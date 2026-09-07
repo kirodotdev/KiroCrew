@@ -56,6 +56,8 @@ interface Opts {
   onPartial?: (text: string, sessionId: string | null) => void
   /** Fired when streaming semantic endpointing judges the utterance complete. */
   onEndpoint?: () => void
+  /** Streaming capture stopped; final corrections may still arrive while typing. */
+  onCaptureStop?: () => void
   /** Id of the session/slot that currently owns the mic. Snapshotted the
    *  instant a recording starts so the resulting transcript can be attributed
    *  to the slot that initiated it — even if the user switches sessions before
@@ -170,9 +172,10 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   // Destructure individual members so downstream useCallback deps track
   // stable references (start/stop/recording) instead of the hook's
   // always-new return object literal, preventing memoization churn.
-  const { recording: streamRecording, start: streamStart, stop: streamStop, switchDevice: streamSwitchDevice, cancel: streamCancel } = useStreamingStt({
+  const { recording: streamRecording, draining: streamDraining, start: streamStart, stop: streamStop, switchDevice: streamSwitchDevice, cancel: streamCancel } = useStreamingStt({
     onPartial: streamOnPartial,
     onFinal: streamOnFinal,
+    onCaptureStop: opts.onCaptureStop,
     onError: setError,
     onLevel: setLevel,
     onDevice: streamOnDevice,
@@ -352,11 +355,14 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       // this stream to the slot now on screen.
       if (startingRef.current) return
       startingRef.current = true
+      // Stop spoken replies before capture can feed them back into dictation.
+      window.dispatchEvent(new CustomEvent('voice-stop'))
       const gen = ++startGenRef.current
       const streamSession = sessionIdRef.current
       streamSessionRef.current = streamSession
       try {
-        await streamStart()
+        const started = await streamStart()
+        if (started === false) return
         // Aborted by a slot switch during startup — stop the stream rather than
         // capture invisibly for a slot that is no longer on screen.
         if (streamSession !== sessionIdRef.current) { streamStop(); return }
@@ -375,6 +381,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     }
     if (!voiceInputSupported || startingRef.current) return
     startingRef.current = true
+    window.dispatchEvent(new CustomEvent('voice-stop'))
     const gen = ++startGenRef.current
     // Attribute this recording's transcript to the slot that owns the mic RIGHT
     // NOW. Captured as a local (not the ref) so a second recording started in
@@ -487,7 +494,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   }, [streamEnabled, streamStart, streamStop, acquireWarm])
 
   const stop = useCallback(() => {
-    if (streamEnabled) { streamStop(); setSessionOwner(null); return }
+    if (streamEnabled) { streamStop(); return }
     setPartial('')
     levelStopRef.current?.()
     levelStopRef.current = null
@@ -532,6 +539,10 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     setSessionOwner(null)
   }, [streamEnabled, streamCancel, releaseWarm])
 
+  useEffect(() => {
+    if (streamEnabled && !streamRecording && !streamDraining && !startingRef.current) setSessionOwner(null)
+  }, [streamEnabled, streamRecording, streamDraining])
+
   const isRecording = streamEnabled ? streamRecording : recording
   const toggle = useCallback(() => { if (isRecording) stop(); else start() }, [isRecording, start, stop])
   /**
@@ -575,5 +586,5 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   /** True when `switchDevice` takes effect immediately rather than next recording. */
   const deviceSwitchIsLive = streamEnabled && streamRecording
 
-  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, download, sampleRef, switchDevice, deviceSwitchIsLive }
+  return { recording: isRecording, transcribing: transcribing || !!streamDraining, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, download, sampleRef, switchDevice, deviceSwitchIsLive }
 }

@@ -23,6 +23,7 @@ vi.mock('../api/client', () => ({
     chatSlots: vi.fn().mockResolvedValue([]),
     voiceConfig: vi.fn().mockResolvedValue({ autoSpeak: true }),
     voiceSynthesize: vi.fn().mockResolvedValue({}),
+    voiceCancel: vi.fn().mockResolvedValue({}),
     approvals: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0, queue: [] }),
@@ -99,7 +100,7 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     })
     await act(async () => {})
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
-    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', SENTENCE.trim())
+    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', SENTENCE.trim(), expect.objectContaining({ request_id: expect.any(String) }))
 
     // Turn completion: everything streamed was already spoken, so nothing may
     // be synthesized again — slicing from the reset counter would repeat the
@@ -122,7 +123,7 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     await act(async () => {})
 
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
-    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', tail)
+    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', tail, expect.objectContaining({ request_id: expect.any(String) }))
 
     hook.unmount()
   })
@@ -147,8 +148,8 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     await act(async () => {})
 
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(2)
-    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(1, 'slot-1', SENTENCE.trim())
-    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(2, 'slot-1', tail)
+    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(1, 'slot-1', SENTENCE.trim(), expect.objectContaining({ request_id: expect.any(String) }))
+    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(2, 'slot-1', tail, expect.objectContaining({ request_id: expect.any(String) }))
 
     hook.unmount()
   })
@@ -166,7 +167,7 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     await act(async () => {})
 
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
-    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', 'A reply that never streamed at all.')
+    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', 'A reply that never streamed at all.', expect.objectContaining({ request_id: expect.any(String) }))
 
     hook.unmount()
   })
@@ -196,8 +197,109 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     await act(async () => {})
 
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(2)
-    expect(api.voiceSynthesize).toHaveBeenLastCalledWith('slot-1', TAIL)
+    expect(api.voiceSynthesize).toHaveBeenLastCalledWith('slot-1', TAIL, expect.objectContaining({ request_id: expect.any(String) }))
 
     hook.unmount()
   })
+  it('speaks Chinese punctuation and a short final answer', async () => {
+    const { hook, ws } = await mount()
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: '你好。接下来处理。', seq: 1 } })
+      ws.simulateMessage({ type: 'chat_segment', data: { slot: 'slot-1' } })
+    })
+    await act(async () => {})
+    expect(vi.mocked(api.voiceSynthesize).mock.calls[0][1]).toBe('你好。接下来处理。')
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: '好的', seq: 2 } })
+      ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-1' } })
+    })
+    await act(async () => {})
+    expect(vi.mocked(api.voiceSynthesize).mock.calls[1][1]).toBe('好的')
+    hook.unmount()
+  })
+
+  it('cancels queued synthesis and rejects late audio after a replacement response starts', async () => {
+    const { hook, ws } = await mount()
+    let finish!: () => void
+    vi.mocked(api.voiceSynthesize).mockImplementationOnce(() => new Promise(resolve => {
+      finish = () => resolve({})
+    }))
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: SENTENCE, seq: 1 } })
+      ws.simulateMessage({ type: 'chat_segment', data: { slot: 'slot-1' } })
+    })
+    await act(async () => {})
+    const oldId = vi.mocked(api.voiceSynthesize).mock.calls[0][2]!.request_id
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: 'A queued second sentence.', seq: 2 } })
+      ws.simulateMessage({ type: 'chat_segment', data: { slot: 'slot-1' } })
+      window.dispatchEvent(new Event('voice-stop'))
+      finish()
+    })
+    await act(async () => {})
+    expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
+    expect(api.voiceCancel).toHaveBeenCalledWith('slot-1', oldId)
+    act(() => {
+      window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot: 'slot-1', request_id: 'replacement' } }))
+      ws.simulateMessage({ type: 'voice_complete', data: { slot: 'slot-1', request_id: oldId, audio: 'stale' } })
+    })
+    expect(store.getState().chat.voiceAudio).not.toBe('stale')
+    act(() => {
+      ws.simulateMessage({ type: 'voice_complete', data: { slot: 'slot-1', request_id: 'replacement', audio: 'current' } })
+    })
+    expect(store.getState().chat.voiceAudio).toBe('current')
+    hook.unmount()
+  })
+
+  it('keeps later segments muted after interruption until the next user turn', async () => {
+    const { hook, ws } = await mount()
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: SENTENCE, seq: 1 } })
+      ws.simulateMessage({ type: 'chat_segment', data: { slot: 'slot-1' } })
+    })
+    await act(async () => {})
+    act(() => {
+      window.dispatchEvent(new Event('voice-stop'))
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: 'A later tool segment.', seq: 2 } })
+      ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-1' } })
+    })
+    await act(async () => {})
+    expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
+    hook.unmount()
+  })
+
+  it('ignores cancelled HTTP failures and reports the current request with its code', async () => {
+    const { hook } = await mount()
+    const errors = vi.fn()
+    window.addEventListener('voice-error', errors)
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot: 'slot-1', request_id: 'old' } }))
+        window.dispatchEvent(new Event('voice-stop'))
+        window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot: 'slot-1', request_id: 'current' } }))
+        window.dispatchEvent(new CustomEvent('voice-synthesis-failed', { detail: { slot: 'slot-1', request_id: 'old', code: 'voice_cancelled' } }))
+      })
+      expect(errors).not.toHaveBeenCalled()
+      act(() => {
+        window.dispatchEvent(new CustomEvent('voice-synthesis-failed', { detail: { slot: 'slot-1', request_id: 'current', code: 'voice_model_config_invalid' } }))
+      })
+      expect(errors).toHaveBeenCalledOnce()
+      expect((errors.mock.calls[0][0] as CustomEvent).detail.code).toBe('voice_model_config_invalid')
+    } finally {
+      window.removeEventListener('voice-error', errors)
+      hook.unmount()
+    }
+  })
+
+  it('releases an in-flight voice request when the audio event connection drops', async () => {
+    const { hook, ws } = await mount()
+    act(() => {
+      window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot: 'slot-1', request_id: 'lost' } }))
+      ws.onclose?.(new CloseEvent('close'))
+    })
+    expect(api.voiceCancel).toHaveBeenCalledWith('slot-1', 'lost')
+    expect(store.getState().chat.voicePlaying).toBe(false)
+    hook.unmount()
+  })
+
 })

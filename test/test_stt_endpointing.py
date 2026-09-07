@@ -16,15 +16,20 @@ conftest, so these do not take tmp_path themselves.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
-from aiohttp import web
+from aiohttp import WSMsgType, web
 
 import kiro_crew.dashboard.handlers.core as core
 from kiro_crew.config.loader import KiroCrewConfig, config_path
 from kiro_crew.dashboard import stt_stream
+from kiro_crew.stt import engine as engine_mod
+from kiro_crew.stt import models
 
 
 def _req(method: str, body: dict | None = None):
@@ -226,7 +231,7 @@ async def test_partial_invalidates_pending_verdict(monkeypatch) -> None:
     monkeypatch.setattr("kiro_crew.dashboard.stt_stream.run_bg_oneliner", bg)
     ws = _fake_ws()
     ep = stt_stream._Endpointer(ws, object(), debounce=0.02, timeout=1.0)
-    ep.note_final("deploy the service")     # schedules gen 1
+    ep.note_final("deploy the service")  # schedules gen 1
     ep.note_partial("deploy the service to")  # user keeps talking -> gen 2, no schedule
     await _drain_until_idle(ep)
     # The gen-1 task wakes to find gen advanced, so it never classifies or sends.
@@ -261,13 +266,13 @@ async def test_single_flight_collision_reruns_not_drops(monkeypatch) -> None:
             await asyncio.sleep(0)
         raise AssertionError(f"condition never held: {label}")
 
-    ep.note_final("first")            # task gen 1
+    ep.note_final("first")  # task gen 1
     await _yield_until(lambda: ep._inflight, "gen-1 reaches run_bg (in-flight)")
-    ep.note_final("second")           # gen 2, collides with in-flight gen 1
+    ep.note_final("second")  # gen 2, collides with in-flight gen 1
     await _yield_until(lambda: ep._pending is not None, "gen-2 latches _pending")
-    release.set()                     # gen-1 call returns -> re-schedules gen 2
+    release.set()  # gen-1 call returns -> re-schedules gen 2
     await _drain_until_idle(ep)
-    assert len(calls) == 2            # in-flight gen 1 + re-run gen 2
+    assert len(calls) == 2  # in-flight gen 1 + re-run gen 2
     ws.send_json.assert_awaited_once_with({"type": "endpoint", "complete": True})
 
 
@@ -280,7 +285,219 @@ async def test_empty_final_does_not_invalidate_pending(monkeypatch) -> None:
     ws = _fake_ws()
     ep = stt_stream._Endpointer(ws, object(), debounce=0.02, timeout=1.0)
     ep.note_final("turn on the lights")  # schedules gen 1
-    ep.note_final("")                    # empty: must NOT bump gen or schedule
+    ep.note_final("")  # empty: must NOT bump gen or schedule
     await _drain_until_idle(ep)
     assert bg.await_count == 1
     ws.send_json.assert_awaited_once_with({"type": "endpoint", "complete": True})
+
+
+class _LocalEndpointStream:
+    """Real local session/VAD/relay with only native inference and LLM replaced."""
+
+    def __init__(self, monkeypatch, *, second_text="with the latest changes"):
+        self.closed = False
+        self.incoming = asyncio.Queue()
+        self.outgoing = asyncio.Queue()
+        self.frames = []
+        self.judgments = []
+        self.first_judge_started = asyncio.Event()
+        self.release_judge = asyncio.Event()
+        self.second_decode_started = asyncio.Event()
+        self.release_second_decode = asyncio.Event()
+        self.final_decodes = 0
+        self.loaded_key = (models.DEFAULT_MODEL, "")
+        self.second_text = second_text
+        self.received = 0
+        self.received_changed = asyncio.Event()
+        monkeypatch.setattr(engine_mod, "shared_engine", lambda **_kw: self)
+        monkeypatch.setattr(models, "is_present", lambda _model: True)
+        monkeypatch.setattr(stt_stream, "run_bg_oneliner", self.judge)
+        # Exercise the real factory and its optional local freshness predicate.
+        original = stt_stream._Endpointer
+
+        def endpointer(*args, **kwargs):
+            self.endpoint = original(*args, **kwargs, debounce=0.0)
+            return self.endpoint
+
+        monkeypatch.setattr(stt_stream, "_Endpointer", endpointer)
+
+    async def ensure_loaded(self, *_args):
+        return engine_mod.Availability(True)
+
+    async def maybe_evict(self):
+        return False
+
+    async def decode(self, _pcm, *, superseding=False, **_kwargs):
+        if superseding:
+            return "live hypothesis"
+        self.final_decodes += 1
+        if self.final_decodes == 2:
+            self.second_decode_started.set()
+            await asyncio.wait_for(self.release_second_decode.wait(), 5)
+            return self.second_text
+        return "check the files"
+
+    async def judge(self, _sessions, prompt, **_kwargs):
+        self.judgments.append(prompt)
+        if len(self.judgments) == 1:
+            self.first_judge_started.set()
+            await asyncio.wait_for(self.release_judge.wait(), 5)
+        return "COMPLETE"
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.closed:
+            raise StopAsyncIteration
+        msg = await asyncio.wait_for(self.incoming.get(), 5)
+        self.received += 1
+        self.received_changed.set()
+        return msg
+
+    async def send_json(self, frame):
+        self.frames.append(frame)
+        self.outgoing.put_nowait(frame)
+
+    async def close(self):
+        self.closed = True
+
+    def send_audio(self, audio, *, chunk_bytes=3200):
+        for offset in range(0, len(audio), chunk_bytes):
+            self.incoming.put_nowait(
+                SimpleNamespace(type=WSMsgType.BINARY, data=audio[offset : offset + chunk_bytes])
+            )
+
+    async def next_frame(self, kind):
+        async with asyncio.timeout(5):
+            while True:
+                frame = await self.outgoing.get()
+                if frame["type"] == kind:
+                    return frame
+
+    async def wait_received(self, count):
+        async with asyncio.timeout(5):
+            while self.received < count:
+                self.received_changed.clear()
+                await self.received_changed.wait()
+
+    def start(self):
+        cfg = KiroCrewConfig.load()
+        cfg.stt.endpointing = True
+        cfg.stt.silence_ms = 700
+        request = SimpleNamespace(app={"state": SimpleNamespace(sessions=object())})
+        return asyncio.create_task(stt_stream._run_local_session(self, cfg, request, "test"))
+
+    async def cleanup(self, task):
+        self.release_judge.set()
+        self.release_second_decode.set()
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+
+
+def _endpoint_utterance(*, speech_seconds=1.2):
+    """Room tone, syllable-shaped speech, then the configured endpoint silence."""
+    sr = stt_stream.STREAM_SAMPLE_RATE_HZ
+    room = np.random.default_rng(42).normal(0, 0.001, int(0.3 * sr))
+    t = np.arange(int(speech_seconds * sr), dtype=np.float32) / sr
+    speech = 0.3 * (0.5 + 0.5 * np.sin(2 * np.pi * 4 * t)) * np.sin(2 * np.pi * 220 * t)
+    return (np.concatenate((room, speech, np.zeros(int(0.7 * sr)))) * 32767).astype("<i2").tobytes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_text", ["with the latest changes", ""])
+async def test_local_backlog_invalidates_judgment_before_next_final(monkeypatch, second_text):
+    """A ready burst skips partials but cannot submit while the next decode waits."""
+    stream = _LocalEndpointStream(monkeypatch, second_text=second_text)
+    task = stream.start()
+    try:
+        await stream.next_frame("ready")
+        stream.send_audio(_endpoint_utterance())
+        await stream.next_frame("final")
+        await asyncio.wait_for(stream.first_judge_started.wait(), 5)
+        stream.send_audio(_endpoint_utterance())
+        await asyncio.wait_for(stream.second_decode_started.wait(), 5)
+        stream.release_judge.set()
+        await asyncio.wait_for(_drain_until_idle(stream.endpoint), 5)
+        assert not any(frame["type"] == "endpoint" for frame in stream.frames)
+        stream.release_second_decode.set()
+        assert (await stream.next_frame("final"))["text"] == second_text
+        await stream.next_frame("endpoint")
+        assert len(stream.judgments) == 2
+        assert "check the files" in stream.judgments[-1]
+        if second_text:
+            assert second_text in stream.judgments[-1]
+    finally:
+        await stream.cleanup(task)
+
+
+@pytest.mark.asyncio
+async def test_local_coalesced_next_speech_blocks_older_final(monkeypatch):
+    """One feed can return a final AFTER already consuming the next live onset."""
+    stream = _LocalEndpointStream(monkeypatch)
+    task = stream.start()
+    try:
+        await stream.next_frame("ready")
+        utterance = _endpoint_utterance()
+        next_prefix = 32000  # One second, including confirmed speech.
+        coalesced = utterance + utterance[:next_prefix]
+        assert len(coalesced) < stt_stream._MAX_WS_MSG_SIZE
+        stream.send_audio(coalesced, chunk_bytes=len(coalesced))
+        await stream.next_frame("final")
+        stream.release_judge.set()
+        await asyncio.wait_for(_drain_until_idle(stream.endpoint), 5)
+        assert stream.judgments == []
+        assert not any(frame["type"] == "endpoint" for frame in stream.frames)
+        stream.send_audio(utterance[next_prefix:])
+        await asyncio.wait_for(stream.second_decode_started.wait(), 5)
+        stream.release_second_decode.set()
+        await stream.next_frame("final")
+        await stream.next_frame("endpoint")
+        assert len(stream.judgments) == 1
+        assert "with the latest changes" in stream.judgments[0]
+    finally:
+        await stream.cleanup(task)
+
+
+@pytest.mark.asyncio
+async def test_local_continued_silence_keeps_auto_submit_live(monkeypatch):
+    """A hot mic continues sending silence throughout the semantic judgment."""
+    stream = _LocalEndpointStream(monkeypatch)
+    task = stream.start()
+    try:
+        await stream.next_frame("ready")
+        stream.send_audio(_endpoint_utterance())
+        await stream.next_frame("final")
+        await asyncio.wait_for(stream.first_judge_started.wait(), 5)
+        received = stream.received
+        stream.send_audio(bytes(32000))
+        await stream.wait_received(received + 10)
+        stream.release_judge.set()
+        await stream.next_frame("endpoint")
+        assert len(stream.judgments) == 1
+    finally:
+        await stream.cleanup(task)
+
+
+@pytest.mark.asyncio
+async def test_local_coalesced_empty_final_rechecks_once(monkeypatch):
+    """Resolving an empty tail must not revive the older final's debounce task."""
+    stream = _LocalEndpointStream(monkeypatch, second_text="")
+    task = stream.start()
+    try:
+        await stream.next_frame("ready")
+        coalesced = _endpoint_utterance(speech_seconds=0.8) * 2
+        assert len(coalesced) < stt_stream._MAX_WS_MSG_SIZE
+        stream.release_judge.set()
+        stream.send_audio(coalesced, chunk_bytes=len(coalesced))
+        await asyncio.wait_for(stream.second_decode_started.wait(), 5)
+        stream.release_second_decode.set()
+        await stream.next_frame("final")
+        assert (await stream.next_frame("final"))["text"] == ""
+        await asyncio.wait_for(_drain_until_idle(stream.endpoint), 5)
+        assert len(stream.judgments) == 1
+        assert [frame for frame in stream.frames if frame["type"] == "endpoint"] == [
+            {"type": "endpoint", "complete": True}
+        ]
+    finally:
+        await stream.cleanup(task)

@@ -16,6 +16,7 @@ import { store } from '../store'
 import { initI18n } from '../i18n'
 import SttSettings from '../pages/settings/SttSettings'
 import { api } from '../api/client'
+import { getPreferredMicId, setPreferredMicId } from '../hooks/mic'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -101,6 +102,36 @@ describe('SttSettings streaming gate', () => {
     })
   })
   afterEach(() => cleanup())
+
+  it('keeps one system default when an unnamed microphone has no device id', async () => {
+    const previousMic = getPreferredMicId()
+    setPreferredMicId('')
+    const enumerate = vi.spyOn(navigator.mediaDevices, 'enumerateDevices').mockResolvedValue([
+      { deviceId: '', groupId: '', kind: 'audioinput', label: '', toJSON: () => ({}) },
+      { deviceId: 'mic-usb', groupId: 'usb', kind: 'audioinput', label: 'USB microphone', toJSON: () => ({}) },
+    ])
+    try {
+      mount()
+      const microphone = await screen.findByRole('combobox', { name: 'Microphone' })
+      fireEvent.click(microphone)
+      // The named option proves the asynchronous device enumeration reached the UI.
+      await screen.findByRole('option', { name: 'USB microphone' })
+      expect(microphone.textContent).toBe('System default')
+      expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual([
+        'System default', 'USB microphone',
+      ])
+      fireEvent.click(screen.getByRole('option', { name: 'USB microphone' }))
+      expect(getPreferredMicId()).toBe('mic-usb')
+      expect(microphone.textContent).toBe('USB microphone')
+      fireEvent.click(microphone)
+      fireEvent.click(await screen.findByRole('option', { name: 'System default' }))
+      expect(getPreferredMicId()).toBe('')
+      expect(microphone.textContent).toBe('System default')
+    } finally {
+      enumerate.mockRestore()
+      setPreferredMicId(previousMic)
+    }
+  })
 
   it('offers the streaming toggle for the on-device apple provider', async () => {
     mount({ provider: 'apple' })

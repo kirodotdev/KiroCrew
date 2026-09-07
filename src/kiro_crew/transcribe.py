@@ -1728,7 +1728,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
             credential_resolver=credential_resolver,
         )
         stream = await client.start_stream_transcription(
-            language_code=stt_config.language_code,
+            language_code=stt_config.effective_language_code,
             media_sample_rate_hz=_TRANSCRIBE_SAMPLE_RATE_HZ,
             media_encoding="ogg-opus",
         )
@@ -2201,9 +2201,9 @@ async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type:
 
     Delegates to :mod:`kiro_crew.apple_speech`, which owns the Swift-helper seam.
     The framework needs a language *locale* rather than whisper's bare language
-    code, so ``stt_config.language_code`` (already BCP-47, e.g. ``en-US``) is passed
-    straight through; the helper falls back to another installed dialect of the same
-    language before it refuses.
+    code, so ``stt_config.effective_language_code`` supplies BCP-47 (e.g. ``en-US``)
+    even when the stored preference is automatic. The helper falls back to another
+    installed dialect of the same language before it refuses.
 
     A supported host needs no model download because the OS ships the assets, so
     a failure here is a real error rather than the missing-model state the local
@@ -2213,7 +2213,7 @@ async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type:
 
     text, metrics = await apple_speech.transcribe(
         audio_path,
-        locale=stt_config.language_code or "en-US",
+        locale=stt_config.effective_language_code,
         timeout_secs=stt_config.timeout_secs or apple_speech.DEFAULT_TIMEOUT_SECS,
     )
     if text is None:

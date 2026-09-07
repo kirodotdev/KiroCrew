@@ -20,13 +20,117 @@ import { copySessionLink } from '../utils/shareUrl'
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(undefined) }))
 import { copyToClipboard } from '../utils/clipboard'
 
-beforeEach(() => { vi.useFakeTimers() })
+beforeEach(() => {
+  vi.useFakeTimers()
+  vi.mocked(copyToClipboard).mockReset().mockResolvedValue(true)
+})
 afterEach(() => { act(() => { vi.runAllTimers() }); vi.useRealTimers() })
 
 describe('AssistantMessage', () => {
   it('renders markdown content', () => {
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} />)
     expect(screen.getByTestId('md')).toHaveTextContent('Hello world')
+  })
+
+  it('offers Read aloud for a short nonblank completed reply and sends its exact content', () => {
+    const onSpeak = vi.fn()
+    render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onSpeak={onSpeak} />)
+    expect(screen.queryByTitle('Copy')).not.toBeInTheDocument()
+    fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    const readAloud = screen.getByRole('menuitem', { name: 'Read aloud' })
+    expect(readAloud).toHaveAttribute('aria-description', 'Read message aloud')
+    fireEvent.click(readAloud)
+    expect(onSpeak).toHaveBeenCalledWith('Done.')
+  })
+
+  it('does not offer Read aloud for a blank completed reply', () => {
+    render(<AssistantMessage content={' \n\t '} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} />)
+    expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
+    expect(screen.getByTitle('Copy')).toBeInTheDocument()
+  })
+
+  it('distinguishes copying reply text from copying its message link', async () => {
+    render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false}
+      onSpeak={vi.fn()} messageTs="2026-09-07T12:00:00Z" slotKey="chat-a" slotTitle="My chat" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link to message' }))
+    expect(copySessionLink).toHaveBeenCalledWith('chat-a', 'My chat', '2026-09-07T12:00:00Z', undefined)
+    fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy text' }))
+    await act(async () => {})
+    expect(copyToClipboard).toHaveBeenCalledWith('Done.')
+    expect(screen.getByTestId('copy-message-menu-item')).toHaveTextContent('Copied')
+  })
+
+  it.each([
+    ['short', 'Done.', {}],
+    ['raw', 'x'.repeat(30), {}],
+    ['regenerate', 'Done.', { onRegenerate: vi.fn() }],
+  ])('swaps Copy for More without growing a %s footer', (_case, content, extra) => {
+    const base = render(<AssistantMessage content={content} isStreaming={false} slotRunning={false} {...extra} />)
+    const baseButtons = base.container.querySelectorAll('[data-role="assistant"] > .opacity-0 button').length
+    cleanup()
+    const voiced = render(<AssistantMessage content={content} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} {...extra} />)
+    const voicedButtons = voiced.container.querySelectorAll('[data-role="assistant"] > .opacity-0 button').length
+    expect(voicedButtons).toBe(baseButtons)
+    expect(screen.queryByTitle('Copy')).not.toBeInTheDocument()
+    expect(screen.getByTestId('assistant-more-actions')).toBeInTheDocument()
+  })
+
+  it('keeps synthetic-menu success visible and exposes no governed actions', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(true)
+    render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onSpeak={vi.fn()} shareEnabled />)
+    fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(screen.getByTestId('copy-message-menu-item'))
+    await act(async () => {})
+    expect(screen.getByTestId('copy-message-menu-item')).toHaveTextContent('Copied')
+    expect(screen.queryByTestId('share-message')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('fork-from-here')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('plan-from-here')).not.toBeInTheDocument()
+  })
+
+  it.each(['resolved false', 'rejected'])('surfaces a persistent ErrorNotice when synthetic-menu Copy is %s and clears it on retry', async (outcome) => {
+    if (outcome === 'resolved false') vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
+    else vi.mocked(copyToClipboard).mockRejectedValueOnce(new Error('refused'))
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(true)
+    render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onSpeak={vi.fn()} />)
+    fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(screen.getByTestId('copy-message-menu-item'))
+    await act(async () => {})
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Copy failed. Select the text and copy it manually.')
+    expect(alert.closest('[role="menu"]')).toBeNull()
+    expect(screen.getByTitle('More actions')).toHaveAttribute('aria-expanded', 'false')
+    act(() => { vi.advanceTimersByTime(2000) })
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(screen.getByTestId('copy-message-menu-item'))
+    await act(async () => {})
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('surfaces inline Copy failure without stealing focus to the existing More trigger', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
+    render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onFork={vi.fn()} forkIndex={0} shareEnabled />)
+    const copy = screen.getByTitle('Copy')
+    copy.focus()
+    fireEvent.click(copy)
+    await act(async () => {})
+    expect(screen.getByRole('alert')).toHaveTextContent('Copy failed. Select the text and copy it manually.')
+    expect(copy).toHaveFocus()
+    expect(screen.getByTitle('More actions')).not.toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('does not reopen a controlled More menu after its footer becomes unavailable', () => {
+    const onSpeak = vi.fn()
+    const { rerender } = render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onSpeak={onSpeak} />)
+    fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    expect(screen.getByTitle('More actions')).toHaveAttribute('aria-expanded', 'true')
+    rerender(<AssistantMessage content="Done." isStreaming slotRunning onSpeak={onSpeak} />)
+    expect(screen.queryByTitle('More actions')).not.toBeInTheDocument()
+    rerender(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onSpeak={onSpeak} />)
+    expect(screen.getByTitle('More actions')).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('does not add streaming-cursor class (replaced by inline gradient)', () => {
@@ -492,15 +596,13 @@ describe('AssistantMessage', () => {
     expect(screen.getAllByTitle('More actions')).toHaveLength(1)
     expect(screen.getByTitle('Fork conversation from here').tagName).toBe('BUTTON')
     c.unmount()
-    // 4. Speak and raw-view are ROW buttons and never sit inside the menu;
-    //    the trigger keeps to the fork/plan signal, as Share's home.
+    // 4. Raw-view remains a row button while Speak joins the existing menu.
     const d = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} onFork={vi.fn()} variants={variants} />)
     expect(screen.getAllByTitle('More actions')).toHaveLength(1)
     expect(screen.getByTitle('Raw markdown')).toBeTruthy()
-    // `speak` is the TITLE and `speak_message` the aria-label, as on base: the
-    // relabel that swapped them is out of this PR's scope.
-    expect(screen.getByTitle('Speak')).toBeTruthy()
-    expect(screen.getByLabelText('Speak message')).toBeTruthy()
+    expect(screen.getByTitle('Copy')).toBeTruthy()
+    openOverflow()
+    expect(screen.getByTestId('speak-message')).toHaveTextContent('Read aloud')
     d.unmount()
     // 5. Fork unavailable keeps its disabled-in-place explanation, as documented.
     render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} variants={variants} />)

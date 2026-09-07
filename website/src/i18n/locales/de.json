@@ -5135,6 +5135,11 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "„{{speak}}“ ist fehlgeschlagen. Prüfe die Text-zu-Sprache-Einstellungen und versuche es erneut.",
+      "blocked": "Dein Browser hat die automatische Wiedergabe blockiert. Öffne unter der abgeschlossenen Antwort „{{moreActions}}“ und wähle „{{speak}}“ aus.",
+      "settings": "Einstellungen für „{{speak}}“ (Text zu Sprache)"
+    },
     "avatarBuilder": {
       "apply": "Übernehmen",
       "apply_hint": "Gilt hier — mit „Änderungen speichern“ dauerhaft speichern.",
@@ -9079,6 +9084,7 @@
         "workflow_runs_load_failed": "Workflow-Ausführungen konnten nicht geladen werden"
       },
       "assistantMessage": {
+        "copy_text": "Text kopieren",
         "applied_to_tasks": "Auf Aufgaben angewendet",
         "copied": "Kopiert!",
         "copy": "Kopieren",
@@ -13276,6 +13282,7 @@
         "copy_manifest_failed": "Das Manifest konnte nicht in die Zwischenablage kopiert werden."
       },
       "sttSettings": {
+        "language_auto": "Sprache automatisch erkennen",
         "allow_microphone_access_to_show_device_names": "Mikrofonzugriff erlauben, um Gerätenamen anzuzeigen",
         "aws_credentials_profile_for_transcribe_blank_def": "AWS-Anmeldedatenprofil für Transcribe (leer = Standardkette)",
         "aws_profile_transcribe": "AWS-Profil (Transcribe)",

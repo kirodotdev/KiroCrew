@@ -3772,6 +3772,11 @@ class ChannelConfig:
 #: supported OS, with no account, no platform floor, and no separate install.
 STT_PROVIDER_LOCAL = "local"
 
+#: Local Whisper can detect the spoken language; forcing English corrupts
+#: multilingual dictation before the recogniser can choose the right tokens.
+STT_LANGUAGE_AUTO = "auto"
+STT_LANGUAGE_FALLBACK = "en-US"
+
 #: The recognisers a user can select. ``local`` runs whisper.cpp in-process,
 #: ``apple`` uses macOS 26+ on-device recognition, and ``transcribe`` sends audio
 #: to AWS Transcribe (billed, and gated on the AWS consent prompt). All three
@@ -4192,9 +4197,11 @@ class SttConfig:
         ),
     )
     language_code: str = field(
-        default="en-US",
+        default=STT_LANGUAGE_AUTO,
         metadata=_meta(
-            "Language Code", "Language for speech recognition (e.g. en-US, fr-FR, es-ES)."
+            "Language Code",
+            "Language for speech recognition (e.g. zh-CN, en-US). The local provider "
+            "defaults to auto-detect; choosing a language can improve short dictation.",
         ),
     )
     streaming: bool = field(
@@ -4254,7 +4261,11 @@ class SttConfig:
     )
     timeout_secs: int = field(
         default=300,
-        metadata=_meta("Timeout", "Transcription timeout in seconds."),
+        metadata=_meta(
+            "Timeout",
+            "Maximum transcription time in seconds. Local streaming uses the same budget "
+            "for pending audio after recording stops.",
+        ),
     )
     transcribe_region: str = field(
         default="us-east-1",
@@ -4264,6 +4275,23 @@ class SttConfig:
         default="",
         metadata=_meta("Transcribe Profile", "AWS profile for Transcribe API."),
     )
+
+    def __post_init__(self) -> None:
+        language = self.language_code
+        if not isinstance(language, str) or not language.strip():
+            language = STT_LANGUAGE_AUTO
+        else:
+            language = language.strip()
+        if language.lower() == STT_LANGUAGE_AUTO:
+            language = STT_LANGUAGE_AUTO
+        self.language_code = language
+
+    @property
+    def effective_language_code(self) -> str:
+        """Resolve a provider locale without changing the stored preference."""
+        if self.language_code == STT_LANGUAGE_AUTO and self.provider != STT_PROVIDER_LOCAL:
+            return STT_LANGUAGE_FALLBACK
+        return self.language_code
 
 
 @dataclass

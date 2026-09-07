@@ -99,6 +99,36 @@ mic -> AudioWorklet (16 kHz mono Int16 PCM) -> WebSocket /api/ws/stt
 
 ### Components
 
+The microphone selector represents devices with an empty ID through System
+default only. Identifiable devices remain separately selectable; anonymous
+enumeration results cannot create a duplicate default option.
+
+The capture worklet keeps resampling phase across render blocks and applies a
+63-tap low-pass filter before downsampling, preventing high-frequency input from
+aliasing into speech. Precomputed fractional-phase kernels preserve non-integer
+ratios such as 44.1 kHz to 16 kHz without sample-position jitter. It emits 100 ms
+PCM batches. On release, microphone tracks
+stop immediately and the hook enters `draining`; the worklet receives `flush`,
+drains the filter history and remaining short PCM frame, then acknowledges with
+`flushed`. Only after
+that acknowledgement (or the bounded flush timeout) does the client send the
+WebSocket `stop`, so the tail precedes finalization. Disconnect recovery preserves
+the most recent partial alongside committed utterances. Transcript joins avoid
+inserting spaces between CJK characters while keeping Latin word separation.
+The shared `website/src/lib/dictationText.ts` rules also apply when dictation
+replaces a selection, inserts at the caret, or appends to a background draft.
+Authored whitespace is preserved and an empty hypothesis leaves the draft intact.
+Meeting captions use the same joining rule and count the actual separator in
+their 240-character window. A long caption keeps a bounded recent tail without
+splitting a surrogate pair or dropping an unspaced CJK prefix just because a
+later Latin word contains a space. Durable meeting transcript storage is unchanged.
+Manual release and an automatic capture stop share the composer's stop protection:
+they freeze the release caret and disarm semantic submission while results drain.
+Late final corrections preserve text the user types after capture has stopped.
+Every actual capture end, including a fatal server frame, synchronously fires
+the composer's once-only capture-stop protection before deferred socket-close
+transcript delivery; explicit cancel and unmount remain discard-only and do not fire it.
+
 | Component | File | Role |
 |---|---|---|
 | WS endpoint | `src/kiro_crew/dashboard/stt_stream.py` | One provider session per connection, plus the caps and the SEL audit pair |
@@ -125,7 +155,7 @@ Client to server:
 
 Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider's `partial` and `final` frame types; `dashboard.stt_stream` owns the complete wire contract:
 
-- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. The buffer is capped and drops **oldest-first** so an unavailable server cannot grow browser memory without bound.
+- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its separate 60-second client timeout. For older servers without a valid allowance, the client uses 315 seconds.
 - `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...}`
   where `stage` is `downloading` or `ready`. A first-ever local session has to
   fetch weights before it can recognise anything, and a silent transfer is
@@ -136,7 +166,7 @@ Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider'
   pushed. A session with nothing to report emits no status frame at all.
 - `{"type":"partial","text":"..."}`: an in-progress hypothesis that replaces the
   previous one.
-- `{"type":"final","text":"..."}`: the committed transcript for the utterance.
+- `{"type":"final","text":"..."}`: the committed transcript for the utterance. An empty final explicitly retracts the previous partial, including a hypothesis removed by hallucination filtering or redaction. It contributes no text to semantic endpointing. The client clears that live hypothesis so disconnect recovery cannot restore it.
 - `{"type":"endpoint","complete":true}`: the semantic endpointer judged the
   utterance a finished request, so the composer may submit without a keypress.
   Only when `stt.endpointing` is on.
@@ -220,10 +250,82 @@ is then the committed text plus a decode of the current phrase, so its cost
 tracks the current phrase rather than the whole recording. Decoding the entire
 utterance on every partial makes each update grow with the recording and can fall behind the speaker. Committed text never regresses under the speaker. Cadence is `stt.partial_interval_ms`, pinned by `test/test_stt_session.py`.
 
+A phrase boundary requires `PHRASE_SILENCE_MS` of consecutive quiet; an individual
+quiet analysis frame inside a syllable does not discard the model's phrase context.
+The partial interval starts when inference completes, so CPU inference taking
+longer than that interval cannot trigger another decode immediately on return.
+
+**Backpressure.** The local transport receives PCM and `stop` independently of
+inference, in a byte- and frame-bounded inbox. Its limits admit the browser's
+entire readiness burst with headroom for live audio during catch-up. While audio is queued, or after
+`stop` has been received, `LocalSession.feed(allow_partial=False)` drains every
+sample through endpointing and the final buffer without cosmetic partial or
+phrase-commit decodes. This prevents a slow model from repeatedly transcribing
+stale frames while the speaker's latest audio waits unread. A stop preserves
+the entire queued tail for final recognition and signals the session's abort
+predicate to stop an in-flight cosmetic decode. Phrase commits are cosmetic too;
+the final never honors that predicate. Overflow reports a coded error;
+audio is never silently dropped to meet the memory budget. The receiver and
+deadline tasks are joined on teardown.
+
+When semantic endpointing is enabled, a second cheap VAD runs synchronously at
+receipt, before queued inference can wait. Newly confirmed speech invalidates
+pending judgments even when backpressure suppresses partial decodes. Each local
+final carries an internal cumulative PCM sample position (never sent on the wire);
+classification and COMPLETE delivery require that position to cover all confirmed
+speech received so far. A coalesced chunk's older final cannot acknowledge its
+next live utterance, and phrase commits, decode padding, or an audio cap cannot
+advance that acknowledgement. The VAD tracks actual confirmed speech separately
+from its duration ceiling: ongoing silence neither invalidates a judgment nor
+keeps auto-submit waiting forever. An empty final acknowledges its audio too;
+when it resolves newer speech that invalidated a judgment, the endpointer may
+reclassify previously committed text. It never revives the stale verdict or
+classifies an empty transcript.
+
+Receipt of `stop` also starts one total `stt.timeout_secs` drain budget. It covers
+the current partial, queued PCM, shared-engine contention, and all remaining final
+decodes; multiple utterances do not each restart that budget. The existing
+timeout's configuration help also describes this post-recording budget.
+Expiry cancels the session task and native decode, allows at most
+`DECODE_ABORT_GRACE_SECS` for native
+cleanup, then sends `stt_decode_failed` and closes while preserving text already
+delivered. Local `ready.final_timeout_ms` adds that cleanup grace and
+`_LOCAL_FINAL_WIRE_GRACE_SECS` so the browser can receive this outcome before its own
+fallback closes. A configured 300-second decode budget therefore advertises
+320 seconds. The independent maximum session-duration cap can end the session
+earlier. Transport cancellation abandons remaining audio instead of starting
+another final decode during cleanup.
+
+**Language.** Local recognition defaults to `auto`, allowing the multilingual
+model to detect the spoken language. `SttConfig.language_code` keeps that stored
+preference through provider changes and unrelated configuration saves, including
+theme changes. Apple and Transcribe require an explicit locale, so their batch and
+streaming calls and the STT settings response use `effective_language_code`, which
+resolves `auto` to `en-US` only for those providers. Switching back to local restores
+automatic detection. Explicit choices such as `en-US` and `zh-CN` remain unchanged
+in both storage and recognition; only the local provider offers `auto` in its picker.
+
 **The final.** One decode of the entire buffer, so the text that reaches the
 message box has the full context the model would have had if it had never been
 streamed, followed by `filter_hallucinations`. Partials are fast and approximate
 on purpose; the final is the accurate one.
+
+Both batch and final recognition retry an empty decode only when the resident
+model key changed. Silence does not pay for the same inference twice; all-zero
+batch recordings skip model loading and inference entirely.
+
+Cancelling a decode sets its native abort callback and holds the decode lock for
+at most `_ABORT_GRACE_SECS` while the worker settles. A worker that ignores abort
+loses its resident context before the lock is released, so another request cannot
+enter the same native state concurrently. This also applies to cancellation during
+timeout cleanup. Cancelling an asyncio task alone cannot terminate a native thread.
+Until a retired worker finishes, model preparation refuses a retry rather than
+allocating a second set of weights alongside the stuck context. Prewarming a model
+that has already completed inference also skips the throwaway silence decode;
+eviction clears that warm state so the next load can warm again.
+The cold throwaway decode is superseding, so a real audio request invalidates
+prewarm work already in flight and can proceed as soon as native abort completes.
+This priority applies to prewarm only; final transcripts remain non-superseding.
 
 **A failed decode is not silence, and the engine no longer says it is.** whisper.cpp
 reports a failure through `whisper_full`'s return code and pywhispercpp discards it:
@@ -242,9 +344,9 @@ mismatch — so an empty transcript means nothing was heard and nothing else.
 failure becomes an `error` event carrying that code, which the transport relays as an
 `error` frame before closing; a partial or a phrase-commit failure is logged and
 skipped, because the next partial is moments away and one bad decode must not end a
-session the speaker is still talking into. Returning an empty final instead is what
-made this invisible: the transport drops an empty final, so a failed decode after the
-user pressed stop discarded the whole utterance with nothing on screen to say why.
+session the speaker is still talking into. A final failure must retain its error
+code: treating it as an empty transcript would retract the partial and discard
+the utterance with nothing on screen to explain the failure.
 `transcribe_pcm` reports the same code through the `Availability` it already returns,
 so the batch path names the reason rather than reporting a memo it could not hear.
 
@@ -254,7 +356,9 @@ final, drops that utterance's audio and committed text, and installs a fresh
 
 **The chunk that ends an utterance is split, not filed whole.** A client chunk can contain both the silence that ends one utterance and speech that starts the next. `Endpointer.push` stops at the frame that closed the utterance and returns
 everything after it as `VadUpdate.pending`; `feed()` buffers only the head, finalises,
-and then seeds the re-armed buffer and detector with that tail. Filing the chunk whole
+and then seeds the re-armed buffer and detector with that tail. A large frame can
+contain multiple endpoints; the session repeats this split until all have been
+finalised, preserving every sample in either a final or the live tail. Filing the chunk whole
 attributed resumed speech to the utterance that just closed, where it sits behind a
 hangover of silence and contributes nothing, and clipped that word's onset off the
 utterance it belongs to. `pending` is empty unless `ended`, because otherwise it would
@@ -275,12 +379,13 @@ once and reading the latter discarded whatever was said after the last detected
 pause. The endpointer is closed AFTER the final, because the final is the one
 segment its judgment is about.
 
-**Residency.** The model is loaded once and reused. A warm decode is tens of
-milliseconds against seconds for anything that loads a model per utterance, which
-is the whole reason this path is worth having. `stt.idle_evict_secs` releases the
-weights after a quiet spell, because a reload from a warm OS cache is a fraction
-of a second and the resident footprint is not something to hold for the life of a
-gateway that transcribed one voice memo this morning. Decodes run on
+**Residency.** The model is loaded once and reused, removing repeated model-load
+cost. Decode latency still depends on the chosen model, hardware, competing work,
+and the acceleration actually compiled into the installed runtime. Having a GPU
+does not establish that the recognizer uses it; a CPU-only runtime can make a large
+model much slower than real time even after warming. Streaming cadence is a limit
+on cosmetic work, not a real-time performance guarantee. `stt.idle_evict_secs`
+releases weights after a quiet spell to bound resident memory. Decodes run on
 `executors.stt_executor()` and hold `WhisperEngine._decode_lock`: `whisper_full`
 mutates the context, so two concurrent decodes on one context corrupt each other,
 and a superseded partial aborts rather than queueing.
@@ -379,10 +484,12 @@ restated here, because a copied constant goes stale silently.
 | `_MAX_STREAM_DURATION_SECS` | `dashboard/stt_stream.py` | Wall-clock life of one connection |
 | `_MAX_WS_MSG_SIZE` | `dashboard/stt_stream.py` | One inbound audio frame |
 | `_MAX_TEXT_FRAME_BYTES` | `dashboard/stt_stream.py` | One inbound control frame |
+| `_MAX_LOCAL_BUFFER_BYTES`, `_MAX_LOCAL_BUFFER_FRAMES` | `dashboard/stt_stream.py` | PCM awaiting local inference, by bytes and frame count |
 | `_MAX_MODEL_PREPARE_SECS` | `dashboard/stt_stream.py` | The one-time model fetch a first-ever `local` session waits on |
 | `heartbeat` on `WebSocketResponse` | `dashboard/stt_stream.py` | Idle liveness ping interval |
 | `MAX_SESSION_SECS` | `stt/session.py` | Audio one local session buffers |
 | `MAX_PHRASE_SECS` | `stt/session.py` | Phrase length before a commit is forced |
+| `PHRASE_SILENCE_MS` | `stt/session.py` | Sustained quiet needed to commit a phrase |
 | `MIN_DECODE_SECS`, `MIN_COMMIT_SECS` | `stt/session.py` | Floors below which a decode or a commit is not worth doing |
 | `THREAD_CEILING` | `stt/engine.py` | Extrapolation ceiling on the derived thread count |
 | `DEFAULT_TIMEOUT_SECS` | `stt/engine.py` | One decode or one model load |

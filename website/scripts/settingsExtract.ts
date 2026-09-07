@@ -341,6 +341,7 @@ export function extractFromSource(
       const labelKey = extractTranslationKeyProp(props, 'label')
       const description = extractStringProp(props, 'description')
       const configKey = extractStringProp(props, 'configKey')
+      const settingId = extractStringProp(props, 'settingId')
       for (const target of targets) {
         const tab = typeof target === 'string' ? target : target.tab
         const params = typeof target === 'string' ? undefined : target.params
@@ -362,6 +363,7 @@ export function extractFromSource(
           occurrence: 1,
           ...(params ? { params } : {}),
           ...(configKey ? { configKey } : {}),
+          ...(settingId ? { settingId } : {}),
         })
       }
     }

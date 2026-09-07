@@ -5135,6 +5135,11 @@
     "viewPr": "পুল রিকোয়েস্ট"
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "“{{speak}}” চালানো যায়নি। টেক্সট-টু-স্পিচ সেটিংস পরীক্ষা করে আবার চেষ্টা করুন।",
+      "blocked": "ব্রাউজার স্বয়ংক্রিয় অডিও চালানো বন্ধ করেছে। সম্পূর্ণ হওয়া উত্তরের নিচে “{{moreActions}}” খুলে “{{speak}}” বেছে নিন।",
+      "settings": "“{{speak}}” সেটিংস (টেক্সট-টু-স্পিচ)"
+    },
     "avatarBuilder": {
       "apply": "প্রয়োগ করুন",
       "apply_hint": "এখানে প্রয়োগ হয় — রাখতে “পরিবর্তন সংরক্ষণ করুন” চাপুন।",
@@ -9079,6 +9084,7 @@
         "workflow_runs_load_failed": "ওয়ার্কফ্লো রান লোড করা যায়নি"
       },
       "assistantMessage": {
+        "copy_text": "টেক্সট কপি করুন",
         "applied_to_tasks": "টাস্কে প্রয়োগ করা হয়েছে",
         "copied": "কপি হয়েছে!",
         "copy": "কপি করুন",
@@ -13277,6 +13283,7 @@
         "copy_manifest_failed": "ম্যানিফেস্ট ক্লিপবোর্ডে কপি করা যায়নি।"
       },
       "sttSettings": {
+        "language_auto": "স্বয়ংক্রিয়ভাবে ভাষা শনাক্ত করুন",
         "allow_microphone_access_to_show_device_names": "ডিভাইসের নাম দেখাতে মাইক্রোফোন অ্যাক্সেসের অনুমতি দিন",
         "aws_credentials_profile_for_transcribe_blank_def": "Transcribe-এর জন্য AWS ক্রেডেনশিয়াল প্রোফাইল (খালি = ডিফল্ট চেইন)",
         "aws_profile_transcribe": "AWS প্রোফাইল (Transcribe)",

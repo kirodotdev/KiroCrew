@@ -31,6 +31,7 @@ import {
 } from './staleOwnerSignal'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { withDeadline } from '../lib/withDeadline'
+import { createVoiceRequestId } from '../lib/voicePlayback'
 
 /** Deadline for `api.skills`. Measured on one host inside twenty minutes: 0.62s
  *  healthy, then 9.76s, 41.41s, 168.71s for a byte-identical payload. 15s clears
@@ -3417,8 +3418,17 @@ export const api = {
     }).then(j) as Promise<{ ok?: boolean; error?: string; code?: string; identityDetail?: string }>,
   revokeAwsConsent: (service: string) =>
     del('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
-  voiceSynthesize: (slot: string, text: string, opts?: { voice?: string; engine?: string; rate?: string; pitch?: string }) =>
-    post('/api/voice/synthesize', { slot, text, ...opts }).then(j),
+  voiceSynthesize: (slot: string, text: string, opts?: { voice?: string; engine?: string; rate?: string; pitch?: string; request_id?: string }) => {
+    const request_id = opts?.request_id || createVoiceRequestId()
+    window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot, request_id } }))
+    return post('/api/voice/synthesize', { slot, text, ...opts, request_id }).then(j).catch(error => {
+      const code = error instanceof ApiError ? parseErrorCode(error.body) : undefined
+      window.dispatchEvent(new CustomEvent('voice-synthesis-failed', { detail: { slot, request_id, code: code || 'voice_synthesis_failed' } }))
+      throw error
+    })
+  },
+  voiceCancel: (slot: string, request_id: string) =>
+    post('/api/voice/cancel', { slot, request_id }).then(j),
 
   // Channels
   channelsList: () => fetch('/api/channels').then(j),

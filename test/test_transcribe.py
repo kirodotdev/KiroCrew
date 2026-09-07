@@ -416,14 +416,22 @@ class TestTranscribeAudio:
         assert probe_threads[0] != loop_thread
 
     @pytest.mark.asyncio
-    async def test_aws_audio_read_runs_off_event_loop(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("language", "expected_locale"),
+        [("auto", "en-US"), ("en-US", "en-US"), ("zh-CN", "zh-CN")],
+    )
+    async def test_aws_audio_read_runs_off_event_loop(
+        self, tmp_path, monkeypatch, language, expected_locale
+    ):
         from threading import get_ident
 
         from kiro_crew import transcribe as tr
 
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake audio")
-        cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
+        cfg = SttConfig(
+            enabled=True, provider="transcribe", language_code=language, timeout_secs=10
+        )
         # Transcribe is a paid service and `_transcribe_aws` refuses without a
         # recorded consent for this profile+region, so this case -- which is
         # about WHERE the read runs, not about the gate -- consents first. The
@@ -461,12 +469,14 @@ class TestTranscribeAudio:
             end_stream=AsyncMock(),
         )
         stream = SimpleNamespace(input_stream=input_stream, output_stream=object())
+        started = {}
 
         class FakeClient:
             def __init__(self, **kwargs):
                 pass
 
             async def start_stream_transcription(self, **kwargs):
+                started.update(kwargs)
                 return stream
 
         class FakeHandler:
@@ -489,6 +499,28 @@ class TestTranscribeAudio:
         assert result is None
         assert read_threads
         assert read_threads[0] != loop_thread
+        assert started["language_code"] == expected_locale
+        assert cfg.language_code == language
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("language", "expected_locale"),
+        [("auto", "en-US"), ("en-US", "en-US"), ("zh-CN", "zh-CN")],
+    )
+    async def test_apple_batch_uses_effective_locale(
+        self, tmp_path, monkeypatch, language, expected_locale
+    ):
+        from kiro_crew import apple_speech
+
+        cfg = SttConfig(provider="apple", language_code=language, timeout_secs=10)
+        recognize = AsyncMock(return_value=("heard", {}))
+        monkeypatch.setattr(apple_speech, "transcribe", recognize)
+        audio_path = str(tmp_path / "voice.wav")
+
+        assert await transcribe._transcribe_apple(audio_path, cfg) == "heard"
+
+        recognize.assert_awaited_once_with(audio_path, locale=expected_locale, timeout_secs=10)
+        assert cfg.language_code == language
 
     @pytest.mark.asyncio
     async def test_local_wav_decode_runs_off_event_loop(self, tmp_path, monkeypatch):
@@ -1163,7 +1195,7 @@ class TestSttConfig:
         assert cfg.enabled is True
         assert cfg.provider == "local"
         assert cfg.model == "base"
-        assert cfg.language_code == "en-US"
+        assert cfg.language_code == "auto"
         assert cfg.streaming is True
         assert cfg.silence_ms == 700
         assert cfg.partial_interval_ms == 400
@@ -1179,6 +1211,20 @@ class TestSttConfig:
         from kiro_crew.stt import models
 
         assert SttConfig().model in {m.name for m in models.CATALOG}
+
+    @pytest.mark.parametrize("provider", ["local", "apple", "transcribe"])
+    @pytest.mark.parametrize("language", ["auto", "AUTO", "", None, 42])
+    def test_language_default_matches_provider_capabilities(self, provider, language):
+        cfg = SttConfig(provider=provider, language_code=language)
+        assert cfg.language_code == "auto"
+        assert cfg.effective_language_code == ("auto" if provider == "local" else "en-US")
+
+    @pytest.mark.parametrize("provider", ["local", "apple", "transcribe"])
+    @pytest.mark.parametrize("language", ["en-US", "zh-CN"])
+    def test_explicit_language_is_preserved(self, provider, language):
+        cfg = SttConfig(provider=provider, language_code=language)
+        assert cfg.language_code == language
+        assert cfg.effective_language_code == language
 
     def test_custom_values(self):
         cfg = SttConfig(

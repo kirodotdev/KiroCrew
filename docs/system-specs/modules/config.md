@@ -19,6 +19,8 @@ top-level section classification, and degraded-input tracking; and
 orchestration, cache fingerprinting, migration, and runtime binding resolution.
 `loader.py` re-exports the historical DTO, helper, and constant names so existing
 callers keep the same import surface.
+New section constants, including local speech's automatic-language default, are
+read from `config.sections` directly; they do not expand that historical facade.
 
 A feature whose section spends tokens on the user's behalf defaults to off and
 documents its knobs in its own spec — `session_summary` is the current example
@@ -988,7 +990,7 @@ class SttConfig:
     enabled: bool = True           # on by default: the default provider needs no account
     provider: str = "local"        # "local" | "apple" | "transcribe"; a retired value degrades to "local"
     model: str = "base"            # a kiro_crew.stt.models CATALOG name; a superseded name resolves via its alias table
-    language_code: str = "en-US"
+    language_code: str = "auto"    # stored preference; effective_language_code resolves auto to en-US for Apple/Transcribe
     streaming: bool = True         # live partials; every provider produces them
     silence_ms: int = 700          # end-of-phrase pause; clamped to _STT_INTERVAL_MS_MIN.._MAX
     partial_interval_ms: int = 400 # live-transcript refresh cadence; same clamp

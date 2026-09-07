@@ -21,6 +21,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { MeetingsApiError, meetingsApi, type TranscriptSegment } from '../api'
 import { reportIfMicDenied } from '../../../hooks/mic'
+import { dictationSeparator, joinTranscript, transcriptTail } from '../../../lib/dictationText'
 
 /** Feature detection mirroring `useStreamingStt` — the dashboard's own hook. */
 export const transcriptionSupported =
@@ -93,20 +94,17 @@ export function captionWindow(finals: readonly string[], partial = ''): string {
   const kept: string[] = []
   let length = 0
   for (let i = segments.length - 1; i >= 0; i--) {
-    // +1 for the space this segment would be joined with.
-    const cost = segments[i].length + (kept.length === 0 ? 0 : 1)
+    const cost = segments[i].length + dictationSeparator(segments[i], kept[0] ?? '').length
     if (length + cost > CAPTION_WINDOW_CHARS) break
     kept.unshift(segments[i])
     length += cost
   }
-  if (kept.length > 0) return kept.join(' ')
+  if (kept.length > 0) return joinTranscript(kept)
 
   // Even the newest segment alone overflows the window: keep its tail, cut at a
-  // word boundary so no word is split mid-token. A segment with no spaces at all
-  // is returned as-is rather than mangled.
-  const tail = segments[segments.length - 1].slice(-CAPTION_WINDOW_CHARS)
-  const firstSpace = tail.indexOf(' ')
-  return firstSpace === -1 ? tail : tail.slice(firstSpace + 1)
+  // word boundary for spaced scripts, without throwing away a CJK prefix just
+  // because an English word later in the caption has a space after it.
+  return transcriptTail(segments[segments.length - 1], CAPTION_WINDOW_CHARS)
 }
 
 interface Options {

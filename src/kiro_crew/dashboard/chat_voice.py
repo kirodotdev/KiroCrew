@@ -16,6 +16,8 @@ import logging
 import os
 import tempfile
 import time
+import uuid
+from dataclasses import dataclass, field
 
 from aiohttp import web
 
@@ -23,20 +25,25 @@ from kiro_crew import aws_consent
 from kiro_crew.config.loader import config_path
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.piper_runtime import PiperRuntime
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.handler import _vc
 from kiro_crew.voice_reply import (
+    PROVIDER_PIPER,
     PROVIDER_POLLY,
     PROVIDER_SYSTEM,
     VALID_ENGINES,
     VALID_PROVIDERS,
     SystemVoiceProbeError,
+    VoiceSynthesisError,
     _validate_pitch,
     _validate_rate,
     list_system_voices,
+    pcm_to_wav,
     resolve_polly_cli,
     resolve_system_tts_async,
     stitch_mp3s,
+    streaming_piper_reply,
     streaming_voice_reply,
     synthesize_speech,
     validate_length_scale,
@@ -45,6 +52,65 @@ from kiro_crew.voice_reply import (
 )
 
 logger = logging.getLogger(__name__)
+
+_MAX_SYNTHESIS_TEXT_CHARS = 20000
+_MAX_ACTIVE_SYNTHESES = 2
+_MAX_REQUEST_ID_CHARS = 128
+_CANCELLED_REQUEST_TTL = 60.0
+_MAX_CANCELLED_REQUESTS = 128
+
+
+@dataclass
+class _VoiceRequests:
+    tasks: dict[tuple[str, str], asyncio.Task] = field(default_factory=dict)
+    cancelled: dict[tuple[str, str], float] = field(default_factory=dict)
+    piper: PiperRuntime = field(default_factory=PiperRuntime)
+
+    def prune(self) -> None:
+        cutoff = time.monotonic() - _CANCELLED_REQUEST_TTL
+        self.cancelled = {key: ts for key, ts in self.cancelled.items() if ts > cutoff}
+
+
+_VOICE_REQUESTS = web.AppKey("voice_requests", _VoiceRequests)
+
+
+def register_voice_lifecycle(app: web.Application) -> None:
+    """Keep synthesis ownership and cancellation bounded to this dashboard."""
+    app[_VOICE_REQUESTS] = _VoiceRequests()
+
+    async def shutdown(app: web.Application) -> None:
+        tasks = list(app[_VOICE_REQUESTS].tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await app[_VOICE_REQUESTS].piper.close()
+
+    app.on_shutdown.append(shutdown)
+
+
+async def api_voice_cancel(request: web.Request) -> web.Response:
+    """POST /api/voice/cancel — stop one identified synthesis, including a racing POST."""
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None
+    if not isinstance(body.get("slot", ""), str) or not (
+        isinstance(body.get("request_id"), str)
+        and 0 < len(body["request_id"]) <= _MAX_REQUEST_ID_CHARS
+    ):
+        return web.json_response(
+            {"error": "slot and request_id required", "code": "voice_invalid_request"}, status=400
+        )
+    jobs = request.app[_VOICE_REQUESTS]
+    key = (body.get("slot", ""), body["request_id"])
+    jobs.prune()
+    if len(jobs.cancelled) >= _MAX_CANCELLED_REQUESTS:
+        jobs.cancelled.pop(next(iter(jobs.cancelled)))
+    jobs.cancelled[key] = time.monotonic()
+    task = jobs.tasks.get(key)
+    if task is not None:
+        task.cancel()
+    return web.json_response({"ok": True, "request_id": key[1]})
 
 
 # Synthesized audio is read and written WHOLE, and its size scales with the
@@ -114,7 +180,11 @@ async def api_voice_config(request: web.Request) -> web.Response:
 
     # ``in VALID_PROVIDERS`` would raise TypeError on an unhashable JSON value
     # (list/dict), 500ing the PUT — require a str first.
-    if "provider" in body and isinstance(body["provider"], str) and body["provider"] in VALID_PROVIDERS:
+    if (
+        "provider" in body
+        and isinstance(body["provider"], str)
+        and body["provider"] in VALID_PROVIDERS
+    ):
         pending["provider"] = body["provider"]
     if "voice" in body:
         # A voice NAME, same class as system_voice: a wrong type must be refused
@@ -216,26 +286,67 @@ async def api_voice_config(request: web.Request) -> web.Response:
 
 
 async def api_voice_synthesize(request: web.Request) -> web.Response:
-    """POST /api/voice/synthesize — sentence-chunked TTS.
-
-    Synthesizes each sentence in parallel, broadcasts ``voice_chunk``
-    WS events with base64 MP3 data for immediate playback, then stitches
-    all chunks into a single MP3 and broadcasts ``voice_complete``.
-    """
-
-    state: DashboardState = request.app["state"]
+    """POST /api/voice/synthesize — identified, cancellable provider streaming."""
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
 
-    text = body.get("text", "").strip()
+    if not isinstance(body.get("text"), str):
+        return web.json_response(
+            {"error": "text required", "code": "voice_invalid_request"}, status=400
+        )
+    text = body["text"].strip()
     slot_key = body.get("slot", "")
-    if not text:
-        return web.json_response({"error": "text required"}, status=400)
+    request_id = body.get("request_id", uuid.uuid4().hex)
+    if (
+        not text
+        or len(text) > _MAX_SYNTHESIS_TEXT_CHARS
+        or not isinstance(slot_key, str)
+        or not isinstance(request_id, str)
+        or not 0 < len(request_id) <= _MAX_REQUEST_ID_CHARS
+        or any(
+            key in body and not isinstance(body[key], str)
+            for key in ("voice", "engine", "rate", "pitch")
+        )
+    ):
+        return web.json_response(
+            {"error": "invalid synthesis request", "code": "voice_invalid_request"}, status=400
+        )
+    jobs = request.app[_VOICE_REQUESTS]
+    jobs.prune()
+    key = (slot_key, request_id)
+    if key in jobs.cancelled:
+        return web.json_response(
+            {"ok": False, "code": "voice_cancelled", "request_id": request_id}, status=409
+        )
+    if key in jobs.tasks or len(jobs.tasks) >= _MAX_ACTIVE_SYNTHESES:
+        return web.json_response(
+            {"error": "voice synthesis is busy", "code": "voice_busy", "request_id": request_id},
+            status=429,
+        )
+    task = asyncio.current_task()
+    assert task is not None
+    jobs.tasks[key] = task
+    try:
+        return await _synthesize_request(
+            request.app["state"], body, text, slot_key, request_id, jobs.piper
+        )
+    finally:
+        jobs.tasks.pop(key, None)
 
+
+async def _synthesize_request(
+    state: DashboardState,
+    body: dict,
+    text: str,
+    slot_key: str,
+    request_id: str,
+    piper: PiperRuntime,
+) -> web.Response:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
+    identity = {"slot": slot_key, "request_id": request_id}
 
     # Voice config — use defaults from handler config or body overrides
     voice_id = body.get("voice", _vc.default_voice)
@@ -243,18 +354,15 @@ async def api_voice_synthesize(request: web.Request) -> web.Response:
     rate = body.get("rate", _vc.default_rate)
     pitch = body.get("pitch", _vc.default_pitch)
 
-    # Only Polly is sentence-chunked SSML; the local providers each produce a
-    # single WAV. ``streaming_voice_reply`` is Polly-only, so route anything else
-    # through the provider-aware ``synthesize_speech`` and emit one chunk +
-    # complete. Written as "not Polly" rather than a per-provider list so a
-    # provider added later cannot silently fall into the Polly branch and reach
-    # a paid AWS service.
-    if _vc.provider != PROVIDER_POLLY:
-        return await _synthesize_nonstreaming(state, text, slot_key)
-
     chunk_paths: list[str] = []
     final_path: str | None = None
     try:
+        if _vc.provider == PROVIDER_PIPER:
+            return await _synthesize_piper_stream(state, text, identity, piper)
+        # Only explicitly selected Polly may reach the paid sentence stream.
+        # The built-in engine retains its provider-aware single-WAV path.
+        if _vc.provider != PROVIDER_POLLY:
+            return await _synthesize_nonstreaming(state, text, identity)
         async for idx, sentence, mp3_bytes in streaming_voice_reply(
             text,
             voice_id=voice_id,
@@ -272,10 +380,11 @@ async def api_voice_synthesize(request: web.Request) -> web.Response:
             state.broadcast_ws(
                 "voice_chunk",
                 {
-                    "slot": slot_key,
+                    **identity,
                     "index": idx,
                     "sentence": sentence,
                     "audio": base64.b64encode(mp3_bytes).decode(),
+                    "audioMime": "audio/mpeg",
                 },
             )
 
@@ -287,23 +396,34 @@ async def api_voice_synthesize(request: web.Request) -> web.Response:
                 state.broadcast_ws(
                     "voice_complete",
                     {
-                        "slot": slot_key,
+                        **identity,
                         "audio": base64.b64encode(final_bytes).decode(),
                         "chunks": len(chunk_paths),
+                        "audioMime": "audio/mpeg",
                     },
                 )
 
-        return web.json_response({"ok": True, "chunks": len(chunk_paths)})
+        if not chunk_paths:
+            raise VoiceSynthesisError(
+                "voice_unavailable", "The selected voice provider returned no audio."
+            )
+        return web.json_response({"ok": True, "chunks": len(chunk_paths), "request_id": request_id})
     except Exception as exc:
         logger.exception("Voice synthesis failed")
         err_msg, _ = redact_exfiltration_urls(str(exc))
         err_msg, _ = redact_credentials(err_msg)
         state.broadcast_ws(
             "voice_error",
-            {"slot": slot_key, "error": err_msg},
+            {**identity, "error": err_msg, "code": getattr(exc, "code", "voice_synthesis_failed")},
         )
         return web.json_response(
-            {"ok": False, "error": err_msg}, status=500
+            {
+                "ok": False,
+                "error": err_msg,
+                "code": getattr(exc, "code", "voice_synthesis_failed"),
+                "request_id": request_id,
+            },
+            status=502,
         )
     finally:
         if final_path:
@@ -314,21 +434,66 @@ async def api_voice_synthesize(request: web.Request) -> web.Response:
                 os.unlink(p)
 
 
-async def _synthesize_nonstreaming(
-    state: DashboardState, text: str, slot_key: str
+async def _synthesize_piper_stream(
+    state: DashboardState, text: str, identity: dict[str, str], piper: PiperRuntime
 ) -> web.Response:
-    """Synthesize one clip via the provider-aware ``synthesize_speech`` and emit
-    it as a single ``voice_chunk`` + ``voice_complete``.
+    """Send playable PCM chunks immediately and retain one bounded replay clip."""
+    pcm = bytearray()
+    chunks = 0
+    sample_rate = 0
+    stream = streaming_piper_reply(
+        text,
+        piper_binary=_vc.piper_binary,
+        piper_model=_vc.piper_model,
+        piper_model_config=_vc.piper_model_config,
+        length_scale=_vc.piper_length_scale,
+        runtime=piper,
+        request_id=identity["request_id"],
+    )
+    # Explicit close is essential when the request is cancelled while the
+    # generator is suspended at yield: its child still belongs to this request.
+    async with contextlib.aclosing(stream):
+        async for index, sample_rate, audio in stream:
+            pcm.extend(audio)
+            chunks += 1
+            state.broadcast_ws(
+                "voice_chunk",
+                {
+                    **identity,
+                    "index": index,
+                    "sentence": text if index == 0 else "",
+                    "audio": base64.b64encode(pcm_to_wav(audio, sample_rate)).decode("ascii"),
+                    "audioMime": "audio/wav",
+                },
+            )
+    if not chunks:
+        raise VoiceSynthesisError("voice_unavailable", "Piper returned no speakable audio.")
 
-    Used for the local providers, which produce a single file rather than the
-    sentence-chunked Polly SSML stream. The audio is delivered whole; the
-    dashboard player already handles a single-chunk reply.
+    def replay() -> str:
+        return base64.b64encode(pcm_to_wav(bytes(pcm), sample_rate)).decode("ascii")
+
+    audio_b64 = await asyncio.to_thread(replay)
+    state.broadcast_ws(
+        "voice_complete",
+        {**identity, "audio": audio_b64, "chunks": chunks, "audioMime": "audio/wav"},
+    )
+    return web.json_response({"ok": True, "chunks": chunks, "request_id": identity["request_id"]})
+
+
+async def _synthesize_nonstreaming(
+    state: DashboardState, text: str, identity: dict[str, str]
+) -> web.Response:
+    """Keep the built-in engine's single-file synthesis and failure remedies.
+
+    Its chunk, completion, and errors share the request identity used by Piper
+    and Polly, so interruption and late-frame rejection apply to every provider.
     """
     audio_path: str | None = None
+    provider = _vc.provider
     try:
         audio_path = await synthesize_speech(
             text,
-            provider=_vc.provider,
+            provider=provider,
             rate=_vc.default_rate,
             piper_binary=_vc.piper_binary,
             piper_model=_vc.piper_model,
@@ -344,7 +509,7 @@ async def _synthesize_nonstreaming(
             # ``system_voice`` the engine rejects, a timeout, a sandbox refusal —
             # and telling that user to install espeak-ng sends them to fix
             # something that is not broken.
-            if _vc.provider == PROVIDER_SYSTEM:
+            if provider == PROVIDER_SYSTEM:
                 resolved = await resolve_system_tts_async()
                 if resolved is None:
                     msg = (
@@ -363,14 +528,20 @@ async def _synthesize_nonstreaming(
                     "Piper TTS unavailable — check the piper binary and model "
                     "path in Voice settings."
                 )
-            state.broadcast_ws("voice_error", {"slot": slot_key, "error": msg})
-            return web.json_response({"ok": False, "error": msg}, status=502)
+            code = "voice_synthesis_failed"
+            if provider == PROVIDER_SYSTEM and resolved is None:
+                code = "voice_unavailable"
+            state.broadcast_ws("voice_error", {**identity, "error": msg, "code": code})
+            return web.json_response(
+                {"ok": False, "error": msg, "code": code, "request_id": identity["request_id"]},
+                status=502,
+            )
         audio_bytes = await asyncio.to_thread(_read_audio, audio_path)
         audio_b64 = base64.b64encode(audio_bytes).decode()
         state.broadcast_ws(
             "voice_chunk",
             {
-                "slot": slot_key,
+                **identity,
                 "index": 0,
                 "sentence": text,
                 "audio": audio_b64,
@@ -379,15 +550,19 @@ async def _synthesize_nonstreaming(
         )
         state.broadcast_ws(
             "voice_complete",
-            {"slot": slot_key, "audio": audio_b64, "chunks": 1, "audioMime": "audio/wav"},
+            {**identity, "audio": audio_b64, "chunks": 1, "audioMime": "audio/wav"},
         )
-        return web.json_response({"ok": True, "chunks": 1})
+        return web.json_response({"ok": True, "chunks": 1, "request_id": identity["request_id"]})
     except Exception as exc:
         logger.exception("Local voice synthesis failed")
         err_msg, _ = redact_exfiltration_urls(str(exc))
         err_msg, _ = redact_credentials(err_msg)
-        state.broadcast_ws("voice_error", {"slot": slot_key, "error": err_msg})
-        return web.json_response({"ok": False, "error": err_msg}, status=500)
+        code = getattr(exc, "code", "voice_synthesis_failed")
+        state.broadcast_ws("voice_error", {**identity, "error": err_msg, "code": code})
+        return web.json_response(
+            {"ok": False, "error": err_msg, "code": code, "request_id": identity["request_id"]},
+            status=502,
+        )
     finally:
         if audio_path:
             with contextlib.suppress(OSError):
@@ -418,10 +593,7 @@ async def api_voice_system_voices(request: web.Request) -> web.Response:
         return web.json_response({"available": False, "voices": []})
 
     now = time.time()
-    if (
-        _system_voices_cache is not None
-        and (now - _system_voices_cache_ts) < _VOICES_CACHE_TTL
-    ):
+    if _system_voices_cache is not None and (now - _system_voices_cache_ts) < _VOICES_CACHE_TTL:
         return web.json_response({"available": True, "voices": _system_voices_cache})
     try:
         voices = await list_system_voices()

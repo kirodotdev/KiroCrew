@@ -5313,6 +5313,11 @@
     "viewPr": "Пул-реквест"
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "Не удалось выполнить «{{speak}}». Проверьте настройки преобразования текста в речь и повторите попытку.",
+      "blocked": "Браузер заблокировал автоматическое воспроизведение. Откройте «{{moreActions}}» под завершённым ответом и выберите «{{speak}}».",
+      "settings": "Настройки «{{speak}}» (преобразование текста в речь)"
+    },
     "avatarBuilder": {
       "apply": "Применить",
       "apply_hint": "Применяется здесь — нажмите «Сохранить изменения», чтобы сохранить.",
@@ -9331,6 +9336,7 @@
         "workflow_runs_load_failed": "Не удалось загрузить запуски рабочих процессов"
       },
       "assistantMessage": {
+        "copy_text": "Копировать текст",
         "applied_to_tasks": "Применено к задачам",
         "copied": "Скопировано!",
         "copy": "Копировать",
@@ -13621,6 +13627,7 @@
         "copy_manifest_failed": "Не удалось скопировать манифест в буфер обмена."
       },
       "sttSettings": {
+        "language_auto": "Определять язык автоматически",
         "allow_microphone_access_to_show_device_names": "Разрешите доступ к микрофону, чтобы увидеть названия устройств",
         "aws_credentials_profile_for_transcribe_blank_def": "Профиль учётных данных AWS для Transcribe (пусто = цепочка по умолчанию)",
         "aws_profile_transcribe": "Профиль AWS (Transcribe)",

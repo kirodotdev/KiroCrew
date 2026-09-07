@@ -54,6 +54,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_path,
 )
+from kiro_crew.config.sections import STT_LANGUAGE_AUTO
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
@@ -939,7 +940,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "dictation_panel": cfg.stt.dictation_panel,
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,
-            "language_code": cfg.stt.language_code,
+            "language_code": cfg.stt.effective_language_code,
             "silence_ms": cfg.stt.silence_ms,
             "partial_interval_ms": cfg.stt.partial_interval_ms,
             "idle_evict_secs": cfg.stt.idle_evict_secs,
@@ -955,7 +956,10 @@ async def api_stt_config(request: web.Request) -> web.Response:
             # streaming controls on a CAPABILITY rather than on a hardcoded provider
             # name — the latter silently hid the toggle when `apple` was added.
             "streaming_providers": list(_STREAMING_PROVIDERS),
-            "language_codes": list(_STT_LANGUAGE_CODES),
+            "language_codes": (
+                ([STT_LANGUAGE_AUTO] if cfg.stt.provider == PROVIDER_LOCAL else [])
+                + list(_STT_LANGUAGE_CODES)
+            ),
             "prereqs": prereqs,
             # True when no install channel can make Transcribe's import
             # requirement (`boto3` + `amazon-transcribe`) satisfiable in this
@@ -1030,8 +1034,7 @@ async def api_stt_status(request: web.Request) -> web.Response:
             # reader's locale. `present` is why this cannot be a static frontend
             # table: it is per-host state that changes as models are fetched.
             "models": catalog,
-            # Whether a model is resident in this process, which is what decides
-            # between a 30 ms transcription and one that pays a load first.
+            # Residency avoids model loading, but says nothing about decode speed.
             "engine_loaded": engine_loaded,
             "download": dict(stt_models.store().status),
             # The decoder every compressed input goes through, and what can be

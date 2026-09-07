@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 
-// Isolate the batch capture path: stub the streaming hook so streamEnabled is
-// always false and no WebSocket/Transcribe session is involved.
+const streamStart = vi.hoisted(() => vi.fn())
+
+// Exercise capture ownership without opening a WebSocket/Transcribe session.
+// Existing tests default to batch; explicit streaming cases use this stub.
 vi.mock('../hooks/useStreamingStt', () => ({
-  streamingSupported: false,
-  useStreamingStt: () => ({ recording: false, start: vi.fn(), stop: vi.fn(), cancel: vi.fn() }),
+  streamingSupported: true,
+  useStreamingStt: () => ({ recording: false, draining: false, start: streamStart, stop: vi.fn(), cancel: vi.fn() }),
 }))
 
 interface FakeTrack { stop: ReturnType<typeof vi.fn>; readyState: string; label: string }
@@ -46,6 +48,7 @@ let getUserMedia: ReturnType<typeof vi.fn>
 let currentStream: ReturnType<typeof makeStream>
 
 beforeEach(() => {
+  streamStart.mockReset().mockResolvedValue(true)
   currentStream = makeStream()
   getUserMedia = vi.fn().mockResolvedValue(currentStream)
   Object.defineProperty(navigator, 'mediaDevices', {
@@ -77,6 +80,39 @@ async function setPreferredMicId(id: string) {
 }
 
 describe('useVoiceInput mic pre-warming', () => {
+  it.each([false, true])('prewarm does not interrupt playback (streaming=%s)', async streaming => {
+    const useVoiceInput = await loadHook()
+    const dispatch = vi.spyOn(window, 'dispatchEvent')
+    const { result } = renderHook(() => useVoiceInput(() => {}, { streaming }))
+
+    await act(async () => { result.current.prewarm() })
+
+    expect(dispatch.mock.calls.filter(([event]) => event.type === 'voice-stop')).toHaveLength(0)
+    expect(streamStart).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('interrupts playback once before async capture (streaming=%s)', async streaming => {
+    const useVoiceInput = await loadHook()
+    const dispatch = vi.spyOn(window, 'dispatchEvent')
+    const stops = () => dispatch.mock.calls.filter(([event]) => event.type === 'voice-stop')
+    let resolveCapture: (value: unknown) => void = () => {}
+    const pending = new Promise(resolve => { resolveCapture = resolve })
+    const capture = streaming ? streamStart : getUserMedia
+    capture.mockImplementationOnce(() => {
+      // The stop happens in the user's start call, before any microphone await.
+      expect(stops()).toHaveLength(1)
+      return pending
+    })
+    const { result } = renderHook(() => useVoiceInput(() => {}, { streaming }))
+
+    act(() => { void result.current.start(); void result.current.start() })
+
+    expect(stops()).toHaveLength(1)
+    expect(capture).toHaveBeenCalledTimes(1)
+    await act(async () => { resolveCapture(streaming ? true : currentStream) })
+    expect(stops()).toHaveLength(1)
+  })
+
   it('prewarm() acquires the mic stream', async () => {
     const useVoiceInput = await loadHook()
     const { result } = renderHook(() => useVoiceInput(() => {}))

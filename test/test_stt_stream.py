@@ -213,7 +213,16 @@ class TestAppleStreamingSession:
     coverage here rather than being assumed shared.
     """
 
-    def _install(self, monkeypatch, *, session=None, start_error="", feed_ok=True, avail=None):
+    def _install(
+        self,
+        monkeypatch,
+        *,
+        session=None,
+        start_error="",
+        feed_ok=True,
+        avail=None,
+        language_code="auto",
+    ):
         """Point the endpoint at the apple provider with a stubbed helper session.
 
         *avail* is what the double reports from ``availability()``, which the error
@@ -224,7 +233,7 @@ class TestAppleStreamingSession:
 
         monkeypatch.setattr(
             "kiro_crew.dashboard.stt_stream.KiroCrewConfig.load",
-            classmethod(lambda cls: _cfg(provider="apple")),
+            classmethod(lambda cls: _cfg(provider="apple", language_code=language_code)),
         )
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
 
@@ -270,6 +279,24 @@ class TestAppleStreamingSession:
         monkeypatch.setitem(sys.modules, "kiro_crew.apple_speech", fake_module)
         monkeypatch.setattr("kiro_crew.apple_speech", fake_module, raising=False)
         return events, fed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("language", "expected_locale"),
+        [("auto", "en-US"), ("en-US", "en-US"), ("zh-CN", "zh-CN")],
+    )
+    async def test_stream_uses_effective_locale(self, monkeypatch, language, expected_locale):
+        self._install(monkeypatch, language_code=language)
+        from kiro_crew import apple_speech
+
+        factory = MagicMock(wraps=apple_speech.StreamingSession)
+        monkeypatch.setattr(apple_speech, "StreamingSession", factory)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert await asyncio.wait_for(ws.receive_json(), timeout=5) == {"type": "ready"}
+            await ws.send_json({"type": "stop"})
+            await ws.close()
+        assert factory.call_args.kwargs["locale"] == expected_locale
 
     @pytest.mark.asyncio
     async def test_duration_cap_fires_for_a_client_that_sends_nothing(self, monkeypatch):
@@ -537,12 +564,12 @@ class TestStreamLifecycle:
     def _require_amazon_transcribe(self):
         pytest.importorskip("amazon_transcribe")
 
-    def _install_stubs(self, monkeypatch, *, fail_start=False):
+    def _install_stubs(self, monkeypatch, *, fail_start=False, language_code="auto"):
         from amazon_transcribe.handlers import TranscriptResultStreamHandler
 
         monkeypatch.setattr(
             "kiro_crew.dashboard.stt_stream.KiroCrewConfig.load",
-            classmethod(lambda cls: _cfg()),
+            classmethod(lambda cls: _cfg(language_code=language_code)),
         )
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.check_origin", lambda r, require: True)
 
@@ -579,8 +606,12 @@ class TestStreamLifecycle:
         return client, input_stream
 
     @pytest.mark.asyncio
-    async def test_ready_then_stop(self, monkeypatch):
-        _, input_stream = self._install_stubs(monkeypatch)
+    @pytest.mark.parametrize(
+        ("language", "expected_locale"),
+        [("auto", "en-US"), ("en-US", "en-US"), ("zh-CN", "zh-CN")],
+    )
+    async def test_ready_then_stop(self, monkeypatch, language, expected_locale):
+        transcribe_client, input_stream = self._install_stubs(monkeypatch, language_code=language)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
             msg = await ws.receive_json()
@@ -590,6 +621,10 @@ class TestStreamLifecycle:
             await ws.close()
         input_stream.send_audio_event.assert_awaited()
         input_stream.end_stream.assert_awaited()
+        assert (
+            transcribe_client.start_stream_transcription.call_args.kwargs["language_code"]
+            == expected_locale
+        )
 
     @pytest.mark.asyncio
     async def test_start_failure_emits_error(self, monkeypatch):
@@ -1319,7 +1354,7 @@ class _FakeLocalSession:
         self.prepared = True
         return list(self._prepare_events)
 
-    async def feed(self, raw_int16: bytes) -> list:
+    async def feed(self, raw_int16: bytes, *, allow_partial=True) -> list:
         self.fed.append(raw_int16)
         self._pending_audio = True
         events = self._feed_events.pop(0) if self._feed_events else []
@@ -1341,6 +1376,9 @@ class _FakeLocalSession:
     def cancel(self) -> None:
         self.cancelled = True
         self._ended = True
+
+    def stop_partials(self) -> None:
+        pass
 
 
 class _RecordingWS:
@@ -1414,6 +1452,239 @@ class TestLocalStreamingSession:
         return outcomes
 
     @pytest.mark.asyncio
+    async def test_pcm_and_stop_are_read_while_a_partial_is_still_decoding(self, monkeypatch):
+        from kiro_crew.dashboard import stt_stream
+
+        decoding = asyncio.Event()
+        stopped = asyncio.Event()
+        allow_partials: list[bool] = []
+        frames = [bytes([n, 1]) * 16 for n in range(4)]
+
+        class SlowSession(_FakeLocalSession):
+            async def feed(self, raw_int16, *, allow_partial=True):
+                allow_partials.append(allow_partial)
+                if not self.fed:
+                    decoding.set()
+                    await asyncio.wait_for(stopped.wait(), timeout=5)
+                return await super().feed(raw_int16, allow_partial=allow_partial)
+
+        class BufferedWS(_RecordingWS):
+            async def __aiter__(self):
+                yield SimpleNamespace(type=web.WSMsgType.BINARY, data=frames[0])
+                await asyncio.wait_for(decoding.wait(), timeout=5)
+                for frame in frames[1:]:
+                    yield SimpleNamespace(type=web.WSMsgType.BINARY, data=frame)
+                stopped.set()
+                yield SimpleNamespace(type=web.WSMsgType.TEXT, data='{"type":"stop"}')
+                raise AssertionError("stop must end the input reader")
+
+        session = self._install(monkeypatch, SlowSession(final_text="all four frames"))
+        outcomes = self._record_end_audits(monkeypatch)
+        ws = BufferedWS()
+        await asyncio.wait_for(
+            stt_stream._run_local_session(ws, _cfg(provider="local"), MagicMock(), "test"),
+            timeout=10,
+        )
+        assert session.fed == frames, "stop discarded buffered audio"
+        assert allow_partials == [True, False, False, False]
+        assert ws.sent[-1] == {"type": "final", "text": "all four frames"}
+        assert outcomes == ["ok"]
+
+    @pytest.mark.asyncio
+    async def test_an_overflowing_pcm_backlog_reports_one_error(self, monkeypatch):
+        from kiro_crew.dashboard import stt_stream
+
+        monkeypatch.setattr(stt_stream, "_MAX_LOCAL_BUFFER_BYTES", 2)
+        session = self._install(monkeypatch, _FakeLocalSession())
+        outcomes = self._record_end_audits(monkeypatch)
+
+        class OverflowWS(_RecordingWS):
+            async def __aiter__(self):
+                yield SimpleNamespace(type=web.WSMsgType.BINARY, data=b"\x00\x01" * 2)
+
+        ws = OverflowWS()
+        await asyncio.wait_for(
+            stt_stream._run_local_session(ws, _cfg(provider="local"), MagicMock(), "test"),
+            timeout=5,
+        )
+        assert [frame["type"] for frame in ws.sent] == ["ready", "error"]
+        assert ws.sent[-1]["code"] == stt_stream._CODE_SESSION_FAILED
+        assert session.fed == [] and session.cancelled
+        assert outcomes == ["error"]
+
+    @pytest.mark.asyncio
+    async def test_cancelling_the_transport_never_starts_a_final_decode(self, monkeypatch):
+        from kiro_crew.dashboard import stt_stream
+
+        decoding = asyncio.Event()
+        release = asyncio.Event()
+
+        class SlowSession(_FakeLocalSession):
+            async def feed(self, raw_int16, *, allow_partial=True):
+                self._pending_audio = True
+                decoding.set()
+                await asyncio.wait_for(release.wait(), timeout=5)
+                return []
+
+        class OpenWS(_RecordingWS):
+            async def __aiter__(self):
+                yield SimpleNamespace(type=web.WSMsgType.BINARY, data=b"\x00\x01")
+                await asyncio.wait_for(release.wait(), timeout=5)
+
+        session = self._install(monkeypatch, SlowSession())
+        outcomes = self._record_end_audits(monkeypatch)
+        ws = OpenWS()
+        task = asyncio.create_task(
+            stt_stream._run_local_session(ws, _cfg(provider="local"), MagicMock(), "test")
+        )
+        try:
+            await asyncio.wait_for(decoding.wait(), timeout=5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+            assert session.cancelled and not session.finished
+            assert ws.closed and outcomes == ["error"]
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("buffered_seconds", [40, 60])
+    async def test_readiness_burst_fits_the_backend_inbox(self, monkeypatch, buffered_seconds):
+        from kiro_crew.dashboard import stt_stream
+
+        session = self._install(monkeypatch, _FakeLocalSession(final_text="complete capture"))
+        outcomes = self._record_end_audits(monkeypatch)
+        # The worklet flushes 100 ms frames in one turn when model readiness
+        # arrives; the receiver must admit that burst before inference catches up.
+        frame = b"\x00\x01" * (stt_stream.STREAM_SAMPLE_RATE_HZ // 10)
+        frames = [frame] * (buffered_seconds * 10)
+
+        class BurstWS(_RecordingWS):
+            async def __aiter__(self):
+                for audio in frames:
+                    yield SimpleNamespace(type=web.WSMsgType.BINARY, data=audio)
+                yield SimpleNamespace(type=web.WSMsgType.TEXT, data='{"type":"stop"}')
+
+        ws = BurstWS()
+        await asyncio.wait_for(
+            stt_stream._run_local_session(ws, _cfg(provider="local"), MagicMock(), "test"),
+            timeout=5,
+        )
+        assert session.fed == frames
+        assert session.finished
+        assert [message["type"] for message in ws.sent] == ["ready", "final"]
+        assert ws.sent[1] == {"type": "final", "text": "complete capture"}
+        assert outcomes == ["ok"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("phase", ["partial", "final"])
+    async def test_stop_budget_covers_the_active_partial_and_the_final(self, monkeypatch, phase):
+        from kiro_crew.dashboard import stt_stream
+
+        cfg = _cfg(provider="local", timeout_secs=22)
+        budget_started = asyncio.Event()
+        budget_expired = asyncio.Event()
+        decoding = asyncio.Event()
+        interrupted = asyncio.Event()
+        release = asyncio.Event()
+        original_sleep = asyncio.sleep
+
+        async def controlled_sleep(delay):
+            if delay == cfg.stt.timeout_secs:
+                budget_started.set()
+                await asyncio.wait_for(budget_expired.wait(), timeout=5)
+            else:
+                await original_sleep(delay)
+
+        monkeypatch.setattr(stt_stream.asyncio, "sleep", controlled_sleep)
+
+        async def blocked_decode():
+            decoding.set()
+            try:
+                await asyncio.wait_for(release.wait(), timeout=5)
+            finally:
+                interrupted.set()
+
+        class SlowSession(_FakeLocalSession):
+            async def feed(self, raw_int16, *, allow_partial=True):
+                events = await super().feed(raw_int16, allow_partial=allow_partial)
+                if phase == "partial":
+                    await blocked_decode()
+                return events
+
+            async def finish(self):
+                self.finished = True
+                await blocked_decode()
+                return stt.SttEvent(stt.KIND_FINAL, text="too late")
+
+        class StopWS(_RecordingWS):
+            async def __aiter__(self):
+                yield SimpleNamespace(type=web.WSMsgType.BINARY, data=b"\x00\x01")
+                if phase == "partial":
+                    await asyncio.wait_for(decoding.wait(), timeout=5)
+                yield SimpleNamespace(type=web.WSMsgType.TEXT, data='{"type":"stop"}')
+
+        session = self._install(monkeypatch, SlowSession())
+        outcomes = self._record_end_audits(monkeypatch)
+        ws = StopWS()
+        task = asyncio.create_task(stt_stream._run_local_session(ws, cfg, MagicMock(), "test"))
+        try:
+            await asyncio.wait_for(budget_started.wait(), timeout=5)
+            await asyncio.wait_for(decoding.wait(), timeout=5)
+            budget_expired.set()
+            await asyncio.wait_for(task, timeout=5)
+            assert interrupted.is_set() and session.cancelled
+            assert session.finished is (phase == "final")
+            assert ws.sent[0] == {"type": "ready", "final_timeout_ms": 42_000}
+            assert [message["type"] for message in ws.sent] == ["ready", "error"]
+            assert ws.sent[1]["code"] == stt.CODE_DECODE_FAILED
+            assert ws.closed and outcomes == ["timeout"]
+        finally:
+            release.set()
+            budget_expired.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_an_empty_final_retracts_the_partial_without_semantic_endpointing(
+        self, monkeypatch
+    ):
+        from kiro_crew.dashboard import stt_stream
+
+        self._install(
+            monkeypatch,
+            _FakeLocalSession(
+                feed_events=[
+                    [stt.SttEvent(stt.KIND_PARTIAL, text="caption hallucination")],
+                    [stt.SttEvent(stt.KIND_FINAL, text="")],
+                ]
+            ),
+        )
+        endpoint = SimpleNamespace(
+            note_partial=MagicMock(),
+            note_final=MagicMock(),
+            note_audio_final=MagicMock(),
+            aclose=AsyncMock(),
+        )
+        monkeypatch.setattr(stt_stream, "_build_endpointer", lambda *_args, **_kwargs: endpoint)
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json())["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01")
+            assert (await asyncio.wait_for(ws.receive_json(), timeout=5))["type"] == "partial"
+            await ws.send_bytes(b"\x00\x01")
+            assert await asyncio.wait_for(ws.receive_json(), timeout=5) == {
+                "type": "final",
+                "text": "",
+            }
+            await ws.send_json({"type": "stop"})
+            await ws.close()
+        endpoint.note_final.assert_not_called()
+        endpoint.note_audio_final.assert_called_once_with("")
+
+    @pytest.mark.asyncio
     async def test_local_relays_a_partial_then_a_final(self, monkeypatch):
         """The default provider streams behind the same socket as the paid one.
 
@@ -1436,7 +1707,7 @@ class TestLocalStreamingSession:
         )
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_bytes(b"\x00\x01" * 16)
             assert (await ws.receive_json()) == {"type": "partial", "text": "hello"}
             await ws.send_bytes(b"\x00\x01" * 16)
@@ -1462,7 +1733,7 @@ class TestLocalStreamingSession:
         session = self._install(monkeypatch, _FakeLocalSession(final_text="the whole utterance"))
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_bytes(b"\x00\x01" * 16)
             await ws.send_str('{"type":"stop"}')
             assert (await ws.receive_json()) == {
@@ -1496,7 +1767,7 @@ class TestLocalStreamingSession:
         )
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_bytes(b"\x00\x01" * 16)
             await ws.send_str('{"type":"stop"}')
             assert (await ws.receive_json()) == {
@@ -1536,7 +1807,7 @@ class TestLocalStreamingSession:
         )
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_bytes(b"\x00\x01" * 16)
             assert (await ws.receive_json()) == {"type": "final", "text": "ship it"}
             # The session stays OPEN across the final, so what proves no `endpoint`
@@ -1594,7 +1865,7 @@ class TestLocalStreamingSession:
         self._install(monkeypatch, _FakeLocalSession(pending=None))
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_str('{"type":"stop"}')
             await ws.close()
 
@@ -1746,7 +2017,7 @@ class TestLocalStreamingSession:
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream.sel", lambda: fake_sel)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_str('{"type":"stop"}')
             await ws.close()
         await _wait_for_operation(calls, "stt_stream_end")
@@ -1879,13 +2150,13 @@ class TestLocalStreamingSession:
         outcomes = self._record_end_audits(monkeypatch)
 
         class _Exploding(_FakeLocalSession):
-            async def feed(self, raw_int16):
+            async def feed(self, raw_int16, *, allow_partial=True):
                 raise RuntimeError("decode blew up")
 
         self._install(monkeypatch, _Exploding())
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             await ws.send_bytes(b"\x00\x01" * 16)
             assert (await ws.receive_json()) == {
                 "type": "error",
@@ -1912,7 +2183,7 @@ class TestLocalStreamingSession:
         monkeypatch.setattr("kiro_crew.dashboard.stt_stream._MAX_STREAM_DURATION_SECS", 0.05)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json()) == {"type": "ready"}
+            assert (await ws.receive_json())["type"] == "ready"
             # Deliberately send NO audio: only the deadline task can end this.
             assert (await ws.receive_json()) == {
                 "type": "error",

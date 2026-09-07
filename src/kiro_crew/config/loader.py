@@ -3505,7 +3505,7 @@ class KiroCrewConfig:
                 enabled=_safe_bool(stt_data.get("enabled"), True),
                 provider=_validated_stt_provider(stt_data.get("provider", STT_PROVIDER_LOCAL)),
                 model=_validated_stt_model(stt_data.get("model", _STT_DEFAULT_MODEL)),
-                language_code=stt_data.get("language_code", "en-US"),
+                language_code=stt_data.get("language_code", _sections.STT_LANGUAGE_AUTO),
                 streaming=_safe_bool(stt_data.get("streaming"), True),
                 silence_ms=_safe_int(
                     stt_data.get("silence_ms"),

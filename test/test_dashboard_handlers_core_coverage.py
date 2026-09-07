@@ -845,7 +845,8 @@ class TestSttConfigEndpoint:
         # Sizes are BYTES, not a formatted label: the dashboard is translated
         # into 12 languages, so only the frontend can format them for a reader.
         assert body["models"][stt_models.DEFAULT_MODEL] > 0
-        assert body["language_codes"][0] == "en-US"
+        assert body["language_codes"][0] == "auto"
+        assert "en-US" in body["language_codes"]
         assert body["available"] is False
         assert body["prereqs"] == []
         # This test venv has a working pip channel, so the unsupported flag

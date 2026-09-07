@@ -178,9 +178,8 @@ const SILENCE_MS_DEFAULT = 700
 /**
  * Bounds and step for the partial-transcript refresh interval, in milliseconds.
  *
- * Floor: a re-decode costs tens of milliseconds and the text churns faster than
- * it can be read below ~150 ms. Ceiling: past a second the transcript stops
- * reading as live, which is the entire point of streaming.
+ * Bounds the pause between completed partial decodes. Faster refresh can make
+ * text churn; the model's inference time still determines the actual cadence.
  */
 const PARTIAL_INTERVAL_MS_MIN = 150
 const PARTIAL_INTERVAL_MS_MAX = 1000
@@ -417,6 +416,9 @@ export default function SttSettings({ cardIndex }: {
   // applied via getUserMedia constraints). Device labels are blank until the
   // page has been granted mic access at least once.
   const [mics, setMics] = useState<MediaDeviceInfo[]>([])
+  // Before permission, an anonymous device can share the system-default value.
+  // It cannot be selected separately, so offer it through System default only.
+  const selectableMics = mics.filter(device => device.deviceId !== '')
   const [micId, setMicId] = useState(getPreferredMicId())
   const refreshMics = useCallback(async () => { setMics(await listMicrophones()) }, [])
   useEffect(() => {
@@ -543,7 +545,8 @@ export default function SttSettings({ cardIndex }: {
     ? stt.streaming_providers
     : FALLBACK_STREAMING_PROVIDERS
   const canStream = streamingProviders.includes(provider)
-  const languageOptions = stt.language_codes?.length ? stt.language_codes : ['en-US']
+  const defaultLanguage = provider === PROVIDER_LOCAL ? 'auto' : 'en-US'
+  const languageOptions = stt.language_codes?.length ? stt.language_codes : [defaultLanguage]
 
   // The catalog and the availability verdict. Treated as absent rather than as
   // "nothing to download" while the status query is in flight, so a slow probe
@@ -655,8 +658,8 @@ export default function SttSettings({ cardIndex }: {
           label={i18nT('pages.settings.sttSettings.microphone')}
           description={i18nT('pages.settings.sttSettings.input_device_used_to_capture_your_voice')}
           value={micId}
-          options={['', ...mics.map(d => d.deviceId)]}
-          optionLabels={[i18nT('pages.settings.sttSettings.system_default'), ...mics.map((d, i) => d.label || i18nT('pages.settings.sttSettings.microphone_2', { n: i + 1 }))]}
+          options={['', ...selectableMics.map(d => d.deviceId)]}
+          optionLabels={[i18nT('pages.settings.sttSettings.system_default'), ...selectableMics.map((d, i) => d.label || i18nT('pages.settings.sttSettings.microphone_2', { n: i + 1 }))]}
           onChange={changeMic}
           disabled={saving}
         />
@@ -763,7 +766,7 @@ export default function SttSettings({ cardIndex }: {
 
         {stt.enabled && <PushToTalkConfig />}
 
-        <SettingsSelect label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || 'en-US'} options={languageOptions} onChange={v => set({ language_code: v })} disabled={saving} />
+        <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : code)} onChange={v => set({ language_code: v })} disabled={saving} />
 
         {isTranscribe && (
           <>

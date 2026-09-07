@@ -20,6 +20,7 @@ import urllib.error
 import numpy as np
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.stt import engine as engine_mod
 from kiro_crew.stt import models
 
@@ -1023,6 +1024,67 @@ async def test_prewarm_pays_the_first_decode_up_front(fake_engine):
     assert fake.decoded_samples, "prewarm must run a decode, not just a load"
 
 
+@pytest.mark.asyncio
+async def test_prewarm_does_not_repeat_inference_until_the_model_is_reloaded(fake_engine):
+    eng, fake = fake_engine
+    assert (await eng.prewarm("base", "en")).ok
+    assert (await eng.prewarm("base", "en")).ok
+    assert len(fake.decoded_samples) == 1
+    await eng.close()
+    assert (await eng.prewarm("base", "en")).ok
+    assert len(fake.decoded_samples) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_session_stop_aborts_its_partial_but_never_its_final(fake_engine):
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    audio = np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)
+    assert await eng.decode(audio, superseding=True, abort_if=lambda: True) == ""
+    assert fake.decoded_samples == []
+    assert await eng.decode(audio, abort_if=lambda: True) == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_real_audio_supersedes_an_inflight_cold_prewarm(fake_engine, monkeypatch):
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    loop = asyncio.get_running_loop()
+    warming = asyncio.Event()
+    release = threading.Event()
+    order: list[str] = []
+    original_transcribe = fake.transcribe
+
+    def transcribe(pcm, abort_callback=None, **kwargs):
+        if not order:
+            order.append("warm")
+            loop.call_soon_threadsafe(warming.set)
+            # A real request must invalidate this throwaway decode without
+            # waiting for its normal completion or cancelling its asyncio task.
+            while not release.wait(timeout=0.01):
+                if abort_callback():
+                    order.append("warm aborted")
+                    return []
+            return []
+        order.append("real audio")
+        return original_transcribe(pcm, abort_callback=abort_callback, **kwargs)
+
+    monkeypatch.setattr(fake, "transcribe", transcribe)
+    prewarm = asyncio.create_task(eng.prewarm("base", "en"))
+    try:
+        await asyncio.wait_for(warming.wait(), timeout=5)
+        transcript = await asyncio.wait_for(
+            eng.decode(np.ones(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)), timeout=5
+        )
+        assert transcript == "hello world"
+        assert (await asyncio.wait_for(prewarm, timeout=5)).ok
+        assert order == ["warm", "warm aborted", "real audio"]
+    finally:
+        release.set()
+        prewarm.cancel()
+        await asyncio.gather(prewarm, return_exceptions=True)
+
+
 def test_shared_engine_is_a_process_singleton(monkeypatch):
     monkeypatch.setattr(engine_mod, "_engine", None)
     assert engine_mod.shared_engine() is engine_mod.shared_engine()
@@ -1103,7 +1165,12 @@ async def test_the_idle_sweep_does_not_create_an_engine_on_a_voiceless_host(monk
     assert engine_mod._engine is None
 
 
-def test_a_planted_symlink_at_a_predictable_staging_path_is_not_followed(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "link_type", [pytest.param("symlink", marks=requires_symlinks), "hardlink"]
+)
+def test_a_planted_link_at_a_predictable_staging_path_is_not_followed(
+    monkeypatch, tmp_path, link_type
+):
     """The models directory is agent-writable, so the staging path must be unguessable.
 
     A fixed ``.bin.part`` -- or one derived from a PID, which is trivially observable --
@@ -1121,7 +1188,11 @@ def test_a_planted_symlink_at_a_predictable_staging_path_is_not_followed(monkeyp
         f"{model.filename}{models._STAGING_SUFFIX}",
         f"{model.filename}.{os.getpid()}{models._STAGING_SUFFIX}",
     ):
-        (tmp_path / guess).symlink_to(victim)
+        planted = tmp_path / guess
+        if link_type == "symlink":
+            planted.symlink_to(victim)
+        else:
+            planted.hardlink_to(victim)
 
     monkeypatch.setattr(models.urllib.request, "urlopen", _stub_urlopen(payload))
     assert models._download_blocking(model) == target
@@ -1157,6 +1228,91 @@ def test_each_staging_file_gets_its_own_name(monkeypatch, tmp_path):
             models._download_blocking(model)
     assert len(seen) == 3, f"staging names repeated across transfers: {seen}"
     assert not list(tmp_path.glob(f"*{models._STAGING_SUFFIX}")), "staging files must not survive"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_decode_aborts_native_work_before_releasing_the_context(
+    fake_engine, monkeypatch
+):
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release = threading.Event()
+    done = threading.Event()
+
+    def transcribe(pcm, abort_callback=None, **_kwargs):
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            while not release.wait(timeout=0.01):
+                if abort_callback():
+                    loop.call_soon_threadsafe(cancellation_seen.set)
+                    release.wait(timeout=5)
+                    return []
+            return []
+        finally:
+            done.set()
+
+    monkeypatch.setattr(fake, "transcribe", transcribe)
+    task = asyncio.create_task(eng.decode(np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        await asyncio.wait_for(cancellation_seen.wait(), timeout=5)
+        assert not task.done(), "the native context was released before its worker finished"
+        assert eng._decode_lock.locked()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert done.is_set()
+        assert eng.loaded
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.to_thread(done.wait, 5)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_worker_cannot_trigger_a_second_model_allocation(
+    fake_engine, monkeypatch
+):
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    release = threading.Event()
+    done = threading.Event()
+    monkeypatch.setattr(engine_mod, "_ABORT_GRACE_SECS", 0)
+
+    def transcribe(pcm, **_kwargs):
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            release.wait(timeout=5)
+            return []
+        finally:
+            done.set()
+
+    monkeypatch.setattr(fake, "transcribe", transcribe)
+    task = asyncio.create_task(eng.decode(np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert not done.is_set(), "the fake must still be holding its native context"
+        assert not eng.loaded
+        refused = await asyncio.wait_for(eng.ensure_loaded("base", "en"), timeout=5)
+        assert refused.code == engine_mod.CODE_DECODE_FAILED
+        release.set()
+        await asyncio.wait_for(asyncio.shield(eng._retired_decode), timeout=5)
+        assert (await eng.ensure_loaded("base", "en")).ok
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.to_thread(done.wait, 5)
 
 
 @pytest.mark.asyncio

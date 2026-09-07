@@ -5046,6 +5046,11 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "‘{{speak}}’를 실행하지 못했습니다. 텍스트 음성 변환 설정을 확인하고 다시 시도하세요.",
+      "blocked": "브라우저가 자동 재생을 차단했습니다. 완료된 답변 아래에서 ‘{{moreActions}}’을 열고 ‘{{speak}}’를 선택하세요.",
+      "settings": "‘{{speak}}’ 설정 (텍스트 음성 변환)"
+    },
     "avatarBuilder": {
       "apply": "적용",
       "apply_hint": "여기에 적용됩니다 — 유지하려면 “변경 사항 저장”을 누르세요.",
@@ -8953,6 +8958,7 @@
         "workflow_runs_load_failed": "워크플로 실행을 불러올 수 없습니다"
       },
       "assistantMessage": {
+        "copy_text": "텍스트 복사",
         "applied_to_tasks": "작업에 적용됨",
         "copied": "복사했습니다!",
         "copy": "복사",
@@ -13104,6 +13110,7 @@
         "copy_manifest_failed": "매니페스트를 클립보드에 복사하지 못했습니다."
       },
       "sttSettings": {
+        "language_auto": "언어 자동 감지",
         "allow_microphone_access_to_show_device_names": "장치 이름을 표시하려면 마이크 액세스를 허용하세요",
         "aws_credentials_profile_for_transcribe_blank_def": "Transcribe용 AWS 자격 증명 프로필(비워 두면 기본 체인)",
         "aws_profile_transcribe": "AWS 프로필(Transcribe)",

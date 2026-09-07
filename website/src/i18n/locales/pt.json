@@ -5224,6 +5224,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "Não foi possível usar “{{speak}}”. Verifique as definições de texto para fala e tente novamente.",
+      "blocked": "O navegador bloqueou a reprodução automática. Abra “{{moreActions}}” abaixo da resposta concluída e selecione “{{speak}}”.",
+      "settings": "Definições de “{{speak}}” (texto para fala)"
+    },
     "avatarBuilder": {
       "apply": "Aplicar",
       "apply_hint": "Aplica-se aqui — pressione “Salvar alterações” para manter.",
@@ -9205,6 +9210,7 @@
         "workflow_runs_load_failed": "Não foi possível carregar as execuções de fluxo de trabalho"
       },
       "assistantMessage": {
+        "copy_text": "Copiar texto",
         "applied_to_tasks": "Aplicado às tarefas",
         "copied": "Copiado!",
         "copy": "Copiar",
@@ -9219,7 +9225,7 @@
         "regenerate_response": "Gerar resposta novamente",
         "rendered": "renderizado",
         "rendered_view": "Visualização renderizada",
-        "speak": "Falar",
+        "speak": "Ler em voz alta",
         "speak_message": "Ler a mensagem em voz alta",
         "steered": "Direcionado",
         "switch_to_raw_markdown_view": "Alternar para a visualização em Markdown bruto",
@@ -13448,6 +13454,7 @@
         "copy_manifest_failed": "Não foi possível copiar o manifesto para a área de transferência."
       },
       "sttSettings": {
+        "language_auto": "Detectar o idioma automaticamente",
         "allow_microphone_access_to_show_device_names": "Permita o acesso ao microfone para exibir os nomes dos dispositivos",
         "aws_credentials_profile_for_transcribe_blank_def": "Perfil de credenciais AWS para o Transcribe (em branco = cadeia padrão)",
         "aws_profile_transcribe": "Perfil AWS (Transcribe)",

@@ -1965,6 +1965,7 @@ jobs:
         # every turn is deterministic and offline: no Kiro/model calls, no cost.
         env:
           KIROCREW_E2E_REQUIRE: "1"
+          VOICE_EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           # CI-enforced on-loop persistence invariant: the e2e gateway boots with
           # strict mode so any un-offloaded session-JSONL mutator that enters
           # ``_locked`` on the event loop raises ``OnLoopPersistError`` and fails
@@ -1973,13 +1974,22 @@ jobs:
           KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
         run: python setup.py test_e2e
 
+      - name: Upload read-aloud recovery evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: voice-recovery-evidence
+          path: website/test-results/**/voice-recovery/
+          if-no-files-found: ignore
+          retention-days: 7
+
       # The specs' own failure record. Playwright writes one directory per
       # failed attempt under website/test-results/ -- the ARIA snapshot of the
       # page at the failing assertion (error-context.md), the on-first-retry
       # trace, and any screenshot -- and the html report next to it. Until this
       # step existed none of it left the runner: #8526 was triaged for hours from
       # a log line that named `error-context.md` and nothing else. Failure-only,
-      # because a green run has nothing in either directory worth keeping and
+      # because the successful recovery screenshots are uploaded above and
       # the job already uploads coverage. `ignore` rather than `error`: a run
       # that failed before the specs started (a browser install that stalled)
       # has no results, and this step must not turn that into a second failure.

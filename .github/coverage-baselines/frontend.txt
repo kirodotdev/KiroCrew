@@ -78,7 +78,6 @@ src/hooks/useBottomTerminal.ts 66.3   # 65/98
 src/hooks/useCronActions.ts 31.0   # 9/29
 src/hooks/usePopoutSync.ts 0.0   # 0/51
 src/hooks/useQuickSearchShortcut.ts 40.5   # 17/42
-src/hooks/useStreamingStt.ts 73.3   # 154/210
 src/lib/disintegrate.ts 0.0   # 0/54
 src/lib/embedded.ts 75.0   # 3/4
 src/main.tsx 0.0   # 0/26

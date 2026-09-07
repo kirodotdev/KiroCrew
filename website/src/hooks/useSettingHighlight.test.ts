@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { createElement } from 'react'
 import { useSettingHighlight } from './useSettingHighlight'
@@ -114,6 +114,88 @@ describe('useSettingHighlight against the real registry and catalogs', () => {
   afterAll(async () => {
     const { i18next } = await import('../i18n/all')
     await i18next.changeLanguage('en')
+  })
+
+  function settingControl(label: string, { configKey, settingId }: { configKey?: string; settingId?: string }) {
+    const el = document.createElement('div')
+    if (configKey) el.dataset.settingKey = configKey
+    if (settingId) el.dataset.settingId = settingId
+    el.dataset.settingLabel = label
+    el.scrollIntoView = vi.fn()
+    return el
+  }
+
+  it.each([
+    { name: 'TTS with keyed STT', highlight: 'voice.provider-2', target: { settingId: 'voice.provider-2' }, sibling: { configKey: 'stt.provider' } },
+    { name: 'TTS with unkeyed legacy row', highlight: 'voice.provider-2', target: { settingId: 'voice.provider-2' }, sibling: {} },
+    { name: 'STT with explicit TTS', highlight: 'key:stt.provider', target: { configKey: 'stt.provider' }, sibling: { settingId: 'voice.provider-2' } },
+  ])('waits for the exact cold provider during $name', async ({ highlight, target, sibling }) => {
+    vi.useFakeTimers()
+    const otherProvider = settingControl('Provider', sibling)
+    const targetProvider = settingControl('Provider', target)
+    document.body.appendChild(otherProvider)
+    const view = renderHook(() => {
+      useSettingHighlight()
+      return useLocation().search
+    }, { wrapper: wrapper([`/settings/voice?highlight=${highlight}`]) })
+
+    try {
+      act(() => { vi.advanceTimersByTime(150) })
+      expect(otherProvider.scrollIntoView).not.toHaveBeenCalled()
+      expect(view.result.current).toContain('highlight=')
+
+      // The configuration query settles after the initial highlight tick.
+      await act(async () => { document.body.appendChild(targetProvider) })
+      expect(targetProvider.scrollIntoView).toHaveBeenCalledTimes(1)
+      expect(view.result.current).not.toContain('highlight=')
+      // Consuming the URL must leave the highlight visible for its fade period.
+      expect(targetProvider.style.outlineOffset).toBe('4px')
+
+      await act(async () => { document.body.removeChild(otherProvider) })
+      expect(targetProvider.scrollIntoView).toHaveBeenCalledTimes(1)
+    } finally {
+      view.unmount()
+      otherProvider.remove()
+      targetProvider.remove()
+      vi.clearAllTimers()
+    }
+  })
+
+  it.each(['navigation', 'unmount'])('abandons a pending UI target on %s', async (end) => {
+    vi.useFakeTimers()
+    const playback = settingControl('Provider', { settingId: 'voice.provider-2' })
+    const preventSleep = settingControl('Prevent sleep while running', { configKey: 'dashboard.prevent_sleep' })
+    const view = renderHook(() => {
+      useSettingHighlight()
+      return { search: useLocation().search, navigate: useNavigate() }
+    }, { wrapper: wrapper(['/settings/voice?highlight=voice.provider-2']) })
+
+    try {
+      act(() => { vi.advanceTimersByTime(150) })
+      expect(view.result.current.search).toContain('highlight=')
+      if (end === 'unmount') view.unmount()
+      else {
+        act(() => {
+          view.result.current.navigate('/settings/chat?highlight=key:dashboard.prevent_sleep&keep=1')
+        })
+        act(() => { vi.advanceTimersByTime(150) })
+        expect(new URLSearchParams(view.result.current.search).get('highlight')).toBe('key:dashboard.prevent_sleep')
+      }
+
+      await act(async () => {
+        document.body.append(playback, preventSleep)
+      })
+      expect(playback.scrollIntoView).not.toHaveBeenCalled()
+      if (end === 'navigation') {
+        expect(preventSleep.scrollIntoView).toHaveBeenCalledTimes(1)
+        expect(view.result.current.search).toBe('?keep=1')
+      } else expect(preventSleep.scrollIntoView).not.toHaveBeenCalled()
+    } finally {
+      view.unmount()
+      playback.remove()
+      preventSleep.remove()
+      vi.clearAllTimers()
+    }
   })
 
   it('highlights a control whose rendered label is translated', async () => {

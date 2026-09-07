@@ -5,9 +5,11 @@
 Dashboard text-to-speech has three providers: the host's built-in speech engine,
 local Piper, and Amazon Polly. `voice_reply.DEFAULT_PROVIDER` selects the
 built-in engine unless configuration selects a valid provider, because it is the
-only one that needs nothing installed. `chat_voice.api_voice_synthesize()` sends
-built-in-engine and Piper output as one WAV chunk and streams Polly sentence
-chunks as MP3; the browser queues either form for sequential playback.
+only one that needs nothing installed on macOS and Windows.
+`chat_voice.api_voice_synthesize()` streams local Piper PCM as small WAV chunks,
+sends built-in-engine output as one WAV chunk, and streams Polly sentences as MP3.
+Every synthesis has a request identity so the browser can reject audio from a
+stopped request.
 
 ## The built-in engine
 
@@ -127,10 +129,12 @@ Telegram and dashboard paths. Three rules:
 
 | Component | Code | Responsibility |
 |---|---|---|
-| Dashboard routes | `dashboard.routes.sessions.register()` | Registers the synthesis, configuration, Polly voice-catalogue, and built-in-engine voice-catalogue endpoints. |
-| Voice endpoints | `dashboard.chat_voice.api_voice_config()`, `api_voice_synthesize()`, `api_voice_voices()`, and `api_voice_system_voices()` | Read and persist configuration, synthesize dashboard speech, and return the Polly and built-in-engine catalogues. |
-| Provider implementation | `voice_reply.synthesize_speech()`, `streaming_voice_reply()`, and `stitch_mp3s()` | Redacts text, selects a provider, creates audio, and joins completed Polly chunks. |
-| Streaming playback | `website/src/hooks/useWebSocket.ts` | Detects completed sentences, serializes synthesis requests, queues audio, and handles interruption. |
+| Dashboard routes | `dashboard.routes.sessions.register()` | Registers synthesis, cancellation, configuration, both voice catalogues, and synthesis shutdown cleanup. |
+| Voice endpoints | `dashboard.chat_voice.api_voice_config()`, `api_voice_synthesize()`, `api_voice_cancel()`, `api_voice_voices()`, and `api_voice_system_voices()` | Read and persist configuration, synthesize and interrupt dashboard speech, and return the Polly and built-in-engine catalogues. |
+| Provider implementation | `voice_reply.synthesize_speech()`, `streaming_piper_reply()`, `streaming_voice_reply()`, and `stitch_mp3s()` | Redacts text, selects a provider, streams local PCM, and joins completed Polly chunks. |
+| Resident local voice | `piper_runtime.PiperRuntime`, `piper_worker.serve()` | Owns one sandboxed Piper model and serial framed requests, with cancellation, idle, model-change, and shutdown cleanup. |
+| Streaming playback | `website/src/hooks/useWebSocket.ts`, `website/src/lib/voicePlayback.ts` | Detects speech boundaries, coalesces pending requests, schedules PCM on one audio clock, and handles interruption. |
+| Playback failures | `website/src/components/VoicePlaybackNotice.tsx` | Displays localized playback or provider failures and retains their machine code in the error report. |
 | Settings | `website/src/pages/settings/VoicePanel.tsx` | Updates auto-speak, provider, and the selected provider's settings; fetches each provider's voice catalogue only while that provider is selected. |
 | Slack reply | `slack.handler.handle_message()` and `_safe_voice_reply()` | Starts a background provider-aware voice reply when thread, global, or voice-input settings allow it. |
 
@@ -143,38 +147,213 @@ submits only text beyond `voiceProgressRef.spokenLen` through
 identity: this prevents an old segment or a background slot from replaying text
 or resetting the active response.
 
-`flushVoiceTail()` handles the remaining eligible text at `chat_segment` and
-`chat_done`. It marks the message consumed even when the tail does not meet the
-speech floor, so a later completion event cannot retry it. The floor and
-boundary rule are implemented in `useWebSocket.ts`; they are not duplicated
-here.
+`voiceBoundary()` recognizes Chinese sentence punctuation without requiring a
+following space, Latin sentence endings, newlines, and clause boundaries in
+long text. It avoids splitting inside code fences or inline code and does not
+split the decimal point in a number. `flushVoiceTail()` submits every nonempty
+remaining tail at `chat_segment` and `chat_done`, including a short reply. It
+marks the whole message consumed so a later completion event cannot retry it.
 
-`enqueueVoiceSynthesis()` appends each request to `synthChainRef`. This keeps
-requests in source order even if a provider finishes them out of order, which is
-load-bearing because the playback queue cannot reconstruct the intended
-sentence order after receiving audio.
+`enqueueVoiceSynthesis()` appends each request to `synthChainRef`. The first
+eligible text starts immediately; while a request is synthesizing, subsequent
+completed sentences merge into the next pending request up to a bounded text
+size. This reduces model launches while retaining source order. An interruption
+invalidates the chain's epoch, so an old promise cannot start its queued text
+after a newer response starts.
 
 For Polly, `api_voice_synthesize()` iterates
 `voice_reply.streaming_voice_reply()`, broadcasts each `voice_chunk`, then
-uses `stitch_mp3s()` to broadcast `voice_complete`. For the built-in engine and
-Piper, `_synthesize_nonstreaming()` broadcasts one WAV `voice_chunk` and one
-`voice_complete`; it is selected by `provider != PROVIDER_POLLY` so a provider
-added later cannot fall into the Polly branch and reach a paid AWS service. `useWebSocket` decodes `voice_chunk` audio into blob URLs and
-plays the queue one item at a time. `voice_complete` also updates the Redux
+uses `stitch_mp3s()` to broadcast `voice_complete`. For Piper,
+`_synthesize_piper_stream()` broadcasts `voice_chunk` frames while the child
+still runs and collects bounded PCM for one WAV `voice_complete` replay clip.
+The built-in engine broadcasts its completed WAV. Only the explicit Polly
+provider reaches the Polly branch; a future provider cannot silently reach a
+paid AWS service. Both event types include `audioMime` and echo the synthesis `request_id`.
+`voice_complete` also updates the Redux
 `voiceAudio` field; `UseWebSocketCoverage.test.tsx` covers that state update.
+
+`VoicePcmPlayer` decodes WAV chunks in order and schedules their sources on one
+`AudioContext` clock. Consecutive ready chunks abut on that clock instead of
+paying a separate media-element load for each short chunk. If synthesis falls
+behind playback, the next chunk starts at the current clock with a small
+scheduling margin. MP3 and browsers without Web Audio use a sequential media
+element queue. Polly therefore retains media-element clip-boundary gaps; the
+continuous PCM clock applies to local WAV playback. Polly also shares the
+newline/CJK sentence splitter: multiline or CJK replies can produce more smaller
+requests than the previous Latin-punctuation-only splitter. Text content and AWS
+consent remain unchanged; this is not a claim of lower Polly cost or latency.
+A playback generation prevents a decode that finishes after stop
+from scheduling obsolete audio.
+
+The API announces `voice-synthesis-start` synchronously. On a manual Read aloud
+click this lets the hook unlock its audio context inside the user's gesture,
+before the HTTP request or the first WebSocket audio frame. Sending a message
+also unlocks the context when auto-speak is enabled. A suspended context's resume
+wait is bounded; a playback failure cancels the affected speech stream and its
+queued chunks in both the PCM and media-element paths. `VoicePlaybackNotice` displays the error,
+including a distinct autoplay-blocked remedy: the browser blocked automatic
+playback, and the user can start playback manually through More actions and
+Read aloud, named with their current localized labels. This distinguishes the
+browser's playback restriction from the manual action used to unlock audio.
+Every nonblank completed reply offers
+Read aloud in More actions, retaining its localized message context as an
+accessible description while its visible label remains its accessible name.
+While the blocked-playback notice is present, completed replies in the active
+conversation reveal their existing action rows without requiring hover. This
+includes an older reply that the user manually selected. Dismissal, synthesis
+restart, slot changes and unmount clear the reveal state.
+Where speech creates a new menu, Copy text moves into that
+menu so the footer gains neither another action control nor another row.
+Clipboard success stays visible in the open menu. A refused text copy closes
+the menu and leaves an `ErrorNotice` with a manual text-copy remedy until
+dismissal or a successful retry. Copy-link keeps its separate short failure label.
+The notice avoids navigating away from an embedded composer's unsaved draft.
+Other playback
+failures name text-to-speech settings and group the existing guarded Settings
+link with the error inside one visible container. That link uses
+`highlight=voice.provider-2` to target the text-to-speech provider row's explicit
+`settingId`, independent of the equally named dictation provider or their display
+order. The primitive and generated registry carry the same UI identity. TTS is
+persisted in a raw `voice_reply` JSON section outside the typed config schema, so
+this row does not claim a schema-backed `configKey` or a `SettingRef` mapping.
+If the settings query is still loading, the highlight waits for the exact
+`data-setting-id` control to mount; it never substitutes a same-label row.
+Navigation or unmount cancels that pending lookup. Actual schema-key links retain
+their existing `key:` path and legacy unidentified label fallback, excluding
+rows that carry a different config key or an explicit UI identity.
+The local composition uses
+the existing inline `ErrorNotice` variant; the shared component API is unchanged.
+The notice retains a structured machine code for the
+diagnostic handoff. It accepts events only while bound to
+a conversation slot and only for that slot. An unbound slot (`null` or
+`undefined`) renders no failure, ignores playback events, and clears any prior
+conversation's failure before the slot is bound again. HTTP-only synthesis
+failures use the same request-identity checks as WebSocket failures so they
+cannot report against an already interrupted request.
+`reportVoiceFailure()` records the localized error and code in the existing
+error journal at the WebSocket playback owner before dispatching the UI event.
+Thus failures are recorded even when ChatPage is unmounted. The notice consumes
+the same report without creating a duplicate; it owns only page-local recovery.
+
+## Local synthesis pipeline
+
+When no custom `piper_binary` is configured and the gateway interpreter has a
+compatible Piper Python API, `streaming_piper_reply()` uses the dashboard's
+`PiperRuntime`. API capability probing runs off the event loop and never loads
+a voice in the gateway. The owned `python -m kiro_crew.piper_worker` subprocess
+loads `PiperVoice` once and serves serial requests over stdin/stdout. Every
+bounded frame has a type and request identity; PCM additionally carries its
+sample rate. Explicit `ready`, `done`, and `error` frames establish lifecycle and
+request boundaries without relying on quiet periods or process exit.
+
+The dashboard owns at most one loaded Piper model. Changed model/config paths,
+sizes, or modification times retire the old worker before a replacement starts.
+The dashboard admits at most two syntheses: the resident path runs one and can
+queue one, with its 180-second deadline covering both the wait and synthesis.
+Each browser already serializes its sentence requests; the waiter serves
+concurrent clients. Further requests receive HTTP 429 with `voice_busy`, which is
+retryable after the outstanding work finishes. Cancelled work continues to occupy
+capacity until its subprocess and sandbox resources have been reaped. Two clients
+interrupting together can therefore receive 429 for their immediate replacements;
+they can retry Read aloud once cancellation finishes. Releasing admission before
+reaping would let repeated interrupts exceed the model/process bound.
+Successful requests retain it for up to 120 seconds of inactivity. Cancellation,
+an early generator close, malformed output, or a request timeout kills and reaps
+the active worker; a cancelled waiter does not kill another request's worker.
+Application shutdown closes the runtime after cancelling active HTTP requests.
+The first request after startup, eviction, or cancellation still pays the model's
+cold-load and initial phonemizer cost; residency improves subsequent requests,
+not cold inference. Cleanup runs in a tracked, shielded task so repeated
+cancellation cannot abandon the child or its sandbox launcher; the next start
+and shutdown join any outstanding reap before proceeding.
+
+An explicit `piper_binary` or a missing/incompatible Python API retains the CLI
+fallback with `--output-raw`. It loads one model for all phrases in that request.
+Its raw PCM has no reliable per-line end marker, so EOF defines completion. The
+CLI is not reused across requests by guessing that silence means completion.
+Its request retains and shields the bounded reap and sandbox-file cleanup task
+until completion, including when another stop or shutdown cancels it again.
+
+A successful gateway API probe does not guarantee that the isolated worker can
+import and run Piper. If that worker fails before sending any PCM, a synthesis
+or protocol failure, or a non-permission OS failure, can use the discovered CLI
+after the worker is reaped. No available CLI preserves the original failure.
+After any PCM, failure is propagated without replay. Cancellation, timeout,
+sandbox or permission refusal, invalid request/model settings and output limits
+never trigger fallback. One outer 180-second deadline covers both attempts,
+including capability probing and queueing; fallback does not reset the budget.
+Both timeout scopes use `piper_runtime.REQUEST_TIMEOUT_SECONDS`; the runtime
+retains its own bound when called directly. The worker, resident reader, and CLI
+reader share `piper_worker.MAX_AUDIO_BYTES`.
+
+Both paths use `split_sentences()` for CJK/Latin punctuation and newlines, and
+`_piper_phrases()` bounds unpunctuated phrases while preserving their tails.
+
+The model JSON declares the actual sample rate. Invalid or absent audio format
+is a coded failure before spawn; a guessed rate would change pitch and playback
+speed. PCM is signed little-endian mono Int16. Pipe reads are bounded by
+`_PIPER_CHUNK_SECONDS`, and an odd trailing byte carries into the next read.
+`pcm_to_wav()` wraps complete samples for immediate browser decoding. Replay
+encoding runs off the event loop. Piper's own inference still determines when
+the first samples become available; chunk size is not a promised synthesis
+latency.
+
+Model and configuration paths pass the shared sensitive-path gate before the
+gateway reads configuration or starts a worker. Protected paths and paths whose
+resolution stalls fail closed with `voice_model_path_forbidden`; the refusal
+does not include file contents.
+
+The provider bounds total output and runtime and drains stderr concurrently;
+the CLI retains only a bounded diagnostic tail and the resident worker discards
+native diagnostics instead of retaining user text. CLI failure logs pass that
+tail through `redact_log_via_context`, preserving an installed credential policy
+and withholding diagnostic text when its composition fails. Cancellation, timeout, output
+overflow, and early generator closure kill and reap the child before removing
+sandbox resources. The worker uses the same standard sandbox and subprocess
+resource ceilings as the CLI, without an unconfined first-party exception.
+Both dashboard Piper spawn paths remove credential-bearing environment keys
+with the shared `scrub_env` helper and prepare cgroup argv off the event loop,
+matching the upstream built-in engine's controls without changing sandbox policy.
+Unsupported sandbox environments still fail closed. The dashboard explicitly
+closes the generator even when a request is interrupted while it is suspended
+at a yield. `test/test_voice_streaming.py` verifies first PCM before child exit
+through real OS pipes, odd-byte alignment, full replay, errors, and cancellation.
+`test/test_piper_runtime.py` additionally exercises real framed pipes, reuse,
+model replacement, active and waiting cancellations, protocol limits, idle
+eviction, and shutdown. Malformed requests and invalid provider PCM retire the
+worker without a success frame or processing the next request; entrypoint tests
+also verify that model-load failures return a bounded error without native text.
 
 ## Interruption
 
-`ChatPage` dispatches `voice-stop` when it sends a message, and its Speak
-handler dispatches the same event while audio is playing. `useWebSocket` maps
-the event to `stopVoice()`, which pauses the active audio element, revokes
-queued blob URLs, clears the queue, and sets `voiceMutedRef`.
+`ChatPage` dispatches `voice-stop` when it sends a message and before a manual
+Read aloud request. This replaces a prior synthesis even during model loading,
+before any audio has started. `useVoiceInput` also dispatches it when an actual
+batch or streaming recording starts, before microphone acquisition, so the
+recognizer does not capture ongoing synthesized speech. Hover prewarming does
+not interrupt playback. Clicking Read aloud while audio plays stops it.
+`useWebSocket` maps the event to `stopVoice()`, which stops scheduled PCM sources,
+pauses an active media element, revokes queued blob URLs, invalidates pending
+decodes and synthesis requests, and sets `voiceMutedRef`.
 
 While muted, `voice_chunk` frames are discarded and the `chat_segment`/
-`chat_done` tail paths do not synthesize more text. `voiceProgressFor()` clears
-the muted state only when it sees a different message identity. This identity
-boundary is load-bearing: it prevents late audio from an interrupted response
-from being played as though it belonged to the next response.
+`chat_done` tail paths do not synthesize more text. A new assistant message
+identity alone does not unmute: an interrupted turn stays interrupted across
+tool-use segments. A new user, non-passive inject, or subagent turn, an explicit
+manual synthesis start, or a slot-focus change establishes a new playback
+context. Focus changes stop the departing slot's speech first. Disabling
+auto-speak also stops current speech. Every accepted `voice_chunk`,
+`voice_complete`, and `voice_error` must match a known `request_id` and the
+active slot; clearing the known IDs makes late frames inert even after the
+muted flag is reset for another response.
+
+The backend keys active synthesis by `(slot, request_id)` in an application-owned
+registry. `POST /api/voice/cancel` cancels the matching handler, which closes its
+provider stream and releases its child. A bounded, expiring cancellation record
+also rejects a synthesis POST that arrives after its cancellation. Unknown IDs
+cannot cancel another request in the same slot. `register_voice_lifecycle()`
+cancels active work during dashboard shutdown, and the registry bounds concurrent
+synthesis so simultaneous local requests cannot load unbounded models.
 
 ## Configuration and API
 
@@ -198,8 +377,16 @@ replacing it. The merge preserves voice settings owned by other channels.
 
 * `GET` and `PUT /api/voice/config`
 * `POST /api/voice/synthesize`
+* `POST /api/voice/cancel`
 * `GET /api/voice/voices`
 * `GET /api/voice/system-voices`
+
+Synthesis accepts `text`, `slot`, and an optional `request_id`; older clients
+receive a generated identity. `voice_chunk`, `voice_complete`, `voice_error`,
+and synthesis HTTP results echo that ID. Cancellation requires `slot` and
+`request_id`. The synthesis endpoint validates body types, text size, and ID
+size before provider work. Provider failures produce `voice_error` and a non-2xx
+response with a stable `code`; empty audio is a failure, not successful silence.
 
 `api_voice_voices()` caches a successful Polly catalogue in process, sorts it by
 language code and name, and does not cache the empty result produced when the
@@ -223,7 +410,7 @@ spawning the AWS CLI. It returns no audio when consent is absent, which lets its
 callers retain their text response rather than spending through an unattended
 path.
 
-`_synthesize_polly()` and `_synthesize_piper()` run their commands through
+`_synthesize_polly()`, `_synthesize_piper()`, and `streaming_piper_reply()` run their commands through
 `wrap_argv_async(..., _prepare=wrap_argv)` and catch
 `SandboxUnavailableError` separately from provider failures. They log the
 sandbox error kind and its own message. The distinction is load-bearing because

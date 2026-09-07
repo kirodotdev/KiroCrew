@@ -5046,6 +5046,11 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "{{speak}}失败。请检查文字转语音设置后重试。",
+      "blocked": "浏览器阻止了自动播放。回复完成后，打开回复下方的“{{moreActions}}”，然后选择“{{speak}}”。",
+      "settings": "{{speak}}设置（文字转语音）"
+    },
     "avatarBuilder": {
       "apply": "应用",
       "apply_hint": "先应用到编辑器——点“保存更改”才会生效。",
@@ -8953,6 +8958,7 @@
         "workflow_runs_load_failed": "无法加载工作流运行"
       },
       "assistantMessage": {
+        "copy_text": "复制文本",
         "applied_to_tasks": "已应用到任务",
         "copied": "已复制！",
         "copy": "复制",
@@ -13104,6 +13110,7 @@
         "copy_manifest_failed": "无法将清单复制到剪贴板。"
       },
       "sttSettings": {
+        "language_auto": "自动检测语言",
         "allow_microphone_access_to_show_device_names": "允许麦克风访问以显示设备名称",
         "aws_credentials_profile_for_transcribe_blank_def": "用于 Transcribe 的 AWS 凭证配置（留空 = 默认链）",
         "aws_profile_transcribe": "AWS 配置（Transcribe）",

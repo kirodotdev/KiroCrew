@@ -1257,6 +1257,11 @@
     }
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "{{speak}} failed. Check the Text-to-speech settings and try again.",
+      "blocked": "Your browser blocked automatic playback. Open {{moreActions}} below the completed reply, then select {{speak}}.",
+      "settings": "{{speak}} settings (Text-to-speech)"
+    },
     "avatarBuilder": {
       "apply": "Apply",
       "apply_hint": "Applies here — press “Save changes” to keep it.",
@@ -3305,6 +3310,9 @@
         "workflow_runs_load_failed": "Couldn't load the workflow runs"
       },
       "assistantMessage": {
+        "speak_message": "Read message aloud",
+        "speak": "Read aloud",
+        "copy_text": "Copy text",
         "copied": "Copied!",
         "raw": "raw",
         "raw_markdown": "Raw markdown",
@@ -5347,6 +5355,7 @@
         "config_load_failed": "Could not load the skills settings. The switches show defaults, not what is stored."
       },
       "sttSettings": {
+        "language_auto": "Detect language automatically",
         "failed_to_save_stt_config": "Failed to save STT config",
         "microphone_2": "Microphone {{n}}",
         "system_default": "System default",

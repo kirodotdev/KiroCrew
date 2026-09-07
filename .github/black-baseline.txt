@@ -191,7 +191,6 @@ src/kiro_crew/dashboard/chat_folder_suggest.py
 src/kiro_crew/dashboard/chat_nav.py
 src/kiro_crew/dashboard/chat_slack.py
 src/kiro_crew/dashboard/chat_title.py
-src/kiro_crew/dashboard/chat_voice.py
 src/kiro_crew/dashboard/crash_dump_store.py
 src/kiro_crew/dashboard/file_index.py
 src/kiro_crew/dashboard/handlers/artifacts.py
@@ -503,7 +502,6 @@ test/test_chat_slot_reasoning_effort.py
 test/test_chat_tags.py
 test/test_chat_title.py
 test/test_chat_turn_timeout_consistency.py
-test/test_chat_voice.py
 test/test_ci_surface_tests.py
 test/test_cli_desktop.py
 test/test_cli_doctor.py
@@ -1053,7 +1051,6 @@ test/test_stop_handler_idempotent.py
 test/test_stop_kill_cancel.py
 test/test_streaming_meta_redaction.py
 test/test_stt_config_atomic.py
-test/test_stt_endpointing.py
 test/test_stt_stream_cov80.py
 test/test_stub_bridge_liveness.py
 test/test_stuck_turn_watchdog.py

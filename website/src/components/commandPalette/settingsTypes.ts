@@ -51,11 +51,17 @@ export interface SettingEntry {
    */
   params?: Record<string, string>
   /**
-   * Backend config key this setting writes (e.g. 'telemetry.beacon_enabled').
+   * Schema-backed config key this setting writes (e.g. 'telemetry.beacon_enabled').
    * Used by SettingRef to resolve a config key to its UI deep-link.
-   * Undefined for settings that don't map to a single config path.
+   * Undefined outside the typed schema or without a single config path.
    */
   configKey?: string
+  /**
+   * Explicit DOM row identity, independent of any backend config path.
+   * When present, highlighting waits for this exact data-setting-id target
+   * rather than substituting another control with the same translated label.
+   */
+  settingId?: string
 }
 
 /**

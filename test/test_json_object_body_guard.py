@@ -167,6 +167,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # nothing route-specific to own elsewhere.
     "chat_voice.py::api_voice_config": ("<default>", _BOUNDED_BY_DEFAULT),
     "chat_voice.py::api_voice_synthesize": ("<default>", _BOUNDED_BY_DEFAULT),
+    "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/messaging.py::api_notification_agent_push": (
         "<default>",

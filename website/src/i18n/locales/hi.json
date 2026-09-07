@@ -5135,6 +5135,11 @@
     "viewPr": "पुल रिक्वेस्ट"
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "“{{speak}}” नहीं चल सका। टेक्स्ट-टू-स्पीच सेटिंग जाँचें और फिर कोशिश करें।",
+      "blocked": "ब्राउज़र ने ऑडियो का स्वतः चलना रोक दिया। पूरे हो चुके जवाब के नीचे “{{moreActions}}” खोलें और “{{speak}}” चुनें।",
+      "settings": "“{{speak}}” की सेटिंग (टेक्स्ट-टू-स्पीच)"
+    },
     "avatarBuilder": {
       "apply": "लागू करें",
       "apply_hint": "यहां लागू होता है — रखने के लिए “बदलाव सहेजें” दबाएं।",
@@ -9079,6 +9084,7 @@
         "workflow_runs_load_failed": "वर्कफ़्लो रन लोड नहीं हो सके"
       },
       "assistantMessage": {
+        "copy_text": "टेक्स्ट कॉपी करें",
         "applied_to_tasks": "कार्यों पर लागू",
         "copied": "कॉपी किया गया!",
         "copy": "कॉपी करें",
@@ -9093,8 +9099,8 @@
         "regenerate_response": "प्रतिक्रिया पुनः बनाएँ",
         "rendered": "रेंडर",
         "rendered_view": "रेंडर किया गया व्यू",
-        "speak": "बोलें",
-        "speak_message": "संदेश बोलें",
+        "speak": "ज़ोर से पढ़ें",
+        "speak_message": "संदेश ज़ोर से पढ़ें",
         "steered": "निर्देशित",
         "switch_to_raw_markdown_view": "रॉ markdown व्यू पर स्विच करें",
         "switch_to_rendered_view": "रेंडर किए गए व्यू पर स्विच करें",
@@ -13277,6 +13283,7 @@
         "copy_manifest_failed": "मैनिफ़ेस्ट क्लिपबोर्ड पर कॉपी नहीं हो सका।"
       },
       "sttSettings": {
+        "language_auto": "भाषा अपने आप पहचानें",
         "allow_microphone_access_to_show_device_names": "डिवाइस के नाम दिखाने के लिए माइक्रोफ़ोन एक्सेस की अनुमति दें",
         "aws_credentials_profile_for_transcribe_blank_def": "Transcribe के लिए AWS क्रेडेंशियल प्रोफ़ाइल (खाली = डिफ़ॉल्ट चेन)",
         "aws_profile_transcribe": "AWS प्रोफ़ाइल (Transcribe)",

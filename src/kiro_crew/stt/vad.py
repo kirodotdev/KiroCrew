@@ -190,6 +190,7 @@ class Endpointer:
         self._max_frames = max(1, max_utterance_ms // FRAME_MS)
         self._floor_db = _FLOOR_UNSET
         self._state = VadState.IDLE
+        self._speech_seen = False
         self._speech_run = 0
         self._silence_run = 0
         self._frames_seen = 0
@@ -213,7 +214,12 @@ class Endpointer:
     @property
     def speech_frames_seen(self) -> bool:
         """Whether any qualifying speech was ever detected in this utterance."""
-        return self._state is not VadState.IDLE
+        return self._speech_seen
+
+    @property
+    def silence_ms(self) -> int:
+        """Consecutive quiet after detected speech, for phrase-boundary decisions."""
+        return self._silence_run * FRAME_MS
 
     def push(self, pcm: np.ndarray) -> VadUpdate:
         """Consume mono float32 audio and return the updated verdict."""
@@ -308,6 +314,7 @@ class Endpointer:
             self._silence_run = 0
             if self._state is VadState.IDLE and self._speech_run >= MIN_SPEECH_FRAMES:
                 self._state = VadState.SPEECH
+                self._speech_seen = True
         else:
             self._speech_run = 0
             if self._state is VadState.SPEECH:

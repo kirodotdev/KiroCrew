@@ -145,9 +145,9 @@ CATALOG: tuple[WhisperModel, ...] = (
     ),
 )
 
-#: The default. Small enough that the one-time download is not a decision, and
-#: accurate enough for dictation; measured real-time factor is ~0.01, so decoding
-#: is never the thing a user waits on.
+#: The default balances download size and multilingual recognition. Inference
+#: latency still depends on the native backend and competing host workloads;
+#: model size alone does not establish real-time performance.
 DEFAULT_MODEL = "base"
 
 _BY_NAME: dict[str, WhisperModel] = {m.name: m for m in CATALOG}

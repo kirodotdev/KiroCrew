@@ -1780,7 +1780,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.settings.sttSettings.language",
     "tab": "voice",
     "type": "select",
-    "occurrence": 1
+    "occurrence": 1,
+    "configKey": "stt.language_code"
   },
   {
     "id": "voice.live-transcript-refresh-ms",
@@ -1856,7 +1857,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "The built-in engine needs no setup; Piper is offline with better quality; Amazon Polly uses AWS credentials + network",
     "tab": "voice",
     "type": "select",
-    "occurrence": 2
+    "occurrence": 2,
+    "settingId": "voice.provider-2"
   },
   {
     "id": "voice.shortcut-key",

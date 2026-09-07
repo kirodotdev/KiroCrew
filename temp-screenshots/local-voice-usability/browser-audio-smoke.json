@@ -1,0 +1,43 @@
+{
+  "capture": {
+    "sampleRate": 48000,
+    "batches": [
+      1600,
+      1600,
+      1600,
+      212
+    ],
+    "samples": 5012
+  },
+  "playback": {
+    "starts": [
+      {
+        "time": 0.45133333333333336,
+        "duration": 0.2
+      },
+      {
+        "time": 0.6513333333333333,
+        "duration": 0.2
+      },
+      {
+        "time": 0.8513333333333333,
+        "duration": 0.2
+      }
+    ],
+    "gaps": [
+      -5.551115123125783e-17,
+      -5.551115123125783e-17
+    ],
+    "states": [
+      true,
+      true,
+      true,
+      false,
+      false
+    ],
+    "errors": []
+  },
+  "passed": true,
+  "fixture": "Synthetic browser audio input and silent WAV playback; no microphone recording",
+  "boundary": "WebAudio scheduling and capture flushing only; not speech recognition accuracy or a live gateway test"
+}

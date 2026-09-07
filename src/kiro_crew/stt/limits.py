@@ -31,9 +31,8 @@ DEFAULT_SILENCE_MS = 700
 MIN_SILENCE_MS = 200
 
 #: How often a live partial may be produced (``stt.partial_interval_ms``). Below
-#: this the text churns faster than it can be read; measured decode cost for a
-#: phrase-length buffer is 27-48 ms, so this is a readability bound, not a
-#: compute one.
+#: this the text churns faster than it can be read. The interval starts after
+#: inference completes; model and runtime speed determine actual update latency.
 DEFAULT_PARTIAL_INTERVAL_MS = 400
 
 #: Floor on the partial cadence, enforced in :mod:`kiro_crew.stt.session`.
@@ -60,12 +59,15 @@ MIN_IDLE_EVICT_SECS = 0
 MAX_IDLE_EVICT_SECS = 86_400
 
 #: Ceiling on how long a caller waits for one decode or one model load
-#: (``stt.timeout_secs``). Generous on purpose: a warm decode is tens of
-#: milliseconds, so anything near this is a wedged native call rather than slow
-#: work, and clipping a legitimate first load (which compiles a GPU pipeline the
-#: first time) would be worse than waiting. It deliberately does NOT bound the
+#: (``stt.timeout_secs``). Model size, available acceleration, and a first load's
+#: GPU pipeline compilation can make work expensive, so this bounds waiting
+#: without assuming that every native runtime decodes in real time. It does NOT bound the
 #: first-run model download, which happens before the engine takes its lock.
 DEFAULT_TIMEOUT_SECS = 300
+
+#: Native decode cancellation cleanup, shared with the browser's advertised
+#: final-result deadline so a cooperative abort can release its context first.
+DECODE_ABORT_GRACE_SECS = 5.0
 
 #: Floor on that ceiling. A first-ever model load compiles a GPU pipeline and was
 #: measured at 7.4 s, so a smaller value would abort the one operation that is

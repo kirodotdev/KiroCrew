@@ -70,6 +70,8 @@ export const SETTINGS_DEFAULT_MODEL_ID = 'chat.default-model'
  * in the active locale via SETTINGS_REGISTRY, finds the element by
  * `data-setting-label`, scrolls it into view, applies a temporary 2s ring
  * flash, then strips the param.
+ * Entries with an explicit settingId instead wait for that data-setting-id
+ * row, so a cold panel cannot highlight a different same-label control.
  *
  * Also accepts `?highlight=key:<configKey>` — first tries direct DOM lookup
  * via `data-setting-key` attribute (zero round-trip); falls back to resolving
@@ -100,24 +102,46 @@ export function useSettingHighlight(): void {
   useEffect(() => {
     if (!highlightId) return
 
-    // key: path — try direct DOM lookup via data-setting-key FIRST
-    if (directConfigKey) {
-      const directEl = document.querySelector(`[data-setting-key="${CSS.escape(directConfigKey)}"]`) as HTMLElement | null
-      if (directEl) {
-        const timer = setTimeout(() => {
-          directEl.scrollIntoView({ block: 'center', behavior: 'smooth' })
-          directEl.style.outline = '2px solid var(--accent)'
-          directEl.style.outlineOffset = '4px'
-          directEl.style.borderRadius = '8px'
-          directEl.style.transition = 'outline-color 0.3s ease'
+    const entry = SETTINGS_REGISTRY.find(e => e.id === highlightId)
+    const settingId = entry?.settingId
+    // Explicit UI identities and schema keys both survive an async panel load.
+    if (settingId || directConfigKey) {
+      const findDirectTarget = (): HTMLElement | null => {
+        if (settingId) return document.querySelector<HTMLElement>(`[data-setting-id="${CSS.escape(settingId)}"]`)
+        if (directConfigKey) return document.querySelector<HTMLElement>(`[data-setting-key="${CSS.escape(directConfigKey)}"]`)
+        return null
+      }
+      const findTarget = (): HTMLElement | null => {
+        const direct = findDirectTarget()
+        // A declared UI identity is authoritative even before it mounts.
+        if (direct || settingId) return direct
+        if (!entry) return null
+        // Keep legacy unidentified controls reachable, but another setting's
+        // schema key or UI identity must never satisfy a same-label request.
+        const label = entry.labelKey ? i18nT(entry.labelKey) : entry.label
+        const matches = document.querySelectorAll<HTMLElement>(`[data-setting-label="${CSS.escape(label)}"]`)
+        const candidate = matches[entry.occurrence - 1] ?? matches[0]
+        return candidate && !candidate.hasAttribute('data-setting-key') && !candidate.hasAttribute('data-setting-id') ? candidate : null
+      }
+      if (entry || findDirectTarget()) {
+        let observer: MutationObserver | null = null
+        const highlightTarget = (): boolean => {
+          const el = findTarget()
+          if (!el) return false
+          observer?.disconnect()
+          el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+          el.style.outline = '2px solid var(--accent)'
+          el.style.outlineOffset = '4px'
+          el.style.borderRadius = '8px'
+          el.style.transition = 'outline-color 0.3s ease'
 
           setTimeout(() => {
-            directEl.style.outlineColor = 'transparent'
+            el.style.outlineColor = 'transparent'
             setTimeout(() => {
-              directEl.style.outline = ''
-              directEl.style.outlineOffset = ''
-              directEl.style.borderRadius = ''
-              directEl.style.transition = ''
+              el.style.outline = ''
+              el.style.outlineOffset = ''
+              el.style.borderRadius = ''
+              el.style.transition = ''
             }, 300)
           }, 2000)
 
@@ -126,14 +150,24 @@ export function useSettingHighlight(): void {
             next.delete('highlight')
             return next
           }, { replace: true })
+          return true
+        }
+        const timer = setTimeout(() => {
+          if (highlightTarget()) return
+          // A cold settings query may outlive the initial render tick. Wait
+          // only while this known target is pending, rather than guessing latency.
+          observer = new MutationObserver(() => { highlightTarget() })
+          observer.observe(document.body, { childList: true, subtree: true })
         }, 100)
-        return () => clearTimeout(timer)
+        return () => {
+          clearTimeout(timer)
+          observer?.disconnect()
+        }
       }
-      // Fall through to legacy label-based resolution if data-setting-key not found
+      // Unknown keys retain the legacy parameter-cleanup behavior below.
     }
 
     // Resolve id → label (legacy path)
-    const entry = SETTINGS_REGISTRY.find(e => e.id === highlightId)
     if (!entry) {
       // Unknown id, strip param
       setParams(prev => {

@@ -5224,6 +5224,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "« {{speak}} » a échoué. Vérifie les paramètres de synthèse vocale et réessaie.",
+      "blocked": "Le navigateur a bloqué la lecture automatique. Ouvre « {{moreActions}} » sous la réponse terminée, puis sélectionne « {{speak}} ».",
+      "settings": "Paramètres de « {{speak}} » (synthèse vocale)"
+    },
     "avatarBuilder": {
       "apply": "Appliquer",
       "apply_hint": "Appliqué ici — appuyez sur « Enregistrer les modifications » pour le conserver.",
@@ -9205,6 +9210,7 @@
         "workflow_runs_load_failed": "Impossible de charger les exécutions de workflow"
       },
       "assistantMessage": {
+        "copy_text": "Copier le texte",
         "applied_to_tasks": "Appliqué aux tâches",
         "copied": "Copié !",
         "copy": "Copier",
@@ -13449,6 +13455,7 @@
         "copy_manifest_failed": "Impossible de copier le manifeste dans le presse-papiers."
       },
       "sttSettings": {
+        "language_auto": "Détecter automatiquement la langue",
         "allow_microphone_access_to_show_device_names": "Autorisez l'accès au microphone pour afficher les noms des périphériques",
         "aws_credentials_profile_for_transcribe_blank_def": "Profil d'identifiants AWS pour Transcribe (vide = chaîne par défaut)",
         "aws_profile_transcribe": "Profil AWS (Transcribe)",

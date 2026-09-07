@@ -32,6 +32,9 @@ from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.stt.engine import pcm_from_int16
+from kiro_crew.stt.limits import DECODE_ABORT_GRACE_SECS
+from kiro_crew.stt.vad import Endpointer as AudioEndpointer
 from kiro_crew.transcribe import _ProfileCredentialResolver, _whisper_language, availability_detail
 
 logger = logging.getLogger(__name__)
@@ -60,6 +63,15 @@ _MAX_STREAM_DURATION_SECS = 300
 # Cap text-frame size — the only valid text frame is `{"type":"stop"}`
 # (15 bytes). Reject obvious abuse without the 128 KiB binary cap.
 _MAX_TEXT_FRAME_BYTES = 256
+#: Keep receiving while CPU inference runs, with bounded memory and no dropped
+#: speech. The browser can flush 60 seconds of pre-ready audio at once; keep
+#: headroom for live frames arriving during that catch-up. A backlog is drained
+#: without cosmetic decodes, and overflow fails clearly.
+_MAX_LOCAL_BUFFER_BYTES = STREAM_SAMPLE_RATE_HZ * 2 * 90
+_MAX_LOCAL_BUFFER_FRAMES = 1024
+#: Native abort cleanup precedes socket teardown; allow its final coded frame
+#: to reach the browser before the browser's own fallback closes the socket.
+_LOCAL_FINAL_WIRE_GRACE_SECS = 15
 # Cap concurrent streaming sessions per-process, for all three providers. Only
 # `transcribe` carries a cost reason (each open socket is a billable session and
 # counts against the account's concurrent-stream quota); the free on-device
@@ -278,12 +290,15 @@ class _Endpointer:
         model: str = _ENDPOINT_MODEL,
         debounce: float = _ENDPOINT_DEBOUNCE_SECS,
         timeout: float = _ENDPOINT_TIMEOUT_SECS,
+        can_submit: Callable[[], bool] | None = None,
     ) -> None:
         self._ws = ws
         self._sessions = sessions
         self._model = model
         self._debounce = debounce
         self._timeout = timeout
+        self._can_submit = can_submit or (lambda: True)
+        self._speech_pending = False
         self._finals: list[str] = []
         self._gen = 0
         self._inflight = False
@@ -303,7 +318,25 @@ class _Endpointer:
         stale verdict, so a COMPLETE for "deploy the service" can't auto-submit
         after the user has gone on to say "to production"."""
         if text:
-            self._gen += 1
+            self.note_speech()
+
+    def note_speech(self) -> None:
+        """Invalidate before inference, even when no display partial is decoded."""
+        self._gen += 1
+        self._speech_pending = True
+
+    def note_audio_final(self, text: str) -> None:
+        """Acknowledge resolved local speech, including a retracted hypothesis.
+
+        An empty result can resume a judgment invalidated by VAD, but only after
+        all newer speech is resolved. It never revives the old model verdict.
+        """
+        if self._can_submit():
+            if self._speech_pending and not text and self._finals:
+                self._gen += 1
+                self._schedule(self._gen, " ".join(self._finals).strip())
+            self._speech_pending = False
+        self.note_final(text)
 
     def note_final(self, text: str) -> None:
         """Record a stable transcript segment and schedule a debounced judgment.
@@ -331,7 +364,7 @@ class _Endpointer:
             await asyncio.sleep(self._debounce)
         except asyncio.CancelledError:
             return
-        if gen != self._gen:
+        if gen != self._gen or not self._can_submit():
             return  # a newer partial/final superseded this one (debounce coalesce)
         if self._inflight:
             # Another classification is in flight. Latch this (the current) gen
@@ -360,7 +393,7 @@ class _Endpointer:
         self._pending = None
         if pending is not None and pending[0] == self._gen and not self._ws.closed:
             self._schedule(pending[0], pending[1])
-        if gen != self._gen:
+        if gen != self._gen or not self._can_submit():
             return  # user kept speaking while classifying — verdict is stale
         if verdict.strip().upper().startswith("COMPLETE") and not self._ws.closed:
             try:
@@ -428,7 +461,11 @@ def _make_handler(ws: web.WebSocketResponse, endpointer: "_Endpointer | None" = 
 
 
 def _build_endpointer(
-    ws: web.WebSocketResponse, cfg: "KiroCrewConfig", request: web.Request
+    ws: web.WebSocketResponse,
+    cfg: "KiroCrewConfig",
+    request: web.Request,
+    *,
+    can_submit: Callable[[], bool] | None = None,
 ) -> "_Endpointer | None":
     """The semantic end-of-utterance judge, or None when it is not available.
 
@@ -444,7 +481,7 @@ def _build_endpointer(
     sessions = getattr(state, "sessions", None)
     if sessions is None:
         return None
-    return _Endpointer(ws, sessions)
+    return _Endpointer(ws, sessions, can_submit=can_submit)
 
 
 async def _run_local_session(
@@ -471,14 +508,21 @@ async def _run_local_session(
     session accumulates buffered audio and holds one of
     ``_MAX_CONCURRENT_SESSIONS`` slots.
     """
+    acknowledged_audio_end = 0
+    latest_speech_audio_end = 0
+    received_samples = 0
     with _audited_setup(caller):
-        endpointer = _build_endpointer(ws, cfg, request)
+        endpointer = _build_endpointer(
+            ws, cfg, request, can_submit=lambda: acknowledged_audio_end >= latest_speech_audio_end
+        )
+        capture_vad = AudioEndpointer(silence_ms=cfg.stt.silence_ms) if endpointer else None
         session = stt.LocalSession(
             model_name=cfg.stt.model,
             language=_whisper_language(cfg.stt.language_code),
             silence_ms=cfg.stt.silence_ms,
             partial_interval_ms=cfg.stt.partial_interval_ms,
             idle_evict_secs=cfg.stt.idle_evict_secs,
+            timeout_secs=cfg.stt.timeout_secs,
         )
 
     # The FIRST fatal cause wins. Both the duration cap and a failed send can end
@@ -511,10 +555,12 @@ async def _run_local_session(
 
     async def _relay(events: list["stt.SttEvent"]) -> bool:
         """Forward session events to the client. False means stop the session."""
+        nonlocal acknowledged_audio_end
         for event in events:
             if event.kind == stt.KIND_ERROR:
-                _claim_fatal("error")
-                await _send({"type": "error", "message": event.text, "code": event.code})
+                if fatal_outcome is None:
+                    _claim_fatal("error")
+                    await _send({"type": "error", "message": event.text, "code": event.code})
                 return False
             if event.kind == stt.KIND_STATUS:
                 if not await _send(
@@ -529,7 +575,17 @@ async def _run_local_session(
                     return False
                 continue
             text = _redacted(event.text).strip()
+            if event.kind == stt.KIND_FINAL:
+                acknowledged_audio_end = max(acknowledged_audio_end, event.audio_end_sample)
+                if endpointer is not None:
+                    endpointer.note_audio_final(text)
             if not text:
+                # An empty final retracts the live hypothesis (for example after
+                # hallucination filtering). Silence here would leave that partial
+                # available for the browser's disconnect-recovery fallback.
+                if event.kind == stt.KIND_FINAL:
+                    if not await _send({"type": stt.KIND_FINAL, "text": ""}):
+                        return False
                 continue
             if endpointer is not None:
                 # Note BEFORE the awaited send, matching the other two branches: a
@@ -538,8 +594,6 @@ async def _run_local_session(
                 # stale COMPLETE emits, auto-submitting a truncated request.
                 if event.kind == stt.KIND_PARTIAL:
                     endpointer.note_partial(text)
-                else:
-                    endpointer.note_final(text)
             if not await _send({"type": event.kind, "text": text}):
                 return False
         return True
@@ -662,22 +716,60 @@ async def _run_local_session(
         except Exception:
             pass
 
-    deadline_task = asyncio.create_task(_enforce_deadline())
-    outcome = "ok"
-    try:
-        await _send({"type": "ready"})
+    inbox: asyncio.Queue[bytes | None] = asyncio.Queue()
+    buffered_bytes = 0
+    input_finished = False
+    drain_timed_out = False
+    drain_error_needed = False
+    drain_task: asyncio.Task[None] | None = None
+    owner_task = asyncio.current_task()
+
+    async def _enforce_final_deadline() -> None:
+        nonlocal drain_timed_out, drain_error_needed
+        # Starts at receipt of stop, including the active partial, queued PCM,
+        # shared-engine contention, and every final decode still needed.
+        await asyncio.sleep(cfg.stt.timeout_secs)
+        drain_timed_out = True
+        session.cancel()
+        if fatal_outcome is None:
+            _claim_fatal("timeout")
+            drain_error_needed = True
+        if owner_task is not None:
+            owner_task.cancel()
+
+    async def _receive_audio() -> None:
+        nonlocal input_finished
+        try:
+            await _read_audio()
+        finally:
+            input_finished = True
+            session.stop_partials()
+            inbox.put_nowait(None)
+
+    async def _read_audio() -> None:
+        nonlocal buffered_bytes, client_gone, drain_task
         async for msg in ws:
+            if fatal_outcome is not None:
+                break
             if msg.type == WSMsgType.BINARY:
-                # A final here means the detector finalised ONE utterance; the
-                # session continues. Closing on it left the Meetings app reporting
-                # "disconnected" and tearing down its microphone on the speaker's
-                # first pause, with nothing to restart it.
-                if not await _relay(await session.feed(msg.data)):
+                if not msg.data:
+                    continue
+                if (
+                    buffered_bytes + len(msg.data) > _MAX_LOCAL_BUFFER_BYTES
+                    or inbox.qsize() >= _MAX_LOCAL_BUFFER_FRAMES
+                ):
+                    _claim_fatal("error")
+                    await _send(
+                        {
+                            "type": "error",
+                            "message": "speech recognition cannot keep up with incoming audio",
+                            "code": _CODE_SESSION_FAILED,
+                        }
+                    )
                     break
-                if session.ended:
-                    # A resource ceiling (the session audio cap) rather than the
-                    # detector: feed() finished the session itself, so stop reading.
-                    break
+                _note_received_speech(msg.data)
+                buffered_bytes += len(msg.data)
+                inbox.put_nowait(msg.data)
             elif msg.type == WSMsgType.TEXT:
                 if len(msg.data) > _MAX_TEXT_FRAME_BYTES:
                     logger.warning(
@@ -690,9 +782,88 @@ async def _run_local_session(
                 except ValueError:
                     continue
                 if isinstance(ctrl, dict) and ctrl.get("type") == "stop":
+                    drain_task = asyncio.create_task(_enforce_final_deadline())
                     break
             elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                client_gone = True
                 break
+
+    def _note_received_speech(raw: bytes) -> None:
+        """Run cheap VAD ahead of every await on queued Whisper inference.
+
+        A final acknowledges its audio position, not a count of transcript
+        events: a coalesced feed may also contain a still-live next utterance.
+        Quiet input after an endpoint does not make a completed request stale.
+        Keep this VAD and LocalSession on the same ordered PCM samples and
+        silence_ms. Both reset at the same audio endpoint; final audio_end_sample
+        acknowledges that shared position. Transcript-event counts cannot replace
+        it because receipt may already be ahead of the decoder.
+        """
+        nonlocal capture_vad, received_samples, latest_speech_audio_end
+        if capture_vad is None or endpointer is None:
+            return
+        pcm = pcm_from_int16(raw)
+        while pcm.size:
+            had_speech = capture_vad.speech_frames_seen
+            update = capture_vad.push(pcm)
+            consumed = pcm.size - update.pending.size if update.ended else pcm.size
+            received_samples += consumed
+            if capture_vad.speech_frames_seen:
+                latest_speech_audio_end = received_samples
+                if not had_speech:
+                    endpointer.note_speech()
+            if not update.ended:
+                break
+            capture_vad = AudioEndpointer(silence_ms=cfg.stt.silence_ms)
+            pcm = update.pending
+
+    deadline_task = asyncio.create_task(_enforce_deadline())
+    receive_task: asyncio.Task[None] | None = None
+    outcome = "ok"
+    try:
+        final_timeout_ms = int(
+            (cfg.stt.timeout_secs + DECODE_ABORT_GRACE_SECS + _LOCAL_FINAL_WIRE_GRACE_SECS) * 1000
+        )
+        if await _send({"type": "ready", "final_timeout_ms": final_timeout_ms}):
+            receive_task = asyncio.create_task(_receive_audio())
+            while True:
+                raw = await inbox.get()
+                if raw is None or fatal_outcome is not None or client_gone or ws.closed:
+                    break
+                buffered_bytes -= len(raw)
+                # The next queued frame makes this frame's partial obsolete.
+                # Stopping has the same effect: drain all audio directly to finals.
+                events = await session.feed(raw, allow_partial=not input_finished and inbox.empty())
+                if not await _relay(events) or session.ended:
+                    break
+            if receive_task.done():
+                await receive_task
+        if (
+            fatal_outcome is None
+            and not client_gone
+            and not ws.closed
+            and not session.ended
+            and session.has_pending_audio
+        ):
+            await _relay([await session.finish()])
+        else:
+            session.cancel()
+    except asyncio.CancelledError:
+        # A cancelled transport has no recipient for a final. Do not start another
+        # full-buffer decode while unwinding its interrupted cosmetic inference.
+        session.cancel()
+        if drain_timed_out:
+            if drain_error_needed:
+                await _send(
+                    {
+                        "type": "error",
+                        "message": "final speech transcription timed out",
+                        "code": stt.CODE_DECODE_FAILED,
+                    }
+                )
+        else:
+            _claim_fatal("error")
+            raise
     except Exception:
         logger.exception("local streaming STT session failed")
         outcome = "error"
@@ -715,31 +886,25 @@ async def _run_local_session(
         # touch the socket, and leaving it live past cleanup would close a socket
         # the next request may already own.
         deadline_task.cancel()
+        if receive_task is not None and not receive_task.done():
+            receive_task.cancel()
+        if drain_task is not None and not drain_task.done():
+            drain_task.cancel()
         if timed_out:
             logger.info("local streaming STT session hit the %ds cap", _MAX_STREAM_DURATION_SECS)
-        if client_gone or ws.closed or not session.has_pending_audio:
-            # Either every utterance has already been finalised, or the transcript
-            # has nowhere to go. Abandoning the audio matters rather than being tidy:
-            # finish() decodes the whole tail, which is real work on the one shared
-            # model that a live session behind this one queues behind.
-            #
-            # Gated on PENDING AUDIO, not on "a final was sent": over a
-            # multi-utterance session both are true at once, and reading the latter
-            # discarded whatever the speaker said after the last detected pause.
+        if not session.ended:
             session.cancel()
-        else:
-            # A `stop` control frame, or a read loop that ended without a verdict:
-            # the transcript the user keeps is one decode of everything heard, so it
-            # is produced here rather than assembled from the partials.
-            try:
-                await _relay([await session.finish()])
-            except Exception:
-                logger.warning("Local final transcript decode failed", exc_info=True)
         # After the final, for the reason the AWS path documents: the final is what
         # the endpointer needs to see, and cancelling its tasks first would drop
         # the judgment on the one segment that matters.
         if endpointer is not None:
             await endpointer.aclose()
+        await asyncio.gather(
+            deadline_task,
+            *([receive_task] if receive_task is not None else []),
+            *([drain_task] if drain_task is not None else []),
+            return_exceptions=True,
+        )
         # A claimed fatal cause outranks the local `outcome`: the read loop can
         # exit cleanly (the cap closed the socket under it) and would otherwise be
         # recorded as "ok" for a session that in fact died.
@@ -784,7 +949,7 @@ async def _run_apple_session(
 
         endpointer = _build_endpointer(ws, cfg, request)
         session = apple_speech.StreamingSession(
-            locale=cfg.stt.language_code or "en-US",
+            locale=cfg.stt.effective_language_code,
             sample_rate=STREAM_SAMPLE_RATE_HZ,
         )
     try:
@@ -1146,7 +1311,7 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
         stream = None
         try:
             stream = await client.start_stream_transcription(
-                language_code=cfg.stt.language_code,
+                language_code=cfg.stt.effective_language_code,
                 media_sample_rate_hz=STREAM_SAMPLE_RATE_HZ,
                 media_encoding="pcm",
                 # Stabilization=high tells Transcribe to commit each word

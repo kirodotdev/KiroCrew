@@ -3,9 +3,8 @@
 whisper.cpp is not a streaming recogniser. It decodes a buffer, so "live" text
 has to be produced by decoding repeatedly as audio arrives, and the only real
 question is *what* to re-decode. Decoding the whole utterance every time is the
-obvious answer and the wrong one: cost grows with the recording, so at a
-real-time factor of ~0.01 a 60 s dictation would spend 660 ms per partial and
-fall behind the speaker.
+obvious answer and the wrong one: repeated work grows with the recording and
+can fall behind the speaker, especially with large models on CPU runtimes.
 
 So the detector that decides when the utterance ended also decides where to cut
 it. On a pause too short to end the utterance, the audio so far is decoded once,
@@ -53,14 +52,18 @@ logger = logging.getLogger(__name__)
 MIN_DECODE_SECS = 1.0
 
 #: A phrase is committed once it reaches this length even without a pause, so a
-#: speaker who never breathes cannot grow the partial buffer without bound. At
-#: RTF ~0.01 this caps a partial decode near 90 ms.
+#: speaker who never breathes cannot grow the partial buffer without bound.
+#: Actual inference latency depends on the model and its runtime acceleration.
 MAX_PHRASE_SECS = 8.0
 
 #: Audio needed before a pause is worth committing. Without a floor, the gap
 #: between two words would cut a phrase in half and the model would lose the
 #: context that makes the second half decode correctly.
 MIN_COMMIT_SECS = 1.0
+
+#: A quiet consonant or a syllable gap is not a phrase boundary. Require a short
+#: sustained pause before discarding the phrase context used by live hypotheses.
+PHRASE_SILENCE_MS = 160
 
 #: Ceiling on a single session's buffered audio. At 16 kHz float32 this is
 #: 4 bytes per sample, so ten minutes is ~38 MB. The point is to bound a client
@@ -81,7 +84,7 @@ def _padded(audio: np.ndarray) -> np.ndarray:
 
     whisper.cpp returns nothing for a buffer under a second, so a genuinely short
     utterance ("stop", "yes") would otherwise be dropped rather than transcribed.
-    Padding costs a few milliseconds of decode and preserves the word.
+    Padding preserves the word while satisfying the recognizer's input floor.
     """
     minimum = int(MIN_DECODE_SECS * SAMPLE_RATE_HZ)
     if audio.size >= minimum:
@@ -122,6 +125,9 @@ class SttEvent:
     stage: str = ""
     downloaded_bytes: int = 0
     total_bytes: int = 0
+    #: Internal final acknowledgement: cumulative input samples covered by this
+    #: result, excluding decode padding and any coalesced next-utterance tail.
+    audio_end_sample: int = field(default=0, compare=False)
 
 
 KIND_STATUS = "status"
@@ -207,9 +213,11 @@ class LocalSession:
         self._silence_ms = silence_ms
         self._endpointer = Endpointer(silence_ms=silence_ms)
         self._buffers = _Buffers()
+        self._finalized_samples = 0
         self._committed = ""
         self._last_partial = 0.0
         self._cancelled = False
+        self._partials_stopped = False
         self._ended = False
         # Set by prepare(); every decode carries it so a concurrent session
         # cannot retarget this one's model or language unnoticed.
@@ -271,12 +279,12 @@ class LocalSession:
         self._key = self._engine.loaded_key
         return events
 
-    async def feed(self, raw_int16: bytes) -> list[SttEvent]:
+    async def feed(self, raw_int16: bytes, *, allow_partial: bool = True) -> list[SttEvent]:
         """Consume one chunk of little-endian int16 PCM and return what to emit.
 
-        Returns at most one partial per call, or the utterance's final when the
-        detector reports the speaker stopped. A final does NOT end the session: the
-        caller keeps reading audio, and the next utterance starts a new one.
+        Returns utterance finals and at most one partial. ``allow_partial=False``
+        lets a transport catch up on queued audio without spending inference on
+        obsolete display text. Every sample still reaches endpointing and finals.
         """
         if self._cancelled or self._ended:
             return []
@@ -295,21 +303,23 @@ class LocalSession:
         # it first put a resumed word into the utterance that just closed -- where it
         # lands after a hangover of silence and contributes nothing -- and clipped that
         # word's onset off the utterance it actually belongs to.
+        events: list[SttEvent] = []
         update = self._endpointer.push(pcm)
-        if update.ended:
+        while update.ended:
             tail = update.pending
             self._buffers.append(pcm[: pcm.size - tail.size])
-            event = await self._finalise_utterance()
-            if tail.size:
-                # Into the RE-ARMED buffers and detector `_finalise_utterance` just
-                # built. The push's verdict is deliberately discarded: a tail is under
-                # one chunk, and ending an utterance needs MIN_SPEECH_FRAMES of speech
-                # followed by a silence run, so it cannot close one on its own.
-                self._buffers.append(tail)
-                self._endpointer.push(tail)
-            return [event]
+            events.append(await self._finalise_utterance())
+            if not tail.size:
+                return events
+            # A legal WebSocket frame can contain several seconds, hence several
+            # utterances. Process every endpoint in its tail before accepting more.
+            pcm = tail
+            update = self._endpointer.push(pcm)
 
         self._buffers.append(pcm)
+
+        if events or not allow_partial or self._partials_stopped:
+            return events
 
         if not self._endpointer.speech_frames_seen:
             # Nothing has been recognised as speech yet, so there is nothing to
@@ -327,7 +337,9 @@ class LocalSession:
         # frame-level ``silent``, not the utterance-level ``speech``, which stays
         # true across exactly these pauses. The length ceiling is the fallback for
         # a speaker who never pauses, so the partial buffer is bounded either way.
-        if phrase_secs >= MAX_PHRASE_SECS or (update.silent and phrase_secs >= MIN_COMMIT_SECS):
+        if phrase_secs >= MAX_PHRASE_SECS or (
+            self._endpointer.silence_ms >= PHRASE_SILENCE_MS and phrase_secs >= MIN_COMMIT_SECS
+        ):
             if await self._commit_phrase():
                 # Report the text the commit just confirmed. A commit is the moment
                 # a phrase became settled, so staying silent here would leave the
@@ -342,9 +354,10 @@ class LocalSession:
         phrase = self._joined(self._buffers.phrase)
         if phrase.size == 0:
             return []
-        self._last_partial = now
         try:
-            text = await self._engine.decode(_padded(phrase), superseding=True, expect=self._key)
+            text = await self._engine.decode(
+                _padded(phrase), superseding=True, expect=self._key, abort_if=self._partial_obsolete
+            )
         except engine_mod.DecodeFailed as exc:
             # A partial is cosmetic and the next one is moments away, so one failed
             # decode must not end a session the speaker is still talking into. Logged
@@ -352,6 +365,10 @@ class LocalSession:
             # the one whose failure they have to be told about.
             logger.warning("Partial decode failed: %s", exc.detail)
             return []
+        finally:
+            # Cadence starts when inference finishes: measuring from its start
+            # makes a slow CPU immediately decode the next obsolete frame again.
+            self._last_partial = time.monotonic()
         if not text:
             # An empty result here is a superseded decode, not silence: newer
             # audio arrived and aborted it. Emitting an empty partial would blank
@@ -382,6 +399,7 @@ class LocalSession:
         the result.
         """
         event = await self._decode_utterance()
+        self._finalized_samples += self._buffers.total_samples
         self._buffers = _Buffers()
         self._committed = ""
         self._last_partial = 0.0
@@ -400,8 +418,9 @@ class LocalSession:
         with different remedies, and reporting the second as the first is what made a
         failed decode look like a silent room.
         """
+        audio_end_sample = self._finalized_samples + self._buffers.total_samples
         if self._cancelled:
-            return SttEvent(KIND_FINAL, text="")
+            return SttEvent(KIND_FINAL, text="", audio_end_sample=audio_end_sample)
         audio = self._joined(self._buffers.full)
         if not _is_audible(audio):
             # A muted or unplugged device delivers digital silence. Decoding it
@@ -415,11 +434,11 @@ class LocalSession:
             # Losing genuine speech is the worse failure: a hallucination on a
             # silent recording is what filter_hallucinations below exists for,
             # whereas a dropped sentence leaves no trace at all.
-            return SttEvent(KIND_FINAL, text="")
+            return SttEvent(KIND_FINAL, text="", audio_end_sample=audio_end_sample)
         padded = _padded(audio)
         try:
             text = await self._engine.decode(padded, expect=self._key)
-            if not text:
+            if not text and self._engine.loaded_key != self._key:
                 # The engine refuses a decode whose model was replaced by a concurrent
                 # session (an operator changing `stt.model` mid-meeting is enough), and
                 # that refusal is indistinguishable here from silence: it returns "",
@@ -432,9 +451,10 @@ class LocalSession:
                 # starve each other indefinitely, and a genuinely empty transcript must
                 # still be allowed to be empty.
                 result = await self._engine.ensure_loaded(self._model_name, self._language)
-                if result.ok:
-                    self._key = self._engine.loaded_key
-                    text = await self._engine.decode(padded, expect=self._key)
+                if not result.ok:
+                    return SttEvent(KIND_ERROR, text=result.detail, code=result.code)
+                self._key = self._engine.loaded_key
+                text = await self._engine.decode(padded, expect=self._key)
         except engine_mod.DecodeFailed as exc:
             # The one decode whose failure the user has to be told about: this is the
             # text they keep. Reported as an `error` event rather than an empty final
@@ -445,12 +465,21 @@ class LocalSession:
         # Only the final is filtered. A partial is a prefix of speech still in
         # progress, so collapsing a repetition there could delete one the speaker
         # had only begun.
-        return SttEvent(KIND_FINAL, text=filter_hallucinations(text))
+        return SttEvent(
+            KIND_FINAL, text=filter_hallucinations(text), audio_end_sample=audio_end_sample
+        )
 
     def cancel(self) -> None:
         """Abandon the session. Any in-flight decode is left to abort on its own."""
         self._cancelled = True
         self._ended = True
+
+    def stop_partials(self) -> None:
+        """Stop cosmetic inference while queued audio is drained to the final."""
+        self._partials_stopped = True
+
+    def _partial_obsolete(self) -> bool:
+        return self._cancelled or self._partials_stopped
 
     async def _commit_phrase(self) -> bool:
         """Fold the current phrase into the committed display text.
@@ -464,7 +493,9 @@ class LocalSession:
         if not _is_audible(phrase):
             return False
         try:
-            text = await self._engine.decode(_padded(phrase), expect=self._key)
+            text = await self._engine.decode(
+                _padded(phrase), superseding=True, expect=self._key, abort_if=self._partial_obsolete
+            )
         except engine_mod.DecodeFailed as exc:
             # Display-only text, so the same trade as a partial: skip this phrase and
             # keep the session alive. The phrase audio is still in the full buffer, so
@@ -503,6 +534,8 @@ async def transcribe_pcm(
     Slack voice memo and a dashboard dictation both land on a model that is
     already loaded.
     """
+    if not _is_audible(pcm):
+        return "", engine_mod.Availability(True)
     eng = engine_mod.shared_engine(idle_evict_secs=idle_evict_secs, timeout_secs=timeout_secs)
     result = await eng.ensure_loaded(model_name, language)
     if not result.ok:
@@ -516,9 +549,10 @@ async def transcribe_pcm(
     # covers that; looping would let two sessions with different settings starve
     # each other indefinitely.
     padded = _padded(pcm)
+    expected = eng.loaded_key
     try:
-        text = await eng.decode(padded, expect=eng.loaded_key)
-        if not text:
+        text = await eng.decode(padded, expect=expected)
+        if not text and eng.loaded_key != expected:
             result = await eng.ensure_loaded(model_name, language)
             if not result.ok:
                 return "", result

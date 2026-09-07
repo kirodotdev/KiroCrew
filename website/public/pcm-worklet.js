@@ -1,64 +1,83 @@
-// PCM downsampler AudioWorklet: converts mic Float32 (usually 48 kHz)
-// to 16 kHz mono Int16 PCM and posts ArrayBuffers to the main thread
-// via `port.postMessage`. Used by useStreamingStt.ts for live STT.
-//
-// Kept intentionally small — runs on the realtime audio thread.
-
+// Audio-thread capture: anti-aliased 16 kHz mono PCM, in 100 ms batches.
 const TARGET_RATE = 16000
-// AWS Transcribe streaming recommends chunk sizes of 50-200ms for
-// optimal latency (smaller chunks = per-frame WebSocket + protocol
-// overhead; larger chunks = added perceived lag). 100ms hits the
-// middle of the recommended range: at 16 kHz Int16, 1600 samples =
-// 3200 bytes per chunk, emitted ~10 times per second.
-// See: https://repost.aws/questions/...latency-from-5-7-seconds-to-10-12-seconds-in-transcribe
 const BATCH_SAMPLES = TARGET_RATE / 10
+const FILTER_TAPS = 63
+const FILTER_PHASES = 256
 
 class PcmWorklet extends AudioWorkletProcessor {
   constructor () {
     super()
-    this._ratio = sampleRate / TARGET_RATE
-    this._carry = 0
-    // Accumulator for batching. Many audio quanta (~128 samples each at
-    // source rate ≈ 2.7ms at 48 kHz) decimate to only ~43 output samples;
-    // posting each quantum individually gives Transcribe 3ms chunks — far
-    // below the 50ms floor and the cause of observed first-word latency.
+    this._phase = 0
+    this._history = new Float32Array(FILTER_TAPS)
+    this._position = 0
+    // Integer ratios need one kernel. Fractional ratios (notably 44.1 kHz)
+    // select a precomputed delay phase rather than jittering between input ticks.
+    this._phases = sampleRate % TARGET_RATE === 0 ? 1 : FILTER_PHASES
+    this._filter = new Float32Array(FILTER_TAPS * this._phases)
+    const cutoff = Math.min(0.5, TARGET_RATE / sampleRate * 0.45)
+    const middle = (FILTER_TAPS - 1) / 2
+    for (let phase = 0; phase < this._phases; phase++) {
+      let sum = 0
+      const offset = phase * FILTER_TAPS
+      for (let i = 0; i < FILTER_TAPS; i++) {
+        const x = i - middle - phase / this._phases
+        const sinc = x === 0 ? 2 * cutoff : Math.sin(2 * Math.PI * cutoff * x) / (Math.PI * x)
+        const window = 0.54 - 0.46 * Math.cos(2 * Math.PI * i / (FILTER_TAPS - 1))
+        sum += this._filter[offset + i] = sinc * window
+      }
+      for (let i = 0; i < FILTER_TAPS; i++) this._filter[offset + i] /= sum
+    }
     this._batch = new Int16Array(BATCH_SAMPLES)
+    this._batchLen = 0
+    this._stopped = false
+    this._hasInput = false
+    this.port.onmessage = e => {
+      if (e.data?.type !== 'flush' || this._stopped) return
+      // A causal FIR still holds the last input's response after capture ends.
+      // Drain that history before the PCM batch; otherwise stopping clips the
+      // remaining impulse response even when the short frame is preserved.
+      if (this._hasInput && sampleRate > TARGET_RATE) {
+        this.process([[new Float32Array(FILTER_TAPS - 1)]])
+      }
+      this._stopped = true
+      this._flush()
+      // MessagePort ordering puts the last short audio frame ahead of the
+      // acknowledgment, so the main thread sends it before the WebSocket stop.
+      this.port.postMessage({ type: 'flushed' })
+    }
+  }
+
+  _flush () {
+    if (!this._batchLen) return
+    const out = this._batch.slice(0, this._batchLen)
+    this.port.postMessage(out.buffer, [out.buffer])
     this._batchLen = 0
   }
 
   process (inputs) {
-    const input = inputs[0]
-    if (!input || input.length === 0) return true
-    const channel = input[0]
-    if (!channel || channel.length === 0) return true
-
-    // Linear decimation: pick one sample every `_ratio` input samples.
-    // Good enough for speech STT at 16 kHz from any browser rate.
-    // _carry is the input-sample offset (>= 0) into the current block where
-    // the next output sample should be picked. It must never go negative, or
-    // channel[negative] → undefined → silent clicks every block.
-    const outCount = Math.max(0, Math.floor((channel.length - this._carry) / this._ratio))
-    if (outCount === 0) {
-      // Whole block skipped; subtract block length and clamp.
-      this._carry = Math.max(0, this._carry - channel.length)
-      return true
-    }
-    // Emit samples directly into the batch buffer; flush when full.
-    for (let i = 0; i < outCount; i++) {
-      const idx = Math.floor(this._carry + i * this._ratio)
-      const s = Math.max(-1, Math.min(1, channel[idx] || 0))
-      this._batch[this._batchLen++] = s < 0 ? s * 0x8000 : s * 0x7FFF
-      if (this._batchLen === BATCH_SAMPLES) {
-        // Transferable copy — the worklet retains the pre-allocated batch.
-        const out = new Int16Array(this._batch)
-        this.port.postMessage(out.buffer, [out.buffer])
-        this._batchLen = 0
+    if (this._stopped) return false
+    const channel = inputs[0]?.[0]
+    if (!channel?.length) return true
+    this._hasInput = true
+    for (let i = 0; i < channel.length; i++) {
+      this._history[this._position] = channel[i]
+      this._phase += TARGET_RATE
+      while (this._phase >= sampleRate) {
+        this._phase -= sampleRate
+        let sample = channel[i]
+        if (sampleRate > TARGET_RATE) {
+          sample = 0
+          const phaseOffset = Math.floor(this._phase / TARGET_RATE * this._phases) * FILTER_TAPS
+          for (let j = 0; j < FILTER_TAPS; j++) {
+            sample += this._history[(this._position - j + FILTER_TAPS) % FILTER_TAPS] * this._filter[phaseOffset + j]
+          }
+        }
+        sample = Math.max(-1, Math.min(1, sample))
+        this._batch[this._batchLen++] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF
+        if (this._batchLen === BATCH_SAMPLES) this._flush()
       }
+      this._position = (this._position + 1) % FILTER_TAPS
     }
-    // Advance carry into next block. Always non-negative by construction since
-    // outCount was chosen so the last pick fits within the current block.
-    const nextInputIdx = this._carry + outCount * this._ratio
-    this._carry = Math.max(0, nextInputIdx - channel.length)
     return true
   }
 }

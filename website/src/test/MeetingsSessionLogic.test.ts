@@ -597,6 +597,32 @@ describe('the live caption shows the newest speech, not the meeting opening', ()
     expect(captionWindow(['hello there', 'how are you'])).toBe('hello there how are you')
   })
 
+  it('joins Chinese and Japanese finals and partials without inserted spaces', () => {
+    expect(captionWindow(['继续', '继续'], '，请处理。')).toBe('继续继续，请处理。')
+    expect(captionWindow(['今日は', '晴れ'], 'です。')).toBe('今日は晴れです。')
+    expect(captionWindow(['请打开', 'Settings'], '然后继续。')).toBe('请打开Settings然后继续。')
+  })
+
+  it('keeps a CJK segment that fits exactly instead of charging a nonexistent separator', () => {
+    const final = '中'.repeat(CAPTION_WINDOW_CHARS - 2)
+    expect(captionWindow([final], '继续')).toBe(final + '继续')
+    // An actual English joining space still counts toward the budget.
+    expect(captionWindow(['a'.repeat(CAPTION_WINDOW_CHARS - 4)], 'next')).toBe('next')
+  })
+
+  it('attaches a punctuation partial without dropping a final that fits the caption budget', () => {
+    expect(captionWindow(['hello'], ', world')).toBe('hello, world')
+    const final = 'a'.repeat(CAPTION_WINDOW_CHARS - 1)
+    expect(captionWindow([final], '.')).toBe(final + '.')
+  })
+
+  it('keeps the recent CJK prefix of an oversized mixed-language segment', () => {
+    const newest = '中'.repeat(CAPTION_WINDOW_CHARS) + ' hello world'
+    const out = captionWindow([newest])
+    expect(out).toBe(newest.slice(-CAPTION_WINDOW_CHARS))
+    expect(out.length).toBe(CAPTION_WINDOW_CHARS)
+  })
+
   it('keeps the in-flight partial at the end', () => {
     expect(captionWindow(['committed words'], 'and the partial')).toBe(
       'committed words and the partial',

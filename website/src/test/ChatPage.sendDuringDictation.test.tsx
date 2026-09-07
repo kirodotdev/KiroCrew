@@ -47,6 +47,7 @@ const voice = vi.hoisted(() => {
     partial: '',
     onPartial: null as ((t: string) => void) | null,
     onEndpoint: null as (() => void) | null,
+    onCaptureStop: null as (() => void) | null,
     onText: null as ((t: string, sessionId: string | null, origin: TranscriptOrigin) => void) | null,
     /** Mode the page configured, so a delivered transcript can carry the origin
      *  the real hook would attach to it. */
@@ -63,9 +64,10 @@ voice.start = vi.fn(() => { voice.recording = true })
 voice.stop = vi.fn(() => { voice.recording = false })
 voice.cancel = vi.fn(() => { voice.recording = false })
 vi.mock('../hooks/useVoiceInput', () => ({
-  useVoiceInput: (onText: (t: string, sessionId: string | null, origin: TranscriptOrigin) => void, opts?: { onPartial?: (t: string) => void; onEndpoint?: () => void; streaming?: boolean }) => {
+  useVoiceInput: (onText: (t: string, sessionId: string | null, origin: TranscriptOrigin) => void, opts?: { onPartial?: (t: string) => void; onEndpoint?: () => void; onCaptureStop?: () => void; streaming?: boolean }) => {
     voice.onPartial = opts?.onPartial ?? null
     voice.onEndpoint = opts?.onEndpoint ?? null
+    voice.onCaptureStop = opts?.onCaptureStop ?? null
     voice.onText = onText
     voice.streaming = !!opts?.streaming
     return ({
@@ -500,6 +502,34 @@ describe('ChatPage — sending while dictating', () => {
     expect(ta.value).toBe('remind me to call Ana — urgent')
   })
 
+  it('protects typed text and disables auto-send when cold capture stops itself', async () => {
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
+
+    // The readiness buffer stops capture without a second click or key release.
+    await act(async () => {
+      voice.recording = false
+      voice.onCaptureStop?.()
+      voice.onPartial?.('请处理')
+    })
+    await act(async () => { fireEvent.change(ta, { target: { value: '请处理，明天再做' } }) })
+    await act(async () => {
+      voice.onPartial?.('请处理这个任务')
+    })
+    expect(ta.value).toBe('请处理这个任务，明天再做')
+    await act(async () => { voice.onEndpoint?.() })
+    expect(api.sendChat).not.toHaveBeenCalled()
+
+    await act(async () => {
+      voice.onPartial?.('请处理这个任务。谢谢。')
+      deliverText('请处理这个任务。谢谢。')
+    })
+    expect(ta.value).toBe('请处理这个任务。谢谢。，明天再做')
+  })
+
   it('leaves the composer alone when the dictated region was edited', async () => {
     // If the region cannot be verified the user rewrote it, and a suffix-match
     // heuristic there would delete text they authored. Same policy cancelVoice
@@ -738,6 +768,28 @@ describe('ChatPage — sending while dictating', () => {
     // nothing to add and must be suppressed.
     await act(async () => { deliverText('remind me to call Ana') })
     expect(ta.value).toBe('draft remind me to call Ana NOW')
+  })
+
+  it('keeps typing added after a fatal stream frame while socket close is deferred', async () => {
+    setStt(true)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    const mic = screen.getByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('remind me') })
+    expect(ta.value).toBe('remind me')
+
+    // The hook emits this synchronously with the fatal frame, before the native
+    // decoder's socket close can deliver its fallback final.
+    await act(async () => { voice.onCaptureStop?.() })
+    await act(async () => {
+      fireEvent.change(ta, { target: { value: 'remind me NOW' } })
+    })
+    await act(async () => { deliverText('remind me') })
+
+    expect(ta.value).toBe('remind me NOW')
   })
 
   it('does not auto-send on an endpoint verdict after a cold-stream stop', async () => {

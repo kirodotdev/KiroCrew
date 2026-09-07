@@ -2494,7 +2494,7 @@
         "enabled": true,
         "provider": "local",
         "model": "base",
-        "language_code": "en-US",
+        "language_code": "auto",
         "streaming": true,
         "silence_ms": 700,
         "partial_interval_ms": 400,
@@ -2566,10 +2566,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Language Code",
-      "help": "Language for speech recognition (e.g. en-US, fr-FR, es-ES).",
+      "help": "Language for speech recognition (e.g. zh-CN, en-US). The local provider defaults to auto-detect; choosing a language can improve short dictation.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "en-US"
+      "defaultValue": "auto"
     },
     {
       "path": "stt.streaming",
@@ -2664,7 +2664,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Timeout",
-      "help": "Transcription timeout in seconds.",
+      "help": "Maximum transcription time in seconds. Local streaming uses the same budget for pending audio after recording stops.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 300

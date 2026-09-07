@@ -1421,6 +1421,39 @@ describe('publishToProvider', () => {
   })
 })
 
+describe('voice synthesis request ownership', () => {
+  it('announces the request synchronously and sends the same id to the gateway', async () => {
+    const started = vi.fn()
+    window.addEventListener('voice-synthesis-start', started)
+    try {
+      const synthesis = api.voiceSynthesize('slot-1', '你好')
+      expect(started).toHaveBeenCalledOnce()
+      const detail = (started.mock.calls[0][0] as CustomEvent).detail
+      expect(detail.slot).toBe('slot-1')
+      expect(detail.request_id).toEqual(expect.any(String))
+      await synthesis
+      expect(call().body).toEqual({ slot: 'slot-1', text: '你好', request_id: detail.request_id })
+    } finally {
+      window.removeEventListener('voice-synthesis-start', started)
+    }
+  })
+
+  it('preserves the structured HTTP error for the request owner to filter', async () => {
+    const failed = vi.fn()
+    fetchMock.mockResolvedValue(res(502, { error: 'provider unavailable', code: 'voice_model_config_invalid' }))
+    window.addEventListener('voice-synthesis-failed', failed)
+    try {
+      await expect(api.voiceSynthesize('slot-1', '你好', { request_id: 'request-1' })).rejects.toBeInstanceOf(ApiError)
+      expect(failed).toHaveBeenCalledOnce()
+      expect((failed.mock.calls[0][0] as CustomEvent).detail).toEqual({
+        slot: 'slot-1', request_id: 'request-1', code: 'voice_model_config_invalid',
+      })
+    } finally {
+      window.removeEventListener('voice-synthesis-failed', failed)
+    }
+  })
+})
+
 /* ─────────────────── 4. whole-surface request invariant ─────────────────── */
 
 describe('every api method issues one well-formed /api request', () => {

@@ -187,7 +187,7 @@ export function VoicePanel() {
           ) : (
             <>
               <SettingsToggle label={i18nT('pages.settings.voicePanel.auto_speak_responses')} description={i18nT('pages.settings.voicePanel.speak_every_assistant_reply_automatically')} checked={voiceCfg.autoSpeak} onChange={v => setVoice({ autoSpeak: v, ...(v ? { enabled: true } : {}) })} disabled={voiceDisabled} />
-              <SettingsSelect label={i18nT('pages.settings.voicePanel.provider')} description={i18nT('pages.settings.voicePanel.the_built_in_engine_needs_no_setup_piper_is_offlin')} value={voiceCfg.provider} options={PROVIDER_OPTIONS} optionLabels={PROVIDER_OPTIONS.map(p => i18nT(PROVIDER_LABEL_KEY[p]))} onChange={v => setVoice({ provider: v })} disabled={voiceDisabled} />
+              <SettingsSelect settingId="voice.provider-2" label={i18nT('pages.settings.voicePanel.provider')} description={i18nT('pages.settings.voicePanel.the_built_in_engine_needs_no_setup_piper_is_offlin')} value={voiceCfg.provider} options={PROVIDER_OPTIONS} optionLabels={PROVIDER_OPTIONS.map(p => i18nT(PROVIDER_LABEL_KEY[p]))} onChange={v => setVoice({ provider: v })} disabled={voiceDisabled} />
               {isSystem ? (
                 <>
                   {systemUnavailable && (

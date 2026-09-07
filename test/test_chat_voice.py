@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import json
 import textwrap
@@ -15,13 +16,20 @@ from chat_test_helpers import _make_state
 
 
 def _make_voice_app(state):
-    from kiro_crew.dashboard.chat_voice import api_voice_config, api_voice_synthesize
+    from kiro_crew.dashboard.chat_voice import (
+        api_voice_cancel,
+        api_voice_config,
+        api_voice_synthesize,
+        register_voice_lifecycle,
+    )
 
     app = web.Application()
     app["state"] = state
+    register_voice_lifecycle(app)
     app.router.add_get("/api/voice/config", api_voice_config)
     app.router.add_put("/api/voice/config", api_voice_config)
     app.router.add_post("/api/voice/synthesize", api_voice_synthesize)
+    app.router.add_post("/api/voice/cancel", api_voice_cancel)
     return app
 
 
@@ -460,10 +468,8 @@ class TestVoiceConfig:
             # Non-numeric, huge-int (OverflowError), non-finite, and non-positive
             # values must all be rejected WITHOUT a 500 and WITHOUT persisting an
             # unserializable value — each leaves the field unchanged at 1.0.
-            for bad in ["fast", 10 ** 400, float("inf"), float("nan"), 0, -2.0]:
-                resp = await client.put(
-                    "/api/voice/config", json={"piper_length_scale": bad}
-                )
+            for bad in ["fast", 10**400, float("inf"), float("nan"), 0, -2.0]:
+                resp = await client.put("/api/voice/config", json={"piper_length_scale": bad})
                 assert resp.status == 200, f"{bad!r} should not 500"
                 assert mock_vc.piper_length_scale == 1.0, f"{bad!r} should be ignored"
 
@@ -541,25 +547,28 @@ class TestVoiceConfig:
         assert persisted["auto_speak"] is True  # written from _vc.auto_speak
 
     @pytest.mark.asyncio
-    async def test_synthesize_routes_piper_through_nonstreaming(self, tmp_path, monkeypatch):
-        # With provider=piper the dashboard synth must NOT call the Polly-only
-        # streaming path; it routes through synthesize_speech and emits one chunk.
+    async def test_synthesize_routes_piper_through_pcm_stream(self, tmp_path, monkeypatch):
+        # Provider dispatch keeps local audio independent of the Polly client.
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(
-            provider="piper", default_voice="Ruth", default_engine="generative",
-            default_rate="100%", default_pitch="0%", aws_profile="", region="",
-            piper_binary="", piper_model="~/m.onnx", piper_model_config="",
+            provider="piper",
+            default_voice="Ruth",
+            default_engine="generative",
+            default_rate="100%",
+            default_pitch="0%",
+            aws_profile="",
+            region="",
+            piper_binary="",
+            piper_model="~/m.onnx",
+            piper_model_config="",
             piper_length_scale=1.0,
             system_voice="",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
 
-        wav = tmp_path / "out.wav"
-        wav.write_bytes(b"RIFF....WAVEfake-audio-bytes")
-
         async def _fake_synth(text, **kw):
-            assert kw["provider"] == "piper"
-            return str(wav)
+            assert kw["piper_model"] == "~/m.onnx"
+            yield 0, 22050, b"\x00\x01"
 
         streaming_called = False
 
@@ -569,7 +578,7 @@ class TestVoiceConfig:
             if False:
                 yield  # pragma: no cover — make it an async generator
 
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.synthesize_speech", _fake_synth)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.streaming_piper_reply", _fake_synth)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice.streaming_voice_reply", _fake_stream)
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -591,7 +600,9 @@ class TestVoiceConfig:
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_voice_app(state))) as client:
-            resp = await client.put("/api/voice/config", data=b"not json", headers={"Content-Type": "application/json"})
+            resp = await client.put(
+                "/api/voice/config", data=b"not json", headers={"Content-Type": "application/json"}
+            )
             assert resp.status == 400
 
 
@@ -612,8 +623,12 @@ class TestVoiceSynthesize:
             # single-file path, so leaving this to MagicMock's auto-attribute
             # would exercise the wrong branch from the one mocked below.
             provider="polly",
-            default_voice="Joanna", default_engine="neural",
-            default_rate="100%", default_pitch="0%", aws_profile="", region="us-east-1",
+            default_voice="Joanna",
+            default_engine="neural",
+            default_rate="100%",
+            default_pitch="0%",
+            aws_profile="",
+            region="us-east-1",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
 
@@ -622,12 +637,16 @@ class TestVoiceSynthesize:
             yield 0, "Hello", b"\x00\x01\x02"
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice.streaming_voice_reply", mock_stream)
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.stitch_mp3s", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.stitch_mp3s", AsyncMock(return_value=None)
+        )
 
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         async with TestClient(TestServer(_make_voice_app(state))) as client:
-            resp = await client.post("/api/voice/synthesize", json={"text": "Hello world", "slot": "s1"})
+            resp = await client.post(
+                "/api/voice/synthesize", json={"text": "Hello world", "slot": "s1"}
+            )
             assert resp.status == 200
             data = await resp.json()
             assert data["ok"] is True
@@ -635,67 +654,48 @@ class TestVoiceSynthesize:
         state.broadcast_ws.assert_called()
 
     @pytest.mark.asyncio
-    async def test_the_piper_clip_is_read_off_the_event_loop(self, tmp_path, monkeypatch):
-        """AUTOSDE `no-blocking-call-on-event-loop`, Piper path.
+    async def test_piper_replay_is_encoded_off_the_event_loop(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import chat_voice
 
-        Piper returns an UNCOMPRESSED wav whose size scales with the length of
-        the reply, and this handler reads it whole before base64-ing it. The
-        gateway runs every session on one loop, so a synchronous read here
-        stalls every other chat turn — and the liveness heartbeat — for as long
-        as the transfer takes.
-
-        The probe is the read itself: `open` is wrapped for this one path and
-        records the thread it was called on. Comparing that against the thread
-        running this coroutine is exact — no sleeping, no timing threshold.
-        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        mock_vc = MagicMock(
-            provider="piper", default_voice="Ruth", default_engine="generative",
-            default_rate="100%", default_pitch="0%", aws_profile="", region="",
-            piper_binary="", piper_model="~/m.onnx", piper_model_config="",
-            piper_length_scale=1.0,
-            system_voice="",
+        monkeypatch.setattr(
+            chat_voice,
+            "_vc",
+            MagicMock(
+                provider="piper",
+                piper_binary="",
+                piper_model="~/m.onnx",
+                piper_model_config="",
+                piper_length_scale=1.0,
+            ),
         )
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
 
-        wav = tmp_path / "out.wav"
-        wav.write_bytes(b"RIFF....WAVEfake-audio-bytes")
+        async def stream(*args, **kwargs):
+            yield 0, 22050, b"\x01\x00"
+            yield 1, 22050, b"\x02\x00"
 
-        async def _fake_synth(text, **kw):
-            return str(wav)
-
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.synthesize_speech", _fake_synth)
-
+        monkeypatch.setattr(chat_voice, "streaming_piper_reply", stream)
         loop_thread = threading.get_ident()
-        read_threads: list[int] = []
-        real_open = builtins.open
+        replay_threads = []
+        real_wav = chat_voice.pcm_to_wav
 
-        def _watch_open(file, *args, **kwargs):
-            # Delegate everything; only the clip's own read is recorded, so
-            # nothing else in the request path is disturbed.
-            if str(file) == str(wav):
-                read_threads.append(threading.get_ident())
-            return real_open(file, *args, **kwargs)
+        def watch_wav(pcm, rate):
+            if len(pcm) == 4:
+                replay_threads.append(threading.get_ident())
+            return real_wav(pcm, rate)
 
-        monkeypatch.setattr(builtins, "open", _watch_open)
-
+        monkeypatch.setattr(chat_voice, "pcm_to_wav", watch_wav)
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         async with TestClient(TestServer(_make_voice_app(state))) as client:
             resp = await client.post("/api/voice/synthesize", json={"text": "hello", "slot": "s1"})
             assert resp.status == 200
-
-        assert read_threads, "the clip was never read — the probe did not fire"
-        assert loop_thread not in read_threads, (
-            "the synthesized clip was read on the gateway event loop "
-            f"(thread {loop_thread}); every other session blocks for the "
-            "length of that read"
-        )
-        # Positive control in the same test: the audio still reaches the client,
-        # so the assertion above is about WHERE the read happened, not about a
-        # read that silently stopped happening.
-        payloads = [c.args[1] for c in state.broadcast_ws.call_args_list]
-        assert any(p.get("audio") for p in payloads)
+        assert replay_threads and loop_thread not in replay_threads
+        assert [call.args[0] for call in state.broadcast_ws.call_args_list] == [
+            "voice_chunk",
+            "voice_chunk",
+            "voice_complete",
+        ]
 
     @pytest.mark.asyncio
     async def test_the_polly_chunks_are_written_and_read_off_the_event_loop(
@@ -709,8 +709,13 @@ class TestVoiceSynthesize:
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(
-            provider="polly", default_voice="Joanna", default_engine="neural",
-            default_rate="100%", default_pitch="0%", aws_profile="", region="us-east-1",
+            provider="polly",
+            default_voice="Joanna",
+            default_engine="neural",
+            default_rate="100%",
+            default_pitch="0%",
+            aws_profile="",
+            region="us-east-1",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
 
@@ -742,30 +747,38 @@ class TestVoiceSynthesize:
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         async with TestClient(TestServer(_make_voice_app(state))) as client:
-            resp = await client.post("/api/voice/synthesize", json={"text": "Hello. Again.", "slot": "s1"})
+            resp = await client.post(
+                "/api/voice/synthesize", json={"text": "Hello. Again.", "slot": "s1"}
+            )
             assert resp.status == 200
             assert (await resp.json())["chunks"] == 2
 
         # Two chunk writes plus the stitched read: the probe must have seen all
         # three, otherwise "not on the loop" would be vacuously true.
-        assert len(audio_io_threads) == 3, (
-            f"expected 2 chunk writes + 1 stitched read, saw {len(audio_io_threads)}"
-        )
+        assert (
+            len(audio_io_threads) == 3
+        ), f"expected 2 chunk writes + 1 stitched read, saw {len(audio_io_threads)}"
         assert loop_thread not in audio_io_threads, (
             "synthesized audio was written or read on the gateway event loop "
             f"(thread {loop_thread})"
         )
 
     @pytest.mark.asyncio
-    async def test_synthesize_exception_returns_500_and_broadcasts_error(self, tmp_path, monkeypatch):
+    async def test_synthesize_exception_returns_502_and_broadcasts_error(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(
             # Named explicitly: routing sends every non-Polly provider to the
             # single-file path, so leaving this to MagicMock's auto-attribute
             # would exercise the wrong branch from the one mocked below.
             provider="polly",
-            default_voice="Joanna", default_engine="neural",
-            default_rate="100%", default_pitch="0%", aws_profile="", region="us-east-1",
+            default_voice="Joanna",
+            default_engine="neural",
+            default_rate="100%",
+            default_pitch="0%",
+            aws_profile="",
+            region="us-east-1",
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
 
@@ -774,13 +787,15 @@ class TestVoiceSynthesize:
             raise RuntimeError("Polly synthesis failed")
             yield  # noqa: unreachable - makes this a generator
 
-        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.streaming_voice_reply", mock_stream_error)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.streaming_voice_reply", mock_stream_error
+        )
 
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         async with TestClient(TestServer(_make_voice_app(state))) as client:
             resp = await client.post("/api/voice/synthesize", json={"text": "Hello", "slot": "s1"})
-            assert resp.status == 500
+            assert resp.status == 502
             data = await resp.json()
             assert data["ok"] is False
             assert "error" in data
@@ -848,12 +863,28 @@ class TestVoiceVoices:
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
 
-        mock_data = json.dumps({"Voices": [
-            {"Id": "Takumi", "Name": "Takumi", "LanguageName": "Japanese",
-             "LanguageCode": "ja-JP", "Gender": "Male", "SupportedEngines": ["neural", "standard"]},
-            {"Id": "Mizuki", "Name": "Mizuki", "LanguageName": "Japanese",
-             "LanguageCode": "ja-JP", "Gender": "Female", "SupportedEngines": ["standard"]},
-        ]})
+        mock_data = json.dumps(
+            {
+                "Voices": [
+                    {
+                        "Id": "Takumi",
+                        "Name": "Takumi",
+                        "LanguageName": "Japanese",
+                        "LanguageCode": "ja-JP",
+                        "Gender": "Male",
+                        "SupportedEngines": ["neural", "standard"],
+                    },
+                    {
+                        "Id": "Mizuki",
+                        "Name": "Mizuki",
+                        "LanguageName": "Japanese",
+                        "LanguageCode": "ja-JP",
+                        "Gender": "Female",
+                        "SupportedEngines": ["standard"],
+                    },
+                ]
+            }
+        )
 
         async def mock_exec(*args, **kwargs):
             proc = MagicMock()
@@ -861,6 +892,7 @@ class TestVoiceVoices:
 
             async def comm():
                 return mock_data.encode(), b""
+
             proc.communicate = comm
             return proc
 
@@ -870,6 +902,7 @@ class TestVoiceVoices:
         )
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
+
         app = web.Application()
         app["state"] = _make_state(tmp_path)
         app.router.add_get("/api/voice/voices", api_voice_voices)
@@ -886,17 +919,25 @@ class TestVoiceVoices:
     async def test_voices_uses_cache(self, tmp_path, monkeypatch):
         """Test that cached voices are returned without subprocess call."""
         import time
+
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(provider="polly", aws_profile="", region="")
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
         cached = [
-            {"id": "Ruth", "name": "Ruth", "language": "English",
-             "languageCode": "en-US", "gender": "Female", "engines": ["neural"]}
+            {
+                "id": "Ruth",
+                "name": "Ruth",
+                "language": "English",
+                "languageCode": "en-US",
+                "gender": "Female",
+                "engines": ["neural"],
+            }
         ]
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", cached)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", time.time())
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
+
         app = web.Application()
         app["state"] = _make_state(tmp_path)
         app.router.add_get("/api/voice/voices", api_voice_voices)
@@ -922,6 +963,7 @@ class TestVoiceVoices:
 
             async def comm():
                 return b"", b"AccessDenied"
+
             proc.communicate = comm
             return proc
 
@@ -931,6 +973,7 @@ class TestVoiceVoices:
         )
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
+
         app = web.Application()
         app["state"] = _make_state(tmp_path)
         app.router.add_get("/api/voice/voices", api_voice_voices)
@@ -943,6 +986,7 @@ class TestVoiceVoices:
     async def test_voices_timeout(self, tmp_path, monkeypatch):
         """Test timeout handling."""
         import asyncio
+
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(provider="polly", aws_profile="", region="")
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
@@ -953,9 +997,7 @@ class TestVoiceVoices:
             proc = MagicMock()
             # First await (under wait_for) times out; the second (the reap
             # after kill) drains the pipes and returns.
-            proc.communicate = AsyncMock(
-                side_effect=[asyncio.TimeoutError(), (b"", b"")]
-            )
+            proc.communicate = AsyncMock(side_effect=[asyncio.TimeoutError(), (b"", b"")])
             proc.kill = MagicMock()
             proc.wait = AsyncMock()
             return proc
@@ -966,6 +1008,7 @@ class TestVoiceVoices:
         )
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
+
         app = web.Application()
         app["state"] = _make_state(tmp_path)
         app.router.add_get("/api/voice/voices", api_voice_voices)
@@ -975,14 +1018,13 @@ class TestVoiceVoices:
             assert resp.status == 504
 
     @pytest.mark.asyncio
-    async def test_voices_timeout_reaps_child_via_communicate_not_wait(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_voices_timeout_reaps_child_via_communicate_not_wait(self, tmp_path, monkeypatch):
         """After a timeout kills the describe-voices child, the cleanup must
         call ``communicate()`` -- not ``wait()`` -- so that PIPE buffers are
         drained. A child blocked writing to a full stderr PIPE would hang the
         request handler if only ``wait()`` were used (#5975)."""
         import asyncio
+
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(provider="polly", aws_profile="", region="")
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
@@ -1003,6 +1045,7 @@ class TestVoiceVoices:
         )
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
+
         app = web.Application()
         app["state"] = _make_state(tmp_path)
         app.router.add_get("/api/voice/voices", api_voice_voices)
@@ -1034,6 +1077,7 @@ class TestVoiceVoices:
         monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
+
         app = web.Application()
         app["state"] = _make_state(tmp_path)
         app.router.add_get("/api/voice/voices", api_voice_voices)
@@ -1047,6 +1091,7 @@ class TestVoiceVoices:
         # The empty result must NOT be cached — the list should recover
         # as soon as `aws` becomes resolvable.
         from kiro_crew.dashboard import chat_voice
+
         assert chat_voice._voices_cache is None
 
     @pytest.mark.asyncio
@@ -1070,6 +1115,7 @@ class TestVoiceVoices:
         monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
+
         app = web.Application()
         app["state"] = _make_state(tmp_path)
         app.router.add_get("/api/voice/voices", api_voice_voices)
@@ -1177,10 +1223,10 @@ class TestVoiceSystemVoices:
 
 
 class TestSynthesizeProviderRouting:
-    """Every non-Polly provider must reach the single-file path.
+    """Only Polly can reach the paid sentence stream.
 
-    Written as "not Polly" in the handler so a provider added later cannot fall
-    into the Polly branch and reach a paid AWS service; these pin that.
+    Piper has its local PCM stream; system and unknown future providers retain
+    the provider-aware single-file path rather than falling through to AWS.
     """
 
     def _mock_vc(self, provider: str):
@@ -1202,9 +1248,7 @@ class TestSynthesizeProviderRouting:
     @pytest.mark.asyncio
     async def test_system_provider_uses_the_single_file_path(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_voice._vc", self._mock_vc("system")
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", self._mock_vc("system"))
 
         wav = tmp_path / "out.wav"
         wav.write_bytes(b"RIFF" + b"x" * 200)
@@ -1215,23 +1259,20 @@ class TestSynthesizeProviderRouting:
             raise AssertionError("Polly streaming must not run for a local provider")
             yield  # noqa: unreachable - keeps this an async generator
 
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_voice.streaming_voice_reply", unreachable
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.streaming_voice_reply", unreachable)
 
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
-        app = web.Application()
-        app["state"] = state
-        from kiro_crew.dashboard.chat_voice import api_voice_synthesize
-
-        app.router.add_post("/api/voice/synthesize", api_voice_synthesize)
+        app = _make_voice_app(state)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/voice/synthesize", json={"text": "Hello", "slot": "s1"}
+                "/api/voice/synthesize",
+                json={"text": "Hello", "slot": "s1", "request_id": "native-success"},
             )
             assert resp.status == 200
-            assert (await resp.json())["chunks"] == 1
+            body = await resp.json()
+            assert body["chunks"] == 1
+            assert body["request_id"] == "native-success"
 
         kwargs = synth.await_args.kwargs
         assert kwargs["provider"] == "system"
@@ -1245,6 +1286,48 @@ class TestSynthesizeProviderRouting:
             if call[0][0] in ("voice_chunk", "voice_complete")
         ]
         assert mimes == ["audio/wav", "audio/wav"]
+        assert all(
+            call.args[1]["request_id"] == "native-success" and call.args[1]["slot"] == "s1"
+            for call in state.broadcast_ws.call_args_list
+        )
+        assert not wav.exists()
+
+    @pytest.mark.asyncio
+    async def test_system_synthesis_is_cancelled_by_its_request_identity(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_voice
+
+        monkeypatch.setattr(chat_voice, "_vc", self._mock_vc("system"))
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def synthesize(*_args, **_kwargs):
+            try:
+                started.set()
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        monkeypatch.setattr(chat_voice, "synthesize_speech", synthesize)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        app = _make_voice_app(state)
+        async with TestClient(TestServer(app)) as client:
+            identity = {"slot": "s1", "request_id": "native-stop"}
+            pending = asyncio.create_task(
+                client.post("/api/voice/synthesize", json={**identity, "text": "Hello"})
+            )
+            try:
+                await asyncio.wait_for(started.wait(), 5)
+                response = await client.post("/api/voice/cancel", json=identity)
+                assert response.status == 200
+                await asyncio.wait_for(stopped.wait(), 5)
+                assert not app[chat_voice._VOICE_REQUESTS].tasks
+                state.broadcast_ws.assert_not_called()
+            finally:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1268,9 +1351,7 @@ class TestSynthesizeProviderRouting:
         one must not.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_voice._vc", self._mock_vc("system")
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", self._mock_vc("system"))
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_voice.synthesize_speech",
             AsyncMock(return_value=None),
@@ -1285,17 +1366,23 @@ class TestSynthesizeProviderRouting:
 
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
-        app = web.Application()
-        app["state"] = state
-        from kiro_crew.dashboard.chat_voice import api_voice_synthesize
-
-        app.router.add_post("/api/voice/synthesize", api_voice_synthesize)
+        app = _make_voice_app(state)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/api/voice/synthesize", json={"text": "Hello", "slot": "s1"}
+                "/api/voice/synthesize",
+                json={"text": "Hello", "slot": "s1", "request_id": "native-failed"},
             )
             assert resp.status == 502
-            err = (await resp.json())["error"]
+            body = await resp.json()
+            err = body["error"]
+            assert body["request_id"] == "native-failed"
+            assert body["code"] == (
+                "voice_unavailable" if resolved is None else "voice_synthesis_failed"
+            )
+        state.broadcast_ws.assert_called_once_with(
+            "voice_error",
+            {"slot": "s1", "request_id": "native-failed", "error": err, "code": body["code"]},
+        )
         assert expect_in in err
         assert expect_not_in not in err
         # A remedy naming the wrong provider costs the user the whole debugging
@@ -1377,7 +1464,6 @@ def test_every_body_field_the_config_put_reads_goes_through_a_validator():
         if callee not in SANCTIONED:
             offenders.append(f"body[{key!r}] reaches _vc via {callee or 'no call'}")
 
-    assert not offenders, (
-        "every config-PUT field must go through a validator; found: "
-        + "; ".join(sorted(offenders))
+    assert not offenders, "every config-PUT field must go through a validator; found: " + "; ".join(
+        sorted(offenders)
     )

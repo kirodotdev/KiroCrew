@@ -68,9 +68,9 @@ export function SettingsToggle({ label, description, checked, onChange, disabled
  * `<span>` — a `<label>` with a dangling `htmlFor`, or one wrapping a group of
  * buttons (SettingsStepper / SettingsButtonGroup), would be wrong. Optional so
  * the wrappers without a single labelable control keep compiling unchanged. */
-function SettingsField({ label, description, hint, configKey, controlId, children }: { label: string; description?: string; hint?: string; configKey?: string; controlId?: string; children: React.ReactNode }) {
+function SettingsField({ label, description, hint, configKey, settingId, controlId, children }: { label: string; description?: string; hint?: string; configKey?: string; settingId?: string; controlId?: string; children: React.ReactNode }) {
   return (
-    <div data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className="flex flex-col gap-1.5 py-1.5">
+    <div data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} {...(settingId ? { 'data-setting-id': settingId } : {})} className="flex flex-col gap-1.5 py-1.5">
       <div className="flex items-center gap-1.5">
         {controlId
           ? <label htmlFor={controlId} className="text-[13px] font-semibold text-text">{label}</label>
@@ -95,18 +95,20 @@ interface SettingsSelectProps {
   /** Optional action at top of dropdown (e.g. "+ New workspace…") */
   action?: { label: string; onSelect: () => void }
   disabled?: boolean
-  /** Backend config key this select writes. */
+  /** Schema-backed config key this select writes. */
   configKey?: string
+  /** Explicit UI row identity for deep links, independent of the config schema. */
+  settingId?: string
 }
 
-export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, configKey }: SettingsSelectProps) {
+export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, configKey, settingId }: SettingsSelectProps) {
   // Per-instance id pairing the caption's htmlFor with the select trigger, so
   // the visible caption is the control's programmatic label. The aria-label
   // below stays as a fallback: it wins the accessible-name computation and
   // carries the same string, so nothing double-announces.
   const controlId = React.useId()
   return (
-    <SettingsField label={label} description={description} hint={hint} configKey={configKey} controlId={controlId}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey} settingId={settingId} controlId={controlId}>
       <SimpleSelect
         id={controlId}
         options={options}

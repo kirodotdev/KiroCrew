@@ -241,6 +241,7 @@ import SessionControlHost from '../components/SessionControlHost'
 import { useSessionControls, useSessionControlStatuses } from '../hooks/useSessionControls'
 import type { ChatFolder } from '../types'
 import ErrorNotice from '../components/ErrorNotice'
+import VoicePlaybackNotice from '../components/VoicePlaybackNotice'
 import ChatDropOverlay from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
 import SessionTabStrip from '../components/SessionTabStrip'
@@ -269,6 +270,7 @@ import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiv
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
 import { useVoiceInput, voiceInputSupported, type TranscriptOrigin } from '../hooks/useVoiceInput'
+import { dictationSeparator, spliceDictationText } from '../lib/dictationText'
 import { usePushToTalk } from '../hooks/usePushToTalk'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
@@ -513,6 +515,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // above the composer, which is the only place all of them can see.
   const unresumableResume = useAppSelector(s => s.chat.unresumableResume)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  // Reveal eligible completed replies while recovery is offered, including an
+  // older reply the user chose to read aloud. Slot identity prevents bleed-over.
+  const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
   // tool_call_ids in THIS slot that have a live MCP App render payload. Passed
   // to TurnBlock so app-bearing rows (which mount an interactive iframe) never
   // fold into a collapsible pane — collapsing hides the app, and re-expanding
@@ -1935,29 +1940,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // when streaming, else the live caret), returning the new value and the caret
   // offset to restore. Falls back to appending when no caret is known (e.g. the
   // composer was never focused).
-  const spliceDictation = useCallback((base: string, text: string): { value: string; caret: number } => {
-    const caret = frozenCaretRef.current ?? voiceCaretRef.current
-    // An empty transcript (e.g. a silent streaming partial) must NOT mutate the
-    // draft: splicing "" across a selection would delete the selected range.
-    // Leave the base untouched and collapse the caret to the insertion point.
-    if (!text) return { value: base, caret: caret ? Math.min(caret.start, base.length) : base.length }
-    if (!caret) {
-      const value = base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text
-      return { value, caret: value.length }
-    }
-    const start = Math.min(caret.start, base.length)
-    const end = Math.min(caret.end, base.length)
-    const before = base.slice(0, start)
-    const after = base.slice(end)
-    // Leading space only when joining onto a non-space char, so mid-sentence
-    // dictation doesn't glue onto the preceding word.
-    // Leading/trailing space uses whitespace-class checks (not only ' ') so a
-    // caret beside a newline or tab doesn't get an unwanted literal space.
-    const lead = before && !/\s$/.test(before) && !/^\s/.test(text) ? ' ' : ''
-    const trail = after && !/^\s/.test(after) && !/\s$/.test(text) ? ' ' : ''
-    const insert = lead + text
-    return { value: before + insert + trail + after, caret: before.length + insert.length }
-  }, [])
+  const spliceDictation = useCallback((base: string, text: string): { value: string; caret: number } =>
+    spliceDictationText(base, text, frozenCaretRef.current ?? voiceCaretRef.current), [])
   const applyVoiceText = useCallback((text: string, sessionId: string | null, origin: TranscriptOrigin) => {
     // Disarmed after a send (streaming) — the transcript was already sent, so
     // drop it for EVERY route. Checked FIRST (before the cross-slot branch) so a
@@ -1975,7 +1959,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // always the only copy: suppressing it would delete what the user said.
     if (origin === 'stream' && (sttDisarmedRef.current || sttAppendDisarmedRef.current)) return
     const target = sessionId ?? activeSlotRef.current
-    const append = (base: string) => (base ? (base.endsWith(' ') ? base + text : base + ' ' + text) : text)
+    const append = (base: string) => base + dictationSeparator(base, text) + text
     // Splice into the LIVE composer only when the target slot is both the active
     // slot AND the slot the composer's `input` currently belongs to. On a slot
     // switch, activeSlotRef updates synchronously in render, but the composer's
@@ -2024,11 +2008,27 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     postStopEditedRef.current = false
     frozenCaretRef.current = null
   }, [saveDrafts, spliceDictation, rebaseFrozenCaret])
+  // Capture can end from a manual release or from the readiness-buffer ceiling.
+  // Both release the composer for typing while the same socket still sends finals.
+  const protectStoppedDictation = useCallback(() => {
+    if (!streamEnabledRef.current || sttEndpointDisarmedRef.current) return
+    sttEndpointDisarmedRef.current = true
+    if (frozenInputRef.current !== null) {
+      // Partials already own the region; close-time delivery would duplicate it.
+      sttAppendDisarmedRef.current = true
+    } else {
+      // Freeze the release caret, but keep the live draft for a cold stream's first
+      // result so typing before that result is preserved at its authored position.
+      frozenCaretRef.current = voiceCaretRef.current
+      lastDictationValueRef.current = inputRef.current
+    }
+  }, [])
   const voice = useVoiceInput(
     applyVoiceText,
     {
       streaming: sttStreaming,
       sessionId: activeSlot,
+      onCaptureStop: protectStoppedDictation,
       onPartial: useCallback((text: string, sessionId: string | null) => {
         // Streaming partials only fire while the originating slot is on screen
         // (switching slots stops the stream), so a partial attributed to any
@@ -2215,56 +2215,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [voice.transcribing, voice.start, sttEnabled, sttConfigLoaded, sttAvailable])
 
   /** Stop voice capture. Always allowed — only starting is gated. */
+  const stopCapture = voice.stop
   const stopVoice = useCallback(() => {
-    // Manual stop of a STREAMING recording: streamStop() drains the socket
-    // asynchronously, so more of the utterance can still arrive. Two routes are
-    // in play and they need OPPOSITE treatment, which is why this sets the
-    // narrow flag rather than the blanket one:
-    //
-    //   - `applyVoiceText` (close-time) APPENDS. The composer already holds the
-    //     hypothesis, so letting it through duplicates the utterance. Suppress.
-    //   - `onPartial` (drain-time) REPLACES the region at the frozen boundary,
-    //     and the hook re-emits `finals.join(' ')` through it as Transcribe
-    //     stabilises each segment. That is the authoritative text. Keep armed.
-    //
-    // Only suppress once the composer actually holds a copy of the speech, which
-    // is exactly what frozenInputRef being set means (onPartial snapshots it on
-    // the FIRST partial, then writes each hypothesis into `input`).
-    //
-    // With frozenInputRef still null NO partial has landed, so the composer
-    // holds nothing and the close-time final is the ONLY copy of the utterance:
-    // suppressing there silently deletes what the user just said. That is the
-    // ordinary case for a short press against a COLD stream, where the release
-    // beats the server's first partial. (Batch is likewise never suppressed
-    // here: its onstop transcript is always the only copy.)
-    if (streamEnabledRef.current && frozenInputRef.current !== null) {
-      sttAppendDisarmedRef.current = true
-    }
-    // Unconditional for a streaming stop: the auto-submit route must close even
-    // when the append route stays open (the cold-stream case above).
-    if (streamEnabledRef.current) {
-      sttEndpointDisarmedRef.current = true
-    }
-    if (streamEnabledRef.current && frozenInputRef.current === null) {
-      // COLD STREAM: no partial landed, so nothing has pinned the insertion point
-      // yet. Freeze the CARET at the release, so a drain partial arriving after
-      // the user has started typing still inserts where they were speaking
-      // instead of after the text they wrote afterwards.
-      //
-      // Deliberately NOT freezing the text as well: with no partial landed the
-      // close-time final is the only copy of the utterance and must splice into
-      // the LIVE composer. Pinning the text here would make it rebuild from the
-      // release-time snapshot and delete anything typed after the release —
-      // trading a wrong insertion point for lost text.
-      //
-      // The value fingerprint is seeded too, so the first drain partial can tell
-      // that the user has typed since the release and leave their caret alone.
-      frozenCaretRef.current = voiceCaretRef.current
-      lastDictationValueRef.current = inputRef.current
-    }
-    voice.stop()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voice.stop])
+    protectStoppedDictation()
+    stopCapture()
+  }, [protectStoppedDictation, stopCapture])
 
   const toggleVoice = useCallback(() => {
     if (voice.recording) stopVoice()
@@ -4560,6 +4515,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       return
     }
     dispatch(setVoiceAudio(null))
+    // A synthesis still loading its model has no playing audio yet, but owns
+    // the same output channel. Replace it before starting a manual request.
+    window.dispatchEvent(new Event('voice-stop'))
     api.voiceSynthesize(activeSlotRef.current || '', content).catch(() => {})
   }, [dispatch])
 
@@ -5764,7 +5722,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} showFooter={(() => {
+              <AssistantMessage revealActions={!!activeSlot && voiceRecoverySlot === activeSlot} suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} shareEnabled={socialShareOn} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -5885,7 +5843,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, connectionsUiOn, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, autoNudgeLoop, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, connectionsUiOn, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -6794,6 +6752,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="action-error"
         />
+        <VoicePlaybackNotice slot={activeSlot} onBlockedSlotChange={setVoiceRecoverySlot} />
         <ErrorNotice
           message={pinError}
           onDismiss={dismissPinStatus}

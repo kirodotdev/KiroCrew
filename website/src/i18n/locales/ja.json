@@ -5046,6 +5046,11 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "voicePlaybackNotice": {
+      "failed": "「{{speak}}」に失敗しました。テキスト音声変換の設定を確認して、もう一度お試しください。",
+      "blocked": "ブラウザーが自動再生をブロックしました。完了した返信の下にある「{{moreActions}}」を開き、「{{speak}}」を選択してください。",
+      "settings": "{{speak}}の設定（テキスト音声変換）"
+    },
     "avatarBuilder": {
       "apply": "適用",
       "apply_hint": "ここに適用されます —「変更を保存」を押すと保存されます。",
@@ -8953,6 +8958,7 @@
         "workflow_runs_load_failed": "ワークフロー実行を読み込めませんでした"
       },
       "assistantMessage": {
+        "copy_text": "テキストをコピー",
         "applied_to_tasks": "タスクに適用済み",
         "copied": "コピーしました！",
         "copy": "コピー",
@@ -8967,8 +8973,8 @@
         "regenerate_response": "レスポンスを再生成",
         "rendered": "レンダリング済み",
         "rendered_view": "レンダリング済みビュー",
-        "speak": "スピーク",
-        "speak_message": "メッセージをスピーク",
+        "speak": "読み上げ",
+        "speak_message": "メッセージを読み上げ",
         "steered": "ステアリング済み",
         "switch_to_raw_markdown_view": "生 Markdown ビューに切り替え",
         "switch_to_rendered_view": "レンダリング済みビューに切り替え",
@@ -13104,6 +13110,7 @@
         "copy_manifest_failed": "マニフェストをクリップボードにコピーできませんでした。"
       },
       "sttSettings": {
+        "language_auto": "言語を自動検出",
         "allow_microphone_access_to_show_device_names": "デバイス名を表示するためにマイクへのアクセスを許可",
         "aws_credentials_profile_for_transcribe_blank_def": "Transcribe の AWS 認証情報プロファイル（空白 = デフォルトチェーン）",
         "aws_profile_transcribe": "AWS プロファイル（Transcribe）",

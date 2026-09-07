@@ -88,6 +88,12 @@ def test_the_utterance_ceiling_always_terminates():
     assert ep.state is vad.VadState.ENDED
 
 
+def test_silence_reaching_the_ceiling_is_not_speech():
+    ep = vad.Endpointer(max_utterance_ms=200)
+    assert ep.push(_silence(0.3)).ended
+    assert not ep.speech_frames_seen
+
+
 def test_ended_is_terminal_and_one_shot():
     ep = vad.Endpointer(silence_ms=300)
     ep.push(_quiet_room(0.3))

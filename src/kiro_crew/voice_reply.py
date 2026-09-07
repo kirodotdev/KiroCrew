@@ -26,17 +26,23 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import json
 import logging
 import math
 import os
 import re
 import shutil
+import struct
 import tempfile
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import aws_consent
+from kiro_crew import aws_consent, piper_runtime
 from kiro_crew.constants import strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
+from kiro_crew.piper_runtime import REQUEST_TIMEOUT_SECONDS as _PIPER_STREAM_TIMEOUT_SECONDS
+from kiro_crew.piper_worker import MAX_AUDIO_BYTES as _PIPER_MAX_AUDIO_BYTES
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import IS_MACOS, IS_WINDOWS, trusted_system_bin
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -47,11 +53,17 @@ from kiro_crew.sandbox import (
     wrap_argv,
     wrap_argv_async,
 )
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    PathResolutionStalled,
+    is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from kiro_crew.piper_runtime import PiperRuntime
     from kiro_crew.slack.client import SlackClientOps
 
 logger = logging.getLogger(__name__)
@@ -264,6 +276,11 @@ DEFAULT_ENGINE = "generative"
 DEFAULT_RATE = "100%"
 DEFAULT_PITCH = "+0%"
 DEFAULT_LENGTH_SCALE = 1.0  # Piper speed: <1 faster, >1 slower
+_PIPER_CHUNK_SECONDS = 0.2
+_PIPER_MAX_PHRASE_CHARS = 240
+_PIPER_REAP_TIMEOUT_SECONDS = 5
+_PIPER_MAX_CONFIG_BYTES = 64 * 1024
+_PIPER_MAX_STDERR_BYTES = 4096
 OUTPUT_FORMAT = "mp3"
 MAX_CHARS = 2900  # Polly SSML limit ~3000 chars, leave margin
 
@@ -1195,12 +1212,305 @@ async def upload_voice_to_slack(
 
 
 def split_sentences(text: str) -> list[str]:
-    """Split text into sentences at . ! ? boundaries."""
+    """Split speakable text at Latin/CJK sentence and paragraph boundaries."""
     clean = strip_markdown(text)
     if not clean:
         return []
-    parts = re.split(r"(?<=[.!?])\s+", clean)
+    parts = re.split(r"(?<=[.!?])\s+|(?<=[。！？；])\s*|\n+", clean)
     return [s.strip() for s in parts if s.strip()]
+
+
+class VoiceSynthesisError(RuntimeError):
+    """A provider failure with a stable code for dashboard localization."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
+    """Frame mono signed little-endian 16-bit PCM as an independently playable WAV."""
+    if len(pcm) % 2:
+        raise ValueError("PCM contains an incomplete sample")
+    return (
+        struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF",
+            len(pcm) + 36,
+            b"WAVE",
+            b"fmt ",
+            16,
+            1,
+            1,
+            sample_rate,
+            sample_rate * 2,
+            2,
+            16,
+            b"data",
+            len(pcm),
+        )
+        + pcm
+    )
+
+
+def _piper_stream_settings(binary: str, model: str, config: str) -> tuple[str, str, str, int]:
+    """Resolve the CLI and read its declared PCM format off the event loop."""
+    resolved = _resolve_piper_binary(binary)
+    if not resolved:
+        raise VoiceSynthesisError(
+            "voice_unavailable",
+            "Piper is unavailable; check its binary and model in Voice settings.",
+        )
+    model, config, sample_rate = _piper_model_settings(model, config)
+    return resolved, model, config, sample_rate
+
+
+def _piper_model_settings(model: str, config: str) -> tuple[str, str, int]:
+    model = os.path.abspath(os.path.expanduser(model)) if model else ""
+    if not model:
+        raise VoiceSynthesisError("voice_unavailable", "Piper voice model is unavailable.")
+    config = os.path.abspath(os.path.expanduser(config)) if config else model + ".json"
+    try:
+        protected = is_sensitive_path(model) or is_sensitive_path(config)
+    except PathResolutionStalled:
+        protected = True
+    if protected:
+        raise VoiceSynthesisError(
+            "voice_model_path_forbidden", "Piper model paths are protected or cannot be verified."
+        )
+    if not os.path.isfile(model):
+        raise VoiceSynthesisError("voice_unavailable", "Piper voice model is unavailable.")
+    try:
+        with open(config, encoding="utf-8") as handle:
+            data = handle.read(_PIPER_MAX_CONFIG_BYTES + 1)
+        if len(data) > _PIPER_MAX_CONFIG_BYTES:
+            raise ValueError("model configuration is too large")
+        sample_rate = json.loads(data)["audio"]["sample_rate"]
+        if type(sample_rate) is not int or not 8000 <= sample_rate <= 192000:
+            raise ValueError("invalid sample rate")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise VoiceSynthesisError(
+            "voice_model_config_invalid",
+            "Piper model configuration has no valid audio sample rate.",
+        ) from exc
+    return model, config, sample_rate
+
+
+def _piper_phrases(text: str) -> list[str]:
+    """Bound each inference without dropping an unpunctuated or CJK tail."""
+    phrases: list[str] = []
+    for sentence in split_sentences(text):
+        while len(sentence) > _PIPER_MAX_PHRASE_CHARS:
+            prefix = sentence[:_PIPER_MAX_PHRASE_CHARS]
+            boundaries = list(re.finditer(r"[,，、;；:]|\s+", prefix))
+            cut = boundaries[-1].end() if boundaries else len(prefix)
+            phrases.append(sentence[:cut].strip())
+            sentence = sentence[cut:].strip()
+        if sentence:
+            phrases.append(sentence)
+    return phrases
+
+
+async def streaming_piper_reply(
+    text: str,
+    *,
+    piper_binary: str = "",
+    piper_model: str = "",
+    piper_model_config: str = "",
+    length_scale: float = DEFAULT_LENGTH_SCALE,
+    runtime: PiperRuntime | None = None,
+    request_id: str = "",
+):
+    """Yield (index, sample_rate, PCM) from a sandboxed Piper provider.
+
+    A dashboard runtime reuses a compatible Python API worker unless a custom
+    CLI was explicitly selected. A failed resident attempt can fall back only
+    before any audio was delivered. Both attempts share one synthesis deadline.
+    """
+    stream = _stream_piper_attempts(
+        text,
+        piper_binary=piper_binary,
+        piper_model=piper_model,
+        piper_model_config=piper_model_config,
+        length_scale=length_scale,
+        runtime=runtime,
+        request_id=request_id,
+    )
+    try:
+        async with asyncio.timeout(_PIPER_STREAM_TIMEOUT_SECONDS):
+            async with contextlib.aclosing(stream):
+                async for frame in stream:
+                    yield frame
+    except TimeoutError as exc:
+        raise VoiceSynthesisError("voice_timeout", "Piper synthesis timed out.") from exc
+
+
+async def _stream_piper_attempts(
+    text: str,
+    *,
+    piper_binary: str,
+    piper_model: str,
+    piper_model_config: str,
+    length_scale: float,
+    runtime: PiperRuntime | None,
+    request_id: str,
+):
+    """Try the resident API, then its existing CLI compatibility path if safe."""
+    text, _ = redact_credentials(text)
+    text, _ = redact_exfiltration_urls(text)
+    phrases = _piper_phrases(text)
+    if not phrases:
+        return
+    if runtime is not None and not piper_binary:
+        if await asyncio.to_thread(piper_runtime.python_piper_available):
+            model, config, sample_rate = await asyncio.to_thread(
+                _piper_model_settings, piper_model, piper_model_config
+            )
+            stream = runtime.stream(
+                phrases,
+                model=model,
+                config=config,
+                sample_rate=sample_rate,
+                length_scale=validate_length_scale(length_scale),
+                request_id=request_id,
+            )
+            emitted = False
+            try:
+                async with contextlib.aclosing(stream):
+                    async for frame in stream:
+                        emitted = True
+                        yield frame
+            except (VoiceSynthesisError, OSError) as exc:
+                # A successful gateway import does not establish that the
+                # isolated -E/-P child can import or run the same package. Its
+                # generator has retired/reaped the failed worker before this
+                # branch can start another process. Never replay partial audio,
+                # retry policy refusal, or turn a cancellation into new work.
+                if emitted or isinstance(exc, PermissionError):
+                    raise
+                if isinstance(exc, VoiceSynthesisError) and exc.code not in (
+                    "voice_invalid_audio",
+                    "voice_synthesis_failed",
+                ):
+                    raise
+                fallback_binary = await asyncio.to_thread(_resolve_piper_binary, "")
+                if not fallback_binary:
+                    raise
+                logger.warning("Resident Piper failed before audio; retrying with the CLI")
+                piper_binary = fallback_binary
+            else:
+                return
+    binary, model, config, sample_rate = await asyncio.to_thread(
+        _piper_stream_settings, piper_binary, piper_model, piper_model_config
+    )
+    cmd = [binary, "-m", model, "-c", config, "--output-raw"]
+    scale = validate_length_scale(length_scale)
+    if scale != DEFAULT_LENGTH_SCALE:
+        cmd += ["--length-scale", str(scale)]
+    cleanup: str | None = None
+    proc: asyncio.subprocess.Process | None = None
+    pipe_tasks: list[asyncio.Task] = []
+    try:
+        cmd, cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
+        cmd = await asyncio.to_thread(cgroup_scope_argv, cmd)
+        proc = await create_subprocess_limited(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=scrub_env({**os.environ, "PYTHONIOENCODING": "utf-8"}),
+        )
+        assert proc is not None
+        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+
+        async def feed() -> None:
+            assert proc is not None and proc.stdin is not None
+            try:
+                for phrase in phrases:
+                    proc.stdin.write((phrase + "\n").encode("utf-8"))
+                    await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                # The exit status and stderr reader own the provider failure.
+                pass
+            finally:
+                proc.stdin.close()
+
+        async def drain_errors() -> bytes:
+            assert proc is not None and proc.stderr is not None
+            tail = b""
+            while data := await proc.stderr.read(_PIPER_MAX_STDERR_BYTES):
+                tail = (tail + data)[-_PIPER_MAX_STDERR_BYTES:]
+            return tail
+
+        writer = asyncio.create_task(feed())
+        errors = asyncio.create_task(drain_errors())
+        pipe_tasks.extend((writer, errors))
+        chunk_bytes = int(sample_rate * _PIPER_CHUNK_SECONDS) * 2
+        pending = b""
+        total = index = 0
+        while data := await proc.stdout.read(chunk_bytes):
+            total += len(data)
+            if total > _PIPER_MAX_AUDIO_BYTES:
+                raise VoiceSynthesisError(
+                    "voice_audio_limit", "Synthesized audio exceeds the limit."
+                )
+            pending += data
+            # Pipes may split an Int16 sample at any byte. Preserve that
+            # byte for the next read instead of corrupting every sample.
+            aligned = len(pending) - len(pending) % 2
+            if aligned:
+                yield index, sample_rate, pending[:aligned]
+                index += 1
+                pending = pending[aligned:]
+        await writer
+        await proc.wait()
+        stderr = await errors
+        if proc.returncode != 0:
+            diagnostic = redact_log_via_context(stderr.decode("utf-8", errors="replace"))
+            logger.error("Piper stream failed (rc=%s): %s", proc.returncode, diagnostic)
+            raise VoiceSynthesisError(
+                "voice_synthesis_failed", "Piper could not synthesize speech."
+            )
+        if pending or not total:
+            raise VoiceSynthesisError(
+                "voice_invalid_audio", "Piper returned incomplete or empty audio."
+            )
+    except SandboxUnavailableError as exc:
+        logger.error("voice_reply: Piper TTS refused by the sandbox (%s): %s", exc.kind, exc)
+        raise VoiceSynthesisError("voice_sandbox_unavailable", str(exc)) from exc
+    finally:
+
+        async def reap() -> None:
+            try:
+                if proc is not None:
+                    if proc.returncode is None:
+                        with contextlib.suppress(OSError):
+                            proc.kill()
+                    for task in pipe_tasks:
+                        task.cancel()
+                    await asyncio.gather(*pipe_tasks, return_exceptions=True)
+                    # Cancel the stderr reader before communicate takes over.
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(
+                            proc.communicate(), timeout=_PIPER_REAP_TIMEOUT_SECONDS
+                        )
+            finally:
+                if cleanup:
+                    with contextlib.suppress(OSError):
+                        await asyncio.to_thread(os.unlink, cleanup)
+
+        # Keep cleanup owned by the request until it settles. A repeated stop
+        # or shutdown cancellation must not abandon its pipes or sandbox file.
+        reaping = asyncio.create_task(reap())
+        cancelled = False
+        while not reaping.done():
+            try:
+                await asyncio.shield(reaping)
+            except asyncio.CancelledError:
+                cancelled = True
+        reaping.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None:
