@@ -7390,6 +7390,7 @@
         "msgs": "msgs /",
         "output_tokens": "Output tokens",
         "plan": "Plan",
+        "refused_transcripts_warning": "{{productName}} couldn't load {{count}} of your chats, so these numbers are incomplete. This can happen when your Windows profile is stored on a network drive.",
         "resets": "Resets",
         "session_activity_30_days": "Session Activity (30 days)",
         "sessions": "Sessions",

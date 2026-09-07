@@ -11696,6 +11696,7 @@
         "msgs": "msgs /",
         "output_tokens": "Tokens de saída",
         "plan": "Plano",
+        "refused_transcripts_warning": "O {{productName}} não conseguiu carregar {{count}} das suas conversas, portanto estes números estão incompletos. Isso pode acontecer quando o seu perfil do Windows está armazenado em uma unidade de rede.",
         "resets": "Renovação",
         "session_activity_30_days": "Atividade das sessões (30 dias)",
         "sessions": "Sessões",

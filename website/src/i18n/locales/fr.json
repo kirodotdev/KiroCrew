@@ -11696,6 +11696,7 @@
         "msgs": "msg /",
         "output_tokens": "Tokens de sortie",
         "plan": "Forfait",
+        "refused_transcripts_warning": "{{productName}} n'a pas pu charger {{count}} de vos conversations, ces chiffres sont donc incomplets. Cela peut arriver lorsque votre profil Windows est stocké sur un lecteur réseau.",
         "resets": "Réinitialisation",
         "session_activity_30_days": "Activité des sessions (30 jours)",
         "sessions": "Sessions",

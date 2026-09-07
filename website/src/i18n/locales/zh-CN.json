@@ -11370,6 +11370,7 @@
         "msgs": "条消息 /",
         "output_tokens": "输出令牌",
         "plan": "套餐",
+        "refused_transcripts_warning": "{{productName}} 无法加载你的 {{count}} 条聊天记录，因此下列数字并不完整。当你的 Windows 配置文件保存在网络驱动器上时，可能会出现这种情况。",
         "resets": "重置时间",
         "session_activity_30_days": "会话活动（30 天）",
         "sessions": "会话",

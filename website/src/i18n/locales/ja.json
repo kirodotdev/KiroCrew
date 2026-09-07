@@ -11370,6 +11370,7 @@
         "msgs": "メッセージ /",
         "output_tokens": "出力トークン",
         "plan": "計画",
+        "refused_transcripts_warning": "{{productName}} はあなたのチャットを {{count}} 件読み込めなかったため、これらの数値は不完全です。Windows のプロファイルがネットワークドライブに保存されている場合に起こることがあります。",
         "resets": "リセット",
         "session_activity_30_days": "セッションアクティビティ（30日）",
         "sessions": "セッション",

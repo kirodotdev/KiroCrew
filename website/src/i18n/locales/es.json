@@ -11696,6 +11696,7 @@
         "msgs": "msjs /",
         "output_tokens": "Tokens de salida",
         "plan": "Plan",
+        "refused_transcripts_warning": "{{productName}} no pudo cargar {{count}} de tus chats, por lo que estos números están incompletos. Esto puede ocurrir cuando tu perfil de Windows está almacenado en una unidad de red.",
         "resets": "Se restablece",
         "session_activity_30_days": "Actividad de sesiones (30 días)",
         "sessions": "Sesiones",

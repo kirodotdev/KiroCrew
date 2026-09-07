@@ -11370,6 +11370,7 @@
         "msgs": "메시지 /",
         "output_tokens": "출력 토큰",
         "plan": "요금제",
+        "refused_transcripts_warning": "{{productName}}이(가) 채팅 {{count}}개를 불러오지 못해 이 수치는 불완전합니다. Windows 프로필이 네트워크 드라이브에 저장되어 있을 때 발생할 수 있습니다.",
         "resets": "초기화",
         "session_activity_30_days": "세션 활동 (30일)",
         "sessions": "세션",

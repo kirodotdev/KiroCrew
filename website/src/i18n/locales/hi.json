@@ -11533,6 +11533,7 @@
         "msgs": "संदेश /",
         "output_tokens": "आउटपुट टोकन",
         "plan": "प्लान",
+        "refused_transcripts_warning": "{{productName}} आपकी {{count}} चैट लोड नहीं कर सका, इसलिए ये संख्याएँ अधूरी हैं। ऐसा तब हो सकता है जब आपकी Windows प्रोफ़ाइल किसी नेटवर्क ड्राइव पर संग्रहीत हो।",
         "resets": "रीसेट",
         "session_activity_30_days": "सत्र गतिविधि (30 दिन)",
         "sessions": "सत्र",

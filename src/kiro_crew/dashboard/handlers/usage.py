@@ -1797,6 +1797,10 @@ def _parse_sessions() -> dict:
     total_msgs = 0
     total_tools = 0
     all_time_sessions = 0
+    # Count of transcripts that did NOT load for any reason (validator refusal,
+    # stat failure, read failure) -- surfaced so the page can say the totals are
+    # incomplete instead of rendering a silent under-count (#6733). The name is
+    # kept for the payload/frontend contract; it is the did-not-load total.
     refused_transcripts = 0
     now_dt = datetime.now()
     today_str = now_dt.strftime("%Y-%m-%d")
@@ -1830,6 +1834,11 @@ def _parse_sessions() -> dict:
         try:
             mtime = resolved.stat().st_mtime
         except OSError:
+            # A transcript that validated but cannot be stat'd did not load, so
+            # it is dropped from the counts exactly like a refusal (#6733). Count
+            # it in the same total: the warning's absence promises complete data,
+            # so every did-not-load branch must feed it, not just the UNC refusal.
+            refused_transcripts += 1
             continue
         all_time_sessions += 1
         if mtime < cutoff:
@@ -1855,6 +1864,10 @@ def _parse_sessions() -> dict:
                     elif kind == "ToolResults":
                         tools += 1
         except (OSError, UnicodeDecodeError):
+            # Same as the stat branch above: a transcript that could not be read
+            # did not load, so it counts toward the incomplete-data warning
+            # rather than vanishing from the totals (#6733).
+            refused_transcripts += 1
             continue
 
         if day is None:
@@ -1870,9 +1883,10 @@ def _parse_sessions() -> dict:
     if refused_transcripts:
         # Server-side only: %s of a Path is a filesystem path, which the
         # returned payload deliberately never carries (see the iterdir handler
-        # above).
+        # above). Counts every did-not-load branch (validator refusal, stat
+        # failure, read failure), not just the UNC refusal (#6733).
         logger.warning(
-            "usage: %d transcript(s) refused by path validation in %s; "
+            "usage: %d transcript(s) could not be loaded in %s; "
             "the reported session counts exclude them",
             refused_transcripts,
             sessions_dir,
@@ -1922,6 +1936,13 @@ def _parse_sessions() -> dict:
         },
         "avg_msgs_per_session": round(total_msgs / max(total_sessions, 1), 1),
         "avg_tools_per_session": round(total_tools / max(total_sessions, 1), 1),
+        # How many transcripts the path validator refused (#6733). Carried in
+        # the payload -- not just the server log -- so the page can say the
+        # count is incomplete instead of rendering a confident zero. On a
+        # roaming-profile (UNC) home this is every transcript, so a zero
+        # session count with a positive refusal count is the exact silent
+        # failure this field makes visible.
+        "refused_transcripts": refused_transcripts,
     }
 
 

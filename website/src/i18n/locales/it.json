@@ -11696,6 +11696,7 @@
         "msgs": "msg /",
         "output_tokens": "Token di output",
         "plan": "Piano",
+        "refused_transcripts_warning": "{{productName}} non è riuscito a caricare {{count}} delle tue chat, quindi questi numeri sono incompleti. Può succedere quando il tuo profilo di Windows è archiviato su un'unità di rete.",
         "resets": "Reimpostazioni",
         "session_activity_30_days": "Attività delle sessioni (30 giorni)",
         "sessions": "Sessioni",
