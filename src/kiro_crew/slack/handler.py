@@ -204,6 +204,13 @@ _THINKING_PLACEHOLDER = "💭 _Thinking…_"
 _CURSOR = " ▍"
 _NO_RESPONSE = "_No response._"
 _STATUS_WORKING = "is working on your request"
+#: First chunk of a REPLACEMENT stream opened by ``_rotate_stream``. A rotation
+#: abandons the message the reader is already watching and continues the same
+#: answer in a new one, so without this the thread reads as a stalled reply
+#: followed by an unexplained second reply. Slack appends stream chunks and
+#: never replaces them, so the text already shown stays in the abandoned
+#: message — this line is what tells the reader the two belong together.
+_STREAM_CONTINUED = "_(continued)_\n\n"
 
 # Max chars of reasoning to surface inline in Slack before truncating. Keeps
 # the 💭 Thinking block from becoming a wall of text; the full
@@ -3014,7 +3021,11 @@ async def handle_message(
         if stream_ts:
             await slack.stop_stream(channel, stream_ts)
         new_ts = await slack.start_stream(
-            channel, reply_ts, team_id=team_id or None, user_id=user_id or None
+            channel,
+            reply_ts,
+            initial_text=_STREAM_CONTINUED,
+            team_id=team_id or None,
+            user_id=user_id or None,
         )
         if new_ts:
             stream_ts = new_ts
@@ -3052,19 +3063,26 @@ async def handle_message(
         return ok
 
     async def _append_task(task_id: str, title: str, status: str, details: str = "") -> bool:
-        """Append task card to stream, rotating on failure."""
+        """Append task card to stream. Never rotates — see below.
+
+        A task card is progress decoration: the tool's name, its state, and the
+        elapsed-time refresh ``_tool_elapsed_updater`` fires every 30s for as
+        long as a tool runs. During a several-minute tool phase it is the ONLY
+        thing appending to the stream, which makes it by far the likeliest call
+        to meet a rate limit or a stream Slack has already closed.
+
+        Rotating on that failure costs the reader their in-progress message and
+        moves the rest of the answer into a new one, so a transient refusal on a
+        decorative refresh renders as a failed reply plus a second reply minutes
+        later. Skipping the card costs nothing: no answer text is withheld, and
+        ``_append_stream`` still rotates when there is real text to deliver and
+        the stream refuses it, which is the moment a rotation is worth its price.
+        """
         if not stream_ts:
             return False
         if channel_activation == ACTIVATION_REVIEW:
             return True  # Suppress task cards in review mode
-        ok = await slack.append_task(channel, stream_ts, task_id, title, status, details=details)
-        if not ok and use_slack_stream:
-            if await _rotate_stream():
-                assert stream_ts is not None
-                return await slack.append_task(
-                    channel, stream_ts, task_id, title, status, details=details
-                )
-        return ok
+        return await slack.append_task(channel, stream_ts, task_id, title, status, details=details)
 
     async def _tool_elapsed_updater() -> None:
         """Periodically update the active task card with elapsed time (every 30s)."""

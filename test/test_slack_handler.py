@@ -3512,6 +3512,86 @@ class TestToolElapsedTimer:
         assert all("⏱" not in d for d in details_list), f"⏱ leaked into details: {details_list}"
 
 
+class _TaskCardRefusedSlack(MockSlackClient):
+    """append_task is refused; every other call is healthy.
+
+    The shape of a long tool phase meeting a Slack rate limit: the elapsed-time
+    refresh is the only thing touching the stream and Slack turns it down.
+    """
+
+    async def append_task(self, channel, ts, task_id, title, status, details="", output=""):
+        await super().append_task(
+            channel, ts, task_id, title, status, details=details, output=output
+        )
+        return False
+
+
+class _StreamAppendRefusedOnceSlack(MockSlackClient):
+    """The first append_stream is refused, so real text forces one rotation."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._n_append = 0
+
+    async def append_stream(self, channel, ts, text):
+        self._n_append += 1
+        await super().append_stream(channel, ts, text)
+        return self._n_append > 1
+
+
+class TestTaskCardNeverAbandonsTheStream:
+    """A refused task card must not cost the reader their in-progress message.
+
+    Rotating on a task-card failure stops the stream the reader is watching and
+    continues the same answer in a NEW message, so the thread reads as a reply
+    that failed followed minutes later by an unexplained second reply
+    (issue 8511). A task card is decoration, so skipping it withholds no answer
+    text; ``_append_stream`` still rotates when real text is refused.
+    """
+
+    @pytest.mark.asyncio
+    async def test_refused_task_card_does_not_open_a_second_stream(self):
+        slack = _TaskCardRefusedSlack()
+        slack._stream_enabled = True
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text="looking"),
+                LLMEvent(kind="tool_call", title="Run Shell", tool_kind="execute"),
+                LLMEvent(kind="text_chunk", text=" done"),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "do it", None, "msg1", "U1")
+
+        starts = [a for a in slack.actions if a[0] == "start_stream"]
+        assert len(starts) == 1, slack.actions
+        assert [a for a in slack.actions if a[0] == "append_task"], slack.actions
+        # One stream opened, one stopped: the answer stayed in a single message.
+        stops = [a for a in slack.actions if a[0] == "stop_stream"]
+        assert len(stops) == 1, slack.actions
+        assert stops[0][1]["ts"] == starts[0][1]["ts"], slack.actions
+
+    @pytest.mark.asyncio
+    async def test_refused_real_text_still_rotates_and_says_it_continues(self):
+        """The branch that protects answer delivery is untouched, and the
+        replacement stream opens with the continuation marker so the two
+        messages read as one answer."""
+        slack = _StreamAppendRefusedOnceSlack()
+        slack._stream_enabled = True
+        # Trailing space: StreamRedactor withholds a trailing credential-class
+        # run, so a chunk with no separator never reaches append_stream at all.
+        provider = FakeProvider([LLMEvent(kind="text_chunk", text="hello ")])
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+
+        starts = [a for a in slack.actions if a[0] == "start_stream"]
+        assert len(starts) == 2, slack.actions
+        assert starts[0][1]["text"] is None, starts
+        # The literal, not the constant: a test that imports the constant still
+        # passes when the marker is emptied out.
+        assert "continued" in (starts[1][1]["text"] or ""), starts
+
+
 class TestCondenseThinking:
     """Unit tests for the _condense_thinking blockquote/truncation helper."""
 
