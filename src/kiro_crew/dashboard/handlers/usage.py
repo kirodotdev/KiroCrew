@@ -1786,8 +1786,6 @@ def _parse_token_history() -> dict[str, Any]:
 def _parse_sessions() -> dict:
     """Parse local kiro session files for usage analytics."""
     sessions_dir = _sessions_dir()
-    if not sessions_dir.exists():
-        return {"error": "No sessions directory"}
 
     cutoff = time.time() - (30 * 86400)
     daily: Counter = Counter()
@@ -1803,6 +1801,10 @@ def _parse_sessions() -> dict:
 
     try:
         entries = list(sessions_dir.iterdir())
+    except FileNotFoundError:
+        # First-run homes have no transcript directory yet; use the same
+        # complete zero statistics as an existing, empty directory.
+        entries = []
     except OSError as exc:
         # The OSError carries a filesystem path; keep it server-side and return
         # a generic message (the ``error`` field is rendered verbatim in the UI).

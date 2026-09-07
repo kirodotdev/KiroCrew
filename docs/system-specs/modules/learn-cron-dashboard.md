@@ -13,6 +13,13 @@ breakdown returned by the free billing API is retained, displayed individually,
 and pooled into the compact readout. The paid `kiro-cli /usage` turn remains
 fallback-only, and its two known bonus formats produce the same list shape.
 
+When the local session transcript directory does not exist, `/api/usage/kiro`
+returns the same complete zero-valued session statistics as an empty directory,
+including `today`, `this_week`, `this_month`, and an empty `daily_history`.
+Reading usage does not create the directory, and available billing is preserved.
+The normal usage cache TTL applies; later session files are counted on refresh.
+Other directory read failures remain errors and are not cached as zero usage.
+
 ## Self-Learning (`learn.py`)
 
 Detects user corrections (e.g. "use X instead of Y", "remember that X", "never use X") and stores them in `~/.kiro/crew/lessons.jsonl`. Categories: `tool`, `preference`, `knowledge`. Injected into LLM context as `[Learned corrections:]` block (max 50). Detection runs after each ACP response.

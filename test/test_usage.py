@@ -41,9 +41,26 @@ def _write_session(path, lines, mtime=None):
 
 
 class TestParseSessions:
-    def test_no_directory(self, tmp_path):
-        with patch.object(usage_mod, "_SESSIONS_DIR", tmp_path / "nope"):
-            assert _parse_sessions() == {"error": "No sessions directory"}
+    @pytest.mark.parametrize("directory_exists", [False, True])
+    def test_empty_session_stats(self, tmp_path, directory_exists):
+        sessions_dir = tmp_path / "cli"
+        if directory_exists:
+            sessions_dir.mkdir()
+        with patch.object(usage_mod, "_SESSIONS_DIR", sessions_dir):
+            result = _parse_sessions()
+        assert result == {
+            "total_sessions": 0,
+            "total_messages": 0,
+            "total_tool_calls": 0,
+            "all_time_sessions": 0,
+            "daily_history": [],
+            "today": {"sessions": 0, "messages": 0, "tool_calls": 0},
+            "this_week": {"sessions": 0, "messages": 0, "tool_calls": 0},
+            "this_month": {"sessions": 0, "messages": 0, "tool_calls": 0},
+            "avg_msgs_per_session": 0,
+            "avg_tools_per_session": 0,
+        }
+        assert sessions_dir.exists() == directory_exists
 
     def test_iterdir_oserror(self, tmp_path):
         d = tmp_path / "cli"
@@ -370,9 +387,50 @@ class TestApiKiroUsage:
                 assert data["sessions"]["total_sessions"] == 1
 
     @pytest.mark.asyncio
+    async def test_missing_directory_preserves_billing_and_refreshes(self, tmp_path):
+        sessions_dir = tmp_path / "cli"
+        session_file = sessions_dir / "first.jsonl"
+        billing = {"credits_used": 10, "credits_plan": 100, "plan": "Pro"}
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", sessions_dir),
+            patch.object(usage_mod, "get_usage_cache", return_value=billing),
+            patch.object(usage_mod, "validate_file_path", return_value=str(session_file)),
+        ):
+            app = web.Application()
+            app.router.add_get("/api/usage/kiro", api_kiro_usage)
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get("/api/usage/kiro")
+                assert response.status == 200
+                data = await response.json()
+                assert "error" not in data
+                assert data["sessions"]["total_sessions"] == 0
+                for period in ("today", "this_week", "this_month"):
+                    assert data["sessions"][period] == {
+                        "sessions": 0,
+                        "messages": 0,
+                        "tool_calls": 0,
+                    }
+                assert data["billing"]["credits_used"] == 10
+                assert data["billing"]["plan"] == "Pro"
+                assert not sessions_dir.exists()
+
+                sessions_dir.mkdir()
+                _write_session(session_file, [{"kind": "Prompt"}])
+                usage_mod._CACHE_TS = time.time() - usage_mod._CACHE_TTL - 1
+                refreshed = await client.get("/api/usage/kiro")
+                assert refreshed.status == 200
+                updated = await refreshed.json()
+                assert updated["sessions"]["total_sessions"] == 1
+                assert updated["sessions"]["total_messages"] == 1
+                assert updated["billing"] == data["billing"]
+
+    @pytest.mark.asyncio
     async def test_error_not_cached(self, tmp_path):
-        with patch.object(usage_mod, "_SESSIONS_DIR", tmp_path / "nope"), patch.object(
-            usage_mod, "get_usage_cache", return_value={}
+        invalid_directory = tmp_path / "cli"
+        invalid_directory.write_text("not a directory", encoding="utf-8")
+        with (
+            patch.object(usage_mod, "_SESSIONS_DIR", invalid_directory),
+            patch.object(usage_mod, "get_usage_cache", return_value={}),
         ):
             app = web.Application()
             app.router.add_get("/api/usage/kiro", api_kiro_usage)
