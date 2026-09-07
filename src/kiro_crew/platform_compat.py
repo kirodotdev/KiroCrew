@@ -3775,6 +3775,38 @@ def pin_directory(path: str | os.PathLike) -> int:
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
 
+    fd = _win_open_without_following(path)
+    try:
+        attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
+        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY or attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+            raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _win_open_without_following(path: str | os.PathLike) -> int:
+    """``CreateFileW`` *path* for reading, opening a reparse point INSTEAD of following it.
+
+    Shared by :func:`pin_directory` and :func:`open_file_no_reparse` so the two do
+    not carry separate copies of the same security-critical flags. What each of
+    them then asserts about the descriptor differs; how the object is reached must
+    not.
+
+    ``OPEN_REPARSE_POINT`` is the whole point: a junction or symlink at the name is
+    opened AS ITSELF, so the caller sees what is really there and the target is
+    never touched. That is what makes the refusal atomic rather than a check
+    followed by an open -- and on Windows the difference is not academic, because
+    resolving a reparse point aimed at a UNC share is itself an outbound SMB
+    authentication. ``BACKUP_SEMANTICS`` is what allows a directory to be opened at
+    all and is harmless on a file. The share mode omits ``FILE_SHARE_DELETE``: while
+    this descriptor lives, the object cannot be renamed or deleted -- and for a
+    directory, neither can anything above it.
+
+    The handle is wrapped in a CRT descriptor so ``os.fstat`` can read the
+    attributes of what was actually opened and ``os.close`` can release it.
+    """
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.CreateFileW.argtypes = [
         wintypes.LPCWSTR,
@@ -3797,13 +3829,41 @@ def pin_directory(path: str | os.PathLike) -> int:
     )
     if handle is None or handle == wintypes.HANDLE(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
-    # Wrapping the handle in a CRT descriptor lets ``os.fstat`` read the
-    # attributes of what was actually opened, and ``os.close`` release it.
-    fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)  # type: ignore[attr-defined]
+    return msvcrt.open_osfhandle(handle, os.O_RDONLY)  # type: ignore[attr-defined]
+
+
+def open_file_no_reparse(path: str | os.PathLike) -> int:
+    """Open a regular FILE for reading, refusing a reparse point at the final name.
+
+    The leaf counterpart to :func:`pin_directory`. ``pin_directory`` freezes the
+    ancestors so the path cannot be re-pointed underneath a caller; this one settles
+    the last component, and it has to do so in the SAME operation that opens it --
+    an ``is_symlink()`` (or ``lstat``) check followed by ``os.open`` is a
+    check-to-open window, and an adversary that can plant the link chooses when.
+
+    * POSIX: ``O_NOFOLLOW`` already refuses a link at the final component; this is
+      exactly the open the callers were doing, named.
+    * Windows: there is no ``O_NOFOLLOW`` -- ``getattr(os, "O_NOFOLLOW", 0)`` is 0,
+      so ``os.open`` FOLLOWS a reparse point at the name. ``CreateFileW`` with
+      ``FILE_FLAG_OPEN_REPARSE_POINT`` opens the reparse point itself instead, and
+      the attribute read off the resulting descriptor is therefore a fact about what
+      was opened, not a prediction about what a later open will find. Refused with
+      ``ELOOP``, matching what POSIX reports for the same shape.
+
+    Refuses a directory with ``IsADirectoryError`` (POSIX reports ``EISDIR`` from the
+    read, Windows from ``os.open``; the two are made to agree here). Release the
+    descriptor with ``os.close``.
+    """
+    if IS_POSIX:
+        return os.open(os.fspath(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+
+    fd = _win_open_without_following(path)
     try:
         attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
-        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY or attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
-            raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
+        if attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+            raise OSError(errno.ELOOP, "reparse point at the final component", os.fspath(path))
+        if attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY:
+            raise IsADirectoryError(errno.EISDIR, "is a directory", os.fspath(path))
     except BaseException:
         os.close(fd)
         raise
