@@ -51,6 +51,19 @@ def _entry(video_id: str, **kwargs: object) -> fv.VideoEntry:
     return fv.VideoEntry(id=video_id, **defaults)  # type: ignore[arg-type]
 
 
+@pytest.fixture(autouse=True)
+def _assets_shipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Treat every catalog asset as present on disk.
+
+    ``offerable()`` withholds an entry whose media is not shipped, and the test
+    tree has no ``static/dist``. Without this default every selection and route
+    test would exercise the withholding branch instead of what it is about. The
+    gate itself is tested in :class:`TestAssetExistenceGate`, which replaces this
+    default with a real temp directory.
+    """
+    monkeypatch.setattr(fv, "_asset_exists", lambda _p: True)
+
+
 class TestAssetPathValidation:
     """A clip src is fetched by the browser with the dashboard's credentials."""
 
@@ -148,6 +161,87 @@ class TestShippedCatalog:
         payload = fv.CATALOG[0].payload()
         assert "used_when" not in payload
         assert payload["id"] == "feature-tips"
+
+
+class TestAssetExistenceGate:
+    """ "Asset shipped" is a precondition of "on offer"."""
+
+    @pytest.fixture
+    def asset_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        # Undo the module-wide default so the real check runs against tmp_path.
+        monkeypatch.undo()
+        root = tmp_path / "app-assets"
+        (root / "feature-videos").mkdir(parents=True)
+        monkeypatch.setattr(fv, "_asset_root", lambda: root)
+        return root
+
+    @staticmethod
+    def _ship(root: Path, video_id: str, *, clip: bool = True, poster: bool = True) -> None:
+        d = root / "feature-videos"
+        if clip:
+            (d / f"{video_id}.mp4").write_bytes(b"\x00")
+        if poster:
+            (d / f"{video_id}.jpg").write_bytes(b"\x00")
+
+    def test_maps_the_url_prefix_onto_the_dist_directory(self, asset_root: Path) -> None:
+        self._ship(asset_root, "x")
+        assert fv._asset_exists(f"{fv.ASSET_PREFIX}x.mp4") is True
+        assert fv._asset_exists(f"{fv.ASSET_PREFIX}missing.mp4") is False
+        # A path outside the served prefix is never "present", whatever is on disk.
+        assert fv._asset_exists("/static/x.mp4") is False
+
+    def test_entry_with_no_shipped_media_is_withheld_not_offered(
+        self, asset_root: Path, tmp_path: Path
+    ) -> None:
+        # The frontend cannot catch this: its <video> is preload="none", so no
+        # fetch -- and no error -- happens before the user presses play, and the
+        # dialog opens on the JSON alone. An unshipped entry must not reach it.
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", (_entry("unshipped"),)):
+                assert fv.offerable() == ()
+                assert fv.select_next("9.9.9") is None
+
+    def test_a_missing_poster_alone_withholds_the_entry(self, asset_root: Path) -> None:
+        self._ship(asset_root, "half", poster=False)
+        with patch.object(fv, "CATALOG", (_entry("half"),)):
+            assert fv.offerable() == ()
+
+    def test_shipped_entry_is_offered(self, asset_root: Path, tmp_path: Path) -> None:
+        self._ship(asset_root, "ready")
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", (_entry("ready"),)):
+                picked = fv.select_next("9.9.9")
+        assert picked is not None and picked.id == "ready"
+
+    def test_selection_skips_past_an_unshipped_entry_to_a_shipped_one(
+        self, asset_root: Path, tmp_path: Path
+    ) -> None:
+        self._ship(asset_root, "second")
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", (_entry("first"), _entry("second"))):
+                picked = fv.select_next("9.9.9")
+        assert picked is not None and picked.id == "second"
+
+    def test_withholding_is_recoverable_once_the_clip_lands(
+        self, asset_root: Path, tmp_path: Path
+    ) -> None:
+        # The whole point: nothing is written, so the entry comes back by itself.
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", (_entry("late"),)):
+                assert fv.select_next("9.9.9") is None
+                self._ship(asset_root, "late")
+                picked = fv.select_next("9.9.9")
+        assert picked is not None and picked.id == "late"
+
+    def test_catalog_membership_ignores_shipping_so_a_verdict_can_still_land(
+        self, asset_root: Path
+    ) -> None:
+        # A user shown a clip whose asset later vanished must still be able to
+        # record a verdict on it: the feedback route checks catalog(), not
+        # offerable(), and this pins that the two sets genuinely differ.
+        with patch.object(fv, "CATALOG", (_entry("gone"),)):
+            assert [e.id for e in fv.catalog()] == ["gone"]
+            assert fv.offerable() == ()
 
 
 class TestProbes:
@@ -827,10 +921,10 @@ class TestRouteRegistration:
 
 
 class TestConfigFlag:
-    def test_default_is_on(self) -> None:
+    def test_default_is_off(self) -> None:
         from kiro_crew.config.sections import DashboardConfig
 
-        assert DashboardConfig().feature_videos_enabled is True
+        assert DashboardConfig().feature_videos_enabled is False
 
     def test_loader_reads_the_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -850,12 +944,16 @@ class TestConfigFlag:
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"dashboard": {}}), encoding="utf-8")
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_file)
-        assert KiroCrewConfig.load().dashboard.feature_videos_enabled is True
+        assert KiroCrewConfig.load().dashboard.feature_videos_enabled is False
 
     def test_a_non_bool_value_keeps_the_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A configured string must not read as "on" -- bool("false") is True."""
+        """A configured string must not read as "on" -- bool("false") is True.
+
+        Still load-bearing with the default OFF: a naive ``bool(...)`` would read the
+        STRING "false" as True and turn the feature on against the operator's config.
+        """
         from kiro_crew.config.loader import KiroCrewConfig
 
         cfg_file = tmp_path / "config.json"
@@ -863,4 +961,4 @@ class TestConfigFlag:
             json.dumps({"dashboard": {"feature_videos_enabled": "false"}}), encoding="utf-8"
         )
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_file)
-        assert KiroCrewConfig.load().dashboard.feature_videos_enabled is True
+        assert KiroCrewConfig.load().dashboard.feature_videos_enabled is False

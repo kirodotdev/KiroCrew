@@ -5,7 +5,8 @@ Kiro Crew plays a short intro clip for a feature this install has not used yet. 
 ## How It Works
 
 - The catalog is a static list in `feature_videos.py`. There is no generation step and no model call.
-- Selection walks the catalog in order and returns the first entry that is enabled, not yet recorded as seen or dismissed, satisfied by the running version, and not withdrawn by a "you already use this" signal.
+- Selection walks the catalog in order and returns the first entry that is enabled, has both its clip and poster shipped on disk, is not yet recorded as seen or dismissed, is satisfied by the running version, and is not withdrawn by a "you already use this" signal.
+- An entry whose media is not shipped is withheld, not shown. The dialog opens on the JSON answer alone and fetches nothing until the user presses play, so it cannot detect a missing clip itself -- it would open around a blank player, and the verdict a user then records is permanent. Withholding keeps the entry on offer for the launch after its clip lands.
 - Clips and posters are same-origin paths under `/app-assets/feature-videos/`. A path carrying a scheme, `//`, `..`, a percent sign, or a backslash is refused, so a catalog entry can never point the browser off this origin. Remote clip downloads are a separate future change.
 - Seen and dismissed are both permanent. There is no snooze: a feature intro that comes back is noise.
 - Temporary and incognito sessions get no video, because the state a video records is permanent and instance-wide.
@@ -17,7 +18,7 @@ Kiro Crew plays a short intro clip for a feature this install has not used yet. 
 |--------|--------|
 | Watch a clip to the end | Records `seen`; that video is never offered again. |
 | Close the modal | Records `dismissed`; same permanence. |
-| `dashboard.feature_videos_enabled: false` in config | Instance-wide kill switch. |
+| `dashboard.feature_videos_enabled: true` in config | Turns the feature ON. It is OFF by default until real clips ship. |
 
 ## Adding a Catalog Entry
 
@@ -66,7 +67,7 @@ To add one, register a function in `_PROBES` (no argument) or `_PARAM_PROBES` (t
 
 ```yaml
 dashboard:
-  feature_videos_enabled: true   # instance-wide switch
+  feature_videos_enabled: true   # instance-wide switch; DEFAULT false
 ```
 
 Display state lives in `feature_videos_state.json` beside `tips_state.json`, written with owner-only permissions.

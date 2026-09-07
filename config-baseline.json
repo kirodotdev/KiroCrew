@@ -5911,7 +5911,7 @@
         "user_role_other": "",
         "user_technical_level": "",
         "tips_enabled": true,
-        "feature_videos_enabled": true,
+        "feature_videos_enabled": false,
         "folder_suggestions_enabled": true,
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
@@ -6686,7 +6686,7 @@
       "help": "Show short feature-intro clips for features this install has not used yet. Instance-wide kill switch.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": false
     },
     {
       "path": "dashboard.folder_suggestions_enabled",

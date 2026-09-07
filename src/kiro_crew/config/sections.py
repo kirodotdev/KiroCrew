@@ -2870,7 +2870,7 @@ class DashboardConfig:
         ),
     )
     feature_videos_enabled: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Feature Videos Enabled",
             "Show short feature-intro clips for features this install has not used "

@@ -242,8 +242,58 @@ CATALOG: tuple[VideoEntry, ...] = (
 
 
 def catalog() -> tuple[VideoEntry, ...]:
-    """The catalog with unsafe entries filtered out."""
+    """The catalog with unsafe entries filtered out.
+
+    This is STRUCTURAL validity only -- a well-formed entry whose media has not
+    shipped yet is still in here. That is deliberate: the feedback route checks
+    membership against this set, and a user who has already been shown a clip
+    must be able to record a verdict on it even if its asset later goes missing.
+    :func:`offerable` is the set that may actually be shown.
+    """
     return tuple(e for e in CATALOG if _entry_is_valid(e))
+
+
+def _asset_root() -> Path:
+    """Where ``ASSET_PREFIX`` is served from on disk.
+
+    ``server.py`` mounts ``static/dist/app-assets`` at ``/app-assets``, so a
+    catalog ``src`` of ``/app-assets/feature-videos/x.mp4`` is the file
+    ``<static>/dist/app-assets/feature-videos/x.mp4``. Resolved through a
+    function, not a constant, so a test can point it at a temp directory.
+    """
+    return Path(__file__).resolve().parent / "static" / "dist" / "app-assets"
+
+
+def _asset_exists(url_path: str) -> bool:
+    """Whether the file behind a validated ``/app-assets/...`` path is on disk."""
+    prefix = "/app-assets/"
+    if not url_path.startswith(prefix):
+        return False
+    return (_asset_root() / url_path[len(prefix) :]).is_file()
+
+
+def offerable() -> tuple[VideoEntry, ...]:
+    """The entries that may be SHOWN: valid, and with both media files on disk.
+
+    "Asset shipped" is a precondition of "on offer", enforced here rather than
+    trusted to the client. The dialog opens on the JSON answer alone and its
+    ``<video>`` is ``preload="none"``, so nothing is fetched -- and no media error
+    can fire -- until the user presses play. An entry whose clip is not shipped
+    would therefore open a dialog around a blank player, and the natural "Got it"
+    writes a PERMANENT verdict, retiring the real intro before anyone saw it.
+    Dropping such an entry here keeps it on offer for the launch after its clip
+    lands, which is the recoverable outcome.
+    """
+    kept: list[VideoEntry] = []
+    for entry in catalog():
+        missing = [p for p in (entry.src, entry.poster) if not _asset_exists(p)]
+        if missing:
+            logger.info(
+                "feature video %r withheld: asset(s) not shipped: %s", entry.id, ", ".join(missing)
+            )
+            continue
+        kept.append(entry)
+    return tuple(kept)
 
 
 # ── "Already used this feature" probes ──
@@ -537,7 +587,7 @@ def select_next(running_version: str) -> VideoEntry | None:
     an entry already ruled out by state or version must not pay for them.
     """
     st = load_state()
-    for entry in catalog():
+    for entry in offerable():
         if st.status_of(entry.id):
             continue
         if not _version_ok(entry.min_version, running_version):

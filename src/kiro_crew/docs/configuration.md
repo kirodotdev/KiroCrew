@@ -254,7 +254,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | `dashboard.merge_queued_messages` | Concatenate follow-up messages while the agent is busy | `false` |
 | `dashboard.mcp_probe_timeout_secs` | Seconds to wait for an MCP server handshake during a probe (5-120) | `15` |
 | `dashboard.link_previews` | Fetch and render HTTP(S) link metadata in assistant messages. Off by default because each linked site receives a request from this machine | `false` |
-| `dashboard.feature_videos_enabled` | Play a short intro clip for a feature this install has not used yet. Instance-wide kill switch; see [Feature Videos](feature-videos.md) | `true` |
+| `dashboard.feature_videos_enabled` | Play a short intro clip for a feature this install has not used yet. Instance-wide kill switch; see [Feature Videos](feature-videos.md). Off until real clips ship | `false` |
 
 ### Slack
 
