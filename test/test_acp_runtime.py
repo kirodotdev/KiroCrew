@@ -6777,6 +6777,72 @@ async def test_session_load_call_site_passes_budget_above_request_timeout(monkey
 
 
 @pytest.mark.asyncio
+async def test_create_set_mode_call_site_passes_budget_above_request_timeout(
+    monkeypatch,
+):
+    """create_session's set_mode must carry the session-start budget, not the
+    generic _REQUEST_TIMEOUT. Switching to an agent boots THAT agent's MCP
+    servers (the same (re-)initialization session/new gets 90s for); a
+    switched-to server pending OAuth holds the response for its full 30s wait,
+    so the generic 30s budget races it exactly as it would session start
+    (#9185). set_mode fires here because the session/new response advertises
+    no `modes` list (older/fake backend -> attempt)."""
+    rt, _, _ = _make_runtime()
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            return {"sessionId": "sid-setmode"}  # no `modes` -> set_mode attempts
+        if method == METHOD_SET_MODE:
+            seen["timeout"] = timeout
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.create_session(cwd="/w", agent="kirocrew")
+
+    assert seen["timeout"] == _SESSION_NEW_TIMEOUT
+    assert isinstance(seen["timeout"], float)
+    assert seen["timeout"] > _REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_load_set_mode_call_site_passes_budget_above_request_timeout(
+    monkeypatch,
+):
+    """The resume path's set_mode is gated by the same switched-to-agent MCP
+    (re-)initialization as create_session's, so it must carry session/load's
+    budget rather than the generic _REQUEST_TIMEOUT (#9185). The session/load
+    response echoes `modes` (a genuine resume), which is also what makes
+    _mode_available admit the switch."""
+    rt, _, _ = _make_runtime()
+    rt._can_load_session = True
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_LOAD:
+            return {
+                "modes": {
+                    "currentModeId": "kiro",
+                    "availableModes": [{"id": "kirocrew"}],
+                }
+            }
+        if method == METHOD_SET_MODE:
+            seen["timeout"] = timeout
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.load_session(
+        "/home/u/.kiro/sessions/cli/sid-9.json", "sid-9", agent="kirocrew", cwd="/w"
+    )
+
+    assert seen["timeout"] == _SESSION_NEW_TIMEOUT
+    assert isinstance(seen["timeout"], float)
+    assert seen["timeout"] > _REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
 async def test_session_start_budget_follows_config(monkeypatch):
     """agent.session_start_timeout_secs raises the session/new budget: the
     configured value is resolved lazily (off-loop, on first session start —

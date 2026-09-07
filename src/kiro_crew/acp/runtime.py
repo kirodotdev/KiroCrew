@@ -2999,9 +2999,19 @@ class AcpRuntime:
             # "no report" for the rest of the session.
             staged_before_switch = handle.queued_frame_count()
             try:
+                # set_mode is a handshake request: switching to an agent boots
+                # THAT agent's MCP servers (see the mode_switched comment below),
+                # the same server (re-)initialization that gives session/new and
+                # session/load their 90s budget. A switched-to server pending
+                # OAuth holds the response for its full 30s wait, so the generic
+                # _REQUEST_TIMEOUT turns set_mode into the SAME race the
+                # session-start floor exists to prevent (see _SESSION_NEW_TIMEOUT
+                # and #9185). `budget` is already resolved for the session/new
+                # above, so reuse it rather than re-reading config.
                 await self._send_and_await(
                     METHOD_SET_MODE,
                     set_mode_params(session_id, mode_agent),
+                    timeout=budget,
                 )
             except Exception:
                 await self.terminate_session(session_id)
@@ -3271,9 +3281,15 @@ class AcpRuntime:
             # out, the only moment "queued" and "pre-switch" mean the same thing.
             staged_before_switch = handle.queued_frame_count()
             try:
+                # Same as create_session: set_mode on the resume path boots the
+                # switched-to agent's MCP servers, so it shares session/load's
+                # 90s budget rather than the generic _REQUEST_TIMEOUT that the
+                # backend's own 30s OAuth wait would race (#9185). `budget` is
+                # the session-start budget already resolved above.
                 await self._send_and_await(
                     METHOD_SET_MODE,
                     set_mode_params(resume_sid, agent),
+                    timeout=budget,
                 )
             except Exception:
                 await self.terminate_session(resume_sid)
