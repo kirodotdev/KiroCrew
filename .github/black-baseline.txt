@@ -284,7 +284,6 @@ src/kiro_crew/knowledge/watcher.py
 src/kiro_crew/mcp_apps_render.py
 src/kiro_crew/mcp_caller.py
 src/kiro_crew/mcp_cleanup.py
-src/kiro_crew/mcp_discovery.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
 src/kiro_crew/mcp_gateway/apps.py
@@ -805,7 +804,6 @@ test/test_mcp_cron_persistent_session.py
 test/test_mcp_cron_security.py
 test/test_mcp_custom_api.py
 test/test_mcp_dashboard_registration.py
-test/test_mcp_discovery.py
 test/test_mcp_gateway_apps_spool.py
 test/test_mcp_gateway_backend_coverage.py
 test/test_mcp_gateway_claim.py

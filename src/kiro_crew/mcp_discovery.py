@@ -444,11 +444,9 @@ def _cache_probe(server: McpServerInfo) -> None:
     _probe_cache[server.name] = _ProbeResult(
         status=server.status,
         tools=list(server.tools),
-        error=redact_mcp_error(server.error, server.headers),
+        error=redact_mcp_error(server.error, server.redaction_headers),
         probed_at=time.monotonic(),
-        capabilities=(
-            dict(server.capabilities) if isinstance(server.capabilities, dict) else None
-        ),
+        capabilities=(dict(server.capabilities) if isinstance(server.capabilities, dict) else None),
         protocol_version=server.protocol_version,
         server_info=dict(server.server_info),
         tool_annotations=[dict(a) for a in server.tool_annotations],
@@ -493,9 +491,7 @@ def _mcp_credential_token_pattern(value: str) -> str:
         try:
             # "%(?:25)*XX" per byte: a literal %XX, or the same escape with its
             # percent sign re-encoded one or more times (%25XX, %2525XX, ...).
-            alternatives.append(
-                "".join(f"%(?:25)*{byte:02X}" for byte in char.encode("utf-8"))
-            )
+            alternatives.append("".join(f"%(?:25)*{byte:02X}" for byte in char.encode("utf-8")))
         except UnicodeEncodeError:
             # A lone surrogate (JSON permits unpaired \uD800 escapes) has no
             # UTF-8 spelling; keep the literal alternative so building the
@@ -516,11 +512,7 @@ def redact_mcp_headers(headers: object) -> dict[str, str]:
     """
     if not isinstance(headers, dict):
         return {}
-    return {
-        name: MCP_REDACTED_HEADER_VALUE
-        for name in headers
-        if isinstance(name, str)
-    }
+    return {name: MCP_REDACTED_HEADER_VALUE for name in headers if isinstance(name, str)}
 
 
 def redact_mcp_error(error: object, headers: object) -> str:
@@ -562,9 +554,7 @@ def redact_mcp_error(error: object, headers: object) -> str:
         if match:
             credential = match.group(1).strip()
             if len(credential) >= _MCP_CREDENTIAL_SUFFIX_MIN_LENGTH:
-                needs_boundary = (
-                    len(credential) < _MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH
-                )
+                needs_boundary = len(credential) < _MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH
                 values.setdefault(credential, needs_boundary)
 
     if not values:
@@ -601,6 +591,14 @@ class McpServerInfo:
     env: dict[str, str] = field(default_factory=dict)
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
+    # The header map the probe actually SENT: config values with ${VAR}/${env:VAR}
+    # references resolved (see :func:`_expand_header_placeholders`). ``None``
+    # until a remote probe runs. Redaction keys on these — an error echoing the
+    # RESOLVED secret carries bytes the configured map never held, and
+    # ``redact_mcp_error``'s layer-2 scrubber matches exact values. Never
+    # serialized: ``to_dict``'s headers block goes through ``redact_mcp_headers``,
+    # which is name-keyed and value-independent.
+    sent_headers: dict[str, str] | None = None
     # Remote-only OAuth hints carried verbatim to the runtime, which owns the
     # authorization exchange. Kiro Crew never enforces scopes and never registers
     # a client — it only refuses to lose these fields while syncing.
@@ -669,6 +667,18 @@ class McpServerInfo:
         """True for Streamable HTTP servers (url-based, no command)."""
         return bool(self.url) and not self.command
 
+    @property
+    def redaction_headers(self) -> dict[str, str]:
+        """The value set a probe error could echo, for ``redact_mcp_error``.
+
+        The headers actually sent when the probe expanded references, else the
+        configured map. The sent map is the COMPLETE scrub set: any configured
+        value that differs post-expansion never left the process unexpanded,
+        so a remote server can only echo the resolved spelling — and a value
+        the expansion left alone is byte-identical in both maps.
+        """
+        return self.headers if self.sent_headers is None else self.sent_headers
+
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
             "name": self.name,
@@ -676,7 +686,7 @@ class McpServerInfo:
             "args": self.args or [],
             "status": self.status,
             "tools": self.tools,
-            "error": redact_mcp_error(self.error, self.headers),
+            "error": redact_mcp_error(self.error, self.redaction_headers),
             "source": self.source,
             "presence": dict(self.presence),
             "probeMode": self.probe_mode,
@@ -1010,9 +1020,7 @@ _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
 #: therefore safe to classify shareable regardless of the daemon's generation.
 #: ``test_mcp_managed_caller_identity.py`` pins this so the entry can neither
 #: silently persist past its reason nor silently widen.
-_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD: frozenset[str] = frozenset(
-    {"kirocrew-computer"}
-)
+_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD: frozenset[str] = frozenset({"kirocrew-computer"})
 
 
 def managed_server_is_session_bound(name: str) -> bool:
@@ -1381,6 +1389,49 @@ async def _read_jsonrpc_response(resp: aiohttp.ClientResponse) -> dict:
     return await resp.json()
 
 
+def _expand_header_placeholders(headers: Mapping[str, str]) -> dict[str, str]:
+    """Resolve ``${VAR}`` / ``${env:VAR}`` references in remote-probe header values.
+
+    A static header whose value carries a runtime reference is a documented
+    form (docs/reference/kiro-cli/mcp/configuration.md) that kiro-cli expands
+    at session runtime. Sending the reference as literal text gets the server's
+    correct rejection reported as a failing row — with advice to delete a
+    header that works in every session (issue #9206).
+
+    Delegates to the mcp_gateway rewriter's declared-env expander — same regex,
+    same credential-filtered source view (``is_secret_env_key`` /
+    ``is_credential_env_key`` / ``scrub_agent_denied_env`` names are misses),
+    same "unresolved stays literal" kiro-cli parity — rather than duplicating
+    the policy here: two copies of a credential filter is the drift
+    ``is_secret_env_key``'s own docstring warns against. The import is
+    function-local because ``mcp_gateway.preflight`` / ``evaluate`` import this
+    module at module scope; keeping the rewriter off this module's import graph
+    avoids handing every consumer that never probes the rewriter's imports.
+    """
+    from kiro_crew.mcp_gateway.rewriter import (
+        _expand_env_placeholders,
+        _placeholder_source_env,
+    )
+
+    source = _placeholder_source_env()
+    return {
+        name: (_expand_env_placeholders(value, source=source) if isinstance(value, str) else value)
+        for name, value in headers.items()
+    }
+
+
+def _header_reference_unresolved(value: object) -> bool:
+    """True when a header value still carries a ``${VAR}`` reference.
+
+    After :func:`_expand_header_placeholders` this means the variable was
+    missing or credential-filtered — either way nothing was dereferenced, so
+    the value is not a credential anything supplied.
+    """
+    from kiro_crew.mcp_gateway.rewriter import _ENV_VAR_PLACEHOLDER
+
+    return isinstance(value, str) and _ENV_VAR_PLACEHOLDER.search(value) is not None
+
+
 def _needs_authorization(
     status_code: int, resp_headers: Mapping[str, str], sent_headers: Mapping[str, str]
 ) -> bool:
@@ -1392,8 +1443,15 @@ def _needs_authorization(
 
     A static ``Authorization`` header in the config is a different case: the
     caller supplied a credential and it was rejected, which is a real error.
+    That premise requires a credential to actually have been supplied — an
+    Authorization value still carrying an unresolved ``${VAR}`` reference
+    (a missing or credential-filtered variable, sent as literal text) supplied
+    nothing, so it does not suppress ``needs_auth``.
     """
-    if any(k.lower() == "authorization" for k in sent_headers):
+    if any(
+        k.lower() == "authorization" and not _header_reference_unresolved(v)
+        for k, v in sent_headers.items()
+    ):
         return False
     if status_code == 401:
         return True
@@ -1510,8 +1568,13 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
                 "clientInfo": {"name": "kirocrew-probe", "version": "1.0.0"},
             },
         }
+        # Resolve ${VAR}/${env:VAR} references in header VALUES so the probe
+        # presents the same credential the session runtime presents. Stored on
+        # the row because redaction must key on the values that actually left
+        # the process (see McpServerInfo.redaction_headers).
+        server.sent_headers = _expand_header_placeholders(server.headers)
         hdrs = {
-            **server.headers,
+            **server.sent_headers,
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
@@ -1527,7 +1590,7 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
                     server.auth_challenge = _is_bearer_challenge(
                         resp.headers.get("WWW-Authenticate", "")
                     )
-                    if _needs_authorization(resp.status, resp.headers, server.headers):
+                    if _needs_authorization(resp.status, resp.headers, server.sent_headers):
                         # A remote OAuth server answers a tokenless probe with
                         # 401 (or 403 + WWW-Authenticate). That is the expected
                         # reply, not a fault: the kiro-cli runtime holds the
@@ -1613,9 +1676,7 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
                     _cache_probe(server)
                     return server
                 server.tools = [
-                    name
-                    for t in tools_data
-                    if isinstance(t, dict) and (name := t.get("name", ""))
+                    name for t in tools_data if isinstance(t, dict) and (name := t.get("name", ""))
                 ]
 
         server.status = "ok"
@@ -1801,11 +1862,7 @@ async def probe_server(
         # keys must not pass through — they would execute before confinement
         # exists. See env.sanitize_spec_env; _note_denied_env explains a
         # resulting failure to the dashboard reader.
-        env.update(
-            sanitize_spec_env(
-                (k, v) for k, v in server.env.items() if k != _path_key
-            )
-        )
+        env.update(sanitize_spec_env((k, v) for k, v in server.env.items() if k != _path_key))
 
         # Resolve command to absolute path using the merged env PATH
         effective_path = env.get("PATH") or ""
@@ -1871,9 +1928,7 @@ async def probe_server(
         # case-insensitively (Windows env keys are case-insensitive and the
         # sanitized spec preserves the author's spelling).
         _declared_temp_upper = {
-            key.upper()
-            for key in (server.env or {})
-            if key.upper() in ("TMPDIR", "TMP", "TEMP")
+            key.upper() for key in (server.env or {}) if key.upper() in ("TMPDIR", "TMP", "TEMP")
         }
         probe_scratch: "Path | None" = None
         if not _declared_temp_upper:
@@ -1906,9 +1961,7 @@ async def probe_server(
             mode="standard",
             env=env,
             strip_python_env=True,
-            extra_writable_dirs=(
-                (str(probe_scratch),) if probe_scratch is not None else ()
-            ),
+            extra_writable_dirs=((str(probe_scratch),) if probe_scratch is not None else ()),
             first_party_fixed_argv=_is_first_party_managed_argv(
                 server.name, server.command, server.args or [], server.env or {}
             ),
@@ -1930,10 +1983,7 @@ async def probe_server(
                 env = {
                     key: value
                     for key, value in env.items()
-                    if not (
-                        key in ("TMPDIR", "TMP", "TEMP")
-                        and key not in _declared_temp_upper
-                    )
+                    if not (key in ("TMPDIR", "TMP", "TEMP") and key not in _declared_temp_upper)
                 }
         except Exception:
             logger.debug("probe temp containment unavailable", exc_info=True)
@@ -1984,9 +2034,11 @@ async def probe_server(
                     "params": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
-                        "clientInfo": dict(client_info)
-                        if client_info
-                        else {"name": "kirocrew-probe", "version": "1.0.0"},
+                        "clientInfo": (
+                            dict(client_info)
+                            if client_info
+                            else {"name": "kirocrew-probe", "version": "1.0.0"}
+                        ),
                     },
                 }
             )
@@ -2296,7 +2348,9 @@ async def probe_server(
                 except (ProcessLookupError, OSError):
                     logger.debug(
                         "Probe tree reap failed for %s (pid %s)",
-                        server.name, probe_pid, exc_info=True,
+                        server.name,
+                        probe_pid,
+                        exc_info=True,
                     )
         if sandbox_cleanup:
             Path(sandbox_cleanup).unlink(missing_ok=True)
@@ -2440,7 +2494,11 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     # Two RESOLVED paths for one binary, differing only in separator flavour or
     # case (``C:\tools\srv.exe`` vs ``C:/Tools/SRV.exe``). Windows itself treats
     # those as the same file, so comparing the strings re-syncs forever.
-    if platform_compat.IS_WINDOWS and _names_a_location(source_cmd) and _names_a_location(agent_cmd):
+    if (
+        platform_compat.IS_WINDOWS
+        and _names_a_location(source_cmd)
+        and _names_a_location(agent_cmd)
+    ):
         if ntpath.normcase(ntpath.normpath(source_cmd)) == ntpath.normcase(
             ntpath.normpath(agent_cmd)
         ):
@@ -2713,9 +2771,7 @@ def kirocrew_managed_names() -> set[str]:
     """
     by_source = _load_mcp_json_by_source()
     return {
-        name
-        for name, spec in by_source.get(SCOPE_KIROCREW, {}).items()
-        if isinstance(spec, dict)
+        name for name, spec in by_source.get(SCOPE_KIROCREW, {}).items() if isinstance(spec, dict)
     }
 
 

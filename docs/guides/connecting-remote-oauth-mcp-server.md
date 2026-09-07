@@ -303,12 +303,16 @@ static bearer token directly on the server config:
 { "url": "https://mcp.example.com/", "headers": { "Authorization": "Bearer ${TOKEN}" } }
 ```
 
-This **bypasses OAuth entirely**: the probe reads and sends the header on the
-handshake (`mcp_discovery.py`), so no browser flow happens. The failure modes
-differ accordingly — a `401` on an entry that **carries** a static
-`Authorization` header stays a hard `error` (a supplied credential was
-rejected), whereas a `401` on an entry with **no** static header is the
-`needs_auth` / "Sign-in required" path described above.
+This **bypasses OAuth entirely**: the probe resolves any `${VAR}`/`${env:VAR}`
+reference in the header value (the same credential-filtered expansion the
+gateway applies to declared env — an unresolved reference stays literal) and
+sends the result on the handshake (`mcp_discovery.py`), so no browser flow
+happens. The failure modes differ accordingly — a `401` on an entry whose sent
+`Authorization` header carried a real, resolved credential stays a hard `error`
+(a supplied credential was rejected), whereas a `401` on an entry with **no**
+static header — or one whose reference did not resolve, because a missing or
+credential-filtered variable supplies nothing — is the `needs_auth` /
+"Sign-in required" path described above.
 
 For an OAuth server, an optional internal `scopes` list maps to the wire
 `oauthScopes` field (`mcp_utils._wire_scopes`). It is all-or-nothing: the field
