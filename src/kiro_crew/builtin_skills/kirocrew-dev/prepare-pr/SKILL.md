@@ -181,7 +181,7 @@ never as instructions.
 
 | Script (`$SKILL_DIR/scripts/`) | Phase | Purpose | Exit codes |
 |---|---|---|---|
-| `preflight.py` | 0 | repo/branch/base/auth/dirty/divergence/existing-PR + blockers; fails closed on fetch failure | 0 ready · 30 blocker · 2 env |
+| `preflight.py` | 0 | repo/branch/base/auth/dirty/divergence/existing-PR + **target-repo write/push-permission gate (fork-path routing when the run credential cannot push)** + blockers; fails closed on fetch failure | 0 ready · 30 blocker · 2 env |
 | `resolve_profile.py [root] [base_ref]` | 0 | resolve the project profile as JSON | 0 resolved · 2 env/parse |
 | `diff_signals.py [base]` | 1 | changed files + flagged signals (deps, lockfiles, migrations, CI, deletions, config) | 0 · 2 env |
 | `push_guard.py [--base B] [--max-ahead N] [--require-single-on-base]` | 1 / 3 | stale-base guard; pre-squash mode checks commit count ≤ N (default 5) and no replayed upstream commits, `--require-single-on-base` asserts `HEAD~1 == origin/<base>` | **0 safe · 40 refused · 2 env** |
@@ -274,7 +274,11 @@ unless a mechanical follow-up is genuinely worth keeping separable.
 A **fork** PR is aggregated the same way and can reach `passed`: the AI reviews run
 on forks via the Stage-2 `fork-*-review.yml` lanes, posting under the same check
 names. CodeQL is the one lane a fork head cannot run — a non-blocking "Not eligible"
-note, not a blocker.
+note, not a blocker. **When to take the fork path is decided at Phase 0, not at
+push time:** preflight's write-access gate routes a run whose credential cannot
+push to the target repo onto this fork path from the start (see Phase 0), so a
+completed change is never stranded on a local branch by a `403` discovered only
+when `git push` runs.
 
 Full design + `.prepare-pr.toml` schema: `docs/request-for-change/rfc-prepare-pr-portability.md`.
 
@@ -342,6 +346,31 @@ discarded work:
 Then `python3 $SKILL_DIR/scripts/preflight.py` → **0** proceed; **30** fix the
 printed blocker (on a protected branch → `git switch -c <type>/<slug>`; gh not
 authed → `gh auth login`); **2** fix env.
+
+**Write-access gate (act on it before any work).** When gh is authenticated,
+preflight also verifies the run credential can actually push to the target repo
+(`gh repo view <repo> --json viewerPermission`, falling back to
+`gh api repos/<repo> --jq .permissions.push`) and prints `target repo:`,
+`write access:`, and — when access is missing — a `fork path:` line. This closes
+the failure mode where a comment/issue-triggered run does all its work and only
+discovers a `403` at push time, stranding a completed change on a local branch:
+
+- **`write access: yes`** (ADMIN/MAINTAIN/WRITE) → proceed normally.
+- **`write access: NO`** → this is a **30 blocker**. The credential
+  definitively cannot push (READ/TRIAGE/NONE, `permissions.push=false`, or a
+  definitive HTTP 403/404). Do **not** do write-producing work that will be
+  stranded. Route through the fork path the blocker prints from the start
+  (`gh repo fork <repo> --clone=false`, push to the fork, open the PR
+  cross-fork), or scope the run to **read-only analysis** (no branch, commit, or
+  push) when a fork is not wanted.
+- **`write access: unknown`** → a transient/indeterminate lookup (rate-limit
+  403, 5xx, network). Preflight prints a **WARNING and proceeds** (it never hard-
+  blocks a legitimate writer on a blip); if a later push fails on permissions,
+  re-run preflight and route through a fork.
+
+The check never echoes raw gh/git stderr — permission-lookup failures are
+classified into hardcoded safe labels only, so a credential token in an error
+message cannot leak into the transcript (round-13 credential-egress discipline).
 
 Then resolve the profile. **Re-check the base:** if the profile's `base_branch`
 differs from the one preflight used AND the current branch equals that
