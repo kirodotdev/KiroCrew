@@ -1,0 +1,144 @@
+{
+  "schema": "roe/v1",
+  "_comment": [
+    "An EXPORT of the active roe_rules rows, not the source of truth. scope_check.py",
+    "reads the rows directly. Do not widen an auditor's latitude by editing this file:",
+    "a widening is a row with a reason and an approver, which is what makes it",
+    "attributable and revertible by flipping active rather than by an untracked edit.",
+    "This is the FIRST instance and it is scoped to Kiro Crew itself (the dogfood",
+    "pilot). It needs a human review before any auditor runs."
+  ],
+  "exported_at": "2026-09-07T00:00:00Z",
+  "target": "kirocrew-dogfood-round-1",
+  "approved_by": null,
+  "rules": {
+    "scope": [
+      {
+        "value": "repo:kirodotdev/KiroCrew",
+        "reason": "The pilot target is this project's own repository; every other repository is out of scope by default."
+      },
+      {
+        "value": "path:src/",
+        "reason": "The backend and the security fence itself live here, which is where the pilot's three surfaces are."
+      },
+      {
+        "value": "path:website/src/",
+        "reason": "The dashboard is a network-exposed surface with its own token and session handling."
+      },
+      {
+        "value": "path:scripts/",
+        "reason": "Gate and tooling scripts run in CI with repository write context, so a defect here is a supply-chain defect."
+      },
+      {
+        "value": "path:.github/workflows/",
+        "reason": "Workflow definitions decide what runs with which credentials; a permissions or checkout mistake is exploitable."
+      }
+    ],
+    "allowed_techniques": [
+      {
+        "value": "static-code-review",
+        "reason": "Reading the code proves the most and touches nothing."
+      },
+      {
+        "value": "dependency-audit",
+        "reason": "Advisory data against the committed lockfiles needs no probe of a running system."
+      },
+      {
+        "value": "local-unit-poc",
+        "reason": "A unit-level test in a scratch worktree is the smallest artifact that turns a claim into evidence, and it is the ceiling before the human active-testing gate."
+      }
+    ],
+    "forbidden": [
+      {
+        "value": "no-production-or-external-hosts",
+        "reason": "A probe against a live or third-party system risks other people's data and availability, and is not needed to prove a code defect."
+      },
+      {
+        "value": "no-reading-credential-material",
+        "reason": "Credential files and tokens (the crew config, AWS and SSH material, any bearer token) are out of bounds for reading as well as writing; holding one is indistinguishable from having stolen it."
+      },
+      {
+        "value": "no-dos-or-broad-fuzzing",
+        "reason": "Resource-exhaustion and untargeted fuzzing produce noise and outages instead of findings, and neither is bounded by a scratch worktree."
+      },
+      {
+        "value": "no-disabling-safety-protections",
+        "reason": "An audit that turns off the control it is auditing measures nothing, and leaves the host unprotected for whatever runs next."
+      },
+      {
+        "value": "no-bypassing-a-policy-block",
+        "reason": "A policy refusal IS the boundary: stop and report it as an event. A wording that gets past a block is a violation, not a result."
+      },
+      {
+        "value": "no-writes-outside-the-scratch-worktree",
+        "reason": "The blast radius of the whole audit is one throwaway checkout; a write anywhere else is unreviewed and often unnoticed."
+      },
+      {
+        "value": "no-network-egress-from-a-poc",
+        "reason": "A proof of concept that talks to the network can exfiltrate what it read and cannot be reproduced offline by a verifier."
+      }
+    ],
+    "severity_scale": [
+      {
+        "value": "Critical: unauthenticated remote code execution, credential disclosure, or a full bypass of the safety fence or the governance ceiling.",
+        "reason": "One step from a total compromise of the host or of the control that bounds every agent on it."
+      },
+      {
+        "value": "High: privilege escalation, authentication or authorization bypass on a network-exposed surface, or a write outside a declared boundary.",
+        "reason": "A real attacker path with a precondition an attacker can meet."
+      },
+      {
+        "value": "Medium: a defect exploitable only with local access, an unlikely precondition, or a bounded partial bypass.",
+        "reason": "Genuine weakening of a control, but gated by something an attacker does not already have."
+      },
+      {
+        "value": "Low: information disclosure with no secret in it, a missing defence-in-depth layer, or a hardening gap with no demonstrated exploit.",
+        "reason": "Worth fixing, not worth interrupting anyone for."
+      }
+    ],
+    "human_approval": [
+      {
+        "value": "active-testing-beyond-static-review-and-local-unit-poc",
+        "reason": "Everything past a scratch worktree can affect a system the operator did not offer up, so the operator decides, per step."
+      },
+      {
+        "value": "fixer-dispatch",
+        "reason": "A fix PR changes the target on the strength of a finding; the human confirms the finding is real before code moves."
+      }
+    ],
+    "report_schema": [
+      {
+        "value": "id",
+        "reason": "Stable handle for the verdict trail and for a lesson's source_finding_id."
+      },
+      {
+        "value": "surface",
+        "reason": "Which work item earned it, so a re-audit can dedupe and a retrospective can group."
+      },
+      {
+        "value": "severity",
+        "reason": "From severity_scale only; it drives the fixer gate."
+      },
+      {
+        "value": "title",
+        "reason": "One line a human can triage without opening the record."
+      },
+      {
+        "value": "paths",
+        "reason": "The affected files, so scope is checkable after the fact and not only before."
+      },
+      {
+        "value": "poc",
+        "reason": "The command or test that demonstrates it; a finding with no reproducible proof is the failure mode the verifier exists to catch."
+      },
+      {
+        "value": "verifier_verdict",
+        "reason": "confirmed | rejected | needs-human, written by the verifier and read by the conductor rather than inferred from prose."
+      },
+      {
+        "value": "status",
+        "reason": "Where the finding is in the pipeline, so an obligation cannot be lost between cycles."
+      }
+    ]
+  }
+}
