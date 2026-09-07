@@ -872,7 +872,12 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
     hook_file = mcp_core.config_dir() / "hooks.json"
     hook_file.parent.mkdir(parents=True, exist_ok=True)
     lock_path = hook_file.parent / "hooks.json.lock"
-    with open(lock_path, "w") as lock_fd:
+    # touch + "r+", never "w": a truncating open of a lock file another holder
+    # already locked raises a sharing violation on Windows instead of waiting.
+    # Same file as webhooks.locked guards; full rationale at
+    # work_ledger._open_lock (issue #9248).
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as lock_fd:
         with platform_compat.flock_exclusive(lock_fd.fileno()):
             # Re-read under lock to avoid lost updates
             hooks = {}
