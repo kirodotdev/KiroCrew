@@ -51,7 +51,8 @@ describe('contributedCommands — what it accepts', () => {
   it('reads a well-formed command', () => {
     const [cmd] = contributedCommands([app([GOOD])])
     expect(cmd).toMatchObject({
-      appLabel: 'PR Bulk Ops',
+      // The validated install identity, not the app-supplied `displayName`.
+      appLabel: 'pr-bulk-ops',
       title: 'Approve all PRs',
       icon: 'Check',
       autoSend: true,
@@ -73,9 +74,30 @@ describe('contributedCommands — what it accepts', () => {
     expect(cmd.argument).toBeNull()
   })
 
-  it('falls back to the app name when it has no display name', () => {
-    const [cmd] = contributedCommands([app([GOOD], { displayName: undefined })])
-    expect(cmd.appLabel).toBe('pr-bulk-ops')
+  it('attributes to the app name whatever the display name says', () => {
+    // `displayName` is free text the app chooses, so it is never the provenance. Every
+    // shape of it resolves to the same validated identifier, including the two that used
+    // to win: a host-impersonating name, and a "present" one that renders as nothing.
+    for (const displayName of [
+      undefined,
+      'PR Bulk Ops',
+      'Kiro Crew',      // claims to be the host
+      '   ',            // truthy, so `||` accepted it
+      '\u200b',         // zero-width, survives `.trim()`
+      '\u034f',         // combining grapheme joiner
+    ]) {
+      const [cmd] = contributedCommands([app([GOOD], { displayName })])
+      expect(cmd.appLabel, JSON.stringify(displayName)).toBe('pr-bulk-ops')
+    }
+  })
+
+  it('never renders an empty attribution, which would read as a builtin row', () => {
+    // `kindLabel` renders a BARE kind when there is no label -- character-for-character
+    // what a builtin row shows -- so an empty label is the one value that must not occur.
+    for (const displayName of [undefined, '', '   ', '\u200b']) {
+      const [cmd] = contributedCommands([app([GOOD], { displayName })])
+      expect(cmd.appLabel.length, JSON.stringify(displayName)).toBeGreaterThan(0)
+    }
   })
 })
 

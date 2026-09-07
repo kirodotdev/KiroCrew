@@ -1368,7 +1368,9 @@ describe('CommandBarOverlay contributed commands', () => {
     // The composed meta, not a bare app-name match: with no subtitle the fallback renders
     // the app name too, so a loose matcher would pass on the subtitle alone and prove
     // nothing about the meta column this fix is about.
-    expect(screen.getByText(`PR Bulk Ops \u00B7 Command`)).toBeTruthy()
+    // The VALIDATED identifier, not the fixture's `displayName`: provenance never comes
+    // from a field the app chooses, or it could claim to be the host.
+    expect(screen.getByText(`pr-bulk-ops \u00B7 Command`)).toBeTruthy()
   })
 
   it('names the contributing app even when the app wrote its own subtitle', () => {
@@ -1379,7 +1381,7 @@ describe('CommandBarOverlay contributed commands', () => {
     mountWithApps([appWith([APPROVE_ALL])])
     enterCommand(/Approve all PRs/)
     expect(screen.getByText(APPROVE_ALL.subtitle)).toBeTruthy()
-    expect(screen.getByText('PR Bulk Ops')).toBeTruthy()
+    expect(screen.getByText('pr-bulk-ops')).toBeTruthy()
   })
 
   it.each(['__proto__', 'constructor', 'toString'])(

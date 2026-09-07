@@ -361,9 +361,9 @@ function readCommand(app: CommandAppRecord, raw: unknown): ContributedCommand | 
   // no label, which is character-for-character what a BUILTIN row shows, so a
   // contributed row whose prompt goes to a tool-enabled agent read as native.
   //
-  // So the label degrades in steps and never becomes empty -- `displayName`, else the
-  // app's `name`, else that name clipped. `name` needs the bound as much as
-  // `displayName` did: `KEBAB_RE` constrains its alphabet and not its length, and this
+  // So the label degrades in steps and never becomes empty -- the app's `name`, else
+  // that name clipped. `name` needs the bound as much as a `displayName` would:
+  // `KEBAB_RE` constrains its alphabet and not its length, and this
   // label is what the rendered subtitle falls back to, so an unclipped 200-character
   // name would buy the attribution back by restoring the per-keystroke scan the caps
   // above exist to bound.
@@ -375,7 +375,25 @@ function readCommand(app: CommandAppRecord, raw: unknown): ContributedCommand | 
   // does not disambiguate the provenance it would appear to qualify. What survives the
   // clip is what the label is for: a prefix of the contributing app's own identifier,
   // which is still unmistakably not a builtin.
-  const rawAppLabel = app.displayName || app.name
+  // The attribution, and it comes from `name` -- NEVER `displayName`.
+  //
+  // `displayName` is free text the app chooses. As provenance that makes it unusable in
+  // two directions, and the paragraphs above understate both:
+  //
+  //   * It can claim to be the host. A manifest saying `displayName: "Kiro Crew"` puts
+  //     that string where this row states its owner, so the row reads as native and the
+  //     reader runs its prompt believing core sent it.
+  //   * `||` is not the emptiness test it looks like. `validate()` refuses only a FALSY
+  //     `displayName` (`if not self.displayName`), so `"   "` -- or a zero-width
+  //     `\u200b` that survives `.trim()` -- is "present", wins over the name, and renders
+  //     the empty label the second paragraph above describes as reading like a builtin.
+  //
+  // `name` is the install identity: `KEBAB_RE` constrains it to `[a-z0-9]` plus single
+  // hyphens, so it can neither be blank nor spell a host word with a space or a capital,
+  // and it is unique across installed apps in a way `displayName` is not. The clip below
+  // already used `name` for exactly this reason; this makes the unclipped path agree with
+  // it instead of preferring a field nothing validates.
+  const rawAppLabel = app.name
   let appLabel = rawAppLabel
   if (appLabel.length > MAX_TITLE) {
     appLabel = app.name.slice(0, MAX_TITLE)
