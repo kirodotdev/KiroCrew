@@ -1622,8 +1622,8 @@ class TestProvisionBuildPaths:
     ) -> None:
         """A DANGLING link at `static/dist` must be replaced, not tripped over.
 
-        `static/dist` is a link on a source install, and KiroCrew makes it
-        itself: `frontend._ensure_tree_dist` publishes exactly this path via
+        `static/dist` is a link on a source install, and Kiro Crew makes
+        it itself: `frontend._ensure_tree_dist` publishes exactly this path via
         `platform_compat.symlink_or_junction`, which falls back to a directory
         JUNCTION on Windows because a directory symlink there needs
         SeCreateSymbolicLinkPrivilege. So on an ordinary unelevated box the link
