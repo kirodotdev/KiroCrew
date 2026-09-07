@@ -97,6 +97,22 @@ class InProcessEmbedder:
             logger.info("Embedding model not yet available — knowledge embeddings disabled")
         return bool(self._available)
 
+    def wait_ready(self, timeout: float | None = None) -> bool:
+        """Wait for the shared backend in a synchronous, one-shot flow.
+
+        Normal Knowledge requests use :meth:`is_available` and never block on
+        model loading. Benchmarks and other one-shot CLI flows may opt into a
+        bounded wait. Backends without a blocking readiness seam retain the
+        non-blocking :meth:`~kiro_crew.embeddings.EmbeddingBackend.is_ready`
+        fallback required by the public backend contract.
+        """
+        backend = self._get_embedder()
+        wait_ready = getattr(backend, "wait_ready", None)
+        ready = wait_ready(timeout=timeout) if callable(wait_ready) else backend.is_ready()
+        self._available = bool(ready)
+        self._last_check = time.time()
+        return self._available
+
     async def is_available_async(self) -> bool:
         """Loop-safe :meth:`is_available` — runs the probe off-loop.
 

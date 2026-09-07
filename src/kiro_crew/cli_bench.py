@@ -22,6 +22,7 @@ from pathlib import Path
 from kiro_crew import cli_help
 
 DEFAULT_OUT_DIR = "bench_results"
+_KB_REAL_EMBED_TIMEOUT_S = 120.0
 
 
 class _BenchError(Exception):
@@ -182,7 +183,7 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
             "hypothetical-exclusion, abstention, citation-fidelity). Distinct from "
             "'bench retrieval', which measures the conversational memory layer. "
             "Defaults to the deterministic toy embedder so it runs anywhere; pass "
-            "--real-embedder for a semantic run when the model is resident."
+            "--real-embedder for a semantic run, loading a cold local model on demand."
         ),
     )
     kb.add_argument(
@@ -201,9 +202,9 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         "--real-embedder",
         action="store_true",
         help=(
-            "Use the in-process Qwen3 embedder instead of the deterministic toy "
-            "stand-in. Refuses if the model is not resident on this host. Required "
-            "for a reportable semantic number."
+            "Use the configured in-process embedder instead of the deterministic toy "
+            "stand-in. Waits for a cold local model to become ready. Required for "
+            "a reportable semantic number."
         ),
     )
     kb.add_argument(
@@ -496,11 +497,13 @@ def _kb_retrieval(args: argparse.Namespace) -> int:
         from kiro_crew.knowledge.embedder import InProcessEmbedder
 
         embedder = InProcessEmbedder()
-        if not embedder.is_available():
+        if not embedder.wait_ready(timeout=_KB_REAL_EMBED_TIMEOUT_S):
             print(
                 "refusing to run: --real-embedder requested but the in-process "
-                "embedding model is not resident on this host. Omit the flag to "
-                "use the deterministic toy embedder (plumbing check only)."
+                "embedding model did not become ready within "
+                f"{_KB_REAL_EMBED_TIMEOUT_S:g} seconds. Run 'kirocrew doctor' for "
+                "model diagnostics, or omit the flag to use the deterministic toy "
+                "embedder (plumbing check only)."
             )
             return 1
         embed_fn = embedder.embed

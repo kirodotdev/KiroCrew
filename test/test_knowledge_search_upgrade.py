@@ -71,6 +71,42 @@ class TestInProcessEmbedder:
         monkeypatch.setattr(emb, "is_available", lambda: False)
         assert emb.embed("hello world") is None
 
+    def test_wait_ready_delegates_to_shared_backend(self, monkeypatch):
+        class _FakeShared:
+            def __init__(self):
+                self.timeouts: list[float | None] = []
+
+            def wait_ready(self, timeout: float | None = None) -> bool:
+                self.timeouts.append(timeout)
+                return True
+
+            def is_ready(self) -> bool:
+                raise AssertionError("wait_ready result should populate the availability cache")
+
+        fake = _FakeShared()
+        monkeypatch.setattr("kiro_crew.embeddings.get_shared_embedder", lambda: fake)
+        emb = InProcessEmbedder()
+
+        assert emb.wait_ready(timeout=12.5) is True
+        assert fake.timeouts == [12.5]
+        assert emb.is_available() is True
+
+    def test_wait_ready_falls_back_for_backend_without_blocking_wait(self, monkeypatch):
+        class _FakeShared:
+            def __init__(self):
+                self.ready_calls = 0
+
+            def is_ready(self) -> bool:
+                self.ready_calls += 1
+                return True
+
+        fake = _FakeShared()
+        monkeypatch.setattr("kiro_crew.embeddings.get_shared_embedder", lambda: fake)
+        emb = InProcessEmbedder()
+
+        assert emb.wait_ready(timeout=12.5) is True
+        assert fake.ready_calls == 1
+
     def test_embed_delegates_to_shared_embedder(self, monkeypatch):
         """embed() routes through the process-wide LlamaCppEmbedder singleton."""
 
