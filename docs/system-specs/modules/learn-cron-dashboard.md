@@ -1089,6 +1089,18 @@ The Developer → Config MCP Tool Search toggle saves `agent.tool_search` as a
 boolean through `PATCH /api/config/kirocrew`. The config watcher refreshes the
 defaults used by new sessions.
 
+Office text previews use `doc_parser.extract_text`. For PPTX, slide order and
+`Slide N` labels come from `ppt/presentation.xml`'s `p:sldIdLst`, resolved through
+its internal slide relationships. ZIP filenames do not determine presentation
+positions. Blank or unresolved slides retain their positions, unreferenced slide
+parts are omitted, and the text budget stops extraction in presentation order.
+Each resolved slide part is extracted at most once, even if malformed metadata
+references it repeatedly.
+Ordering metadata uses the same bounded ZIP reads and hardened XML parser as slide
+content, including when the caller supplies an already-open archive. Incomplete
+containers without `ppt/presentation.xml` retain numeric-filename best-effort
+extraction; a present but unreadable ordering manifest does not fall back to it.
+
 Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
 - `folder_repository.py` — chat-folder load, serialized read-modify-write, rollback,
   full-value write confirmation, a snapshot-handing `hold` (the store lock held
