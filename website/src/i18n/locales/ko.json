@@ -10100,7 +10100,13 @@
       "board_update_failed": "보드 업데이트 실패",
       "open_crew_members": "크루 멤버",
       "open_crew_members_desc": "크루 멤버 페이지를 엽니다. 각 멤버는 자기 스레드를 가진 상주 에이전트입니다.",
-      "open_crew_members_gated_desc": "먼저 설정을 열어 이 미리보기를 켭니다. 켜기 전까지 페이지를 사용할 수 없습니다."
+      "open_crew_members_gated_desc": "먼저 설정을 열어 이 미리보기를 켭니다. 켜기 전까지 페이지를 사용할 수 없습니다.",
+      "remote_sessions_not_shown_in_board_view_other": "보드 열은 로컬 세션만 관리하므로 원격 세션 {{count}}개는 보드 보기에 표시되지 않습니다.",
+      "sessions_from_instance_unavailable": "{{names}}의 세션을 현재 사용할 수 없습니다.",
+      "checking_remote_instances": "원격 인스턴스 확인 중…",
+      "opens_the_instance_dashboard": "이 세션이 아니라 {{name}} 대시보드를 엽니다",
+      "row_opens_instance_dashboard": "{{name}} 대시보드를 엽니다",
+      "remote_instances_list_unavailable": "원격 인스턴스를 나열할 수 없어 해당 세션이 표시되지 않습니다."
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
@@ -10481,6 +10487,8 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "수신 웹훅 토큰, 등록된 컨텍스트, 실행 기록입니다. API는 동작하지만 페이지는 아직 완성되지 않았습니다.",
         "open_webhooks": "Webhooks 열기",
         "webhooks": "Webhooks",
+        "remote_instance_sessions": "원격 인스턴스 세션",
+        "merge_a_connected_remote_instances_live_sessions": "연결된 원격 인스턴스의 활성 세션을 세션 목록에 병합하고 각 세션에 서버 배지를 표시합니다. 작동하지만 아직 완성되지 않았습니다.",
         "intro": {
           "webhooks_summary": "다른 시스템(CI, 리뷰 봇, 배포 파이프라인)이 Webhooks 페이지에서 만든 액세스 토큰으로 메시지를 보내 대신 에이전트를 실행할 수 있습니다.",
           "webhooks_where": "켜면 설정의 이 카드에 “Webhooks 열기” 링크가 나타나고, 새 Webhooks 페이지는 거기서 열립니다. 페이지가 완성될 때까지 사이드바에는 나타나지 않습니다.끄면 페이지가 다시 숨겨질 뿐이며, 만든 토큰은 그대로 유지됩니다.",

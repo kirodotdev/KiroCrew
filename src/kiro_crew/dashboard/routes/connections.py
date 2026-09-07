@@ -128,6 +128,14 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/instances/{id}/capabilities", handlers_instances.api_instances_capabilities
     )
+    # Peer live-session read for the merged-sessions sidebar. A dedicated route
+    # rather than a bare proxy hop because the peer's reply needs a hub-side
+    # filter: the peer lists the slots THIS hub drives for its own
+    # remote-execution bindings, and without that filter one conversation renders
+    # twice (see api_instances_chat_slots). Also registered BEFORE the catch-all.
+    app.router.add_get(
+        "/api/instances/{id}/chat-slots", handlers_instances.api_instances_chat_slots
+    )
     # Generic chat proxy — the carrier for the remote-crew chat view. Forwards
     # a bounded slice of the peer's /api surface over the already-open tunnel;
     # method/path policy lives in the handler (see api_instances_proxy).

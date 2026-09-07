@@ -10410,7 +10410,15 @@
       "board_update_failed": "Aggiornamento della board non riuscito",
       "open_crew_members": "Membri della crew",
       "open_crew_members_desc": "Apre la pagina Membri della crew: ogni membro è un agente permanente con il proprio thread.",
-      "open_crew_members_gated_desc": "Apre prima le Impostazioni per attivare questa anteprima: la pagina non è disponibile finché non lo fai."
+      "open_crew_members_gated_desc": "Apre prima le Impostazioni per attivare questa anteprima: la pagina non è disponibile finché non lo fai.",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} sessione remota non è mostrata nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
+      "remote_sessions_not_shown_in_board_view_many": "{{count}} sessioni remote non sono mostrate nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} sessioni remote non sono mostrate nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
+      "sessions_from_instance_unavailable": "Le sessioni di {{names}} non sono disponibili al momento.",
+      "checking_remote_instances": "Controllo delle istanze remote…",
+      "opens_the_instance_dashboard": "Apre la dashboard di {{name}}, non questa sessione",
+      "row_opens_instance_dashboard": "apre la dashboard di {{name}}",
+      "remote_instances_list_unavailable": "Non è stato possibile elencare le istanze remote, quindi le loro sessioni non vengono mostrate."
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",
@@ -10793,6 +10801,8 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Token dei webhook in ingresso, contesti registrati e cronologia delle esecuzioni. L’API funziona, ma la pagina non è finita.",
         "open_webhooks": "Apri Webhooks",
         "webhooks": "Webhooks",
+        "remote_instance_sessions": "Sessioni dell’istanza remota",
+        "merge_a_connected_remote_instances_live_sessions": "Unisce le sessioni attive di un’istanza remota connessa nell’elenco delle sessioni, ognuna con un badge server. Funzionante, ma non completo.",
         "intro": {
           "webhooks_summary": "Un altro sistema (CI, un bot di revisione, una pipeline di deploy) può avviare il tuo agente per te inviando un messaggio con un token di accesso che crei nella pagina Webhooks.",
           "webhooks_where": "Una volta attivo, su questa scheda nelle Impostazioni compare il link «Apri Webhooks», da cui si apre la nuova pagina Webhooks; non compare nella barra laterale finché non è finita. Disattivarlo nasconde di nuovo la pagina e nulla più; i token che hai creato restano.",

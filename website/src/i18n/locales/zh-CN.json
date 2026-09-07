@@ -10100,7 +10100,13 @@
       "board_update_failed": "看板更新失败",
       "open_crew_members": "团队成员",
       "open_crew_members_desc": "打开团队成员页面——每个成员都是一个常驻代理，各有自己的话题。",
-      "open_crew_members_gated_desc": "会先打开设置以开启此预览——开启之前该页面不可用。"
+      "open_crew_members_gated_desc": "会先打开设置以开启此预览——开启之前该页面不可用。",
+      "remote_sessions_not_shown_in_board_view_other": "看板列仅管理本地会话，因此 {{count}} 个远程会话不会显示在看板视图中。",
+      "sessions_from_instance_unavailable": "{{names}} 的会话当前不可用。",
+      "checking_remote_instances": "正在检查远程实例…",
+      "opens_the_instance_dashboard": "打开 {{name}} 的仪表板，而不是此会话",
+      "row_opens_instance_dashboard": "打开 {{name}} 的仪表板",
+      "remote_instances_list_unavailable": "无法列出远程实例，因此不显示其会话。"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -10481,6 +10487,8 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
         "webhooks": "Webhook",
+        "remote_instance_sessions": "远程实例会话",
+        "merge_a_connected_remote_instances_live_sessions": "将已连接远程实例的实时会话合并到会话列表中，每个会话都带有服务器标记。功能可用，但尚未完成。",
         "intro": {
           "webhooks_summary": "让另一个系统替你启动代理——CI、评审机器人、部署流水线——只需用你在 Webhooks 页面创建的访问令牌发送一条消息。",
           "webhooks_where": "开启后，这张卡片在“设置”里会出现“打开 Webhooks”链接，新的 Webhooks 页面从那里进入；页面完成之前不会出现在侧边栏里。关闭后只是重新隐藏这个页面；你创建的 token 会保留。",

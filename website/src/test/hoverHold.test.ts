@@ -61,6 +61,42 @@ describe('heldSeat – degenerate and absent frames', () => {
   })
 })
 
+describe('heldSeat – origin-qualified identity across a colliding key', () => {
+  // The pin is captured from `data-session-row`, which is origin-qualified, so
+  // `pin.key` and `seenOrder` carry `peer:key` for a peer row. A local row and a
+  // peer row can share the same raw key; the `idOf` accessor is what keeps the
+  // two apart. Without it (the raw-key default) the peer row and the local row
+  // both match, the held row is dropped twice, and the wrong row is reseated.
+  const idOf = (s: { key: string; peer_id?: string }) =>
+    s.peer_id ? `${s.peer_id}:${s.key}` : s.key
+  const collidingList = () => [
+    { key: 'x' }, // local row, raw key 'x'
+    { key: 'x', peer_id: 'astro' }, // peer row, same raw key
+    { key: 'y' },
+  ]
+
+  // Degenerate frame (no measured heights) so the seat is a pure ordinal count
+  // of rows ranked before the held one — the path where a raw-key collision
+  // diverges cleanly. The held row is the PEER `astro:x` at captured index 1.
+  const degPin = () => pin({
+    key: 'astro:x',
+    seenOrder: ['x', 'astro:x', 'y'],
+    heights: {},
+  })
+
+  it('counts only the local `x` before the held peer row when addressed by qualified id', () => {
+    // idOf('x')=0 < mine(1) counts; idOf(peer)='astro:x'=1 not <1; y not <1. Seat 1.
+    expect(heldSeat(degPin(), collidingList(), undefined, idOf)).toBe(1)
+  })
+
+  it('miscounts the colliding peer row as also-before under the raw-key default', () => {
+    // Raw default: BOTH the local `x` and the peer row (raw key `x`) resolve to
+    // rank 0 < 1, so the held row is counted before itself — seat 2, one slot
+    // too low. This is the wrong-row displacement the qualified id prevents.
+    expect(heldSeat(degPin(), collidingList())).toBe(2)
+  })
+})
+
 describe('heldSeat – the frame must cover only the row own container', () => {
   const CONFINED = pin({ key: 'b1', seenOrder: ['b1', 'b2'], heights: { b1: 40, b2: 40 } })
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import json
 import logging
 import math
 import re
@@ -38,6 +39,7 @@ from kiro_crew.dashboard.session_transfer import (
 )
 from kiro_crew.history import SEARCH_MIN_CHARS
 from kiro_crew.instances.constants import (
+    PEER_SLOTS_REPLY_MAX_BYTES,
     PROXY_PATH_MAX_DECODE_PASSES,
     PROXY_REQUEST_BODY_MAX_BYTES,
 )
@@ -1432,6 +1434,318 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
             "unavailable": unavailable,
         }
     )
+
+
+#: Every field ``useInstanceSessions.ts`` reads off a peer slot, with the clamp
+#: each one gets. An ALLOWLIST rather than a passthrough, for the same reason as
+#: ``_cap_rows``: the peer's ``/api/chat/slots`` projection carries far more than
+#: this — a message preview, the pending tool's input and kind, the option
+#: labels, source links, todo and MCP payloads — none of which this list renders.
+#: Forwarding them would hand the browser peer-authored text no local code path
+#: has a use for, and a peer on a build with extra fields could put content into
+#: a row through a key this gateway has never heard of. Timestamps are clamped
+#: short because they are PARSED as ISO-8601 instants, never shown as prose.
+_PEER_SLOT_STR_FIELDS: dict[str, int] = {
+    "key": _PEER_FIELD_MAX_CHARS,
+    "title": _CAP_MAX_STR,
+    "agent": 128,
+    "last_turn_ts": 64,
+    "last_ts": 64,
+    "created": 64,
+}
+
+#: The booleans the sidebar reads, coerced with ``is True`` rather than
+#: truth-tested: a peer answering ``"running": "no"`` must not raise a spinner or
+#: an approval badge it never claimed. The hook normalizes these too — doing it
+#: here as well is what makes the WIRE honest, so this route answers the same way
+#: for any reader, not only the one frontend that happens to re-check.
+_PEER_SLOT_BOOL_FIELDS = ("running", "pending_approval")
+
+
+def _clean_peer_slot(row: object) -> dict[str, object] | None:
+    """Re-shape one untrusted peer slot: allowlist keys, redact, clamp, coerce.
+
+    What ``_clean`` does for a peer's SEARCH row, applied to a peer's LIVE row.
+    Strings go through ``_cap_str``, the sink registered for peer text on this
+    boundary, which redacts BEFORE clamping so a credential cannot survive by
+    sitting past the limit — safe to run on whole fields here because the reply
+    was already bounded to ``PEER_SLOTS_REPLY_MAX_BYTES`` before it was decoded.
+    The peer redacts its own copy through this same chain, which makes the pass
+    idempotent in the healthy case and is exactly why it is cheap enough to not
+    depend on the peer having run it.
+
+    Empty results are OMITTED rather than sent as ``""``: an absent title must
+    stay absent so the row falls back to its placeholder instead of rendering a
+    blank label.
+
+    Returns ``None`` only for a non-dict, which is not a row at all. A row whose
+    ``key`` is missing or unusable is still returned, shaped — the hook drops it
+    on its own ``typeof s.key !== 'string'`` guard, and dropping it here would
+    make a malformed row indistinguishable from a deduplicated one in the audit
+    count below.
+    """
+    if not isinstance(row, dict):
+        return None
+    out: dict[str, object] = {}
+    for field, limit in _PEER_SLOT_STR_FIELDS.items():
+        value = _cap_str(row.get(field), limit)
+        if value:
+            out[field] = value
+    for field in _PEER_SLOT_BOOL_FIELDS:
+        out[field] = row.get(field) is True
+    return out
+
+
+async def api_instances_chat_slots(request: web.Request) -> web.Response:
+    """GET /api/instances/{id}/chat-slots — a peer's LIVE sessions, deduplicated.
+
+    Backs the merged-sessions sidebar preview, where a connected peer's open
+    sessions appear as ordinary rows in this machine's Sessions list. Read-only:
+    a peer-owned session offers no rename, close or pin, because those are
+    local-slot operations that cannot reach a session on another machine.
+
+    Deliberately NOT the frontend calling
+    ``/api/instances/{id}/proxy/api/chat/slots``, which is what it did first. The
+    peer's reply needs a HUB-SIDE filter that only this process can apply. A local
+    session bound to this peer for EXECUTION (``executor == "remote"``) is backed
+    by a real slot ON the peer, so the peer lists it like any other of its own —
+    and the browser would then render one conversation TWICE: once as the local
+    row the user can actually chat in, and once as a read-only peer row that
+    navigates away to the instance pane.
+
+    The two are correlated only by the binding's ``remote_slot``, which is
+    deliberately not projected to the browser (see ``slot_projection``: it is the
+    PEER's slot key, meaningful only inside a request routed back through that
+    instance). Filtering here is what keeps it that way — the dedupe runs where
+    the binding already lives, so no peer slot key has to cross to the browser to
+    make it possible.
+
+    Surviving rows are then re-shaped by ``_clean_peer_slot`` rather than
+    forwarded as the peer sent them. A slot title is MODEL-AUTHORED text from
+    another machine, and ``slot_projection.py`` redacts a LOCAL slot's title
+    (``redact(slot.display_title)``) before the browser ever sees it — so an
+    unshaped peer row would have been the one row in that merged list whose text
+    never met a redactor. Runtime TYPE validation still lives in the sidebar
+    hook, which is the only place that knows what it renders; what happens here
+    is field selection and redaction, neither of which the browser can do for
+    itself once the bytes have already arrived.
+
+    The reply is bounded twice, in BYTES before decoding and in ROWS before
+    shaping, because the two bound different costs — see each bound's own note
+    below. An interrupted read is refused with its own code rather than decoded
+    from whatever arrived: a short session list is indistinguishable from a
+    complete one here, so accepting one would silently lose sessions.
+
+    This route is GET-only, which is narrower than the ``("api", "chat")`` proxy
+    row it replaces for this read — that row admits the peer's mutating verbs
+    too, and nothing here needs them.
+    """
+    denied = _guard(request, "chat_slots")
+    if denied is not None:
+        return denied
+    # Owner-only, the same bar as the proxy and the capability read: this executes
+    # on a peer with the OWNER's manager-held credential and discloses every one
+    # of that peer's open session titles, so a Slack-minted `!dashboard` subject
+    # (an authenticated NON-owner) must not reach it.
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if not is_owner_dashboard_request(request):
+        _audit("chat_slots", "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request, "remote-crew session list is owner-only")
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info.get("id", "")
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit(
+            "chat_slots", "denied", request_id=instance_id, error="instances manager unavailable"
+        )
+        return web.json_response(
+            {"error": "remote crews are not available", "code": "instances_unavailable"},
+            status=503,
+        )
+
+    # Snapshot the driven peer-slot keys BEFORE the await. ``_slots`` is mutated
+    # on the event loop, so reading it synchronously here is consistent by
+    # construction; resolving it after the peer read would race a binding created
+    # or torn down while the tunnel call was in flight and let its duplicate
+    # through. ``is_remote`` requires the WHOLE binding, so a half-written slot
+    # contributes no empty key to the set.
+    driven: set[str] = {
+        slot.remote_slot
+        for slot in state._slots.values()
+        if slot.is_remote and slot.instance_id == instance_id
+    }
+
+    try:
+        async with mgr.proxy_request(instance_id, "GET", "api/chat/slots") as upstream:
+            if not 200 <= upstream.status < 300:
+                _audit(
+                    "chat_slots",
+                    "failure",
+                    request_id=instance_id,
+                    error=f"peer HTTP {upstream.status}",
+                )
+                return web.json_response(
+                    {
+                        "error": "the crew refused to list its sessions",
+                        "code": "peer_slots_refused",
+                    },
+                    status=502,
+                )
+            # Bounded read before decoding, for the same reason as the federated
+            # search and capability caps: resp.json() would buffer the whole body
+            # first, so an unbounded reply could exhaust hub memory before any
+            # downstream check runs.
+            #
+            # Accumulated to EOF rather than taken from one ``read(cap + 1)``.
+            # ``StreamReader.read(n)`` returns as soon as ANY buffered data
+            # exists, so a single call yields a PREFIX of a multi-chunk body —
+            # which would have failed the healthy case, not the hostile one: a
+            # peer with enough open sessions to span two TCP chunks would have
+            # been reported ``peer_slots_malformed`` because the JSON was cut
+            # mid-document. Same shape as ``ssh_tunnel_manager``'s search read
+            # (which carries the same note), refusing the moment the cap is
+            # crossed so the bound still holds against an unbounded reply.
+            chunks: list[bytes] = []
+            received = 0
+            oversized = False
+            try:
+                async for chunk in upstream.content.iter_chunked(65536):
+                    received += len(chunk)
+                    if received > PEER_SLOTS_REPLY_MAX_BYTES:
+                        oversized = True
+                        break
+                    chunks.append(chunk)
+            except Exception as e:
+                # An INTERRUPTED body is its own failure, and without this it was
+                # a 500. The carrier only wraps the phase BEFORE the response —
+                # once it has yielded, a tunnel that drops mid-body
+                # (``ClientConnectionError``), a chunked reply that ends short of
+                # its declared length (``ClientPayloadError``) and the read-idle
+                # timeout expiring all raise straight through this handler. An
+                # unhandled one is a peer-side fault reported as a hub bug, with
+                # no code for the sidebar's banner to name, so it gets one beside
+                # the refused / oversized / malformed replies.
+                #
+                # REFUSED rather than decoding what did arrive, even though a
+                # prefix that happens to parse is possible: a short list and a
+                # complete one are indistinguishable here, so accepting it would
+                # silently drop sessions from the merged list — the same
+                # symptom, and the same wrong diagnosis, as the truncating read
+                # this block replaced.
+                #
+                # Only the exception TYPE is logged or returned, following the
+                # federated-search read this is modelled on: never the partial
+                # body (untrusted peer bytes) and never the credential.
+                # ``asyncio.CancelledError`` is a BaseException, so it is
+                # deliberately NOT absorbed here — swallowing a cancel would
+                # defeat cooperative shutdown.
+                logger.info(
+                    "chat-slots read from %s was interrupted (%s)",
+                    instance_id,
+                    type(e).__name__,
+                )
+                _audit(
+                    "chat_slots",
+                    "failure",
+                    request_id=instance_id,
+                    error=f"interrupted reply ({type(e).__name__})",
+                )
+                return web.json_response(
+                    {
+                        "error": "the crew stopped answering partway through its session list",
+                        "code": "peer_slots_interrupted",
+                    },
+                    status=502,
+                )
+            raw = b"".join(chunks)
+    except ProxyRequestError as e:
+        _audit("chat_slots", "failure", request_id=instance_id, error=e.code)
+        # Literal statuses for the same reason as the proxy route: the carrier
+        # only ever suggests 503 (not connected / no credential) or 502.
+        if e.http_status == 503:
+            return web.json_response({"error": e.message, "code": e.code}, status=503)
+        return web.json_response({"error": e.message, "code": e.code}, status=502)
+
+    if oversized:
+        _audit("chat_slots", "failure", request_id=instance_id, error="oversized reply")
+        return web.json_response(
+            {
+                "error": "the crew returned an oversized session list",
+                "code": "peer_slots_too_large",
+            },
+            status=502,
+        )
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        payload = None
+    if not isinstance(payload, list):
+        _audit("chat_slots", "failure", request_id=instance_id, error="malformed reply")
+        return web.json_response(
+            {
+                "error": "the crew returned a malformed session list",
+                "code": "peer_slots_malformed",
+            },
+            status=502,
+        )
+
+    # Drop the peer slots this hub itself drives. A row carrying no usable string
+    # key is KEPT rather than dropped here: the sidebar hook rejects it anyway,
+    # and dropping it in this pass would make a malformed row indistinguishable
+    # from a deduplicated one in the audit count below.
+    rows = [
+        row
+        for row in payload
+        if not (isinstance(row, dict) and isinstance(row.get("key"), str) and row["key"] in driven)
+    ]
+    filtered = len(payload) - len(rows)
+
+    # A ROW cap as well as the byte cap, because the two bound different costs.
+    # The byte cap bounds what is BUFFERED; this bounds what is then PROCESSED,
+    # and the per-row work is not free — every string field of every surviving
+    # row runs the relay's redaction chain in ``_cap_str``. ``{"key":"x"},`` is
+    # twelve bytes, so a hostile or broken peer fits hundreds of thousands of
+    # rows under 4 MiB and spends the hub's CPU in the redactor rather than its
+    # memory. A byte cap is not a row cap, which is why the capability reader
+    # above carries both.
+    #
+    # Sliced AFTER the dedupe: bounding ``payload`` instead would let the slots
+    # this hub already drives consume the budget, so a peer whose sessions are
+    # mostly hub-driven would report fewer of its OWN than the cap allows. The
+    # dedupe pass itself is a membership test per row and is bounded by the byte
+    # cap; the shaping below is the expensive half and is what this bounds.
+    #
+    # ``MAX_LIVE_SLOTS`` rather than ``_CAP_MAX_ROWS`` even though both are 500
+    # today, because only one of them is DERIVED: it is the ceiling a Kiro Crew
+    # gateway enforces on its own live slots at every path that allocates one,
+    # so a peer running this software cannot honestly answer with more rows than
+    # that, and a raised ceiling should widen this read along with it. The
+    # capability cap is a judgement about how long a PICKER may usefully be and
+    # has no reason to move when the slot ceiling does.
+    #
+    # TRUNCATED rather than refused, unlike the byte cap: bytes past that cap are
+    # only ever garbage, but a peer on a newer build with a higher ceiling is
+    # honest and a refusal would cost it every row. Audited so a short list is
+    # attributable to this bound instead of looking like sessions the peer never
+    # reported.
+    #
+    # Deferred import for the same reason as ``_cap_str``'s: ``state`` pulls in
+    # the websocket hub and the notification bus, and this module is imported on
+    # the gateway's boot path. By the time a request reaches here the module is
+    # already loaded.
+    from kiro_crew.dashboard.state import MAX_LIVE_SLOTS
+
+    over_cap = max(0, len(rows) - MAX_LIVE_SLOTS)
+    if over_cap:
+        rows = rows[:MAX_LIVE_SLOTS]
+    shaped = [cleaned for cleaned in (_clean_peer_slot(row) for row in rows) if cleaned is not None]
+    detail = f"{len(shaped)} rows, {filtered} hub-driven filtered"
+    if over_cap:
+        detail += f", {over_cap} past the row cap"
+    _audit("chat_slots", "success", request_id=f"{instance_id} ({detail})")
+    return web.json_response(shaped)
 
 
 async def api_instances_proxy(request: web.Request) -> web.StreamResponse:

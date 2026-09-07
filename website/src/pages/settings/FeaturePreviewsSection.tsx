@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -40,7 +40,7 @@ import { i18nT } from '../../i18n/t'
  * short-lived, so the cost of a card is paid once and then deleted with it.
  *
  * Under `pages/settings/` ON PURPOSE, reversing the old tab's stance:
- * `gen-settings-registry.mjs` scans this directory, so the three toggles ARE
+ * `gen-settings-registry.mjs` scans this directory, so these toggles ARE
  * indexed into Settings search (`PANEL_TAB_MAP` maps this file to `developer`).
  * The old tab kept itself out of the index so that searching "webhooks" would
  * not advertise a hidden page. In Settings the calculus flips: a control the
@@ -120,6 +120,7 @@ export function FeaturePreviewsSection() {
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
   const crew = usePreviewFlag(PREVIEW_CREW)
   const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
+  const instanceSessions = usePreviewFlag(PREVIEW_INSTANCE_SESSIONS)
 
   return (
     // The wrapper exists for the legacy redirect: `?highlight=key:<anchor>`
@@ -225,6 +226,23 @@ export function FeaturePreviewsSection() {
           description={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
           checked={remoteCrewChat}
           onChange={v => setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, v)}
+        />
+      </SettingsCard>
+      {/* Adjacent to the card above and still SEPARATE from it, because the two
+          point opposite ways across the same tunnel: that flag DISPATCHES a chat
+          to another machine, this one LISTS the sessions that machine already
+          owns. Sharing a card would imply flipping one gets the other.
+
+          NO ingress button, and for a different reason than the crew cards: they
+          omit it because their door is already on screen, whereas this preview
+          has no page of its own at all — it changes the Sessions list every user
+          is already looking at, so the toggle IS the whole affordance. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.remote_instance_sessions')}
+          description={i18nT('pages.developer.featurePreviewsTab.merge_a_connected_remote_instances_live_sessions')}
+          checked={instanceSessions}
+          onChange={v => setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, v)}
         />
       </SettingsCard>
     </SettingsSection>

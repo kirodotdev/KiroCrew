@@ -10255,7 +10255,14 @@
       "board_update_failed": "बोर्ड अपडेट विफल",
       "open_crew_members": "क्रू सदस्य",
       "open_crew_members_desc": "क्रू सदस्य पेज खोलता है — हर सदस्य एक स्थायी एजेंट है, जिसका अपना थ्रेड है।",
-      "open_crew_members_gated_desc": "पहले सेटिंग्स खोलता है, ताकि तुम इस प्रीव्यू को चालू कर सको — चालू करने तक यह पेज उपलब्ध नहीं है।"
+      "open_crew_members_gated_desc": "पहले सेटिंग्स खोलता है, ताकि तुम इस प्रीव्यू को चालू कर सको — चालू करने तक यह पेज उपलब्ध नहीं है।",
+      "remote_sessions_not_shown_in_board_view_one": "{{count}} रिमोट सत्र बोर्ड व्यू में नहीं दिखाया जाता — बोर्ड कॉलम केवल स्थानीय सत्रों को प्रबंधित करते हैं।",
+      "remote_sessions_not_shown_in_board_view_other": "{{count}} रिमोट सत्र बोर्ड व्यू में नहीं दिखाए जाते — बोर्ड कॉलम केवल स्थानीय सत्रों को प्रबंधित करते हैं।",
+      "sessions_from_instance_unavailable": "{{names}} के सत्र इस समय अनुपलब्ध हैं।",
+      "checking_remote_instances": "रिमोट इंस्टैंस जाँचे जा रहे हैं…",
+      "opens_the_instance_dashboard": "इस सत्र के बजाय {{name}} का डैशबोर्ड खोलता है",
+      "row_opens_instance_dashboard": "{{name}} का डैशबोर्ड खोलता है",
+      "remote_instances_list_unavailable": "रिमोट इंस्टैंस सूचीबद्ध नहीं किए जा सके, इसलिए उनके सत्र नहीं दिखाए गए हैं।"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
@@ -10637,6 +10644,8 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "इनबाउंड वेबहुक टोकन, पंजीकृत संदर्भ और रन इतिहास. API काम करता है, पेज अभी पूरा नहीं हुआ है.",
         "open_webhooks": "वेबहुक खोलें",
         "webhooks": "वेबहुक",
+        "remote_instance_sessions": "रिमोट इंस्टैंस के सत्र",
+        "merge_a_connected_remote_instances_live_sessions": "किसी कनेक्टेड रिमोट इंस्टैंस के सक्रिय सत्रों को सत्र सूची में मिला देता है, और हर एक पर सर्वर बैज दिखाता है। यह काम करता है, लेकिन अभी पूरा नहीं हुआ है।",
         "intro": {
           "webhooks_summary": "कोई दूसरा सिस्टम (CI, रिव्यू बॉट, डिप्लॉय पाइपलाइन) Webhooks पेज पर बनाए गए access token के साथ एक मैसेज भेजकर तुम्हारी जगह एजेंट चला सकता है।",
           "webhooks_where": "इसे चालू करने पर सेटिंग्स में इस कार्ड पर “Webhooks खोलो” लिंक दिखता है; नया Webhooks पेज वहीं से खुलता है। पेज पूरा होने तक यह साइडबार में नहीं दिखता। इसे बंद करने पर पेज बस फिर छिप जाता है; तुम्हारे बनाए token बने रहते हैं।",
