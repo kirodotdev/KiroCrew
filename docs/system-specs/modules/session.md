@@ -180,6 +180,13 @@ send time.
   boundaries: steer cut, compaction, clear, agent switch) is load-bearing for the
   promise-only guard.
 
+  A successfully delivered non-blocking `ask_question` directive is different
+  from a generic productive tool-only turn: its card is the intended terminal
+  output, and the tool explicitly tells the model to end until the user's answer
+  arrives as a new message. The runner therefore records the successful card
+  outcome and skips the entire empty-response ladder. Delivery failures keep the
+  normal behavior so the model can fall back to a plain-text question.
+
   **Turn-end diagnostics.** The branch emits ONE privacy-safe WARNING per empty
   verdict, after the rung is chosen, naming a closed `cause` and `rung` plus
   booleans: `provider_empty`, `tool_only`, `thinking_only`, `visible_partial`,

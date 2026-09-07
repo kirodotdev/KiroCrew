@@ -60,6 +60,8 @@ from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
 
+QUESTION_CARD_SHOWN_PREFIX = "Question card shown in this session."
+
 # Card directives require a connected dashboard surface. ``set_project`` is
 # admitted by the user-surface provenance gate below, then separately requires
 # the current turn to own the slot it would mutate.
@@ -849,7 +851,7 @@ async def _ask_question(state: Any, slot: Any, args: dict[str, Any]) -> str:
             "ask in plain text and end your turn instead."
         )
     return (
-        "Question card shown in this session. End your turn now — the user's "
+        f"{QUESTION_CARD_SHOWN_PREFIX} End your turn now — the user's "
         "answer will arrive as your next message; do not re-ask or guess."
     )
 

@@ -22,6 +22,7 @@ The ``_meta.kiro`` fixture shape mirrors ``test_todo_list_surface.py``.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -213,8 +214,9 @@ async def _drive(
     monkeypatch,
     *,
     directive_user_origin: bool = True,
+    applied_result: str | None = "[applied]",
 ):
-    """Stream *events* through _run_chat; return the apply_session_directive spy."""
+    """Stream *events* through _run_chat; optionally stub the directive applier."""
     from kiro_crew.dashboard import chat_runner
 
     async def _stream(_msg):
@@ -228,8 +230,10 @@ async def _drive(
     client.client = None
     state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
 
-    spy = AsyncMock(return_value="[applied]")
-    monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
+    spy = None
+    if applied_result is not None:
+        spy = AsyncMock(return_value=applied_result)
+        monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
 
     await chat_runner._run_chat(
         state,
@@ -337,6 +341,74 @@ class TestChatRunnerDirectiveSeam:
         assert call.args[3] == "monitor_start"  # kind
         assert call.args[4] == args  # decoded, validated args
         assert call.kwargs["producer_is_user_facing"] is True
+
+    @pytest.mark.asyncio
+    async def test_successful_question_card_ends_turn_without_recovery(
+        self, tmp_path, monkeypatch
+    ):
+        """A delivered non-blocking question card is the turn's terminal output.
+
+        The tool explicitly tells the model to end with no assistant text. Treating
+        that shape like a generic tool-only turn injects a continuation, which asks
+        the model to finish the same request and can post the same card repeatedly.
+        """
+        from kiro_crew.dashboard import chat_runner
+
+        state = _stub_state(tmp_path)
+        state.post_question_card = AsyncMock(return_value=1)
+        slot = state.get_or_create_slot("question-terminal")
+        slot._titled = True
+        questions = [
+            {
+                "question": "Choose one",
+                "options": [{"label": "Option A"}, {"label": "Option B"}],
+            }
+        ]
+        marker = session_directive.encode(
+            "ask_question", {"questions": questions}, "Question card requested."
+        )
+        events = [
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-question",
+                title="Ask the user",
+                tool_name="ask_question",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-question",
+                tool_output=marker,
+                tool_final=True,
+            ),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        queue_calls = []
+        queue_insert = type(slot).queue_insert
+
+        def _record_queue(self_slot, *args, **kwargs):
+            queue_calls.append((args, kwargs))
+            return queue_insert(self_slot, *args, **kwargs)
+
+        monkeypatch.setattr(type(slot), "queue_insert", _record_queue)
+        monkeypatch.setattr(
+            chat_runner, "_start_next_queued_turn", AsyncMock(return_value=False)
+        )
+
+        try:
+            await _drive(state, slot, events, monkeypatch, applied_result=None)
+        finally:
+            tasks = list(state._background_tasks)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        state.post_question_card.assert_awaited_once_with(slot.key, questions)
+        assert queue_calls == [], "a terminal question card queued a recovery turn"
+        assert slot._empty_response_retries == 0
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert not any("continu" in m.get("content", "").lower() for m in notices)
 
     @pytest.mark.asyncio
     async def test_automation_provenance_reaches_directive_applier(

@@ -127,7 +127,10 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_agent,
     read_turn_model,
 )
-from kiro_crew.dashboard.session_directive_apply import apply_session_directive
+from kiro_crew.dashboard.session_directive_apply import (
+    QUESTION_CARD_SHOWN_PREFIX,
+    apply_session_directive,
+)
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
@@ -6173,6 +6176,16 @@ async def _run_chat(
     # text and overwrite the applied outcome in the transcript. Replaying the
     # stored output keeps every frame consistent and marker-free.
     _dir_consumed_out: dict[str, str] = {}
+    # A successfully posted non-blocking question card is the intended terminal
+    # output of this turn. The tool tells the model to end without assistant
+    # text, so empty-response recovery must not inject a closing continuation.
+    _terminal_question_posted = False
+
+    def _record_terminal_question(kind: str, outcome: str) -> None:
+        nonlocal _terminal_question_posted
+        if kind == "ask_question" and outcome.startswith(QUESTION_CARD_SHOWN_PREFIX):
+            _terminal_question_posted = True
+
     # When this turn began, for bounding an out-of-band directive claim to it.
     # A directive belongs to the turn that asked for it: a record parked by a turn
     # that was cancelled before consuming it must not be claimable by a later one.
@@ -8147,14 +8160,16 @@ async def _run_chat(
                             else None
                         )
                     if _oob:
+                        _applied_kind = str(_oob.get("kind") or "")
                         _applied_one = await apply_session_directive(
                             state,
                             slot,
                             session_key,
-                            str(_oob.get("kind") or ""),
+                            _applied_kind,
                             dict(_oob.get("args") or {}),
                             producer_is_user_facing=_directive_user_origin,
                         )
+                        _record_terminal_question(_applied_kind, _applied_one)
                         logger.info(
                             "session-directive applied OUT OF BAND for %s "
                             "(tool_call_id=%s, kind=%s): this backend emits no "
@@ -8334,16 +8349,16 @@ async def _run_chat(
                             # arm two loops or render two cards, so retire the
                             # twin now that the marker path has taken it.
                             directive_queue.discard(session_key)
-                            _out = _redact_tool_field(
-                                await apply_session_directive(
-                                    state,
-                                    slot,
-                                    session_key,
-                                    _dir_tool,
-                                    _dir_args,
-                                    producer_is_user_facing=_directive_user_origin,
-                                )
+                            _applied_one = await apply_session_directive(
+                                state,
+                                slot,
+                                session_key,
+                                _dir_tool,
+                                _dir_args,
+                                producer_is_user_facing=_directive_user_origin,
                             )
+                            _record_terminal_question(_dir_tool, _applied_one)
+                            _out = _redact_tool_field(_applied_one)
                             _dir_consumed_out[event.tool_call_id] = _out
                         else:
                             # Recorded directive tool but no valid marker in the
@@ -10712,6 +10727,7 @@ async def _run_chat(
         elif (
             _stop_reason != STOP_REASON_CANCELLED
             and not _produced_visible_output
+            and not _terminal_question_posted
             and not _refusal_reasons
         ):
             # Model returned an empty response — retry once, then notify user.
