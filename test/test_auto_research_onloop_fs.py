@@ -396,3 +396,173 @@ class TestCancellationSettlesWorker:
         )
         assert result == 42
         assert observed == [], "on_settled must not fire on the uncancelled path"
+
+
+class TestCampaignTextIsUtf8NotTheHostCodePage:
+    """Research prose is written and read as UTF-8, whatever the host code page.
+
+    The same reasoning this module opens with: ``FINDINGS.md`` is the report an
+    LLM research loop produces, so its content is bounded by the model's output
+    and not by anything this code controls. A model routinely emits characters
+    the host's legacy ANSI code page cannot represent -- an emoji is the common
+    one. ``Path.write_text`` with no ``encoding`` encodes with
+    ``locale.getpreferredencoding()``, which is UTF-8 on POSIX but the ANSI code
+    page on Windows, so on a CJK Windows host that write raises
+    ``UnicodeEncodeError`` and the cycle's finding is lost rather than saved.
+
+    Measured on a `cp950` host before the fix, calling these very helpers:
+
+        _write_text             UnicodeEncodeError: 'cp950' codec can't encode
+                                character '\\U0001f600'
+        _write_new_cycle_files  UnicodeEncodeError: ... same
+
+    The bug is host-conditioned, so a UTF-8 CI runner cannot make it fail. What
+    IS checkable everywhere is the property that fixes it: the bytes on disk are
+    UTF-8, chosen by this code, rather than whatever the host would have picked.
+    That is what these assert, so the guard holds on the runners too.
+
+    The JSON paths in this module are deliberately NOT covered here:
+    ``json.dumps`` defaults to ``ensure_ascii=True``, so those files are pure
+    ASCII and decode identically under every code page. Pinning them would be
+    noise.
+    """
+
+    #: A finding shaped like real model output: an emoji (outside every legacy
+    #: ANSI code page), an em dash and CJK (inside some, outside others).
+    FINDING = "Cycle 1 \U0001f600 adoption — up 12% 已完成"
+
+    def _campaign(self, tmp_path: Path, name: str = "aaaa0100") -> Path:
+        d = tmp_path / name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_write_text_encodes_utf8(self, tmp_path: Path) -> None:
+        target = self._campaign(tmp_path) / "FINDINGS.md"
+        h._write_text(target, self.FINDING)
+        assert target.read_bytes() == self.FINDING.encode("utf-8")
+
+    def test_new_cycle_files_encode_utf8(self, tmp_path: Path) -> None:
+        target = self._campaign(tmp_path) / "cycle-1.md"
+        assert h._write_new_cycle_files([(target, self.FINDING)]) is True
+        assert target.read_bytes() == self.FINDING.encode("utf-8")
+
+    def test_findings_survive_a_fork_round_trip(self, tmp_path: Path) -> None:
+        """The fork path reads a parent's findings and writes them straight back.
+
+        Read and write must agree; a decode-then-encode through two different
+        code pages is how a forked campaign silently inherits mojibake.
+        """
+        src = self._campaign(tmp_path, "aaaa0101") / "FINDINGS.md"
+        src.write_bytes(self.FINDING.encode("utf-8"))
+        dst = self._campaign(tmp_path, "aaaa0102") / "FINDINGS.md"
+
+        h._copy_parent_findings(src, dst)
+
+        assert dst.read_bytes() == self.FINDING.encode("utf-8")
+        assert h._read_text_or_missing(dst) == self.FINDING
+
+    def test_the_guard_can_actually_fail(self) -> None:
+        """Guard the guard: the fixture really does defeat a legacy code page.
+
+        Without this, every assertion above would pass just as happily on a
+        payload that was ASCII all along, and would be pinning nothing.
+        """
+        with pytest.raises(UnicodeEncodeError):
+            self.FINDING.encode("cp950")
+        assert self.FINDING.encode("utf-8").decode("utf-8") == self.FINDING
+
+    def test_a_legacy_code_page_campaign_reads_back_recoverable(self, tmp_path: Path) -> None:
+        """A campaign written BEFORE the encoding was pinned must not 500.
+
+        Its `FINDINGS.md` is sitting on disk in the host code page, so a strict
+        UTF-8 read would raise and make every report/fork/export route fail for
+        good. Nothing on disk records which code page that was, so the read does
+        not pick one: it decodes ``latin-1``, which never raises and maps every
+        byte to the code point of the same value. The report therefore renders,
+        the file is untouched, and the original bytes are recoverable from the
+        string -- byte-exact up to the universal-newline translation text mode
+        applies, which is stated rather than glossed, and is why the fixture
+        carries a ``\r\n``.
+        """
+        raw = "Old finding - 已完成\r\nsecond line".encode("cp950")
+        target = self._campaign(tmp_path) / "FINDINGS.md"
+        target.write_bytes(raw)
+        with pytest.raises(UnicodeDecodeError):
+            raw.decode("utf-8")  # guard the guard: the non-UTF-8 branch is reached
+        assert b"\r\n" in raw  # ... and the newline fold is genuinely exercised
+
+        out = h._read_text_or_missing(target)
+
+        assert out is not None
+        assert out.encode("latin-1") == raw.replace(b"\r\n", b"\n")
+        assert target.read_bytes() == raw, "reading a report must not rewrite it"
+
+    def test_bytes_valid_under_both_decodings_resolve_to_the_declared_contract(
+        self, tmp_path: Path
+    ) -> None:
+        """The ambiguous case: bytes that decode successfully under BOTH candidates.
+
+        cp950 ``癒`` is the two bytes ``c2 a1``, and those same bytes are valid
+        UTF-8 for ``¡``; 899 cp950 multi-byte characters have that property. A
+        read that chose its codec by trying the host code page could not tell
+        the two apart, because a decode succeeding is not evidence of what wrote
+        the file -- and no marker, version or writer generation is stored
+        anywhere in a campaign directory to break the tie.
+
+        So the tie is not broken by inspection. UTF-8 is the declared contract
+        for campaign prose, these bytes are read as UTF-8, and that answer is
+        the same on every host whatever its code page happens to be.
+        """
+        raw = "癒".encode("cp950")
+        assert raw == b"\xc2\xa1"
+        assert raw.decode("utf-8") == "\u00a1"  # guard the guard: genuinely ambiguous
+        target = self._campaign(tmp_path) / "FINDINGS.md"
+        target.write_bytes(raw)
+
+        assert h._read_text_or_missing(target) == "\u00a1"
+        assert target.read_bytes() == raw, "reading a report must not rewrite it"
+
+    def test_the_read_never_consults_the_host_code_page(self) -> None:
+        """Ratchet: a code-page probe must not come back into this read path.
+
+        Picking the host codec assumes the READING host wrote the file. It need
+        not have: a campaign directory can be copied or restored between
+        machines, and a host's code page can change under a campaign that never
+        moved. That assumption makes one directory decode differently in two
+        places, which is a worse contract than a render that is uniformly
+        latin-1 and uniformly reversible.
+        """
+        assert not hasattr(h, "locale"), "handlers imports a host-code-page probe again"
+        source = inspect.getsource(h._read_campaign_text)
+        assert "getpreferredencoding" not in source.split('"""')[-1]
+
+    def test_an_undecodable_file_degrades_without_destroying_it(self, tmp_path: Path) -> None:
+        """Bytes no candidate decoding claims must not become an HTTP 500.
+
+        They must also survive: ``errors="replace"`` throws away exactly the
+        bytes a later correct migration would need, so a decode that dropped
+        them would make the damage permanent on the one file that still had the
+        original.
+        """
+        raw = b"\xff\xfe\x00 broken \xf0\x28\x8c\x28"
+        target = self._campaign(tmp_path) / "FINDINGS.md"
+        target.write_bytes(raw)
+
+        out = h._read_text_or_missing(target)
+
+        assert out is not None and "broken" in out
+        assert out.encode("latin-1") == raw
+        assert target.read_bytes() == raw, "a lossy decode must not be persisted"
+
+    def test_a_crlf_findings_file_still_comes_back_with_newlines(self, tmp_path: Path) -> None:
+        """Text mode's universal-newline translation is load-bearing here.
+
+        Two tests in this tree compare a findings file's contents after a fork,
+        so a read that returned ``\r\n`` would shift them. Both the UTF-8 read
+        and the legacy fallback stay in text mode, which is what keeps this
+        free.
+        """
+        target = self._campaign(tmp_path) / "FINDINGS.md"
+        target.write_bytes(b"line one\r\nline two\r\n")
+
+        assert h._read_text_or_missing(target) == "line one\nline two\n"
