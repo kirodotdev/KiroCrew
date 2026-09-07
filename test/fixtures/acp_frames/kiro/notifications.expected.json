@@ -92,7 +92,8 @@
         "tool_call_id": "kiro-tool-0002",
         "tool_input": "{\n  \"path\": \"~/notes.md\",\n  \"token\": \"[REDACTED: credential]\"\n}",
         "tool_input_redacted": true,
-        "tool_kind": "read"
+        "tool_kind": "read",
+        "wire_title": "read the deploy notes"
       }
     ],
     "frame": "session/update",

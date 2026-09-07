@@ -76,7 +76,8 @@
         "title": "shell",
         "tool_call_id": "call_ReplayCorpus1",
         "tool_input": "{\n  \"command\": [\n    \"bash\",\n    \"-lc\",\n    \"echo acp-replay-corpus\"\n  ]\n}",
-        "tool_kind": "execute"
+        "tool_kind": "execute",
+        "wire_title": "shell"
       }
     ],
     "frame": "session/update",

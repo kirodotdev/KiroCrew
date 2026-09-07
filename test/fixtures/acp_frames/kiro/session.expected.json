@@ -68,7 +68,8 @@
         "tool_call_id": "kiro-tool-0001",
         "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__tool_use_purpose\": \"Echo the corpus marker\"\n}",
         "tool_kind": "execute",
-        "tool_purpose": "Echo the corpus marker"
+        "tool_purpose": "Echo the corpus marker",
+        "wire_title": "echo acp-replay-corpus"
       }
     ],
     "frame": "session/update",

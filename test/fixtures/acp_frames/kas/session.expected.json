@@ -42,7 +42,8 @@
         "tool_call_id": "kas-tool-0001",
         "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"__toolUsePurpose\": \"Echo the corpus marker\"\n}",
         "tool_kind": "execute",
-        "tool_purpose": "Echo the corpus marker"
+        "tool_purpose": "Echo the corpus marker",
+        "wire_title": "executeBash"
       }
     ],
     "frame": "session/update",

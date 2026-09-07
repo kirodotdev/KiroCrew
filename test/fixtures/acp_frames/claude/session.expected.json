@@ -64,7 +64,8 @@
         "title": "Echo the corpus marker",
         "tool_call_id": "toolu_01ReplayCorpus",
         "tool_input": "{\n  \"command\": \"echo acp-replay-corpus\",\n  \"description\": \"Echo the corpus marker\"\n}",
-        "tool_kind": "execute"
+        "tool_kind": "execute",
+        "wire_title": "Bash"
       }
     ],
     "frame": "session/update",
