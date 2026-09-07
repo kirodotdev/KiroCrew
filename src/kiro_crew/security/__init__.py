@@ -330,6 +330,7 @@ from .paths import (
     MAX_SCANNABLE_COMMAND_CHARS,
     MAX_SCANNABLE_SOURCE_BODY_CHARS,
     PathResolutionStalled,
+    ProjectPathVerdict,
     _candidate_forms,
     _expanded_env_root,
     _home_dir_targets,
@@ -361,6 +362,7 @@ from .paths import (
     is_sensitive_path,
     is_sensitive_write_path,
     path_contains_sensitive,
+    resolve_project_path,
     sandbox_credential_targets,
     sensitive_home_dirs,
     write_protected_home_paths,
@@ -1150,9 +1152,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                     seen_views.add(candidate)
                     views.append(candidate)
             joined_here: set[str] = set()
-            payloads = _nested_shell_payloads(
-                tokens, allow_join=allow_join, joined_out=joined_here
-            )
+            payloads = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
             programs = _argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -1401,9 +1401,7 @@ def is_denied(
         agent cannot diagnose at all. The span is the whole subject because a floor
         decides on the argv's SHAPE rather than at an offset.
         """
-        diagnostic = (
-            refusal_diagnostic(rule, component, tool_name) if rule and component else None
-        )
+        diagnostic = refusal_diagnostic(rule, component, tool_name) if rule and component else None
         return _deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
         )

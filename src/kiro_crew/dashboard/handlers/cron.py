@@ -21,6 +21,7 @@ from kiro_crew import model_registry
 from kiro_crew.config.loader import config_dir
 from kiro_crew.context import ContextBuilder
 from kiro_crew.cron import (
+    _UNSET,
     CronPendingMismatch,
     CronStoreBusy,
     CronStoreUnreadable,
@@ -586,10 +587,31 @@ async def api_crons_create(request: web.Request) -> web.Response:
             body, "source_template_prompt", max_len=MAX_CRON_MESSAGE
         )
         member_id = validate_string_field(body, "member_id", max_len=MAX_SHORT_STRING)
+        project_path = validate_string_field(body, "project_path", max_len=MAX_SHORT_STRING)
     except ValidationError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     if not name or not message:
         return web.json_response({"error": "name and message required"}, status=400)
+    # project_path binds the job's agent to an arbitrary cwd at fire time, so
+    # it carries the same owner-authorization boundary as the agents-roster
+    # `project_path` query param (handlers/agents.py): an allow-listed
+    # non-owner dashboard token (app == "", which sails through every app-
+    # token check) must not be able to create a job that later reads and
+    # returns another project's files just by naming its path. Denied and
+    # audited rather than silently ignored, matching that read-side gate.
+    if project_path and not is_owner_dashboard_request(request):
+        try:
+            _sel().log_api_access(
+                caller="dashboard",
+                operation="cron.create.project_path",
+                outcome="denied",
+                source="dashboard",
+                resources=project_path,
+                error="not owner",
+            )
+        except Exception:
+            logger.debug("SEL logging failed for cron create project_path denial", exc_info=True)
+        return web.json_response({"error": "project_path requires owner authorization"}, status=403)
     every = body.get("every")
     if not every and not cron_expr and schedule:
         # Treat schedule string as cron expr if 5-field, else as interval
@@ -672,6 +694,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         # own copy. Both "" for a blank create. Never gate execution.
         "source_preset": (source_preset or ""),
         "source_template_prompt": (source_template_prompt or ""),
+        "project_path": (project_path or ""),
     }
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
@@ -824,6 +847,40 @@ async def api_cron_update(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # A project-bound job's message/agent/schedule can be rewritten and later
+    # fired with `job.project_path` as its execution cwd -- gating only the
+    # `project_path` field itself (below) protected the BINDING but not the
+    # already-bound JOB: a non-owner could edit an owner-bound job's message
+    # (ungated) or trigger it (api_cron_run, also ungated) and read that
+    # project's files without ever touching project_path. So this checks the
+    # PERSISTED job's binding up front, before any field is applied, and
+    # requires owner authorization for the update AS A WHOLE whenever a
+    # binding already exists -- caught by review. The case where THIS body
+    # is newly requesting a project_path is checked separately below, AFTER
+    # validate_string_field, so a malformed (non-string) project_path from a
+    # non-owner still surfaces its proper 400 rather than being masked by
+    # this 403 -- `existing_job.project_path` is always a validated string
+    # already, so no such ordering hazard applies to it.
+    existing_job = await state.crons.get_job_async(job_id)
+    if existing_job is None:
+        return web.json_response({"error": "job not found"}, status=404)
+    if existing_job.project_path and not is_owner_dashboard_request(request):
+        try:
+            _sel().log_api_access(
+                caller="dashboard",
+                operation="cron.update.project_bound_job",
+                outcome="denied",
+                source="dashboard",
+                resources=job_id,
+                error="not owner",
+            )
+        except Exception:
+            logger.debug(
+                "SEL logging failed for cron update project-bound-job denial", exc_info=True
+            )
+        return web.json_response(
+            {"error": "updating a project-bound job requires owner authorization"}, status=403
+        )
     kwargs: dict[str, Any] = {}
     for key in (
         "name",
@@ -914,10 +971,67 @@ async def api_cron_update(request: web.Request) -> web.Response:
             safe_tz, _ = redact_credentials(redact_exfiltration_urls(tz_val)[0])
             return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
         kwargs["timezone"] = tz_val
+    if "project_path" in body:
+        # Same validator as create (isinstance(str) + sanitize + length cap)
+        # so PATCH cannot diverge from POST: a non-string JSON project_path
+        # (array/object/number) would otherwise reach `.strip()` unguarded
+        # here and raise AttributeError -> HTTP 500 instead of a clean 400.
+        # Deliberately validated BEFORE the owner check below: a malformed
+        # non-owner request must still surface its proper 400, not a 403
+        # that masks the real problem.
+        try:
+            validated_project_path = validate_string_field(
+                body, "project_path", max_len=MAX_SHORT_STRING
+            )
+        except ValidationError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_project_path"}, status=400
+            )
+        # The job-level gate above already covers a job with an EXISTING
+        # binding. This covers the other half: a non-owner newly SETTING a
+        # binding on a job that has none yet -- both setting and clearing
+        # (an empty string here) are privileged mutations of this field.
+        if validated_project_path and not is_owner_dashboard_request(request):
+            try:
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="cron.update.project_path",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=validated_project_path,
+                    error="not owner",
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for cron update project_path denial", exc_info=True
+                )
+            return web.json_response(
+                {"error": "project_path requires owner authorization"}, status=403
+            )
+        kwargs["project_path"] = validated_project_path
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
+    # The owner-authorization decisions above were made against a SNAPSHOT
+    # (`existing_job`) read outside any lock; the actual mutation below
+    # acquires the store's lock separately. A concurrent owner bind/unbind
+    # landing in that gap would let a non-owner's already-cleared request
+    # execute against a binding it was never actually checked against --
+    # closed by re-verifying the same field atomically, under the lock,
+    # immediately before the write: an owner's own request needs no such
+    # guard (their authorization does not depend on the binding's value).
+    if not is_owner_dashboard_request(request):
+        kwargs["expect_project_path"] = existing_job.project_path
     try:
         job = await state.crons.update_job_async(job_id, **kwargs)
+    except CronPendingMismatch:
+        return web.json_response(
+            {
+                "error": "the job's project binding changed after it was checked — "
+                "reload and try again",
+                "code": "stale_project_binding",
+            },
+            status=409,
+        )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:
@@ -1634,6 +1748,27 @@ async def api_cron_run(request: web.Request) -> web.Response:
     job = await state.crons.get_job_async(job_id)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
+    # A project-bound job fires with `job.project_path` as its execution
+    # cwd, reading and potentially returning that project's files. Manual
+    # trigger has no owner gate elsewhere in this route -- without this, a
+    # non-owner allow-listed dashboard token could fire an owner-bound job
+    # on demand and exfiltrate the project's data, same class of finding as
+    # the PATCH-time gate above (`api_cron_update`) but for the run path.
+    if job.project_path and not is_owner_dashboard_request(request):
+        try:
+            _sel().log_api_access(
+                caller="dashboard",
+                operation="cron.run.project_bound_job",
+                outcome="denied",
+                source="dashboard",
+                resources=job_id,
+                error="not owner",
+            )
+        except Exception:
+            logger.debug("SEL logging failed for cron run project-bound-job denial", exc_info=True)
+        return web.json_response(
+            {"error": "triggering a project-bound job requires owner authorization"}, status=403
+        )
     # Reject if a run is already in flight. Overwriting _running_tasks[job_id]
     # would orphan the prior task's handle (it could no longer be
     # tracked/cancelled/joined) and allow overlapping duplicate runs. The
@@ -1644,7 +1779,18 @@ async def api_cron_run(request: web.Request) -> web.Response:
     # because the guard and the assignment are not separated by an await.)
     if job_id in state.crons._running_tasks or state.crons.is_running(job_id):
         return web.json_response({"error": "job is already running"}, status=409)
-    task = asyncio.create_task(state.crons.run_job(job_id))  # type: ignore[arg-type]
+    # The owner-authorization decision above used a snapshot read outside any
+    # lock; `run_job` independently re-syncs its OWN fresh snapshot from disk
+    # once the task actually starts, well after this handler has returned.
+    # An owner binding the project in that gap would let this already-
+    # authorized (against the stale, unbound snapshot) non-owner's dispatch
+    # execute against the newly-bound project -- closed by passing the same
+    # field forward so `run_job` can re-verify it itself; an owner's own
+    # request needs no such guard.
+    run_kwargs: dict[str, Any] = {}
+    if not is_owner_dashboard_request(request):
+        run_kwargs["expect_project_path"] = job.project_path
+    task = asyncio.create_task(state.crons.run_job(job_id, **run_kwargs))  # type: ignore[arg-type]
     state.crons._running_tasks[job_id] = task  # type: ignore[assignment]
 
     def _on_done(t: asyncio.Task, _jid: str = job_id) -> None:  # type: ignore[type-arg]
@@ -1742,8 +1888,56 @@ async def api_cron_enable(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled", True)
+    # Re-enabling an owner-disabled project-bound job hands it back to the
+    # scheduler, which fires it against `job.project_path` the same as a
+    # manual trigger -- unlike run, this route had NO owner gate at all
+    # (create/update/run all do, per the same class of finding). Only the
+    # RE-ENABLE direction needs the check: disabling one's own or anyone
+    # else's job stops execution rather than starting it, so it carries no
+    # equivalent exfiltration risk.
+    if enabled:
+        job = await state.crons.get_job_async(job_id)
+        if job and job.project_path and not is_owner_dashboard_request(request):
+            try:
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="cron.enable.project_bound_job",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=job_id,
+                    error="not owner",
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for cron enable project-bound-job denial",
+                    exc_info=True,
+                )
+            return web.json_response(
+                {"error": "enabling a project-bound job requires owner authorization"},
+                status=403,
+            )
+        # Same TOCTOU close as api_cron_update: the owner-authorization
+        # decision above used a snapshot read outside any lock, so
+        # re-verify the same field atomically under the lock right before
+        # the actual toggle -- an owner's own request needs no such guard.
+        expect_project_path = (
+            job.project_path if job and not is_owner_dashboard_request(request) else _UNSET
+        )
+    else:
+        expect_project_path = _UNSET
     try:
-        ok = await state.crons.enable_job_async(job_id, enabled=enabled)
+        ok = await state.crons.enable_job_async(
+            job_id, enabled=enabled, expect_project_path=expect_project_path
+        )
+    except CronPendingMismatch:
+        return web.json_response(
+            {
+                "error": "the job's project binding changed after it was checked — "
+                "reload and try again",
+                "code": "stale_project_binding",
+            },
+            status=409,
+        )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:
@@ -2657,6 +2851,14 @@ async def api_crons(request: web.Request) -> web.Response:
             ),
             "script": redact_credentials(redact_exfiltration_urls(j.script or "")[0])[0] or None,
             "command": redact_credentials(redact_exfiltration_urls(j.command or "")[0])[0] or None,
+            # The operating folder a project-scoped job resolves its agent and
+            # cwd against. The Schedule page reopens a job by re-parsing THIS
+            # response (JobForm.parseJobDefaults reads `job.project_path`), so
+            # this field's absence here — not a frontend bug — is what would
+            # leave the "Operating folder" field blank on every edit despite
+            # the value being correctly persisted and used at fire time.
+            "project_path": redact_credentials(redact_exfiltration_urls(j.project_path or "")[0])[0]
+            or None,
             # Grant metadata only — env-var names and vault secret NAMES;
             # plaintext values never leave the vault. Owner-only even so: a
             # non-owner dashboard token (an allowed Slack user's !dashboard

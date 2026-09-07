@@ -65,7 +65,11 @@ class TestApiCronRun:
         assert data["ok"] is True
         # A run was started (the task may already have finished and been popped
         # by the done-callback, so assert the invocation rather than the dict).
-        state.crons.run_job.assert_called_once_with("j1")
+        # `expect_project_path=""` is passed because this request resolves as
+        # non-owner (a plain TestClient call carries no owner markers) against
+        # an unbound job -- see test_cron_project_bound_job_toctou.py for the
+        # TOCTOU this closes.
+        state.crons.run_job.assert_called_once_with("j1", expect_project_path="")
 
     @pytest.mark.asyncio
     async def test_run_unknown_job_404(self) -> None:
@@ -113,7 +117,7 @@ class TestApiCronRun:
             resp = await client.post("/api/crons/just-created/run")
             assert resp.status == 200
         state.crons.get_job_async.assert_awaited_once_with("just-created")
-        state.crons.run_job.assert_called_once_with("just-created")
+        state.crons.run_job.assert_called_once_with("just-created", expect_project_path="")
 
     @pytest.mark.asyncio
     async def test_concurrent_runs_still_yield_one_200_and_one_409(self) -> None:
@@ -142,4 +146,4 @@ class TestApiCronRun:
         finally:
             gate.set()
         # Exactly one run was started despite both requests passing the lookup.
-        state.crons.run_job.assert_called_once_with("j1")
+        state.crons.run_job.assert_called_once_with("j1", expect_project_path="")

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, RefObject } from 'react'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { createPortal } from 'react-dom'
+import { Branch as DismissableLayerBranch } from '@radix-ui/react-dismissable-layer'
 import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
@@ -196,9 +197,69 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     e.stopPropagation()
   }
 
+  // A modal Radix Dialog also runs `react-remove-scroll` (see the
+  // `pointer-events-auto` comment below for the sibling `pointer-events`
+  // issue this same "portals outside the dialog's own tree" shape causes).
+  // Unlike pointer-events, `react-remove-scroll` isn't fixable by a style
+  // override: it enforces the scroll lock with a REAL
+  // `document.addEventListener('wheel'/'touchmove', ..., { passive: false })`
+  // in the BUBBLE phase, gated on a `shards` allow-list that only contains
+  // the Dialog's own content ref — this popover was never added to it (it
+  // can't be, from here; `shards` is fixed once by <DialogContent>). The
+  // result, confirmed live: a real trackpad/wheel scroll over the popover's
+  // own directory list calls `scrollTop`/`scrollTo` internally, then
+  // `react-remove-scroll`'s document listener still fires on the same event
+  // and calls `preventDefault()`, undoing it — same failure shape as the
+  // click-passthrough bug, different Radix subsystem, so the earlier
+  // `pointer-events-auto` / `Branch` fixes don't touch it.
+  //
+  // Fix: intercept the wheel event during CAPTURE, before it can bubble to
+  // `document` at all. Capture always completes before bubble begins, so a
+  // capture listener on this popover's own root — closer to the event
+  // target than `document` — reliably runs first regardless of DOM order or
+  // React's own (unrelated) synthetic delegation. `stopPropagation` on the
+  // underlying native event is required: React's synthetic
+  // `stopPropagation` only stops OTHER REACT handlers, not an independent
+  // native `document.addEventListener` react-remove-scroll owns.
+  const allowNativeScroll = (e: React.WheelEvent) => {
+    e.nativeEvent.stopPropagation()
+  }
+
+  // Same fix as allowNativeScroll, for the touch vector: react-remove-scroll's
+  // document-level scroll lock intercepts BOTH `wheel` and `touchmove` in
+  // `{ passive: false }`, so a touchscreen user's drag over the directory
+  // list was still eaten by the lock even with the wheel vector covered --
+  // the list scrolled by mouse wheel but not by touch.
+  const allowNativeTouchScroll = (e: React.TouchEvent) => {
+    e.nativeEvent.stopPropagation()
+  }
+
   return createPortal(
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keyboard-isolation barrier (see above), not an activatable control; there is no behaviour for a keyboard to be given, and every control inside here is a real input or button. Adding a role/tab stop would advertise an interaction this element does not have.
-    <div ref={dropRef} onKeyDown={isolateKeys} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
+    // Rendered as a Radix DismissableLayerBranch (not a plain <div>) because
+    // this popover portals to document.body as a REACT SIBLING of whatever
+    // hosts it — a plain Radix Dialog's DismissableLayer included. Radix's
+    // dismissable layer treats a branch's DOM subtree as "inside" for BOTH of
+    // its outside-dismiss checks (pointerdown-outside AND focus-outside), so
+    // a click or focus move into this popover no longer reads as "outside the
+    // dialog" and closes it out from under itself. A caller-side
+    // onPointerDownOutside override on <DialogContent> covers only the first
+    // of those two vectors — Branch is the one fix that covers both, and it's
+    // a harmless no-op for callers with no Radix DismissableLayer ancestor
+    // (FolderConfigModal's hand-rolled Modal.tsx) since it just renders a div.
+    //
+    // `pointer-events-auto` is REQUIRED, separately from Branch: a modal
+    // Radix Dialog sets `document.body.style.pointerEvents = 'none'` while
+    // open (its own way of enforcing modality — see
+    // @radix-ui/react-dismissable-layer's `disableOutsidePointerEvents`
+    // handling) and this popover portals as a DIRECT CHILD OF BODY, so it
+    // inherits that `none` and every click silently passes through to
+    // whatever is visually underneath (verified live: `elementFromPoint`
+    // inside the popover's own bounding rect resolved to the dialog's own
+    // content, not the popover, purely from inherited `pointer-events`, with
+    // zero relation to z-index/paint order/DOM order — all of which were
+    // already correct). Branch alone does not restore this: it only exempts
+    // outside-click DISMISSAL logic, not the CSS pointer-events sweep.
+    <DismissableLayerBranch ref={dropRef} data-project-picker="" onKeyDown={isolateKeys} onWheelCapture={allowNativeScroll} onTouchMoveCapture={allowNativeTouchScroll} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up pointer-events-auto" style={(() => {
       const dropMinH = 200
       const spaceBelow = window.innerHeight - anchorR.bottom - 8
       const flipUp = spaceBelow < dropMinH || anchorR.bottom > window.innerHeight / 2
@@ -339,7 +400,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
           </div>
         </>
       )}
-    </div>,
+    </DismissableLayerBranch>,
     document.body
   )
 }

@@ -32,6 +32,7 @@ def _make_gateway():
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_session_binding = {}
     gw._no_crons = False
     gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
     gw.sessions.release = MagicMock()
@@ -64,9 +65,10 @@ def _run_callback(gw, job, stream_result="done"):
     async def fake_stream(client, msg, **kwargs):
         return stream_result
 
-    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_crew.slack.gateway.CronService"
-    ) as mock_cron_cls:
+    with (
+        patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream),
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+    ):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -268,9 +270,11 @@ def _run_callback_raising(gw, job, exc):
     async def fake_stream(client, msg, **kwargs):
         raise exc
 
-    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_crew.slack.gateway.CronService"
-    ) as mock_cron_cls, patch("kiro_crew.sel.sel"):
+    with (
+        patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream),
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+        patch("kiro_crew.sel.sel"),
+    ):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -325,9 +329,7 @@ class TestCronFailureDedup:
         assert gw.slack.post_message.await_count == 1  # no new Slack post
         assert job.consecutive_failures == 2
         # Dashboard still gets notified (with dup marker)
-        dup_calls = [
-            c for c in gw.dashboard_state.notify.call_args_list if "dup failure" in str(c)
-        ]
+        dup_calls = [c for c in gw.dashboard_state.notify.call_args_list if "dup failure" in str(c)]
         assert dup_calls, "Expected a dup failure dashboard notification"
 
     def test_different_failure_re_alerts(self) -> None:
@@ -516,8 +518,9 @@ class TestCronFailurePersistence:
             timeout_secs=0,
         )
         # Pretend _execute hangs so _execute_with_timeout triggers the timeout.
-        with patch.object(svc, "_execute", side_effect=_hang), patch(
-            "kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05
+        with (
+            patch.object(svc, "_execute", side_effect=_hang),
+            patch("kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05),
         ):
             asyncio.run(svc._execute_with_timeout(job))
         assert job.last_status == "error"
@@ -551,8 +554,9 @@ class TestCronFailurePersistence:
         )
         svc._jobs = [job]
         svc._save()
-        with patch.object(svc, "_execute", side_effect=_hang), patch(
-            "kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05
+        with (
+            patch.object(svc, "_execute", side_effect=_hang),
+            patch("kiro_crew.cron._JOB_TIMEOUT_SECS", 0.05),
         ):
             asyncio.run(svc._run_job_isolated(job))
         svc2 = CronService(base_dir=tmp_path)
@@ -657,8 +661,7 @@ class TestCronFailureRespectsSilent:
         _run_callback_raising(gw, job, RuntimeError("boom"))
         gw.slack.post_message.assert_awaited_once()
         alert_calls = [
-            c for c in gw.dashboard_state.notify.call_args_list
-            if "❌ Job failed" in str(c)
+            c for c in gw.dashboard_state.notify.call_args_list if "❌ Job failed" in str(c)
         ]
         assert alert_calls, "Non-silent cron failure must still ring the dashboard bell"
 

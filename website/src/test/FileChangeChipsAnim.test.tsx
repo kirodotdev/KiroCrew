@@ -107,8 +107,15 @@ describe('chip row collapse animation', () => {
 
     fireEvent.keyDown(row, { key: 'Enter' })
     await waitFor(() => expect(document.activeElement).toBe(chevron()))
+    // `completeOpenFocus` moves focus and clears the imperative `tabindex`
+    // attribute synchronously, but `role` is a declarative prop driven by
+    // `focusProxy` state -- its removal from the DOM waits on React's next
+    // render commit after `setFocusProxy(false)`, a separate async step the
+    // focus-only `waitFor` above does not cover. Asserting on it immediately
+    // races that commit under load (observed failing on a throttled CI
+    // runner, passing reliably on an idle local machine); wait for it too.
+    await waitFor(() => expect(row).not.toHaveAttribute('role'))
     expect(latest().unsafeCSS).not.toContain('fccHide')
-    expect(row).not.toHaveAttribute('role')
     expect(row).not.toHaveAttribute('tabindex')
   })
 
