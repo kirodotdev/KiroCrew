@@ -223,6 +223,7 @@ async def test_ingest_file_reports_the_committed_ids_without_touching_sqlite(tmp
                 on_committed=None,
                 on_duplicate=None,
                 embed_priority=None,
+                count_toward_import_budget=True,
             ):
                 def _insert_and_report() -> None:
                     # Mirrors the real finalize hop: insert, then hand the ids to
@@ -297,6 +298,7 @@ async def test_ingest_file_reports_failure_when_the_pipeline_never_commits(tmp_p
                 on_committed=None,
                 on_duplicate=None,
                 embed_priority=None,
+                count_toward_import_budget=True,
             ):
                 # Rolls back internally and does NOT raise -- exactly the shape
                 # the old sync_status read existed to catch.
@@ -362,6 +364,7 @@ async def test_ingest_file_still_reports_a_refused_duplicate_as_deduped(tmp_path
                 on_committed=None,
                 on_duplicate=None,
                 embed_priority=None,
+                count_toward_import_budget=True,
             ):
                 assert on_duplicate is not None, "the watcher no longer listens for a refusal"
                 on_duplicate("text-hash-of-body")
@@ -499,6 +502,7 @@ async def test_commit_callback_persists_the_state_row_before_returning(tmp_path)
                 on_committed=None,
                 on_duplicate=None,
                 embed_priority=None,
+                count_toward_import_budget=True,
             ):
                 def _insert_report_and_observe() -> None:
                     item_id = store.add_item("T", "body", "document", source_id=source_id)
@@ -602,6 +606,7 @@ async def test_a_failed_callback_persistence_does_not_poison_the_ingest(tmp_path
                 on_committed=None,
                 on_duplicate=None,
                 embed_priority=None,
+                count_toward_import_budget=True,
             ):
                 def _insert_and_report() -> None:
                     created.append(store.add_item("T", "body", "document", source_id=source_id))

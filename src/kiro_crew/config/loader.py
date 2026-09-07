@@ -173,6 +173,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     FOLDER_INGEST_CHUNK_BUDGET_MAX,
     FORWARD_DECLARED_ENV_DEFAULT,
     IMESSAGE_SERVICES,
+    IMPORT_CHUNK_BUDGET_MAX,
     JAIL_MODE_AUTO,
     JAIL_MODE_OFF,
     JAIL_MODE_ON,
@@ -3194,6 +3195,11 @@ class KiroCrewConfig:
                     knowledge_data.get("sweep_chunk_budget", 500),
                     500,
                     SWEEP_CHUNK_BUDGET_MAX,
+                ),
+                import_chunk_budget=_safe_nonnegative_int(
+                    knowledge_data.get("import_chunk_budget", 0),
+                    0,
+                    IMPORT_CHUNK_BUDGET_MAX,
                 ),
                 embed_rate_limit=_safe_nonnegative_int(
                     knowledge_data.get("embed_rate_limit", 120), 120, EMBED_RATE_LIMIT_MAX

@@ -58,3 +58,32 @@ def test_a_denied_gateway_response_surfaces_a_clear_error():
     # X-Internal-Secret handshake — the authenticated client, not a bare one.
     post.assert_called_once()
     assert post.call_args.args[0] == "/api/knowledge/agent-document"
+
+
+def test_a_deferred_add_is_not_reported_as_stored_and_searchable():
+    """A budget deferral must not fall through to the success line.
+
+    The agent-document route reports a refusal as HTTP 200 with
+    ``status: "deferred"`` and no ``error`` key -- deliberately, so the agent
+    learns WHY rather than getting a generic failure. That shape means every
+    status the tool does not name explicitly lands on the "it is now searchable"
+    string, which for a deferral would claim a document that was never written is
+    retrievable.
+    """
+    deferred = {
+        "status": "deferred",
+        "reason": "knowledge.import_chunk_budget of 50 chunk(s) per 60s window "
+                  "is spent (60 used)",
+        "slug": "design-review-notes",
+    }
+    with patch("kiro_crew.mcp_core._post", return_value=deferred), \
+         patch("kiro_crew.mcp_core.sel"):
+        out = _call_tool_inner("knowledge_add_document",
+                               {"title": "Design Review Notes",
+                                "content": "body text", "source_uri": "chat://x"})
+
+    assert "searchable" not in out.lower() or "NOT searchable" in out, (
+        "a deferred add must not be reported as searchable")
+    assert "Not added" in out
+    # The reason travels, so the agent can decide whether waiting will help.
+    assert "import_chunk_budget" in out

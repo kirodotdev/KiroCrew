@@ -529,3 +529,463 @@ class TestExtractionModelResolution:
                     _install_knowledge_agent()
                     written = mock_write.call_args[0][1]
                     assert written["model"] == "claude-haiku-4.5"
+
+
+# --- Explicit-import cross-file chunk budget ---
+#
+# The watcher path has per-sweep and global chunk budgets; the explicit import
+# routes (single-file add, agent add, direct text ingest, remote sync) are bounded
+# by a cross-file ceiling instead. These cover the ImportChunkBudget limiter, its
+# config key, and its enforcement at the pipeline entry.
+
+
+class TestImportChunkBudgetConfig:
+    def test_import_chunk_budget_default_off_opt_in(self):
+        # Default MUST be 0 (opt-in): a policy control that ships on would throttle
+        # every existing user's imports without their choosing it. Opt in first,
+        # default-on later with data. If this reddens to 500, the switch flipped.
+        c = KnowledgeConfig()
+        assert c.import_chunk_budget == 0
+
+    def test_import_chunk_budget_stored_verbatim(self):
+        c = KnowledgeConfig(import_chunk_budget=200)
+        assert c.import_chunk_budget == 200
+
+    def test_import_chunk_budget_zero_is_unbounded(self):
+        c = KnowledgeConfig(import_chunk_budget=0)
+        assert c.import_chunk_budget == 0
+
+    def test_loader_clamps_absurd_value_to_ceiling(self, tmp_path):
+        import json
+        import unittest.mock
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.sections import IMPORT_CHUNK_BUDGET_MAX
+
+        (tmp_path / "config.json").write_text(
+            json.dumps({"knowledge": {"import_chunk_budget": IMPORT_CHUNK_BUDGET_MAX * 100}}),
+            encoding="utf-8",
+        )
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.config_dir", return_value=tmp_path
+        ):
+            cfg = KiroCrewConfig.load()
+        assert cfg.knowledge.import_chunk_budget == IMPORT_CHUNK_BUDGET_MAX
+
+
+class TestImportChunkBudgetLimiter:
+    def test_zero_budget_never_refuses(self):
+        from kiro_crew.knowledge.ingestion import ImportChunkBudget
+
+        b = ImportChunkBudget(budget=0)
+        # Disabled: reserve returns None (no token) and never raises.
+        assert b.reserve() is None
+        b.settle(None, 10_000)  # no-op
+        b.release(None)  # no-op
+
+    def test_reserve_refuses_once_window_reaches_budget(self):
+        import kiro_crew.knowledge.ingestion as ing
+        from kiro_crew.knowledge.ingestion import ImportChunkBudget, ImportChunkBudgetError
+
+        now = [1000.0]
+        with patch.object(ing._time, "monotonic", lambda: now[0]):
+            b = ImportChunkBudget(budget=50)
+            t1 = b.reserve()          # empty window: ok, books 50 (per-file max)
+            b.settle(t1, 30)          # reconcile down to 30
+            t2 = b.reserve()          # 30 < 50: ok, books 50 -> spent 80
+            b.settle(t2, 30)          # reconcile to 30 -> spent 60 >= 50
+            # The accepted files completed; the NEXT reserve trips.
+            try:
+                b.reserve()
+                raised = False
+            except ImportChunkBudgetError as e:
+                raised = True
+                assert e.budget == 50
+                assert e.spent >= 50
+            assert raised, "reserve() must refuse once the window is at/over budget"
+
+    def test_concurrent_reservations_do_not_overrun(self):
+        # The TOCTOU fix: a reservation is booked INTO the window at reserve()
+        # time, before settle(), so simultaneous imports see each other. With a
+        # budget of 50 and the per-file placeholder of 50, the first reserve books
+        # 50 and the second is refused -- N concurrent imports cannot each pass.
+        import kiro_crew.knowledge.ingestion as ing
+        from kiro_crew.knowledge.ingestion import ImportChunkBudget, ImportChunkBudgetError
+
+        now = [1000.0]
+        with patch.object(ing._time, "monotonic", lambda: now[0]):
+            b = ImportChunkBudget(budget=50)
+            t1 = b.reserve()  # books 50 immediately, BEFORE any settle
+            assert t1 is not None
+            # Second concurrent import (its settle has not run yet) is refused.
+            try:
+                b.reserve()
+                overran = True
+            except ImportChunkBudgetError:
+                overran = False
+            assert not overran, "a second concurrent reserve must not pass before the first settles"
+
+    def test_release_frees_a_failed_reservation(self):
+        import kiro_crew.knowledge.ingestion as ing
+        from kiro_crew.knowledge.ingestion import ImportChunkBudget
+
+        now = [1000.0]
+        with patch.object(ing._time, "monotonic", lambda: now[0]):
+            b = ImportChunkBudget(budget=50)
+            t1 = b.reserve()   # books 50 -> at budget
+            b.release(t1)      # failed import frees it
+            # Window is empty again: a fresh reserve succeeds.
+            assert b.reserve() is not None
+
+    def test_release_reclaims_a_noop_reservation_no_leak(self):
+        # The dedup / content-unchanged success paths return before any chunk
+        # work, so they never settle. A finally-release must reclaim the
+        # placeholder or ten no-op re-ingests would strand 10x50=500 chunks and
+        # falsely refuse genuine imports at the default budget.
+        import kiro_crew.knowledge.ingestion as ing
+        from kiro_crew.knowledge.ingestion import ImportChunkBudget
+
+        now = [1000.0]
+        with patch.object(ing._time, "monotonic", lambda: now[0]):
+            b = ImportChunkBudget(budget=500)
+            for _ in range(20):          # 20 > 500/50, would exhaust if leaked
+                t = b.reserve()          # books 50
+                b.release(t)             # no-op path: reclaim it
+            # Nothing accumulated: a genuine import still reserves fine.
+            assert b.reserve() is not None
+
+    def test_release_is_noop_after_settle_no_double_count(self):
+        # settle() consumes the token; a following release() (from the wrapper's
+        # finally) must NOT drop the settled real count.
+        import kiro_crew.knowledge.ingestion as ing
+        from kiro_crew.knowledge.ingestion import ImportChunkBudget, ImportChunkBudgetError
+
+        now = [1000.0]
+        with patch.object(ing._time, "monotonic", lambda: now[0]):
+            b = ImportChunkBudget(budget=50)
+            t = b.reserve()
+            b.settle(t, 50)      # real cost 50 -> at budget
+            b.release(t)         # finally-release: must be a no-op here
+            # The settled 50 still stands, so the next reserve is refused.
+            try:
+                b.reserve()
+                refused = False
+            except ImportChunkBudgetError:
+                refused = True
+            assert refused, "release after settle must not drop the settled count"
+
+    def test_window_rolls_over_and_reopens(self):
+        import kiro_crew.knowledge.ingestion as ing
+        from kiro_crew.knowledge.ingestion import ImportChunkBudget
+
+        now = [1000.0]
+        with patch.object(ing._time, "monotonic", lambda: now[0]):
+            b = ImportChunkBudget(budget=50)
+            t1 = b.reserve()
+            b.settle(t1, 60)   # 60 >= 50 within window
+            try:
+                b.reserve()
+                refused = True
+            except ing.ImportChunkBudgetError:
+                refused = True
+            else:
+                refused = False
+            # (either the reserve above raised, or we set refused False)
+            assert refused
+            now[0] += 61.0     # advance past the 60s window
+            assert b.reserve() is not None  # pruned, reopened
+
+    def test_an_open_reservation_outlives_the_window(self):
+        # A file slower than the window keeps its slot until it settles. If
+        # pruning expired a live reservation, a concurrent import would be
+        # admitted past the very concurrency ceiling the placeholder enforces.
+        import kiro_crew.knowledge.ingestion as ing
+        from kiro_crew.knowledge.ingestion import ImportChunkBudget, ImportChunkBudgetError
+
+        now = [1000.0]
+        with patch.object(ing._time, "monotonic", lambda: now[0]):
+            b = ImportChunkBudget(budget=50)
+            t = b.reserve()                  # books 50 -> at budget
+            assert t is not None
+            now[0] += ing._IMPORT_CHUNK_BUDGET_WINDOW_SECS + 1.0   # still ingesting
+            try:
+                b.reserve()
+                refused = False
+            except ImportChunkBudgetError:
+                refused = True
+            assert refused, "an in-flight reservation must still occupy the ceiling"
+            # Settling closes it, so its entry expires by age like any record.
+            b.settle(t, 1)
+            assert b.reserve() is not None
+
+    def test_error_message_is_ascii_and_actionable(self):
+        from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+
+        msg = str(ImportChunkBudgetError(budget=50, window_secs=60.0, spent=60))
+        assert msg.isascii()
+        assert "import_chunk_budget" in msg
+
+
+class TestImportBudgetPipelineGate:
+    """The gate lives at the pipeline entry; watcher + artifact-sync paths are exempt."""
+
+    def _pipeline(self):
+        from unittest.mock import MagicMock
+
+        from kiro_crew.knowledge.ingestion import IngestionPipeline
+
+        return IngestionPipeline(
+            store=MagicMock(), extractor=MagicMock(), chunker=MagicMock(),
+            reader=MagicMock(),
+        )
+
+    def test_enter_budget_refuses_explicit_call_when_exhausted(self):
+        import asyncio
+
+        from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+
+        p = self._pipeline()
+        with patch("kiro_crew.knowledge.ingestion._import_chunk_budget", return_value=50):
+            p._import_budget.set_budget(50)
+            t = p._import_budget.reserve()   # book 50 -> at budget
+            assert t is not None
+            try:
+                asyncio.run(p._enter_import_budget(count_toward_import_budget=True))
+                raised = False
+            except ImportChunkBudgetError:
+                raised = True
+        assert raised, "an explicit call must be refused once the window is exhausted"
+
+    def test_watcher_path_is_exempt_even_when_exhausted(self):
+        import asyncio
+
+        p = self._pipeline()
+        with patch("kiro_crew.knowledge.ingestion._import_chunk_budget", return_value=50):
+            p._import_budget.set_budget(50)
+            p._import_budget.reserve()  # exhaust
+            # count_toward_import_budget=False (watcher/artifact-sync) must not gate.
+            token = asyncio.run(p._enter_import_budget(count_toward_import_budget=False))
+        assert token is None
+
+    def test_enter_budget_returns_token_when_enabled(self):
+        import asyncio
+
+        p = self._pipeline()
+        with patch("kiro_crew.knowledge.ingestion._import_chunk_budget", return_value=500):
+            token = asyncio.run(p._enter_import_budget(count_toward_import_budget=True))
+        assert token is not None  # a reservation to settle/release later
+
+    def test_enter_budget_returns_none_when_config_zero(self):
+        import asyncio
+
+        p = self._pipeline()
+        with patch("kiro_crew.knowledge.ingestion._import_chunk_budget", return_value=0):
+            token = asyncio.run(p._enter_import_budget(count_toward_import_budget=True))
+        assert token is None  # disabled -> nothing to settle
+
+
+class TestRemoteSyncSurfacesDeferral:
+    """Remote sync surfaces a budget deferral without counting it as a failure."""
+
+    def test_sync_source_surfaces_deferred_and_records_no_failure(self, tmp_path):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+        from kiro_crew.knowledge.store import KnowledgeStore
+        from kiro_crew.knowledge.sync import SyncScheduler
+
+        store = KnowledgeStore(str(tmp_path / "sync.db"))
+        try:
+            sid = store.add_source(name="remote", source_type="webhook", uri="x://remote")
+            connector = MagicMock()
+            connector.detect_changes = AsyncMock(return_value=True)
+            connector.fetch = AsyncMock(return_value=("body text", {}))
+            pipeline = MagicMock()
+            pipeline.ingest_text = AsyncMock(
+                side_effect=ImportChunkBudgetError(budget=500, window_secs=60.0, spent=500))
+
+            sched = SyncScheduler(store, pipeline, {"webhook": connector})
+            res = asyncio.run(sched.sync_source(sid))
+
+            assert "deferred" in res and "import_chunk_budget" in res["deferred"]
+            assert res["synced"] is False
+            # A deferral is not a failure: consecutive_failures must stay 0.
+            row = store.db.execute(
+                "SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            import json as _json
+            props = _json.loads(row["properties"] or "{}")
+            assert props.get("consecutive_failures", 0) == 0
+        finally:
+            store.close()
+
+
+class TestBackgroundDeferralStaysRetryable:
+    """A budget deferral on a background path must not land in 'error'.
+
+    ``SyncScheduler.sync_all`` skips a source whose ``sync_status`` is 'error', so
+    writing that state over a window that clears in a minute would quiesce the
+    source for good. Both background writers whose content is still on disk mark
+    'pending' instead, which the sweep still visits.
+    """
+
+    @staticmethod
+    def _recording_store():
+        class _DB:
+            def __init__(self):
+                self.statements: list[str] = []
+
+            def execute(self, sql, params=()):
+                self.statements.append(sql)
+
+            def commit(self):
+                pass
+
+        class _Store:
+            def __init__(self):
+                self.db = _DB()
+
+        return _Store()
+
+    @staticmethod
+    def _states(store):
+        return [s for s in store.db.statements if "sync_status" in s]
+
+    def test_local_file_ingest_defers_to_pending(self, tmp_path):
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import knowledge as kh
+        from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+
+        doc = tmp_path / "doc.md"
+        doc.write_text("body", encoding="utf-8")
+        store = self._recording_store()
+        pipeline = SimpleNamespace(ingest_file=AsyncMock(
+            side_effect=ImportChunkBudgetError(budget=50, window_secs=60.0, spent=60)))
+
+        asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), "src-1"))
+
+        states = self._states(store)
+        assert len(states) == 1, states
+        assert "'pending'" in states[0]
+        assert "'error'" not in states[0]
+
+    def test_local_file_ingest_still_errors_on_a_real_failure(self, tmp_path):
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import knowledge as kh
+
+        doc = tmp_path / "doc.md"
+        doc.write_text("body", encoding="utf-8")
+        store = self._recording_store()
+        pipeline = SimpleNamespace(ingest_file=AsyncMock(side_effect=RuntimeError("disk gone")))
+
+        asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), "src-1"))
+
+        states = self._states(store)
+        assert len(states) == 1, states
+        assert "'error'" in states[0]
+
+
+class TestUploadRefusesBeforeAccepting:
+    """An exhausted window must refuse the upload, never accept then discard it.
+
+    The multipart route answers 'processing' and ingests in the background, and
+    the staged temp file is the only server-side copy -- its ``finally`` unlinks
+    it. So admission is reserved before the response and the token handed to
+    ``ingest_file``: a refusal becomes a 429 the client can act on, and a token
+    that never reaches ``ingest_file`` is reclaimed instead of stranding a
+    placeholder in the window.
+    """
+
+    @staticmethod
+    def _pipeline():
+        from unittest.mock import MagicMock
+
+        from kiro_crew.knowledge.ingestion import IngestionPipeline
+
+        return IngestionPipeline(
+            store=MagicMock(), extractor=MagicMock(), chunker=MagicMock(),
+            reader=MagicMock(),
+        )
+
+    def test_reserve_import_budget_raises_when_the_window_is_exhausted(self):
+        from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+
+        p = self._pipeline()
+        with patch("kiro_crew.knowledge.ingestion._import_chunk_budget", return_value=50):
+            p._import_budget.set_budget(50)
+            p._import_budget.reserve()          # exhaust the window
+            try:
+                asyncio.run(p.reserve_import_budget())
+                raised = False
+            except ImportChunkBudgetError:
+                raised = True
+        assert raised, "an exhausted window must refuse admission before acceptance"
+
+    def test_reserve_import_budget_returns_none_when_disabled(self):
+        p = self._pipeline()
+        with patch("kiro_crew.knowledge.ingestion._import_chunk_budget", return_value=0):
+            assert asyncio.run(p.reserve_import_budget()) is None
+
+    def test_a_handed_over_token_settles_without_booking_a_second_entry(self):
+        """`ingest_file` consumes the caller's token rather than booking another."""
+        from kiro_crew.knowledge.ingestion import ImportChunkBudget
+
+        b = ImportChunkBudget(budget=50)
+        token = b.reserve()                      # the route's own admission
+        assert token is not None
+        before = len(b._events)
+        b.settle(token, 1)
+        assert len(b._events) == before, "settling must reconcile, not add an entry"
+
+    def test_release_import_budget_reclaims_an_unused_token(self):
+        p = self._pipeline()
+        with patch("kiro_crew.knowledge.ingestion._import_chunk_budget", return_value=50):
+            p._import_budget.set_budget(50)
+            token = asyncio.run(p.reserve_import_budget())
+            assert token is not None
+            p.release_import_budget(token)       # handler failed before handover
+            # Reclaimed, so a genuine import still passes.
+            assert asyncio.run(p.reserve_import_budget()) is not None
+
+    def test_ingest_file_honours_an_admitted_caller_in_every_combination(self):
+        """Whether `ingest_file` enters the budget again, across all four inputs.
+
+        A DISABLED budget admits with a token of ``None``, so "no token" cannot
+        mean "not admitted": reserving on that would enter the budget a second
+        time, and a budget enabled between the two config reads would refuse an
+        upload already accepted. The flag is what says admission is settled, and a
+        caller holding a token is honoured either way rather than stranded.
+        """
+        from unittest.mock import AsyncMock
+
+        from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+
+        def run(flag, token):
+            p = self._pipeline()
+            with patch("kiro_crew.knowledge.ingestion._import_chunk_budget", return_value=50):
+                p._import_budget.set_budget(50)
+                p._import_budget.reserve()          # exhaust the window
+                impl = AsyncMock(return_value="job")
+                with patch.object(p, "_ingest_file_impl", impl):
+                    try:
+                        asyncio.run(p.ingest_file(
+                            "/tmp/x.md", count_toward_import_budget=flag,
+                            import_budget_token=token))
+                    except ImportChunkBudgetError:
+                        return "refused"
+                    return impl.await_args.kwargs["budget_token"]
+
+        # Ordinary explicit path: no admission yet, so an exhausted window refuses.
+        assert run(True, None) == "refused"
+        # Admitted with a token (budget enabled): used, never re-reserved.
+        assert run(False, 7) == 7
+        # Admitted with the budget disabled: None is the admission, not its absence.
+        assert run(False, None) is None
+        # A caller holding a token is honoured rather than having it stranded.
+        assert run(True, 7) == 7
+
+    def test_release_import_budget_tolerates_none(self):
+        p = self._pipeline()
+        p.release_import_budget(None)            # nothing reserved; must not raise

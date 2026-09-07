@@ -459,6 +459,12 @@ async def ingest_artifact(
             original_name=f"{title}{ext}",
             source_id=source_id,
             old_item_ids=old_item_ids,
+            # Automated artifact synchronization, not a user's one-shot import, so
+            # it is exempt from the explicit-import chunk budget (like the folder
+            # watcher path). Counting it would let an exhausted budget make this
+            # upsert raise -- leaving the old chunks searchable and dropping the
+            # sync event, a worse outcome than the cost the budget prevents.
+            count_toward_import_budget=False,
             # Fires inside the finalize hop, only on the fully-committed branch
             # -- the same branch that reports status 'completed' below -- and
             # persists the ownership row there (see _record_ownership).

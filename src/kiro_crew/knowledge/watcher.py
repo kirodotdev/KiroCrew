@@ -283,6 +283,7 @@ class KnowledgeWatcher:
                                     on_progress=_note_extraction,
                                     on_committed=_record_committed,
                                     on_duplicate=_record_refused,
+                                    count_toward_import_budget=False,
                                 )
                             except FileTooLargeError:
                                 # Warning already logged by the pipeline (names the file

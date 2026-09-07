@@ -1910,6 +1910,29 @@ class KnowledgeConfig:
             "0 removes the bound.",
         ),
     )
+    import_chunk_budget: int = field(
+        default=0,
+        metadata=_meta(
+            "Explicit Import Chunk Budget",
+            "Maximum chunks ingested through the EXPLICIT one-shot import paths "
+            "(a single-file add, an agent-driven add, a direct text ingest, and "
+            "remote sync) within a rolling ~60s window -- the cross-file cost "
+            "ceiling those paths lack, since they are many independent calls "
+            "with no scan boundary the way a watcher sweep has. Each chunk costs "
+            "an LLM extraction call. When the window is exhausted the next import "
+            "is REFUSED with a reason rather than silently truncated, so a "
+            "deliberate import never loses part of a file. A single file stays "
+            "bounded by the 50-chunk per-file cap independently. 0 (the default) "
+            "removes the bound -- opt in by setting it (e.g. 500, matching "
+            "sweep_chunk_budget) so this changes nothing until you choose it. "
+            "LIMITATION if you enable it: reservation is worst-case -- each "
+            "in-flight import books the 50-chunk per-file maximum up front and "
+            "reconciles to the real count only when it finishes, so several "
+            "concurrent imports throttle below the nominal number you set here "
+            "until that accounting is refined. Set it with that headroom in "
+            "mind.",
+        ),
+    )
     embed_rate_limit: int = field(
         default=120,
         metadata=_meta(
@@ -3760,6 +3783,10 @@ FOLDER_INGEST_CHUNK_BUDGET_MAX = 10000
 DEDUP_EVERY_N_SWEEPS_MAX = 288
 SWEEP_CHUNK_BUDGET_MAX = 50000
 EMBED_RATE_LIMIT_MAX = 10000
+# Ceiling on the explicit-import cross-file chunk budget, same rationale as the
+# folder/sweep budgets above: clamp a negative to 0 (0 == unbounded) and cap an
+# absurd hand-edited value so it cannot load verbatim into real work.
+IMPORT_CHUNK_BUDGET_MAX = 50000
 
 
 ACTIVATION_ALWAYS = "always"  # Process every message

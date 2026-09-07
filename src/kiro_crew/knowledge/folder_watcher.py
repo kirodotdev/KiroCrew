@@ -1121,7 +1121,8 @@ class FolderWatcher:
                 old_item_ids=old_item_ids,
                 on_committed=_record_committed,
                 on_duplicate=_record_refused,
-                embed_priority=embed_priority)
+                embed_priority=embed_priority,
+                count_toward_import_budget=False)
 
             if refused:
                 return [], "deduped"

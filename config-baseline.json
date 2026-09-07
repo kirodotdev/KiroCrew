@@ -1765,6 +1765,7 @@
         "dedup_every_n_sweeps": 12,
         "doc_ingest_hosts": [],
         "sweep_chunk_budget": 500,
+        "import_chunk_budget": 0,
         "embed_rate_limit": 120,
         "extraction_model": "",
         "extraction_pool_size": 3
@@ -1956,6 +1957,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 500
+    },
+    {
+      "path": "knowledge.import_chunk_budget",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Explicit Import Chunk Budget",
+      "help": "Maximum chunks ingested through the EXPLICIT one-shot import paths (a single-file add, an agent-driven add, a direct text ingest, and remote sync) within a rolling ~60s window -- the cross-file cost ceiling those paths lack, since they are many independent calls with no scan boundary the way a watcher sweep has. Each chunk costs an LLM extraction call. When the window is exhausted the next import is REFUSED with a reason rather than silently truncated, so a deliberate import never loses part of a file. A single file stays bounded by the 50-chunk per-file cap independently. 0 (the default) removes the bound -- opt in by setting it (e.g. 500, matching sweep_chunk_budget) so this changes nothing until you choose it. LIMITATION if you enable it: reservation is worst-case -- each in-flight import books the 50-chunk per-file maximum up front and reconciles to the real count only when it finishes, so several concurrent imports throttle below the nominal number you set here until that accounting is refined. Set it with that headroom in mind.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "knowledge.embed_rate_limit",

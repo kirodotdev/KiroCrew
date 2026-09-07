@@ -10,8 +10,11 @@ mirroring the sibling ``api_upload_file`` magic-byte gate. Genuine text formats
 """
 from __future__ import annotations
 
+import asyncio
 import io
+import tempfile
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,7 +41,14 @@ def _make_app() -> tuple[web.Application, AsyncMock]:
     app = web.Application()
     app["state"] = SimpleNamespace(knowledge_store=_FakeStore())
     ingest_spy = AsyncMock()
-    app["knowledge_pipeline"] = SimpleNamespace(ingest_file=ingest_spy)
+    # The handler reserves explicit-import admission before it answers, so the
+    # fake pipeline has to offer that surface too. None is the budget-disabled
+    # answer, which is the default and what these signature tests want.
+    app["knowledge_pipeline"] = SimpleNamespace(
+        ingest_file=ingest_spy,
+        reserve_import_budget=AsyncMock(return_value=None),
+        release_import_budget=MagicMock(),
+    )
     app.router.add_post("/api/knowledge/ingest", ingest_file)
     return app, ingest_spy
 
@@ -156,3 +166,70 @@ async def test_docx_zip_bomb_uncompressed_size_rejected_before_parse(mock_sel):
     assert status == 400, body
     assert "archive rejected" in body["error"]
     ingest_spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_import_budget_refuses_with_429_before_accepting(mock_sel, tmp_path):
+    """An exhausted cross-file window must refuse, not accept then discard.
+
+    This route answers 'processing' and ingests in the background, and the staged
+    temp file is the only server-side copy -- the background task's ``finally``
+    unlinks it. So a refusal found after the response would throw away a file the
+    client was told had been accepted. Admission is reserved before the response
+    instead, which makes 429 the answer and leaves nothing staged.
+    """
+    from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+
+    app, ingest_spy = _make_app()
+    app["knowledge_pipeline"].reserve_import_budget = AsyncMock(
+        side_effect=ImportChunkBudgetError(budget=50, window_secs=60.0, spent=60))
+
+    before = set(p.name for p in Path(tempfile.gettempdir()).glob("kn_*"))
+    status, body = await _post(app, b"# notes\n", "notes.md", "text/markdown")
+
+    assert status == 429, body
+    assert "import_chunk_budget" in body["error"]
+    # Refused before acceptance: no ingest was started ...
+    ingest_spy.assert_not_called()
+    # ... and the staged copy was not left behind.
+    assert set(p.name for p in Path(tempfile.gettempdir()).glob("kn_*")) == before
+
+
+@pytest.mark.asyncio
+async def test_admission_token_is_handed_to_the_background_ingest(mock_sel):
+    """A granted token travels to ``ingest_file`` so admission cannot be re-taken."""
+    app, ingest_spy = _make_app()
+    app["knowledge_pipeline"].reserve_import_budget = AsyncMock(return_value=7)
+
+    status, body = await _post(app, b"# notes\n", "notes.md", "text/markdown")
+
+    assert status == 200, body
+    await asyncio.sleep(0)  # let the background task run
+    assert ingest_spy.await_args is not None, "background ingest never ran"
+    assert ingest_spy.await_args.kwargs["import_budget_token"] == 7
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_upload_never_reserves_a_second_time(mock_sel):
+    """A disabled budget admits with a token of ``None``, and that is still an
+    admission.
+
+    Keying the handover on the token's value would read ``None`` as "nothing
+    supplied" and reserve again inside the background task -- and a budget enabled
+    between the two config reads would then refuse an upload already accepted,
+    marking it errored and deleting its only staged copy. So the route declares
+    ``count_toward_import_budget=False`` and the flag, not the token, is what
+    decides.
+    """
+    app, ingest_spy = _make_app()
+    app["knowledge_pipeline"].reserve_import_budget = AsyncMock(return_value=None)
+
+    status, body = await _post(app, b"# notes\n", "notes.md", "text/markdown")
+
+    assert status == 200, body
+    await asyncio.sleep(0)
+    assert ingest_spy.await_args is not None, "background ingest never ran"
+    kwargs = ingest_spy.await_args.kwargs
+    assert kwargs["count_toward_import_budget"] is False, (
+        "an already-admitted upload must not re-enter the budget")
+    assert kwargs["import_budget_token"] is None

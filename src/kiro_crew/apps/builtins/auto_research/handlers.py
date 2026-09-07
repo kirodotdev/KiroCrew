@@ -42,6 +42,7 @@ from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
+from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
 from kiro_crew.knowledge.llm_pool import LLMPool
 from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.on_loop_db import OnLoopDBGuard
@@ -3447,9 +3448,23 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
             store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (sid,))
             store.db.commit()
 
+        def _mark_pending() -> None:
+            store.db.execute("UPDATE sources SET sync_status = 'pending' WHERE id = ?", (sid,))
+            store.db.commit()
+
         try:
+            # A user's one-shot import: the click is deliberate, and this route has
+            # no budget of its own the way the watcher and artifact-sync sweeps do,
+            # so it counts against the explicit-import chunk ceiling.
             await pipeline.ingest_file(uri, source_id=sid)
             await asyncio.to_thread(_mark_synced)
+        except ImportChunkBudgetError as exc:
+            # Transient, so not 'error': sync_all skips an errored source, which
+            # would quiesce this one permanently over a window that clears in a
+            # minute. The findings file stays on disk, so a retry has content to
+            # re-read.
+            logger.warning("Findings ingestion deferred by import budget for %s: %s", cid, exc)
+            await asyncio.to_thread(_mark_pending)
         except Exception:
             logger.exception("Research findings ingestion failed for %s", cid)
             await asyncio.to_thread(_mark_error)

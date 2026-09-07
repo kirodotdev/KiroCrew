@@ -24,7 +24,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 
-from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
+from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, MAX_CHUNKS_PER_FILE, HeadingAwareChunker
 from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
 from .extractor import EntityExtractor
@@ -168,6 +168,193 @@ def _max_ingest_file_mb() -> float:
         return DEFAULT_MAX_INGEST_FILE_MB
 
 
+#: Rolling window (seconds) over which the explicit-import chunk budget is
+#: totalled. 60s is a short window because the explicit paths are interactive
+#: (a user adding files, an agent handing over a document), so the ceiling bounds
+#: a burst of successive adds within about a minute rather than pacing a
+#: long-running scan the way the watcher's per-sweep budget does. Inlined as the
+#: single window: only ``ImportChunkBudget()`` is constructed in production.
+_IMPORT_CHUNK_BUDGET_WINDOW_SECS = 60.0
+
+
+class ImportChunkBudgetError(RuntimeError):
+    """Raised when an explicit import would exceed ``knowledge.import_chunk_budget``.
+
+    Carries the budget, the window and the count already spent in the window so a
+    caller can surface WHY the import was deferred rather than failing opaquely --
+    the whole point of refusing rather than silently truncating a deliberate
+    import. The message is deterministic and ASCII so it is safe to surface to an
+    agent tool result or a dashboard error.
+    """
+
+    def __init__(self, budget: int, window_secs: float, spent: int):
+        self.budget = budget
+        self.window_secs = window_secs
+        self.spent = spent
+        super().__init__(
+            f"Knowledge import deferred: the explicit-import chunk budget "
+            f"(knowledge.import_chunk_budget={budget} chunks per {window_secs:g}s) "
+            f"is already spent ({spent} chunks reserved or ingested this window). "
+            f"Retry after the window rolls over, ingest fewer files at once, or "
+            f"raise knowledge.import_chunk_budget (0 removes the bound)."
+        )
+
+
+class ImportChunkBudget:
+    """Rolling-window ceiling on chunks ingested through the EXPLICIT import paths.
+
+    The watcher path (folder sweep) already has its own per-sweep and global
+    chunk budgets; those are bounded by a scan (one pass over one source). The
+    explicit routes -- single-file add, agent ``knowledge_add_document``, direct
+    text ingest, remote sync -- are many independent calls in succession with no
+    scan boundary, so there is nothing to total the cost across files. This is
+    the equivalent ceiling for that path: a rolling 60-second window over which
+    at most ``budget`` chunks may be ingested.
+
+    ``budget=0`` disables it (unbounded). Per-file cost stays bounded by the
+    chunker's 50-chunk cap independently; this bounds the CROSS-FILE total.
+
+    The gate is enforced at CALL granularity, not chunk granularity: a file whose
+    real cost pushes the window PAST ``budget`` still completes (its chunks are
+    already produced), and the NEXT call is the one refused. So the effective
+    bound is ``[budget, budget + MAX_CHUNKS_PER_FILE)`` -- a run of adds can end at
+    most one file's worst case (50 chunks) above ``budget``, never unbounded. This
+    is deliberate: the alternative -- rejecting a file mid-flight once its chunk
+    count is known -- would waste the extraction already spent and is the
+    silent-truncation failure this exists to avoid. Treat ``budget`` as a soft
+    ceiling with a bounded, single-file overshoot, not a hard cap.
+
+    Trip behaviour is REFUSE, not truncate: a single-file cap that silently
+    dropped part of a user's deliberate import would be a worse failure than the
+    cost it prevents. :meth:`reserve` raises :class:`ImportChunkBudgetError` at
+    entry, before any chunking/extraction cost is incurred; an accepted file
+    always runs to completion, its reservation settled to its real chunk count.
+
+    Concurrency: the caller does ``reserve()`` (synchronous), then awaits the
+    chunk/extract work, then ``settle()``. If N imports each only checked a
+    running total they would all pass before any recorded, overrunning by
+    concurrency x file. So ``reserve`` books a placeholder of the per-file
+    maximum (:data:`~kiro_crew.knowledge.chunker.MAX_CHUNKS_PER_FILE`) INTO the
+    window immediately, and that reservation is visible to every concurrent
+    ``reserve`` across the await -- ``settle`` later reconciles it down to the
+    real count. The reservation is an UPPER bound, so a burst is refused a little
+    early rather than allowed to overrun; the worst residual error is one file's
+    slack per in-flight import, never unbounded. Every caller is on the event
+    loop and reserve/settle/release are synchronous and non-awaiting, so no lock
+    is needed (unlike the embed limiter, whose refill straddles an await).
+    """
+
+    def __init__(self, budget: int = 0):
+        self._budget = max(0, int(budget))
+        self._window_secs = _IMPORT_CHUNK_BUDGET_WINDOW_SECS
+        # (monotonic_ts, chunk_count, token) entries; pruned to the window on each
+        # touch. token identifies a live reservation so settle/release can find it.
+        self._events: list[tuple[float, int, int]] = []
+        self._next_token = 0
+        # Tokens already settled: a later release() of one is a no-op, which is
+        # what makes a finally-release safe after a success-path settle.
+        self._settled: set[int] = set()
+        # Tokens reserved and not yet settled or released, i.e. imports still in
+        # flight. Window pruning skips their events: an import slower than the
+        # window would otherwise age out of its own reservation while still
+        # running, and a concurrent reserve() would stop seeing it and admit
+        # another import past the concurrency ceiling the placeholder enforces.
+        self._open: set[int] = set()
+
+    def set_budget(self, budget: int) -> None:
+        """Update the ceiling live (config is read per-ingest, no restart)."""
+        self._budget = max(0, int(budget))
+
+    def _spent(self, now: float) -> int:
+        """Chunks reserved-or-recorded within the trailing window.
+
+        Prunes entries older than the window, EXCEPT an open reservation: an
+        import still in flight holds its slot however long it runs, so a file
+        slower than the window cannot age out of the ceiling it occupies.
+        """
+        cutoff = now - self._window_secs
+        self._events = [
+            (ts, n, t) for (ts, n, t) in self._events if ts >= cutoff or t in self._open
+        ]
+        return sum(n for (_, n, _t) in self._events)
+
+    def reserve(self) -> int | None:
+        """Refuse a new import when the window is at/over budget; else book a
+        worst-case placeholder and return its token.
+
+        Returns ``None`` when the budget is disabled (0) -- the caller then does
+        not settle. Raises :class:`ImportChunkBudgetError` when the trailing
+        window (including live reservations from concurrent in-flight imports) is
+        already exhausted.
+
+        The placeholder is the per-file maximum because the true chunk count is
+        not known until the file is chunked, which happens after an await; booking
+        the maximum now is what makes a concurrent ``reserve`` see this import and
+        stops N simultaneous imports from each passing before any records.
+        """
+        if self._budget <= 0:
+            return None
+        now = _time.monotonic()
+        spent = self._spent(now)
+        if spent >= self._budget:
+            raise ImportChunkBudgetError(self._budget, self._window_secs, spent)
+        token = self._next_token
+        self._next_token += 1
+        self._events.append((now, MAX_CHUNKS_PER_FILE, token))
+        self._open.add(token)
+        return token
+
+    def settle(self, token: int | None, chunk_count: int) -> None:
+        """Reconcile a reservation to the real chunk count of an accepted import.
+
+        No-op when ``token`` is ``None`` (budget was disabled at reserve time).
+        The reservation timestamp is preserved so the window still expires the
+        cost at the moment the import began, not when it finished. After a settle
+        the token is CONSUMED, so a later :meth:`release` of it is a no-op -- that
+        is what lets every caller put ``release`` in a ``finally`` and settle on
+        the success path without double-counting.
+        """
+        if token is None:
+            return
+        self._settled.add(token)
+        self._open.discard(token)
+        n = max(0, int(chunk_count))
+        for i, (ts, _placeholder, t) in enumerate(self._events):
+            if t == token:
+                self._events[i] = (ts, n, t)
+                return
+
+    def release(self, token: int | None) -> None:
+        """Drop a still-open reservation, so a failed OR no-op import does not hold
+        budget. A no-op when the token is ``None`` or was already settled -- so it
+        is safe to call unconditionally in a ``finally`` after a possible settle.
+
+        This is the fix for the reservation LEAK on the no-op success paths
+        (content-hash-unchanged, dedup-refused): those branches return before any
+        chunk work, so they never settle; a finally-release reclaims their
+        placeholder. Without it, ten no-op re-ingests would each strand a 50-chunk
+        placeholder and falsely refuse genuine imports at the default budget.
+        """
+        if token is None:
+            return
+        if token in self._settled:
+            self._settled.discard(token)
+            return
+        self._open.discard(token)
+        self._events = [(ts, n, t) for (ts, n, t) in self._events if t != token]
+
+
+def _import_chunk_budget() -> int:
+    # Read live so a config change takes effect without a restart, matching
+    # _max_ingest_file_mb. Circular import guarded the same way.
+    from kiro_crew.config.loader import KiroCrewConfig  # circular import
+
+    try:
+        return max(0, int(KiroCrewConfig.load().knowledge.import_chunk_budget))
+    except Exception:
+        return 0
+
+
 def _run_chunker(chunker: HeadingAwareChunker, ext: str, text: str, uri: str) -> list[dict]:
     """Dispatch to the right chunker. CPU-bound -- run via asyncio.to_thread."""
     if ext == '.pptx':
@@ -262,6 +449,63 @@ class IngestionPipeline:
         self.reader = reader
         self.embedder = embedder
         self._dedup_enabled = dedup_enabled
+        # Cross-file cost ceiling for the EXPLICIT import paths (single-file add,
+        # agent add, direct text ingest, remote sync). The watcher path has its
+        # own per-sweep budgets; this bounds the windowless explicit path. One
+        # instance per pipeline (per gateway process), so a run of successive
+        # explicit adds shares one rolling window. Budget is refreshed from live
+        # config on each ingest, so it is 0/unbounded by default and a config
+        # change takes effect without a restart.
+        self._import_budget = ImportChunkBudget()
+
+    async def reserve_import_budget(self) -> int | None:
+        """Reserve explicit-import admission BEFORE the caller accepts the work.
+
+        For a route that answers the client and ingests afterwards, discovering a
+        refusal inside the background task is too late: the multipart upload route
+        replies 'processing', and the staged temp file is the only server-side copy
+        (its ``finally`` unlinks it), so a refusal found later discards a file the
+        client was told had been accepted. Reserving here puts the refusal at the
+        response -- 429, matching what ``ingest_text`` already answers -- and the
+        token is handed to :meth:`ingest_file`, which then owns settling or
+        releasing it, so admission cannot be lost in between.
+
+        Raises :class:`ImportChunkBudgetError` when the window is exhausted.
+        Returns ``None`` when the budget is disabled -- which is an ADMISSION, not
+        an absent one -- so hand the result over as-is together with
+        ``count_toward_import_budget=False``, and let that flag be what tells
+        :meth:`ingest_file` not to enter the budget a second time.
+        """
+        return await self._enter_import_budget(True)
+
+    def release_import_budget(self, token: int | None) -> None:
+        """Reclaim a token from :meth:`reserve_import_budget` that never reached
+        :meth:`ingest_file` -- the caller failed between reserving and handing it
+        over. A no-op for ``None``. Once handed over, ingest_file's own finally
+        owns it and calling this as well would be the double-release that
+        :meth:`ImportChunkBudget.release` is written to tolerate.
+        """
+        self._import_budget.release(token)
+
+    async def _enter_import_budget(self, count_toward_import_budget: bool) -> int | None:
+        """Refresh the explicit-import budget from live config and RESERVE against
+        the rolling window, refusing the call if the window is already exhausted.
+
+        Returns a reservation token to settle/release on the way out, or ``None``
+        when the budget is disabled or this is a non-explicit caller. The
+        automated paths -- both folder-watcher sweeps and artifact sync -- pass
+        ``count_toward_import_budget=False`` because they are already governed by
+        their own budgets; for them this is a no-op that returns ``None``.
+        Raises :class:`ImportChunkBudgetError` when an explicit call is refused.
+
+        The config read is offloaded: ``_import_chunk_budget`` does a synchronous
+        ``KiroCrewConfig.load()`` (stat + read + parse of config.json), which must
+        not run on the event loop.
+        """
+        if not count_toward_import_budget:
+            return None
+        self._import_budget.set_budget(await asyncio.to_thread(_import_chunk_budget))
+        return self._import_budget.reserve()
 
     def _resolve_old_item_ids(self, source_id: str | None) -> list[str]:
         """The source's full pre-existing item group: the ids a replace-all
@@ -466,6 +710,8 @@ class IngestionPipeline:
         on_duplicate: Callable[[str], None] | None = None,
         *,
         embed_priority: int = PRIORITY_NORMAL,
+        count_toward_import_budget: bool = True,
+        import_budget_token: int | None = None,
     ) -> str | None:
         """Full pipeline. Returns job_id, or None if content hash unchanged.
 
@@ -496,7 +742,65 @@ class IngestionPipeline:
         finishes and then re-raises the cancellation, so a shutdown lands with the
         deletion and the location claim durable and the caller's write never
         reached.
+
+        ``count_toward_import_budget`` gates and records this call against the
+        cross-file explicit-import chunk budget (``knowledge.import_chunk_budget``).
+        Explicit callers leave it True; the folder-watcher path passes False
+        because it is already bounded by the per-sweep chunk budgets.
         """
+        # Cross-file cost ceiling for the explicit import paths. Reserved FIRST so
+        # a refused import does no filesystem read, chunking or extraction, and a
+        # reservation is held across the awaits below so concurrent imports cannot
+        # each pass before any records (see ImportChunkBudget). Returns a token to
+        # settle on success / release on any non-success exit; None when disabled
+        # or for the watcher/artifact-sync paths.
+        #
+        # A caller that must answer the client BEFORE this runs -- the multipart
+        # upload route, which replies 'processing' and ingests in the background --
+        # reserves its own admission with :meth:`reserve_import_budget` and passes
+        # ``count_toward_import_budget=False`` plus the token it holds. That flag is
+        # not optional for such a caller, because a DISABLED budget admits with a
+        # token of ``None``: leaving the flag True would send this call down the
+        # reserve branch, entering the budget a SECOND time, and a budget enabled
+        # between the two config reads would then refuse an upload already accepted
+        # and discard its only staged copy. Ownership of whatever this ends up
+        # holding transfers here -- the finally below settles or releases it.
+        budget_token = (
+            import_budget_token
+            if import_budget_token is not None
+            else await self._enter_import_budget(count_toward_import_budget)
+        )
+        try:
+            return await self._ingest_file_impl(
+                budget_token=budget_token,
+                path=path, on_progress=on_progress, original_name=original_name,
+                namespace=namespace, source_id=source_id, old_item_ids=old_item_ids,
+                on_committed=on_committed, on_duplicate=on_duplicate,
+                embed_priority=embed_priority,
+            )
+        finally:
+            # Reclaim the reservation on EVERY exit that did not settle it: an
+            # exception, but also the no-op success paths (content-hash unchanged,
+            # dedup-refused) that return before any chunk work. settle() on the
+            # chunking success path marks the token consumed, so this release is a
+            # no-op there -- no double-counting. Without this, a no-op re-ingest
+            # would strand its 50-chunk placeholder and falsely refuse real imports.
+            self._import_budget.release(budget_token)
+
+    async def _ingest_file_impl(
+        self,
+        *,
+        budget_token: int | None,
+        path: str,
+        on_progress=None,
+        original_name: str = "",
+        namespace: str = "default",
+        source_id: str = "",
+        old_item_ids: list[str] | None = None,
+        on_committed: Callable[[list[str]], None] | None = None,
+        on_duplicate: Callable[[str], None] | None = None,
+        embed_priority: int = PRIORITY_NORMAL,
+    ) -> str | None:
         p = Path(path)
         display_name = original_name or p.name
         # Separate copy for the two sinks a name is allowed to reach: the error
@@ -661,6 +965,7 @@ class IngestionPipeline:
                 existing=existing, old_item_ids=old_item_ids,
                 _old_item_ids=_old_item_ids, path=path, on_progress=on_progress,
                 embed_priority=embed_priority, on_committed=on_committed,
+                budget_token=budget_token,
             )
         except Exception:
             try:
@@ -687,7 +992,7 @@ class IngestionPipeline:
                                 uri, content_hash, display_name, namespace,
                                 existing, old_item_ids, _old_item_ids, path,
                                 on_progress, embed_priority,
-                                on_committed=None) -> str | None:
+                                on_committed=None, budget_token=None) -> str | None:
         """Chunk/extract/store/finalize — split out so ingest_file can mark the
         pre-inserted job row 'failed' on ANY exception in one place."""
         # 4. Chunk (use per-source chunk size if configured)
@@ -857,6 +1162,13 @@ class IngestionPipeline:
             # rebuild). Offloaded so a large source's dedup cannot stall the loop
             # (RLock-guarded graph + thread-local sqlite make this thread-safe).
             await asyncio.to_thread(self._maybe_dedup, source_id, content_hash)
+
+        # Reconcile the reservation to the real chunk count ONLY now, after the
+        # fallible finalize succeeded -- settling earlier would leave a failed
+        # import charged (its exception releases via ingest_file's finally, but a
+        # settled token never releases). total is the extraction cost actually
+        # incurred (extract_batch ran on every chunk). No-op when token is None.
+        self._import_budget.settle(budget_token, total)
         return job_id
 
     async def ingest_text(self, text: str, title: str, source_type: str = 'manual',
@@ -877,7 +1189,35 @@ class IngestionPipeline:
           source hold many independently-replaceable documents -- the
           aggregate "Artifacts" source keys a group per artifact slug, exactly
           as a folder source keys a group per file.
+
+        Every caller of this method is a deliberate import, so it always counts
+        against the cross-file explicit-import chunk budget
+        (``knowledge.import_chunk_budget``). :meth:`ingest_file` takes a
+        ``count_toward_import_budget`` opt-out because the watcher and
+        artifact-sync sweeps reach it and carry their own bounds; nothing reaches
+        this one that way.
         """
+        # Cross-file cost ceiling. Reserved first (held across the awaits below so
+        # concurrent imports cannot each pass before any records); token settled on
+        # success, released on any non-success exit.
+        budget_token = await self._enter_import_budget(True)
+        try:
+            return await self._ingest_text_impl(
+                text, title, source_type=source_type, source_id=source_id,
+                old_item_ids=old_item_ids, on_duplicate=on_duplicate,
+                budget_token=budget_token,
+            )
+        finally:
+            # Reclaim on every non-settling exit, including the no-op success
+            # paths (unchanged hash, dedup-refused). settle() on the chunk path
+            # consumes the token so this release is a no-op there. See ingest_file.
+            self._import_budget.release(budget_token)
+
+    async def _ingest_text_impl(self, text: str, title: str, source_type: str = 'manual',
+                                source_id: str | None = None,
+                                old_item_ids: list[str] | None = None,
+                                on_duplicate: Callable[[str], None] | None = None,
+                                budget_token: int | None = None) -> str | None:
         content_hash = hashlib.sha256(text.encode()).hexdigest()
 
         # Resolve the source and the prior item ids this call should replace.
@@ -1044,6 +1384,11 @@ class IngestionPipeline:
             # rebuild). Offloaded so a large source's dedup cannot stall the loop
             # (RLock-guarded graph + thread-local sqlite make this thread-safe).
             await asyncio.to_thread(self._maybe_dedup, source_id, content_hash)
+
+        # Settle only after the fallible finalize succeeded (see _ingest_file_body):
+        # a failure before here releases via ingest_text's finally instead of
+        # staying charged. No-op when token is None.
+        self._import_budget.settle(budget_token, total)
         return job_id
 
     def get_job_status(self, job_id: str) -> dict | None:

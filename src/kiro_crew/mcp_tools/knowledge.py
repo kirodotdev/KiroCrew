@@ -352,6 +352,16 @@ def knowledge_add_document(name: str, args: dict[str, Any]) -> str:
     if add_status == "duplicate":
         return (f"Already in the knowledge library, nothing added "
                 f"({resp.get('reason', 'duplicate content')}).")
+    if add_status == "deferred":
+        # The cross-file import budget refused this add, and the route reports that
+        # as a 200 with no `error` key -- so without this branch it would fall into
+        # the success line below and tell the agent a document that was never
+        # written is searchable. Nothing was stored, and the reason carries the
+        # budget, window and spend the agent needs to decide whether to wait.
+        return (f"Not added -- the knowledge import budget deferred it "
+                f"({resp.get('reason', 'import budget exhausted')}). Nothing was "
+                f"stored and it is NOT searchable. Retry once the window clears, or "
+                f"ask the operator to raise knowledge.import_chunk_budget.")
     # audit_title, not title: a document name is caller-supplied and free-form
     # enough to carry a credential, and this string is rendered into chat and
     # persisted in the transcript -- a wider audience than the audit log that

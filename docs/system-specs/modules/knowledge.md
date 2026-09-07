@@ -314,6 +314,51 @@ persist bookkeeping, so a rolled-back partial ingest stays retryable — bounded
 the attempted-charge above — instead of being parked behind a recorded hash while
 the superseded document stays searchable.
 
+**Explicit-import chunk ceiling.** Every budget above governs a WATCHER sweep. The
+explicit one-shot import routes reach `IngestionPipeline` directly and no sweep
+counter ever sees them, so they carry their own cross-file ceiling:
+`ImportChunkBudget` in `ingestion.py`, sized by `knowledge.import_chunk_budget`
+(0 = disabled, the default) over a rolling `_IMPORT_CHUNK_BUDGET_WINDOW_SECS`
+window. A single file is already capped at `MAX_CHUNKS_PER_FILE`; this bounds the
+cost ACROSS files, which is the shape a run of deliberate adds has.
+
+*Counted by default, exempt only where something else bounds it.* The opt-out is
+`ingest_file`'s `count_toward_import_budget`, defaulting to `True`, so a new caller
+is counted unless it asks not to be. `ingest_text` carries no such flag: only the
+sweeps opt out, and none of them reach it. Read that default as the rule and this
+list as its only exceptions -- a new path (a new connector, say) inherits the
+ceiling deliberately rather than by forgetting a keyword:
+
+| Path | Counted? | Why |
+|---|---|---|
+| dashboard single-file add, multipart upload, agent `knowledge_add_document`, direct text ingest, remote connector sync | yes | no other counter sees them |
+| auto-research add-to-knowledge | yes | a user's click with no bound of its own |
+| folder-watcher sweeps, single-file sweep | no | bounded by `sweep_chunk_budget` / `folder_ingest_chunk_budget` above |
+| artifact-sync reconcile | no | bounded per reconcile by `RECONCILE_INGEST_BUDGET` |
+
+*Reserve / settle / release.* The true chunk count is unknown until after an await,
+so `reserve()` books `MAX_CHUNKS_PER_FILE` as a placeholder INTO the window at
+admission, and every concurrent `reserve` sees it -- without that, N simultaneous
+imports would each pass before any recorded. `settle(token, n)` reconciles it down
+to the real count once the fallible finalize has succeeded, keeping the RESERVATION
+timestamp so the window expires the cost from when the import began; `release` in a
+`finally` reclaims a token on every non-settling exit, including the no-op success
+paths (content-hash unchanged, dedup-refused) that would otherwise strand a
+placeholder. An OPEN reservation is exempt from window pruning, so an import slower
+than the window cannot age out of the ceiling it occupies while it is still running.
+Trip behaviour is a reasoned refusal, never truncation: `ImportChunkBudgetError`
+carries budget, window and spend.
+
+*Admission before acceptance.* A route that answers the client and ingests
+afterwards cannot discover a refusal in its background task -- the multipart upload
+route's staged temp file is the only server-side copy, so a late refusal would
+discard a file the client was told had been accepted. Such a caller reserves with
+`reserve_import_budget()` before responding, answers `429` on refusal, and passes
+the token to `ingest_file` with `count_toward_import_budget=False`. That flag is
+required, not decorative: a disabled budget admits with a token of `None`, so
+leaving the flag `True` would re-enter the budget on a second config read.
+`release_import_budget` reclaims a token the caller never handed over.
+
 **Cost visibility.** `POST /api/knowledge/sources` walks a folder before ingesting
 anything and returns `file_count`, `capped_file_count`, `estimated_chunks`,
 `estimated_llm_calls` and `chunk_budget_per_sweep` alongside the

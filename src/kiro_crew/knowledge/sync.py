@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 
 from .connectors.base import BaseConnector
+from .ingestion import ImportChunkBudgetError
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,13 @@ class SyncScheduler:
                 props["metadata"] = meta
             self.store.update_source(source_id, last_synced=now, properties=props)
             result.update(synced=True, items_created=items_created)
+        except ImportChunkBudgetError as e:
+            # A budget deferral is transient, not a sync failure: surface the
+            # reasoned message and do NOT call _record_failure (which increments
+            # consecutive_failures and can disable the source). The next sync
+            # after the window rolls over proceeds normally.
+            logger.warning("Sync deferred by import budget for source %s: %s", source_id, e)
+            result["deferred"] = str(e)
         except Exception as e:
             logger.exception("Sync failed for source %s", source_id)
             result["error"] = str(e)
