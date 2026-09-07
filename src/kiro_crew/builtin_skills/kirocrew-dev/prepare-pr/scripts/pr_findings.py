@@ -178,6 +178,9 @@ span_hash = _review_contract.span_hash
 sha_matches = _review_contract.sha_matches
 comment_key = _review_contract.comment_key
 extract_findings = _review_contract.extract_findings
+extract_design_items = _review_contract.extract_design_items
+design_lane_verdicts = _review_contract.design_lane_verdicts
+CLEARS_WHEN_RE = _review_contract.CLEARS_WHEN_RE
 parse_disposition_record = _review_contract.parse_disposition_record
 
 
@@ -679,9 +682,41 @@ def main(argv):
         if bot_comments is None:
             print("(bot comments could not be read)")
         else:
-            findings = list(
-                extract_findings(bot_comments, head_sha, resolve_marker_bindings(os.environ))
-            )
+            bindings = resolve_marker_bindings(os.environ)
+            # Whole-design lanes FIRST: they rule on the change's shape, so
+            # fixing a line-level finding inside a shape the design review is
+            # about to change is work that gets deleted. Their span ids come
+            # from extract_design_items, which is deliberately not part of the
+            # extract_findings universe the server-side disposition gate reads.
+            verdicts = design_lane_verdicts(bot_comments, head_sha, bindings)
+            design_items = list(extract_design_items(bot_comments, head_sha, bindings))
+            print("-- whole-design lanes (answer these BEFORE the line-level findings)")
+            if not verdicts:
+                print("(no whole-design lane stamped for the current head)")
+            for lane in sorted(verdicts):
+                print(
+                    "  {}: verdict={}".format(
+                        sanitize(redact(lane)), sanitize(redact(verdicts[lane]))
+                    )
+                )
+            for item in design_items:
+                print(
+                    "- span={}  [{}]{} {}  ({})".format(
+                        item["span"],
+                        sanitize(redact(item["kind"])),
+                        " [BLOCK-MERGE]" if item["block_merge"] else "",
+                        sanitize(redact(item["path"])),
+                        sanitize(redact(item["reviewer"])),
+                    )
+                )
+                body_text = CLEARS_WHEN_RE.sub("", item["text"]).strip()
+                print("  " + sanitize(redact(body_text))[:280])
+                if item["clears_when"]:
+                    print("  Clears when: " + sanitize(redact(item["clears_when"]))[:280])
+            if verdicts and not design_items:
+                print("(no Blockers/Watch/Subtraction/Suggestion items in those bodies)")
+            print("-- line-level findings (GPT / Opus)")
+            findings = list(extract_findings(bot_comments, head_sha, bindings))
             for f in findings:
                 print(
                     "- span={}  [{}]{} {}:{}  ({})".format(
@@ -708,7 +743,10 @@ def main(argv):
     print()
     print(
         "NOTE: fix every legitimate Critical/High finding + failing check; "
-        "push back on false positives; Medium/Low are advisory."
+        "push back on false positives; Medium/Low are advisory. Every "
+        "whole-design item above needs its OWN disposition comment naming its "
+        "span (one lane, one finding per comment) - an unanswered CONCERNS is "
+        "pr_status.py exit 20."
     )
     return 0
 

@@ -148,6 +148,219 @@ def extract_findings(
             }
 
 
+# Whole-design lanes: Design, UX and First Principles review the SHAPE of the
+# change rather than a line, so they emit a verdict line plus prose sections
+# instead of the `BLOCKING -- path:line` shape FINDING_RE reads. SKILL.md ranks
+# them above the line-level lanes in triage, which is only possible if their
+# items reach the loop with span ids of their own.
+WHOLE_DESIGN_LANES = ("DESIGN", "UX", "FIRST-PRINCIPLES")
+# `Design-Verdict: CONCERNS`, `UX-Verdict: PASS`, `First-Principles-Verdict: BLOCK`
+VERDICT_LINE_RE = re.compile(
+    r"^[A-Za-z-]+-Verdict:\s*(PASS|CONCERNS|BLOCK)\b", re.MULTILINE | re.IGNORECASE
+)
+# The item-bearing sections of those lanes' output templates. Deliberately an
+# allowlist rather than "every `###` heading": First Principles also emits a
+# `### What this change ships` INVENTORY and UX a `### Evidence gaps` note, and
+# neither is an item an author disposes of one by one.
+DESIGN_ITEM_SECTIONS = (
+    "Blockers",
+    "Watch",
+    "Subtractions",
+    "Suggestions",
+    "Not justified as shipped",
+)
+# A per-item trailing line naming what would retire the item. Optional: it is
+# absent from every lane's older output, so parsing must not depend on it.
+CLEARS_WHEN_RE = re.compile(r"clears\s+when\s*:\s*(.+?)\s*$", re.IGNORECASE)
+# One synthetic path for every whole-design item. Their findings are about the
+# change's shape, so no single file owns them, and a real path here would read
+# as a line-level finding.
+DESIGN_ITEM_PATH = "(design)"
+_DESIGN_SPAN_TEXT_CHARS = 80
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
+_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*)$")
+_MD_NOISE_RE = re.compile(r"[`*_~]+")
+
+
+def normalize_design_item_text(text):
+    """Fold one item to the identity its span is hashed from.
+
+    Markdown emphasis, list markers and line wrapping all change without the
+    item changing, so they are stripped; the first
+    ``_DESIGN_SPAN_TEXT_CHARS`` characters then keep the span stable when the
+    lane re-words a trailing clause and change it when the item itself changes.
+    """
+    plain = _MD_NOISE_RE.sub("", text or "")
+    return " ".join(plain.split()).lower()[:_DESIGN_SPAN_TEXT_CHARS]
+
+
+def _collapse(lines):
+    return " ".join(" ".join(lines).split())
+
+
+def design_section_items(body):
+    """Yield ``(section, item text)`` for each item in a whole-design body.
+
+    Items are the section's bullets or numbered entries, each carrying its
+    continuation lines (the consequence chain and the fix the templates ask
+    for). A section whose lane wrote PROSE instead of a list still yields its
+    paragraphs: the templates say "one or two lines each" without mandating a
+    bullet, and silently yielding nothing there would hide exactly the CONCERNS
+    items this extractor exists to surface.
+    """
+    wanted = {name.lower(): name for name in DESIGN_ITEM_SECTIONS}
+    section = ""
+    blocks: list = []
+
+    def close():
+        items = [b for b in blocks if b and b[0]]
+        chosen = items or [b for b in blocks if b and not b[0]]
+        out = []
+        for _is_item, lines in chosen:
+            text = _collapse(lines)
+            if text:
+                out.append((section, text))
+        return out
+
+    results: list = []
+    for raw in (body or "").splitlines():
+        heading = _HEADING_RE.match(raw)
+        if heading:
+            if section:
+                results.extend(close())
+            blocks = []
+            section = wanted.get(heading.group(1).strip().lower(), "")
+            continue
+        if not section:
+            continue
+        # The stamp, the blocking marker and the verdict line are the body's
+        # own trailers, never item text.
+        if (
+            REVIEWED_STAMP_RE.search(raw)
+            or BLOCK_MERGE_RE.search(raw)
+            or VERDICT_LINE_RE.search(raw)
+        ):
+            results.extend(close())
+            blocks = []
+            section = ""
+            continue
+        stripped = raw.strip()
+        if not stripped:
+            blocks.append(None)  # separator: the next line starts a new block
+            continue
+        bullet = _BULLET_RE.match(raw)
+        if bullet:
+            blocks.append([True, [bullet.group(1).strip()]])
+        elif blocks and blocks[-1] is not None:
+            blocks[-1][1].append(stripped)
+        else:
+            blocks.append([False, [stripped]])
+    if section:
+        results.extend(close())
+    return results
+
+
+def _fresh_design_bodies(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES):
+    """Yield ``(lane, body, verdict)`` per whole-design lane fresh for the head.
+
+    Freshness follows extract_findings exactly: the lane's OWN stamp inside its
+    own workflow-keyed comment, so a stamp name injected by model output cannot
+    forge another lane's review.
+    """
+    wanted = {name.upper() for name in lanes or ()}
+    for comment in comments or []:
+        body = comment.get("body") or ""
+        name = (bindings or {}).get(comment_key(body))
+        if not name or name.upper() not in wanted:
+            continue
+        fresh = any(
+            stamp_name == name and sha_matches(sha, head_sha)
+            for stamp_name, sha in REVIEWED_STAMP_RE.findall(body)
+        )
+        if not fresh:
+            continue
+        match = VERDICT_LINE_RE.search(body)
+        yield name, body, (match.group(1).upper() if match else "")
+
+
+def design_lane_verdicts(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES):
+    """``{lane: verdict}`` for whole-design lanes stamped for ``head_sha``.
+
+    A lane that reported PASS carries no items, so its verdict has to come from
+    somewhere other than the item list for the reader to see the lane ran.
+    """
+    return {
+        name: verdict
+        for name, _body, verdict in _fresh_design_bodies(comments, head_sha, bindings, lanes)
+    }
+
+
+def extract_design_items(comments, head_sha, bindings, lanes=WHOLE_DESIGN_LANES):
+    """Yield whole-design items stamped for ``head_sha`` with stable span ids.
+
+    Deliberately SEPARATE from extract_findings, which stays the definition of
+    "this lane has findings" for disposition_violations -- and therefore for
+    pr-readiness.yml's server-side gate. Folding these items into that universe
+    would silently reclassify a today-valid spanless ``target=design``
+    disposition as a violation and fail the required status on PRs nobody
+    touched, so the design items feed only local reporting (pr_findings.py) and
+    the local unanswered-CONCERNS check (pr_status.py). A disposition may still
+    CLAIM one of these spans: an unknown span for a lane with no
+    extract_findings identities is not a violation.
+    """
+    for name, body, verdict in _fresh_design_bodies(comments, head_sha, bindings, lanes):
+        for section, text in design_section_items(body):
+            clears = CLEARS_WHEN_RE.search(text)
+            yield {
+                "reviewer": name.lower(),
+                "lane": name,
+                "verdict": verdict,
+                "kind": section.upper(),
+                "path": DESIGN_ITEM_PATH,
+                "text": text,
+                "clears_when": clears.group(1).strip() if clears else "",
+                "block_merge": verdict == "BLOCK",
+                "span": span_hash(name, normalize_design_item_text(text)),
+            }
+
+
+def unanswered_concern_lanes(verdicts, records, head_sha):
+    """Whole-design lanes at CONCERNS for this head with no disposition yet.
+
+    LOCAL ONLY -- the prepare-pr loop's own stop condition. SKILL.md says a
+    green rollup with an unanswered CONCERNS is not converged, and nothing
+    enforced it: the loop armed auto-merge straight past a fresh CONCERNS. The
+    server-side required status is deliberately NOT changed, because CONCERNS
+    is advisory by contract for every writer who never runs this loop.
+
+    Answered means a repository writer's disposition record targets that lane
+    and names this head (a short ``head=`` prefix counts, as everywhere else).
+    """
+    out = []
+    for name, verdict in sorted((verdicts or {}).items()):
+        if verdict != "CONCERNS" or name.upper() not in WHOLE_DESIGN_LANES:
+            continue
+        target = name.lower()
+        answered = any(
+            not record.get("malformed")
+            and (record.get("target") or "").lower() == target
+            and sha_matches(record.get("head") or "", head_sha)
+            for record in records or []
+        )
+        if not answered:
+            out.append(name)
+    return out
+
+
+def unanswered_concerns_reason(lane, head_sha):
+    """The one blocking reason text for an unanswered whole-design CONCERNS."""
+    return (
+        "unanswered CONCERNS from {} on current head - answer each Watch item "
+        "with an <!-- ai-review-disposition target={} head={} --> comment "
+        "(fix, rebut, or accept-and-defer)".format(lane, lane.lower(), head_sha)
+    )
+
+
 def parse_disposition_record(comment):
     """Parse one disposition-marked comment into a record dict, else None.
 

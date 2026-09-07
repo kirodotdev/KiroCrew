@@ -1094,13 +1094,45 @@ jobs:
             PASS)
               conclusion="success"; title="PASS (advisory)" ;;
             CONCERNS)
-              conclusion="success"; title="CONCERNS (advisory)" ;;
+              conclusion="neutral"; title="CONCERNS — read the Watch items" ;;
             BLOCK)
               conclusion="failure"; title="BLOCK (advisory) — see PR comment" ;;
             *)
               conclusion="neutral"; title="review incomplete (advisory)" ;;
           esac
           summary="Advisory fork UX review for $HEAD. See the PR comment for details."
+          # CONCERNS is where a design/premise/UX risk actually lives, and today
+          # it is invisible: the check reports green and 31 of 57 CONCERNS drew
+          # no human reply at all. Distil the punchline and the Watch section so
+          # the Checks UI itself can carry them -- no new command, no convention
+          # to learn. Reads the ALREADY-REDACTED body, so the redaction and
+          # withhold gates upstream stay the only publish boundary. Caps with a
+          # Bash substring rather than a pipe into `head`: a piped cap SIGPIPEs
+          # the writer, and `pipefail` turns that into a step failure on exactly
+          # the long body the cap exists for.
+          concerns_digest() {
+            local file="$1" header="$2" marker="$3" digest=""
+            [ -f "$file" ] || return 0
+            digest="$(awk -v header="^$header" -v marker="$marker" '
+              index($0, marker) == 1 { exit }
+              !seen && $0 ~ header { seen = 1; next }
+              !seen { next }
+              seen == 1 && NF { print; seen = 2; next }
+              /^### / { watch = ($0 ~ /^### Watch[[:space:]]*$/) }
+              watch { print }
+            ' "$file")"
+            printf '%s' "${digest:0:2000}"
+          }
+          # `neutral` reads as a PASS to pr-readiness.yml (it counts success and
+          # neutral alike), so this changes what a human SEES, never whether the
+          # PR can merge -- and unlike `success` it renders as its own state in
+          # the Checks list instead of a green tick nobody opens.
+          if [ "${VERDICT:-}" = "CONCERNS" ]; then
+            digest="$(concerns_digest "${RUNNER_TEMP:-/tmp}/ux-comment.md" "UX-Verdict:" "[UX-REVIEWED]")"
+            if [ -n "$digest" ]; then
+              summary="$(printf '%s\n\n_CONCERNS is advisory and does not block merge. Full review in the PR comment for %s._\n' "$digest" "$HEAD")"
+            fi
+          fi
           # complete <check-run id> <conclusion> <title> — one retry, because a
           # single transient 5xx here is what strands the run: the check-run stays
           # `in_progress` forever, and pr-readiness counts ANY non-completed run of

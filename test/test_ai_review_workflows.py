@@ -5870,3 +5870,616 @@ class TestGptRefusalTerminalState:
         # re-run the incomplete notice advises.
         assert '{ [ "$kind" = "incomplete" ] || [ "$kind" = "refused" ]; }' in comment_step
         assert "very unlikely to produce a fresh verdict" in comment_step
+
+
+# The three design/premise/UX lanes on a fork, whose verdict lands as a
+# check-run this repo controls end to end.
+CONCERNS_FORK_LANES = (
+    ("fork-design-review.yml", "Design-Verdict:", "[DESIGN-REVIEWED]"),
+    (
+        "fork-first-principles-review.yml",
+        "First-Principles-Verdict:",
+        "[FIRST-PRINCIPLES-REVIEWED]",
+    ),
+    ("fork-ux-review.yml", "UX-Verdict:", "[UX-REVIEWED]"),
+)
+
+# Their same-repo twins, which own a JOB rather than a check-run and so cannot
+# report themselves neutral: (workflow, posting step, status step, lane label).
+CONCERNS_SAME_LANES = (
+    (
+        "design-review.yml",
+        "Post design review summary",
+        "Design review status (gates on BLOCK)",
+        "Design Review",
+    ),
+    (
+        "first-principles-review.yml",
+        "Post first-principles review summary",
+        "First-principles review status (gates on BLOCK)",
+        "First Principles Review",
+    ),
+    (
+        "ux-review.yml",
+        "Post UX review summary",
+        "UX review status (gates on BLOCK)",
+        "UX Review",
+    ),
+)
+
+DESIGN_LANES = ("design-review.yml", "fork-design-review.yml")
+
+
+class TestDesignVerdictCalibration:
+    """BLOCK must be REACHABLE for the class of change that takes a platform out.
+
+    The flat tie-breaker ("when torn, choose CONCERNS", "if any is
+    might/unclear it is CONCERNS at most") made it unreachable there by
+    construction: the reviewer has no shell and no Windows host, so a platform
+    premise is ALWAYS unclear to it. PR #8117 is the worked example -- the lane
+    wrote the exact failure mode (absent macOS-only settings file read as False
+    -> every classified Windows spawn fail-closes at session start) and still
+    resolved CONCERNS. The calibration is therefore scoped by REVERSIBILITY, and
+    an unverified premise is an INPUT to BLOCK rather than a reason to lower it.
+    """
+
+    FIRST = "Tie-breaker, SCOPED BY REVERSIBILITY"
+    LAST = "Size is never a BLOCK."
+
+    def _calibration(self, workflow: str) -> str:
+        lines = _workflow(workflow).splitlines()
+        start = next((i for i, line in enumerate(lines) if self.FIRST in line), None)
+        assert start is not None, f"{workflow} carries no reversibility-scoped tie-breaker"
+        end = next(i for i, line in enumerate(lines[start:], start) if self.LAST in line)
+        block = lines[start : end + 1]
+        indent = len(block[0]) - len(block[0].lstrip())
+        return "\n".join(line[indent:] if line.strip() else "" for line in block)
+
+    def test_both_design_lanes_carry_an_identical_calibration_block(self) -> None:
+        # The fork lane is the one that runs on an outside contributor's PR, so a
+        # calibration that lives in only one copy is a calibration that does not
+        # apply to the PRs it was written for.
+        blocks = {name: self._calibration(name) for name in DESIGN_LANES}
+        reference = blocks[DESIGN_LANES[0]]
+        for name, block in blocks.items():
+            assert block == reference, (
+                f"{name} verdict calibration drifted from {DESIGN_LANES[0]}; "
+                "both design lanes must carry the same text"
+            )
+
+    def test_tie_breaker_is_decided_by_the_consequence_not_by_certainty(self) -> None:
+        for name in DESIGN_LANES:
+            flat = _flat(self._calibration(name))
+            # Reversible -> CONCERNS is retained, so an ordinary judgement call
+            # still lands where it did.
+            assert "the consequence is REVERSIBLE" in flat, name
+            assert "a regression a revert fixes cleanly" in flat, name
+            assert "-> CONCERNS" in flat, name
+            # Irreversible-in-product -> BLOCK is the new half.
+            assert "STOPS WORKING" in flat, name
+            assert "session start, spawn, auth, gateway boot" in flat, name
+            assert "no in-product remedy short of disabling a safety control" in flat, name
+            assert "-> BLOCK" in flat, name
+
+    def test_an_unverified_premise_is_a_block_input(self) -> None:
+        for name in DESIGN_LANES:
+            flat = _flat(self._calibration(name))
+            assert "An UNVERIFIED premise is a BLOCK INPUT, not a reason to lower" in flat, name
+            # The reviewer's own blindness is named, because that is why the old
+            # rule collapsed: it cannot verify a platform claim, so the AUTHOR
+            # must, and BLOCK is what asks them to.
+            assert "no shell, no Windows host and no provider account" in flat, name
+            assert "name the evidence that clears it" in flat, name
+
+    def test_the_flat_tie_breaker_is_gone_from_both_lanes(self) -> None:
+        # The exact sentences that made BLOCK unreachable must not come back --
+        # either one restores the old behaviour on its own.
+        for name in DESIGN_LANES:
+            flat = _flat(_workflow(name))
+            assert (
+                "Tie-breaker: when torn between BLOCK and CONCERNS, choose CONCERNS." not in flat
+            ), name
+            assert (
+                'If any is "might", "unclear", or a matter of taste, it is a CONCERNS at most'
+                not in flat
+            ), name
+
+    def test_named_block_triggers_cover_the_shape_that_shipped(self) -> None:
+        for name in DESIGN_LANES:
+            flat = _flat(self._calibration(name))
+            # (1) the availability path gated on unestablished platform semantics
+            assert "gates a core availability path on a probe, file or setting" in flat, name
+            assert "ON THE AFFECTED PLATFORM this repo never establishes" in flat, name
+            assert "an absent file read as False is a decision, not a default" in flat, name
+            # (2) a deleted pin treated as a gap -- with the check that tells the
+            # two apart, since "it was a gap" is exactly what the PR asserted.
+            assert "pinned the OPPOSITE behaviour" in flat, name
+            assert "as a GAP rather than as a DECISION" in flat, name
+            assert "read the test's own message and its git history" in flat, name
+            # (3) an N/A manual-verification claim for an unexercised platform
+            assert '"Manual verification: N/A"' in flat, name
+            assert "a platform or in an environment CI does not exercise" in flat, name
+
+    def test_the_anti_bloat_rules_survive_the_recalibration(self) -> None:
+        # Making BLOCK reachable must not make it cheap: the budget and the
+        # size-is-not-a-finding rule are what keep this lane from turning into
+        # noise, so they are pinned alongside the new triggers.
+        for name in DESIGN_LANES:
+            flat = _flat(self._calibration(name))
+            assert "at most 1 BLOCK per review" in flat, name
+            assert "Size is never a BLOCK." in flat, name
+            assert "A matter of taste is never a BLOCK" in flat, name
+            assert "FALSIFY BEFORE YOU BLOCK" in flat, name
+            assert "never merely because the change is large or far-reaching" in _flat(
+                _workflow(name)
+            ), name
+
+    def test_every_blocker_and_watch_item_says_what_clears_it(self) -> None:
+        # A finding a coding loop cannot act on is a finding that does not get
+        # acted on. `Clears when:` is the actionable half, so the output
+        # contract demands it on BOTH sections, not just on Blockers.
+        for name in DESIGN_LANES:
+            workflow = _workflow(name)
+            blockers = workflow.index("### Blockers")
+            watch = workflow.index("### Watch", blockers)
+            suggestions = workflow.index("### Suggestions", watch)
+            for label, section in (
+                ("Blockers", workflow[blockers:watch]),
+                ("Watch", workflow[watch:suggestions]),
+            ):
+                assert (
+                    "`Clears when: <the concrete evidence or change that resolves this>`"
+                    in _flat(section)
+                ), (f"{name}: the {label} section does not require a Clears when line")
+            assert "an item with no `Clears when:` is not actionable" in _flat(
+                workflow[watch:suggestions]
+            ), name
+
+
+class TestConcernsIsVisibleInTheChecksUi:
+    """A CONCERNS verdict must be legible without opening the PR comment.
+
+    31 of 57 CONCERNS drew no human reply at all, and the mechanism is simple:
+    the lane reported a green check, so nothing in the Checks UI said there was
+    anything to read. The fork lanes own a check-run, so CONCERNS becomes
+    `neutral` -- still a pass to pr-readiness.yml, but its own state in the list
+    -- carrying the punchline and Watch items in `output.summary`. The same-repo
+    lanes own a JOB, which cannot be neutral, so they emit a warning annotation
+    and a step summary instead. No new command, no convention to learn.
+    """
+
+    def _digest_fn(self, workflow: str, step: str) -> str:
+        return _shell_function(_step_script(_workflow(workflow), step), "concerns_digest")
+
+    def test_fork_lanes_finalize_concerns_as_neutral(self) -> None:
+        for name, _, _ in CONCERNS_FORK_LANES:
+            finalize = _step_script(_workflow(name), "Finalize check-run (advisory)")
+            assert 'conclusion="neutral"; title="CONCERNS — read the Watch items"' in finalize, name
+            # The green tick must not come back: it is what made CONCERNS
+            # indistinguishable from PASS in the Checks list.
+            assert 'CONCERNS) conclusion="success"' not in finalize, name
+            assert 'title="CONCERNS (advisory)"' not in finalize, name
+            # A real BLOCK still fails, and an incomplete run still resolves
+            # neutral -- neither end of the contract moved.
+            assert 'conclusion="failure"' in finalize, name
+
+    def test_fork_lanes_put_the_punchline_and_watch_items_in_the_summary(self) -> None:
+        for name, header, marker in CONCERNS_FORK_LANES:
+            finalize = _step_script(_workflow(name), "Finalize check-run (advisory)")
+            assert 'concerns_digest "' in finalize, name
+            assert f'"{header}" "{marker}"' in finalize, name
+            # The digest REPLACES the generic "see the PR comment" summary only
+            # when it actually parsed something.
+            assert 'if [ "${VERDICT:-}" = "CONCERNS" ]; then' in finalize, name
+            assert 'if [ -n "$digest" ]; then' in finalize, name
+            assert '-f "output[summary]=$summary"' in finalize, name
+
+    def test_the_summary_reads_an_already_redacted_body(self) -> None:
+        # The publish boundary stays where it is. Each lane's digest reads the
+        # file its own redaction step rewrote in place, so no un-redacted text
+        # can reach a check-run summary.
+        bodies = {
+            "fork-design-review.yml": "design-review-output.md",
+            "fork-first-principles-review.yml": "first-principles-output.md",
+            "fork-ux-review.yml": "ux-comment.md",
+        }
+        for name, body in bodies.items():
+            workflow = _workflow(name)
+            finalize = _step_script(workflow, "Finalize check-run (advisory)")
+            assert body in finalize, name
+            # The same file is the one the perl redaction targets.
+            redaction = _line_containing(workflow, "perl -i -pe", "REDACTED-AWS-KEY-ID")
+            assert body in redaction or f'f="$RUNNER_TEMP/{body}"' in workflow, name
+
+    def test_pr_readiness_still_counts_neutral_as_a_pass(self) -> None:
+        # This is what makes the change safe: `neutral` is visible to a human
+        # and invisible to the gate, so an advisory CONCERNS cannot start
+        # blocking merges. Read-only assertion -- this PR does not edit the file.
+        readiness = _workflow("pr-readiness.yml")
+        assert 'IN("success","neutral")' in readiness
+        assert "success|neutral|skipped) passed+=" in readiness
+
+    def test_same_repo_lanes_annotate_concerns_and_still_exit_zero(self) -> None:
+        for name, _, status_step, lane in CONCERNS_SAME_LANES:
+            status = _step_script(_workflow(name), status_step)
+            assert f"::warning title={lane} CONCERNS::" in status, name
+            assert 'if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then' in status, name
+            assert '>> "$GITHUB_STEP_SUMMARY"' in status, name
+            # The exit contract does not move: CONCERNS stays inside the
+            # PASS|CONCERNS branch, so only BLOCK can fail this gate.
+            assert "\n  PASS|CONCERNS)\n" in status, name
+            assert '  if [ "$VERDICT" = "CONCERNS" ]; then' in status, name
+            assert "::error::" in status, name
+            block_at = status.index("\n  BLOCK)\n")
+            concerns_at = status.index("\n  PASS|CONCERNS)\n")
+            assert "exit 1" not in status[concerns_at:block_at], name
+
+    def test_the_annotation_falls_back_when_no_digest_was_threaded(self) -> None:
+        # A CONCERNS verdict whose body could not be parsed must still say that
+        # something needs reading, or the annotation goes missing on exactly the
+        # malformed output a human most needs to look at.
+        for name, _, status_step, lane in CONCERNS_SAME_LANES:
+            status = _step_script(_workflow(name), status_step)
+            assert (
+                f"${{CONCERNS_PUNCHLINE:-read the Watch items in the {lane} comment" in status
+            ), name
+            assert '"${CONCERNS_DIGEST:-$punchline}"' in status, name
+
+    def test_the_digest_is_threaded_through_github_output(self) -> None:
+        for name, post_step, _, _ in CONCERNS_SAME_LANES:
+            post = _step_script(_workflow(name), post_step)
+            assert 'if [ "$verdict" = "CONCERNS" ]; then' in post, name
+            assert "printf 'concerns_punchline=%s\\n'" in post, name
+            # Multi-line values need a delimiter the value cannot forge.
+            assert 'delim="CONCERNS_DIGEST_${RANDOM}${RANDOM}_EOF"' in post, name
+            assert "printf 'concerns_digest<<%s\\n' \"$delim\"" in post, name
+            # And the status step must actually receive them.
+            env = _step_env(name, [s for w, _, s, _ in CONCERNS_SAME_LANES if w == name][0])
+            assert env["CONCERNS_PUNCHLINE"] == "${{ steps.post.outputs.concerns_punchline }}", name
+            assert env["CONCERNS_DIGEST"] == "${{ steps.post.outputs.concerns_digest }}", name
+
+    def test_no_lane_caps_the_digest_with_a_pipe(self) -> None:
+        # `head -c` exits as soon as it has its bytes, so the writer takes
+        # SIGPIPE and `pipefail` turns that 141 into a step failure -- on
+        # exactly the over-long review the cap exists for. Same reason the
+        # first-principles intent cap uses perl rather than a pipe.
+        for name, _, _ in CONCERNS_FORK_LANES:
+            finalize = _step_script(_workflow(name), "Finalize check-run (advisory)")
+            assert "| head -c" not in finalize, name
+            assert "${digest:0:2000}" in finalize, name
+        for name, post_step, _, _ in CONCERNS_SAME_LANES:
+            post = _step_script(_workflow(name), post_step)
+            assert "| head -c" not in post, name
+            # The punchline is the first line; awk exits there, so it must not
+            # sit downstream of a pipe either.
+            assert "printf '%s\\n' \"$concerns_body\" | awk" not in post, name
+            assert "awk 'NF { print; exit }' <<< \"$concerns_body\"" in post, name
+
+    def test_the_digest_helper_is_byte_identical_in_every_lane(self) -> None:
+        # Six copies, one body. The header and marker are ARGUMENTS, so nothing
+        # about a lane needs its own version -- and a per-lane version is how
+        # one lane quietly stops publishing its Watch items.
+        copies = {
+            name: self._digest_fn(name, "Finalize check-run (advisory)")
+            for name, _, _ in CONCERNS_FORK_LANES
+        }
+        copies.update(
+            {name: self._digest_fn(name, post) for name, post, _, _ in CONCERNS_SAME_LANES}
+        )
+        reference = copies["fork-design-review.yml"]
+        for name, body in copies.items():
+            assert body == reference, f"{name}: concerns_digest drifted from fork-design-review.yml"
+
+    def test_digest_extracts_the_punchline_and_watch_section_only(self, tmp_path: Path) -> None:
+        # Execute the REAL helper: a wrong awk here publishes the whole review
+        # (or nothing) into a check-run summary, and no static assertion sees it.
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the digest helper is Bash")
+        body = tmp_path / "comment.md"
+        body.write_text(
+            "<!-- design-review -->\n"
+            "## Design Review (Fable 5) — 🟡 CONCERNS\n"
+            "\n"
+            "_Design-level review of `abc`._\n"
+            "\n"
+            "Design-Verdict: CONCERNS\n"
+            "\n"
+            "**win32 delegation now hangs off a macOS-only settings file.**\n"
+            "\n"
+            "### Watch\n"
+            "- absent-file->False fails every classified spawn closed on Windows.\n"
+            "  Clears when: kiro-cli confirms the key's win32 semantics.\n"
+            "\n"
+            "### Suggestions\n"
+            "- drop the probe entirely.\n"
+            "\n"
+            "[DESIGN-REVIEWED] abc\n",
+            encoding="utf-8",
+        )
+        script = (
+            self._digest_fn("design-review.yml", "Post design review summary")
+            + f'\nconcerns_digest "{body}" "Design-Verdict:" "[DESIGN-REVIEWED]"\n'
+        )
+        result = subprocess.run(
+            [bash, "-euo", "pipefail", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        out = result.stdout
+        assert out.startswith("**win32 delegation now hangs off a macOS-only settings file.**")
+        assert "### Watch" in out
+        assert "Clears when: kiro-cli confirms the key's win32 semantics." in out
+        # Neither the comment header nor the sections after Watch may ride along.
+        assert "<!-- design-review -->" not in out
+        assert "Design-Verdict:" not in out
+        assert "### Suggestions" not in out
+        assert "drop the probe entirely" not in out
+        assert "[DESIGN-REVIEWED]" not in out
+
+    def test_digest_caps_a_long_body_without_failing_the_step(self, tmp_path: Path) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the digest helper is Bash")
+        body = tmp_path / "comment.md"
+        body.write_text(
+            "UX-Verdict: CONCERNS\n\n**punchline**\n\n### Watch\n"
+            + ("- a very long watch item\n" * 500)
+            + "[UX-REVIEWED] abc\n",
+            encoding="utf-8",
+        )
+        script = (
+            self._digest_fn("fork-ux-review.yml", "Finalize check-run (advisory)")
+            + f'\nconcerns_digest "{body}" "UX-Verdict:" "[UX-REVIEWED]"\n'
+        )
+        result = subprocess.run(
+            [bash, "-euo", "pipefail", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert len(result.stdout) == 2000
+
+    def test_digest_of_a_missing_body_is_empty_and_not_a_failure(self, tmp_path: Path) -> None:
+        # The finalize step is `if: always()`, so it runs on jobs that never
+        # wrote a body. A `set -e` failure there would strand the check-run.
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the digest helper is Bash")
+        script = (
+            self._digest_fn("fork-design-review.yml", "Finalize check-run (advisory)")
+            + f'\nconcerns_digest "{tmp_path / "absent.md"}" "Design-Verdict:" "[DESIGN-REVIEWED]"\n'
+            + 'echo "rc=$?"\n'
+        )
+        result = subprocess.run(
+            [bash, "-euo", "pipefail", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout == "rc=0\n"
+
+    @pytest.mark.parametrize(
+        "lane",
+        [pytest.param(entry, id=entry[0].removesuffix(".yml")) for entry in CONCERNS_SAME_LANES],
+    )
+    def test_same_repo_status_step_emits_the_annotation_and_summary(
+        self, lane: tuple[str, str, str, str], tmp_path: Path
+    ) -> None:
+        # Execute the REAL status step on a CONCERNS verdict: the annotation and
+        # the step summary are the whole point of the change, and a mistyped
+        # workflow-command prefix produces no annotation and no error either.
+        name, _, status_step, label = lane
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the status step is Bash")
+        summary_file = tmp_path / "step-summary.md"
+        summary_file.write_text("", encoding="utf-8")
+        script = _step_script(_workflow(name), status_step)
+        result = subprocess.run(
+            [bash, "-e", "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "LC_ALL": "C.UTF-8",
+                "HEAD": "0" * 40,
+                "ACTOR": "someone",
+                "VERDICT": "CONCERNS",
+                "HUMAN_OVERRIDE": "false",
+                "OVERRIDE_ACTOR": "",
+                "CONCERNS_PUNCHLINE": "**the win32 probe reads a macOS-only file**",
+                "CONCERNS_DIGEST": (
+                    "**the win32 probe reads a macOS-only file**\n"
+                    "### Watch\n"
+                    "- every classified spawn fails closed on Windows.\n"
+                    "  Clears when: kiro-cli confirms the win32 semantics."
+                ),
+                "GITHUB_STEP_SUMMARY": str(summary_file),
+            },
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (
+            f"::warning title={label} CONCERNS::**the win32 probe reads a macOS-only file**"
+            in result.stdout
+        )
+        written = summary_file.read_text(encoding="utf-8")
+        assert f"## {label} — 🟡 CONCERNS (advisory)" in written
+        assert "### Watch" in written
+        assert "Clears when: kiro-cli confirms the win32 semantics." in written
+
+    @pytest.mark.parametrize(
+        "lane",
+        [pytest.param(entry, id=entry[0].removesuffix(".yml")) for entry in CONCERNS_SAME_LANES],
+    )
+    def test_a_pass_verdict_emits_no_concerns_annotation(
+        self, lane: tuple[str, str, str, str], tmp_path: Path
+    ) -> None:
+        # The annotation must be a CONCERNS signal, not a per-run banner: a
+        # warning on every green run is a warning nobody reads.
+        name, _, status_step, label = lane
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the status step is Bash")
+        summary_file = tmp_path / "step-summary.md"
+        summary_file.write_text("", encoding="utf-8")
+        result = subprocess.run(
+            [bash, "-e", "-c", _step_script(_workflow(name), status_step)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "LC_ALL": "C.UTF-8",
+                "HEAD": "0" * 40,
+                "ACTOR": "someone",
+                "VERDICT": "PASS",
+                "HUMAN_OVERRIDE": "false",
+                "OVERRIDE_ACTOR": "",
+                "GITHUB_STEP_SUMMARY": str(summary_file),
+            },
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "::warning" not in result.stdout
+        assert summary_file.read_text(encoding="utf-8") == ""
+
+
+class TestFirstPrinciplesProblemsFirstContract:
+    """The lane's PASS was praise by construction, and its calibration made
+    BLOCK unreachable for the one class where the reviewer is structurally
+    unable to check the premise. Both were prompt text, so both are pinned
+    here: provenance for a claimed defect, symmetry as INHERITED, a deleted pin
+    as a prior decision, an availability-path premise as the BLOCK case, and an
+    output that leads with the problems rather than with the inventory."""
+
+    def test_a_claimed_defect_needs_a_provenance_the_reviewer_can_point_at(self) -> None:
+        # A `fix` whose only support is the description asserting a defect is
+        # indistinguishable from an addition: PR #8117 shipped a whole-platform
+        # regression behind "verified security finding" and no repro.
+        contract = _fp_contract()
+        assert "PROVENANCE OF A REPORTED DEFECT" in contract
+        assert "a test\n     this PR adds that fails on base" in contract
+        assert "linked issue" in contract
+        assert "has no provenance you can check, so the item is INHERITED" in contract
+
+    def test_symmetry_with_a_twin_is_never_a_justification(self) -> None:
+        # The measured failure: the lane tagged "aligns win32 with the macOS
+        # twin" as `justified`, which its own provenance lens already calls
+        # INHERITED. The tag has to be spelled out or the general rule loses.
+        contract = _fp_contract()
+        assert "SYMMETRY IS INHERITED, ALWAYS" in contract
+        assert "aligns X with its twin" in contract
+        assert "are NEVER a\n     justification on their own" in contract
+        assert "the symmetry form of\n     INHERITED" in contract
+        # The twin is not evidence about this side.
+        assert "nameable WITHOUT the twin" in contract
+
+    def test_a_deleted_pin_is_a_prior_decision_not_a_gap(self) -> None:
+        # The PR deleted a test whose message said the opposite and called the
+        # pin "a gap". That is the framing-contradicted-by-the-diff BLOCK
+        # trigger, so the contract must route it there by name.
+        contract = _fp_contract()
+        assert "A DELETED OR REWRITTEN\n   PIN IS A PRIOR DECISION" in contract
+        assert "pinned the OPPOSITE behaviour" in contract
+        assert "Treat it as standing" in contract
+        assert 'calls\n   it "a gap"' in contract
+        assert "framing contradicted by the diff" in contract
+        assert 'a deleted pin recast as "a gap" with no' in contract
+
+    def test_an_unverified_premise_on_an_availability_path_is_the_block_case(self) -> None:
+        # "When torn, choose CONCERNS" made BLOCK unreachable exactly where the
+        # reviewer cannot verify the premise at all -- it has no shell and no
+        # second platform -- so the tie-breaker is scoped to reversible cases
+        # and this one is named as a trigger.
+        contract = _fp_contract()
+        assert "UNVERIFIED PREMISE ON A CORE\n  AVAILABILITY PATH" in contract
+        assert "ONLY where being wrong is REVERSIBLE" in contract
+        assert 'Here "unclear" is the BLOCK case, not the CONCERNS case' in contract
+        assert "the author can" in contract
+        assert "Do not soften this to a Watch item" in contract
+        # The carve-outs stay a closed set of two; an open-ended third would
+        # put the tie-breaker back in charge of everything.
+        assert "there is no third" in contract
+        assert "The two exceptions are named at the" in contract
+        assert "The single exception is the combination" not in contract
+
+    def test_undeclared_and_rides_along_are_inventory_tags_not_verdicts(self) -> None:
+        # ~50% of PRs drew CONCERNS, so the signal cost nothing to ignore.
+        # These two tags still print, but no longer carry the verdict by
+        # themselves; CONCERNS is reserved for premise and depth risks.
+        contract = _fp_contract()
+        assert "`undeclared` and `rides along`\n  are INVENTORY TAGS ONLY" in contract
+        assert "on\n  their own they do NOT reach CONCERNS" in contract
+        assert "a harm-free rider is inventory" in contract
+        # The tags themselves survive on the item line.
+        assert "undeclared | rides" in contract
+        # A premise risk carried BY the rider still reaches CONCERNS.
+        assert "when the rider itself\n  carries one of the premise risks" in contract
+
+    def test_output_leads_with_problems_and_drops_the_praise_punchline(self) -> None:
+        contract = _fp_contract()
+        # The PASS punchline no longer argues the author's case.
+        assert "why every item earns its place" not in contract.split("Output EXACTLY")[0]
+        assert "Never\nexplain why every item earns its place" in contract
+        assert "the ONE thing a human should still verify before merge" in contract
+        assert "`Nothing to check.`" in contract
+        # Non-justified items are read FIRST, above the inventory.
+        assert "### Not justified as shipped" in contract
+        assert contract.index("### Not justified as shipped") < contract.index(
+            "### What this change ships"
+        )
+        # `justified` carries no reason -- the parenthetical was the praise.
+        assert "`justified` is exactly that ONE word" in contract
+        assert "Only a NON-justified tag carries a reason" in contract
+
+    def test_a_clean_inventory_collapses_and_a_dirty_one_stays_open(self) -> None:
+        contract = _fp_contract()
+        assert "<details><summary>Inventory (N items)</summary>" in contract
+        assert "</details>" in contract
+        assert "WHEN EVERY ITEM IS TAGGED `justified`, wrap the whole section body in" in contract
+        assert "leave the block EXPANDED" in contract
+        # The inventory is still always emitted -- collapsing is not omitting.
+        assert "ALWAYS present, even on PASS" in contract
+        assert "A PASS here is a claim about EVERY item" in contract
+
+    def test_every_finding_states_what_would_clear_it(self) -> None:
+        # A finding with no statable resolution is what produced 31 of 57
+        # unanswered CONCERNS: nothing told the author when they were done.
+        contract = _fp_contract()
+        assert "Every Watch item AND every Blocker ends with one line" in contract
+        assert "`Clears when: <the concrete evidence or change that resolves it>`" in contract
+        assert "is not a finding; drop it" in contract
+
+    def test_the_output_diet_tightened_and_kept_its_machine_read_lines(self) -> None:
+        contract = _fp_contract()
+        assert "review under ~180 words excluding the inventory lines" in contract
+        assert "~250 words" not in contract
+        # The two lines the workflows grep for are untouched, and still first
+        # and last in the emitted shape.
+        assert "First-Principles-Verdict: <PASS | CONCERNS | BLOCK>" in contract
+        assert contract.rstrip().endswith("[FIRST-PRINCIPLES-REVIEWED] <head sha>")
+        for name in FP_LANES:
+            workflow = _workflow(name)
+            assert "grep -iE '^First-Principles-Verdict:'" in workflow
+        # The subtraction-only stance and the SYSTEM RULES block stay.
+        assert contract.startswith("SYSTEM RULES (non-negotiable")
+        assert "EVERY suggestion you emit must be a SUBTRACTION" in contract
+        # Security boundaries, repo context and the user-count rule stay.
+        assert "REPO CONTEXT: Kiro Crew is an open-source AI agent platform" in contract
+        assert "DO NOT REASON FROM AN ASSUMED USER COUNT, in either direction" in contract
+        assert "the AGENT is untrusted with respect to its own governance" in contract

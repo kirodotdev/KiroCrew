@@ -322,18 +322,45 @@ jobs:
               story. BLOCK **FAILS this check and blocks PR readiness** -- a
               contributor cannot merge past it without fixing the design or
               getting an explicit human override. Treat it accordingly.
-            Tie-breaker: when torn between BLOCK and CONCERNS, choose CONCERNS.
+            Tie-breaker, SCOPED BY REVERSIBILITY -- when torn between BLOCK and
+            CONCERNS, the consequence decides, not your comfort:
+            - unclear AND the consequence is REVERSIBLE (a bad default a user can
+              flip, a regression a revert fixes cleanly, a slower path) -> CONCERNS.
+            - unclear AND the consequence is that a PLATFORM, a PROVIDER, or a CORE
+              PATH (session start, spawn, auth, gateway boot) STOPS WORKING, with no
+              in-product remedy short of disabling a safety control -> BLOCK.
+              "the user can turn the sandbox off" is not a remedy.
+            An UNVERIFIED premise is a BLOCK INPUT, not a reason to lower the
+            verdict. You have no shell, no Windows host and no provider account, so
+            a platform or provider claim is ALWAYS unclear to you -- if "unclear"
+            lowered the verdict, BLOCK would be unreachable for exactly the class
+            that takes a platform down. The AUTHOR can verify it and you cannot: so
+            BLOCK, and name the evidence that clears it.
             Only reach for BLOCK when the DESIGN is wrong — never merely because
             the change is large or far-reaching.
+            BLOCK TRIGGERS (each is a BLOCK on its own; still write its consequence
+            chain and its `Clears when:` line):
+            - the change gates a core availability path on a probe, file or setting
+              whose semantics ON THE AFFECTED PLATFORM this repo never establishes
+              (an absent file read as False is a decision, not a default);
+            - the change deletes, weakens or rewrites a test or assertion that
+              pinned the OPPOSITE behaviour and the PR treats that old pin as a GAP
+              rather than as a DECISION -- read the test's own message and its git
+              history before you accept "gap"; a pin that names the behaviour it
+              forbids is a decision until a human says otherwise;
+            - the PR says "Manual verification: N/A" (or equivalent) for a branch
+              that only runs on a platform or in an environment CI does not
+              exercise.
             FALSIFY BEFORE YOU BLOCK (mandatory, because BLOCK now blocks): for
             each BLOCK candidate, actively try to KILL it -- name the specific
             requirement the design fails, the concrete alternative that is
             better, and the consequence of shipping as-is. A candidate survives
             ONLY if you can state all three from the diff and the code you
-            opened. If any is "might", "unclear", or a matter of taste, it is a
-            CONCERNS at most -- never a BLOCK. Budget: at most 1 BLOCK per
-            review; if you have two, you are almost certainly describing one
-            root design problem, so merge them.
+            opened. A matter of taste is never a BLOCK; "might" and "unclear"
+            lower it ONLY when the tie-breaker above finds the consequence
+            reversible. Budget: at most 1 BLOCK per review; if you have two, you
+            are almost certainly describing one root design problem, so merge
+            them. Size is never a BLOCK.
 
             FINAL OUTPUT (authoritative — this is your LAST message; the workflow
             captures it verbatim from the run transcript, so do NOT call any tool
@@ -362,12 +389,20 @@ jobs:
             ### Blockers
             <ONLY when verdict is BLOCK. Each: one-line title, then a single
             consequence chain (cause → mechanism → consequence) quoting the diff/
-            description, then a one-line fix. These are the things that must be
-            resolved or human-overridden.>
+            description, then a one-line fix, then a LAST line of exactly this
+            shape:
+            `Clears when: <the concrete evidence or change that resolves this>`
+            These are the things that must be resolved or human-overridden.>
 
             ### Watch
             <ONLY for a genuine CONCERNS-level design risk a human should see
-            before merging. One or two lines each. Skip if none.>
+            before merging. One or two lines each, then a LAST line of exactly
+            this shape:
+            `Clears when: <the concrete evidence or change that resolves this>`
+            Every Blocker AND every Watch item carries that line, because a coding
+            loop reads it as the thing to go do -- an item with no `Clears when:`
+            is not actionable, so either write the line or drop the item. Skip the
+            section if none.>
 
             ### Suggestions
             <0–3 genuinely valuable design optimizations or simplifications
@@ -513,6 +548,49 @@ jobs:
           # SYSTEM RULES prompt also forbids emitting secrets; this is the
           # mechanical backstop. Mirrors codex-review.yml's redaction step.
           perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' "${RUNNER_TEMP:-/tmp}/design-comment.md"
+          # CONCERNS is where a design/premise/UX risk actually lives, and today
+          # it is invisible: the check reports green and 31 of 57 CONCERNS drew
+          # no human reply at all. Distil the punchline and the Watch section so
+          # the Checks UI itself can carry them -- no new command, no convention
+          # to learn. Reads the ALREADY-REDACTED body, so the redaction and
+          # withhold gates upstream stay the only publish boundary. Caps with a
+          # Bash substring rather than a pipe into `head`: a piped cap SIGPIPEs
+          # the writer, and `pipefail` turns that into a step failure on exactly
+          # the long body the cap exists for.
+          concerns_digest() {
+            local file="$1" header="$2" marker="$3" digest=""
+            [ -f "$file" ] || return 0
+            digest="$(awk -v header="^$header" -v marker="$marker" '
+              index($0, marker) == 1 { exit }
+              !seen && $0 ~ header { seen = 1; next }
+              !seen { next }
+              seen == 1 && NF { print; seen = 2; next }
+              /^### / { watch = ($0 ~ /^### Watch[[:space:]]*$/) }
+              watch { print }
+            ' "$file")"
+            printf '%s' "${digest:0:2000}"
+          }
+          # A same-repo job cannot report itself `neutral` the way the fork
+          # lanes' check-runs can, so hand the digest to the status step, which
+          # turns it into a job annotation and a run summary. Multi-line output
+          # uses a random delimiter: the value is model text, so a fixed one
+          # could be closed early by the body itself.
+          if [ "$verdict" = "CONCERNS" ]; then
+            concerns_body="$(concerns_digest "${RUNNER_TEMP:-/tmp}/design-comment.md" "Design-Verdict:" "[DESIGN-REVIEWED]")"
+            if [ -n "$concerns_body" ]; then
+              # Here-string, not `printf | awk`: awk exits on the first line, so a
+              # pipe would SIGPIPE the writer and `pipefail` would read 141 as a
+              # step failure on exactly the long body this exists to summarise.
+              concerns_punchline="$(awk 'NF { print; exit }' <<< "$concerns_body")"
+              printf 'concerns_punchline=%s\n' "$concerns_punchline" >> "$GITHUB_OUTPUT"
+              delim="CONCERNS_DIGEST_${RANDOM}${RANDOM}_EOF"
+              {
+                printf 'concerns_digest<<%s\n' "$delim"
+                printf '%s\n' "$concerns_body"
+                printf '%s\n' "$delim"
+              } >> "$GITHUB_OUTPUT"
+            fi
+          fi
           # Guarded upsert (#8292, #8344): the shared function below is defined
           # byte-identically in every review lane; test_ai_review_workflows.py
           # pins all copies to one canonical body so the invariant cannot
@@ -649,6 +727,8 @@ jobs:
           VERDICT: ${{ steps.post.outputs.verdict }}
           HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
+          CONCERNS_PUNCHLINE: ${{ steps.post.outputs.concerns_punchline }}
+          CONCERNS_DIGEST: ${{ steps.post.outputs.concerns_digest }}
         run: |
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human judgment by $OVERRIDE_ACTOR overrides Design Review for $HEAD. Passing gate."
@@ -660,6 +740,24 @@ jobs:
           fi
           case "$VERDICT" in
             PASS|CONCERNS)
+              # The exit contract is untouched: CONCERNS still exits 0. What
+              # changes is that it stops being SILENT -- a green tick told a
+              # reader nothing was worth reading, and 31 of 57 CONCERNS drew no
+              # reply. A job cannot report itself `neutral` the way the fork
+              # lanes' check-runs can, so the punchline goes on the job as an
+              # annotation and the Watch items go to the run summary, where the
+              # local prepare-pr loop and a human read the same text.
+              if [ "$VERDICT" = "CONCERNS" ]; then
+                punchline="${CONCERNS_PUNCHLINE:-read the Watch items in the Design Review comment on this PR}"
+                echo "::warning title=Design Review CONCERNS::$punchline"
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  {
+                    echo "## Design Review — 🟡 CONCERNS (advisory)"
+                    echo
+                    printf '%s\n' "${CONCERNS_DIGEST:-$punchline}"
+                  } >> "$GITHUB_STEP_SUMMARY"
+                fi
+              fi
               echo "Design review verdict for $HEAD: $VERDICT (non-blocking)."
               exit 0 ;;
             BLOCK)

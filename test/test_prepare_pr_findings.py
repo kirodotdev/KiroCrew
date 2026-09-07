@@ -1033,3 +1033,229 @@ class TestDispositionViolations:
 
         assert violations == sorted(violations)
         assert len(violations) == 1
+
+
+# ---------------------------------------------------------------------------
+# Whole-design lanes reach the drill-in with span ids of their own. FINDING_RE
+# reads the `BLOCKING -- path:line` shape only GPT and Opus emit, so a Design
+# or First Principles Watch item used to be invisible to the loop even though
+# SKILL.md ranks those lanes ABOVE the line-level ones in triage.
+# ---------------------------------------------------------------------------
+
+
+def _design_body(verdict: str = "CONCERNS", head: str = _HEAD) -> str:
+    return (
+        "<!-- design-review -->\n"
+        "Design-Verdict: {}\n\n"
+        "**The win32 predicate depends on a macOS-only settings file.**\n\n"
+        "### Watch\n"
+        "- Absent-file -> False raises SandboxUnavailableError at boot on a\n"
+        "  default Windows install.\n"
+        "  Clears when: kiro-cli confirms the key is read on win32.\n\n"
+        "### Suggestions\n"
+        "1. Split the probe out of the predicate.\n\n"
+        "[DESIGN-REVIEWED] {}".format(verdict, head)
+    )
+
+
+def _run_findings(module: ModuleType, comments: list[dict]) -> None:
+    payload = json.dumps(
+        {
+            "number": 42,
+            "url": "https://github.com/example/repo/pull/42",
+            "headRefOid": _HEAD,
+            "statusCheckRollup": [],
+        }
+    )
+
+    def fake_run(args: list[str]) -> tuple[int, str, str]:
+        if args[:3] == ["gh", "auth", "status"]:
+            return 0, "", ""
+        if args[:3] == ["gh", "pr", "view"]:
+            return 0, payload, ""
+        raise AssertionError("unexpected command: {}".format(args))
+
+    module.run = fake_run
+    module.iter_unresolved_threads = lambda *_a: iter(())
+    module.fetch_bot_comments = lambda *_a: comments
+
+
+class TestWholeDesignItems:
+    def test_design_items_print_above_the_line_level_findings(self, capsys) -> None:
+        module = _load_script()
+        gpt = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": (
+                "<!-- codex-ai-review -->\n"
+                "FINDING -- src/x.py:10 -- tighten -> Fix: x\n"
+                "[GPT-REVIEWED] " + _HEAD
+            ),
+        }
+        design = {"user": {"type": "Bot", "login": "github-actions[bot]"}, "body": _design_body()}
+        _run_findings(module, [gpt, design])
+
+        assert module.main(["pr_findings.py", "42"]) == 0
+
+        out = capsys.readouterr().out
+        items = list(
+            module.extract_design_items([design], _HEAD, dict(module.DEFAULT_MARKER_BINDINGS))
+        )
+        assert len(items) == 2
+        design_at = out.index("span=" + items[0]["span"])
+        gpt_at = out.index("span=" + module.span_hash("src/x.py", "gpt/FINDING"))
+        assert design_at < gpt_at, "whole-design items must outrank line-level findings"
+        assert "DESIGN: verdict=CONCERNS" in out
+        assert "[WATCH]" in out and "[SUGGESTIONS]" in out
+        assert "Clears when: kiro-cli confirms the key is read on win32." in out
+
+    def test_an_item_without_a_clears_when_line_prints_no_empty_one(self, capsys) -> None:
+        module = _load_script()
+        design = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": (
+                "<!-- design-review -->\n"
+                "Design-Verdict: CONCERNS\n\n"
+                "### Watch\n"
+                "- the deleted pin was the only regression guard\n\n"
+                "[DESIGN-REVIEWED] " + _HEAD
+            ),
+        }
+        _run_findings(module, [design])
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        assert "the deleted pin was the only regression guard" in out
+        assert "Clears when:" not in out
+
+    def test_a_stale_design_stamp_contributes_no_items(self, capsys) -> None:
+        module = _load_script()
+        design = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": _design_body(head=_OLD),
+        }
+        _run_findings(module, [design])
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        assert "no whole-design lane stamped for the current head" in out
+        assert "[WATCH]" not in out
+
+    def test_a_pass_lane_prints_its_verdict_with_no_items(self, capsys) -> None:
+        module = _load_script()
+        design = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": (
+                "<!-- design-review -->\n"
+                "Design-Verdict: PASS\n\n"
+                "**Sound: the change is scoped to the one predicate.**\n\n"
+                "[DESIGN-REVIEWED] " + _HEAD
+            ),
+        }
+        _run_findings(module, [design])
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        assert "DESIGN: verdict=PASS" in out
+        assert "no Blockers/Watch/Subtraction/Suggestion items" in out
+
+    def test_control_characters_in_an_item_are_stripped(self, capsys) -> None:
+        """Item text is untrusted, model-authored bytes printed to a terminal."""
+        module = _load_script()
+        design = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": (
+                "<!-- design-review -->\n"
+                "Design-Verdict: CONCERNS\n\n"
+                "### Watch\n"
+                "- \x1b[31mred\x1b[0m item\n\n"
+                "[DESIGN-REVIEWED] " + _HEAD
+            ),
+        }
+        _run_findings(module, [design])
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        assert "\x1b[" not in out
+        assert "red item" in out
+
+    def test_a_token_in_an_item_is_redacted(self, capsys) -> None:
+        module = _load_script()
+        design = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": (
+                "<!-- design-review -->\n"
+                "Design-Verdict: CONCERNS\n\n"
+                "### Watch\n"
+                "- the sample uses ghp_" + "a" * 30 + " inline\n\n"
+                "[DESIGN-REVIEWED] " + _HEAD
+            ),
+        }
+        _run_findings(module, [design])
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        assert "ghp_" + "a" * 30 not in out
+        assert "[REDACTED]" in out
+
+    def test_the_design_helpers_are_the_shared_contract_in_both_entrypoints(self) -> None:
+        """Same seam as the existing parity pin: one definition of the design
+        extractor, resolved by both CLIs from the shared contract."""
+        findings = _load_script()
+        status = _load_status()
+        for name in (
+            "extract_design_items",
+            "design_lane_verdicts",
+            "CLEARS_WHEN_RE",
+        ):
+            assert getattr(findings, name) is getattr(findings._review_contract, name), name
+        for name in (
+            "extract_design_items",
+            "design_lane_verdicts",
+            "unanswered_concern_lanes",
+            "unanswered_concerns_reason",
+            "WHOLE_DESIGN_LANES",
+            "VERDICT_LINE_RE",
+        ):
+            assert getattr(status, name) is getattr(status._review_contract, name), name
+
+    def test_design_items_stay_out_of_the_extract_findings_universe(self) -> None:
+        """The load-bearing separation: disposition_violations (and therefore
+        pr-readiness.yml's server-side gate) reads extract_findings, so a
+        design body must contribute NO span there. Folding them in would turn a
+        valid spanless target=design record into a violation."""
+        module = _load_script()
+        design = {"user": {"type": "Bot", "login": "github-actions[bot]"}, "body": _design_body()}
+        bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+
+        assert list(module.extract_findings([design], _HEAD, bindings)) == []
+        assert list(module.extract_design_items([design], _HEAD, bindings))
+
+    def test_the_not_justified_section_is_an_item_section(self) -> None:
+        """The section the prompts gained for the premise gate. Its items are
+        exactly the ones a PASS used to bury, so they must reach the loop with
+        span ids like any other."""
+        module = _load_script()
+        comment = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": (
+                "<!-- first-principles-review -->\n"
+                "First-Principles-Verdict: CONCERNS\n\n"
+                "### Not justified as shipped\n"
+                "- the win32 probe rides along on the macOS twin's symmetry\n"
+                "  Clears when: kiro-cli confirms the key is read on win32.\n\n"
+                "[FIRST-PRINCIPLES-REVIEWED] " + _HEAD
+            ),
+        }
+
+        items = list(
+            module.extract_design_items([comment], _HEAD, dict(module.DEFAULT_MARKER_BINDINGS))
+        )
+
+        assert [i["kind"] for i in items] == ["NOT JUSTIFIED AS SHIPPED"]
+        assert items[0]["reviewer"] == "first-principles"
+        assert items[0]["clears_when"] == "kiro-cli confirms the key is read on win32."

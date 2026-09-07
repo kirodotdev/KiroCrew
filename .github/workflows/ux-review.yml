@@ -1101,6 +1101,49 @@ jobs:
           # a verdict parsed" gate above, this keeps internal detail out of
           # the public PR comment. Mirrors design-review.yml's redaction step.
           perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' "${RUNNER_TEMP:-/tmp}/ux-comment.md"
+          # CONCERNS is where a design/premise/UX risk actually lives, and today
+          # it is invisible: the check reports green and 31 of 57 CONCERNS drew
+          # no human reply at all. Distil the punchline and the Watch section so
+          # the Checks UI itself can carry them -- no new command, no convention
+          # to learn. Reads the ALREADY-REDACTED body, so the redaction and
+          # withhold gates upstream stay the only publish boundary. Caps with a
+          # Bash substring rather than a pipe into `head`: a piped cap SIGPIPEs
+          # the writer, and `pipefail` turns that into a step failure on exactly
+          # the long body the cap exists for.
+          concerns_digest() {
+            local file="$1" header="$2" marker="$3" digest=""
+            [ -f "$file" ] || return 0
+            digest="$(awk -v header="^$header" -v marker="$marker" '
+              index($0, marker) == 1 { exit }
+              !seen && $0 ~ header { seen = 1; next }
+              !seen { next }
+              seen == 1 && NF { print; seen = 2; next }
+              /^### / { watch = ($0 ~ /^### Watch[[:space:]]*$/) }
+              watch { print }
+            ' "$file")"
+            printf '%s' "${digest:0:2000}"
+          }
+          # A same-repo job cannot report itself `neutral` the way the fork
+          # lanes' check-runs can, so hand the digest to the status step, which
+          # turns it into a job annotation and a run summary. Multi-line output
+          # uses a random delimiter: the value is model text, so a fixed one
+          # could be closed early by the body itself.
+          if [ "$verdict" = "CONCERNS" ]; then
+            concerns_body="$(concerns_digest "${RUNNER_TEMP:-/tmp}/ux-comment.md" "UX-Verdict:" "[UX-REVIEWED]")"
+            if [ -n "$concerns_body" ]; then
+              # Here-string, not `printf | awk`: awk exits on the first line, so a
+              # pipe would SIGPIPE the writer and `pipefail` would read 141 as a
+              # step failure on exactly the long body this exists to summarise.
+              concerns_punchline="$(awk 'NF { print; exit }' <<< "$concerns_body")"
+              printf 'concerns_punchline=%s\n' "$concerns_punchline" >> "$GITHUB_OUTPUT"
+              delim="CONCERNS_DIGEST_${RANDOM}${RANDOM}_EOF"
+              {
+                printf 'concerns_digest<<%s\n' "$delim"
+                printf '%s\n' "$concerns_body"
+                printf '%s\n' "$delim"
+              } >> "$GITHUB_OUTPUT"
+            fi
+          fi
           # Guarded upsert (#8292, #8344): the shared function below is defined
           # byte-identically in every review lane; test_ai_review_workflows.py
           # pins all copies to one canonical body so the invariant cannot
@@ -1233,6 +1276,8 @@ jobs:
           VERDICT: ${{ steps.post.outputs.verdict }}
           HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
+          CONCERNS_PUNCHLINE: ${{ steps.post.outputs.concerns_punchline }}
+          CONCERNS_DIGEST: ${{ steps.post.outputs.concerns_digest }}
         run: |
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human judgment by $OVERRIDE_ACTOR overrides UX Review for $HEAD. Passing gate."
@@ -1247,6 +1292,24 @@ jobs:
               echo "UX review skipped for $HEAD (no UI-relevant changes — non-blocking)."
               exit 0 ;;
             PASS|CONCERNS)
+              # The exit contract is untouched: CONCERNS still exits 0. What
+              # changes is that it stops being SILENT -- a green tick told a
+              # reader nothing was worth reading, and 31 of 57 CONCERNS drew no
+              # reply. A job cannot report itself `neutral` the way the fork
+              # lanes' check-runs can, so the punchline goes on the job as an
+              # annotation and the Watch items go to the run summary, where the
+              # local prepare-pr loop and a human read the same text.
+              if [ "$VERDICT" = "CONCERNS" ]; then
+                punchline="${CONCERNS_PUNCHLINE:-read the Watch items in the UX Review comment on this PR}"
+                echo "::warning title=UX Review CONCERNS::$punchline"
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                  {
+                    echo "## UX Review — 🟡 CONCERNS (advisory)"
+                    echo
+                    printf '%s\n' "${CONCERNS_DIGEST:-$punchline}"
+                  } >> "$GITHUB_STEP_SUMMARY"
+                fi
+              fi
               echo "UX review verdict for $HEAD: $VERDICT (non-blocking)."
               exit 0 ;;
             BLOCK)
