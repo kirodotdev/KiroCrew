@@ -156,7 +156,13 @@ def _evaluate(item):
         path = accept.get("path")
         if not isinstance(path, str) or not path:
             return ("error", "file spec needs a path")
-        want = bool(accept.get("exists", True))
+        # bool() would coerce, and a truthy `{"exists": "false"}` must not
+        # invert an absence check into a presence check; reject non-booleans
+        # (including 1/0 — the pr guard already refuses bool as an int).
+        exists = accept.get("exists", True)
+        if not isinstance(exists, bool):
+            return ("error", "file spec needs a boolean exists")
+        want = exists
         have = Path(path).exists()
         verdict = "pass" if have == want else "fail"
         return (verdict, f"{path} {'exists' if have else 'does not exist'}")

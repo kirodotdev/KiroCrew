@@ -788,6 +788,55 @@ class TestAcceptEvaluator:
         assert out["junk"]["verdict"] == "error"
         assert out["nopath"]["verdict"] == "error"
 
+    def test_file_rejects_a_non_boolean_exists(self, tmp_path):
+        """``bool()`` coercion would read ``{"exists": "false"}`` as ``True``.
+
+        The reported shape: an acceptance assembled from text carries string
+        booleans, and a truthy ``"false"`` silently inverts an absence check
+        into a presence check — the evaluator reports ``pass`` for exactly the
+        state the spec asked to reject. ``1``/``0`` are rejected too, on
+        purpose: the ``pr`` guard already refuses ``bool`` as an ``int``, so
+        accepting ``int`` as a ``bool`` here would contradict the sibling
+        field. A malformed spec gets a loud ``error``, never a coerced verdict.
+        """
+        mod = _load_evaluator()
+        present = tmp_path / "made"
+        present.write_text("x", encoding="utf-8")
+        for bad in ("false", "true", 1, 0, None):
+            verdict, evidence = mod._evaluate(
+                {"accept": {"kind": "file", "path": str(present), "exists": bad}}
+            )
+            assert verdict == "error", bad
+            assert "boolean exists" in evidence
+
+    def test_file_absent_exists_key_still_defaults_to_presence_check(self, tmp_path):
+        """The default is unchanged: no ``exists`` key means ``exists: true``."""
+        mod = _load_evaluator()
+        present = tmp_path / "made"
+        present.write_text("x", encoding="utf-8")
+        verdict, _ = mod._evaluate({"accept": {"kind": "file", "path": str(present)}})
+        assert verdict == "pass"
+        verdict, _ = mod._evaluate({"accept": {"kind": "file", "path": str(tmp_path / "no")}})
+        assert verdict == "fail"
+
+    def test_file_real_booleans_still_work(self, tmp_path):
+        """Regression floor: genuine ``True``/``False`` keep their semantics."""
+        mod = _load_evaluator()
+        present = tmp_path / "made"
+        present.write_text("x", encoding="utf-8")
+        missing = tmp_path / "no"
+        cases = [
+            (present, True, "pass"),
+            (present, False, "fail"),
+            (missing, True, "fail"),
+            (missing, False, "pass"),
+        ]
+        for path, want, expected in cases:
+            verdict, _ = mod._evaluate(
+                {"accept": {"kind": "file", "path": str(path), "exists": want}}
+            )
+            assert verdict == expected, (path.name, want)
+
     def test_the_cmd_kind_is_refused_and_says_what_to_use(self):
         """A conductor carrying an older skill gets guidance, not 'unknown kind'.
 
