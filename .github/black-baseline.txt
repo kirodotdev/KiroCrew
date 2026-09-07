@@ -137,7 +137,6 @@ src/kiro_crew/apps/builtins/papyrus/backend/gitops.py
 src/kiro_crew/apps/builtins/papyrus/backend/latex.py
 src/kiro_crew/apps/builtins/papyrus/backend/routes.py
 src/kiro_crew/apps/builtins/papyrus/backend/store.py
-src/kiro_crew/apps/builtins/papyrus/backend/tectonic.py
 src/kiro_crew/apps/builtins/personal_shopper/backend/routes.py
 src/kiro_crew/apps/builtins/personal_shopper/backend/store.py
 src/kiro_crew/apps/builtins/personal_shopper/tests/test_routes.py
