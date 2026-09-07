@@ -24,8 +24,8 @@ import { store } from '../src/store'
 import { WebhooksPanel } from '../src/pages/settings/WebhooksPanel'
 import '../src/index.css'
 
-// Loopback on purpose: this string can reach a committed screenshot, and
-// `website/capture/` sits outside scrub-lint's roots.
+// Loopback on purpose: this string can reach a committed screenshot, where it
+// is baked into the PNG and no text scanner can see it.
 const URL_ = 'http://127.0.0.1:6776/api/hooks/agent'
 const NOW = Date.now() / 1000
 

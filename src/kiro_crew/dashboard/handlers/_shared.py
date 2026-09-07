@@ -64,6 +64,23 @@ def _redact_memory_field(val: object) -> object:
     return val
 
 
+#: The session-search row fields carrying LLM-authored or peer-supplied prose,
+#: which every pass returning such a row must put through
+#: :func:`kiro_crew.security.redact` before egress.
+#:
+#: Three passes return these rows -- ``api_sessions_search``, and
+#: ``api_instances_search_sessions``' local-row and peer-row passes -- and each
+#: used to hand-copy both the redaction chain AND this field list. The chain
+#: already had an owner (``security.redact`` composes the exfiltration-URL and
+#: credential passes in that order); this tuple gives the field list one too, so
+#: a caller cannot redact ``title`` and quietly forget ``snippet``. That is the
+#: drift half of #3940 follow-up 3, and the quieter half: a missing field reads
+#: as correct at the call site.
+#:
+#: Order is irrelevant; membership is the contract.
+SESSION_SEARCH_TEXT_FIELDS: tuple[str, ...] = ("title", "snippet")
+
+
 # Shared body cap for the small JSON-object endpoints that must bound the
 # request BEFORE decoding (the strict-internal notification routes). Kept
 # module-level and in one place so the security-relevant cap cannot drift
@@ -1893,17 +1910,15 @@ async def require_owner_dashboard_request(
     """Owner gate shared across dashboard handler modules.
 
     Returns ``None`` when the caller IS the dashboard owner, allowing the
-    request to proceed.  Otherwise audits the denial via SEL (off-thread so a
-    first-process SEL construction cannot stall the event loop), checks for
-    a stale pre-owner bootstrap subject (relabelling the denial to a 401), and
-    falls back to a 403 with the standard ``owner_only`` code.
+    request to proceed.  Otherwise audits the denial via SEL (an enqueue —
+    the singleton is warmed at startup, see ``sel.warm_sel_singleton``),
+    checks for a stale pre-owner bootstrap subject (relabelling the denial
+    to a 401), and falls back to a 403 with the standard ``owner_only`` code.
 
     Imports ``is_owner_dashboard_request`` and ``stale_owner_session_response``
     inside the function body to avoid a circular import: ``source_providers``
     imports chat-state helpers that reach back into sibling handler modules.
     """
-    import asyncio
-
     from kiro_crew.dashboard.handlers.source_providers import (
         is_owner_dashboard_request,
     )
@@ -1911,21 +1926,20 @@ async def require_owner_dashboard_request(
     if is_owner_dashboard_request(request):
         return None
 
-    # Off the loop: the FIRST sel() of a process CONSTRUCTS the log (trust-dir
-    # creation, key validation — blocking file IO), so on a fresh gateway whose
-    # first mutating request is non-owner this would stall every other request.
+    # SEL is warmed at gateway startup (sel.warm_sel_singleton), so this
+    # ``log_api_access`` only enqueues to the writer thread — no thread hop
+    # needed (#8608). Guarded because a FAILED warm leaves construction to
+    # retry here and possibly raise.
     caller = str(request.get("user") or "unknown")
     try:
         from kiro_crew.sel import sel as _sel
 
-        await asyncio.to_thread(
-            lambda: _sel().log_api_access(
-                caller=caller,
-                operation=operation,
-                outcome="denied",
-                source="dashboard",
-                resources="non_owner_block",
-            )
+        _sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources="non_owner_block",
         )
     except Exception:  # pragma: no cover - audit must never change the outcome
         logger.debug("SEL audit for non-owner %s failed", operation, exc_info=True)

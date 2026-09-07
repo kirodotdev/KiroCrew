@@ -33,9 +33,9 @@ from kiro_crew.acp.client import (
 
 # Representative advertised sets for the scenarios below.
 _ENTITLED = ["claude-opus-4.8", "claude-sonnet-4.6", "auto"]  # serves auto
-_FREE_TIER = ["claude-sonnet-4.6"]                            # subset, no auto
-_NO_AUTO_PARTITION = ["gpt-5.6-terra", "gpt-5.6-luna"]        # serves models, not auto
-_UNKNOWN: list = []                                           # no session yet
+_FREE_TIER = ["claude-sonnet-4.6"]  # subset, no auto
+_NO_AUTO_PARTITION = ["gpt-5.6-terra", "gpt-5.6-luna"]  # serves models, not auto
+_UNKNOWN: list = []  # no session yet
 
 
 class TestBackgroundResolution:
@@ -73,6 +73,31 @@ class TestBackgroundResolution:
     def test_blank_advertised_entries_are_ignored(self):
         assert resolve_usable_model("claude-sonnet-4.6", ["", "  ", "claude-sonnet-4.6"]) == (
             "claude-sonnet-4.6"
+        )
+
+    def test_namespaced_pin_resolves_to_the_advertised_spelling(self):
+        # A persisted pin can carry a stale `<namespace>::<bare-id>` qualifier
+        # from the catalog that named it, while the session advertises the BARE
+        # id. The substitute path must resolve it — returning the ADVERTISED
+        # spelling for the wire — not silently inherit the backend default.
+        assert (
+            resolve_usable_model("openrouter::z-ai/glm-5.3-flash", ["z-ai/glm-5.3-flash"])
+            == "z-ai/glm-5.3-flash"
+        )
+
+    def test_namespaced_pin_absent_under_both_spellings_inherits_default(self):
+        # The fold can only clear a false withhold, never create entitlement: a
+        # model the backend serves under neither spelling still resolves to "".
+        assert resolve_usable_model("openrouter::not-served", ["z-ai/glm-5.3-flash"]) == ""
+
+    def test_verbatim_advertised_qualified_id_is_not_peeled(self):
+        # An id advertised WITH its qualifier matches literally and is returned
+        # as given — the peel only runs on a literal miss.
+        assert (
+            resolve_usable_model(
+                "openrouter::z-ai/glm-5.3-flash", ["openrouter::z-ai/glm-5.3-flash"]
+            )
+            == "openrouter::z-ai/glm-5.3-flash"
         )
 
 

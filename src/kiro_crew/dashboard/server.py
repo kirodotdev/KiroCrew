@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import errno
 import faulthandler
+import functools
 import logging
 import os
 import stat
@@ -20,6 +21,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat, port_resolution
 from kiro_crew.apps.backend import start_enabled_app_backends
+from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler
 from kiro_crew.apps.hooks_integration import (
     init_hooks_system,
     on_gateway_shutdown,
@@ -53,6 +55,7 @@ from kiro_crew.dashboard import (
     tailnet,
     tailnet_serve,
 )
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.crash_dump_store import (
     claim_dump_notification,
     dump_age_seconds,
@@ -86,6 +89,7 @@ from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_relocate,
     api_artifact_reopen_comment,
     api_artifact_reply_comment,
+    api_artifact_reprobe_notice,
     api_artifact_resolve_comment,
     api_artifact_session_docs,
     api_artifact_set_folder,
@@ -170,6 +174,7 @@ from kiro_crew.platform import (
 )
 from kiro_crew.power import SleepInhibitor
 from kiro_crew.safety_override import (
+    POLICY_REVOKED_SOURCE,
     apply_config_duration,
     describe_dropped_grant,
     grant_declared_yolo,
@@ -177,9 +182,10 @@ from kiro_crew.safety_override import (
     take_dropped_grant,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.sel import sel
+from kiro_crew.sel import sel, sel_is_warm, warm_sel_singleton
 from kiro_crew.skill_usage import register_skill_read_observer
 from kiro_crew.skills import SkillsLoader, set_pending_consumed_hook, set_pending_staged_hook
+from kiro_crew.stall_attribution import attribute_dump, describe
 from kiro_crew.tunnel.setup import setup_tunnel
 
 if TYPE_CHECKING:
@@ -458,40 +464,53 @@ _PRE_AUDIT_DENY_STATUSES = frozenset({401, 403})
 
 
 async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
-    """Record a middleware refusal in the SEL, off the event loop, best-effort.
+    """Record a middleware refusal in the SEL, best-effort.
 
     Shared by every middleware that denies BEFORE ``sel_audit_middleware`` runs
     (that one is registered inner to them, so a bare raise produces a 403 that
     appears nowhere in the audit log). One helper rather than per-site calls
-    because both properties below are easy to omit at a new deny site and
+    because the property below is easy to omit at a new deny site and
     invisible when omitted:
 
-    * OFF THE LOOP — ``log_api_access`` only enqueues, but the first ``sel()``
-      of a process CONSTRUCTS the log: trust-dir creation, key validation, and
-      on Windows the owner-only DACL on the key file. A fresh
-      dashboard whose first state-changing request is cross-origin would run
-      that synchronously on the event loop and stall every other request.
     * BEST-EFFORT — a trust root too short to sign the chain makes construction
       raise, and an unguarded write would turn the refusal into a 500: losing
       the denial in order to report it.
 
+    No thread hop on the healthy path: the SEL singleton is warmed at startup
+    (:func:`kiro_crew.sel.warm_sel_singleton`, awaited by both start paths
+    before the middleware chain is built), so ``log_api_access`` here only
+    enqueues to the writer thread (after its one-time start on first
+    ``log()``) (#8608). The warm is best-effort, though: when it FAILED, the
+    next ``sel()`` retries ``_init_locked`` -- trust-dir creation, key load,
+    a tail read of the log -- on the calling thread, and this helper runs on
+    the event loop for every denied request. So the hop is kept for exactly
+    that case, gated on :func:`kiro_crew.sel.sel_is_warm`: two attribute
+    reads on the healthy path, a worker thread on the degraded one, never
+    blocking file I/O on the loop. The ``except`` stays because construction
+    can raise on either path.
+
     Calling this CLAIMS the request (:func:`origin.mark_audit_claimed`) so the
     deny-audit boundary outer to every barrier does not record the same refusal
     a second time. The claim is set unconditionally, before the write: a write
-    that failed here fails identically in the boundary, so a second doomed
-    thread hop buys nothing.
+    that failed here fails identically in the boundary, so retrying in the
+    boundary buys nothing.
     """
     mark_audit_claimed(request)
-    try:
-        await asyncio.to_thread(
-            lambda: sel().log_api_access(
-                caller=caller,
-                operation=f"{request.method} {request.path}",
-                outcome="denied",
-                resources=request.path,
-                error=error,
-            )
+
+    def _write() -> None:
+        sel().log_api_access(
+            caller=caller,
+            operation=f"{request.method} {request.path}",
+            outcome="denied",
+            resources=request.path,
+            error=error,
         )
+
+    try:
+        if sel_is_warm():
+            _write()
+        else:
+            await asyncio.to_thread(_write)
     except Exception:
         logger.warning("Failed to log a middleware denial to SEL", exc_info=True)
 
@@ -1363,6 +1382,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     # MCP Apps (SEP-1865): embedded app iframe -> gateway tool callback.
     app.router.add_post("/api/mcp-apps/call", handlers.api_mcp_apps_call)
     app.router.add_get("/api/spawn", handlers.api_spawn_list)
+    app.router.add_post("/api/spawn/stop-all", handlers.api_spawn_stop_all)
     app.router.add_get("/api/spawn/{agent_id}", handlers.api_spawn_status)
     app.router.add_delete("/api/spawn/{agent_id}", handlers.api_spawn_delete)
     app.router.add_post("/api/spawn/{agent_id}/retry", handlers.api_spawn_retry)
@@ -1381,6 +1401,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/crons/history", handlers.api_cron_history_all)
     app.router.add_delete("/api/crons/{job_id}", handlers.api_cron_delete)
     app.router.add_patch("/api/crons/{job_id}", handlers.api_cron_update)
+    # Operator-only vault-secret grants. The "/api/crons" prefix above makes
+    # this reachable with X-Internal-Secret, so the HANDLER refuses proven
+    # internal-secret callers (request["internal_auth"]) — machines request,
+    # humans grant. See the handler docstring.
+    app.router.add_put("/api/crons/{job_id}/secrets", handlers.api_cron_secret_grant)
     app.router.add_post("/api/crons/{job_id}/enable", handlers.api_cron_enable)
     app.router.add_post("/api/crons/{job_id}/run", handlers.api_cron_run)
     app.router.add_post("/api/crons/{job_id}/cancel", handlers.api_cron_cancel)
@@ -1574,6 +1599,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/artifacts/{slug}/publish", api_artifact_publish)
     app.router.add_delete("/api/artifacts/{slug}/publish", api_artifact_unpublish)
     app.router.add_post("/api/artifacts/{slug}/publish/refresh", api_artifact_refresh_sharing)
+    app.router.add_post("/api/artifacts/{slug}/publish/reprobe-notice", api_artifact_reprobe_notice)
     app.router.add_patch("/api/artifacts/{slug}/sharing", api_artifact_update_sharing)
     app.router.add_patch("/api/artifacts/{slug}/relocate", api_artifact_relocate)
     # Upstream sync (fork/publication lineage) — pull / status / overwrite
@@ -2108,7 +2134,7 @@ def _armed_unattended_loops() -> "list[Any]":
 _UNATTENDED_EXPIRY_TITLE = "🔒 Auto-approve expired while an unattended run was in progress"
 
 
-def _unattended_expiry_text(loop_count: int) -> str:
+def _unattended_expiry_text(loop_count: int, source: str) -> str:
     """Body shared by the dashboard note and the owner DM, so the two cannot drift.
 
     Names the remedy as well as the cause: ``agent.yolo_duration`` accepts
@@ -2116,16 +2142,32 @@ def _unattended_expiry_text(loop_count: int) -> str:
     problem is that operators do not know that option exists, and the moment it
     would have helped is the moment worth saying so.
 
+    EXCEPT after a policy revocation (``source == POLICY_REVOKED_SOURCE``): both
+    halves of that remedy — re-enabling auto-approve and ``until_shutdown``, a
+    ``yolo_duration`` scope member — are refused by the same fail-closed
+    ``approval_modes`` gate that revoked the grant, so suggesting them directs
+    the one operator who is not present into a wall (issue #8850). The stall
+    description stays; only the remedy is replaced with the actual cause.
+
     The stall is stated conditionally because global auto-approve is not the only
     path to one: a slot carrying its own trust grant is approved by ``slot._trust``
     independently of the grant, so its cycles keep running after this expiry.
     Claiming the run has stopped would send an operator to rescue a healthy one.
     """
-    return (
+    stall = (
         f"{loop_count} monitor loop(s) are still running, but auto-approval has "
         f"ended, so any cycle that relied on it now waits on a per-tool approval "
         f"that nobody is there to give. (A session granted its own trust is "
-        f"unaffected.) Re-enable auto-approve to resume. For runs meant to go "
+        f"unaffected.)"
+    )
+    if source == POLICY_REVOKED_SOURCE:
+        return (
+            f"{stall} Auto-approve was disabled by organization policy, so it "
+            f"cannot be re-enabled while the policy is in effect — contact your "
+            f"administrator if you believe this is unexpected."
+        )
+    return (
+        f"{stall} Re-enable auto-approve to resume. For runs meant to go "
         f"unattended overnight, Settings → agent.yolo_duration has an "
         f"'until_shutdown' option that has no timed expiry."
     )
@@ -2154,7 +2196,7 @@ def _notify_unattended_expiry(state: "DashboardState", source: str) -> None:
         "every further cycle will wait on per-tool approval",
         len(armed),
     )
-    body = _unattended_expiry_text(len(armed))
+    body = _unattended_expiry_text(len(armed), source)
     try:
         state.notify(
             "safety_override",
@@ -2181,12 +2223,179 @@ def _notify_unattended_expiry(state: "DashboardState", source: str) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
-def _dispatch_override_expiry_notification(state: DashboardState, notify_coro_factory: Any) -> bool:
+def _override_expiry_dm_text(source: str) -> str:
+    """Owner-DM body for an override expiry, worded by what actually happened.
+
+    A POLICY revocation (``source == POLICY_REVOKED_SOURCE``) is not an expiry
+    the operator can undo: ``_commit_activation``'s fail-closed
+    ``approval_modes`` gate refuses the very ``/kirocrew yolo`` this message
+    used to suggest, so the old text directed the operator into a wall without
+    naming the cause. Presentation only — the gate and its SEL audit are
+    unchanged. (The unattended-run notice applies the same source split in
+    ``_unattended_expiry_text``.)
+
+    Every other source keeps the original wording byte-identical: a TTL lapse
+    IS re-armable, and that text is pinned by tests.
+    """
+    if source == POLICY_REVOKED_SOURCE:
+        return (
+            "\U0001f512 Auto-approve was disabled by organization policy, and the "
+            "active safety override has been revoked. Tools now require approval. "
+            "Re-authorization is refused while the policy is in effect — contact "
+            "your administrator if you believe this is unexpected."
+        )
+    return "\U0001f512 Safety override expired. Tools now require approval. Reply `/kirocrew yolo` to re-authorize."
+
+
+async def _notify_slack_override_expired(state: DashboardState, source: str) -> None:
+    """Post the override expiry notice to the owner DM, worded by cause.
+
+    Module-level (not a ``start_dashboard`` closure) so the seam this fix added —
+    ``source`` travelling from the expiry callback into the DM body — is
+    directly testable; a closure would leave that wiring uncovered.
+    """
+    await _dm_owner(state, _override_expiry_dm_text(source))
+
+
+def _clear_override_derived_trust(state: "DashboardState", source: str) -> None:
+    """Drop every INHERITED grant of the expiring override. State only, no loop.
+
+    Module-level (not a ``start_dashboard`` closure), like the Slack notifier, so the
+    seam is directly testable against a real ``DashboardState``.
+
+    Split out of the notifier because the two halves have different
+    deadlines. ``subagent_manager.admission.parent_trusted`` reads a session's
+    ``approval_policy == "auto"`` DIRECTLY -- it consults no flag in
+    ``safety_override`` -- so until this has run a spawn is auto-approved against
+    a ceiling that already denies, and an already-launched subagent is not
+    un-spawned by anything later. That makes this the half a policy revocation has
+    to complete synchronously, on whichever thread installed the ceiling, while
+    the broadcasts and DMs below can be scheduled onto the loop.
+
+    Safe off the event loop: it touches the slot dict and the session store and
+    nothing loop-affine. Idempotent, so the notifier re-running it costs nothing.
+    """
+    # Slots carrying STANDING trust keep their policy: that is a separate,
+    # longer-lived decision than the expiring override, and it is also what must
+    # survive the channel-trust revoke below.
+    standing_trust: set[str] = set()
+    if state.sessions is not None:
+        # Snapshot the slots before iterating. This runs on whatever thread
+        # installed the denying ceiling, and the loop keeps creating and removing
+        # slots -- so iterating the live dict raises "dictionary changed size
+        # during iteration" and ABORTS the teardown partway, leaving the slots it
+        # had not reached yet at ``approval_policy="auto"`` with nothing to come
+        # back for them. A partial revocation is the failure this whole path
+        # exists to prevent, so the iteration cannot be the thing that breaks it.
+        for slot in list(state._slots.values()):
+            if slot._trust or slot._trust_reads:
+                # Excluded from the channel-trust revoke below, via the SAME
+                # derivation the reset uses: a channel-born slot's turns run on
+                # the channel's own session key, so a `dashboard:<slot>` spelling
+                # names a key nothing on that path reads.
+                standing_trust.add(effective_session_key(slot))
+            else:
+                # The SAME derivation the grant used. A channel-born slot's
+                # turns run on the channel's own session key, which is what
+                # `linked_session_key` holds, so clearing `dashboard:<slot>`
+                # here cleared a key nothing on the channel path ever reads:
+                # the TTL could not expire the grant it had handed out, which
+                # is worse than a missing off-switch because the operator was
+                # told it was time-bounded.
+                state.sessions.set_approval_policy(effective_session_key(slot), "")
+    # Slack cleanup — isolated so failures don't block dashboard operations
+    try:
+        # From `messaging`, not `slack.handler`: the grant is channel-neutral.
+        # This revokes the approval_policy half as well as the mapping, which is
+        # what a CHANNEL session needs -- the loop just above resets only the
+        # dashboard's own slots, and a subagent reads the policy rather than the
+        # mapping, so policy left at "auto" outlives the override it belonged to.
+        # ``keep_policy`` is what stops this from undoing the preservation above:
+        # a Trust press can file a ``dashboard:`` key in the shared grant, and
+        # resetting its policy here would revoke standing trust nobody expired.
+        from kiro_crew.messaging.session_trust import clear_trusted_sessions
+
+        clear_trusted_sessions(keep_policy=standing_trust)
+    except Exception:
+        logger.debug("Could not clear trusted sessions", exc_info=True)
+
+
+def _suspend_override_derived_trust(state: "DashboardState") -> Callable[[], None] | None:
+    """Blank the grant's inherited slot policies BEFORE a new ceiling publishes.
+
+    Returns the restore. ``_clear_override_derived_trust`` runs once a deny
+    has been RESOLVED against the new ceiling, but resolving is a governance read
+    and the ceiling is already published while it runs -- and
+    ``admission.parent_trusted`` reads the slot's approval policy directly, not
+    ``is_active()``, so for that whole window a spawn from a slot carrying the
+    override's inherited ``"auto"`` was auto-approved against a ceiling that may
+    deny. This is the pre-publication half that closes it.
+
+    Only the override's OWN inherited trust is suspended: slots with standing
+    ``_trust`` / ``_trust_reads`` are left alone (a Trust press is a separate,
+    longer-lived decision no yolo ceiling touches), and only slots currently at
+    ``"auto"`` are recorded, so the restore puts back exactly what was taken. The
+    shared channel-trust mapping is NOT suspended: ``is_session_trusted`` gates a
+    tool in an already-running turn (recoverable, audited), while this guards
+    spawn admission (unrecoverable) -- the same asymmetry the revoke ordering rests
+    on. Same thread contract as the clear: slot dict + session store only.
+    """
+    if state.sessions is None:
+        return None
+    suspended: list[tuple[str, str]] = []
+    for slot in list(state._slots.values()):
+        if slot._trust or slot._trust_reads:
+            continue
+        key = effective_session_key(slot)
+        try:
+            if state.sessions.get_approval_policy(key) != "auto":
+                continue
+            state.sessions.set_approval_policy(key, "")
+        except Exception:
+            logger.debug("could not suspend inherited trust on %s", key, exc_info=True)
+            continue
+        suspended.append((slot.key, key))
+    if not suspended:
+        return None
+
+    def _restore() -> None:
+        # Restore is CONDITIONAL, per slot, on the slot still being in the state it
+        # was suspended from. The governance read in between is long enough for
+        # the operator to have changed a slot's mode -- picked ``trust_reads`` or
+        # ``trust``, or ``normal`` -- and each of those writes this same policy.
+        # Writing ``"auto"`` over a ``trust_reads`` slot would upgrade read-only
+        # trust to full auto-approve on the read ``parent_trusted`` makes; over a
+        # ``normal`` slot it would undo an explicit revoke. So a slot gets its
+        # ``"auto"`` back only if it still exists, still carries no standing trust
+        # flag, and its policy is still the empty string this suspension left.
+        for slot_key, key in suspended:
+            slot = state._slots.get(slot_key)
+            if slot is None or slot._trust or slot._trust_reads:
+                continue
+            try:
+                if state.sessions.get_approval_policy(key) != "":
+                    continue
+                state.sessions.set_approval_policy(key, "auto")
+            except Exception:
+                logger.debug("could not restore inherited trust on %s", key, exc_info=True)
+
+    return _restore
+
+
+def _dispatch_override_expiry_notification(
+    state: DashboardState, notify_coro_factory: Any, source: str
+) -> bool:
     """Schedule the Slack override-expiry DM unless disabled via config.
 
     Gated by ``agent.notify_override_expiry`` (read live so it can be toggled
     without a restart). Returns True if a notification task was scheduled, False
     if skipped — either disabled via config or no running event loop.
+
+    ``source`` is the expiry trigger (``policy`` for a policy revocation, else
+    the activating source) and is handed to ``notify_coro_factory`` so the DM
+    can word the notice by cause. The config gate deliberately does not vary by
+    source: ``agent.notify_override_expiry`` mutes the recurring expiry notice
+    as a class, whichever way the grant ended.
     """
     if not KiroCrewConfig.load().agent.notify_override_expiry:
         return False
@@ -2195,7 +2404,7 @@ def _dispatch_override_expiry_notification(state: DashboardState, notify_coro_fa
     except RuntimeError:
         logger.debug("No running event loop — Slack expiry notification skipped")
         return False
-    task = loop.create_task(notify_coro_factory())
+    task = loop.create_task(notify_coro_factory(source))
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
     return True
@@ -2313,6 +2522,59 @@ def _dispatch_owner_dm(state: DashboardState, text: str) -> None:
         logger.debug("No running event loop — owner DM skipped")
         return
     task = loop.create_task(_dm_owner(state, text))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _register_connections_warm_lifecycle(app: web.Application, state: DashboardState) -> None:
+    """Retire warm generations on cleanup; startup scavenging is kicked post-bind.
+
+    The import sits inside the hook deliberately, against ``top-level-imports``, because
+    ``no-new-work-on-gateway-boot-path`` governs this file and wins: importing
+    ``connections.warm`` at module scope would pull its whole dependency graph -- the mint
+    table, the provider registry, tool aliases, MCP discovery -- onto the one ordered thread
+    between process start and the socket accepting requests. Startup scavenging is NOT an
+    ``on_startup`` hook for the same reason: aiohttp runs those inside ``runner.setup()``,
+    BEFORE the listener binds, so even a hook that only created the scavenge task put the
+    synchronous import in front of the bind. Both entrypoints instead call
+    ``_kick_connections_warm_scavenge`` strictly after ``_start_site`` returns.
+
+    The cleanup hook is registered here, before ``runner.setup()`` freezes aiohttp's signal
+    lists; it resolves the import only when a gateway is already stopping.
+    """
+
+    async def _connections_warm_shutdown(_app: web.Application) -> None:
+        try:
+            from kiro_crew.connections.warm import shutdown_warm_mint
+
+            await shutdown_warm_mint()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Connections warm shutdown failed", exc_info=True)
+
+    app.on_cleanup.append(_connections_warm_shutdown)
+
+
+def _kick_connections_warm_scavenge(state: DashboardState) -> None:
+    """Start the crash-residue scavenge as a tracked background task, post-bind.
+
+    Called by both gateway entrypoints only after ``_start_site`` has returned, so the
+    listener is already accepting requests. The deferred ``connections.warm`` import
+    happens INSIDE the worker thread: resolving that dependency graph on the event loop
+    would stall in-flight requests just as it would have stalled the bind.
+    """
+
+    def _scavenge_in_thread() -> None:
+        from kiro_crew.connections.warm import scavenge_warm_mint_artifacts
+
+        scavenge_warm_mint_artifacts()
+
+    async def _connections_warm_scavenge() -> None:
+        try:
+            await asyncio.to_thread(_scavenge_in_thread)
+        except Exception:  # noqa: BLE001 — fail closed by retaining unproved residue
+            logger.warning("Connections warm artifact scavenging failed", exc_info=True)
+
+    task = asyncio.create_task(_connections_warm_scavenge())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
@@ -3322,16 +3584,51 @@ async def start_dashboard(
 
         await init_dev_mode_watcher(state.broadcast_ws)
 
+        # App hook reconciler: the CLI (`kirocrew app enable/disable/install/
+        # uninstall`) mutates apps on disk in a DIFFERENT process and never
+        # notifies this gateway, so a CLI reinstall left the old backend.hooks
+        # module live, its on_startup task running, and its .app_secret stale
+        # (issue #7880). This poll reloads changed hooks in-process — the same
+        # "CLI writes disk, gateway reconciles" contract already used for crons
+        # and UI files. Started AFTER on_gateway_startup so the boot pass has
+        # already recorded its loaded-hook signatures in the shared registry and
+        # the reconciler's first tick sees no drift. Synchronous + IO-free, so it
+        # adds nothing before the dashboard socket binds.
+        init_hook_reconciler(
+            cron_service=state.crons,
+            broadcast_fn=_app_event_broadcast,
+            spawn_impl=_app_spawn,
+        )
+
     app.on_startup.append(_hooks_startup)
 
     async def _hooks_shutdown(app_: web.Application) -> None:
-        await on_gateway_shutdown()
-        # Cancel the app dev-mode watcher started in _hooks_startup so an
-        # in-process gateway restart does not leak the module-global task (which
-        # holds a stale broadcast_ws targeting dead clients). Await cancellation.
+        # Stop the background pollers BEFORE the gateway hook shutdown sweep.
+        # The reconciler and the dev-mode watcher can each LOAD/START app hooks
+        # on a tick; if either is still live while on_gateway_shutdown() tears
+        # hooks down, a poll landing mid-sweep could re-import a module or spawn
+        # an on_startup task AFTER it was torn down, so that app's code would
+        # survive an in-process gateway restart. Cancelling them first also stops
+        # their module-global tasks from leaking stale gateway service handles /
+        # a stale broadcast_ws across the restart. Await cancellation so neither
+        # can fire one more tick during the sweep.
         from kiro_crew.apps.dev_mode import stop_dev_mode_watcher
 
-        await stop_dev_mode_watcher()
+        # on_gateway_shutdown() is the sweep that actually tears down app
+        # backends; it MUST run even if stopping a poller hangs (its bounded
+        # drain can burn its budget) or raises, otherwise a spawned app backend
+        # survives gateway exit. Stop the pollers first (preserving the
+        # no-tick-during-sweep ordering) but never let a stop failure abort the
+        # sweep: catch and log it, then always run on_gateway_shutdown.
+        try:
+            await stop_dev_mode_watcher()
+            await stop_hook_reconciler()
+        except Exception:
+            logger.exception(
+                "Error stopping background pollers on shutdown; proceeding to the "
+                "gateway hook shutdown sweep so app backends are torn down"
+            )
+        await on_gateway_shutdown()
 
     app.on_cleanup.append(_hooks_shutdown)
 
@@ -3466,6 +3763,7 @@ async def start_dashboard(
         _ts_cfg.trust_identity,
         tailnet_effective_allowed_logins(_cfg.degraded_sections, _ts_cfg.allowed_logins),
         _ts_cfg.pin_scope,
+        bind_refresh_chains=_ts_cfg.bind_refresh_chains,
         # An unreadable tailnet policy resolves allowed_logins to [] and so
         # trust_identity to False, which is "no login restriction". The values
         # alone cannot tell that from "never configured"; degraded_sections can.
@@ -3536,6 +3834,13 @@ async def start_dashboard(
     # event loop BEFORE building the middleware chain, so no blocking key-file
     # I/O lands on the loop on the first auth op.
     await warm_auth_singletons()
+
+    # Warm the SecurityEventLog singleton off the loop before any handler or
+    # middleware can be its first touch, so a first ``log_api_access`` is a
+    # non-blocking enqueue on every path — call sites need no per-site
+    # ``asyncio.to_thread`` hop (#8608). Best-effort inside the helper: a
+    # failed warm never blocks readiness.
+    await warm_sel_singleton()
 
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
@@ -3641,6 +3946,7 @@ async def start_dashboard(
     # ``_register_instances_hooks`` for why ordering matters.
     _register_instances_hooks(app, state, port)
     _register_browser_view_cleanup(app)
+    _register_connections_warm_lifecycle(app, state)
 
     # Unix-socket cleanup hook — registered before runner.setup freezes the
     # signal lists; the path itself only becomes known after the site starts
@@ -3681,6 +3987,13 @@ async def start_dashboard(
     except OSError:
         await runner.cleanup()
         raise
+
+    # Listener is bound and credentials are published — now kick the warm
+    # crash-residue scavenge. Deliberately NOT an on_startup hook: those run
+    # inside runner.setup(), before the bind, and the scavenge's deferred
+    # import must never sit in front of the listener
+    # (no-new-work-on-gateway-boot-path).
+    _kick_connections_warm_scavenge(state)
 
     # Event-loop heartbeat: proves the asyncio loop is live (the off-loop /proc
     # sampler can't — it runs in a subprocess). Sleeps 10s, then logs actual
@@ -3815,6 +4128,16 @@ async def start_dashboard(
             # per dump — the dump is re-detected for up to 7 days on every
             # start, so notifying unconditionally would alert every restart.
             if await asyncio.to_thread(claim_dump_notification, _prior_dump):
+                # Say who the loop was working for, from the same evidence the
+                # doctor reads, so the person restarting knows which job to look
+                # at without opening the dump.
+                try:
+                    _attr_lines = describe(
+                        await asyncio.to_thread(attribute_dump, _prior_dump, data_home())
+                    )
+                except Exception:
+                    logger.debug("stall attribution for notification failed", exc_info=True)
+                    _attr_lines = []
                 try:
                     state.notify(
                         "heartbeat",
@@ -3822,8 +4145,9 @@ async def start_dashboard(
                         (
                             f"The previous gateway stopped responding and exited "
                             f"{_age_h:.1f}h ago, then restarted. Work in flight at "
-                            f"that moment was interrupted and not saved. Thread "
-                            f"stacks: {_prior_dump}"
+                            f"that moment was interrupted and not saved. "
+                            + ("".join(f"{ln}. " for ln in _attr_lines))
+                            + f"Thread stacks: {_prior_dump}"
                         ),
                         meta={"url": "/settings", "dump": str(_prior_dump)},
                     )
@@ -3903,65 +4227,40 @@ async def start_dashboard(
     # NOTE: Even with restore_sessions=false, foldered and pinned sessions are restored
     # so the Explorer tree stays populated.  Users can unpin or remove from folder to dismiss.
     cfg = KiroCrewConfig.load()
-    _apply_startup_yolo(state, cfg)
+    # Offloaded: this PR gave arming a fail-closed ``approval_modes`` gate, so
+    # ``grant_declared_yolo`` now resolves governance -- an ``iterdir`` + per-file
+    # ``stat`` walk of the profiles dir. We are inside ``async def start_dashboard``,
+    # so running it inline stalls the gateway's loop, and on slow storage it stalls
+    # the heartbeat with it.
+    await asyncio.to_thread(_apply_startup_yolo, state, cfg)
 
     # Wire safety override expiry notifications
-    async def _notify_slack_override_expired() -> None:
-        """Post override expiry notice to Slack owner DM."""
-        await _dm_owner(
-            state,
-            "\U0001f512 Safety override expired. Tools now require approval. Reply `/kirocrew yolo` to re-authorize.",
-        )
-
     def _on_override_expired(source: str) -> None:
-        """Notify all interfaces when safety override expires."""
+        """Notify all interfaces when safety override expires.
+
+        Runs the inherited-trust teardown first so a TTL lapse -- which reaches this
+        directly, with no separate synchronous call -- still clears everything. A
+        policy revocation has already run it inline by the time this fires, and it is
+        idempotent, so the two paths need no branch between them.
+        """
+        _clear_override_derived_trust(state, source)
         state.broadcast_ws("yolo_expired", {"source": source})
         state.push_slots_update()
-        # Slots carrying STANDING trust keep their policy: that is a separate,
-        # longer-lived decision than the expiring override, and it is also what must
-        # survive the channel-trust revoke below.
-        standing_trust: set[str] = set()
-        if state.sessions is not None:
-            from kiro_crew.dashboard.chat_utils import effective_session_key
-
-            for slot in state._slots.values():
-                if slot._trust or slot._trust_reads:
-                    # Excluded from the channel-trust revoke below, via the SAME
-                    # derivation the reset uses: a channel-born slot's turns run on
-                    # the channel's own session key, so a `dashboard:<slot>` spelling
-                    # names a key nothing on that path reads.
-                    standing_trust.add(effective_session_key(slot))
-                else:
-                    # The SAME derivation the grant used. A channel-born slot's
-                    # turns run on the channel's own session key, which is what
-                    # `linked_session_key` holds, so clearing `dashboard:<slot>`
-                    # here cleared a key nothing on the channel path ever reads:
-                    # the TTL could not expire the grant it had handed out, which
-                    # is worse than a missing off-switch because the operator was
-                    # told it was time-bounded.
-                    state.sessions.set_approval_policy(effective_session_key(slot), "")
-        # Slack cleanup — isolated so failures don't block dashboard operations
-        try:
-            # From `messaging`, not `slack.handler`: the grant is channel-neutral.
-            # This revokes the approval_policy half as well as the mapping, which is
-            # what a CHANNEL session needs -- the loop just above resets only the
-            # dashboard's own slots, and a subagent reads the policy rather than the
-            # mapping, so policy left at "auto" outlives the override it belonged to.
-            # ``keep_policy`` is what stops this from undoing the preservation above:
-            # a Trust press can file a ``dashboard:`` key in the shared grant, and
-            # resetting its policy here would revoke standing trust nobody expired.
-            from kiro_crew.messaging.session_trust import clear_trusted_sessions
-
-            clear_trusted_sessions(keep_policy=standing_trust)
-        except Exception:
-            logger.debug("Could not clear trusted sessions", exc_info=True)
         # Slack notification (prevent GC with background_tasks set)
-        _dispatch_override_expiry_notification(state, _notify_slack_override_expired)
+        _dispatch_override_expiry_notification(
+            state, functools.partial(_notify_slack_override_expired, state), source
+        )
         # An expiry that lands on an unattended run is the one case that cannot
         # self-report: nobody is present to answer the prompts it produces.
         _notify_unattended_expiry(state, source)
 
     safety_override().on_expired = _on_override_expired
+    # The synchronous half, for the one caller that cannot wait for the loop: a
+    # ceiling install that denies ``yolo`` revokes from whatever thread installed it.
+    safety_override().on_policy_revoked = functools.partial(_clear_override_derived_trust, state)
+    # The pre-publication half: suspend inherited slot trust while a new ceiling is
+    # being resolved, and get it back if the ceiling still permits.
+    safety_override().on_policy_suspend = functools.partial(_suspend_override_derived_trust, state)
 
     # A grant that was live when the process went down is GONE -- grants are
     # in-memory by design and this does not change that. What it changes is that
@@ -4240,6 +4539,7 @@ async def start_api_server(
         _ts_cfg.trust_identity,
         tailnet_effective_allowed_logins(_cfg.degraded_sections, _ts_cfg.allowed_logins),
         _ts_cfg.pin_scope,
+        bind_refresh_chains=_ts_cfg.bind_refresh_chains,
         identity_unknown=tailnet_identity_unknown(_cfg.degraded_sections),
         unreadable_files=tuple(degraded_config_files(_cfg.degraded_sections)),
     )
@@ -4334,6 +4634,11 @@ async def start_api_server(
     # (parity with start_dashboard) so no blocking key-file I/O hits the loop.
     await warm_auth_singletons()
 
+    # Warm the SecurityEventLog singleton off the loop (parity with
+    # start_dashboard) so the first audit on this entrypoint is also a
+    # non-blocking enqueue, never an on-loop ``_init_locked`` (#8608).
+    await warm_sel_singleton()
+
     # Explicit ordering mirrors start_dashboard: latency → deny-audit → host →
     # csrf → token → audit.
     app.middlewares[:] = [
@@ -4398,6 +4703,7 @@ async def start_api_server(
     # is what makes headless --slack-only keep the host awake during a long
     # Slack task, identically to the full dashboard.
     _register_prevent_sleep_shutdown(app, state)
+    _register_connections_warm_lifecycle(app, state)
 
     # Unix-socket cleanup hook — same holder pattern as start_dashboard,
     # registered before runner.setup freezes the signal lists.
@@ -4442,6 +4748,11 @@ async def start_api_server(
     except OSError:
         await runner.cleanup()
         raise
+
+    # Listener is bound — kick the warm crash-residue scavenge (parity with
+    # start_dashboard: never an on_startup hook, which would run the deferred
+    # import before the bind).
+    _kick_connections_warm_scavenge(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 

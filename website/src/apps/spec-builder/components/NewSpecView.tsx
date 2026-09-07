@@ -102,9 +102,14 @@ export default function NewSpecView({ onCancel, onCreated, setErr, onSettings }:
             rows={3}
             aria-label={i18nT('apps.specBuilder.components.newSpecView.describe_what_you_want_to_do')}
             placeholder={i18nT('apps.specBuilder.components.newSpecView.e_g_add_login_with_google_so_users_don_t_need_pa')}
-            style={{ ...inputStyle, resize: 'vertical', marginTop: '8px', marginBottom: '24px', lineHeight: 1.5, fontWeight: 400 }}
+            style={{ ...inputStyle, resize: 'vertical', marginTop: '8px', marginBottom: desc.trim() ? '8px' : '24px', lineHeight: 1.5, fontWeight: 400 }}
           />
         </label>
+        {desc.trim() ? (
+          <div className="text-[12px] text-muted -mt-1 mb-6 leading-relaxed">
+            {i18nT('apps.specBuilder.components.newSpecView.this_spec_will_be_called', { name: autoName })}
+          </div>
+        ) : null}
 
         <div className="text-[14px] font-semibold mb-2">{i18nT('apps.specBuilder.components.newSpecView.which_project_is_this_for')}</div>
         <ProjectPicker value={wd} onChange={setWd} />

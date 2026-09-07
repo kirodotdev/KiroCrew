@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
-import { renderUserContent } from '../pages/ChatPage'
+import { renderUserContent } from '../pages/chat/ChatPageMessageContent'
 
 const noop = () => {}
 

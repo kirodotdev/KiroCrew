@@ -45,6 +45,24 @@ def _explicit_registry_execution_admission(monkeypatch):
     monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
 
 
+@pytest.fixture(autouse=True)
+def _catalog_absent(monkeypatch):
+    """Pin "official catalog reachable, app absent" for the whole module.
+
+    ``get_registry_app`` (patched to a stub in most tests here) is, in its real
+    implementation, upstream of ``official_catalog.inventory_for_install``, whose
+    real lookup performs a fresh uncached HTTPS fetch on every call. A test that
+    exercises the real ``get_registry_app``/catalog path (rather than stubbing it
+    directly) would otherwise depend on the runner's live network being up. A
+    test that wants a different catalog answer overrides this by monkeypatching
+    the same seam itself (see ``TestCatalogAppsIncludesExternalRegistries``).
+    """
+    monkeypatch.setattr(
+        "kiro_crew.apps.official_catalog.inventory_for_install",
+        lambda name: None,
+    )
+
+
 # A portable long-lived child: sleeps well past any test timeout without
 # relying on POSIX-only binaries (``sleep``/``bash`` are absent on native
 # Windows, where they would fail collection with FileNotFoundError).

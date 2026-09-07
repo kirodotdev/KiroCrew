@@ -145,6 +145,12 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
     { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
   ],
   'DeveloperPanel.tsx': 'developer',
+  // The Feature Previews cards DeveloperPanel mounts. Indexed on purpose: the
+  // old Developer-page tab kept itself out of search so "webhooks" would not
+  // advertise a hidden page, but a control visible on a Settings pane that
+  // search cannot find is the coverage gap settingsCoverage.test.ts exists to
+  // close — and the hit reaches the labelled opt-in switch, not the page.
+  'FeaturePreviewsSection.tsx': 'developer',
   'AboutPanel.tsx': 'about',
   'SttSettings.tsx': 'voice',
   // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also

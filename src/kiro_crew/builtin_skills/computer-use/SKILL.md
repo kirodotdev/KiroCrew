@@ -203,6 +203,9 @@ single/double/triple), and `click_method`:
   one method built on a private Apple API, so it can stop working on a future macOS —
   when it is unavailable the refusal says so and names `app_post`. Do not reach for it
   first; reach for it when a covered window is the reason a click did nothing.
+  It is a **left-button recipe only**: pairing it with `mouse_button: right` or
+  `middle` is refused, and the refusal names `app_post` as the route for those,
+  since that reaches the same application through a public API.
 
 `computer_drag` is coordinate-only — no accessibility action expresses a sweep
 between two points — and it takes the same `mouse_button` / `click_method` options.
@@ -372,6 +375,7 @@ These are **answers**, not failures. Relay them and adapt; do not loop.
 | `computer use is disabled …` | the primary switch is off | tell the user to enable it in Settings → Computer Use; do not retry |
 | `computer use is not supported on this platform (…)` | no driver for this OS (e.g. Linux) | say so once |
 | `click_method 'app_post' is macOS-only …` / `'sky_click' is macOS-only …` | a macOS-only click method on Windows | use an `element_index` (no pointer moves), or name `click_method: "global"` to accept the cursor move |
+| `click_method 'sky_click' supports only the left mouse button (…)` | `sky_click` is a left-button-only recipe | use `left`, or switch to `app_post` for a right/middle click — the refusal names it |
 | `click_method 'auto' with coordinates cannot be served on Windows` | `auto` + x/y, where the only coordinate route moves the real cursor | pass an `element_index`, or name `global` explicitly — `auto` never takes the pointer on its own |
 | `element N … advertises no action this platform can perform` | the element implements no invoke / toggle / select / legacy default action | try its parent or a child from `computer_get_state` |
 | `dragging on Windows moves the operator's real cursor …` | a drag with the default `click_method` (the macOS app-scoped route) | pass `click_method: "global"` explicitly — Windows has no pointer-free drag, so the opt-in is the whole point. There is no element form of a drag |

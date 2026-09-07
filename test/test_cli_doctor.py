@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -80,6 +81,42 @@ class TestFixHint:
         # No Windows arm supplied → keep the Linux text rather than inventing one.
         monkeypatch.setattr(cli_doctor._plat, "system", lambda: "Windows")
         assert cli_doctor._os_fix_hint("brew x", "linux x") == "linux x"
+
+
+class TestFfmpegLinuxHintResolvable:
+    """The Linux missing-ffmpeg hint names only locations the resolver searches (#8897).
+
+    An earlier hint told the user to drop a static build into ``~/.local/bin``,
+    which ``transcribe._find_ffmpeg`` deliberately never searches (its candidate
+    list documents removing that directory), so following the advice literally
+    still ended at "not found". Hold the hint against the resolver's own candidate
+    list rather than freezing its prose.
+    """
+
+    def test_hint_does_not_name_the_deliberately_excluded_dir(self) -> None:
+        assert ".local/bin" not in cli_doctor._FFMPEG_LINUX_HINT
+
+    def test_every_directory_named_is_actually_searched(self) -> None:
+        from kiro_crew import transcribe
+
+        dirs = re.findall(r"/[A-Za-z0-9._/-]+", cli_doctor._FFMPEG_LINUX_HINT)
+        assert dirs, "the hint must name at least one concrete install directory"
+        for directory in dirs:
+            assert (
+                directory in transcribe._FFMPEG_CANDIDATE_DIRS
+            ), f"{directory} is in the doctor hint but _find_ffmpeg never searches it"
+
+    def test_hint_offers_the_managed_store_download(self) -> None:
+        # The store download is the remedy that needs no PATH reasoning and works
+        # on distros with no packaged ffmpeg (the AL2023 case the old hint cited).
+        # Anchored to the decoder table, not the prose alone: if the pinned Linux
+        # artifacts were ever dropped, the hint would promise a download the
+        # gateway refuses (409 decoder_unsupported_platform).
+        from kiro_crew.stt import decoder
+
+        assert "dashboard" in cli_doctor._FFMPEG_LINUX_HINT
+        assert decoder.artifact_for("Linux", "x86_64") is not None
+        assert decoder.artifact_for("Linux", "aarch64") is not None
 
 
 class TestDataHome:

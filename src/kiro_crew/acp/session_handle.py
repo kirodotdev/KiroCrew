@@ -69,6 +69,7 @@ from kiro_crew.acp.liveness import (
     _consume_future_exception,
     boottime_now,
     consult_offloaded,
+    steady_now,
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
@@ -137,10 +138,10 @@ class WatchdogSettings:
     :data:`_TURN_CEILING_WINDOW_FRACTION` for the enforced headroom."""
 
     check_after_secs: float = 60.0
-    stale_window_secs: float = 300.0
-    tool_stall_suspect_secs: float = 3600.0
-    tool_stall_hard_cap_secs: float = 3600.0
-    model_silent_probe_secs: float = 900.0
+    stale_window_secs: float = 600.0
+    tool_stall_suspect_secs: float = 5400.0
+    tool_stall_hard_cap_secs: float = 7200.0
+    model_silent_probe_secs: float = 1800.0
     wellness_sample_secs: float = 3.0
     # Whether a per-agent watchdog_tool_stall_* override was applied to this
     # snapshot. Telemetry-only (the kirocrew.watchdog.action attr): a BOOLEAN,
@@ -906,6 +907,15 @@ class AcpSessionHandle:
         # from an abandoned turn (or routed here for a backend child between
         # turns) gets the fail-closed reject; the live turn's requests are
         # handled by the dispatch loop as before.
+        # A DROPPED frame is invisible to every layer above: the abandoned turn's
+        # output vanishes here with nothing to show it existed, and a turn that
+        # loses its terminal this way reaches the dashboard as an empty response
+        # with no attributable cause. Count them and say how many, ONCE. Never
+        # what they were: a frame carries model text, tool arguments and tool
+        # results, and none of that belongs in a log — nor its size, which leaks
+        # response length. The count is bounded by the queue, and the log line is
+        # one per turn regardless of how many frames drained.
+        _stale_dropped = 0
         while True:
             try:
                 stale = self._queue.get_nowait()
@@ -979,6 +989,19 @@ class AcpSessionHandle:
                         _stale_sid if _stale_sid != self._session_id else ""
                     ),
                 )
+            else:
+                # Everything that is not a permission request is DISCARDED, which
+                # is correct (it belongs to a turn nobody is reading any more) but
+                # was silent. Count it.
+                _stale_dropped += 1
+
+        if _stale_dropped:
+            logger.warning(
+                "pre-turn drain discarded %d leftover frame(s) from a prior "
+                "abandoned turn on this session; those frames — possibly "
+                "including that turn's terminal — reached no consumer",
+                _stale_dropped,
+            )
 
         self.last_prompt_stats = self.last_prompt_stats.carry_over()
 
@@ -1019,6 +1042,16 @@ class AcpSessionHandle:
                 _mark(self._session_id, False)
             raise
 
+        # Did a terminal reach the consumer, and did this generator finish of its
+        # own accord? Together these answer a question no layer above can: the
+        # dashboard reads "no EVENT_COMPLETE" as an empty response and cannot tell
+        # whether the backend never closed the turn or the consumer simply walked
+        # away. Only a CLEAN exhaustion is reported, which is what makes the
+        # warning spam-free: a consumer close (GeneratorExit), a cancellation, and
+        # any raised error all leave `_exhausted_clean` False and are already
+        # logged by whoever caused them.
+        _yielded_terminal = False
+        _exhausted_clean = False
         try:
             # Surface any drain-time rejections (see the pre-turn drain above)
             # as crew-card activity before the turn's own events — the user
@@ -1052,6 +1085,11 @@ class AcpSessionHandle:
                 # single choke point because `_dispatch_events` yields from 15
                 # places and every one of them funnels through this `async for`.
                 self._parked_since = time.monotonic()
+                if event.kind == EVENT_COMPLETE:
+                    # Set BEFORE the yield: a consumer that closes the stream ON
+                    # the terminal still received it, and marking it after would
+                    # report a lost terminal that was in fact delivered.
+                    _yielded_terminal = True
                 try:
                     yield event
                 finally:
@@ -1064,11 +1102,26 @@ class AcpSessionHandle:
                     if self._parked_since is not None:
                         self._parked_total += time.monotonic() - self._parked_since
                         self._parked_since = None
+            # Reached only when the dispatch loop returned on its own — not on a
+            # close, a cancel, or an exception.
+            _exhausted_clean = True
         finally:
             if _mark is not None:
                 _mark(self._session_id, False)
             if not self._turn_done.is_set():
                 self._turn_done.set()
+            if _exhausted_clean and not _yielded_terminal:
+                # The dispatch loop synthesizes a terminal on every path it knows
+                # about (timeout, stale, tool stall, cancel-unacked), so reaching
+                # here means one of its exits has none — and the consumer is left
+                # deciding what an unclosed turn means. Content-free by
+                # construction: this line carries no count, no text and no ids,
+                # because the only fact it has to report is that it happened.
+                logger.warning(
+                    "prompt stream for this session ended without a terminal "
+                    "completion event; the caller will see the turn as producing "
+                    "nothing"
+                )
 
     # ── Turn park state (readable from OUTSIDE the turn) ──
 
@@ -2188,7 +2241,7 @@ class AcpSessionHandle:
                             self._log_working_deferral(_tool_idle, evidence, timeout)
                             continue
                         # UNKNOWN acts at the suspect window. The suspect
-                        # default (1h) is BUILD-scale forbearance — an LLM-shaped
+                        # default (90 min) is BUILD-scale forbearance — an LLM-shaped
                         # stall (flat subtree whose only live evidence is an
                         # established backend socket: a model turn riding inside
                         # a tool, e.g. kiro-cli use_subagent) narrows to the
@@ -2311,9 +2364,9 @@ class AcpSessionHandle:
                         # user"), and an unacked cancel confirms the wedge via the
                         # unresponsive-cancel branch at the loop top.
                         # ``window`` = "extended" when the established_flat
-                        # model-wait probe window (model_silent_probe_secs, 900s)
+                        # model-wait probe window (model_silent_probe_secs, 1800s)
                         # governed the decision instead of the ordinary stale
-                        # window (stale_window_secs, 300s). The established_flat
+                        # window (stale_window_secs, 600s). The established_flat
                         # case is an EXTENSION for model-wait (silence of a
                         # non-streamed think), not a narrowing as on the tool
                         # branch — emitting "extended" lets dashboards distinguish
@@ -2812,7 +2865,7 @@ class AcpSessionHandle:
         "standard" (default), "narrowed" (a tool-branch tag reduces the
         build-scale suspect window — established_flat to the model-silent budget,
         shell_child_absent to the ordinary silence window), or "extended"
-        (model-wait established_flat extends the 300s stale window to the
+        (model-wait established_flat extends the 600s stale window to the
         model-silent probe window for a non-streamed server-side think).
         ``agent_override`` is the per-agent-override BOOLEAN from the settings
         snapshot — deliberately NOT the agent name (per-agent joins happen via
@@ -3644,6 +3697,7 @@ class AcpSessionHandle:
                     command=ev.tool_input,
                     dispatch_ts=time.monotonic(),
                     dispatch_boot_ts=boottime_now(),
+                    dispatch_steady_ts=steady_now(),
                     dispatch_parked_secs=self._parked_total,
                     is_shell=ev.is_shell,
                     tool_name=ev.tool_name,

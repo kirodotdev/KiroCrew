@@ -459,6 +459,17 @@ async def authorize_and_add_nudge(
     gate: bool = False,
     monitor: MonitorState | None = None,
     replace_existing: bool = True,
+    # Opt-in for the session-directive re-arm path ONLY: with
+    # ``replace_existing=False`` it permits displacing a retained row whose
+    # stop the SYSTEM imposed (an approval stall, a spent cap or budget, a
+    # finished or vanished subject — the ``_stopped_row_is_replaceable``
+    # allowlist), so such a row cannot deadlock the re-arm that
+    # monitor_update's own refusal message prescribes. Consumer-recorded
+    # stops (manual pauses, user stops, session-close retention, research
+    # tombstones, quarantined records) stay refused as retained evidence.
+    # Dashboard REST creates never set it: their documented contract is
+    # any-record 409, preserving retained inspection records.
+    replace_stopped: bool = False,
     expected_existing_monitor_id: str | None = None,
     expected_existing_config_generation: int | None = None,
 ) -> tuple[Any | None, str | None, int]:
@@ -774,6 +785,8 @@ async def authorize_and_add_nudge(
             }
             if not replace_existing:
                 add_kwargs["replace_existing"] = False
+            if replace_stopped:
+                add_kwargs["replace_stopped"] = True
             loop = await svc.add(
                 **add_kwargs,
             )
@@ -790,6 +803,8 @@ async def authorize_and_add_nudge(
             }
             if not replace_existing:
                 add_monitor_kwargs["replace_existing"] = False
+            if replace_stopped:
+                add_monitor_kwargs["replace_stopped"] = True
             if expected_existing_monitor_id is not None:
                 add_monitor_kwargs["expected_existing_monitor_id"] = expected_existing_monitor_id
                 add_monitor_kwargs["expected_existing_config_generation"] = (

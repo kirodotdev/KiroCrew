@@ -39,6 +39,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_TOOL_STALL,
     JsonRpcMessage,
 )
+from kiro_crew.config.loader import WatchdogConfig
 from kiro_crew.dashboard.state import (
     STALE_RECOVERY_PREFIX,
     TOOL_STALL_RECOVERY_PREFIX,
@@ -84,6 +85,10 @@ class _FreshActivityRuntime:
     @property
     def _last_activity(self) -> float:
         return time.monotonic()
+
+
+# The shipped global windows, so a default change lands here without a literal to chase.
+_GLOBAL = WatchdogConfig()
 
 
 def _make_handle(
@@ -584,8 +589,8 @@ def test_per_agent_override_narrows_watchdog_snapshot(monkeypatch):
     assert wd.tool_stall_suspect_secs == 900.0
     assert wd.tool_stall_hard_cap_secs == 1800.0
     # Non-overridden windows inherit the globals untouched.
-    assert wd.model_silent_probe_secs == 900.0
-    assert wd.stale_window_secs == 300.0
+    assert wd.model_silent_probe_secs == _GLOBAL.model_silent_probe_secs
+    assert wd.stale_window_secs == _GLOBAL.stale_window_secs
 
 
 def test_per_agent_override_zero_inherits_global(monkeypatch):
@@ -599,8 +604,8 @@ def test_per_agent_override_zero_inherits_global(monkeypatch):
     })
 
     wd = _load_watchdog_settings("builder")
-    assert wd.tool_stall_suspect_secs == 3600.0
-    assert wd.tool_stall_hard_cap_secs == 3600.0
+    assert wd.tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
+    assert wd.tool_stall_hard_cap_secs == _GLOBAL.tool_stall_hard_cap_secs
 
 
 def test_kiro_binding_name_is_not_resolved(monkeypatch):
@@ -619,7 +624,7 @@ def test_kiro_binding_name_is_not_resolved(monkeypatch):
         ),
     })
 
-    assert _load_watchdog_settings("pr-reviewer-kiro").tool_stall_suspect_secs == 3600.0
+    assert _load_watchdog_settings("pr-reviewer-kiro").tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
 
 
 def test_shared_binding_cannot_collide_canonical_names(monkeypatch):
@@ -657,7 +662,7 @@ def test_handle_snapshots_crew_agent_overrides(monkeypatch):
     assert handle._watchdog.tool_stall_suspect_secs == 450.0
     assert handle._watchdog.agent_override is True
     bare = AcpSessionHandle("s2", asyncio.Queue(), rt)
-    assert bare._watchdog.tool_stall_suspect_secs == 3600.0
+    assert bare._watchdog.tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
     assert bare._watchdog.agent_override is False
 
 
@@ -676,7 +681,7 @@ def test_rebind_watchdog_follows_warm_pool_rekey(monkeypatch):
     rt = MagicMock()
     rt.pid = None
     handle = AcpSessionHandle("s1", asyncio.Queue(), rt)  # pool spawn: no crew
-    assert handle._watchdog.tool_stall_suspect_secs == 3600.0
+    assert handle._watchdog.tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
 
     handle.rebind_watchdog("claimer")
     assert handle._crew_agent == "claimer"
@@ -684,7 +689,7 @@ def test_rebind_watchdog_follows_warm_pool_rekey(monkeypatch):
     assert handle._watchdog.agent_override is True
 
     handle.rebind_watchdog("")
-    assert handle._watchdog.tool_stall_suspect_secs == 3600.0
+    assert handle._watchdog.tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
     assert handle._watchdog.agent_override is False
 
 
@@ -695,8 +700,8 @@ def test_unknown_agent_inherits_global(monkeypatch):
 
     _cfg_with_agent_overrides(monkeypatch, {})
 
-    assert _load_watchdog_settings("nope").tool_stall_suspect_secs == 3600.0
-    assert _load_watchdog_settings("").tool_stall_suspect_secs == 3600.0
+    assert _load_watchdog_settings("nope").tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
+    assert _load_watchdog_settings("").tool_stall_suspect_secs == _GLOBAL.tool_stall_suspect_secs
 
 
 @pytest.mark.asyncio

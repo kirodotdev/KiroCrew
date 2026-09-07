@@ -682,24 +682,36 @@ async def test_binding_claimed_during_header_edit_is_not_overwritten() -> None:
 
 @pytest.mark.asyncio
 async def test_resumed_turn_lands_in_live_dashboard_window() -> None:
-    """A resumed turn must enter the OPEN slot's window, not just disk.
-
-    The dashboard save writes meta + frozen prefix + its own window + foreign
-    tail. A disk-only append made before a later dashboard turn is therefore
-    re-serialized AFTER it and the transcript reads back out of order. Landing
-    the turn in the live window keeps it inside the region the save
-    re-serializes. Mirrors dashboard/cron_inject.py.
-    """
+    """A resumed turn is projected user-first without a new user-row broadcast."""
     log = _log()
     log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior"}]
     dispatcher, client, sessions = _dispatcher({"u1"}, log)
+    durable: list[tuple[str, str, str]] = []
+
+    def _append_if_absent(
+        key: str,
+        role: str,
+        content: str,
+        *,
+        agent: str | None = None,
+        mid: str | None = None,
+    ) -> None:
+        durable.append((role, content, mid or ""))
+
+    log.append_if_absent = _append_if_absent  # type: ignore[attr-defined]
 
     class _Slot:
         def __init__(self) -> None:
-            self.messages: list[tuple[str, str]] = []
+            self.messages: list[dict[str, Any]] = []
+            self.broadcasts: list[tuple[str, bool]] = []
+            self.is_restricted = False
 
-        def append(self, role: str, content: str, cls: str = "", **kw: Any) -> None:
-            self.messages.append((role, content))
+        def append(self, role: str, content: str, cls: str = "", **kw: Any) -> dict[str, Any]:
+            mid = f"m-{len(self.messages) + 1:016x}"
+            row = {"role": role, "content": content, "meta": {"mid": mid}}
+            self.messages.append(row)
+            self.broadcasts.append((role, bool(kw.get("broadcast_user"))))
+            return row
 
     class _State:
         def __init__(self) -> None:
@@ -718,13 +730,93 @@ async def test_resumed_turn_lands_in_live_dashboard_window() -> None:
     await dispatcher.handle_message(_message("!sessions"))
     custom_id, message_id = _picker_button(client)
     await dispatcher.on_interaction(_interaction(custom_id, message_id))
+    pushes_before_turn = state.pushes
     await dispatcher.handle_message(_message("continue here"))
 
     assert sessions.last_key == "dashboard:chat-1"
-    roles = [r for r, _ in state.slot.messages]
-    assert roles == ["user", "assistant"], state.slot.messages
-    assert state.slot.messages[0][1] == "continue here"
-    assert state.pushes >= 1
+    assert [(row["role"], row["content"]) for row in state.slot.messages] == [
+        ("user", "continue here"),
+        ("assistant", "Answer: continue here"),
+    ]
+    assert state.slot.broadcasts == [("user", False), ("assistant", False)]
+    assert durable == [
+        ("user", "continue here", "m-0000000000000001"),
+        ("assistant", "Answer: continue here", "m-0000000000000002"),
+    ]
+    assert state.pushes == pushes_before_turn + 1
+
+
+@pytest.mark.asyncio
+async def test_restricted_resumed_turn_is_neither_projected_nor_persisted() -> None:
+    """Discord had the same two-writer leak as Telegram.
+
+    A resumed ``dashboard:`` key gets its privacy mode from the dashboard slot.
+    Without the caller-side gate Discord projected the turn into that slot (making
+    it dirty for a later flush) and also appended it directly to durable history.
+    Neither path may see content for an incognito or temporary session.
+    """
+    log = _log()
+    log.messages["dashboard:chat-1"] = [{"role": "assistant", "content": "prior"}]
+    dispatcher, client, sessions = _dispatcher({"u1"}, log)
+    durable_before = list(log.messages["dashboard:chat-1"])
+    persist_calls: list[str] = []
+    real_persist = dispatcher._persist_turn
+
+    def _persist(*args: Any, **kwargs: Any) -> None:
+        persist_calls.append(str(args[0]))
+        real_persist(*args, **kwargs)
+
+    dispatcher._persist_turn = _persist  # type: ignore[method-assign]
+
+    class _RestrictedSlot:
+        is_restricted = True
+
+        def __init__(self) -> None:
+            self.messages: list[dict[str, Any]] = []
+
+        def append(self, role: str, content: str, cls: str = "", **kw: Any) -> dict[str, Any]:
+            row = {"role": role, "content": content, "meta": {"mid": f"m-{len(self.messages)}"}}
+            self.messages.append(row)
+            return row
+
+    class _State:
+        def __init__(self) -> None:
+            self.slot = _RestrictedSlot()
+
+        def get_slot(self, name: str) -> Any:
+            return self.slot if name == "chat-1" else None
+
+        def push_slots_update(self) -> None:
+            raise AssertionError("a restricted turn must not dirty or push its slot")
+
+    state = _State()
+    dispatcher._session_resume.dashboard_state = state
+
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+    await dispatcher.handle_message(_message("private continuation"))
+
+    assert sessions.last_key == "dashboard:chat-1"
+    assert state.slot.messages == []
+    assert persist_calls == []
+    assert log.messages["dashboard:chat-1"] == durable_before
+
+
+@pytest.mark.asyncio
+async def test_discord_restricted_decision_allows_unknown_but_denies_live_slot() -> None:
+    """Cold ordinary resumes keep history; an affirmative live restriction wins."""
+    dispatcher, _, _ = _dispatcher({"u1"}, _log())
+
+    dispatcher._session_resume.dashboard_state = SimpleNamespace(
+        sessions=None, get_slot=lambda _name: SimpleNamespace(is_restricted=True)
+    )
+    assert await dispatcher._session_restricted("dashboard:chat-1") is True
+
+    dispatcher._session_resume.dashboard_state = SimpleNamespace(
+        sessions=None, get_slot=lambda _name: None
+    )
+    assert await dispatcher._session_restricted("dashboard:missing") is False
 
 
 @pytest.mark.asyncio
@@ -740,7 +832,11 @@ async def test_mirrored_turn_persists_idempotently() -> None:
 
     class _State:
         def get_slot(self, name: str) -> Any:
-            return type("S", (), {"append": lambda *a, **k: None})()
+            return type(
+                "S",
+                (),
+                {"append": lambda *a, **k: None, "is_restricted": False},
+            )()
 
         def push_slots_update(self) -> None:
             return None

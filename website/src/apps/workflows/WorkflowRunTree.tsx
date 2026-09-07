@@ -19,6 +19,7 @@
  */
 import { memo, useMemo, useState } from 'react'
 import { CheckCircle2, XCircle, Loader2, ChevronRight, Workflow as WorkflowIcon } from 'lucide-react'
+import ErrorNotice from '../../components/ErrorNotice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { groupByPhase, latestBudget, type WfEvent } from './runModel'
 
@@ -176,30 +177,35 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
         </div>
       )}
 
-      {/* terminal result / failure panel */}
-      {status && status !== 'running' && status !== 'paused' && (
+      {/* terminal result / failure panel. A failed run's `error` is the backend's own
+          report of the failure, so it renders through ErrorNotice — askAgent on: this
+          is a status tree with nothing editable, and the chat composer draft beneath
+          it is persisted per slot, so the hand-off loses nothing (same decision as the
+          collapsed row and progress bar that feed this tree). */}
+      {status === 'failed' && (
+        <ErrorNotice
+          message={i18nT('apps.workflows.workflowRunTree.failed_with_error', {
+            error: sanitizeLlmOutput(error || i18nT('apps.workflows.workflowRunTree.unknown_error')).slice(0, 200),
+          })}
+          askAgent
+          testId="workflow-run-tree-error"
+        />
+      )}
+      {status && status !== 'running' && status !== 'paused' && status !== 'failed' && (
         <div
           className={`text-[12px] rounded p-2 border ${
-            status === 'finished'
-              ? 'border-green-500/30'
-              : status === 'cancelled'
-                ? 'border-border'
-                : 'border-red-500/30 text-red-500'
+            status === 'finished' ? 'border-green-500/30' : 'border-border'
           }`}
         >
           <div className="font-medium mb-1 flex items-center gap-1.5">
             {status === 'finished' ? (
               <CheckCircle2 size={12} className="text-green-500" />
-            ) : status === 'cancelled' ? (
-              <XCircle size={12} />
             ) : (
               <XCircle size={12} />
             )}
             {status === 'finished'
               ? i18nT('apps.workflows.workflowRunTree.result')
-              : status === 'cancelled'
-                ? i18nT('apps.workflows.workflowRunTree.cancelled')
-                : i18nT('apps.workflows.workflowRunTree.failed_with_error', { error: sanitizeLlmOutput(error || i18nT('apps.workflows.workflowRunTree.unknown_error')).slice(0, 200) })}
+              : i18nT('apps.workflows.workflowRunTree.cancelled')}
           </div>
           {status === 'finished' && result !== undefined && (
             <pre className="font-mono text-[11px] whitespace-pre-wrap break-all max-h-40 overflow-auto">

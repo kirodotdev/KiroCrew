@@ -26,6 +26,7 @@ import { parseErrorCode } from '../utils/errorReport'
 import { fmtList } from '../i18n/format'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { Btn, SendBtn } from './ui'
+import ErrorNotice from './ErrorNotice'
 import OnboardingChapterShell, {
   OnboardingShellContext,
   type ShellAsideCopy,
@@ -533,9 +534,13 @@ export default function AgentImportFlow({
           <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
             {i18nT('components.agentImportFlow.we_could_not_scan_agent_setup')}
           </h1>
-          <p className="mt-2 max-w-lg text-sm text-danger" role="alert">
-            {errorMessage(scanQuery.error, i18nT('components.agentImportFlow.the_gateway_returned_an_unexpected_error'))}
-          </p>
+          {/* Scan-failed state: no selections exist yet, so the hand-off loses nothing. */}
+          <ErrorNotice
+            askAgent
+            testId="agent-import-scan-error"
+            className="mt-2 max-w-lg text-left"
+            message={errorMessage(scanQuery.error, i18nT('components.agentImportFlow.the_gateway_returned_an_unexpected_error'))}
+          />
           <SendBtn type="button" className="mt-5" onClick={() => scanQuery.refetch()}>
             <RefreshCw className="lucide-inline" /> {i18nT('components.agentImportFlow.try_again')}
           </SendBtn>
@@ -558,11 +563,16 @@ export default function AgentImportFlow({
           <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-none">
             {i18nT('components.agentImportFlow.found_setup_kirocrew_could_not_read')}
           </h1>
-          <p className="mt-2 max-w-lg text-sm text-danger" role="alert">
-            {i18nT('components.agentImportFlow.found_setup_but_could_not_read_it', {
+          {/* Persistent reader failure reported by the gateway — exactly what the
+              agent can diagnose. No selections exist in this full-panel state. */}
+          <ErrorNotice
+            askAgent
+            testId="agent-import-unreadable-error"
+            className="mt-2 max-w-lg text-left"
+            message={i18nT('components.agentImportFlow.found_setup_but_could_not_read_it', {
               sources: fmtList(unreadableSources),
             })}
-          </p>
+          />
           <div className="mt-5 flex items-center gap-3">
             {/* `isFetching`, NOT `isPending`: a refetch of already-cached data
               * leaves `isPending` false, so without this the primary action on a
@@ -583,11 +593,13 @@ export default function AgentImportFlow({
               {i18nT('components.agentImportFlow.skip_import')}
             </Btn>
           </div>
-          {completionError && (
-            <p className="mt-4 text-sm text-danger" role="alert">
-              {errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))}
-            </p>
-          )}
+          {/* Full-panel state: nothing selected yet, so the hand-off loses nothing. */}
+          <ErrorNotice
+            askAgent
+            testId="agent-import-completion-error"
+            className="mt-4 max-w-lg text-left"
+            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+          />
         </div>
       )
     }
@@ -610,11 +622,13 @@ export default function AgentImportFlow({
             {isBusy && <Loader2 className="lucide-inline animate-spin" />}
             {i18nT('components.agentImportFlow.skip_import')}
           </SendBtn>
-          {completionError && (
-            <p className="mt-4 text-sm text-danger" role="alert">
-              {errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))}
-            </p>
-          )}
+          {/* Full-panel state: nothing selected yet, so the hand-off loses nothing. */}
+          <ErrorNotice
+            askAgent
+            testId="agent-import-completion-error"
+            className="mt-4 max-w-lg text-left"
+            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+          />
         </div>
       )
     }
@@ -625,18 +639,22 @@ export default function AgentImportFlow({
             * fire, so an unreadable source would otherwise leave no trace at the
             * one screen where the user decides what to import — they would read
             * its absence as "unsupported". Name it here, next to the picker. */}
+          {/* No hand-off: the stage-1 source/category selections (selectedSources,
+              selectedCategories) are unsaved wizard state. */}
           {unreadableSources.length > 0 && (
-            <p className="mb-4 text-sm text-danger" role="alert">
-              {i18nT('components.agentImportFlow.some_setup_could_not_be_read', {
+            <ErrorNotice
+              testId="agent-import-stage1-unreadable-error"
+              className="mb-4"
+              message={i18nT('components.agentImportFlow.some_setup_could_not_be_read', {
                 sources: fmtList(unreadableSources),
               })}
-            </p>
+            />
           )}
-          {completionError && (
-            <p className="mb-4 text-sm text-danger" role="alert">
-              {errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))}
-            </p>
-          )}
+          <ErrorNotice
+            testId="agent-import-completion-error"
+            className="mb-4"
+            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+          />
           <div className="space-y-3">
             {sources.map(source => {
               const count = supportedCategories(source).reduce((sum, category) => sum + category.count, 0)
@@ -674,6 +692,14 @@ export default function AgentImportFlow({
     if (stage === 2) {
       return (
         <>
+          {/* No hand-off: the category selections (selectedCategories) are unsaved
+              wizard state. Rendered here too so a header "Skip all" failure on
+              this stage is not silent. */}
+          <ErrorNotice
+            testId="agent-import-completion-error"
+            className="mb-4"
+            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+          />
           <div className="space-y-5">
             {sources.filter(source => selectedSources.has(source.id)).map(source => (
               <fieldset key={source.id} aria-label={`${source.name} categories`}>
@@ -722,11 +748,20 @@ export default function AgentImportFlow({
     if (stage === 3) {
       return (
         <>
+          {/* No hand-off: the stage-3 review holds the selections and the conflict
+              strategy, none of which is saved until the import applies. */}
           {applyMutation.isError && (
-            <p className="mb-4 text-sm text-danger" role="alert">
-              {errorMessage(applyMutation.error, i18nT('components.agentImportFlow.the_import_did_not_finish_please_try_again'))}
-            </p>
+            <ErrorNotice
+              testId="agent-import-apply-error"
+              className="mb-4"
+              message={errorMessage(applyMutation.error, i18nT('components.agentImportFlow.the_import_did_not_finish_please_try_again'))}
+            />
           )}
+          <ErrorNotice
+            testId="agent-import-completion-error"
+            className="mb-4"
+            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+          />
           <section className="rounded-lg border border-ok/30 bg-ok-subtle p-4">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-text-strong">
               <ShieldCheck className="lucide-inline text-ok" /> {i18nT('components.agentImportFlow.merge_only')}
@@ -838,11 +873,14 @@ export default function AgentImportFlow({
             </div>
           </div>
         )}
-        {completionError && (
-          <div className="mt-5 rounded-lg border border-danger/20 bg-danger/10 p-3 text-sm text-danger" role="alert">
-            {errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))}
-          </div>
-        )}
+        {/* Import already applied; only the completed flag failed to persist, so
+            the hand-off loses nothing. */}
+        <ErrorNotice
+          askAgent
+          testId="agent-import-completion-error"
+          className="mt-5"
+          message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+        />
       </>
     )
   })()

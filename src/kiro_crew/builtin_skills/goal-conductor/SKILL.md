@@ -14,7 +14,11 @@ Your four jobs, none of which can be delegated to a work item:
 3. Verify what came back.
 4. Decide the next round, or stop.
 
-Everything else belongs in a work item. This spec has **no `fs_write`** — that
+Everything else belongs in a work item. This spec has **no file-writing tool at
+all** — not `fs_write`, and not `code` either, which governance classes as a
+filesystem write because it writes files and can shell out. `grep`, `glob` and
+`web_search` are unmounted as well; `fs_read` and `web_fetch` are what you read
+the world with. That
 is deliberate. If a task needs a file written, it is a work item, not something
 you do. `execute_bash` IS granted, for exactly one purpose: running this
 skill's bundled scripts — the acceptance evaluator (`scripts/accept_eval.py`)
@@ -246,10 +250,10 @@ stops growing.
 in the autonudge handler. When the USER messages you mid-flight, there is no
 snapshot — read the ledger yourself before answering anything about item state.
 
-**A terminal phase silences the snapshot.** `render_snapshot` returns empty when
-the phase is terminal. Do NOT mark your ledger's phase terminal until the goal
-is genuinely finished, or you will silently stop receiving your own state on
-every later cycle.
+**A terminal phase silences the snapshot.** `render_snapshot` returns empty once
+the phase is `done` or `abandoned` — the only two terminal values. Do NOT set
+either until the goal is genuinely finished, or you will silently stop receiving
+your own state on every later cycle.
 
 What goes where:
 
@@ -342,6 +346,21 @@ watches, and that cost grows with the loop's own history.
 
 ## Known limits of this version
 
+- **The session tools may not be in your tool list yet.** With MCP Tool Search
+  active their specs are deferred, so a first `session_create` fails with
+  `A tool with the name 'session_create' does not exist`. That means DEFERRED, not
+  missing: load it with
+  `tool_search(tool_id="kirocrew-dashboard::session_create")` — `tool_search` is
+  auto-approved for exactly this, so the load never prompts — then repeat the
+  call. `chat_folder_create` is on the same server; `monitor_start` is served by
+  `kirocrew-core`, so its id is `kirocrew-core::monitor_start`.
+- **A cron job may dispatch into the sessions it created**, so a fleet can be
+  stood up and driven from a schedule instead of only from a live chat session.
+  Session control is on by default: the agent config is the grant, so you do not
+  need the user to flip a switch first.
+- **Never dispatch a work item onto `kirocrew-conductor` itself** — it is an
+  unadvertised agent and its spec cannot write a file, so the item would look
+  stalled rather than misconfigured.
 - **The grant is the agent's MCP mount, not a feature switch.** The session tools
   come from `@kirocrew-dashboard`; an agent whose spec does not mount it never sees
   them, exactly like any other MCP server. `agent.session_control` defaults to true
@@ -352,7 +371,15 @@ watches, and that cost grows with the loop's own history.
   Auto-approved by name: `chat_folder_tree`, `chat_folder_create`,
   `session_create`, `session_read_message` — so a patrol cycle that wakes on a
   nudge with nobody at the keyboard never blocks, and filing rides the create
-  itself (the `folder` argument), so it costs no extra approval. **`session_send`
+  itself (the `folder` argument), so it costs no extra approval. The
+  `@kirocrew-core` verbs are granted by name too, and only these: `monitor_start`,
+  `monitor_update`, `autonudge_stop`, `wait`, `resource_status`, `list_sessions`,
+  `session_ledger_read`, `session_ledger_record`, `skill_search`, `skill_fetch`,
+  `select_crew`, `send_message`, `send_notification`, `ask_question`. That covers
+  every core call this procedure asks you to make; **any other core tool is
+  mounted but prompts**, including `task_run`, `workflow_run` and the `spawn_*`
+  family, which this charter forbids you to route a work item to in the first
+  place. **`session_send`
   and `session_stop` are deliberately NOT auto-approved**, because each writes to
   a session that is not yours: a seed runs as the target's own turn, and a stop
   discards the target's in-flight work. You ingest external content by design, so

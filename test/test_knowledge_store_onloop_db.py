@@ -336,11 +336,18 @@ class TestConstructionOnLoopIsSanctioned:
 
     def test_constructor_wraps_init_in_the_scoped_opt_out(self):
         """Mutation guard: the ``allow_on_loop()`` ``with`` block's body must be
-        EXACTLY the three init calls. Textual-order checks are not enough: they
+        EXACTLY the two init calls. Textual-order checks are not enough: they
         stay green when the calls are dedented out of the block (the likely
-        drift in a later constructor edit), and they cannot see a FOURTH call
+        drift in a later constructor edit), and they cannot see a THIRD call
         joining the block -- which the scoped exemption would silently sanction
         against a ``blocking: true`` rule. AST nesting catches both.
+
+        ``_load_graph`` was deliberately moved OUT of this block (#8329): the
+        graph is materialised by its first reader via ``ensure_graph_loaded``,
+        which runs on a worker thread, so the guard SHOULD be armed for it --
+        reaching the load on the loop is now a real finding, not a sanctioned
+        take. It is asserted absent below so a later edit cannot quietly put a
+        data-scaled scan back on the pre-bind boot path.
         """
         src = textwrap.dedent(inspect.getsource(KnowledgeStore.__init__))
         tree = ast.parse(src)
@@ -369,7 +376,12 @@ class TestConstructionOnLoopIsSanctioned:
                 and func.value.id == "self"
             ), "the sanctioned block must call methods on self only"
             calls.append(func.attr)
-        assert calls == ["_init_schema", "_migrate", "_load_graph"], (
+        assert "_load_graph" not in calls, (
+            "the graph load is back inside the sanctioned block -- that returns a "
+            "data-scaled two-table scan to the pre-bind boot path and un-arms the "
+            "guard for it. It belongs behind ensure_graph_loaded (#8329)."
+        )
+        assert calls == ["_init_schema", "_migrate"], (
             "the sanctioned block's body changed -- a call moved out (re-arming "
             "the guard for it) or joined in (sanctioning NEW on-loop work, which "
             f"needs its own justification): {calls}"

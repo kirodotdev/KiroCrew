@@ -356,6 +356,41 @@ class TestSplitOptionsTrailer:
         text = "See [OPTIONS: in the docs] for the list."
         assert split_options_trailer(text, hide_partial=True) == (text, [])
 
+    def test_hide_partial_keeps_grammar_dead_prose(self) -> None:
+        """A quoted ``[OPTIONS`` that can never become the marker is prose.
+
+        The trailer grammar opens ``[OPTIONS:`` -- once any other byte follows
+        the substring, no later bytes can complete it, so holding it back
+        protects nothing. And the streaming consolation (the next frame
+        re-renders) fails exactly here: when no ``]`` ever arrives, every
+        frame including the sealed one re-trims, so the cut is permanent on
+        the channel. Same reply as the buffered-default pin above; the policy
+        split is about live fragments, not about deleting quoted prose.
+        """
+        text = "Read the docs, see the [OPTIONS section"
+        assert split_options_trailer(text, hide_partial=True) == (text, [])
+
+    def test_hide_partial_keeps_everything_after_a_dead_fragment(self) -> None:
+        """The loss is unbounded: everything from the quote to buffer end went.
+
+        The trim point is wherever the substring sits, so one quoted token
+        positioned early deletes every later paragraph -- located-by-substring
+        without asking whether it READS as the marker (the #8983 class).
+        """
+        text = (
+            "The [OPTIONS grammar is end-anchored.\n\n"
+            "A whole later paragraph of real prose that the reader needs."
+        )
+        assert split_options_trailer(text, hide_partial=True) == (text, [])
+
+    def test_a_bare_opener_at_buffer_end_is_still_hidden(self) -> None:
+        """Boundary control: ``[OPTIONS`` as the final bytes may still become
+        the marker (the ``:`` can be the next byte to arrive), so the
+        streaming surface keeps hiding it."""
+        body, choices = split_options_trailer("Working on it. [OPTIONS", hide_partial=True)
+        assert body == "Working on it."
+        assert choices == []
+
     def test_the_default_is_the_non_destructive_one(self) -> None:
         """Pins the DIRECTION of the default, not just its value.
 

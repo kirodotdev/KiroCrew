@@ -65,6 +65,7 @@ from kiro_crew.validation import (
     SUGGEST_FOLLOWUP_SCHEMA,
     TASK_RUN_SCHEMA,
     WAIT_SCHEMA,
+    ValidationError,
     validate_ask_user_question,
     validate_tool_args,
 )
@@ -350,7 +351,11 @@ def schemas() -> list[dict[str, Any]]:
                 "backstop, NOT a successful finish. Use monitor_update to "
                 "revise or re-arm the instruction if what you are watching "
                 "changes. One automation may occupy a session; monitor_start "
-                "is create-only and refuses while one already exists. "
+                "is create-only and refuses while an ACTIVE one exists (a "
+                "system-stopped or expired automation — an approval stall, a "
+                "spent cap or budget, a finished subject — is replaced by the "
+                "new arm; manual pauses, user stops and retained tombstones "
+                "are preserved). "
                 "Survives gateway restarts. Every cycle appends a full turn to "
                 "this same session, so keep per-cycle output small and report "
                 "only real signals. "
@@ -1020,13 +1025,22 @@ def ask_question(name: str, args: dict[str, Any]) -> str:
             "turn with an [OPTIONS: a | b | c] tag instead — it renders "
             "clickable buttons on every channel that supports them."
         )
+    # Deep per-question/option validation, AUTHORITATIVELY here rather than in
+    # the shallow schema: a malformed nested question must be rejected before the
+    # model is told a card was posted, not surface later as a card-post failure.
+    # RETURNED, not raised: an escaped exception is turned into the same
+    # ``"Error: …"`` text by the JSON-RPC layer, but it escapes this server's own
+    # return path — so it is neither audited with the call's args nor tagged as a
+    # refusal, and the consumer reads a decline as a LOST DIRECTIVE MARKER
+    # (#8635). Returning keeps the model-facing text identical and keeps the
+    # "marker or refusal, nothing in between" invariant total.
+    try:
+        questions = validate_ask_user_question(args)
+    except ValidationError as exc:
+        return f"Error: {exc}"
     return _emit_directive(
         "ask_question",
-        # Encode the AUTHORITATIVELY-validated + normalized questions (deep
-        # per-question/option checks), not the shallow-schema args: a
-        # malformed nested question must be rejected HERE, not surface as a
-        # card-post failure after the model was told it posted.
-        {"questions": validate_ask_user_question(args)},
+        {"questions": questions},
         "Question card requested for this session. End your turn now — if it "
         "renders, the user's answer arrives as your next message (do NOT "
         "re-ask or guess in the meantime). If no dashboard client is "
@@ -1148,6 +1162,24 @@ def _monitor_context_refusal(tool_name: str, session_key: str, message: str) -> 
     return f"Error: {message}"
 
 
+def _parsed_pull_request_target(raw: Any) -> tuple[str, str]:
+    """Return ``(url, "")`` for a valid PR target, or ``("", "Error: …")``.
+
+    ONE guarded parse for BOTH callers (``monitor_watch`` and ``monitor_update``)
+    rather than a ``try`` at each site. `parse_github_pull_request_target` raises,
+    and a raise from a directive tool escapes this server's own return path: the
+    JSON-RPC layer turns it into the same ``"Error: …"`` text, but past the point
+    that tags a decline as a refusal, so the consumer reads it as a LOST directive
+    marker and fires the WARNING reserved for a transport regression. Guarding the
+    two sites separately is what let the second one ship unguarded (#8635); a
+    single seam is what makes the next caller correct by construction.
+    """
+    try:
+        return parse_github_pull_request_target(str(raw)).url, ""
+    except ValueError as exc:
+        return "", f"Error: {exc}"
+
+
 def monitor_watch(name: str, args: dict[str, Any]) -> str:
     """Validate and emit a session-bound structured monitor directive."""
     args = validate_tool_args(args, MONITOR_WATCH_SCHEMA)
@@ -1164,7 +1196,9 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
             "monitor_watch only works from within a dashboard, Slack, or "
             f"Discord session (current session_key={sk!r}).",
         )
-    target = parse_github_pull_request_target(args["target"]).url
+    target, target_error = _parsed_pull_request_target(args["target"])
+    if target_error:
+        return target_error
     payload = {
         "kind": args["kind"],
         "target": target,
@@ -1334,7 +1368,9 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
     if args.get("max_runtime_secs") is not None:
         patch["max_runtime_secs"] = int(args["max_runtime_secs"])
     if args.get("target") is not None:
-        patch["target"] = parse_github_pull_request_target(str(args["target"])).url
+        patch["target"], target_error = _parsed_pull_request_target(args["target"])
+        if target_error:
+            return target_error
     if args.get("objective") is not None:
         patch["objective"] = str(args["objective"])
     for field in ("max_agent_turns", "max_tokens", "max_provider_errors"):

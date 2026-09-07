@@ -41,6 +41,20 @@ const connectionsDisconnect = vi.fn()
 const connectionsTest = vi.fn()
 
 vi.mock('../api/client', () => ({
+  // A real-shaped class, not a stub: `testConnection`'s 409 handling narrows
+  // with `e instanceof ApiError` before it may read `.status`/`.body`, so a
+  // bare object would make every rejection fall through to the generic
+  // action_failed message and the single-flight branch would never run.
+  ApiError: class ApiError extends Error {
+    status: number
+    body: string
+    constructor(status: number, message: string, body = '') {
+      super(message)
+      this.name = 'ApiError'
+      this.status = status
+      this.body = body
+    }
+  },
   api: {
     mcpServers: (...a: unknown[]) => mcpServers(...a),
     mcpProbe: (...a: unknown[]) => mcpProbe(...a),
@@ -69,8 +83,10 @@ vi.mock('../pages/overview/McpTab', () => ({
 
 import ConnectionsPage from '../pages/connections/ConnectionsPage'
 import { CONNECTION_PROVIDERS } from '../pages/connections/registry'
+import ProviderLogo, { PROVIDER_LOGO_SLUGS } from '../pages/connections/ProviderLogo'
 import { i18next } from '../i18n'
 import { createTestStore, renderWithProviders } from './helpers'
+import { ApiError } from '../api/client'
 
 const NOTION_URL = 'https://mcp.notion.com/mcp'
 const STRIPE_URL = 'https://mcp.stripe.com'
@@ -376,10 +392,13 @@ describe('the provider gallery', () => {
     expect(within(gitlab).queryByRole('button', { name: 'GitLab prerequisites' })).not.toBeInTheDocument()
   })
 
-  it('keeps the prerequisite icon beside Authorize when a configured provider is ungranted', async () => {
-    // A GitLab entry whose grant is confirmed absent offers Authorize instead
-    // of Connect — the same consent flow with the same Duo/group wall, so the
-    // warning must ride this CTA too, not only the first-connect one.
+  it('keeps the prerequisite icon beside Connect when a configured provider is ungranted', async () => {
+    // A GitLab entry whose grant is confirmed absent offers the same Connect
+    // CTA as the first-connect path — same consent flow, same Duo/group wall
+    // -- so the warning must ride this button too, not only the first-connect
+    // one. The label used to read "Authorize" here while every other
+    // consent-starting button read "Connect" for the identical startMint
+    // path; both are unified on "Connect" now.
     mcpServers.mockResolvedValue([
       server({ name: 'gitlab', url: 'https://gitlab.com/api/v4/mcp', status: 'needs_auth' }),
     ])
@@ -391,7 +410,7 @@ describe('the provider gallery', () => {
 
     const gitlab = await waitFor(() => card('gitlab'))
     await waitFor(() => expect(gitlab).toHaveAttribute('data-state', 'not-verified'))
-    expect(within(gitlab).getByRole('button', { name: /Authorize/ })).toBeInTheDocument()
+    expect(within(gitlab).getByRole('button', { name: /Connect/ })).toBeInTheDocument()
     expect(within(gitlab).getByRole('button', { name: 'GitLab prerequisites' })).toBeInTheDocument()
   })
 
@@ -548,6 +567,10 @@ describe('a connected provider', () => {
 
     const warning = await screen.findByRole('alert')
     expect(warning).toHaveTextContent('Offered no tools to inspect')
+    // A no_tools verdict is NOT a failed request -- the call succeeded and
+    // returned a verdict -- so it keeps this page's plain feedback line (a
+    // <div>) rather than being dressed as an error through ErrorNotice.
+    expect(warning.tagName).toBe('DIV')
     expect(card('notion')).toHaveAttribute('data-state', 'connected')
     expect(screen.queryByText('Connection is healthy.')).toBeNull()
   })
@@ -609,6 +632,15 @@ describe('a connected provider', () => {
 
     const failure = await screen.findByRole('alert')
     expect(failure).toHaveTextContent('Action failed: The provider did not pass the connection test.')
+    // A generic action failure is a FAILED request, so it renders through the
+    // shared error surface (`ErrorNotice`) rather than a hand-written alert box
+    // -- its inline variant is a <span role="alert">, while this page's plain
+    // feedback line is a <div>, so the tag names which surface rendered it.
+    expect(failure.tagName).toBe('SPAN')
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    // No hand-off beside the return-address paste-back input, whose typed value
+    // survives a failed relay and would be discarded by navigating to the chat.
+    expect(within(failure).queryByRole('button', { name: /ask.*agent/i })).toBeNull()
   })
 
   it('shows the busy label while authenticated enumeration is in flight', async () => {
@@ -625,6 +657,111 @@ describe('a connected provider', () => {
 
     pending.resolve({ verdict: 'usable' })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Test' })).toBeEnabled())
+  })
+
+  it('disables every OTHER card\'s Test button while one card is testing, with an explanation', async () => {
+    const pending = deferred<{ verdict: string }>()
+    mcpServers.mockResolvedValue([
+      server({ accountLabel: 'ada@example.com' }),
+      server({ name: 'stripe', url: STRIPE_URL }),
+    ])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [
+        { slug: 'notion', status: 'connected', grantPresent: true },
+        { slug: 'stripe', status: 'connected', grantPresent: true },
+      ],
+    })
+    connectionsTest.mockImplementation((slug: string) => slug === 'notion' ? pending.promise : Promise.resolve({ verdict: 'usable' }))
+    mount()
+
+    await waitFor(() => expect(card('stripe')).toHaveAttribute('data-state', 'connected'))
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Test' }))
+
+    // The sibling's button is disabled and explains itself; it is NOT relabeled
+    // "Testing…" -- that label is reserved for the card that owns the request.
+    // aria-label overrides the visible "Test" text for the accessible name, so
+    // the disabled sibling's true accessible name IS the explanation.
+    const explanation = 'One connection test runs at a time — Notion is testing'
+    const stripeTest = await waitFor(() => within(card('stripe')).getByRole('button', { name: explanation }))
+    expect(stripeTest).toBeDisabled()
+    expect(stripeTest).toHaveTextContent('Test')
+    expect(stripeTest).toHaveAttribute('title', 'One connection test runs at a time — Notion is testing')
+    // Every OTHER action on the sibling card stays enabled -- only Test is blocked.
+    expect(within(card('stripe')).getByRole('button', { name: /Disconnect/ })).toBeEnabled()
+    // The testing card's own label is still the busy spinner label, not the
+    // sibling-disable text -- the two must never collide on one card.
+    expect(within(card('notion')).getByRole('button', { name: 'Testing…' })).toBeInTheDocument()
+
+    pending.resolve({ verdict: 'usable' })
+    await waitFor(() => expect(within(card('stripe')).getByRole('button', { name: 'Test' })).toBeEnabled())
+  })
+
+  it('never disables a testing card\'s OWN button against its own name', async () => {
+    const pending = deferred<{ verdict: string }>()
+    mcpServers.mockResolvedValue(connected)
+    connectionsTest.mockReturnValue(pending.promise)
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Test' })))
+
+    // The busy spinner label covers this card's own in-flight state; it must
+    // never ALSO carry the sibling-disable title naming itself.
+    const testing = within(card('notion')).getByRole('button', { name: 'Testing…' })
+    expect(testing).not.toHaveAttribute('title')
+
+    pending.resolve({ verdict: 'usable' })
+  })
+
+  it('renders a 409 test_in_flight refusal as a named warning, never an opaque error', async () => {
+    mcpServers.mockResolvedValue([
+      server({ accountLabel: 'ada@example.com' }),
+      server({ name: 'stripe', url: STRIPE_URL }),
+    ])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [
+        { slug: 'notion', status: 'connected', grantPresent: true },
+        { slug: 'stripe', status: 'connected', grantPresent: true },
+      ],
+    })
+    // The server is the ground truth for the refusal: the client's own busy
+    // state disables the sibling button, but this proves the CARD reacts
+    // correctly to a 409 arriving regardless of what disabled it client-side --
+    // a stale disabled state, a second tab, or a race all reach this path.
+    connectionsTest.mockRejectedValue(
+      new ApiError(409, 'a connection test for notion is already running', JSON.stringify({
+        error: 'a connection test for notion is already running',
+        code: 'test_in_flight',
+        slug: 'notion',
+      })),
+    )
+    mount()
+
+    await waitFor(() => expect(card('stripe')).toHaveAttribute('data-state', 'connected'))
+    // Directly invoking the click handler bypasses the client-side `disabled`
+    // attribute, isolating the response-handling path from the button-state path.
+    fireEvent.click(within(card('stripe')).getByRole('button', { name: 'Test' }))
+
+    const warning = await screen.findByRole('alert')
+    expect(warning).toHaveTextContent('A connection test for Notion is already running')
+    expect(warning).not.toHaveTextContent('Unknown error')
+    expect(warning).not.toHaveTextContent('Action failed')
+    // A rejected request renders through the SHARED error surface, so the
+    // structured context (endpoint, status, backend `code`) is recoverable
+    // rather than thrown away by a hand-written line. ErrorNotice's inline
+    // variant owns the role="alert", so exactly one alert exists -- a nested
+    // pair would announce twice.
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    // ErrorNotice's inline variant is a <span role="alert">, while this page's
+    // plain feedback line is a <div> -- so the tag proves WHICH surface rendered
+    // it without reaching into the component's internals.
+    expect(warning.tagName).toBe('SPAN')
+    // No hand-off beside the return-address paste-back field: the button
+    // navigates to the chat and unmounts this gallery.
+    expect(within(warning).queryByRole('button', { name: /ask.*agent/i })).toBeNull()
+    // The card stays connected -- a single-flight refusal is not a test failure.
+    expect(card('stripe')).toHaveAttribute('data-state', 'connected')
   })
 
   it('uninstalls the entry on Disconnect and keeps pointing at the provider revoke page', async () => {
@@ -662,7 +799,14 @@ describe('a connected provider', () => {
     expect(alert).toHaveTextContent(
       'Part of the stored grant could not be removed. Revoke access at the provider.',
     )
-    expect(within(alert).getByRole('link', { name: /Revoke at Notion/ })).toBeInTheDocument()
+    // The error TEXT is owned by ErrorNotice (which carries the role), so the
+    // revoke affordance is its sibling in the feedback slot rather than inside
+    // the announced region -- supplemental guidance, not part of the error
+    // string. The message itself already says to revoke at the provider.
+    expect(alert.tagName).toBe('SPAN')
+    const slot = alert.closest('[data-slot="connection-feedback"]')
+    expect(slot).not.toBeNull()
+    expect(within(slot as HTMLElement).getByRole('link', { name: /Revoke at Notion/ })).toBeInTheDocument()
   })
 
   it('says the grant was kept when another entry shares the endpoint', async () => {
@@ -1603,23 +1747,27 @@ describe('the authorization status feed', () => {
 })
 
 // Provider brand marks. The art inventory and the card roster are maintained
-// separately, so a provider can ship without a mark -- GitLab does today, while
-// the inventory carries GitHub, which the launch set holds back. That case must
-// degrade to the lettered tile rather than to an empty gap, and it did not: the
-// card built `<ProviderLogo …/>` unconditionally, which is a truthy element even
-// for a slug with no mark, so the `??` fallback beside it was unreachable.
+// separately, so a provider CAN ship without a mark -- `superhuman` is in the
+// registry today with no `.svg` file at all, while every provider the launch
+// gate lets through onto the visible gallery now ships one (github is also
+// launch-gated off, but the inventory already covers it, so it cannot stand
+// in for the gap case). That gap case must degrade to the lettered tile
+// rather than to an empty gap, and it did not: the card built
+// `<ProviderLogo …/>` unconditionally, which is a truthy element even for a
+// slug with no mark, so the `??` fallback beside it was unreachable.
+// Exercised directly against `ProviderLogo` / `PROVIDER_LOGO_SLUGS` below
+// rather than through a real gallery card, because no visible card is
+// currently gapped to hang that assertion on.
 describe('the card brand mark', () => {
-  it('renders a lettered tile for a provider that ships no mark', async () => {
-    mount()
-
-    await waitFor(() => expect(card('gitlab')).toBeInTheDocument())
-    // The mark slot only -- the header also carries the provider NAME, so asserting
-    // on the header's own text would match the name's first letter either way.
-    const slot = card('gitlab').querySelector('header [role="img"]')
-    if (!slot) throw new Error('no brand-mark slot on the gitlab card')
-    expect(slot.querySelector('[data-testid="provider-logo-gitlab"]')).toBeNull()
-    // ...so the initial stands in, rather than the slot sitting empty.
-    expect(slot.textContent).toBe('G')
+  it('ships no mark for a provider the launch gate holds back (superhuman)', () => {
+    // The card's own fallback logic (`PROVIDER_LOGO_SLUGS.includes(slug) ? <ProviderLogo .../> : null`)
+    // reads this list; asserting on it directly pins the gap the lettered
+    // tile exists to cover, independent of which providers are launch-gated.
+    // `superhuman` is in the registry (launch_gate_passed: false) with no
+    // `.svg` file in `logos/` at all -- unlike github, which the launch gate
+    // also holds back but which the inventory already covers.
+    expect(PROVIDER_LOGO_SLUGS).not.toContain('superhuman')
+    expect(ProviderLogo({ slug: 'superhuman' })).toBeNull()
   })
 
   it('renders the mark, and no letter, for a provider that ships one', async () => {
@@ -1630,6 +1778,16 @@ describe('the card brand mark', () => {
     if (!slot) throw new Error('no brand-mark slot on the notion card')
     expect(slot.querySelector('[data-testid="provider-logo-notion"]')).not.toBeNull()
     // The tile must not double up with the mark.
+    expect(slot.textContent).toBe('')
+  })
+
+  it('renders the full-colour gitlab mark, and no letter', async () => {
+    mount()
+
+    await waitFor(() => expect(card('gitlab')).toBeInTheDocument())
+    const slot = card('gitlab').querySelector('header [role="img"]')
+    if (!slot) throw new Error('no brand-mark slot on the gitlab card')
+    expect(slot.querySelector('[data-testid="provider-logo-gitlab"]')).not.toBeNull()
     expect(slot.textContent).toBe('')
   })
 })
@@ -1657,6 +1815,26 @@ describe('the card description box', () => {
       // lines instead of cutting one mid-glyph.
       expect(description).toHaveClass('leading-[17px]')
     }
+  })
+})
+
+// jsdom runs no layout engine, so the CLASS is the observable here: an
+// `items-start` override on the grid is what let one row's cards take their
+// own heights instead of stretching to a shared bottom edge, which is what
+// "nothing is flush" reported. This supersedes an earlier deliberate choice
+// ("a taller card must not stretch its siblings") -- the user has since
+// overridden that with an explicit flush-rows request, and every card is
+// already `flex flex-col` with its action region on `mt-auto`, so a stretched
+// row aligns buttons on a shared edge rather than clipping content.
+describe('the gallery grid', () => {
+  it('stretches row cards to equal height instead of sizing each to its own content', async () => {
+    mount()
+
+    await waitFor(() => expect(card('notion')).toBeInTheDocument())
+    const grid = card('notion').parentElement
+    if (!grid) throw new Error('no grid parent above the notion card')
+    expect(grid).not.toHaveClass('items-start')
+    expect(grid).toHaveClass('grid')
   })
 })
 

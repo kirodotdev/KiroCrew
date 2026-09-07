@@ -24,6 +24,7 @@ import { repoSlug, useSage, type ActiveRepo } from '../context'
 import { loadRecentRepos, rememberRecentRepo } from '../lib/persist'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 export default function RepoSwitcher() {
   const {
     pinnedRepos, pinnedLoading, activeRepo, setActiveRepo,
@@ -180,7 +181,7 @@ export default function RepoSwitcher() {
       </DropdownMenu>
 
       {pinError && (
-        <div className="px-1 pt-1 text-[11.5px] text-danger">{pinError.message}</div>
+        <ErrorNotice message={pinError.message} variant="inline" askAgent className="px-1 pt-1" />
       )}
     </div>
   )

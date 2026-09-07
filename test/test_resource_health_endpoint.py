@@ -39,10 +39,15 @@ _MOCK_STATUS = ResourceStatus(
 @pytest.mark.asyncio
 async def test_api_system_includes_resource_posture(monkeypatch):
     """The /api/system response must include resource posture fields."""
-    with patch(
-        "kiro_crew.dashboard.handlers_system._resource_probe",
-        return_value=_MOCK_STATUS,
-        create=True,
+    with (
+        patch(
+            "kiro_crew.dashboard.handlers_system._resource_probe",
+            return_value=_MOCK_STATUS,
+            create=True,
+        ),
+        # The local-IP probe is the one real network reach in a system-info
+        # render; pin its answer so the test never dials out.
+        patch.object(hs, "_local_ip", return_value="127.0.0.1"),
     ):
         # Patch at the module level where the lazy import will resolve
         monkeypatch.setattr(
@@ -71,6 +76,7 @@ async def test_api_system_resource_posture_fallback_on_probe_failure(monkeypatch
         raise RuntimeError("probe unavailable")
 
     monkeypatch.setattr("kiro_crew.resource_status.probe", _failing_probe)
+    monkeypatch.setattr(hs, "_local_ip", lambda: "127.0.0.1")
 
     resp = await hs.api_system(_Req())
 
@@ -101,6 +107,7 @@ async def test_api_system_resource_posture_ample(monkeypatch):
     monkeypatch.setattr(
         "kiro_crew.subagent.compute_max_subagents", lambda cfg: 11
     )
+    monkeypatch.setattr(hs, "_local_ip", lambda: "127.0.0.1")
 
     resp = await hs.api_system(_Req())
 

@@ -1722,7 +1722,7 @@ Examples:
     pod_parser = cli_help.add_command(sub, "pod")
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
-        metavar="{up,down,ls,prune,status,token,url,scenarios,logs,exec,provision,install}",
+        metavar="{up,down,ls,prune,status,token,url,scenarios,api,logs,exec,provision,install}",
     )
     pod_up = pod_sub.add_parser("up", help="Schedule an isolated pod for a worktree")
     pod_up.add_argument("name", help="Worktree name")
@@ -1809,6 +1809,54 @@ Examples:
         help="List the seed scenarios `pod up --seed <scenario>` accepts",
     )
     pod_scenarios.add_argument("--json", action="store_true", help="Emit rows as JSON")
+    pod_api = pod_sub.add_parser(
+        "api",
+        help="Call a running pod's HTTP API with its own token",
+        description=(
+            "Make one authenticated request against a running pod and print a "
+            "fixed-key JSON document: {name, method, path, status, ok, body}. "
+            "GET and HEAD are permitted by default; other methods require "
+            "--allow-write."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  kirocrew pod api my-wt GET sessions\n"
+            "  kirocrew pod api my-wt GET /api/health\n"
+            '  kirocrew pod api my-wt POST config --data \'{"key":"agent.model"}\' '
+            "--allow-write\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pod_api.add_argument("name", help="Worktree name")
+    pod_api.add_argument(
+        "method",
+        # No `choices=`: argparse would reject an unrecognised method with its own
+        # usage prose on stderr and exit 2, escaping the fixed-key JSON envelope
+        # this command promises on EVERY exit. `pod.runtime.pod_api` validates the
+        # method against API_METHODS and raises PodError, which the envelope
+        # reports as a status-0 document an agent can parse. `type=str.upper` stays
+        # so a lowercase method still normalises.
+        type=str.upper,
+        metavar="METHOD",
+        help="HTTP method: GET, HEAD, POST, PUT, PATCH or DELETE (case-insensitive)",
+    )
+    pod_api.add_argument(
+        "path",
+        help=(
+            "API path; /api/ is prepended when absent. Existing query parameters "
+            "are preserved, but caller-supplied token parameters are refused."
+        ),
+    )
+    pod_api.add_argument(
+        "--data",
+        default="",
+        help="Request body, sent verbatim as application/json",
+    )
+    pod_api.add_argument(
+        "--allow-write",
+        action="store_true",
+        help="Permit POST, PUT, PATCH, or DELETE (off by default)",
+    )
     pod_logs = pod_sub.add_parser("logs", help="Tail a pod's journal")
     pod_logs.add_argument("name", help="Worktree name")
     pod_logs.add_argument("-n", "--lines", type=int, default=50, help="Lines to tail (default: 50)")

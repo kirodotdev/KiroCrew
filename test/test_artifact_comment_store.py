@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 
 import pytest
@@ -13,11 +14,32 @@ from kiro_crew.artifacts import (
 )
 
 
-@pytest.fixture
-def store(tmp_path):
-    s = ArtifactStore(root=tmp_path / "artifacts")
+@pytest.fixture(scope="module")
+def _seeded_artifacts_template(tmp_path_factory):
+    """Build the "test-art" artifact tree ONCE per module.
+
+    ``ArtifactStore.create`` costs ~0.5s (atomic write + fsync of the
+    artifact's content/metadata), and every test in this file starts from
+    the identical single-artifact tree. Building it once and handing each
+    test a copy turns that per-test cost into a per-module one.
+    """
+    template_root = tmp_path_factory.mktemp("artifact_comment_store_template")
+    s = ArtifactStore(root=template_root / "artifacts")
     s.create(name="Test Artifact", content="<p>Hello</p>", slug="test-art")
-    return s
+    return template_root / "artifacts"
+
+
+@pytest.fixture
+def store(tmp_path, _seeded_artifacts_template):
+    """Fresh store per test: copy the seeded tree, construct a new instance.
+
+    Nothing here is shared with another test -- the copy and the
+    ``ArtifactStore`` object are both fresh, so mutations (add/delete/update
+    comment, content updates) in one test can never leak into another.
+    """
+    dest = tmp_path / "artifacts"
+    shutil.copytree(_seeded_artifacts_template, dest)
+    return ArtifactStore(root=dest)
 
 
 class TestCommentStore:

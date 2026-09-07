@@ -9,7 +9,7 @@ import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PierreFarmHoldContext } from '../components/pierreStaging'
-import { PierrePatch } from '../pierre'
+import { PierreFilePair, PierrePatch } from '../pierre'
 
 // The lazy impl chunk: resolve instantly to a visible stub so tests exercise
 // WarmSwap itself, not the real highlight worker.
@@ -34,6 +34,52 @@ describe('WarmSwap', () => {
       </PierreFarmHoldContext.Provider>,
     )
     expect(screen.queryByTestId('impl')).toBeNull()
+  })
+
+  it('uses a caller-provided FilePair fallback during farm measurement', () => {
+    render(
+      <PierreFarmHoldContext.Provider value={true}>
+        <PierreFilePair
+          oldFile={{ name: 'a.ts', contents: 'before' }}
+          newFile={{ name: 'a.ts', contents: 'after' }}
+          fallbackText="bounded"
+          fallbackClassName="max-h-[376px] overflow-auto"
+        />
+      </PierreFarmHoldContext.Provider>,
+    )
+    expect(screen.getByText('bounded')).toHaveClass('max-h-[376px]', 'overflow-auto')
+    expect(screen.queryByTestId('impl')).toBeNull()
+  })
+
+  it('notifies FilePair when WarmSwap reveals the implementation', async () => {
+    let roCallback: (() => void) | null = null
+    class StubRO {
+      constructor(cb: () => void) { roCallback = cb }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', StubRO)
+    let height = 0
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height)
+    const onVisible = vi.fn()
+    try {
+      render(
+        <PierreFilePair
+          oldFile={{ name: 'a.ts', contents: 'before' }}
+          newFile={{ name: 'a.ts', contents: 'after' }}
+          fallbackText="bounded"
+          fallbackClassName="max-h-[376px] overflow-auto"
+          onVisible={onVisible}
+        />,
+      )
+      expect(await screen.findByTestId('impl')).toBeTruthy()
+      expect(onVisible).not.toHaveBeenCalled()
+      height = 120
+      await act(async () => { roCallback?.() })
+      expect(onVisible).toHaveBeenCalledTimes(1)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('swaps immediately when ResizeObserver is unavailable (jsdom default)', async () => {

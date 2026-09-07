@@ -93,6 +93,9 @@ describe('Side multi-turn conversation', () => {
       renderWithProviders(<SideChat slot={SLOT} />, { store })
       expect(screen.getByText('Turn 1 q')).toBeInTheDocument()
       expect(screen.getByText('Turn 2 a')).toBeInTheDocument()
+      expect(screen.getByRole('note')).toHaveTextContent(
+        'Context only · Tools and MCPs are unavailable here. Use the main chat to take action.',
+      )
     })
   })
 })

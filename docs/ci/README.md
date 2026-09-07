@@ -8,7 +8,6 @@ Everything that gates a pull request.
 | [e2e-gate.md](e2e-gate.md) | The offline browser E2E gate (`python setup.py test_e2e`). |
 | [harness-parity-gate.md](harness-parity-gate.md) | The added-line gate keeping the Kiro harness first-class: the six rules, and why it reports rather than enforces whole-tree. |
 | [i18n-gates.md](i18n-gates.md) | The i18n gate chain: what fails, what only reports, and the ratchet rule. |
-| [prepare-pr-portability.md](prepare-pr-portability.md) | How the `prepare-pr` skill resolves a per-project profile. |
 
 The local gate you run before committing is in [../../AGENTS.md](../../AGENTS.md);
 test determinism and speed are in

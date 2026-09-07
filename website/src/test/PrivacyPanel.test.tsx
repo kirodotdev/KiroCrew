@@ -13,6 +13,9 @@ vi.mock('../api/client', async importOriginal => {
       ...mod.api,
       beaconStatus: vi.fn(),
       patchConfig: vi.fn(),
+      // The metric-recording card now reports a failed status read through its
+      // own alert; a resolved stub keeps these beacon-toggle cases to one alert.
+      collectionStatus: vi.fn(async () => ({ enabled: false })),
     },
   }
 })

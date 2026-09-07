@@ -148,3 +148,20 @@ def parsed_candidates(
                 continue
             raise
         yield path, text, tree
+
+
+def _clear_caches() -> None:
+    """Drop the cached raw and NFKC-normalised corpus text.
+
+    ``_read_tree`` and ``_normalized_texts`` are each an ``lru_cache(maxsize=1)``
+    over the whole ``src/`` tree (~80 MB raw text + ~80 MB of its NFKC copy), and
+    once any gate in a worker calls either one, that ~160 MB sits on the heap for
+    the rest of that worker's life -- it is never large enough to trigger a GC
+    that would reclaim it, so it is pure retained RSS on every later test the
+    worker runs. A caller that is done with the corpus for now (a module-scoped
+    fixture at teardown) can drop it here; the next gate that needs it just pays
+    the read again, which is the same one-time cost every gate already paid
+    before this module existed to share it.
+    """
+    _read_tree.cache_clear()
+    _normalized_texts.cache_clear()

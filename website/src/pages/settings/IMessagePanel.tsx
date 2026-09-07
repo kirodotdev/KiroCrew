@@ -4,6 +4,7 @@ import { ExternalLink, Check, AlertTriangle, Lock, MonitorOff } from 'lucide-rea
 import { IMessageIcon } from '../../components/IMessageIcon'
 import { SettingsSection, SettingsCard, SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
 import { Btn } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { TagListEditor } from './SlackPanel'
 import { api, type IMessageConfigData, type IMessageConfigSave } from '../../api/client'
 
@@ -80,12 +81,22 @@ function StatusBadge({ config }: { config: IMessageConfigData }) {
   )
 }
 
+/**
+ * The bridge's startup failure (`connect_error`), kept apart from
+ * {@link connectionHint}: it is the outcome of something that FAILED, so it
+ * renders through `ErrorNotice`, while the hint describes a state that has not
+ * gone wrong yet.
+ */
+function connectError(config: IMessageConfigData): string {
+  if (config.connected || !config.configured || !config.connect_error) return ''
+  return i18nT('pages.settings.iMessagePanel.connection_failed', { error: config.connect_error })
+}
+
 /** One-line explanation of WHY iMessage is not active, with the fix. */
 function connectionHint(config: IMessageConfigData): string {
-  if (config.connected || !config.configured) return ''
-  if (config.connect_error) {
-    return i18nT('pages.settings.iMessagePanel.connection_failed', { error: config.connect_error })
-  }
+  // A startup failure is shown by `connectError`; "saved but not running"
+  // would only repeat it underneath.
+  if (config.connected || !config.configured || config.connect_error) return ''
   return i18nT('pages.settings.iMessagePanel.saved_but_not_running')
 }
 
@@ -128,8 +139,10 @@ export function IMessagePanel() {
           msg = e.message
         }
       }
+      // Persist until the next save attempt clears it: the rejected draft is
+      // still in the form, and a notice that erases itself after a few seconds
+      // leaves a quiet form that reads as saved.
       setError(msg)
-      setTimeout(() => setError(''), 8000)
     },
     onSuccess: (res) => {
       setSaved(true)
@@ -162,12 +175,15 @@ export function IMessagePanel() {
   }, [draft, saveMut])
 
   if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.iMessagePanel.loading')}</p>
-  if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">{i18nT('pages.settings.iMessagePanel.cannot_load')}</p>
+  // Nothing to lose here: the form is not mounted in this branch.
+  if (isError || !data || !draft) return <ErrorNotice className="m-4" message={i18nT('pages.settings.iMessagePanel.cannot_load')} askAgent />
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   // Off macOS every input would persist a setting that can never take effect,
   // so the form is locked for the same reason a remote session is.
   const ro = data.read_only || !data.supported
+  const startupError = connectError(data)
+  const hint = connectionHint(data)
 
   return (
     <>
@@ -184,10 +200,14 @@ export function IMessagePanel() {
           <p className="text-[12px] text-muted mt-1">
             {i18nT('pages.settings.iMessagePanel.tagline')}
           </p>
-          {connectionHint(data) && (
+          {/* No hand-off: the unsaved `draft` (allowed_handles, db_path, service,
+              session folder) lives in this panel's local state — navigating to
+              the chat would discard it. */}
+          <ErrorNotice message={startupError} className="mt-2" />
+          {hint && (
             <p className="text-[12px] text-warn mt-1 flex items-center gap-1.5">
               <AlertTriangle size={12} className="flex-none" />
-              {connectionHint(data)}
+              {hint}
             </p>
           )}
         </div>
@@ -320,11 +340,11 @@ export function IMessagePanel() {
             <Check size={14} /> {restartHint ? i18nT('pages.settings.iMessagePanel.saved_restart') : i18nT('pages.settings.iMessagePanel.saved')}
           </span>
         )}
-        {error && (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-danger">
-            <AlertTriangle size={14} /> {error}
-          </span>
-        )}
+        {/* No hand-off: the unsaved `draft` (allowed_handles, db_path, service,
+            session folder) is exactly what a failed save did not store — the
+            hand-off unmounts this panel and would lose it. Same shape as
+            SlackPanel's save row. */}
+        <ErrorNotice message={error} variant="inline" />
       </div>}
     </>
   )

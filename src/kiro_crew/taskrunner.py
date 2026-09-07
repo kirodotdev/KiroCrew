@@ -818,7 +818,7 @@ class TaskRunner:
             run.status = "planned"
             await self._apersist_runs()
 
-        self._grant_run_trust(run, bool(auto_approve))
+        await self._grant_run_trust(run, bool(auto_approve))
         await self._apersist_runs()
 
         self._agent = agent
@@ -933,7 +933,7 @@ class TaskRunner:
         run.task_id = task_id
         run.name = name or auto_name(spec_content, str(spec_path))
         run.work_dir = str(task_dir)
-        self._grant_run_trust(run, bool(auto_approve))
+        await self._grant_run_trust(run, bool(auto_approve))
         self._runs[task_id] = run
         watchdog_task: asyncio.Task | None = None  # type: ignore[type-arg]
         history_key = f"taskrunner:run:{spec_path.stem}"
@@ -1439,18 +1439,31 @@ class TaskRunner:
         # down (one kiro-cli process for the whole run).
         await self._release_run_runtime(run)
 
-    def _grant_run_trust(self, run: Project, enabled: bool) -> None:
+    async def _grant_run_trust(self, run: Project, enabled: bool) -> None:
         """Single owner of per-run trust — sets the persisted UI intent flag AND
         the authoritative SafetyOverride scoped grant together, so the two
         representations can never diverge at a call site. Enable activates an
         audited, TTL-bounded scoped grant; disable revokes it.
+
+        Async, and both halves are offloaded: each writes a SEL event, and arming
+        additionally consults the ``approval_modes`` policy. Both callers are async
+        methods, so running either inline put that filesystem work on the gateway's
+        event loop.
+
+        The flag is set FROM the activation result, never ahead of it. Arming can
+        now be refused -- an ``approval_modes`` deny of ``yolo`` disables scoped
+        grants too -- and assigning the flag first meant a refused arm still
+        persisted and reported ``auto_approve: True`` with no authoritative grant
+        behind it. That is the exact divergence this function exists to prevent,
+        so the refusal has to reach the flag.
         """
-        run.auto_approve = bool(enabled)
         scope = _auto_approve_scope(run.task_id)
-        if run.auto_approve:
-            safety_override().activate_scoped(scope, source="dashboard")
+        if enabled:
+            result = await asyncio.to_thread(safety_override().activate_scoped, scope, "dashboard")
+            run.auto_approve = bool(result.active)
         else:
-            safety_override().deactivate_scope(scope)
+            await asyncio.to_thread(safety_override().deactivate_scope, scope)
+            run.auto_approve = False
 
     async def _release_run_runtime(self, run: Project) -> None:
         """Kill the run's shared AcpRuntime once (idempotent) at run teardown.

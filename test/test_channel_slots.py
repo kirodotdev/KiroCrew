@@ -29,7 +29,27 @@ from kiro_crew.messaging.link import (
     is_channel_session_key,
 )
 
+# Shared time origin for session stamps. Captured at import, so any test whose
+# production path reads the LIVE clock must also pin that clock to NOW (see
+# ``frozen_clock``) — otherwise eligibility decays with elapsed shard time and
+# the module fails deterministically once a shard runs past the recency window
+# (#8968).
 NOW = time.time()
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``time.time`` to the module's NOW for tests that call the real
+    reconcile pass.
+
+    ``reconcile_channel_slots`` derives its recency cutoff from the live clock
+    (``channel_slots.py``: ``cutoff = time.time() - window_minutes * 60``),
+    while fixtures stamp sessions against the import-time NOW. Freezing the one
+    clock both sides read makes eligibility pure arithmetic: the tests hold at
+    any elapsed time, and the ``== 0`` assertions cannot pass vacuously because
+    an eligible stamp can never age out mid-suite.
+    """
+    monkeypatch.setattr(time, "time", lambda: NOW)
 
 
 @pytest.fixture
@@ -470,6 +490,7 @@ class _FakeLog:
         return list(self.transcripts.get(key, []))
 
 
+@pytest.mark.usefixtures("frozen_clock")
 class TestReconcilePass:
     def test_surfaces_eligible_and_pushes_once(self, dashboard_state: Any) -> None:
         dashboard_state.conversation_log = _FakeLog(
@@ -898,6 +919,7 @@ class TestClosedAtStamp:
         assert "closed_at" not in meta
 
 
+@pytest.mark.usefixtures("frozen_clock")
 class TestReconcileMore:
 
     def test_a_steady_state_pass_re_reads_metadata_but_no_transcripts(
@@ -961,6 +983,67 @@ class TestReconcileMore:
         assert "slack_2.2" in dashboard_state._slots
 
 
+class TestReconcileClockCoherence:
+    """Regression pins for #8968: reconcile eligibility verdicts must be a
+    function of the stamps alone, never of wall-clock time elapsed since this
+    module was imported.
+
+    ``NOW`` is captured at import while the real pass computes its cutoff from
+    the live clock, so before ``frozen_clock`` the module had a 30-minute shelf
+    life: any CI shard running longer aged every default stamp out of the
+    window, failing the nonzero assertions while the ``== 0`` ones passed
+    vacuously. These pins simulate the long-running shard directly instead of
+    waiting to become one.
+    """
+
+    #: Simulated seconds since module import — well past every window in use.
+    ELAPSED = 7200.0
+
+    def _freeze(self, monkeypatch: pytest.MonkeyPatch, instant: float) -> None:
+        monkeypatch.setattr(time, "time", lambda: instant)
+
+    def test_a_fresh_stamp_survives_any_shard_elapsed_time(
+        self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A session stamped at the pass's own now is eligible even when the
+        module has been imported for hours — the exact spot the defect fired."""
+        pass_now = NOW + self.ELAPSED
+        self._freeze(monkeypatch, pass_now)
+        log = _FakeLog([_session("slack:1.1", modified=pass_now)], {})
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        assert "slack_1.1" in dashboard_state._slots
+
+    def test_the_window_still_filters_under_a_frozen_clock(
+        self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Freezing the clock must not disable the recency rule: a stamp older
+        than the window is still filtered, keeping the suite's ``== 0``
+        verdicts meaningful rather than vacuous."""
+        pass_now = NOW + self.ELAPSED
+        self._freeze(monkeypatch, pass_now)
+        log = _FakeLog([_session("slack:1.1", modified=pass_now - 1801)], {})
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        assert dashboard_state._slots == {}
+
+    def test_a_stamp_exactly_at_the_cutoff_is_eligible(
+        self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Boundary pin: eligibility filters strictly (``modified < cutoff``),
+        so a session exactly at the window edge still surfaces. Guards the
+        comparison against drifting to ``<=`` now that the clock is pinnable."""
+        pass_now = NOW + self.ELAPSED
+        self._freeze(monkeypatch, pass_now)
+        log = _FakeLog([_session("slack:1.1", modified=pass_now - 1800)], {})
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        assert "slack_1.1" in dashboard_state._slots
+
+
 class TestImmediateDispatcherSurface:
     def test_reconciles_with_the_configured_restore_window(
         self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
@@ -1012,6 +1095,7 @@ class TestImmediateDispatcherSurface:
         assert not called
 
 
+@pytest.mark.usefixtures("frozen_clock")
 class TestFailedTranscriptReadDefers:
     """A read failure must not look like an empty conversation.
 

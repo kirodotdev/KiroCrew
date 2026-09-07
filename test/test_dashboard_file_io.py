@@ -343,11 +343,19 @@ class TestFileWrite:
             assert resp.status == 200
 
         kwargs = captured["kwargs"]
-        # See the steering twin: a descriptor where the xattr syscalls exist,
-        # None where they do not (Windows), because a handle held open there
-        # would make os.replace fail. The kwarg itself must always be passed.
+        # See the steering twin: the handler's gate is PIN-FIRST, not
+        # xattr-first. When the parent pins, open_access_control_source hands
+        # back a descriptor even where the xattr syscalls are absent — the MODE
+        # carry needs it so the bits come off the pinned inode (macOS: openat
+        # and no listxattr). Only on the unpinned floor does the xattr flag
+        # decide, and None there (Windows) is what keeps os.replace working
+        # while any other handle is open. The kwarg itself must always be passed.
+        handler_pins = (
+            files_mod.pinned_fs.supports_pinned_walk()
+            and aw.pinned_parent_replace_supported()
+        )
         assert "preserve_access_control_from" in kwargs
-        if aw.ACCESS_CONTROL_XATTRS_SUPPORTED:
+        if handler_pins or aw.ACCESS_CONTROL_XATTRS_SUPPORTED:
             assert isinstance(kwargs["preserve_access_control_from"], int)
             assert captured["source_bytes"] == b"hello world"
         else:  # pragma: no cover - exercised on Windows CI only

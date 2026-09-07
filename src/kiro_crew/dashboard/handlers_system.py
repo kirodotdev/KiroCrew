@@ -27,12 +27,18 @@ import kiro_crew
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import (
+    DashboardState,
+)
 from kiro_crew.embeddings import get_shared_embedder, model_file_present
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform import current_context
-from kiro_crew.safety_override import safety_override, until_shutdown_permitted
+from kiro_crew.safety_override import (
+    cached_disabled_approval_modes,
+    safety_override,
+    until_shutdown_permitted,
+)
 from kiro_crew.stats import Stats
 
 logger = logging.getLogger(__name__)
@@ -131,13 +137,15 @@ def _get_telemetry_salt() -> bytes:
         return _IN_MEMORY_SALT
 
 
-def _yolo_duration_fields() -> tuple[str, bool]:
-    """``(configured_duration, until_shutdown_permitted)`` for the Settings card.
+def _yolo_duration_fields() -> tuple[str, bool, list[str]]:
+    """``(configured_duration, until_shutdown_permitted, disabled_approval_modes)``.
 
-    BOTH values touch the filesystem — the config read and the governance profile
-    resolution (``iterdir``/``stat`` over the profiles dir) — so this runs in a
-    worker thread, never on the event loop. ``/api/status`` is polled
-    continuously; doing this inline stalls the whole gateway on a slow home.
+    The first two touch the filesystem — the config read, and the ``yolo_duration``
+    governance resolution (``iterdir``/``stat`` over the profiles dir) — so this runs
+    in a worker thread, never on the event loop. ``/api/status`` is polled
+    continuously; doing this inline stalls the whole gateway on a slow home. The
+    disabled-modes list does NOT touch the filesystem (it reads the verdict pushed at
+    ceiling install) and only rides along here because it belongs in the same frame.
     """
     try:
         label = str(KiroCrewConfig.load().agent.yolo_duration)
@@ -149,7 +157,11 @@ def _yolo_duration_fields() -> tuple[str, bool]:
     except Exception:
         logger.debug("could not resolve until_shutdown permission", exc_info=True)
         permitted = True
-    return label, permitted
+    # ONE shared reader with ``status_snapshot`` AND with the per-tool-call
+    # enforcement predicate, so the HTTP, SSE and WS status frames cannot report a
+    # list the enforcement path disagrees with.
+    disabled_modes = cached_disabled_approval_modes()
+    return label, permitted, disabled_modes
 
 
 async def api_status(request: web.Request) -> web.Response:
@@ -183,8 +195,10 @@ async def api_status(request: web.Request) -> web.Response:
         except Exception:
             owner_hash = "unknown"
     so_status = safety_override().status()
-    # Off-loop: both values hit the filesystem (see _yolo_duration_fields).
-    yolo_duration, until_shutdown_ok = await asyncio.to_thread(_yolo_duration_fields)
+    # Off-loop: the duration values hit the filesystem (see _yolo_duration_fields).
+    yolo_duration, until_shutdown_ok, disabled_approval_modes = await asyncio.to_thread(
+        _yolo_duration_fields
+    )
     data.update(
         {
             "uptime_secs": int(uptime),
@@ -207,6 +221,10 @@ async def api_status(request: web.Request) -> web.Response:
             # no-timed-expiry option — the Settings card lock-badges it when not.
             "yolo_duration": yolo_duration,
             "yolo_until_shutdown_permitted": until_shutdown_ok,
+            # Auto-approve modes forbidden by the ``approval_modes`` policy
+            # scope (subset of trust_reads/trust/yolo); the chat-footer approval
+            # picker hides each listed mode. Empty = all modes selectable.
+            "disabled_approval_modes": disabled_approval_modes,
             "owner_id_hash": owner_hash,
             "os_type": static_info.get("os", ""),
             "arch": static_info.get("arch", ""),
@@ -464,6 +482,28 @@ def _apply_mcp_process_counts(data: dict[str, object]) -> None:
     data.update(_proc_scan_cache)
 
 
+def _local_ip() -> str:
+    """The address the kernel would source an outbound packet from, best-effort.
+
+    A UDP socket ``connect`` sends nothing (no handshake for a datagram socket),
+    it only selects a route, so ``getsockname`` yields the interface address
+    without a packet leaving the host; ``8.8.8.8`` is just a public address any
+    default route covers. Falls back to loopback when there is no route or no
+    network stack (an offline runner, a sandbox). The one place system-info
+    rendering reaches for the network, kept as its own seam so a test can pin
+    the answer instead of stubbing ``socket.socket`` -- replacing that CLASS
+    breaks ``isinstance`` checks inside asyncio's proactor loop on Windows.
+    """
+    try:
+        # Context manager guarantees the socket fd is closed on every path,
+        # including when connect()/getsockname() raise (CWE-772 fd leak).
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return str(s.getsockname()[0])
+    except Exception:
+        return "127.0.0.1"
+
+
 def _collect_system_metrics() -> dict[str, object]:
     """Collect system metrics synchronously (runs in thread pool).
 
@@ -568,15 +608,7 @@ def _collect_system_metrics() -> dict[str, object]:
                 cpu_pct = 0
     data["cpu_pct"] = cpu_pct
 
-    # Local IP address
-    try:
-        # Context manager guarantees the socket fd is closed on every path,
-        # including when connect()/getsockname() raise (CWE-772 fd leak).
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            data["ip"] = s.getsockname()[0]
-    except Exception:
-        data["ip"] = "127.0.0.1"
+    data["ip"] = _local_ip()
 
     # Network bytes + speed — cross-platform
     try:

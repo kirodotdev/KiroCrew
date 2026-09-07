@@ -110,6 +110,7 @@ import { i18nT } from '../../i18n/t'
 import { PRODUCT_NAME } from './src/shared/config'
 import { fmtNumber, fmtPercent } from '../../i18n/format'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 
 /**
@@ -167,6 +168,7 @@ export default function MochiPage() {
         <OfflineLanding
           starting={status === 'starting'}
           pending={enableMut.isPending}
+          error={enableMut.isError ? (enableMut.error as Error).message : null}
           onEnable={() => enableMut.mutate()}
           onRetry={() => qc.invalidateQueries({ queryKey: ['mochi', 'enabled'] })}
         />
@@ -194,11 +196,14 @@ const features = (): Array<[React.ReactNode, string]> => [
 function OfflineLanding({
   starting,
   pending,
+  error,
   onEnable,
   onRetry,
 }: {
   starting: boolean
   pending: boolean
+  /** A rejected enable used to vanish: the button re-armed and nothing said why. */
+  error?: string | null
   onEnable: () => void
   onRetry: () => void
 }) {
@@ -224,6 +229,8 @@ function OfflineLanding({
             <RefreshCw className="w-3.5 h-3.5 lucide-inline" /> {i18nT('apps.mochi.mochiPage.check_again')}
           </Btn>
         </div>
+        {/* The landing holds no draft, so the hand-off loses nothing. */}
+        <ErrorNotice className="text-left mb-4" message={error} askAgent />
         <Card className="text-left mt-4">
           <CardTitle>{i18nT('apps.mochi.mochiPage.what_mochi_can_do')}</CardTitle>
           <div className="space-y-3 px-1 pt-1">
@@ -511,6 +518,14 @@ function WatchlistCard() {
           addMut.mutate({ label, kind: kind as WatchKind, target }, { onSuccess: done })
         }
       />
+      {/* Cancel / reopen used to fail silently — the row simply did not move.
+          No hand-off: the watch form above holds unsaved label / target / category inputs. */}
+      {cancelMut.isError ? (
+        <ErrorNotice className="mt-3" message={(cancelMut.error as Error).message} />
+      ) : null}
+      {reopenMut.isError ? (
+        <ErrorNotice className="mt-3" message={(reopenMut.error as Error).message} />
+      ) : null}
       <div className="mt-3">
         <WatchRows
           rows={formatWatchItems(items)}
@@ -719,11 +734,9 @@ function AddWatchForm({
       <Btn primary type="submit">
         <Plus className="w-3.5 h-3.5 lucide-inline" /> {i18nT('apps.mochi.mochiPage.watch')}
       </Btn>
-      {failed && (
-        <span role="alert" className="text-[11px] text-[var(--danger)] w-full">
-          {i18nT('apps.mochi.mochiPage.add_failed')}
-        </span>
-      )}
+      {/* No hand-off: the label / target / category typed into this form are unsaved
+          (a failed add is exactly when they are still here). */}
+      {failed && <ErrorNotice className="w-full" message={i18nT('apps.mochi.mochiPage.add_failed')} />}
     </form>
   )
 }
@@ -874,16 +887,30 @@ function PinnedCard() {
   const seenMut = useMutation({ mutationFn: markPinnedSeen, onSuccess: invalidate })
 
   const pins = data?.pins ?? []
+  // Unpin / mark-seen used to fail silently. One notice per mutation, not a chain, so a
+  // persistent earlier failure cannot mask a later one. No hand-off: the page's watch
+  // form (label / target / category inputs) is unsaved and the navigation would drop it.
+  const pinErrors = (
+    <>
+      {unpinMut.isError ? <ErrorNotice className="mb-2" message={(unpinMut.error as Error).message} /> : null}
+      {seenMut.isError ? <ErrorNotice className="mb-2" message={(seenMut.error as Error).message} /> : null}
+    </>
+  )
   if (pins.length === 0) {
     return (
-      <EmptyState
-        icon={<Pin className="w-5 h-5" />}
-        title={i18nT('apps.mochi.mochiPage.no_pinned_files')}
-        subtitle={i18nT('apps.mochi.mochiPage.mochi_pins_files_here_when_you_ask_it_to_watch_o')}
-      />
+      <>
+        {pinErrors}
+        <EmptyState
+          icon={<Pin className="w-5 h-5" />}
+          title={i18nT('apps.mochi.mochiPage.no_pinned_files')}
+          subtitle={i18nT('apps.mochi.mochiPage.mochi_pins_files_here_when_you_ask_it_to_watch_o')}
+        />
+      </>
     )
   }
   return (
+    <>
+    {pinErrors}
     <ul className="space-y-2">
       {pins.map((pin) => (
         <li
@@ -922,6 +949,7 @@ function PinnedCard() {
         </li>
       ))}
     </ul>
+    </>
   )
 }
 

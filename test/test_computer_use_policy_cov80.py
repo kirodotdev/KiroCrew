@@ -174,8 +174,12 @@ class TestCheckInputTarget:
         assert refusal is not None
         assert "refusing to type this text" in refusal
 
-    def test_a_credential_read_is_refused(self) -> None:
-        refusal = policy.check_input_target(_INNOCUOUS, None, "cat ~/.ssh/id_rsa", PolicyConfig())
+    def test_a_credential_exfiltration_is_refused(self) -> None:
+        # The shell gate matches no paths in typed text; its surviving tiers (IMDS and
+        # environment-credential reads) are what this scan still refuses.
+        refusal = policy.check_input_target(
+            _INNOCUOUS, None, "env | grep AWS_SECRET", PolicyConfig()
+        )
         assert refusal is not None
 
     def test_an_exfiltration_shape_is_refused_by_the_second_scan(self) -> None:

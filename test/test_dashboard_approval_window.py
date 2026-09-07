@@ -162,9 +162,7 @@ class TestPerSlotWindowIsAlsoBudgetBounded:
         return min(state.approval_timeout_for(slot), td.tool_approval_timeout_secs())
 
     @pytest.mark.asyncio
-    async def test_attended_window_is_the_configured_one_not_the_flat_constant(
-        self, cfg
-    ) -> None:
+    async def test_attended_window_is_the_configured_one_not_the_flat_constant(self, cfg) -> None:
         # 7200 is what `approval_timeout_for` returns for an attended slot; the
         # window that actually applies is the configurable, bounded one.
         cfg(window=600, turn=7200)
@@ -269,6 +267,127 @@ class TestStallSignalReachesTheLoop:
         )
 
 
+class TestTimeoutTellsTheAgentInBand:
+    """The timeout branch must correct the agent's "user denied" attribution.
+
+    kiro-cli reports the auto-decline below as its generic "User denied tool
+    execution", so without an in-band notice the agent concludes the human
+    actively refused a call nobody answered, and changes course on a decision
+    that was never made. The policy-deny paths already steer their reason into
+    the running turn before rejecting; this pins the same wiring — same helper,
+    same before-the-reject ordering — onto the approval-timeout branch.
+    """
+
+    @staticmethod
+    def _timeout_branch() -> list[str]:
+        from kiro_crew.dashboard import chat_runner
+
+        lines = inspect.getsource(chat_runner._run_chat).split("\n")
+        start = next(
+            i for i, ln in enumerate(lines) if ln.strip() == "except asyncio.TimeoutError:"
+        )
+        indent = len(lines[start]) - len(lines[start].lstrip())
+        body = []
+        for ln in lines[start + 1 :]:
+            if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
+                break
+            body.append(ln)
+        return body
+
+    def test_the_branch_steers_the_timeout_cause(self) -> None:
+        body = "\n".join(self._timeout_branch())
+        assert "_steer_policy_notice(" in body, (
+            "the approval-timeout branch sends no in-band notice; the agent is "
+            "left holding kiro-cli's generic 'User denied tool execution'"
+        )
+        assert "cause=DENY_CAUSE_APPROVAL_TIMEOUT" in body, (
+            "the notice must carry the timeout cause, not inherit the policy "
+            "wording — 'blocked by a safety policy' is false here"
+        )
+
+    def test_the_notice_stays_out_of_the_turn_ledger(self) -> None:
+        """The steer must NOT thread `_refusal_notices`.
+
+        `should_queue_refusal_recovery` compares that list against
+        `_refusal_reasons` by COUNT, and this path deliberately appends no
+        reasons entry (an expired prompt is answered as an ordinary rejection,
+        never by a recovery continuation). Threading the shared ledger would
+        let an unsettled timeout notice force a duplicate recovery turn — or
+        let a settled one mask a real deny whose own steer failed.
+        """
+        # Scanned over CODE lines only: the comment above the call site names
+        # _refusal_notices while explaining why it is NOT used, and a comment
+        # must neither satisfy nor trip a wiring assertion.
+        code = "\n".join(ln for ln in self._timeout_branch() if not ln.lstrip().startswith("#"))
+        assert (
+            "_timeout_notices" in code
+        ), "expected a local throwaway notice list for the timeout steer"
+        assert "_refusal_notices" not in code, (
+            "the timeout steer must not participate in the recovery-fallback "
+            "accounting — it pairs with no _refusal_reasons entry"
+        )
+
+    def test_the_steer_is_not_gated_on_the_unattended_flag(self) -> None:
+        """BOTH attended and unattended slots get the notice.
+
+        The unattended transcript line stays unattended-only, but an attended
+        slot's AGENT is handed the exact same generic denial string — nesting
+        the steer under the flag would leave the attended case exactly as
+        broken as before this change.
+        """
+        body = self._timeout_branch()
+        gate = next(i for i, ln in enumerate(body) if ln.strip() == "if _unattended_wait:")
+        gate_indent = len(body[gate]) - len(body[gate].lstrip())
+        call = next(i for i, ln in enumerate(body) if "_steer_policy_notice(" in ln)
+        owner = next(
+            i
+            for i in range(call, -1, -1)
+            if body[i].strip()
+            and not body[i].lstrip().startswith("#")
+            and (len(body[i]) - len(body[i].lstrip())) <= gate_indent
+        )
+        assert (len(body[owner]) - len(body[owner].lstrip())) == gate_indent, (
+            "the in-band steer is nested inside a gate — an attended (or "
+            "unattended) slot's agent would never be corrected"
+        )
+
+    def test_the_steer_is_bounded_so_reject_and_audit_cannot_be_skipped(self) -> None:
+        """The steer await must be bounded INSIDE the helper.
+
+        Every deny path runs reject_tool + a SEL audit write after
+        `_steer_policy_notice`; unbounded, a backpressured ACP stdin could hold
+        the await until the turn deadline cancelled it — skipping both, so the
+        UI would read rejected while the wire and the audit trail never heard
+        about it. The bound lives in the helper (not per call site) so all
+        five deny paths inherit it and a sixth cannot be added without it.
+        """
+        from kiro_crew.dashboard import chat_runner
+
+        helper = inspect.getsource(chat_runner._steer_policy_notice)
+        assert "asyncio.wait_for(" in helper, "the steer notice is awaited unbounded"
+        assert "_STEER_NOTICE_BOUND_SECS" in helper
+        # The branch itself must NOT re-wrap the call: a second, per-site bound
+        # is exactly the duplication moving it into the helper removed.
+        code = "\n".join(ln for ln in self._timeout_branch() if not ln.lstrip().startswith("#"))
+        assert "asyncio.wait_for(" not in code
+
+    def test_the_reject_still_happens_after_the_steer(self) -> None:
+        """The notice explains the decline; it must not replace it.
+
+        Ordering is the mechanism: the steer is written while the permission
+        request is still unanswered, and the generic rejected branch (the one
+        a timed-out approval falls into, identified by its ``_reject_label``
+        append) answers it afterwards.
+        """
+        from kiro_crew.dashboard import chat_runner
+
+        src = inspect.getsource(chat_runner._run_chat)
+        steer = src.index("cause=DENY_CAUSE_APPROVAL_TIMEOUT")
+        reject = src.index('slot.append("tool", _reject_label, "msg msg-tool")')
+        assert steer < reject, "the steer must precede the rejection going on the wire"
+        assert "await client.reject_tool(event.request_id)" in src[steer:reject]
+
+
 class TestResolver:
     def test_reads_config(self, cfg) -> None:
         cfg(window=300)
@@ -324,11 +443,19 @@ class TestLoadTimeClamp:
         _clamp_security_bounds(data)
         assert data["agent"]["tool_approval_timeout_secs"] == 600
 
-    def test_absent_ceiling_uses_the_field_default(self) -> None:
-        """Omitting the ceiling must not disable the cross-field clamp."""
+    def test_absent_ceiling_uses_the_field_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Omitting the ceiling must not disable the cross-field clamp.
+
+        With the shipped default ceiling the static ``TOOL_APPROVAL_TIMEOUT_MAX``
+        binds first, so the cross-field clamp can only be SEEN to consult the
+        field default by lowering that default below the static max.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        monkeypatch.setattr(loader_mod, "_DEFAULT_CHAT_TURN_TIMEOUT_SECS", 1200)
         data = {"agent": {"tool_approval_timeout_secs": 7200}}
         _clamp_security_bounds(data)
-        assert data["agent"]["tool_approval_timeout_secs"] == 7200 - APPROVAL_TURN_MARGIN_SECS
+        assert data["agent"]["tool_approval_timeout_secs"] == 1200 - APPROVAL_TURN_MARGIN_SECS
 
     def test_static_bounds_applied_first(self) -> None:
         """The generic range clamp still runs on this field."""
@@ -338,8 +465,18 @@ class TestLoadTimeClamp:
 
         data = {"agent": {"tool_approval_timeout_secs": TOOL_APPROVAL_TIMEOUT_MAX * 10}}
         _clamp_security_bounds(data)
-        # Static ceiling first, then the cross-field margin under the default
-        # turn ceiling (both 7200, so the margin binds).
+        # Static ceiling first. The default turn ceiling sits above the static
+        # max by more than the margin, so the cross-field clamp leaves the
+        # statically-clamped value alone.
+        assert data["agent"]["tool_approval_timeout_secs"] == TOOL_APPROVAL_TIMEOUT_MAX
+        # With a ceiling INSIDE the static max the cross-field margin binds after it.
+        data = {
+            "agent": {
+                "tool_approval_timeout_secs": TOOL_APPROVAL_TIMEOUT_MAX * 10,
+                "chat_turn_timeout_secs": TOOL_APPROVAL_TIMEOUT_MAX,
+            }
+        }
+        _clamp_security_bounds(data)
         assert (
             data["agent"]["tool_approval_timeout_secs"]
             == TOOL_APPROVAL_TIMEOUT_MAX - APPROVAL_TURN_MARGIN_SECS
@@ -371,10 +508,17 @@ class TestLoadTimeClamp:
         _clamp_security_bounds(data)
         assert data["agent"]["tool_approval_timeout_secs"] is True
 
-    def test_non_int_ceiling_falls_back_to_the_default(self) -> None:
+    def test_non_int_ceiling_falls_back_to_the_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config import loader as loader_mod
+
+        # Lowered below the static max so the fallback is observable (see
+        # test_absent_ceiling_uses_the_field_default).
+        monkeypatch.setattr(loader_mod, "_DEFAULT_CHAT_TURN_TIMEOUT_SECS", 1200)
         data = {"agent": {"tool_approval_timeout_secs": 7200, "chat_turn_timeout_secs": "lots"}}
         _clamp_security_bounds(data)
-        assert data["agent"]["tool_approval_timeout_secs"] == 7200 - APPROVAL_TURN_MARGIN_SECS
+        assert data["agent"]["tool_approval_timeout_secs"] == 1200 - APPROVAL_TURN_MARGIN_SECS
 
 
 class TestArmTimeBudget:

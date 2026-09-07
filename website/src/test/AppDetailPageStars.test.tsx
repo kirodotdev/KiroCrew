@@ -69,7 +69,7 @@ describe('AppDetailPage — star count', () => {
     system.mockResolvedValue({ hostname: '' })
     // Not installed: /api/apps/{name} rejects, the page falls through to the
     // registry row — the branch that spreads the raw payload.
-    getApp.mockRejectedValue(new Error('not found'))
+    getApp.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
   })
 
   it('renders the compact count in the hero and the exact count in Details', async () => {

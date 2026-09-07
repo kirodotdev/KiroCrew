@@ -455,7 +455,8 @@ def validate_campaign(config: dict) -> dict:
         and config.get("execution_mode", DEFAULT_EXECUTION_MODE) == "workflow"
     ):
         # The workflow engine resolves its own models per step; a campaign-level
-        # pin would be silently ignored, which the AGENTS.md contract forbids.
+        # pin would be silently ignored, which
+        # docs/system-specs/common/model-selection.md forbids.
         errors.append(
             "Model selection requires agent mode — workflow mode runs on the default model"
         )

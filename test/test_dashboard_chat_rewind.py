@@ -11,6 +11,8 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+from kiro_crew.dashboard import chat_persistence
+
 
 @pytest.fixture(autouse=True)
 def _mock_run_chat(monkeypatch):
@@ -298,7 +300,9 @@ class TestRewindSlot:
         slot._disk_tail_ts = "2026-05-21T15:00:00Z"
         state.sessions._session_map.get = MagicMock(return_value="")
 
-        def _save_stamps_witnesses(_state, saved_slot, msgs, *, expected_history_key):
+        def _save_stamps_witnesses(
+            _state, saved_slot, msgs, *, expected_history_key, expected_disk_older_count
+        ):
             # Emulate the real save's post-write bookkeeping on the live slot.
             saved_slot._pending_rewrite = False
             saved_slot._disk_window_len = len(msgs)
@@ -323,6 +327,168 @@ class TestRewindSlot:
         assert slot._disk_window_len == 1
         assert slot._disk_meta_observed is True
         assert slot._disk_tail_ts == "2026-05-21T16:00:05Z"
+        if slot.task:
+            slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_rewind_pairs_the_snapshot_with_the_frozen_prefix_boundary(
+        self, tmp_path, monkeypatch
+    ):
+        """The frozen window must be written against the boundary it was frozen at.
+
+        ``_disk_older_count`` is where the frozen prefix ends, and an ``append``
+        at the window cap moves it. Reading it in the save worker instead of
+        pairing it with the snapshot writes the trimmed rows twice -- once in the
+        prefix, once at the head of the snapshot. This pins the wiring (the
+        endpoint hands the save the PRE-await boundary and re-adopts it at the
+        commit); the two tests below drive the save's own refusal for real.
+        """
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        state.sessions._session_map.get = MagicMock(return_value="")
+        seen: dict[str, object] = {}
+
+        async def _moves_the_boundary(key, **kwargs):
+            # Stands in for a cap-trim landing inside the awaited boundary, which
+            # advances the disk boundary and the durable position base together.
+            slot._disk_older_count = 7
+            slot._disk_older_durable_count = 7
+            return True
+
+        state.sessions.discard_conversation = AsyncMock(side_effect=_moves_the_boundary)
+
+        def _record_pairing(
+            _state, saved_slot, msgs, *, expected_history_key, expected_disk_older_count
+        ):
+            seen["boundary"] = expected_disk_older_count
+            return True
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_rewind._save_slot_to_history", _record_pairing
+        )
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/src/rewind",
+                json={"at_message_index": 0, "content": "edited first question"},
+            )
+            assert resp.status == 200
+
+        # The PRE-await boundary, not the one the worker would have read.
+        assert seen["boundary"] == 0
+        assert slot._disk_older_count == 0  # the commit re-adopts it
+        assert slot._disk_older_durable_count == 0  # and the durable base with it
+        if slot.task:
+            slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_rewind_refuses_when_a_cap_trim_moves_the_frozen_prefix(
+        self, tmp_path, monkeypatch
+    ):
+        """A trim that re-credits rows to the frozen prefix must refuse the save.
+
+        Drives the refusal through the REAL save. The file written is
+        ``frozen_prefix + snapshot`` and the prefix boundary is
+        ``_disk_older_count``; an ``append`` at the cap trims the front and
+        credits the trimmed rows to that counter, so a save reading the counter
+        AFTER the trim writes those rows twice -- once in the prefix it now
+        claims, once at the head of the still-frozen snapshot. The paired count
+        makes that drift refuse instead: nothing written, retryable 503, and the
+        transcript on disk is untouched.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state._MAX_SLOT_MESSAGES", 4)
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        state.sessions._session_map.get = MagicMock(return_value="")
+        # The rows must be ON DISK for a trim to credit them to the frozen
+        # prefix: ``append`` only counts the persisted portion of the evicted
+        # slice.
+        await asyncio.to_thread(state.flush_slot_now, slot)
+        assert slot._disk_window_len == 4
+        assert slot._disk_older_count == 0
+        persisted_before = [
+            (m["role"], m["content"]) for m in state.conversation_log.read_messages("dashboard:src")
+        ]
+        assert [content for _role, content in persisted_before] == [
+            "first question",
+            "first answer",
+            "second question",
+            "second answer",
+        ]
+
+        async def _flush_with_cap_arrival():
+            # Runs after the native discard and BEFORE the history rewrite, so
+            # the boundary moves while the snapshot is already frozen.
+            slot.append("assistant", "workflow result", "msg msg-a")
+            assert slot._disk_older_count == 1
+
+        state.sessions.discard_conversation = AsyncMock(return_value=True)
+        state.sessions.aflush = AsyncMock(side_effect=_flush_with_cap_arrival)
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/src/rewind",
+                json={"at_message_index": 2, "content": "edited second question"},
+            )
+            assert resp.status == 503
+            assert (await resp.json())["code"] == "rewind_save_failed"
+
+        # A bare live-counter read would write prefix ["first question"] plus a
+        # snapshot that still starts with it.
+        assert [
+            (m["role"], m["content"]) for m in state.conversation_log.read_messages("dashboard:src")
+        ] == persisted_before
+        if slot.task:
+            slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_rewind_leaves_the_witnesses_alone_when_a_rebind_wins_the_write(self, tmp_path):
+        """A rebind landing inside the write must not stamp the live witnesses.
+
+        The write itself is correct -- the save's own routing pin was checked
+        before it and the bytes land on the authorized transcript. What must not
+        follow is the post-write bookkeeping: those witnesses describe the file
+        just written, and the slot now writes a DIFFERENT one. Stamping would
+        clear a ``_pending_rewrite`` the new transcript still owes and claim its
+        unsaved rows as persisted, which a later flush then believes.
+        """
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        state.sessions._session_map.get = MagicMock(return_value="")
+        original_messages = list(slot.messages)
+        slot._pending_rewrite = True  # a rewrite is owed on the CURRENT transcript
+        slot._disk_window_len = 0
+        slot._disk_meta_observed = False
+
+        real_atomic_write = chat_persistence.atomic_write
+
+        def _rebinding_atomic_write(path, payload, **kwargs):
+            # The last thing before the witness stamping: the slot moves to
+            # another transcript with the authorized bytes already on their way
+            # to disk.
+            slot.linked_session_key = "slack:9876543210.999"
+            return real_atomic_write(path, payload, **kwargs)
+
+        state.sessions.discard_conversation = AsyncMock(return_value=True)
+
+        with patch.object(chat_persistence, "atomic_write", _rebinding_atomic_write):
+            app = _make_app(state)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/chat/slots/src/rewind",
+                    json={"at_message_index": 0, "content": "edited first question"},
+                )
+                assert resp.status == 503
+                assert (await resp.json())["code"] == "rewind_slot_rebound"
+
+        assert slot.messages == original_messages
+        # Untouched, so the next flush of the NEW transcript still archives
+        # before it rewrites and still treats its window as unpersisted.
+        assert slot._pending_rewrite is True
+        assert slot._disk_window_len == 0
+        assert slot._disk_meta_observed is False
         if slot.task:
             slot.task.cancel()
 

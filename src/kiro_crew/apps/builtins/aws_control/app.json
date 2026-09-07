@@ -46,6 +46,10 @@
     "governance"
   ],
   "iconUrl": "/app-assets/aws-control/icon.svg",
+  "heroImage": "/app-assets/aws-control/hero-light.svg",
+  "heroImageDark": "/app-assets/aws-control/hero-dark.svg",
+  "heroImageDetail": "/app-assets/aws-control/hero-detail-light.svg",
+  "heroImageDetailDark": "/app-assets/aws-control/hero-detail-dark.svg",
   "screenshots": [
     "/app-assets/aws-control/screenshot-main.png"
   ]

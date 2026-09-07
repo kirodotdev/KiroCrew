@@ -10,11 +10,11 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import SpecStatePanel from '../apps/spec-builder/components/SpecStatePanel'
 import { type SpecDetail } from '../apps/spec-builder/api'
 
-// The option controls are role=button with the decision's question as their
-// accessible name (Clickable + aria-label). Anchored on the option so a match
-// cannot come from the card's surrounding text.
-const HTTPS = /be answered\?HTTPS \(recommended\)$/
-const STREAMING = /be answered\?Streaming$/
+// The option controls are role=button with a complete, localizable action as
+// their accessible name (Clickable + aria-label). Anchored on the option so a
+// match cannot come from the card's surrounding text.
+const HTTPS = /Answer “Inbound transport” with HTTPS \(recommended\)$/
+const STREAMING = /Answer “Inbound transport” with Streaming$/
 
 const PENDING: SpecDetail = {
   name: 's',

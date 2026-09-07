@@ -4,6 +4,7 @@ import type { RepoLabel } from '../api'
 import LabelRow from './LabelRow'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 /** The "Labels" block of a rail filter section: a header with a toggleable
  * search box and the label palette itself. Shared by the issue FiltersSection
  * and the pull-request PrFiltersSection — the two differ only in WHICH counts and
@@ -65,7 +66,8 @@ export default function LabelPalette({
         )}
       </div>
       {loading && <div className="text-[12px] text-muted">{i18nT('apps.issueRadar.components.labelPalette.loading_labels')}</div>}
-      {error && <div className="text-[12px] text-danger">{error.message}</div>}
+      {/* A labels read inside the filter rail; the search field is a filter, not a draft. */}
+      <ErrorNotice message={error?.message} variant="inline" askAgent />
       {labels.length === 0 && !loading && (
         <div className="text-[12px] text-muted">{i18nT('apps.issueRadar.components.labelPalette.no_labels_on_this_repo')}</div>
       )}

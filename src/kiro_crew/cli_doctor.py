@@ -55,7 +55,7 @@ from kiro_crew.config.paths import (
 )
 from kiro_crew.config.superseded_defaults import render_doctor_section
 from kiro_crew.constants import MIN_NODE_MAJOR
-from kiro_crew.cron import unhealthy_jobs_from_disk
+from kiro_crew.cron import job_pause_state_from_disk, unhealthy_jobs_from_disk
 from kiro_crew.dashboard.crash_dump_store import (
     dump_age_seconds,
     dump_first_stack_lines,
@@ -106,6 +106,7 @@ from kiro_crew.service import common as common_service
 from kiro_crew.service import controller as service_controller
 from kiro_crew.service import linux as service_linux
 from kiro_crew.session_pid_sig import signing_health
+from kiro_crew.stall_attribution import attribute_dump, describe
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.transcribe import _find_ffmpeg, availability_detail, ensure_ffmpeg_in_path
 from kiro_crew.validation import _AGENT_NAME_RE
@@ -361,6 +362,25 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
     if windows is not None and _plat.system() == "Windows":
         return windows
     return linux
+
+
+# The Linux arm of the missing-ffmpeg fix, a module constant so the test can hold
+# it against the resolver's real search set. An earlier version told the user to
+# drop a static build into ``~/.local/bin``, which ``transcribe._find_ffmpeg``
+# deliberately never searches (``_ffmpeg_candidate_dirs`` documents removing it:
+# a generic user-writable PATH dir would let agent-written code run as the
+# gateway), so a user who followed the advice still ended at "not found" (#8897).
+# Name only remedies that actually resolve: the dashboard's decoder download
+# installs into the digest-verified store ``_find_ffmpeg`` checks last and needs
+# no PATH reasoning (the working fix on distros with no packaged ffmpeg, e.g.
+# AL2023 — pinned artifacts exist for x86_64 and aarch64, the Linux ISAs the
+# desktop matrix ships; on any other ISA the fetch is refused and the second
+# clause is the remedy), and ``/usr/local/bin`` is both a real
+# ``_FFMPEG_CANDIDATE_DIRS`` entry and the conventional manual-install prefix.
+_FFMPEG_LINUX_HINT = (
+    "download the audio decoder from the dashboard (Settings → Speech-to-Text), "
+    "or install ffmpeg into /usr/local/bin"
+)
 
 
 # kiro-cli is the DEFAULT agent backend; the claude-agent-acp binary below belongs
@@ -992,6 +1012,62 @@ def _doctor_data_home() -> None:
         f"  legacy:      ⏹ {legacy} present but not the data home — safe to "
         f"delete once you have confirmed it holds nothing you need"
     )
+
+
+def _doctor_cron_script_sources(issues: list[str]) -> None:
+    """Report deployed cron scripts that no longer agree with their skill-asset source.
+
+    The packaged-to-installed hop is content-verified, ``scripts/`` included. The
+    installed-to-``crons/`` hop is a hand-run ``cp`` documented in the owning
+    skill, and nothing compares its two sides -- so a deploy can run superseded
+    code indefinitely while looking healthy, which is how the shipped PR watch
+    came to re-emit its wake footer once per observation long after the package
+    had split that out.
+
+    Divergence is reported WITHOUT a direction. A cron script body is
+    LLM-writeable by design, so the two sides disagreeing can mean a stale deploy
+    or a deliberate local edit, and nothing on disk distinguishes them. Doctor
+    surfaces the disagreement and leaves the reconciliation to whoever knows
+    which they intended.
+
+    Silent when nothing deployed has a source: a cron script without one is out
+    of scope here, not a finding.
+    """
+    from kiro_crew.skills import (
+        CRON_SOURCE_DIVERGED,
+        CRON_SOURCE_IN_SYNC,
+        deployed_cron_script_sources,
+    )
+
+    states = deployed_cron_script_sources()
+    if not states:
+        return
+
+    print("\nCron Script Sources")
+    for state in states:
+        # Both halves are read off disk and BOTH go through _safe_display. The
+        # crons dir is agent-writeable by design (see cron_script.py), so a
+        # deployed script's name is not merely untrusted in the abstract -- the
+        # design deliberately lets an agent choose it. A diagnostic that reads
+        # those names and prints them raw is exactly the wrong consumer for such
+        # a directory: an OSC/ANSI sequence or a newline in a filename would
+        # drive the terminal or forge the surrounding verdict lines.
+        name = _safe_display(state.name)
+        source = _safe_display(str(state.source))
+        if state.state == CRON_SOURCE_IN_SYNC:
+            print(f"  {name}:  ✅ agrees with {source}")
+        elif state.state == CRON_SOURCE_DIVERGED:
+            print(f"  {name}:  ❌ DIVERGED from {source}")
+        else:
+            print(f"  {name}:  ⏹ could not be compared against {source}")
+
+    if any(state.state == CRON_SOURCE_DIVERGED for state in states):
+        issues.append("deployed cron script diverged from its skill source")
+        print(
+            "               Reconcile using the owning skill's own copy recipe. "
+            "A diverged copy may be a stale deploy OR an intentional local edit "
+            "-- doctor cannot tell which, so it does not overwrite either one."
+        )
 
 
 def _doctor_managed_service_policy(issues: list[str]) -> None:
@@ -2915,6 +2991,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Data Home (+ leftover legacy home) ──
     _doctor_data_home()
+    _doctor_cron_script_sources(issues)
     _doctor_path_launcher()
     _doctor_trust_root()
     _doctor_strict_identity(cfg)
@@ -3177,8 +3254,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 "               Fix: "
                 + _os_fix_hint(
                     "brew install ffmpeg",
-                    "drop a static ffmpeg build into ~/.local/bin "
-                    "(not in AL2023 repos; Kiro Crew auto-detects it)",
+                    _FFMPEG_LINUX_HINT,
                     windows="winget install Gyan.FFmpeg",
                 )
             )
@@ -3330,6 +3406,25 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                     print("  MainThread stuck at:")
                     for _line in _stack:
                         print(f"    {_line}")
+                # Who the loop was working for. Read from the dump's wedged
+                # stack and the cron in-flight markers on disk -- no gateway
+                # needed -- and phrased as evidence plus the one action it
+                # supports, or the statement that it supports none.
+                _attribution = attribute_dump(_latest, config_dir())
+                print("  attribution:")
+                for _line in describe(_attribution):
+                    print(f"    {_line}")
+                # Same predicate as the breaker and describe(): a lone marker
+                # under a chat/Slack stack is a bystander, not the culprit.
+                if _attribution.is_cron and _attribution.job is not None:
+                    _paused_job = job_pause_state_from_disk(_attribution.job.job_id)
+                    if _paused_job is not None:
+                        print(f"    job is currently {_paused_job}")
+                    issues.append(
+                        "loop-stall dump attributed to cron job "
+                        f"{_safe_display(_attribution.job.name)} "
+                        f"({_safe_display(_attribution.job.job_id)})"
+                    )
                 issues.append(f"recent loop-stall crash dump ({_age_h:.0f}h ago)")
             else:
                 print(

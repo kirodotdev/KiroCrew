@@ -6,6 +6,7 @@ import {
 
 import { sevOf, KIND_LABEL, HARD_CAP_MS, MAX_SCREENS, BLOCKED, SAMPLE_REPORT, SAMPLE_SCREENS } from './constants'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import { Spinner } from './Motion'
 import { S } from './styles'
 import { designCritiqueApi, fileUrl } from './api'
@@ -60,6 +61,13 @@ export default function DesignCritiquePage() {
   // a second critique finishing first takes history index 0, and annotating
   // through the chip would then write onto the wrong critique's entry.
   const [justFinished, setJustFinished] = useState<{ slotKey: string; read: string; screens: Screen[]; report: Report } | null>(null)
+  // A BACKGROUND run that failed. The foreground run reports through `err`, but
+  // a run the user had already navigated away from used to announce its failure
+  // only as a toast — once that faded, the critique had simply vanished from the
+  // history with nothing on screen saying why. Kept per run (keyed by slotKey)
+  // until each is read and dismissed, so a second failure cannot overwrite the
+  // first back into toast-only.
+  const [backgroundFailures, setBackgroundFailures] = useState<Array<{ slotKey: string; message: string }>>([])
   const [dragId, setDragId] = useState<string | null>(null)
   const [sel, setSel] = useState<Sel | null>(null)
   const [asks, setAsks] = useState<Ask[]>([])
@@ -69,7 +77,16 @@ export default function DesignCritiquePage() {
   const [showAuth, setShowAuth] = useState(false)
   const [current, setCurrent] = useState<{ report: Report | null; screens: Screen[]; entryId?: number | null } | null>(null)
   const [critiques, setCritiques] = useState<HistoryEntry[]>(loadHistory)
-  const [err, setErr] = useState('')
+  // Two composer messages, kept apart on purpose: `err` is a failure (a caught
+  // exception, a run that did not finish) and renders through ErrorNotice;
+  // `hint` is a client-side check or a not-failed status ("still working") and
+  // must not be dressed as an error. The two are mutually exclusive on screen:
+  // setting either clears the other, so a run that times out ("still working")
+  // and then fails never shows both verdicts above one composer.
+  const [err, setErrRaw] = useState('')
+  const [hint, setHintRaw] = useState('')
+  const setErr = (m: string) => { setErrRaw(m); if (m) setHintRaw('') }
+  const setHint = (m: string) => { setHintRaw(m); if (m) setErrRaw('') }
   const [dragging, setDragging] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [zoom, setZoom] = useState(false)
@@ -311,12 +328,16 @@ export default function DesignCritiquePage() {
     // never by dropping the foreground run into an error state.
     const watching = isWatching(slotKey)
     if (flag && flag.timeout) {
-      if (watching) { setErr(i18nT('apps.designCritique.designCritiquePage.still_working_on_this_one_it_s_kept_running_come')); setPhase('error') }
+      if (watching) { setHint(i18nT('apps.designCritique.designCritiquePage.still_working_on_this_one_it_s_kept_running_come')); setPhase('error') }
       return
     }
     endRun(slotKey)
     setCritiques(dropPendingCritique(slotKey))
-    if (watching) { setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.something_went_wrong')); setPhase('error') }
+    const message = e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.something_went_wrong')
+    if (watching) { setErr(message); setPhase('error') }
+    // The toast is transient feedback; the failed state itself is rendered
+    // in-page (the rail notice) so it is not lost when the toast fades.
+    else setBackgroundFailures(prev => [...prev.filter(f => f.slotKey !== slotKey), { slotKey, message }])
     notify('Critique failed: ' + (e instanceof Error ? e.message : String(e)), { type: 'error' })
   }
 
@@ -339,10 +360,10 @@ export default function DesignCritiquePage() {
   // One or many screenshots. Order is the order you gave them.
   const runImages = async (fileList: File[]) => {
     const files = Array.from(fileList || []).filter(f => /^image\//.test(f.type || ''))
-    if (!files.length) { setErr(i18nT('apps.designCritique.designCritiquePage.those_weren_t_image_files')); setPhase('error'); return }
-    if (files.length > 20) { setErr(i18nT('apps.designCritique.designCritiquePage.that_s_more_than_20_screens_send_fewer')); setPhase('error'); return }
+    if (!files.length) { setHint(i18nT('apps.designCritique.designCritiquePage.those_weren_t_image_files')); setPhase('error'); return }
+    if (files.length > 20) { setHint(i18nT('apps.designCritique.designCritiquePage.that_s_more_than_20_screens_send_fewer')); setPhase('error'); return }
     const seq = ++runSeqRef.current
-    setErr(''); setBlocked(null); setShowAuth(false); setMenuOpen(false); startClock(); setWriting(false); setPendingKind(null); setPhase('uploading')
+    setErr(''); setHint(''); setBlocked(null); setShowAuth(false); setMenuOpen(false); startClock(); setWriting(false); setPendingKind(null); setPhase('uploading')
     try {
       const { paths } = await designCritiqueApi.uploadFiles(files)
       if (!paths || !paths.length) throw new Error('no file paths returned')
@@ -406,12 +427,12 @@ export default function DesignCritiquePage() {
     const det = detectKind(raw)
     if (!det) return
     if (det.kind === 'unknown') {
-      setErr('I couldn’t tell what that is. Give me a Figma link, a GitHub/GitLab/Bitbucket repo, an absolute local path, or a URL that’s already serving.')
+      setHint(i18nT('apps.designCritique.designCritiquePage.couldn_t_tell_what_that_is_give_me_a_figma_link'))
       setPhase('error'); return
     }
     const seq = ++runSeqRef.current
     const jobKey = 'ref-' + Date.now()
-    setErr(''); setBlocked(null); setShowAuth(false); setMenuOpen(false); startClock(); setWriting(false); setPendingKind(det.kind)
+    setErr(''); setHint(''); setBlocked(null); setShowAuth(false); setMenuOpen(false); startClock(); setWriting(false); setPendingKind(det.kind)
     setCurrent({ report: null, screens: [] }); setScreenIdx(0); setScope(null); setPicked([])
     setRefHandle(''); setRefTarget({ kind: det.kind, value: det.value })
     setSlot(jobKey)
@@ -614,7 +635,7 @@ export default function DesignCritiquePage() {
         const flag = e as Flagged
         if (flag && flag.cancelled) return
         if (flag && flag.timeout) {
-          setErr(i18nT('apps.designCritique.designCritiquePage.still_working_on_this_one_it_s_kept_running_come_2'))
+          setHint(i18nT('apps.designCritique.designCritiquePage.still_working_on_this_one_it_s_kept_running_come_2'))
           setPhase('error'); return
         }
         endRun(job.slotKey)
@@ -649,12 +670,12 @@ export default function DesignCritiquePage() {
   // ── staging ────────────────────────────────────────────────────────────
   const addFiles = (fileList: FileList | File[] | null) => {
     const imgs = Array.from(fileList || []).filter(f => /^image\//.test(f.type || ''))
-    if (!imgs.length) { setErr(i18nT('apps.designCritique.designCritiquePage.those_weren_t_image_files')); return }
-    setErr('')
+    if (!imgs.length) { setHint(i18nT('apps.designCritique.designCritiquePage.those_weren_t_image_files')); return }
+    setErr(''); setHint('')
     setStaged(prev => {
       const room = MAX_SCREENS - prev.length
-      if (room <= 0) { setErr('That’s the limit of ' + MAX_SCREENS + ' screens.'); return prev }
-      if (imgs.length > room) setErr('Only added the first ' + room + ' — the limit is ' + MAX_SCREENS + ' screens.')
+      if (room <= 0) { setHint(i18nT('apps.designCritique.designCritiquePage.that_s_the_limit_of_max_screens', { max: MAX_SCREENS })); return prev }
+      if (imgs.length > room) setHint(i18nT('apps.designCritique.designCritiquePage.only_added_the_first_room_the_limit_is_max_screens', { room, max: MAX_SCREENS }))
       return prev.concat(imgs.slice(0, room).map(f => ({ id: f.name + ':' + f.size + ':' + Math.random().toString(36).slice(2, 7), file: f, url: URL.createObjectURL(f) })))
     })
     if (phase === 'error') setPhase('new')
@@ -791,11 +812,11 @@ export default function DesignCritiquePage() {
   }
 
   const sendScreenshots = () => {
-    setPhase('new'); setCurrent(null); setScope(null); setPicked([]); setErr(''); setRefText('')
+    setPhase('new'); setCurrent(null); setScope(null); setPicked([]); setErr(''); setHint(''); setRefText('')
     setTimeout(() => { if (inputRef.current) inputRef.current.click() }, 0)
   }
   const critiqueRunning = () => {
-    setPhase('new'); setCurrent(null); setScope(null); setPicked([]); setErr('')
+    setPhase('new'); setCurrent(null); setScope(null); setPicked([]); setErr(''); setHint('')
     setRefText('http://localhost:')
   }
 
@@ -811,7 +832,7 @@ export default function DesignCritiquePage() {
     // removes every persisted run, which would discard a concurrent critique.
     if (k) { cancelledRef.current.add(k); endRun(k) }
     activeSlotRef.current = ''; setSlot(''); setScope(null); setPicked([]); setJustFinished(null)
-    setPhase('new'); setCurrent(null); setErr(''); setWriting(false); setPendingKind(null)
+    setPhase('new'); setCurrent(null); setErr(''); setHint(''); setWriting(false); setPendingKind(null)
     startedAtRef.current = 0; setElapsed(0)
     // Release this slot's flag once its poller has certainly observed it. Keyed
     // per slot so the timer cannot un-cancel a different run.
@@ -855,7 +876,7 @@ export default function DesignCritiquePage() {
       endRun(slot)
     }
     if (!running) { setSlot(''); setScope(null); setPicked([]); setRefBrief('') }
-    setPhase('new'); setCurrent(null); setMenuOpen(false); setErr(''); setBlocked(null); setRefText('')
+    setPhase('new'); setCurrent(null); setMenuOpen(false); setErr(''); setHint(''); setBlocked(null); setRefText('')
     startedAtRef.current = 0; setElapsed(0); setWriting(false); setPendingKind(null)
   }
   const openExample = () => { setMenuOpen(false); showReport(SAMPLE_REPORT, SAMPLE_SCREENS) }
@@ -865,7 +886,7 @@ export default function DesignCritiquePage() {
     activeSlotRef.current = e.slotKey
     setSlot(e.slotKey)
     setCurrent({ report: null, screens: e.screens || [] })
-    setJustFinished(null); setErr(''); setBlocked(null)
+    setJustFinished(null); setErr(''); setHint(''); setBlocked(null)
     const job = loadJobs().find(j => j.slotKey === e.slotKey)
     startClock(job && job.ts ? job.ts : e.ts)
     setPhase(e.screens && e.screens.length ? 'analyzing' : 'scanning')
@@ -1174,9 +1195,28 @@ export default function DesignCritiquePage() {
     )
   }
 
+  // Failed background runs, on their own row under the rail head — not inside
+  // its button row, where the notice's hand-off would join New / History /
+  // Running as a third action. The failed run is gone from history and its
+  // screens are on disk, so the hand-off has nothing on this rail to lose.
+  const railFailures = backgroundFailures.length ? (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+      {backgroundFailures.map(f => (
+        <ErrorNotice
+          key={f.slotKey}
+          message={f.message}
+          title={i18nT('apps.designCritique.designCritiquePage.that_critique_didn_t_finish')}
+          askAgent
+          onDismiss={() => setBackgroundFailures(prev => prev.filter(x => x.slotKey !== f.slotKey))}
+        />
+      ))}
+    </div>
+  ) : null
+
   const rail = (
     <div style={{ ...S.rail, ...(narrow ? S.railNarrow : {}) }} onMouseUp={phase === 'report' ? captureSelection : undefined}>
       {railHead}
+      {railFailures}
       {railBody}
     </div>
   )
@@ -1245,7 +1285,7 @@ export default function DesignCritiquePage() {
     canvasInner = (
       <Composer
         staged={staged} refText={refText} dragging={dragging} blocked={blocked} showAuth={showAuth}
-        busy={busy} err={err} inputRef={inputRef}
+        busy={busy} err={err} hint={hint} inputRef={inputRef}
         onPick={onPick} onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}
         pickFile={pickFile} dropStaged={dropStaged} moveStaged={moveStaged} clearStaged={clearStaged}
         start={start} setRefText={setRefText} setBlocked={setBlocked} setShowAuth={setShowAuth}

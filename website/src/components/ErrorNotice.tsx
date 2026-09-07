@@ -31,7 +31,9 @@ export default function ErrorNotice({
   onDismiss,
   variant = 'block',
   askAgent = false,
+  onHandoff,
   className = '',
+  messageClassName = '',
   testId,
 }: {
   /** Human error text. Falsy renders nothing, so `<ErrorNotice message={err} />` needs no `&&` guard. */
@@ -65,7 +67,22 @@ export default function ErrorNotice({
    * field whose contents are not yet saved somewhere durable.
    */
   askAgent?: boolean
+  /**
+   * Forwarded to the hand-off button: runs only once the hand-off has actually
+   * proceeded. For a notice rendered inside an OVERLAY that would otherwise sit
+   * over the chat the hand-off navigates to (a modal, the remote-crew error
+   * panel), so the caller can dismiss it — a hand-off the user cannot see reads
+   * as a dead button. Ignored when `askAgent` is off.
+   */
+  onHandoff?: () => void
   className?: string
+  /**
+   * Classes for the `message` span only — e.g. `font-mono` when the message is
+   * verbatim tool or server output. Scoped there, not on the root, so a
+   * plain-language `title` keeps the UI font and reads as a separate clause
+   * from the raw output beside it.
+   */
+  messageClassName?: string
   /**
    * `data-testid` for the root element. Several notices can share one surface
    * (a page-level read failure above a row's own mutation failure), and a
@@ -81,11 +98,12 @@ export default function ErrorNotice({
       <span role="alert" className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${className}`} data-testid={testId}>
         <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
         {title && <strong className="font-semibold">{title}</strong>}
-        <span className="min-w-0" style={{ overflowWrap: 'anywhere' }}>{message}</span>
+        <span className={`min-w-0 ${messageClassName}`} style={{ overflowWrap: 'anywhere' }}>{message}</span>
         {askAgent && (
           <AskAgentButton
             report={report}
             message={message}
+            onHandoff={onHandoff}
           />
         )}
         {onDismiss && (
@@ -111,12 +129,15 @@ export default function ErrorNotice({
       <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>
         {title && <strong className="font-semibold">{title} </strong>}
-        {message}
+        {/* Wrapped only when asked: the bare text node is the shape every
+            existing consumer's tests read. */}
+        {messageClassName ? <span className={messageClassName}>{message}</span> : message}
       </div>
       {askAgent && (
         <AskAgentButton
           report={report}
           message={message}
+          onHandoff={onHandoff}
           className="mt-[1px]"
         />
       )}

@@ -26,7 +26,7 @@ const { mockSideOpen, mockSideTurn, mockSteerChat, mockSendChat } = vi.hoisted((
   mockSideOpen: vi.fn().mockResolvedValue({ ok: true, open: true, messages: 0, last_run_id: '', created_at: '' }),
   mockSideTurn: vi.fn().mockResolvedValue({ ok: true, run_id: 'r1', messages: 1 }),
   mockSteerChat: vi.fn().mockResolvedValue({ ok: true }),
-  mockSendChat: vi.fn().mockResolvedValue({ ok: true }),
+  mockSendChat: vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, steered: true }) }),
 }))
 
 vi.mock('../api/client', () => ({
@@ -165,11 +165,18 @@ describe('/side while a turn is running', () => {
     fireEvent.change(input, { target: { value: 'plain steer text' } })
     await armRunning(store)
     fireEvent.keyDown(input, { key: 'Enter' })
-    // The third argument is the client-minted send-correlation id the steer
-    // path stamps on its optimistic bubble (#6075) — pin its shape, not its
-    // random value.
-    await waitFor(() => expect(mockSteerChat).toHaveBeenCalledWith('plain steer text', SLOT, expect.stringMatching(/^s-/)))
-    expect(mockSendChat).not.toHaveBeenCalled()
+    // The steer is the same `/api/chat` POST as a send, flagged `steer`
+    // (6th argument), through the chat-core transport; `meta.sendId` is the
+    // client-minted correlation id the steer path stamps on its optimistic
+    // bubble (#6075) — pin its shape, not its random value. The bespoke
+    // `steerChat` helper is no longer a path on this surface.
+    await waitFor(() => expect(mockSendChat).toHaveBeenCalled())
+    const call = mockSendChat.mock.calls[0]
+    expect(call[0]).toBe('plain steer text')
+    expect(call[1]).toBe(SLOT)
+    expect((call[4] as { sendId?: string }).sendId).toMatch(/^s-/)
+    expect(call[5]).toBe(true)
+    expect(mockSteerChat).not.toHaveBeenCalled()
   })
 
   it('/side opens the side chat instead of being steered into the turn', async () => {

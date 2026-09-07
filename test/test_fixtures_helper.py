@@ -338,6 +338,11 @@ def test_seeded_home_importable_without_pytest(
     # Force a fresh load by removing any cached copy of the target module.
     monkeypatch.delitem(sys.modules, "kiro_crew.testing.fixtures", raising=False)
     monkeypatch.delitem(sys.modules, "kiro_crew.testing", raising=False)
+    # The fresh import_module below would otherwise byte-compile a real
+    # __pycache__/*.pyc into the checkout's src/kiro_crew/testing/ tree —
+    # this test only cares about the module's runtime attributes, not about
+    # leaving compiled bytecode behind.
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
 
     fresh = importlib.import_module("kiro_crew.testing.fixtures")
 

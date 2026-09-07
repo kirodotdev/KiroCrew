@@ -3082,7 +3082,17 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
             if staged_path.parent == root and staged_path.name.startswith("One.md."):
                 staged.append(staged_path)
                 temp_written.set()
-                if not release_stage.wait(timeout=30):
+                # Not a synchronisation point -- `release_stage.set()` always
+                # runs in the `finally` below regardless of how long the Sync
+                # or the save's own retries take. This wait is a fail-safe
+                # against a genuine deadlock, not a race the test should ever
+                # actually run out on, so its budget is generous rather than
+                # tight: a loaded CI host's shared `to_thread` executor can
+                # make the Sync's own worker-thread git calls queue behind
+                # this parked slot, stretching how long `finally` takes to
+                # reach `release_stage.set()` well past a tight budget (flake
+                # class 2, see testing-conventions.md).
+                if not release_stage.wait(timeout=120):
                     raise AssertionError("test never released the staging worker")
 
         with pytest.MonkeyPatch.context() as mp:

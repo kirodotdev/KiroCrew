@@ -806,6 +806,19 @@ class TestResourceShims:
         # truncated without argtypes, so GetProcessTimes failed and this read 0.0.
         assert pc.proc_cpu_seconds() > 0.0
 
+    def test_proc_cpu_nanos_for_pid_reads_a_running_process(self):
+        # Linux /proc, macOS libproc, Windows GetProcessTimes: a live interpreter
+        # has consumed CPU on all three. None is reserved for a platform with no
+        # per-pid counter at all, where the caller keeps its prior behavior.
+        ns = pc.proc_cpu_nanos_for_pid(os.getpid())
+        if ns is None:
+            pytest.skip("no per-pid CPU counter on this platform")
+        assert ns > 0
+
+    def test_proc_cpu_nanos_for_pid_refuses_a_reserved_pid(self):
+        assert pc.proc_cpu_nanos_for_pid(0) is None
+        assert pc.proc_cpu_nanos_for_pid(-1) is None
+
     def test_raise_nofile_soft_limit_is_safe(self):
         # No-op on Windows; best-effort raise on POSIX. Must never raise.
         pc.raise_nofile_soft_limit(4096)
@@ -999,6 +1012,63 @@ class TestDirLinkShims:
 
         assert link.is_symlink()
         assert os.readlink(str(link)) == str(target)
+
+
+class TestPinDirectory:
+    """``pin_directory``: hold a directory so a child written by PATH stays put.
+
+    Every platform: the open refuses anything that is not a real directory.
+    Windows only: the held handle blocks rename/delete -- the property the
+    caller relies on when a same-UID watcher could otherwise swap the directory
+    for a junction between a check and a child process's open.
+    """
+
+    def test_a_real_directory_pins_and_releases(self, tmp_path):
+        target = tmp_path / "dir"
+        target.mkdir()
+        fd = pc.pin_directory(target)
+        try:
+            assert fd >= 0
+            assert stat.S_ISDIR(os.fstat(fd).st_mode)
+        finally:
+            os.close(fd)
+        # Released: the directory is ordinary again.
+        target.rename(tmp_path / "moved")
+
+    def test_a_file_at_the_name_is_refused(self, tmp_path):
+        regular = tmp_path / "f.txt"
+        regular.write_text("x")
+        with pytest.raises(NotADirectoryError):
+            pc.pin_directory(regular)
+
+    def test_a_link_at_the_name_is_refused_not_followed(self, tmp_path):
+        # A watcher's whole move is to put a link where the directory was; the
+        # pin must fail on it rather than pin the link's TARGET in its place.
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        pc.symlink_or_junction(target, link)
+        with pytest.raises(OSError):
+            pc.pin_directory(link)
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="a held handle blocks rename only on Windows")
+    def test_a_pinned_directory_cannot_be_renamed_or_removed(self, tmp_path):
+        # The pin is on the DIRECTORY: its children can still be removed (the
+        # caller holds its own file open for that), but the directory itself
+        # can be neither renamed nor deleted until the handle is released.
+        target = tmp_path / "dir"
+        target.mkdir()
+        fd = pc.pin_directory(target)
+        try:
+            with pytest.raises(OSError):
+                target.rename(tmp_path / "swapped")
+            with pytest.raises(OSError):
+                target.rmdir()
+            assert target.is_dir()
+        finally:
+            os.close(fd)
+        target.rename(tmp_path / "swapped")
+        assert (tmp_path / "swapped").is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -1545,6 +1615,40 @@ class TestOwnProcessStartTime:
 
         monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: _ShortLib())
         assert pc._darwin_process_start_microtime(4242) is None
+
+    def test_darwin_cpu_nanos_parses_the_taskinfo_layout(self, monkeypatch):
+        """user+system CPU are sliced from the pinned ``proc_taskinfo`` offsets."""
+
+        class _FakeLib:
+            @staticmethod
+            def proc_pidinfo(_pid, _flavor, _arg, buf, size):
+                raw = bytearray(size)
+                raw[pc._DARWIN_PTI_TOTAL_USER_OFFSET : pc._DARWIN_PTI_TOTAL_USER_OFFSET + 8] = (
+                    7_000_000_000
+                ).to_bytes(8, "little")
+                raw[pc._DARWIN_PTI_TOTAL_SYSTEM_OFFSET : pc._DARWIN_PTI_TOTAL_SYSTEM_OFFSET + 8] = (
+                    500_000_000
+                ).to_bytes(8, "little")
+                buf.raw = bytes(raw)
+                return size
+
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: _FakeLib())
+        assert pc._darwin_process_cpu_nanos(4242) == 7_500_000_000
+
+    def test_darwin_cpu_nanos_refuses_a_mismatched_struct_size(self, monkeypatch):
+        """Same layout check as the start-time probe: a partial fill answers None."""
+
+        class _ShortLib:
+            @staticmethod
+            def proc_pidinfo(_pid, _flavor, _arg, _buf, _size):
+                return 64
+
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: _ShortLib())
+        assert pc._darwin_process_cpu_nanos(4242) is None
+
+    def test_darwin_cpu_nanos_without_libproc_is_none(self, monkeypatch):
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: None)
+        assert pc._darwin_process_cpu_nanos(4242) is None
 
     def test_reads_the_platform_once_then_serves_the_cache(self, monkeypatch):
         first = pc.own_process_start_time()  # populate the cache for THIS pid

@@ -488,7 +488,7 @@ class AcpEvent:
     #: ``acp/_dispatch._repair_escaped_marker`` over its joined output before
     #: redaction and the head cut; a new provider's builder is pinned to that by
     #: ``test_session_directive_transport.py``. See
-    #: docs/system-specs/features/agent-host-contract.md §9.
+    #: docs/system-specs/modules/agent-host-contract.md §9.
     tool_output: str = ""
     tool_final: bool = False  # True when this tool_result is the final (status=completed) update
     usage: TurnUsage = field(default_factory=TurnUsage)

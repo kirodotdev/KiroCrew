@@ -13,6 +13,7 @@ import ListSkeleton from './ListSkeleton'
 import EmptyState from './EmptyState'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 export default function RunList({
   runs, loading, error, selectedRunId, onSelect, onNewReview, onDelete,
   deleting = false,
@@ -59,7 +60,7 @@ export default function RunList({
           style={{ scrollbarWidth: 'none' }}
         >
           {loading && <ListSkeleton />}
-          {error && <div className="px-1 py-2 text-[13px] text-danger">{error}</div>}
+          {error && <ErrorNotice message={error} askAgent className="mx-1 my-2" />}
           {showEmpty && (
             /* No action button here: the column's own "New review" sits a few
                pixels above this block, so a second CTA read as a duplicate. */

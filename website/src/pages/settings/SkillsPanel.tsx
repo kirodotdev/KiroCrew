@@ -58,10 +58,15 @@ export function SkillsPanel() {
     },
   }))
 
-  const disabled = cfgQ.isLoading || patchMut.isPending
+  const disabled = cfgQ.isLoading || cfgQ.isError || patchMut.isPending
 
   return (
     <SettingsSection title={i18nT('pages.settings.skillsPanel.skills')}>
+      {/* Load failure: the toggles below would otherwise show defaults as if they
+          were the stored values. Toggle-only card, nothing to lose → hand-off on. */}
+      {cfgQ.isError && (
+        <ErrorNotice message={i18nT('pages.settings.skillsPanel.config_load_failed')} className="mb-2" askAgent />
+      )}
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.settings.skillsPanel.auto_generate_skills_from_sessions')}

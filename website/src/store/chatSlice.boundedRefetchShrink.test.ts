@@ -111,7 +111,13 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
     expect(store.getState().chat.slotRun?.active).toBeUndefined()
 
     await store.dispatch(switchSlot('active'))
-    expect(limitsFor('active').at(-1)).toBeUndefined()
+    // The property, not the mechanism. This used to require the last read to be
+    // UNBOUNDED, and what satisfied that was the coverage check assuming a hole for
+    // want of an earlier server total -- the same false positive that read a whole
+    // 2,644-message transcript on a phone. A window sized to what the tab holds
+    // already reaches every cached row, so what has to be true is that the window
+    // COVERS the cache and nothing the reader had goes missing.
+    expect(limitsFor('active').at(-1)).toBeGreaterThanOrEqual(full)
     expect(visible(store)).toBe(full)
   })
 

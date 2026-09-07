@@ -1,7 +1,15 @@
 /**
  * transcriptRenderers — the dashboard's row set for the shared chat transcript.
  *
- * The single-chat surface (ChatPage) draws its rows from a local role chain.
+ * This is the ONE dashboard row set (chat-core P5-b): the single-chat surface
+ * (ChatPage) spreads this factory into its host list and adds only its
+ * page-only entries (the conversational bubble with fork/pin/footer chrome,
+ * the undrawn/permission rows, the stop-event and OAuth banners); ChatPane
+ * calls it with fewer options. Behaviour a surface cannot supply is an
+ * OPTION with the pane's default -- the tool row's disclosure key, its
+ * "animating" rule, the hot-transcript hint, the completion cards' session
+ * hand-offs -- so the two surfaces differ only in what they wire, never in
+ * how a row is drawn.
  * Every OTHER dashboard surface draws through app-sdk/ChatMessageList, whose
  * default registry is deliberately store-free and therefore renders a WEAKER
  * transcript: a static pill instead of the live tool line, and nothing at all
@@ -19,6 +27,7 @@
  * so an entry reusing a default's `id` REPLACES it, a new `id` ADDS a row type,
  * and a narrow entry must precede the broader one it refines.
  */
+import type React from 'react'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
@@ -34,9 +43,46 @@ import { FileCard } from '../../components/FileCard'
 import type { MessageRenderer, MessageRenderContext } from '../../app-sdk/messageRenderers'
 import type { ChatMessage } from '../../types'
 
+/** Disclosure-map identity for a tool row (#8204). messageRowKey is
+ *  `${role}-${clientTs ?? ts}` and tool rows are never clientTs-stamped, so a
+ *  burst of tool rows appended in one server tick all share `tool-<tick>` —
+ *  expanding one expanded them all, because the row key doubled as the
+ *  toolDisclosure map key. Fold `meta.tool_call_id` in when present (ACP-issued,
+ *  globally unique) so each row owns its disclosure entry.
+ *
+ *  Deliberately NOT folded into messageRowKey: the React-key role is not at
+ *  stake (each renderMessage element is the sole child of a separately keyed
+ *  wrapper), and the key-stability suite pins messageRowKey(tool) === 'tool-<ts>'.
+ *  Scoped to role 'tool' and identity when the id is absent, so every other
+ *  role's in-session disclosure state keeps its existing key shape.
+ *  Shared by every dashboard surface through this row set (chat-core P5-b);
+ *  exported for tests. */
+export function toolDisclosureKey(m: ChatMessage, key: string): string {
+  if (m.role !== 'tool') return key
+  const tcid = m.meta?.tool_call_id
+  return typeof tcid === 'string' && tcid ? `${key}-${tcid}` : key
+}
+
 export interface TranscriptRendererOptions {
-  /** Slot these rows belong to. The tool line keys its per-slot log off it. */
-  slot: string
+  /** Slot these rows belong to. The tool line keys its per-slot log off it;
+   *  omitted (the single-chat surface) it reads the active slot's. */
+  slot?: string
+  /** Whether a tool row animates as "running". Default: the transcript's
+   *  running flag. ChatPage narrows it to the trailing group -- rows after the
+   *  last assistant text while the slot is in `tool_running`. */
+  toolRunning?: (m: ChatMessage, ctx: MessageRenderContext) => boolean
+  /** The transcript is scrolling / streaming hard; tool rows defer their
+   *  heavier work. */
+  transcriptHot?: boolean
+  /** What to draw for a `file` row whose content is not JSON. Default: nothing
+   *  (a pane); the single-chat surface has always fallen through to its
+   *  conversational bubble for one and passes that. */
+  renderUnparsedFile?: (m: ChatMessage, ctx: MessageRenderContext) => React.ReactNode
+  /** Session hand-offs on the completion cards: open a session chip, and the
+   *  title map + active key the chip resolver needs. */
+  onSessionOpen?: (key: string) => void
+  sessions?: ReadonlyMap<string, string>
+  activeSession?: string
   /** Open a file in the host's side panel. Unwired from a pane until #3300:
    *  the dock is `activeSlot`-keyed while pane focus deliberately is not. */
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
@@ -81,21 +127,24 @@ function lastErrorIndex(messages: ChatMessage[]): number {
 export function createTranscriptRenderers(
   o: TranscriptRendererOptions,
 ): readonly MessageRenderer[] {
-  const toolLine = (m: ChatMessage, ctx: MessageRenderContext) =>
-    ctx.row(
+  const toolLine = (m: ChatMessage, ctx: MessageRenderContext) => {
+    const dKey = toolDisclosureKey(m, ctx.key)
+    return ctx.row(
       <ToolCallLine
         message={m}
-        running={ctx.running}
+        running={o.toolRunning ? o.toolRunning(m, ctx) : ctx.running}
         slot={o.slot}
         onFileOpen={o.onFileOpen}
-        disclosure={o.toolDisclosure?.[ctx.key]}
-        disclosureKey={ctx.key}
+        disclosure={o.toolDisclosure?.[dKey]}
+        disclosureKey={dKey}
         onDisclosureChange={o.onToolDisclosureChange}
         appInPanel={o.appInPanel}
         onOpenApp={o.onOpenApp}
+        transcriptHot={o.transcriptHot}
       />,
       true,
     )
+  }
 
   return [
     // ── Shape-matched rows, ahead of anything keyed only by role ──
@@ -111,6 +160,9 @@ export function createTranscriptRenderers(
           message={m}
           onFileOpen={o.onFileOpen}
           onFolderOpen={o.onFolderOpen}
+          onSessionOpen={o.onSessionOpen}
+          sessions={o.sessions}
+          activeSession={o.activeSession}
           disclosureKey={ctx.key}
           onOpenPanel={o.onOpenSubagentPanel}
         />,
@@ -141,7 +193,7 @@ export function createTranscriptRenderers(
       render: (m, ctx) => {
         const launch = extractSpawnRunLaunch(m)
         if (!launch) return toolLine(m, ctx)
-        return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot} />, true)
+        return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot ?? ''} />, true)
       },
     },
     {
@@ -153,6 +205,17 @@ export function createTranscriptRenderers(
       roles: ['tool'],
       match: m => !!m.content?.startsWith('🔧'),
       render: toolLine,
+    },
+    {
+      // The ✅ / 🚫 completion sibling of a tool call carries state, not a row:
+      // completion is drawn by the tool line's own icon, and the 🚫 sibling is
+      // read for the auto-denied flag. Claimed explicitly so it draws nothing on
+      // EVERY surface -- a pane's unclaimed-role fallback already drew nothing,
+      // but the single-chat surface's is the bubble, and "✅ done" as a bubble is
+      // the row this closes.
+      id: 'tool_completion',
+      roles: ['tool'],
+      render: () => null,
     },
 
     // ── Rows the default registry leaves undrawn ──
@@ -180,7 +243,7 @@ export function createTranscriptRenderers(
         try {
           file = JSON.parse(m.content)
         } catch {
-          return null
+          return o.renderUnparsedFile ? o.renderUnparsedFile(m, ctx) : null
         }
         return ctx.row(<FileCard file={file} />)
       },
@@ -230,6 +293,9 @@ export function createTranscriptRenderers(
           message={m}
           onFileOpen={o.onFileOpen}
           onFolderOpen={o.onFolderOpen}
+          onSessionOpen={o.onSessionOpen}
+          sessions={o.sessions}
+          activeSession={o.activeSession}
           disclosureKey={ctx.key}
         />,
         true,

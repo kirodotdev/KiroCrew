@@ -78,6 +78,15 @@ def _jsonable(obj):
     return obj
 
 
+class ArchiveEncodingError(ValueError):
+    """``results.tsv`` holds bytes that are not valid UTF-8.
+
+    Raised instead of guessing a codec: there is no in-band record of which
+    code page wrote a legacy file, so any locale-based decode can silently
+    corrupt it. The message names the file and the operator remedy.
+    """
+
+
 class Archive:
     """The on-disk ``results/`` archive. Append-only; reconstructable on restart."""
 
@@ -95,18 +104,47 @@ class Archive:
 
     def _ensure_tsv(self) -> None:
         if not self.tsv.exists():
-            self.tsv.write_text("\t".join(CONTROL_COLUMNS) + "\n")
+            self.tsv.write_text("\t".join(CONTROL_COLUMNS) + "\n", encoding="utf-8")
+            return
+
+        raw = self.tsv.read_bytes()
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            # Never decode with the CURRENT host locale: an archive written
+            # under one legacy code page and opened under another host would be
+            # silently transcoded to mojibake (CP1252 ``café`` read as CP1251
+            # becomes ``cafй``). There is no in-band record of which code page
+            # wrote the file, so any guess can corrupt it. Preserve the bytes
+            # untouched and fail closed with the remedy in the message.
+            if error.end == len(raw) and error.reason == "unexpected end of data":
+                # A crash can tear the final UTF-8 code point of an append;
+                # everything before the torn tail is intact.
+                hint = (
+                    "the final append looks crash-torn; delete the incomplete "
+                    "final line to recover the archive"
+                )
+            else:
+                hint = (
+                    "the file looks legacy-encoded; re-encode it to UTF-8 "
+                    "(e.g. `iconv -f <source-codepage> -t utf-8`) or move it "
+                    "aside to start a fresh archive"
+                )
+            raise ArchiveEncodingError(
+                f"{self.tsv} is not valid UTF-8 at byte {error.start}; "
+                f"the file was left untouched — {hint}."
+            ) from error
 
     # ── run metadata ────────────────────────────────────────────────────
 
     def write_meta(self, meta: dict) -> None:
-        self.meta_path.write_text(json.dumps(_jsonable(meta), indent=2))
+        self.meta_path.write_text(json.dumps(_jsonable(meta), indent=2), encoding="utf-8")
 
     def read_meta(self) -> dict:
         if not self.meta_path.exists():
             return {}
         try:
-            return json.loads(self.meta_path.read_text())
+            return json.loads(self.meta_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return {}
 
@@ -123,9 +161,11 @@ class Archive:
         # copy would defeat its only purpose. Nothing here is served raw: the read side
         # (`backend/routes.py:_redact_for_display`) credential-scans before the diff
         # reaches a browser, and every push path scans before anything leaves the host.
-        diff_path.write_text(diff or "")  # lgtm[py/clear-text-storage-sensitive-data]
+        diff_path.write_text(
+            diff or "", encoding="utf-8"
+        )  # lgtm[py/clear-text-storage-sensitive-data]
         json_path.write_text(  # lgtm[py/clear-text-storage-sensitive-data]
-            json.dumps(_jsonable(detail), indent=2)
+            json.dumps(_jsonable(detail), indent=2), encoding="utf-8"
         )
         return diff_path.name
 
@@ -153,9 +193,9 @@ class Archive:
             return text.replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
         line = "\t".join(_cell(c) for c in CONTROL_COLUMNS)
-        with self.tsv.open("a") as f:
+        with self.tsv.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
-        with self.jsonl.open("a") as f:
+        with self.jsonl.open("a", encoding="utf-8") as f:
             # Local plaintext archive row — same reasoning as `save_candidate` above.
             f.write(json.dumps(_jsonable(row)) + "\n")  # lgtm[py/clear-text-storage-sensitive-data]
 
@@ -167,7 +207,7 @@ class Archive:
         n = 0
         if not self.jsonl.exists():
             return 0
-        for line in self.jsonl.read_text().splitlines():
+        for line in self.jsonl.read_text(encoding="utf-8").splitlines():
             try:
                 n = max(n, int(json.loads(line).get("cycle", 0)))
             except Exception:  # noqa: BLE001
@@ -179,7 +219,7 @@ class Archive:
         excluding kept ones — the proposer's memory of strong near-misses."""
         rows: list[dict] = []
         if self.jsonl.exists():
-            for line in self.jsonl.read_text().splitlines():
+            for line in self.jsonl.read_text(encoding="utf-8").splitlines():
                 try:
                     rows.append(json.loads(line))
                 except Exception:  # noqa: BLE001
@@ -202,5 +242,6 @@ class Archive:
 
     def write_drift(self, cycle: int, payload: dict) -> None:
         (self.drift_dir / f"rebest-{cycle}.json").write_text(
-            json.dumps(_jsonable({"cycle": cycle, "ts": time.time(), **payload}), indent=2)
+            json.dumps(_jsonable({"cycle": cycle, "ts": time.time(), **payload}), indent=2),
+            encoding="utf-8",
         )

@@ -68,6 +68,15 @@ export interface SendTurnOptions {
   message: string
   slot?: string
   meta?: Record<string, unknown>
+  /** "Act on this now": inject into the running turn instead of queueing
+   *  behind it (or, on an idle slot, skip the hold that parks a message behind
+   *  still-running sub-agents). A flag of THIS endpoint -- `/api/chat` reads
+   *  it -- not a new receipt shape: a steer comes back `dispatched`, `queued`
+   *  (demoted) or refused like any send, with `body.steered` saying which. */
+  steer?: boolean
+  /** The active colour theme, so a widget the turn renders inherits it. Sent
+   *  only by surfaces that own a theme (ChatPage); embeds and panes omit it. */
+  colorTheme?: string
 }
 
 /**
@@ -90,9 +99,10 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
     const r = await api.sendChat(
       opts.message,
       opts.slot,
-      undefined,
+      opts.colorTheme,
       controller.signal,
       opts.meta,
+      opts.steer,
     )
     const { body, outcome } = await readSendReceipt(r)
     if (outcome === 'refused') return { status: 'refused', body, reason: typeof body.error === 'string' ? body.error : undefined }

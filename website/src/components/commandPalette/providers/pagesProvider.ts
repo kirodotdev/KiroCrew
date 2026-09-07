@@ -6,14 +6,12 @@ import type { NavigateFunction } from 'react-router-dom'
 import {
   ScrollText,
   Code2,
-  Webhook,
   ArrowDownToLine,
   ListChecks,
   Bot,
   Server,
   LayoutGrid,
   Compass,
-  Library,
 } from 'lucide-react'
 
 import { getAdvertisedSurfaces, surfaceLabel } from '../../../surfaces/registry'
@@ -25,10 +23,16 @@ import type { ResourceProvider, Result } from '../types'
 /**
  * Pages provider (Search Everywhere).
  *
- * Source of truth is the surface registry (`src/surfaces/registry.ts`) — the
- * very same `getAdvertisedSurfaces()` list `App.tsx` renders the left rail from —
- * so newly registered rail destinations show up here for free and we never
- * duplicate the rail by hand.
+ * Source of truth is the surface registry (`src/surfaces/registry.ts`) — so newly
+ * registered destinations show up here for free and we never duplicate the rail
+ * by hand.
+ *
+ * This list is NO LONGER identical to the rail's. Both read
+ * `getAdvertisedSurfaces()`, but `App.tsx` additionally drops a `pinnable`
+ * surface the user has not promoted, so a promotable sub-item (an Agent
+ * Capabilities tab) is searchable here whether or not it occupies a rail row.
+ * That is deliberate: the palette answers "where can I go", and such a tab is
+ * always reachable inside its host panel — only its rail row is opt-in.
  *
  * The rail does not cover every routed destination, however. A handful of
  * pages have routes in `App.tsx` but no rail surface (some are redirects into
@@ -102,14 +106,8 @@ const EXTRA_PAGES: readonly (Omit<PageEntry, 'title'> & { previewFlag?: string }
   // the route as the only thing telling them apart. The inbound arrow also says
   // which direction this one runs.
   { key: 'webhooks', route: '/webhooks', icon: inlineIcon(ArrowDownToLine), previewFlag: PREVIEW_WEBHOOKS },
-  // Knowledge has no rail surface (it is a tab inside Agent Capabilities), so
-  // the registry no longer offers it and the palette needs it from here. The
-  // route targets the tab directly rather than the legacy /knowledge redirect,
-  // so the subtitle teaches the page's new address instead of hiding it.
-  { key: 'knowledge', route: '/capabilities?tab=knowledge', icon: inlineIcon(Library) },
   { key: 'logs', route: '/logs', icon: inlineIcon(ScrollText) },
   { key: 'developer', route: '/developer', icon: inlineIcon(Code2) },
-  { key: 'hooks', route: '/hooks', icon: inlineIcon(Webhook) },
   { key: 'tasks', route: '/tasks', icon: inlineIcon(ListChecks) },
   { key: 'mc-agents', route: '/mc-agents', icon: inlineIcon(Bot) },
   { key: 'instances', route: '/instances', icon: inlineIcon(Server) },
@@ -134,12 +132,8 @@ const EXTRA_PAGE_TITLE_KEY: Record<string, string> = {
   // ones. Titled "Inbound webhooks", not "Webhooks", to stay distinguishable
   // from the `hooks` entry (the agent-hooks page) that sits beside it.
   webhooks: 'pages.settings.webhooksPanel.inbound_webhooks',
-  // Reuses the Capabilities tab's own label so the palette and the rail cannot
-  // disagree on what the page is called.
-  knowledge: 'pages.capabilitiesPage.knowledge_label',
   logs: 'components.commandPalette.providers.pagesProvider.logs',
   developer: 'components.commandPalette.providers.pagesProvider.developer',
-  hooks: 'components.commandPalette.providers.pagesProvider.hooks',
   tasks: 'components.commandPalette.providers.pagesProvider.tasks',
   'mc-agents': 'components.commandPalette.providers.pagesProvider.kirocrew_agents',
   instances: 'components.commandPalette.providers.pagesProvider.remote_crew',

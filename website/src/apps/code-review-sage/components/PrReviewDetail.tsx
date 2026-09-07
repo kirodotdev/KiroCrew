@@ -30,6 +30,7 @@ import ShimmerLine from './ShimmerLine'
 import PullRequestPanel from '../../../components/PullRequestPanel'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 type Tab = 'review' | 'source'
 
 /** http(s) only: the URL is provider-derived and lands in an href. */
@@ -189,7 +190,7 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
           hint={i18nT('apps.codeReviewSage.components.prReviewDetail.start_a_review_and_its_findings_appear_here_you')}
         />
       ) : reportError ? (
-        <div className="text-[12.5px] text-danger">{reportError.message}</div>
+        <ErrorNotice message={reportError.message} askAgent />
       ) : reportLoading ? (
         <ReportSkeleton />
       ) : scoped && scoped.rows.length > 0 ? (
@@ -389,9 +390,7 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
           </button>
         </div>
         {startReview.error && (
-          <div className="mt-2 text-[12.5px] text-danger">
-            {(startReview.error as Error).message}
-          </div>
+          <ErrorNotice message={(startReview.error as Error).message} variant="inline" askAgent className="mt-2" />
         )}
 
         <div

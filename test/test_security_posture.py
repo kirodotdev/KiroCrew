@@ -31,6 +31,23 @@ from kiro_crew.security_posture import (
     build_posture_snapshot_async,
 )
 
+
+@pytest.fixture(autouse=True, scope="module")
+def _drop_source_corpus_after_module():
+    """Release the whole-tree corpus this module's census pulls in.
+
+    ``_package_baseline_log_census`` below is its own ``lru_cache(maxsize=1)``
+    wrapping a ``source_corpus.parsed_candidates`` walk, so it holds two
+    references on the corpus: its own cached census AND (via
+    ``source_corpus``) the ~160 MB raw+NFKC text cache. ``test/conftest.py``
+    releases the corpus itself at every module's teardown; this releases the
+    census on top. Module teardown rather than per test, because the two tests
+    here deliberately share the census cache within the module.
+    """
+    yield
+    _package_baseline_log_census.cache_clear()
+
+
 # ANY use of a redactor, including every wrapper.
 #
 # This alternation is load-bearing: the guard below can only classify a module it
@@ -695,18 +712,20 @@ class TestOmissionDetection:
         """
         from pathlib import Path
 
-        pkg = Path(security.__file__).resolve().parent
+        pkg = Path(security_posture.__file__).resolve().parent
         call = _REDACTOR_CALL_RE
 
         registered = {module for _label, module, _detail in security_posture._REDACTION_SINKS}
         allowlisted = security_posture.NON_EGRESS_REDACTION_MODULES
-        # security.py DEFINES the redactors; security_posture.py only names them.
-        self_referential = {"security.py", "security_posture.py"}
+        # The ``security`` package DEFINES the redactors; security_posture.py only
+        # names them. The whole package is skipped, not one file, because the
+        # definitions are spread across its submodules.
+        self_referential = {"security_posture.py"}
 
         unclassified: list[str] = []
         for path in sorted(pkg.rglob("*.py")):
             rel = path.relative_to(pkg).as_posix()
-            if rel in self_referential or rel.startswith(("_vendor/", "testing/")):
+            if rel in self_referential or rel.startswith(("security/", "_vendor/", "testing/")):
                 continue
             if "/tests/" in rel or rel.endswith("_test.py"):
                 continue
@@ -731,7 +750,7 @@ class TestOmissionDetection:
         """
         from pathlib import Path
 
-        pkg = Path(security.__file__).resolve().parent
+        pkg = Path(security_posture.__file__).resolve().parent
         call = _REDACTOR_CALL_RE
         stale = [
             rel
@@ -867,7 +886,7 @@ class TestOmissionDetection:
         import re
         from pathlib import Path
 
-        pkg = Path(security.__file__).resolve().parent
+        pkg = Path(security_posture.__file__).resolve().parent
         explicit: set[str] = set()
         for path in pkg.rglob("*.py"):
             if path.name in {"sel.py", "security_posture.py"}:
@@ -905,14 +924,14 @@ class TestRedactionSinkRegistry:
     def test_every_named_sink_module_exists(self):
         from pathlib import Path
 
-        pkg = Path(security.__file__).resolve().parent
+        pkg = Path(security_posture.__file__).resolve().parent
         for _label, module, _detail in security_posture._REDACTION_SINKS:
             assert (pkg / module).is_file(), module
 
     def test_every_named_sink_module_actually_redacts(self):
         from pathlib import Path
 
-        pkg = Path(security.__file__).resolve().parent
+        pkg = Path(security_posture.__file__).resolve().parent
         for label, module, _detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")
             # The claim "this is an output path where redaction is applied" must be
@@ -930,7 +949,7 @@ class TestRedactionSinkRegistry:
         """
         from pathlib import Path
 
-        pkg = Path(security.__file__).resolve().parent
+        pkg = Path(security_posture.__file__).resolve().parent
         # Wrappers that run BOTH scanners internally, so a sink using one is fully
         # covered: StreamRedactor (rolling dual-pass), redact() (the dual-pass
         # helper), redact_and_truncate() (redact-then-slice, so a credential cannot
@@ -975,7 +994,7 @@ class TestRedactionSinkRegistry:
         """
         from pathlib import Path
 
-        pkg = Path(security.__file__).resolve().parent
+        pkg = Path(security_posture.__file__).resolve().parent
         # claim substring (case-insensitive) -> symbol that must exist in the module
         claims = {
             "streamredactor": "StreamRedactor",

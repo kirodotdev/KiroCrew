@@ -249,9 +249,11 @@ describe('SecretsPanel', () => {
     listShouldFail = true
     mount()
 
-    // `names` falls back to [] on error, so the panel degrades to the empty state
-    // instead of throwing — the Add path stays reachable.
-    expect(await screen.findByText('No secrets stored yet.')).toBeInTheDocument()
+    // A failed read must NOT read as "no secrets": the panel names the failure
+    // (with the backend prose) instead of degrading to the empty state — and the
+    // Add path stays reachable.
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load secrets: boom')
+    expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add secret' })).toBeInTheDocument()
   })
 })
@@ -346,9 +348,10 @@ describe('SecretsPanel error handling', () => {
     )
     mount()
 
-    // The list query rejects, so the panel shows the empty state. The assertion
-    // that matters is that a non-OK status did NOT resolve as data.
-    expect(await screen.findByText('No secrets stored yet.')).toBeInTheDocument()
+    // The list query rejects and the panel names the failure. The assertion that
+    // matters is that a non-OK status did NOT resolve as data — and that the
+    // backend's prose survived into the thrown error.
+    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 400: Secret name must be a string')
   })
 
   it('rejects a non-OK response whose body is not JSON', async () => {
@@ -365,8 +368,10 @@ describe('SecretsPanel error handling', () => {
     mount()
 
     // The detail-extraction `catch` must swallow the parse failure and still
-    // throw on the status, not leak a SyntaxError.
-    expect(await screen.findByText('No secrets stored yet.')).toBeInTheDocument()
+    // throw on the status, not leak a SyntaxError — so the notice carries the
+    // bare status and nothing else.
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load secrets: HTTP 502')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('not json')
   })
 })
 

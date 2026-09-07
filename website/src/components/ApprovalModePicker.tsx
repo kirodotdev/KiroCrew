@@ -8,6 +8,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { changeApprovalMode } from '../store/dashboardSlice'
 import { safeSetItem } from '../utils/safeStorage'
 import { settingsPath } from './settingsPath'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 /** Single source of truth for approval-mode presentation.
@@ -115,6 +116,24 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const yoloDuration = useAppSelector(s => s.dashboard.status?.yolo_duration)
+  // Auto-approve modes the `approval_modes` policy scope forbids (a subset of
+  // trust_reads/trust/yolo). Absent/empty => every mode selectable, so the
+  // solo-operator default is unchanged. `normal` is the interactive floor and
+  // is never in this list. Denied modes are HIDDEN from the menu below rather
+  // than shown disabled — server-side enforcement remains the source of truth.
+  const disabledModes = useAppSelector(s => s.dashboard.status?.disabled_approval_modes) ?? []
+  const isModeBlocked = (k: string) => disabledModes.includes(k)
+  // A mode ALREADY selected when the policy lands is the one exception to
+  // hiding. The trigger renders `mode` unfiltered, so hiding its row too would
+  // put "Trust" on the button with no Trust row and no checkmark anywhere in the
+  // menu — the control would contradict itself with no explanation. The row
+  // stays, disabled and labelled, until the user picks something else.
+  const isModeVisible = (k: string) => !isModeBlocked(k) || k === mode
+  // Set when the gateway refuses a pick with 403 `mode_disabled_by_policy`.
+  // Reachable in the load race before the first status frame arrives, when
+  // `disabled_approval_modes` is still undefined and every mode renders: without
+  // this the click does nothing at all, silently.
+  const [policyRefused, setPolicyRefused] = useState('')
   const [open, setOpen] = useState(false)
   const [yoloConfirm, setYoloConfirm] = useState(0)
   const [yoloDontAsk, setYoloDontAsk] = useState(false)
@@ -168,7 +187,23 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
   }
 
   const pick = (m: ApprovalModeKey) => {
-    dispatch(changeApprovalMode({ mode: m, slot: slotKey }))
+    setPolicyRefused('')
+    void dispatch(changeApprovalMode({ mode: m, slot: slotKey })).then(r => {
+      // Only a POLICY refusal is held open and reported here. Any other failure
+      // keeps the existing close-and-move-on behaviour: it is transient and
+      // retrying the same click is the natural response, whereas a policy denial
+      // will never succeed and the user needs to be told why.
+      if (r.meta.requestStatus === 'rejected'
+          && (r.payload as { code?: string } | undefined)?.code === 'mode_disabled_by_policy') {
+        // Re-open so the note below is actually on screen: the menu was closed
+        // optimistically, and the refusal renders inside it.
+        setPolicyRefused(m)
+        onOpenChange(true)
+      }
+    })
+    // Close optimistically for the overwhelmingly common success case — a menu
+    // that lingered on every pick while a round-trip completed would feel broken
+    // — and re-open only on the policy refusal above.
     onOpenChange(false)
   }
 
@@ -192,13 +227,26 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" collisionPadding={8} className="w-[280px]">
-        {APPROVAL_SEGMENTS.map(s => {
+        {/* Modes the `approval_modes` policy denies are hidden outright — a
+            hidden control can't be probed or asked about, and `normal` (the
+            interactive floor) is never deniable, so the list is never empty.
+            The ONE exception is a denied mode that is still the active one:
+            the trigger renders it regardless, so its row stays (disabled, with
+            the reason) rather than leaving the button label unexplained.
+            Server-side enforcement (api_chat_mode 403, the slot-approve gate,
+            safety_override arming) stays the source of truth. */}
+        {APPROVAL_SEGMENTS.filter(s => isModeVisible(s.key)).map(s => {
           const t = segmentText(s.key)
+          const blocked = isModeBlocked(s.key)
           return (
           <DropdownMenuItem
             key={s.key}
+            disabled={blocked}
             title={t.tooltip}
             onSelect={e => {
+              // Belt-and-braces with `disabled`: a denied mode must never reach
+              // `pick()`, whose PUT the gateway answers with 403.
+              if (blocked) { e.preventDefault(); return }
               if (s.key === 'yolo') {
                 if (mode === 'yolo') { e.preventDefault(); return }
                 if (localStorage.getItem('mc-yolo-ack')) { pick('yolo'); return }
@@ -213,12 +261,27 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
             <span className="shrink-0">{s.icon}</span>
             <span className="flex flex-col min-w-0 flex-1">
               <span className="font-medium">{t.label}</span>
-              <span className="text-[11px] font-normal text-muted leading-snug">{t.desc}</span>
+              <span className="text-[11px] font-normal text-muted leading-snug">
+                {blocked ? i18nT('components.approvalModePicker.mode_disabled_by_policy') : t.desc}
+              </span>
             </span>
             {s.key === mode && <Check size={12} className="shrink-0 text-accent" />}
           </DropdownMenuItem>
           )
         })}
+        {/* The shared error surface, not a hand-written line. A 403 from the
+            policy gate is a rejected request like any other, and rolling our own
+            <div> here dropped the agent hand-off the rest of the dashboard
+            offers. `inline` because this sits inside the menu's own flow rather
+            than as a boxed banner. */}
+        {policyRefused && (
+          <ErrorNotice
+            variant="inline"
+            askAgent
+            className="px-2 py-1.5"
+            message={i18nT('components.approvalModePicker.mode_disabled_by_policy')}
+          />
+        )}
         {yoloConfirm > 0 && (
           <>
             <DropdownMenuSeparator />

@@ -24,11 +24,7 @@ from kiro_crew.metrics.events import CONTEXT_COMPACTIONS, emit_counter
 from kiro_crew.metrics.sessions import END_REASON_RECYCLED, record_session_ended
 
 if TYPE_CHECKING:
-    # Type-only: importing providers.base from this leaf at runtime enters the
-    # providers -> acp package -> runtime -> session_pid -> providers cycle.
     from kiro_crew.providers.base import LLMProvider
-else:
-    LLMProvider = Any
 
 
 class CompactCallback(Protocol):

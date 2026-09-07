@@ -1,8 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, fireEvent, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
 import { __resetForTests } from '../hooks/useNotificationSound'
 import type { NotificationChannel } from '../types'
+
+/** The channels section reads/writes through React Query, so the panel needs
+ *  a client. `retry: false` so the "API fails" case settles in one round. */
+function renderPanel() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(<QueryClientProvider client={qc}><NotificationsPanel /></QueryClientProvider>)
+}
 
 const CHANNELS: NotificationChannel[] = [
   { channel: 'system.approval', source: 'system', registered: true, default_priority: 'critical', protected: true, settings: {} },
@@ -37,7 +45,7 @@ beforeEach(() => {
 
 describe('NotificationsPanel channels section', () => {
   it('groups channels by source with system first', async () => {
-    render(<NotificationsPanel />)
+    renderPanel()
     await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
     expect(screen.getByText('system')).toBeTruthy()
     expect(screen.getByText('oncall-radar')).toBeTruthy()
@@ -47,39 +55,40 @@ describe('NotificationsPanel channels section', () => {
   })
 
   it('renders protected channels locked without controls', async () => {
-    render(<NotificationsPanel />)
+    renderPanel()
     await waitFor(() => expect(screen.getByText('approval')).toBeTruthy())
     expect(screen.getByText('protected')).toBeTruthy()
     expect(screen.queryByRole('switch', { name: /system\.approval/ })).toBeNull()
   })
 
   it('marks unregistered channels as retained', async () => {
-    render(<NotificationsPanel />)
+    renderPanel()
     await waitFor(() => expect(screen.getByText('sync-status')).toBeTruthy())
     expect(screen.getByText(/setting retained/)).toBeTruthy()
   })
 
   it('mute toggle PUTs the setting', async () => {
-    render(<NotificationsPanel />)
+    renderPanel()
     await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
     const toggle = screen.getByRole('switch', { name: /system\.cron/ })
     expect(toggle.getAttribute('aria-checked')).toBe('true')
     fireEvent.click(toggle)
-    expect(mockUpdate).toHaveBeenCalledWith('system.cron', { muted: true })
+    // useMutation invokes mutationFn after its async onMutate, not synchronously.
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('system.cron', { muted: true }))
   })
 
   it('muted channel toggle reads off and unmutes on click', async () => {
-    render(<NotificationsPanel />)
+    renderPanel()
     await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy())
     const toggle = screen.getByRole('switch', { name: /system\.heartbeat/ })
     expect(toggle.getAttribute('aria-checked')).toBe('false')
     fireEvent.click(toggle)
-    expect(mockUpdate).toHaveBeenCalledWith('system.heartbeat', { muted: false })
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('system.heartbeat', { muted: false }))
   })
 
   it('hides the section when the channels API fails', async () => {
     mockChannels.mockRejectedValue(new Error('boom'))
-    render(<NotificationsPanel />)
+    renderPanel()
     await waitFor(() => expect(screen.getByText('Failed to load channels')).toBeTruthy())
     // Sound section still renders
     expect(screen.getByText('Sound')).toBeTruthy()

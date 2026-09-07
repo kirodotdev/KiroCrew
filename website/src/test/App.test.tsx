@@ -261,7 +261,12 @@ describe('App routing', () => {
       // still shown rather than skipped along with it.
       renderWithProviders(<App />, { route: '/chat' })
 
-      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      // Privacy mounts only at the end of a real async chain: the import
+      // chapter's scan query resolves, an effect fires its auto-complete
+      // mutation (`api.onboardingImportState`), and `onSuccess` flips the
+      // parent's state. findBy*'s 1000ms default polls that whole chain and
+      // loses under load, so the wait names the boundary and gives it room.
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
       expect(within(dialog).getByText('Anonymous daily heartbeat')).toBeInTheDocument()
       // Mandatory: no way past it but forward.
       expect(within(dialog).queryByRole('button', { name: /skip/i })).not.toBeInTheDocument()
@@ -286,8 +291,9 @@ describe('App routing', () => {
       const api = await freshFirstRun()
       renderWithProviders(<App />, { route: '/chat' })
 
-      // Chapter 1 (nothing to import) → Privacy → Customize.
-      const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
+      // Chapter 1 (nothing to import) → Privacy → Customize. Same
+      // auto-complete mutation chain as above sits in front of this dialog.
+      const dialog = await screen.findByRole('dialog', { name: 'Privacy' }, { timeout: 5000 })
       fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
       expect(await screen.findByText('Pick your look')).toBeInTheDocument()
 
@@ -1435,7 +1441,12 @@ describe('TopbarMetrics widget', () => {
     sysMock.mockResolvedValueOnce({ mem_used_gb: 4.0, mem_total_gb: 0, cpu_pct: 25.0, disk_total_gb: 0, disk_free_gb: 0 } as never)
     localStorage.setItem('mc-topbar-metrics', '1')
     renderWithProviders(<App />, { route: '/chat' })
-    expect(await screen.findByText(/MEM —/)).toBeInTheDocument()
+    // The capsule paints `MEM —` / `DSK —` BEFORE the first frame lands too (the
+    // loading placeholder reuses the loaded branch's "no valid reading" glyph),
+    // so a dash is not proof the frame arrived. `CPU 25%` only exists in the
+    // loaded branch: wait for that, then read the dashes off the same frame.
+    expect(await screen.findByText(/CPU 25%/)).toBeInTheDocument()
+    expect(screen.getByText(/MEM —/)).toBeInTheDocument()
     expect(screen.getByText(/DSK —/)).toBeInTheDocument()
     sysMock.mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 } as never)
     localStorage.removeItem('mc-topbar-metrics')
@@ -1454,10 +1465,12 @@ describe('TopbarMetrics widget', () => {
     sysMock.mockResolvedValueOnce({ mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 } as never)
     localStorage.setItem('mc-topbar-metrics', '1')
     renderWithProviders(<App />, { route: '/chat' })
-    expect(await screen.findByText(/MEM —/)).toBeInTheDocument()
+    // Same ordering as above: `MEM —` is also the pre-frame placeholder, so the
+    // wait has to be on a reading only the loaded frame can produce.
+    expect(await screen.findByText(/CPU 25%/)).toBeInTheDocument()
+    expect(screen.getByText(/MEM —/)).toBeInTheDocument()
     // The rest of the same frame still renders — one absent probe must not
     // blank the whole capsule, let alone unmount the app.
-    expect(screen.getByText(/CPU 25%/)).toBeInTheDocument()
     expect(screen.getByText(/DSK 40%/)).toBeInTheDocument()
     sysMock.mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 } as never)
     localStorage.removeItem('mc-topbar-metrics')

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { i18nT } from '../i18n/t'
 import type { ReactNode } from 'react'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
@@ -329,7 +330,7 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     expect((box as HTMLTextAreaElement).value).toBe('')
   })
 
-  it('falls back to the generic string when the transport rejects', async () => {
+  it('states the cause when the transport rejects: the shared connection copy, not a bare "Send failed"', async () => {
     ;(api.sendChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('offline'))
     const { store } = renderPane('pane-generic')
     const box = (await screen.findAllByRole('textbox'))[0]
@@ -338,7 +339,7 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
 
     // No response means no server reason, so the connectivity copy is correct here.
     await waitFor(() => expect(errorsIn(store, 'pane-generic')).toHaveLength(1))
-    expect(errorsIn(store, 'pane-generic')[0].content.trim().length).toBeGreaterThan(0)
+    expect(errorsIn(store, 'pane-generic')[0].content).toBe(i18nT('pages.chatPage.send_failed_connection'))
   })
 
   it('reports a REFUSED question-card answer instead of losing it (#4217)', async () => {

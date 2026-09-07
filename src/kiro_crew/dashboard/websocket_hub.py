@@ -341,6 +341,25 @@ class WebSocketHub:
     def ws_client_count(self) -> int:
         return len(self._owner._ws_clients)
 
+    def dashboard_user_ws_count(self) -> int:
+        """Count open sockets belonging to a dashboard USER, not an app token.
+
+        ``ws_client_count`` counts every ``/api/ws`` registration, and an app
+        token is one of them (``_is_dashboard_user`` False, set from the auth
+        middleware in ``dashboard/ws.py``). Such a socket does not receive an
+        owner-surface frame unless its manifest declared that event -- the same
+        first line ``_ws_client_allowed`` gates on -- so a caller asking "is a
+        human watching?" must not count it.
+
+        Closed-but-not-yet-pruned sockets are skipped: the registry prunes
+        lazily, on the next broadcast.
+        """
+        return sum(
+            1
+            for ws in list(self._owner._ws_clients)
+            if not ws.closed and ws.get("_is_dashboard_user", False)
+        )
+
     def broadcast_browser_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Redact and broadcast a browser activity event."""
         redact_credentials = self._redact_credentials_provider()

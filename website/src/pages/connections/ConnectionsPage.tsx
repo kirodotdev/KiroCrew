@@ -15,11 +15,13 @@ import {
   Unplug,
   X,
 } from 'lucide-react'
-import { api, type ConnectionMintState, type ConnectionStatus } from '../../api/client'
+import { api, ApiError, type ConnectionMintState, type ConnectionStatus } from '../../api/client'
 import { useAppSelector } from '../../store'
 import type { ChatMessage, McpApplyChange, McpServer } from '../../types'
 import { fmtDate } from '../../i18n/format'
 import { Badge, Btn, ContentSkeleton, SearchInput } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
+import { findReport, type ErrorReport } from '../../utils/errorReport'
 import McpTab from '../overview/McpTab'
 import ProviderLogo, { PROVIDER_LOGO_SLUGS } from './ProviderLogo'
 import {
@@ -55,6 +57,22 @@ export type Feedback = {
   /** Localized supplemental guidance appended after `text` (e.g. a provider's
    *  prerequisite steps on a zero-tools verdict). */
   detail?: string
+  /**
+   * Structured context for an `error` feedback, when the journal holds it.
+   *
+   * Enrichment ONLY -- it never decides which surface renders: every `error`
+   * kind routes through `ErrorNotice` because `kind` alone says the request
+   * failed, and `ErrorNotice` degrades to its own message-keyed lookup when no
+   * report is found. Gating the routing on a report instead would let a lookup
+   * miss (a mocked client, a redaction difference, journal eviction) silently
+   * fall back to a hand-written error line, which is the defect the shared
+   * surface exists to prevent -- and it would fail on the least-exercised path.
+   *
+   * Carried explicitly rather than derived from `text`, because `text` is a
+   * LOCALIZED string while the journal is keyed on the message the API layer
+   * produced, so a lookup by the rendered text misses in every locale.
+   */
+  report?: ErrorReport
   revoke?: { href: string; provider: string }
   help?: { href: string }
 }
@@ -292,6 +310,19 @@ export function connectionStateFor(
   // A completed OAuth flow in THIS session outranks a possibly-lagging status
   // poll: the grant was just written, the feed may not have re-read yet.
   if (oauth?.completed) return 'connected'
+  // A pending attempt THIS TAB is holding, or the backend's own mint table
+  // saying a flow is in flight right now, outranks the cached probe verdicts
+  // below. The mint side of this fix validates an existing grant before ever
+  // reporting a mint `granted`, so a live `awaitingConsent`/`locallyWaiting`
+  // here means either a genuinely fresh consent flow (the old grant did not
+  // hold up) or a not-yet-decided reconnect -- never a flow the backend itself
+  // already knows is stale. Reading `server.status === 'ok'` first, as this
+  // branch used to, is exactly what let Connect flip Stripe and Vercel to
+  // Connected on a cached probe the instant the click landed, well before the
+  // mint had validated anything: the card claimed an authorization no fresher
+  // fact yet backed. `oauth?.oauthUrl` is kept alongside the mint signal for
+  // the chat-message delivery path, which never sets `awaitingConsent`.
+  if (locallyWaiting || awaitingConsent || oauth?.oauthUrl) return 'waiting-for-approval'
   if (server.status === 'ok') {
     // The reachability probe is cached, so `ok` outlives a revoked grant. A
     // CONFIRMED absent grant (grantPresent === false, never the indeterminate
@@ -300,7 +331,6 @@ export function connectionStateFor(
     // authorization that no longer exists.
     return probeIndicatesConnected(server.status, grantPresent) ? 'connected' : 'not-verified'
   }
-  if (locallyWaiting || awaitingConsent || oauth?.oauthUrl) return 'waiting-for-approval'
   // The status probe carries no OAuth token — kiro-cli owns token custody and
   // Kiro Crew stores no credential — so a remote OAuth server answers it with 401
   // and the gateway reports `needs_auth`. Two very different situations produce
@@ -368,6 +398,12 @@ interface ConnectionCardProps {
    *  can name itself, while an unknowable one must keep the honest hedge. */
   grantPresent?: boolean
   busy?: ConnectionAction
+  /** The provider NAME (not slug) of whichever card currently owns the single
+   *  in-flight Connections Test, or undefined when none is running. Used only
+   *  to disable and explain every OTHER card's Test button -- this card's own
+   *  busy==='test' already covers its own button, and a card testing itself
+   *  must not disable against its own name. */
+  testingProvider?: string
   feedbackSlots: ReadonlyArray<{ slug: string; value: Feedback }>
   highlighted: boolean
   onConnect: () => Promise<unknown>
@@ -527,6 +563,7 @@ function ConnectionCard({
   connectedSince,
   grantPresent,
   busy,
+  testingProvider,
   feedbackSlots,
   highlighted,
   onConnect,
@@ -911,7 +948,7 @@ function ConnectionCard({
               {prerequisiteTip}
               <Btn primary onClick={() => void startMint(onReconnect)} disabled={!!busy}>
                 {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />}
-                {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.authorize')}
+                {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.connect')}
               </Btn>
             </div>
           </div>
@@ -926,7 +963,12 @@ function ConnectionCard({
               </dl>
             )}
             <div className="flex justify-end gap-2">
-              <Btn onClick={() => void onTest()} disabled={!!busy}>
+              <Btn
+                onClick={() => void onTest()}
+                disabled={!!busy || !!testingProvider}
+                title={testingProvider ? t('pages.connectionsPage.test_blocked_by_sibling', { provider: testingProvider }) : undefined}
+                aria-label={testingProvider ? t('pages.connectionsPage.test_blocked_by_sibling', { provider: testingProvider }) : undefined}
+              >
                 {busy === 'test' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />}
                 {busy === 'test' ? t('pages.connectionsPage.testing') : t('pages.connectionsPage.test_connection')}
               </Btn>
@@ -977,10 +1019,15 @@ function ConnectionCard({
                 />
               )
             }
+            const isError = slot.value.kind === 'error'
             return (
               <div
                 key={slot.slug}
-                role={slot.value.kind === 'success' ? 'status' : 'alert'}
+                // An `error` renders through `ErrorNotice`, which supplies its OWN
+                // role="alert" -- a second one here would announce twice and make
+                // a by-role lookup ambiguous. Non-error kinds keep this wrapper's
+                // role, because they have no shared surface of their own.
+                role={isError ? undefined : (slot.value.kind === 'success' ? 'status' : 'alert')}
                 className={`col-start-1 row-start-1 ${
                   slot.value.kind === 'error'
                     ? 'text-danger'
@@ -989,7 +1036,18 @@ function ConnectionCard({
                       : 'text-ok'
                 }`}
               >
-                {slot.value.text}
+                {isError ? (
+                  /* No hand-off: the waiting card renders the return-address
+                     paste-back input, whose typed value lives only in card-local
+                     state and is cleared ONLY on a delivered relay -- so after a
+                     FAILED relay the address the user must retry with is still
+                     sitting in that input, and the hand-off navigates to the chat
+                     and unmounts this gallery, discarding it. That covers the
+                     generic action failure; the single-flight refusal separately
+                     has no diagnosis to hand over, being self-describing and
+                     self-correcting (wait for the running test, click again). */
+                  <ErrorNotice variant="inline" message={slot.value.text} report={slot.value.report} />
+                ) : slot.value.text}
                 {slot.value.detail && (
                   <>
                     {' '}
@@ -1263,7 +1321,14 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       const message = error instanceof Error ? error.message : t('pages.connectionsPage.unknown_error')
       setFeedback(current => ({
         ...current,
-        [provider.slug]: { kind: 'error', text: t('pages.connectionsPage.action_failed', { error: message }) },
+        [provider.slug]: {
+          kind: 'error',
+          text: t('pages.connectionsPage.action_failed', { error: message }),
+          // Keyed on the message the API layer journaled, not the localized text
+          // above, so the endpoint/status/`code` context survives into the
+          // shared error surface in every locale.
+          report: findReport(message),
+        },
       }))
       return false
     } finally {
@@ -1478,7 +1543,41 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   }
 
   const testConnection = async (provider: ConnectionProvider) => run(provider, 'test', async () => {
-    const result = await api.connectionsTest(provider.slug)
+    let result
+    try {
+      result = await api.connectionsTest(provider.slug)
+    } catch (error) {
+      // A single-flight refusal is a REJECTED REQUEST, so it belongs to the
+      // shared error surface (`ErrorNotice`, via `Feedback.report`) rather than
+      // this page's plain feedback line -- but it is named rather than left to
+      // the ambiguous "action_failed" catch in `run` below, because the one
+      // thing the user needs is WHICH provider is holding the slot.
+      if (error instanceof ApiError && error.status === 409) {
+        let runningSlug = ''
+        try {
+          const parsed: unknown = JSON.parse(error.body)
+          if (parsed && typeof parsed === 'object' && typeof (parsed as { slug?: unknown }).slug === 'string') {
+            runningSlug = (parsed as { slug: string }).slug
+          }
+        } catch { /* malformed body — fall back to the generic provider name below */ }
+        const runningProvider = CONNECTION_PROVIDERS.find(candidate => candidate.slug === runningSlug)?.name
+          ?? provider.name
+        setFeedback(current => ({
+          ...current,
+          [provider.slug]: {
+            kind: 'error',
+            text: t('pages.connectionsPage.test_in_flight', { provider: runningProvider }),
+            // Keyed on the message the API layer journaled, not the localized
+            // text rendered above, so the endpoint/status/`code` context is
+            // recovered in every locale. A miss is tolerated -- `kind: 'error'`
+            // is what routes this to the shared surface, not the report.
+            report: findReport(error.message),
+          },
+        }))
+        return
+      }
+      throw error
+    }
     if (result.verdict === 'usable') {
       setFeedback(current => ({
         ...current,
@@ -1587,7 +1686,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               {t('pages.connectionsPage.no_matching_services')}
             </div>
           ) : (
-            <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
               {filteredProviders.map(provider => {
                 const server = serverForConnection(provider, servers)
                 const pending = locallyWaiting[provider.slug]
@@ -1608,6 +1707,13 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                   status?.status === 'awaiting_consent',
                 )
                 const cardBusy = busy?.slug === provider.slug ? busy.action : undefined
+                // Named only when a DIFFERENT card owns the running test: this
+                // card's own in-flight test is already covered by `cardBusy`,
+                // and naming a card against itself would read as nonsense
+                // ("Vercel is testing" on Vercel's own disabled button).
+                const testingProvider = busy?.action === 'test' && busy.slug !== provider.slug
+                  ? CONNECTION_PROVIDERS.find(candidate => candidate.slug === busy.slug)?.name
+                  : undefined
                 return (
                   <ConnectionCard
                     key={provider.slug}
@@ -1620,6 +1726,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     // indeterminate stays undefined so the card keeps the hedge.
                     grantPresent={confirmedGrantPresent(status)}
                     busy={cardBusy}
+                    testingProvider={testingProvider}
                     feedbackSlots={feedbackSlots}
                     highlighted={highlightedSlug === provider.slug}
                     onConnect={() => connect(provider)}

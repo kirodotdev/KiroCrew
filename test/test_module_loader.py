@@ -12,8 +12,11 @@ import pytest
 
 from kiro_crew.apps.module_loader import (
     _module_namespace,
+    cache_shutdown_callable,
+    clear_shutdown_callable,
     is_app_module_loaded,
     load_app_module,
+    resolve_loaded_callable,
     unload_app_modules,
 )
 
@@ -698,3 +701,91 @@ def test_deploy_skill_install_replaces_managed_dir(tmp_path, monkeypatch):
     assert (managed_dir / "SKILL.md").exists()
     # Marker was re-written by the copy fallback
     assert (managed_dir / ".kirocrew-managed").exists()
+
+
+# ---------------------------------------------------------------------------
+# resolve_loaded_callable — gone-app shutdown (issue #7880 reconciler teardown)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_loaded_callable_survives_deleted_files(tmp_path, monkeypatch):
+    """GPT [BLOCKING]: CLI uninstall deletes an app's files, so the disk loader
+    can no longer resolve its on_shutdown -- yet the module the gateway imported
+    is still resident in sys.modules and a task its on_startup spawned is still
+    live. resolve_loaded_callable resolves the callable from that cached module
+    so trust revocation can still run on_shutdown, where load_app_module (disk)
+    now raises."""
+    app_dir = tmp_path / "gone-app"
+    _create_app_module(
+        app_dir, "backend.hooks:on_shutdown", "def on_shutdown(ctx):\n    return 'bye'\n"
+    )
+    # Load it as the gateway would, then delete the files (simulate uninstall).
+    func = load_app_module("gone-app", app_dir, "backend.hooks:on_shutdown")
+    assert func(None) == "bye"
+    import shutil
+
+    shutil.rmtree(app_dir)
+
+    # Disk loader now fails (files gone)...
+    with pytest.raises(ImportError):
+        load_app_module("gone-app", app_dir, "backend.hooks:on_shutdown")
+    # ...but the cached module still resolves the callable.
+    cached = resolve_loaded_callable("gone-app", "backend.hooks:on_shutdown")
+    assert cached is not None and cached(None) == "bye"
+
+    unload_app_modules("gone-app")
+    # Once unloaded, there is nothing cached to resolve.
+    assert resolve_loaded_callable("gone-app", "backend.hooks:on_shutdown") is None
+
+
+def test_resolve_loaded_callable_none_when_never_loaded():
+    """An app the gateway never loaded has no cached module -> None (the caller
+    then falls back to the disk loader / hooks-skipped teardown)."""
+    assert resolve_loaded_callable("never-loaded-app", "backend.hooks:on_shutdown") is None
+    # Malformed paths resolve to None rather than raising.
+    assert resolve_loaded_callable("x", "no-colon") is None
+    assert resolve_loaded_callable("x", ":only_callable") is None
+
+
+def test_cached_shutdown_callable_survives_uninstall_of_uncached_module():
+    """GPT [BLOCKING]: when on_startup and on_shutdown live in SEPARATE modules,
+    only the startup module is in sys.modules, so resolve_loaded_callable would
+    miss the shutdown module and the disk fallback would raise on the deleted
+    files -- orphaning the app's background task after trust removal. The
+    enable-time cache_shutdown_callable captures the bound on_shutdown callable
+    while files exist, so resolve_loaded_callable returns it FIRST, without disk."""
+    ran = {"v": False}
+
+    def on_shutdown(ctx):
+        ran["v"] = True
+        return "stopped"
+
+    # No module for this app is in sys.modules (startup never imported the
+    # shutdown module) -> without the cache, resolution would be None.
+    assert resolve_loaded_callable("sep-app", "backend.shutdown:on_shutdown") is None
+
+    # Enable-time cache (populated while files existed) now covers it.
+    cache_shutdown_callable("sep-app", on_shutdown)
+    func = resolve_loaded_callable("sep-app", "backend.shutdown:on_shutdown")
+    assert func is not None
+    assert func(None) == "stopped" and ran["v"] is True
+
+    # Cleared on unload -> re-enable re-caches fresh code.
+    clear_shutdown_callable("sep-app")
+    assert resolve_loaded_callable("sep-app", "backend.shutdown:on_shutdown") is None
+
+
+def test_clear_all_shutdown_callables_drops_the_whole_cache():
+    """GPT round-9: the gateway teardown sweep does not go through per-app
+    unload_app_modules, so it must drop the whole shutdown cache -- otherwise a
+    callable captured this generation survives into an in-process restart and is
+    used to stop a NEWLY loaded worker."""
+    import kiro_crew.apps.module_loader as ml
+
+    ml._shutdown_callables.clear()
+    ml.cache_shutdown_callable("app-a", lambda ctx: None)
+    ml.cache_shutdown_callable("app-b", lambda ctx: None)
+    assert ml._shutdown_callables  # populated
+
+    ml.clear_all_shutdown_callables()
+    assert ml._shutdown_callables == {}, "teardown sweep must drop every cached callable"

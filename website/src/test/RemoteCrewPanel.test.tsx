@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
@@ -617,6 +617,16 @@ describe('RemoteCrewPanel', () => {
         probes: [{ name: 'ssh', ok: true }, { name: 'remote_dashboard', ok: false }],
       },
     }
+    /** The hand-off ON THE DIAGNOSIS NOTE. A broken row now carries its own
+     *  "Ask the agent" link next to `status.error` (StatusBadge renders it through
+     *  ErrorNotice), so the note's button must be picked by its container — the
+     *  row's link would send the bare message without the ladder. */
+    // The diagnosis note is the shared ErrorNotice (role="alert") since #8749;
+    // this helper still looked for the role="status" box #8729 was written
+    // against, so `closest` returned null and every hand-off case failed.
+    const noteAgentButton = () =>
+      within(screen.getByTestId('remote-crew-diagnosis'))
+        .getByRole('button', { name: /agent/i })
 
     it('hands the diagnosis to the agent with the ladder code and probe chain', async () => {
       // A diagnosis that names the broken link and then leaves the user with
@@ -633,7 +643,7 @@ describe('RemoteCrewPanel', () => {
       await openRowMenu(u)
       await u.click(await screen.findByRole('menuitem', { name: /Diagnose Nimbus/i }))
       await screen.findByText(/c1: Remote dashboard down/i)
-      await u.click(screen.getByRole('button', { name: /agent/i }))
+      await u.click(noteAgentButton())
 
       const prompt = consumeChatHandoff() || ''
       expect(prompt).toContain('remote_down')
@@ -661,7 +671,7 @@ describe('RemoteCrewPanel', () => {
       await openRowMenu(u)
       await u.click(await screen.findByRole('menuitem', { name: /Diagnose Nimbus/i }))
       await screen.findByText(/c1: Remote dashboard down/i)
-      await u.click(screen.getByRole('button', { name: /agent/i }))
+      await u.click(noteAgentButton())
       first.unmount()
 
       renderWithProviders(<RemoteCrewPanel />, { store: first.store })
@@ -688,7 +698,7 @@ describe('RemoteCrewPanel', () => {
       await openRowMenu(u)
       await u.click(await screen.findByRole('menuitem', { name: /Diagnose Nimbus/i }))
       await screen.findByText(/c1: Remote dashboard down/i)
-      await u.click(screen.getByRole('button', { name: /agent/i }))
+      await u.click(noteAgentButton())
       first.unmount()
 
       renderWithProviders(<RemoteCrewPanel />, { store: first.store })
@@ -723,7 +733,7 @@ describe('RemoteCrewPanel', () => {
       await openRowMenu(u)
       await u.click(await screen.findByRole('menuitem', { name: /Diagnose Nimbus/i }))
       await screen.findByText(/c1: Remote dashboard down/i)
-      await u.click(screen.getByRole('button', { name: /agent/i }))
+      await u.click(noteAgentButton())
       first.unmount()
 
       // Someone else moved the TTL while the user was in the chat.

@@ -123,6 +123,17 @@ describe('chat sidebar — stale-session collapse', () => {
     expect(expander).toHaveTextContent('2')
   })
 
+  it('shows the pinned boundary only when dormant unpinned rows are expanded', () => {
+    const { getByTestId, queryByTestId } = renderSidebar([
+      slot('pinned', 'pinned session', 1, { pinned: true }),
+      slot('old', 'dormant unpinned', 10 * 24),
+    ])
+
+    expect(queryByTestId('pinned-session-divider')).toBeNull()
+    fireEvent.click(getByTestId('stale-expander-root'))
+    expect(getByTestId('pinned-session-divider')).toBeInTheDocument()
+  })
+
   it('expands and re-collapses on click, flipping aria-expanded', () => {
     const { getByTestId, queryByText } = renderSidebar([
       slot('fresh', 'fresh session', 2),

@@ -47,20 +47,17 @@ async def _owner_only(request: web.Request, operation: str) -> web.Response | No
     """
     if is_owner_dashboard_request(request):
         return None
-    # Off the loop: the FIRST sel() of a process CONSTRUCTS the log (trust-dir
-    # creation, key validation — blocking file IO), so on a fresh gateway whose
-    # first secrets request is non-owner this would otherwise stall every other
-    # request. Same reasoning as agents._require_owner.
+    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton,
+    # #8608). Guarded because a FAILED warm leaves construction to retry here
+    # and possibly raise — the audit must never change the outcome.
     caller = str(request.get("user") or "unknown")
     try:
-        await asyncio.to_thread(
-            lambda: _sel().log_api_access(
-                caller=caller,
-                operation=operation,
-                outcome="denied",
-                source="dashboard",
-                resources="non_owner_block",
-            )
+        _sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources="non_owner_block",
         )
     except Exception:  # pragma: no cover — audit must never change the outcome
         logger.debug("SEL audit for non-owner %s failed", operation, exc_info=True)

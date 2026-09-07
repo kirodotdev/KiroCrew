@@ -341,6 +341,24 @@ def data_home() -> Path:
     return config_dir()
 
 
+def peek_data_home() -> Path:
+    """Where the data home IS, without creating or maintaining it.
+
+    :func:`config_dir` and :func:`data_home` both create the home on first
+    resolution (and refresh the recovery breadcrumb). A caller that only wants
+    to know whether a file *would* be there -- an import-time cache load, a
+    read-only inspector -- must not turn "import the package" into "mkdir
+    ``~/.kiro/crew``": a test collector imports before any isolation runs, and a
+    tool that reports state should not create it. Applies the SAME override
+    predicate :func:`config_dir` gates on, so a valid ``KIROCREW_HOME`` and the
+    default home agree between reader and writer, and reads nothing else.
+    """
+    override = _valid_override_home()
+    if override is not None:
+        return override
+    return _resolve_default_home()
+
+
 def ensure_data_home() -> Path:
     """Eagerly resolve and create the data home — call BEFORE the loop.
 
@@ -544,6 +562,16 @@ def kiro_home() -> Path:
     return p
 
 
+#: Test/tooling redirect for :func:`kiro_sessions_dir`, consulted on every call
+#: (``None`` = resolve from the environment). Same shape as
+#: :data:`_agents_dir_override` and for the same reason: several modules bind
+#: ``kiro_sessions_dir`` by name (``from ... import kiro_sessions_dir``), which
+#: copies the function OBJECT, so patching this module's attribute would never
+#: reach them. A value read inside the function BODY does, because a function's
+#: globals are always its defining module's.
+_sessions_dir_override: Callable[[], Path] | None = None
+
+
 def kiro_sessions_dir() -> Path:
     """Where kiro-cli stores its chat transcripts: ``<kiro home>/sessions/cli``.
 
@@ -553,7 +581,16 @@ def kiro_sessions_dir() -> Path:
     transcripts from the machine-wide path loses session resume and has its
     mappings pruned. Routing both through the resolver keeps writer and reader in
     agreement.
+
+    Honours :data:`_sessions_dir_override` when one is installed, the same lever
+    :func:`kiro_agents_dir` offers for the agent-spec home — this is the third
+    ``~/.kiro`` axis (agents, transcripts, and the data home ``KIROCREW_HOME``
+    already covers) and it needs its own hook because it is resolved lazily
+    (``kiro_home()`` -> ``$KIRO_HOME`` or ``Path.home()/.kiro``) at every call, so
+    neither ``KIROCREW_HOME`` nor an import-time path pin can reach it.
     """
+    if _sessions_dir_override is not None:
+        return _sessions_dir_override()
     return kiro_home() / "sessions" / "cli"
 
 

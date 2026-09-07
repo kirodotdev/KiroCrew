@@ -1,8 +1,23 @@
+---
+title: App Sandbox and Isolation Roadmap
+status: draft
+kind: framework
+author: Ray Xu (rayrayxu)
+created: 2026-04-23
+last-audited: 2026-09-05
+audited-at: 424efa423
+doc-pr:
+implementation-prs: []
+tracking-issues: []
+supersedes: []
+superseded-by: []
+---
+
 # App Sandbox & Isolation Roadmap
 
-**Author:** Ray Xu (rayrayxu)
-**Date:** 2026-04-23
-**Status:** Planned
+A roadmap rather than a single reviewable change: it inventories what an app token
+can reach today and stages the isolation work, so each stage is proposed and
+approved on its own.
 
 ---
 

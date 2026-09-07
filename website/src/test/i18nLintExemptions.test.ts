@@ -186,6 +186,35 @@ describe('the autolink template placeholder is exempt', () => {
   })
 })
 
+describe('diagnostic log sentinels are exempt', () => {
+  it('stays quiet on the bare sentinels', async () => {
+    // Real site: lib/paneLog.ts. The reader is whoever greps gateway-launch.log
+    // after a pane failed to load, so a translated `<redacted>` would make the
+    // journal unsearchable in the one incident it exists for.
+    expect(
+      await lint(`export const PROBE = ['<redacted>', '<empty>', '<unserializable>']`),
+    ).toEqual([])
+  })
+
+  it('stays quiet on a sentinel standing in for a query', async () => {
+    // The two values `safePaneUrl` substitutes for a query it will not journal.
+    expect(await lint(`export const PROBE = ['?token=<redacted>', '?<query>']`)).toEqual([])
+  })
+
+  it('still reports copy that merely contains a bracketed word', async () => {
+    // The anchors are the whole tightness argument: a placeholder inside a
+    // sentence is copy, and the surrounding words are what must stay reportable.
+    const messages = await lint(`export const PROBE = ['Enter <name> here', 'Token <redacted>']`)
+    expect(messages).toHaveLength(2)
+  })
+
+  it('still reports a server-contract query that carries no sentinel', async () => {
+    // `?<query>` must not have widened the `^[?&][a-z_]+=…$` shapes into "anything
+    // after a question mark" — a query whose VALUE is prose is still copy.
+    expect(await lint(`export const PROBE = ['?label=Save changes']`)).toHaveLength(1)
+  })
+})
+
 describe('Tailwind arbitrary-variant clusters are exempt', () => {
   it('stays quiet on the touch-target override clusters', async () => {
     // Real site: HOVER_NONE_ACTIONS_ROW_CLS / HOVER_NONE_ACTION_BTN_CLS in

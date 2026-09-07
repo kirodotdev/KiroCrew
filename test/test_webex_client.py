@@ -575,11 +575,19 @@ class TestRedeliveryHandling:
         assert "raw-uuid" not in str(c._seen) or c._seen  # the mark is kept
 
     @pytest.mark.asyncio
-    async def test_a_failed_ack_does_not_raise(self) -> None:
+    async def test_a_failed_ack_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A closed socket is the expected failure and is already surfaced by the
         # reconnect loop; letting it escape would log an unretrieved task
         # exception on every reconnect.
         c = _client()
+        # The handler task fetches the message via a real Webex REST call
+        # unless stubbed; give it a message so it settles without a network
+        # reach-out, matching _wired()'s fake_fetch elsewhere in this file.
+        monkeypatch.setattr(
+            c,
+            "fetch_message",
+            lambda mid: asyncio.sleep(0, result={"personEmail": "user@example.com", "text": "hi"}),
+        )
 
         class DeadWs:
             async def send_json(self, payload: dict) -> None:
@@ -590,8 +598,13 @@ class TestRedeliveryHandling:
         await asyncio.gather(*c._handler_tasks, return_exceptions=False)
 
     @pytest.mark.asyncio
-    async def test_no_socket_means_no_ack_attempt(self) -> None:
+    async def test_no_socket_means_no_ack_attempt(self, monkeypatch: pytest.MonkeyPatch) -> None:
         c = _client()
+        monkeypatch.setattr(
+            c,
+            "fetch_message",
+            lambda mid: asyncio.sleep(0, result={"personEmail": "user@example.com", "text": "hi"}),
+        )
         c._ws = None
         c._handle_frame(_frame())  # must not raise
         await asyncio.gather(*c._handler_tasks)

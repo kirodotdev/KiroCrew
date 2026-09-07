@@ -133,12 +133,16 @@ describe('InstancesViewport', () => {
     expect((frame.parentElement as HTMLElement).style.display).toBe('none')
   })
 
-  it('delegates microphone and fullscreen to the cross-origin pane', async () => {
+  it('delegates microphone, fullscreen and clipboard-write to the cross-origin pane', async () => {
     // The pane is a cross-origin iframe (same host, different port), where
-    // both features are denied unless the parent delegates them. Dropping
-    // either regresses a user-visible capability: mic -> getUserMedia rejects
-    // with NotAllowedError; fullscreen -> the fullscreen button on native
-    // <video> controls inside the embedded chat renders disabled.
+    // these features are denied unless the parent delegates them. Dropping
+    // any of them regresses a user-visible capability: mic -> getUserMedia
+    // rejects with NotAllowedError; fullscreen -> the fullscreen button on
+    // native <video> controls inside the embedded chat renders disabled;
+    // clipboard-write -> navigator.clipboard.writeText() rejects in the pane,
+    // so every copy affordance fails (CliPanel's selection copy surfaces
+    // "Copy failed"; TerminalKeyBar and WebAppArtifactCard hit the same
+    // rejection).
     const store = createTestStore({
       instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
     })
@@ -148,7 +152,17 @@ describe('InstancesViewport', () => {
       if (!f) throw new Error('no iframe yet')
       return f as HTMLIFrameElement
     })
-    expect(frame.getAttribute('allow')).toBe('microphone; fullscreen')
+    expect(frame.getAttribute('allow')).toBe('microphone; fullscreen; clipboard-write')
+    // Contract pin: whatever shape the delegation list takes in the future,
+    // clipboard-write must survive it -- the pane's copy paths depend on it.
+    expect(frame.getAttribute('allow')).toContain('clipboard-write')
+    // Scope discipline: clipboard-read stays undelegated. Read is the more
+    // sensitive grant class and exceeds this fix's clipboard-write scope, so
+    // the pane's Paste key (TerminalKeyBar's readText) still fails inside
+    // embedded panes, visibly, with its named paste_permission_needed status.
+    // Delegating read is a maintainer decision; this pin makes a future grant
+    // a deliberate act rather than a drive-by.
+    expect(frame.getAttribute('allow')).not.toContain('clipboard-read')
     expect(frame.hasAttribute('allowfullscreen')).toBe(true)
   })
 

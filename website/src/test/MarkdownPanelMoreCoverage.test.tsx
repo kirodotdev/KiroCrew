@@ -182,7 +182,7 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════════════════
 
 function openOverflow(filePath = '/tmp/notes.md', content = '# hi\n') {
-  render(<OverflowMenu filePath={filePath} content={content} />, { wrapper })
+  render(<OverflowMenu filePath={filePath} content={content} onError={vi.fn()} />, { wrapper })
   fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
 }
 
@@ -301,7 +301,9 @@ describe('MarkdownPanel — snapshot failure', () => {
     await screen.findByLabelText('Open as artifact')
     openPanelMenu()
     fireEvent.click(await screen.findByText('Snapshot version'))
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith('artifact is read-only'))
+    // The failure lands in the panel's shared ErrorNotice, not a blocking alert.
+    expect(await screen.findByTestId('markdown-panel-action-error')).toHaveTextContent('artifact is read-only')
+    expect(window.alert).not.toHaveBeenCalled()
   })
 })
 

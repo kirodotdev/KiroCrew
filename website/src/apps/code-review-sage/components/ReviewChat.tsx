@@ -22,6 +22,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { api } from '../../../api/client'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { i18nT } from '../../../i18n/t'
 import { SageApiError, sageApi } from '../api'
 import type { ChatTurn } from '../lib/types'
@@ -255,8 +256,10 @@ export default function ReviewChat(
             </div>
           )}
 
+          {/* This panel has no composer of its own (see the header comment), so a
+              failed resume leaves nothing on screen to lose. */}
           {error && (
-            <div className="text-[11.5px] text-danger">{error}</div>
+            <ErrorNotice message={error} variant="inline" askAgent />
           )}
         </div>
       )}

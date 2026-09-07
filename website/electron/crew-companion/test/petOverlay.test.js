@@ -114,6 +114,7 @@ function stubElectron() {
     restore() {
       Module._resolveFilename = realResolve;
       delete require.cache.electron;
+      require("fs").rmSync(userDataDir, { recursive: true, force: true });
     },
   };
 }

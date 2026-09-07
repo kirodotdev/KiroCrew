@@ -12,6 +12,7 @@ import { sageApi } from '../api'
 import { useSage } from '../context'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { useImeGuard } from '../../../hooks/useImeGuard'
 export default function LearningRail() {
   const ime = useImeGuard()
@@ -92,9 +93,7 @@ export default function LearningRail() {
           <div className="px-1 py-1 text-[12px] text-muted">{i18nT('apps.codeReviewSage.components.learningRail.loading')}</div>
         )}
         {nsQuery.error && (
-          <div className="px-1 py-1 text-[12px] text-danger">
-            {(nsQuery.error as Error).message}
-          </div>
+          <ErrorNotice message={(nsQuery.error as Error).message} variant="inline" askAgent className="px-1 py-1" />
         )}
 
         {nsQuery.data?.namespaces.map((ns) => {
@@ -218,7 +217,8 @@ export default function LearningRail() {
             </button>
           </div>
         )}
-        {err && <div className="px-1 text-[11.5px] text-danger">{err.message}</div>}
+        {/* No hand-off: the new-namespace name input above is unsaved. */}
+        {err && <ErrorNotice message={err.message} variant="inline" className="px-1" />}
       </div>
     </div>
   )

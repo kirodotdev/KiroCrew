@@ -24,7 +24,11 @@ this" contract failed at least once:
   pinned with it. Without this, the ~108 test modules that ship inside the package
   under ``src/kiro_crew/apps/builtins/*/tests/`` -- which see this conftest and no
   other -- write the operator's live ``~/.kiro/crew`` the moment they touch
-  ``config_dir()``.
+  ``config_dir()``. ``KIROCREW_WORKSPACE`` is pinned alongside it for the same
+  reason: ``workspace_root()`` is a SEPARATE default from ``config_dir()`` (it
+  falls back to ``~/workplace/kirocrew-workspace``, not under the data home at
+  all), so pinning only ``KIROCREW_HOME`` leaves it resolving to the operator's
+  real ``~/workplace`` the moment a test reaches an agent working directory.
 * **Credential environment.** Recognised fixed credentials and validated
   ``JIRA_TOKEN_<HEX>`` keys are restored after every test, so a fabricated
   ``.env`` cannot silently override the next test's credentials in the same
@@ -99,6 +103,7 @@ import asyncio
 import asyncio.base_events
 import atexit
 import contextlib
+import functools
 import gc
 import getpass
 import importlib
@@ -114,6 +119,86 @@ import threading
 import warnings
 
 import pytest
+
+# ── Hypothesis example database (rootdir floor) ─────────────────────────────
+# ``test/conftest.py`` registers the "default"/"thorough" profiles but never sets
+# ``database=``, so hypothesis falls back to its own default: ``.hypothesis/examples``
+# resolved against the CURRENT WORKING DIRECTORY, i.e. the repo root, for every test
+# collected from ANY testpath -- including the ~108 modules under
+# ``src/kiro_crew/apps/builtins/*/tests/`` that never import ``test/conftest.py`` at all.
+# That writes an untracked directory into the checkout on every run (git status shows it
+# under "Ignored files" since ``.gitignore`` covers it, but it still needs a place to live
+# that is not the source tree).
+#
+# Profiles are process-global, so whichever profile is active when a ``@given`` test runs
+# applies regardless of which testpath collected it. Registering a "default" profile here
+# at module level would not stick: ``test/conftest.py`` re-registers "default" by name
+# right after this module loads (pytest imports the rootdir conftest first, then
+# ``test/conftest.py`` -- see ``pytest_load_initial_conftests``), and ``register_profile``
+# without ``parent=`` builds a fresh settings object from scratch, silently resetting
+# ``database`` back to the on-disk default. Doing the redirect from ``pytest_configure``
+# instead runs after both conftests' module-level code, so it lands last: ``parent=`` keeps
+# whatever ``max_examples``/``deadline``/health-check suppression ``test/conftest.py`` set,
+# and only ``database`` is overridden.
+_HYPOTHESIS_DB_DIR: str | None = None
+
+
+def _redirect_hypothesis_database() -> None:
+    """Point the active hypothesis profile's example database off the checkout.
+
+    Uses a stable per-user directory under the platform cache root
+    (``$XDG_CACHE_HOME`` or ``~/.cache``, ``kirocrew/hypothesis``) rather than
+    ``database=None`` or a per-run temp dir: the shrunk counterexample hypothesis
+    saves is what makes a property-test failure replay on the NEXT run instead of
+    costing a full re-search, so the database has to outlive the process. What
+    moves is only WHERE it lives -- out of the checkout and into the same cache
+    tree the xdist slot files already use -- not whether it persists. Tolerates
+    hypothesis being absent (a partial checkout, or an environment where it was
+    never installed), an unwritable cache root (falls back to ``database=None``
+    rather than to the checkout), and no profile named "default" existing yet,
+    since this floor must not be the reason collection fails for a suite that
+    does not use hypothesis at all.
+    """
+    global _HYPOTHESIS_DB_DIR
+    try:
+        from hypothesis import settings as _hyp_settings
+        from hypothesis.database import DirectoryBasedExampleDatabase
+    except ImportError:
+        return
+    try:
+        _current = _hyp_settings.get_profile(_hyp_settings._current_profile)
+    except Exception:  # noqa: BLE001 - no active profile to inherit from
+        return
+    if _HYPOTHESIS_DB_DIR is None:
+        cache_root = os.environ.get("XDG_CACHE_HOME") or os.path.join(
+            os.path.expanduser("~"), ".cache"
+        )
+        candidate = os.path.join(cache_root, "kirocrew", "hypothesis")
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            _HYPOTHESIS_DB_DIR = candidate
+        except OSError:
+            _HYPOTHESIS_DB_DIR = ""
+        # The example database is only one tenant of ``.hypothesis/``: the
+        # unicode-data cache (``storage_directory("unicode_data", ...)``) is written
+        # through hypothesis's HOME directory, which defaults to ``.hypothesis``
+        # under the CWD, i.e. the checkout. Move the home too, so the whole tree
+        # lands in the cache dir; the env var is what a spawned child reads.
+        if _HYPOTHESIS_DB_DIR:
+            try:
+                from hypothesis.configuration import set_hypothesis_home_dir
+
+                set_hypothesis_home_dir(_HYPOTHESIS_DB_DIR)
+                os.environ.setdefault("HYPOTHESIS_STORAGE_DIRECTORY", _HYPOTHESIS_DB_DIR)
+            except Exception:  # noqa: BLE001 - an older hypothesis without the hook
+                pass
+    database = DirectoryBasedExampleDatabase(_HYPOTHESIS_DB_DIR) if _HYPOTHESIS_DB_DIR else None
+    _hyp_settings.register_profile(
+        _hyp_settings._current_profile,
+        parent=_current,
+        database=database,
+    )
+    _hyp_settings.load_profile(_hyp_settings._current_profile)
 
 
 def _root_can_create_real_symlink() -> bool:
@@ -832,6 +917,7 @@ def _prefer_short_tmp_base() -> None:
 def pytest_configure(config: pytest.Config) -> None:
     """Record the working directory pytest started in, before any test can move it."""
     _prefer_short_tmp_base()
+    _redirect_hypothesis_database()
     global _SESSION_CWD
     try:
         _SESSION_CWD = os.getcwd()
@@ -988,6 +1074,33 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
     return xdist_budget.resolve_workers()
 
 
+def _join_install_receipt_workers() -> None:
+    """Join any ``install_receipt.dispatch()`` worker before this test's pins lift.
+
+    ``dispatch()`` hands the receipt write to a daemon thread. The worker receives
+    every environment-derived input (the data home, the config fields) from the
+    dispatching thread and reads nothing itself -- but a thread still alive when
+    ``monkeypatch`` undoes ``KIROCREW_HOME`` is a thread whose WRITE lands after the
+    test that owned it is gone. The per-test probe in the 5x hygiene run saw exactly
+    that: the ``kirocrew-install-receipt`` thread alive after teardown in 3 of 5
+    runs, and once a receipt secret written into the operator's real ``~/.kiro/crew``.
+
+    Structural rather than opt-in, for the same reason as the CWD restore below: the
+    test that leaks is never the test that fails, so relying on each
+    dispatch-triggering test to remember ``wait_for_pending_receipt_writes()`` is the
+    shape that let this through. It lives in the ``tryfirst`` teardown hook for the
+    ordering reason documented on ``pytest_runtest_teardown``: an autouse fixture
+    from this conftest is an OUTER fixture and would tear down AFTER ``monkeypatch``
+    had already restored the environment. With no worker registered this is one
+    lock acquire; the module is looked up rather than imported so a test run that
+    never touches the receipt path pays nothing.
+    """
+    mod = sys.modules.get("kiro_crew.apps.install_receipt")
+    waiter = getattr(mod, "wait_for_pending_receipt_writes", None)
+    if waiter is not None:
+        waiter()
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_teardown(item, nextitem):
     """Put the process working directory back, BEFORE any fixture teardown runs.
@@ -1022,6 +1135,7 @@ def pytest_runtest_teardown(item, nextitem):
     directory for its own duration keeps working, and ``monkeypatch.chdir`` (which reverts
     itself, and whose undo lands on the same value) remains the right tool inside a test.
     """
+    _join_install_receipt_workers()
     if _SESSION_CWD is None:  # pragma: no cover - configure always runs first
         return
     try:
@@ -1897,7 +2011,7 @@ _isolation_dirs.seq = 0  # type: ignore[attr-defined]
 
 @pytest.fixture(autouse=True)
 def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
-    """Pin ``KIROCREW_HOME`` to a per-test tmp dir, for EVERY testpath.
+    """Pin ``KIROCREW_HOME`` and ``KIROCREW_WORKSPACE`` to per-test tmp dirs, for EVERY testpath.
 
     This lives at the rootdir rather than in ``test/conftest.py`` because the leak it
     closes is worst in the testpaths that conftest does not reach. The ~108 test
@@ -1940,8 +2054,21 @@ def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
     and they read an empty directory instead of the tree they just built. A test that
     reaches ``kiro_home()`` therefore isolates it itself, with whichever of the two
     levers it already uses.
+
+    ``KIROCREW_WORKSPACE`` is pinned alongside ``KIROCREW_HOME`` for the same
+    reason as the rest of this fixture: ``config.loader.workspace_root()`` is its
+    own default, independent of ``config_dir()`` -- with no override and no saved
+    ``<config_dir>/workspace_dir`` file it falls back to the platform's
+    ``_default_workspace_base()`` plus ``kirocrew-workspace``, which on Linux/macOS
+    is the operator's real ``~/workplace``. Any test that reaches an agent working
+    directory (``workspace_root()``, ``_session_work_dir()``, ``outbox_dir()``)
+    without setting its own ``KIROCREW_WORKSPACE`` therefore ``mkdir``s and writes
+    into that real tree. Unlike ``config_dir()``, ``workspace_root()`` reads the env
+    var fresh on every call and caches nothing, so there is no module-global memo to
+    reset here -- setting the variable is the whole fix.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(_isolation_dirs("kirocrew-home")))
+    monkeypatch.setenv("KIROCREW_WORKSPACE", str(_isolation_dirs("workspace")))
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
     monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
     monkeypatch.delenv("KIROCREW_DEV_MODE", raising=False)
@@ -2319,6 +2446,112 @@ def unpinned_agent_spec_home(_isolate_agent_spec_home, monkeypatch):
     return _isolate_agent_spec_home
 
 
+#: The operator's real kiro-cli home, captured before any test can repoint
+#: ``Path.home``/``KIRO_HOME``. The sessions-dir floor compares against THIS, so a
+#: test that relocates the home is followed and only the real store is fenced.
+_REAL_KIRO_HOME_AT_START = (pathlib.Path.home() / ".kiro").resolve()
+
+
+def _is_under(path: pathlib.Path, root: pathlib.Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:  # pragma: no cover - unresolvable path cannot be the real home
+        return False
+    return resolved == root or root in resolved.parents
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kiro_sessions_dir(_isolation_dirs, monkeypatch):
+    """Pin kiro-cli's transcript store (``<kiro home>/sessions/cli``), for EVERY testpath.
+
+    A fourth ``~/.kiro`` isolation axis, distinct from the data home, the import-time
+    ``_SHARED_KIRO_PATHS`` bindings, and the agent-spec home above. ``kiro_sessions_dir()``
+    is a LAZY resolver (``kiro_home()`` -> ``$KIRO_HOME`` or ``Path.home()/.kiro``), so
+    neither ``KIROCREW_HOME`` nor an import-time path pin reaches it -- the same reason
+    the agent-spec home needed its own fixture instead of folding into one of those.
+
+    Without this, a test that reaches session teardown (``AcpSessionHandle.destroy()`` ->
+    ``_cleanup_transcript``, which calls ``kiro_sessions_dir()`` directly with no override)
+    deletes ``<sid>.json``/``.jsonl`` out of the operator's REAL kiro-cli session store --
+    confirmed live: ``sA.json``, ``sA.jsonl``, ``new-sid.json(l)`` and even a fabricated
+    ``<MagicMock ...>`` filename were removed from ``~/.kiro/sessions/cli`` by
+    ``test_acp_runtime.py`` and ``test_session_transfer.py`` session-teardown tests and
+    ``test_dashboard_chat_rewind.py``'s chained-history tests.
+
+    Installs the override via the single accessor's function BODY, exactly like
+    :func:`_isolate_agent_spec_home` does for ``_agents_dir_override``: ``kiro_sessions_dir``
+    is bound by name in several modules (``session_map``, ``acp.client``,
+    ``dashboard.session_transfer``, ...), and copies the function OBJECT, so patching only
+    ``paths.kiro_sessions_dir`` would never reach them.
+
+    ``session_map.py`` additionally exposes its OWN opt-in override
+    (``_KIRO_SESSIONS_DIR``, ``None`` = defer to ``kiro_sessions_dir()``) for existing
+    monkeypatch call sites -- pinned here too so a test that reads through that module
+    sees the same tree as one that reads through the resolver directly.
+
+    Creates nothing -- an absent sessions dir is the normal fresh-install state, and
+    every writer creates its own parent first. A test that sets its own value still wins,
+    through any lever: ``monkeypatch`` applied later in setup overrides both hooks, and a
+    test that relocates kiro-cli's home itself -- ``KIRO_HOME``, ``HOME``, or a patched
+    ``Path.home`` -- is followed there rather than pinned, because the override only
+    fences the operator's REAL store (see ``_pinned_sessions_dir``). A test that asserts
+    on the real default layout opts out with :func:`unpinned_kiro_sessions_dir`.
+    """
+    root = _isolation_dirs("kiro-sessions-cli")
+    # Imported unconditionally, never patch-if-imported: this floor guards a DELETE
+    # path, and a test that imports its subject inside its own body would otherwise
+    # find no module at setup, leave the override ``None``, and remove transcripts
+    # from the operator's real store at teardown -- the exact failure the floor
+    # exists to close. ``config.paths`` is the stdlib-only leaf, so the import costs
+    # milliseconds once per worker; ``ImportError`` is tolerated so a partial
+    # checkout cannot break collection (a module that cannot import has no seam).
+    try:
+        paths = importlib.import_module("kiro_crew.config.paths")
+    except ImportError:  # pragma: no cover - partial checkout
+        paths = None
+    if paths is not None:
+        real_kiro_home = paths.kiro_home
+
+        def _pinned_sessions_dir() -> pathlib.Path:
+            # A GUARD, not a redirect. The lazy resolver is deliberately left to
+            # each test (see the module docstring): ~35 tests relocate it with
+            # ``patch("pathlib.Path.home", ...)`` or ``KIRO_HOME``, and they must
+            # keep reading the tree they just built. So resolve it the way
+            # production would, and only when that lands in the operator's REAL
+            # ``~/.kiro`` -- the one place a test may never delete from -- answer
+            # the isolation dir instead.
+            unpinned = real_kiro_home() / "sessions" / "cli"
+            if _is_under(unpinned, _REAL_KIRO_HOME_AT_START):
+                return root
+            return unpinned
+
+        monkeypatch.setattr(paths, "_sessions_dir_override", _pinned_sessions_dir)
+    # ``session_map`` defers to ``kiro_sessions_dir()`` when its own override is
+    # unset, so the resolver pin above is the floor; this only keeps a module that IS
+    # loaded reading the same tree through its own lever.
+    session_map = sys.modules.get("kiro_crew.session_map")
+    if session_map is not None:
+        monkeypatch.setattr(session_map, "_KIRO_SESSIONS_DIR", root, raising=False)
+
+
+@pytest.fixture
+def unpinned_kiro_sessions_dir(_isolate_kiro_sessions_dir, monkeypatch):
+    """Opt out of the sessions-dir pin, for a test that ASSERTS on the real layout.
+
+    The two drift guards in ``test_agent_home_isolation`` check that the resolver
+    still derives the transcript store from ``kiro_home()`` -- pinned, they would
+    assert about a tmp path that does not ship. READ-ONLY use only: this hands back
+    the operator's real store, and a test that deletes through it is the harm the
+    pin exists to prevent.
+    """
+    paths = sys.modules.get("kiro_crew.config.paths")
+    if paths is not None:
+        monkeypatch.setattr(paths, "_sessions_dir_override", None)
+    session_map = sys.modules.get("kiro_crew.session_map")
+    if session_map is not None:
+        monkeypatch.setattr(session_map, "_KIRO_SESSIONS_DIR", None, raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _no_model_download(monkeypatch, _isolation_dirs):
     """Never let a test download model weights over the network.
@@ -2347,6 +2580,54 @@ def _no_model_download(monkeypatch, _isolation_dirs):
     # lock file into the repo root, plus a background reader thread that outlives the
     # test. Tests that exercise telemetry delete this var themselves (test/metrics/).
     monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
+
+
+@pytest.fixture(autouse=True)
+def _no_default_builtin_skills_sync(request, monkeypatch):
+    """Stop a bare ``SkillsLoader()`` / ``ContextBuilder()`` from syncing builtins.
+
+    ``SkillsLoader.__init__`` defaults ``install_builtins=True``, which calls
+    ``_ensure_builtin_skills`` — a stat walk plus capped content hashing over
+    the whole builtin-skills tree, then a real copy to disk on first divergence
+    (~20s on a loaded host). ``ContextBuilder.__init__`` builds exactly that
+    default (``self.skills = skills or SkillsLoader()``) whenever a test omits
+    ``skills=``, so every such call site pays the sync even though the test
+    under it almost never asserts anything about builtin skills. ~70 call
+    sites across ``test/`` construct ``ContextBuilder()`` bare; fixing it here
+    once is cheaper than a per-call-site ``skills=SkillsLoader(install_builtins=False)``
+    that every new call site would have to remember.
+
+    Patches the constructor itself, not a module-level flag, because that is
+    the seam production code actually reads — ``install_builtins`` is a plain
+    keyword default baked into ``SkillsLoader.__init__``'s signature, not a
+    config value the class re-reads later. The wrapper only rewrites an
+    OMITTED argument: a caller that explicitly passes ``install_builtins=`` in
+    either form (keyword or positional) is left alone, so ``test_skills.py``
+    passing ``install_builtins=False`` and ``test_crystallize_skill.py``
+    asserting on a real sync with ``install_builtins=True`` both keep getting
+    exactly what they asked for. A test whose contract IS the default — the
+    event-loop guard in ``test_builtin_skill_sync_safety.py`` asserts that a
+    bare ``SkillsLoader(skills_path=...)`` syncs when built off a running loop
+    — opts out with ``@pytest.mark.real_builtin_skills_sync`` (registered in
+    ``setup.cfg``) and gets the constructor untouched.
+    """
+    if request.node.get_closest_marker("real_builtin_skills_sync") is not None:
+        return
+
+    from kiro_crew.skills import SkillsLoader
+
+    original_init = SkillsLoader.__init__
+
+    @functools.wraps(original_init)
+    def _init_without_builtins_by_default(self, *args, **kwargs):
+        # 2nd positional slot (after self, i.e. args[0]) is skills_path; the
+        # 3rd (args[1]) is install_builtins. Only default it when the caller
+        # supplied neither the keyword nor that positional slot.
+        if "install_builtins" not in kwargs and len(args) < 2:
+            kwargs["install_builtins"] = False
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(SkillsLoader, "__init__", _init_without_builtins_by_default)
 
 
 @pytest.fixture(autouse=True)

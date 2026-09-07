@@ -925,6 +925,196 @@ class TestBuildSeatbeltProfile:
         assert "file-link*" not in profile
 
 
+class TestWritableCarveouts:
+    """#8653: a probe's private TMPDIR must be writable inside the sandbox.
+
+    The MCP probe's TMPDIR lives at ``<data home>/run/mcp-tmp/<probe>``, inside
+    the runtime parent both backends seal read-only, so the wrap must carve
+    exactly that directory back out — a Bun-packaged server extracts its native
+    module into TMPDIR before it can answer the handshake. These tests lock the
+    carve-out's two properties: it OPENS the approved directory (emitted after
+    the seal — Seatbelt is last-match-wins) and it opens NOTHING else (the
+    validator refuses every candidate that would re-open another seal).
+    """
+
+    def _relocated_home(self, monkeypatch, tmp_path):
+        custom_home = tmp_path / "crew-home"
+        custom_home.mkdir()
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: custom_home)
+        probe = custom_home / "run" / "mcp-tmp" / "probe-x"
+        probe.mkdir(parents=True)
+        return custom_home, probe
+
+    @staticmethod
+    def _spellings(path) -> list[str]:
+        lexical = os.path.normpath(str(path))
+        return list(dict.fromkeys((lexical, os.path.realpath(lexical))))
+
+    def test_seatbelt_carveout_allow_lands_after_run_seal(self, monkeypatch, tmp_path):
+        home, probe = self._relocated_home(monkeypatch, tmp_path)
+        profile = _build_seatbelt_profile(
+            "standard", extra_writable_dirs=(str(probe),)
+        )
+        deny = f'(deny file-write* (subpath "{home / "run"}"))'
+        assert deny in profile
+        for spelling in self._spellings(probe):
+            allow = f'(allow file-write* (subpath "{spelling}"))'
+            assert allow in profile
+            # Seatbelt is last-match-wins: the allow must come AFTER the seal,
+            # or the seal wins and the child's TMPDIR stays unwritable.
+            assert profile.index(allow) > profile.index(deny)
+        # The subtree's hardlink deny is deliberately NOT re-opened: a scratch
+        # dir never needs to mint hardlinks, and the deny is what stops
+        # aliasing a sealed inode into the writable window.
+        assert "(allow file-link" not in profile
+        assert "(allow file-read" not in profile
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            "run",  # the sealed parent itself: contains the voice runtime
+            os.path.join("run", "voice-runtime"),  # the hidden runtime root
+            "elsewhere",  # outside every carveable parent
+            os.path.join("run", "absent"),  # does not exist
+        ],
+    )
+    def test_seatbelt_refuses_unsafe_carveouts(self, monkeypatch, tmp_path, candidate):
+        home, _probe = self._relocated_home(monkeypatch, tmp_path)
+        (home / "elsewhere").mkdir()
+        profile = _build_seatbelt_profile(
+            "standard", extra_writable_dirs=(str(home / candidate),)
+        )
+        assert "(allow file-write*" not in profile
+
+    def test_seatbelt_refuses_relative_carveout(self, monkeypatch, tmp_path):
+        self._relocated_home(monkeypatch, tmp_path)
+        profile = _build_seatbelt_profile(
+            "standard", extra_writable_dirs=("run/mcp-tmp/probe-x",)
+        )
+        assert "(allow file-write*" not in profile
+
+    @_POSIX_ONLY
+    def test_launcher_embeds_validated_carveout(self, monkeypatch, tmp_path):
+        home, probe = self._relocated_home(monkeypatch, tmp_path)
+        script = _build_launcher_script(
+            "standard", extra_writable_dirs=(str(probe),)
+        )
+        expected = json.dumps(self._spellings(probe))
+        assert f"WRITABLE_DIRS = {expected}" in script
+        # Structural anchor (not prose): the carve-out loop's remount must
+        # clear the seal -- a remount that re-passed MS_RDONLY would silently
+        # keep the carve-out read-only. Scope the check to the loop body.
+        loop = self._writable_loop(script)
+        assert "_MS_REMOUNT | _MS_BIND" in loop
+        assert "_locked_mount_flags(target)" in loop
+        assert "_MS_RDONLY" not in loop
+
+    @staticmethod
+    def _writable_loop(script: str) -> str:
+        """The carve-out loop's body, anchored on structure, not prose.
+
+        ``EXPOSE_FILES`` is looped twice in the script (a pre-read before the
+        seals and the restore after them); anchor on the restore loop, i.e.
+        the first occurrence AFTER the carve-out loop starts.
+        """
+        start = script.index("for d in WRITABLE_DIRS:")
+        end = script.index("for src_path, filename in EXPOSE_FILES:", start)
+        return script[start:end]
+
+    @_POSIX_ONLY
+    def test_launcher_refuses_unsafe_carveout(self, monkeypatch, tmp_path):
+        home, _probe = self._relocated_home(monkeypatch, tmp_path)
+        script = _build_launcher_script(
+            "standard", extra_writable_dirs=(str(home / "run"),)
+        )
+        assert "WRITABLE_DIRS = []" in script
+
+    @_POSIX_ONLY
+    def test_launcher_seals_before_carveout_rebind(self, monkeypatch, tmp_path):
+        """The READONLY seal must precede the carve-out re-bind.
+
+        Load-bearing ordering: a non-recursive MS_BIND does not replicate
+        submounts, so a parent self-bind established AFTER the carve-out would
+        mask the carve-out mount entirely -- the writable window vanishes
+        silently and #8653 is back with no error.
+        """
+        home, probe = self._relocated_home(monkeypatch, tmp_path)
+        script = _build_launcher_script(
+            "standard", extra_writable_dirs=(str(probe),)
+        )
+        assert script.index("for d in READONLY_DIRS:") < script.index(
+            "for d in WRITABLE_DIRS:"
+        )
+
+    @_POSIX_ONLY
+    def test_launcher_carveout_mounts_fail_open(self, monkeypatch, tmp_path):
+        """The two carve-out mounts WIDEN access, so they must not route
+        through ``_mount_or_die``: a host refusing them keeps the seal
+        (pre-carve-out behavior) instead of losing every sandboxed probe."""
+        home, probe = self._relocated_home(monkeypatch, tmp_path)
+        script = _build_launcher_script(
+            "standard", extra_writable_dirs=(str(probe),)
+        )
+        loop = self._writable_loop(script)
+        assert "_mount_or_die" not in loop
+        assert "_mount_or_warn" in loop
+
+    @_POSIX_ONLY
+    def test_launcher_refuses_carveout_inside_unhidden_tree(
+        self, monkeypatch, tmp_path
+    ):
+        """A caller-re-exposed (``extra_visible_dirs``) tree must still refuse
+        a writable window: exposure cancels the hide, not the write seal, so
+        the validator's guard set must include the ``unhidden`` entries (the
+        ``+ unhidden`` term in the builder is load-bearing)."""
+        home, _probe = self._relocated_home(monkeypatch, tmp_path)
+        exposed = home / "run" / "exposed-tree"
+        inside = exposed / "scratch"
+        inside.mkdir(parents=True)
+        script = _build_launcher_script(
+            "standard",
+            extra_hidden_dirs=(str(exposed),),
+            extra_visible_dirs=(str(exposed),),
+            extra_writable_dirs=(str(inside),),
+        )
+        assert "WRITABLE_DIRS = []" in script
+
+    def test_symlinked_data_home_emits_both_spellings(self, monkeypatch, tmp_path):
+        """A symlinked data home (supported) must carve BOTH spellings:
+        Seatbelt rules are path-based and see each spelling independently."""
+        real_home = tmp_path / "real-home"
+        real_home.mkdir()
+        lexical_home = tmp_path / "linked-home"
+        os.symlink(real_home, lexical_home)
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: lexical_home)
+        probe = lexical_home / "run" / "mcp-tmp" / "probe-x"
+        probe.mkdir(parents=True)
+        lexical = os.path.normpath(str(probe))
+        canonical = os.path.realpath(lexical)
+        assert lexical != canonical  # the premise of the test
+        profile = _build_seatbelt_profile(
+            "standard", extra_writable_dirs=(str(probe),)
+        )
+        for spelling in (lexical, canonical):
+            assert f'(allow file-write* (subpath "{spelling}"))' in profile
+
+    def test_validator_refuses_dir_inside_hidden_tree(self, monkeypatch, tmp_path):
+        """A carve-out under a read-hidden tree must be refused even when a
+        (buggy or hostile) caller also names that tree as a carveable parent:
+        write access without read access is still a tampering channel."""
+        home, _probe = self._relocated_home(monkeypatch, tmp_path)
+        hidden = home / "run" / "secrets"
+        inside = hidden / "scratch"
+        inside.mkdir(parents=True)
+        approved = sandbox_mod._writable_carveout_spellings(
+            (str(inside),),
+            subtree_guards=[str(hidden)],
+            literal_guards=[],
+            carveable_parents=[str(home / "run")],
+        )
+        assert approved == []
+
+
 class TestBuildLauncherScript:
     @_POSIX_ONLY
     def test_strict_script_contains_dirs(self):

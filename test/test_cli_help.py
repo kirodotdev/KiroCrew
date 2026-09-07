@@ -136,3 +136,44 @@ class TestTopLevelHelpLayout:
         # The help text spells the port out; keep it honest against the binder.
         assert str(_DEFAULT_PORT) in out
         assert cli_help._DEFAULT_PORT_TEXT == str(_DEFAULT_PORT)
+
+
+class TestPodApiMethodParsing:
+    @pytest.mark.parametrize("spelling", ["GET", "Get", "get"])
+    def test_method_is_case_insensitive_and_canonicalized(self, spelling, monkeypatch, tmp_path):
+        import kiro_crew.cli_commands as cli_commands
+
+        captured = []
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["kirocrew", "pod", "api", "wt", spelling, "health"],
+        )
+        monkeypatch.setattr(cli_commands, "_pod", lambda args: captured.append(args))
+        from kiro_crew.cli import main
+
+        main()
+        assert len(captured) == 1
+        assert captured[0].method == "GET"
+
+    def test_the_six_canonical_methods_are_advertised_in_help(self, monkeypatch, tmp_path, capsys):
+        """The method surface is documented in help, not enforced by argparse.
+
+        `choices=` used to reject an unknown verb here, which meant argparse
+        answered with its own usage prose and exit 2 — escaping the fixed-key
+        JSON envelope `pod api` promises on every exit. Validation moved to
+        `pod.runtime.pod_api`, which reports through that envelope, so the
+        canonical list has to remain discoverable somewhere: the argument's help.
+        """
+        out, err = _capture_cli(
+            monkeypatch,
+            tmp_path,
+            capsys,
+            ["pod", "api", "--help"],
+        )
+        rendered = out + err
+        for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"):
+            assert method in rendered, method
+        # argparse must no longer be the thing that refuses a bad verb.
+        assert "choose from" not in rendered

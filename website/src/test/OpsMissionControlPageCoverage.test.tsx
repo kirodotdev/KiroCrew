@@ -360,26 +360,39 @@ describe('OpsMissionControlPage', () => {
   })
 
   it('renders a compact age per row and an em dash for an unparseable timestamp', async () => {
-    stubRoutes(
-      mkState({
-        incidents: [
-          mkIncident({ incident_id: 'omc-secs', updated_at: agoIso(20) }),
-          mkIncident({ incident_id: 'omc-mins', updated_at: agoIso(90) }),
-          mkIncident({ incident_id: 'omc-hours', updated_at: agoIso(7200) }),
-          mkIncident({ incident_id: 'omc-days', updated_at: agoIso(200000) }),
-          mkIncident({ incident_id: 'omc-bad', updated_at: 'not-a-date', claimed_at: '' }),
-        ],
-      }),
-    )
-    renderWithProviders(<OpsMissionControlPage />)
-    await waitFor(() =>
-      expect(screen.getAllByTestId('omc-incident-row')).toHaveLength(5),
-    )
-    expect(screen.getByText('20s')).toBeInTheDocument()
-    expect(screen.getByText('1m')).toBeInTheDocument()
-    expect(screen.getByText('2h')).toBeInTheDocument()
-    expect(screen.getByText('2d')).toBeInTheDocument()
-    expect(screen.getByText('—')).toBeInTheDocument()
+    // `age()` derives its text from `Date.now() - Date.parse(updated_at)`. The
+    // fixture timestamps are computed from the real clock at test-data-build
+    // time, but rendering (and the `waitFor` below) happens later, so under a
+    // loaded, concurrent run the elapsed wall-clock time can push a boundary
+    // value like 20s into 21s and flip the rendered unit. Pin only `Date.now`
+    // (not the timers `waitFor`/React Query need to keep ticking) so the
+    // elapsed time between building the fixtures and asserting on them is 0.
+    const now = Date.now()
+    const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      stubRoutes(
+        mkState({
+          incidents: [
+            mkIncident({ incident_id: 'omc-secs', updated_at: new Date(now - 20_000).toISOString() }),
+            mkIncident({ incident_id: 'omc-mins', updated_at: new Date(now - 90_000).toISOString() }),
+            mkIncident({ incident_id: 'omc-hours', updated_at: new Date(now - 7_200_000).toISOString() }),
+            mkIncident({ incident_id: 'omc-days', updated_at: new Date(now - 200_000_000).toISOString() }),
+            mkIncident({ incident_id: 'omc-bad', updated_at: 'not-a-date', claimed_at: '' }),
+          ],
+        }),
+      )
+      renderWithProviders(<OpsMissionControlPage />)
+      await waitFor(() =>
+        expect(screen.getAllByTestId('omc-incident-row')).toHaveLength(5),
+      )
+      expect(screen.getByText('20s')).toBeInTheDocument()
+      expect(screen.getByText('1m')).toBeInTheDocument()
+      expect(screen.getByText('2h')).toBeInTheDocument()
+      expect(screen.getByText('2d')).toBeInTheDocument()
+      expect(screen.getByText('—')).toBeInTheDocument()
+    } finally {
+      dateNowSpy.mockRestore()
+    }
   })
 
   it('expands a row into its detail panel and mounts the investigation chat', async () => {

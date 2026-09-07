@@ -1844,16 +1844,6 @@ async def probe_server(
         # start?" probe runs for real instead of fail-closing. Third-party
         # probes (and any customized managed command/args/env) pass False and
         # keep the full fail-close + opt-in behavior.
-        wrapped_argv, env, sandbox_cleanup = await sandboxed_spawn_argv_async(
-            [resolved, *(server.args or [])],
-            mode="standard",
-            env=env,
-            strip_python_env=True,
-            first_party_fixed_argv=_is_first_party_managed_argv(
-                server.name, server.command, server.args or [], server.env or {}
-            ),
-            _prepare=sandboxed_spawn_argv,
-        )
         # Probe temp containment (#5064): each probe gets its OWN private dir
         # under the managed root, cleaned in this function's finally -- unlike
         # a backend, a probe knows exactly when its lifecycle ends, so no
@@ -1862,23 +1852,74 @@ async def probe_server(
         # would cycle), created off-loop, and fail-open: a probe must run even
         # when containment cannot be set up.
         #
+        # Allocated BEFORE the sandbox wrap (#8653): the managed root lives at
+        # ``<data home>/run/mcp-tmp``, inside the runtime parent the sandbox
+        # seals read-only, so the wrap must know the directory to carve its
+        # write access out of that seal. Allocating after the wrap handed the
+        # child a ``TMPDIR`` it could not write -- a Bun-packaged server then
+        # failed the probe with "Cannot find the native Koffi module" because
+        # it could not extract its native module. The allocation failure path
+        # stays fail-open (probe runs with inherited temp, no carve-out), and
+        # the outer ``finally`` sweeps the dir even when the wrap itself
+        # raises.
+        #
         # Mirrors the backend chokepoint: a spec-DECLARED temp wins -- the
         # operator pointed this server at chosen storage, and overriding it
         # would trade litter for ENOSPC on the data-home volume. Checked
         # case-insensitively (Windows env keys are case-insensitive and the
         # sanitized spec preserves the author's spelling).
-        try:
-            _declared_temp_upper = {
-                key.upper()
-                for key in (server.env or {})
-                if key.upper() in ("TMPDIR", "TMP", "TEMP")
-            }
-            if not _declared_temp_upper:
-                from kiro_crew.mcp_gateway.backend_tmp import allocate_probe_tmp, tmp_env
+        _declared_temp_upper = {
+            key.upper()
+            for key in (server.env or {})
+            if key.upper() in ("TMPDIR", "TMP", "TEMP")
+        }
+        probe_scratch: "Path | None" = None
+        if not _declared_temp_upper:
+            try:
+                from kiro_crew.mcp_gateway.backend_tmp import (
+                    allocate_probe_tmp,
+                    probe_child_scratch,
+                )
 
                 probe_tmp = await asyncio.to_thread(allocate_probe_tmp)
-                env = {**env, **tmp_env(probe_tmp)}
-            else:
+                # The child gets a SCRATCH SUBDIR, never the allocation root:
+                # the root holds the ``.owner`` reclamation record, and the
+                # write carve-out below must not put that record inside the
+                # child's writable window (see probe_child_scratch).
+                probe_scratch = await asyncio.to_thread(probe_child_scratch, probe_tmp)
+            except Exception:
+                logger.debug("probe temp containment unavailable", exc_info=True)
+                if probe_tmp is not None and probe_scratch is None:
+                    # The allocation exists but its child-facing half does
+                    # not: reclaim now. Ownerless-or-provisional dirs are
+                    # deliberately never deleted by the sweeps until
+                    # owner-dead+idle, and no probe pid will ever be recorded
+                    # for this one.
+                    from kiro_crew.mcp_gateway.backend_tmp import sweep_backend_tmp
+
+                    await asyncio.to_thread(sweep_backend_tmp, probe_tmp)
+                    probe_tmp = None
+        wrapped_argv, env, sandbox_cleanup = await sandboxed_spawn_argv_async(
+            [resolved, *(server.args or [])],
+            mode="standard",
+            env=env,
+            strip_python_env=True,
+            extra_writable_dirs=(
+                (str(probe_scratch),) if probe_scratch is not None else ()
+            ),
+            first_party_fixed_argv=_is_first_party_managed_argv(
+                server.name, server.command, server.args or [], server.env or {}
+            ),
+            _prepare=sandboxed_spawn_argv,
+        )
+        try:
+            if probe_scratch is not None:
+                from kiro_crew.mcp_gateway.backend_tmp import tmp_env
+
+                # Merged AFTER the wrap so the managed triple lands on the
+                # SCRUBBED env the child actually receives.
+                env = {**env, **tmp_env(probe_scratch)}
+            elif _declared_temp_upper:
                 # Yielding alone is not enough: ambient temp keys are still in
                 # ``env`` and ``tempfile`` consults TMPDIR before TMP, so a
                 # spec declaring only TMP would silently write through the

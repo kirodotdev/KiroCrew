@@ -1646,7 +1646,7 @@ def _repro_test_dir(worktree: Path) -> str:
     The prompt used to hard-code ``test/``, but a repo using ``tests/`` (plural) then got
     a reproducing test written into a directory that does not exist, so T2 could never
     collect it and EVERY candidate failed ``test_invalid`` regardless of fix quality.
-    Found by running docs/system-specs/modules/auto-improvement-test-plan.md against Zedmor/chess_test, which uses ``tests/``.
+    Found by running docs/system-specs/modules/auto-improvement.md against Zedmor/chess_test, which uses ``tests/``.
 
     The edit fence already permits both (``_ADDABLE_TEST_GLOBS``), so only the
     instruction was wrong. Prefers an EXISTING directory; falls back to ``test``.

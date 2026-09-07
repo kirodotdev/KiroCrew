@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.platform_compat import pid_exists
+from kiro_crew.platform_compat import pid_exists, process_start_time
 
 logger = logging.getLogger(__name__)
 
@@ -194,13 +194,26 @@ def _read_dump_head(dump_path: Path) -> tuple[str, bool]:
     the startup sweep. Raises ``OSError`` on refusal or read failure — callers
     already treat that as "leave the file alone".
     """
+    return _read_dump_bytes(dump_path, _HEADER_SCAN_BYTES)
+
+
+#: The most of a dump any reader takes. faulthandler writes a few KB per
+#: thread; a gateway with a saturated executor writes tens of KB. The dump
+#: directory is not agent-fenced, so a reader that trusted the file's size
+#: could be handed an arbitrarily large one on the startup path.
+_DUMP_READ_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _read_dump_bytes(dump_path: Path, max_bytes: int) -> tuple[str, bool]:
+    """``(text, truncated)`` for at most *max_bytes* of a REGULAR dump file;
+    see :func:`_read_dump_head` for the refusals."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     fd = os.open(str(dump_path), flags)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(f"not a regular file: {dump_path}")
         chunks: list[bytes] = []
-        remaining = _HEADER_SCAN_BYTES + 1
+        remaining = max_bytes + 1
         while remaining > 0:
             chunk = os.read(fd, remaining)
             if not chunk:
@@ -210,8 +223,13 @@ def _read_dump_head(dump_path: Path) -> tuple[str, bool]:
     finally:
         os.close(fd)
     data = b"".join(chunks)
-    truncated = len(data) > _HEADER_SCAN_BYTES
-    return data[:_HEADER_SCAN_BYTES].decode("utf-8", errors="replace"), truncated
+    truncated = len(data) > max_bytes
+    return data[:max_bytes].decode("utf-8", errors="replace"), truncated
+
+
+def _read_dump_lines(dump_path: Path) -> list[str]:
+    """Every line of a dump, read through the size bound. Raises ``OSError``."""
+    return _read_dump_bytes(dump_path, _DUMP_READ_MAX_BYTES)[0].splitlines()
 
 
 def _is_header_only(dump_path: Path) -> bool:
@@ -264,10 +282,12 @@ def _pid_start_id(pid: int) -> str | None:
     an unrelated process. The starttime field (22nd in ``/proc/<pid>/stat``,
     clock ticks since boot) is fixed for a process's lifetime, so a recorded
     start ID that no longer matches means the owner is GONE even though the
-    PID is live. Returns ``None`` where the probe is unavailable (no procfs:
-    macOS, Windows) or unreadable — callers must then fall back to plain PID
-    liveness (conservative: protects a possibly-reused PID's file rather than
-    risking deletion of a live owner's fd target).
+    PID is live. Where procfs is absent it falls back to
+    :func:`platform_compat.process_start_time` (``ps`` on macOS/BSD), and
+    returns ``None`` only where neither is readable —
+    callers must then fall back to plain PID liveness (conservative: protects a
+    possibly-reused PID's file rather than risking deletion of a live owner's
+    fd target).
     """
     try:
         with open(f"/proc/{pid}/stat", "rb") as f:
@@ -277,7 +297,13 @@ def _pid_start_id(pid: int) -> str | None:
         tail = stat.rsplit(b")", 1)[1].split()
         return tail[19].decode("ascii")
     except (OSError, IndexError, UnicodeDecodeError):
+        pass
+    try:
+        started = process_start_time(pid)
+    except Exception:
         return None
+    # One whitespace-free token: the header line is parsed by token.
+    return re.sub(r"\s+", "_", started) if started else None
 
 
 def _dump_owner(dump_path: Path) -> tuple[int, str | None, str | None] | None:
@@ -645,7 +671,7 @@ def dump_first_stack_lines(dump_path: Path, max_lines: int = 5) -> list[str]:
     recognizable (malformed or foreign dump content).
     """
     try:
-        lines = dump_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = _read_dump_lines(dump_path)
     except OSError:
         return []
     stack_lines = [ln for ln in lines[_HEADER_LINES:] if ln.strip()]
@@ -654,6 +680,69 @@ def dump_first_stack_lines(dump_path: Path, max_lines: int = 5) -> list[str]:
     if wedged is None:
         return stack_lines[:max_lines]
     return (preamble + wedged)[:max_lines]
+
+
+def dump_owner_identity(dump_path: Path) -> tuple[int, str | None, str | None] | None:
+    """``(pid, pid_domain, start_id)`` of the gateway that wrote *dump_path*.
+
+    The full identity, for a reader that must tell the crashed gateway from a
+    later process holding the same PID number: a replacement container is PID 1
+    like the one it replaced, and a recycled PID on one host is live while its
+    owner is gone. ``pid_domain`` / ``start_id`` are ``None`` where the header
+    predates them or procfs was unavailable; a reader then falls back to the
+    number alone.
+    """
+    return _dump_owner(dump_path)
+
+
+def current_process_identity() -> tuple[str, str | None]:
+    """``(pid_domain, start_id)`` of THIS process -- what its dump header
+    records, offered so a sibling file written by the same process (a cron
+    in-flight marker) carries the same identity and can be joined to it."""
+    return _pid_domain(), _pid_start_id(os.getpid())
+
+
+def pid_identity_alive(pid: int, pid_domain: str | None, start_id: str | None) -> bool | None:
+    """Liveness of the process a recorded ``(pid, pid_domain, start_id)`` names.
+
+    The same three-way answer as :func:`_owner_alive`, for a record that is not a
+    dump header: ``None`` when the PID belongs to a domain this process cannot
+    probe (another host, another PID namespace -- a replacement container's
+    PID 1 says nothing about the PID 1 that died), ``False`` when the PID is
+    gone or is live under a different start id (recycled), ``True`` when it is
+    this process or a live PID whose start id matches (or is unknowable on
+    either side, the conservative direction). A record without a domain is
+    probed locally like a pre-domain header.
+    """
+    if pid_domain is not None and pid_domain != _pid_domain():
+        return None
+    if start_id is not None:
+        # Before the own-PID shortcut: a restarted gateway can be handed the
+        # crashed one's PID, and then "this process" is NOT the writer.
+        current = _pid_start_id(pid)
+        if current is not None and current != start_id:
+            return False
+    if pid == os.getpid():
+        return True
+    return pid_exists(pid)
+
+
+def dump_wedged_frames(dump_path: Path) -> list[str]:
+    """Every frame line of the WEDGED thread's stack (see ``_wedged_thread_block``).
+
+    Unlike :func:`dump_first_stack_lines` this returns the whole block and no
+    preamble: the stall attribution walks all of it looking for the frame that
+    names the surface (a cron run, a dashboard turn, a channel dispatcher), and
+    that frame sits far below the top-of-stack gate frames.
+    """
+    try:
+        lines = _read_dump_lines(dump_path)
+    except OSError:
+        return []
+    stack_lines = [ln for ln in lines[_HEADER_LINES:] if ln.strip()]
+    _preamble, blocks = _split_stack_content(stack_lines)
+    wedged = _wedged_thread_block(blocks)
+    return list(wedged) if wedged is not None else []
 
 
 def dump_replay_lines(
@@ -674,10 +763,9 @@ def dump_replay_lines(
     only ``Queue.get`` workers and ``[truncated]``).
     """
     try:
-        content = dump_path.read_text(encoding="utf-8", errors="replace")
+        all_lines = _read_dump_lines(dump_path)
     except OSError:
         return [], False
-    all_lines = content.splitlines()
     stack_lines = [ln for ln in all_lines[_HEADER_LINES:] if ln.strip()]
     preamble, blocks = _split_stack_content(stack_lines)
     wedged = _wedged_thread_block(blocks)

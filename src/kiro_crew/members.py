@@ -23,18 +23,26 @@ import json
 import logging
 import os
 import re
+import stat
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
 from kiro_crew.jsonl_util import (
     RECORD_CAP,
     UnreadableRecord,
     rotate_jsonl_at,
     strict_records,
+)
+from kiro_crew.pinned_fs import (
+    PinnedPathRefusal,
+    open_in_pinned_parent,
+    supports_pinned_walk,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +77,34 @@ _RECORD_CAP = RECORD_CAP
 
 #: Crew-slug -> DM-thread binding inside a member's directory.
 DM_FILE_NAME = "dm.json"
+
+#: Per-member PERMANENT RULES (the user-owned layer of the member system
+#: prompt: approval boundaries, forbidden actions, evidence requirements).
+#: Lives under the keystone-gated ``trust/`` subtree for the same reason the
+#: DM binding does: these rules are precisely what the member must not be able
+#: to rewrite for itself, so they cannot sit on a path the agent's file tools
+#: can write. Only the gateway (via the dashboard rules endpoint — a human
+#: action) writes here.
+RULES_DIR_NAME = "member-rules"
+
+#: Hard cap on a member's permanent-rules text. Enforced on WRITE (the write
+#: is a human dashboard action, so a too-long payload is refused loudly)
+#: rather than truncated on read — silently dropping the tail of a rules
+#: document would drop rules.
+MEMBER_RULES_MAX_CHARS = 4000
+
+#: Per-member self-maintained briefing (the member-owned layer of the member
+#: system prompt: current priorities, pointers to its own scripts and notes).
+#: Lives in the member's OWN directory — deliberately agent-writable, since
+#: the whole point is that the member curates what its future self wakes up
+#: knowing. Precedence is fixed by injection order, not trust: rules outrank
+#: the briefing because they are injected above it and named as user-owned.
+BRIEFING_FILE_NAME = "briefing.md"
+
+#: Cap on how much of the briefing is INJECTED per turn (working memory, not
+#: an archive). Enforced on read with a visible truncation marker so the
+#: member learns its briefing overflowed instead of silently losing the tail.
+MEMBER_BRIEFING_MAX_CHARS = 4000
 # Bindings live under the keystone-gated ``trust/`` subtree, NOT inside the
 # member's own directory. The binding IS the thread's identity authority (the
 # resume/send/thread-open guards all defer to it precisely because transcript
@@ -112,18 +148,16 @@ def is_member_session_key(session_key: str | None) -> bool:
 
 
 def select_provider_backend(
-    explicit: str | None,
     session_key: str | None,
     member_backend: str,
     configured_default: str,
 ) -> str:
     """The per-session half of the ONE backend-selection gate (H3/H13).
 
-    Precedence: an explicit caller pick, then the member-DM auto-route, then
-    the configured default. Both non-default arms go through
-    :func:`resolve_selected_backend` — the same governance/selectability gate
-    the persisted field crosses, so a denied or unknown value degrades to kiro
-    and the member thread runs as plain chat.
+    Precedence: the member-DM auto-route, then the configured default. The
+    member arm goes through :func:`resolve_selected_backend` — the same
+    governance/selectability gate the persisted field crosses, so a denied or
+    unknown value degrades to kiro and the member thread runs as plain chat.
 
     Lives here rather than inline in ``create_provider_factory`` so the
     factory body stays a single selection CALL with no branching of its own:
@@ -132,8 +166,6 @@ def select_provider_backend(
     """
     from kiro_crew.acp_backends import resolve_selected_backend
 
-    if explicit:
-        return resolve_selected_backend(explicit)
     if is_member_session_key(session_key):
         backend = resolve_selected_backend(member_backend)
         logger.info(
@@ -163,12 +195,28 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     applies to the agent-declared ``mcpServers`` block, not to what the host
     itself injects per session).
 
+    The env also carries ``KIROCREW_BOUND_PORT`` — the port this gateway is
+    actually serving. Unlike a chat session's MCP child, which inherits the
+    gateway's whole environment, this entry is built from scratch, so without
+    the port the child's resolution chain falls through to the run marker; that
+    check needs :func:`platform_compat.find_listening_pids` (``lsof``), which
+    sees no listener from inside the sandbox's user namespace, and the child
+    then dials the default port. On a gateway bound anywhere else that is a
+    connection refused on every dispatch call. ``KIROCREW_BOUND_PORT`` rather
+    than ``KIROCREW_PORT`` because the latter means "the port an operator
+    asked for" and is persisted, while this is the transient fact of what got
+    bound.
+
     ``None`` when the server command cannot be resolved — the member thread
     then runs as plain chat and the caller logs the degradation.
     """
     # circular import: agent's module graph is heavy and imports config, which
     # sits below this module for the thread-endpoint path.
     from kiro_crew.agent import _kirocrew_mcp_invocation
+
+    # circular import, same shape: port_resolution reaches config.loader, whose
+    # provider-backend path imports this module.
+    from kiro_crew.port_resolution import resolve_serving_port
 
     try:
         command, args = _kirocrew_mcp_invocation("mcp-dashboard")
@@ -177,11 +225,17 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
         return None
     if not command:
         return None
+    env: list[dict[str, str]] = [{"name": "KIROCREW_SESSION_KEY", "value": session_key}]
+    # resolve_serving_port() reads KIROCREW_BOUND_PORT first and only then falls
+    # through the client order, so one call covers both "the gateway exported the
+    # port it bound" and "derive it" — and a malformed export is ignored rather
+    # than forwarded.
+    env.append({"name": "KIROCREW_BOUND_PORT", "value": str(resolve_serving_port())})
     return {
         "name": MEMBER_DISPATCH_SERVER,
         "command": command,
         "args": list(args),
-        "env": [{"name": "KIROCREW_SESSION_KEY", "value": session_key}],
+        "env": env,
         "type": "stdio",
     }
 
@@ -289,6 +343,161 @@ def member_slot_key(slug: str) -> str:
     return DM_SLOT_KEY_PREFIX + validate_slug(slug)
 
 
+def member_thread_session_alias(slug: str) -> str:
+    """Canonical session-map alias for a member's pinned DM thread.
+
+    ``dashboard:<slot key>`` — the spelling the session manager and the
+    conversation log key a member thread under (see
+    :func:`is_member_session_key` for the full set of prefixes a member key
+    travels through). This is the ONE derivation every out-of-turn touch of a
+    member session goes through — flagging the warm session for re-injection
+    after a rules write, probing the thread's on-disk history — so the key
+    format lives here rather than being hand-built at each site, where one
+    divergent spelling would silently orphan the invariant it serves.
+    """
+    return f"dashboard:{member_slot_key(slug)}"
+
+
+class MemberLifecycle(str, Enum):
+    """Session-lifecycle states a turn can arrive in, as the member-context
+    chokepoint distinguishes them.
+
+    Derived by :func:`member_lifecycle` from the same inputs
+    ``build_message`` already branches on, so the two can never disagree on
+    what state a turn is in:
+
+    * ``FRESH`` — brand-new session; the full session context is built and
+      injected.
+    * ``SLIM_RESUME`` — the provider restored the native transcript
+      (``session/load``); only a minimal header is injected, but the restored
+      member section may be stale.
+    * ``WARM_REINJECTION`` — follow-up turn whose session-start context was
+      compacted away (or deliberately invalidated, e.g. by a rules write);
+      the one-shot re-injection flag was consumed for this turn.
+    * ``WARM`` — ordinary follow-up turn; the delivered section is still live
+      in the provider conversation.
+    * ``MINIMAL`` — minimal-context turn (cron); never a member thread by
+      contract (``member`` is ``""`` on every such call).
+    """
+
+    FRESH = "fresh"
+    SLIM_RESUME = "slim_resume"
+    WARM_REINJECTION = "warm_reinjection"
+    WARM = "warm"
+    MINIMAL = "minimal"
+
+    @property
+    def delivers_section(self) -> bool:
+        """Whether a member turn in this state injects the CURRENT section.
+
+        The lifecycle half of the chokepoint's verdict, exposed on the enum so
+        a caller that knows a turn is member-shaped without holding the member
+        NAME (the chat runner records delivery-at-stake the moment the session
+        client exists, before the context build resolves the name) reads the
+        same single source of truth :func:`member_turn_context` does.
+        """
+        return self in (
+            MemberLifecycle.FRESH,
+            MemberLifecycle.SLIM_RESUME,
+            MemberLifecycle.WARM_REINJECTION,
+        )
+
+
+@dataclass(frozen=True)
+class MemberTurnContext:
+    """What the member layer must do on ONE turn — the chokepoint's verdict.
+
+    Exactly one of the two flags is set for a member turn (both are ``False``
+    only when the turn carries no member, or on ``MINIMAL`` turns, which
+    carry no member by contract):
+
+    * ``deliver_section`` — inject the CURRENT four-layer member section this
+      turn. Delivery itself enforces the rules gate: the section builder
+      reads the user's [PERMANENT RULES] fresh, and an existing-but-unreadable
+      rules file aborts the turn (fail closed) instead of running the member
+      unbounded.
+    * ``enforce_rules_gate`` — the section is already live in the provider
+      conversation, so nothing is injected, but the fail-closed rules read
+      still runs: a first-turn abort leaves a warm session, and without this
+      per-turn check the member would keep running after its rules file went
+      unreadable.
+    """
+
+    member: str
+    lifecycle: MemberLifecycle
+    deliver_section: bool
+    enforce_rules_gate: bool
+
+
+def member_lifecycle(
+    *,
+    is_new_session: bool,
+    resumed: bool,
+    minimal_context: bool,
+    needs_reinjection: bool,
+) -> MemberLifecycle:
+    """Map ``build_message``'s branch inputs to one lifecycle state.
+
+    Mirrors the branch structure of ``build_message`` exactly — including the
+    precedence quirks a hand-written table would have to document:
+    ``minimal_context`` beats ``resumed`` (a minimal resumed build early-returns
+    before any member handling), and ``needs_reinjection`` only matters on warm
+    turns (on a new session the full/slim injection path already delivers).
+    """
+    if is_new_session:
+        if minimal_context:
+            return MemberLifecycle.MINIMAL
+        if resumed:
+            return MemberLifecycle.SLIM_RESUME
+        return MemberLifecycle.FRESH
+    if needs_reinjection:
+        return MemberLifecycle.WARM_REINJECTION
+    return MemberLifecycle.WARM
+
+
+def member_turn_context(member: str, lifecycle: MemberLifecycle) -> MemberTurnContext:
+    """THE decision point for the rules-currency invariant.
+
+    Invariant: **every member turn runs under the user's CURRENT rules.**
+    Every lifecycle state satisfies it one of two ways — deliver the current
+    section (which reads the rules, fail closed), or run the standalone
+    fail-closed rules read against the section already live in the provider
+    conversation. All delivery branches call this function instead of
+    branching by hand, so a future lifecycle state added to ``build_message``
+    cannot silently skip both the member section and the rules gate: it has
+    to be given a verdict here first, where the mapping is pinned by tests.
+
+    ``MINIMAL`` is the one deliberate exception — such turns are never member
+    threads (``member`` is ``""`` by contract at every call site), and a
+    member name arriving anyway gets neither delivery nor gate, exactly as
+    the branch structure disposes of it (the minimal build early-returns
+    before any member handling).
+
+    An empty *member* means the turn has no member layer at all: nothing is
+    delivered and nothing is gated, whatever the lifecycle.
+    """
+    # Deny by default. Both verdict predicates are identity/membership tests
+    # that answer False for anything that is not a genuine enum member — and
+    # the str mixin makes a bare "warm" compare EQUAL to the member while
+    # failing both — so an unrecognized lifecycle would otherwise yield the
+    # one combination the invariant forbids (no delivery, no gate) silently,
+    # at the single decision point the invariant rests on. Refuse loudly
+    # instead.
+    if not isinstance(lifecycle, MemberLifecycle):
+        raise TypeError(f"lifecycle must be MemberLifecycle, got {lifecycle!r}")
+    if not member:
+        return MemberTurnContext(
+            member="", lifecycle=lifecycle, deliver_section=False, enforce_rules_gate=False
+        )
+    gate = lifecycle is MemberLifecycle.WARM
+    return MemberTurnContext(
+        member=member,
+        lifecycle=lifecycle,
+        deliver_section=lifecycle.delivers_section,
+        enforce_rules_gate=gate,
+    )
+
+
 def read_dm_binding(slug: str) -> dict | None:
     """Return a member's DM-thread binding, or ``None`` when absent/unusable.
 
@@ -297,7 +506,11 @@ def read_dm_binding(slug: str) -> dict | None:
     binding is idempotently re-creatable, so degrading to re-creation is
     always safe and the caller needs no try/except.
 
-    Blocking file IO: call via ``asyncio.to_thread`` from async code.
+    Blocking file IO: call via ``asyncio.to_thread`` from async code. The read
+    goes through :func:`read_bytes_with_retry`, which retries a transient
+    Windows sharing violation (an AV/indexer handle on the file this
+    function's write-side twin, :func:`write_dm_binding`, just atomically
+    replaced) — off-loop only, matching this function's own calling contract.
     """
     try:
         path = dm_binding_path(slug)
@@ -308,7 +521,7 @@ def read_dm_binding(slug: str) -> dict | None:
         # restore paths rely on that to survive any on-disk state at boot.
         return None
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = read_bytes_with_retry(path).decode("utf-8")
     except (OSError, UnicodeError):
         # Invalid UTF-8 is the same totality case as an unreadable file: the
         # binding reads as absent, never as a 500 out of every member API.
@@ -397,6 +610,279 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
     # must be at least as durable as the transcript it attributes.
     atomic_write(path, json.dumps(binding, ensure_ascii=False), fsync=True)
     return binding
+
+
+def member_rules_path(slug: str) -> Path:
+    """Absolute path to one member's permanent-rules file, containment-checked.
+
+    Mirrors :func:`dm_binding_path`: keystone-gated ``trust/`` subtree, one
+    flat ``<slug>.json`` per member, symlink containment re-checked behind
+    ``validate_slug``. JSON rather than bare text because the payload records
+    the EXACT member name (slugification is lossy, and a safety-rules file
+    shared between two colliding crew names must be attributable — the same
+    reason ``dm.json`` records the name). Does NOT create the directory;
+    :func:`write_member_rules` does on demand.
+    """
+    validate_slug(slug)
+    root = (data_home() / "trust" / RULES_DIR_NAME).resolve()
+    target = (root / f"{slug}.json").resolve()
+    if target.parent != root and root not in target.parents:
+        raise MemberSlugError(f"member slug {slug!r} escapes {root}")
+    return target
+
+
+class MemberRulesUnreadable(RuntimeError):
+    """A rules file EXISTS but cannot be read or parsed.
+
+    Deliberately distinct from "absent": the rules layer is the user's safety
+    boundary, so an unreadable file must NOT silently read as "never set" —
+    injecting identity + protocol + briefing with the user's rules quietly
+    missing would be indistinguishable from a member the user never bounded.
+    Callers degrade the WHOLE member section (or answer 500), never just the
+    rules layer.
+    """
+
+
+def read_member_rules(slug: str, member: str) -> str:
+    """Return *member*'s permanent rules text, or ``""`` when never set.
+
+    Name-scoped, like every read of a lossy-slug file: the payload's recorded
+    ``member`` must equal the requested name, so a colliding crew name reads
+    the shared file as "no rules for me" instead of inheriting another
+    member's safety boundary.
+
+    Missing file reads as ``""`` (the normal state). An EXISTING file that
+    cannot be read or parsed raises :class:`MemberRulesUnreadable` — see its
+    docstring for why that must not degrade to ``""``.
+
+    Blocking file IO: call via ``asyncio.to_thread`` from async code.
+    """
+    path = member_rules_path(slug)
+    try:
+        # Same read-side twin as read_dm_binding: write_member_rules replaces
+        # this file atomically, and on Windows an AV/indexer handle on the
+        # just-replaced file is a transient sharing violation, not a corrupt
+        # rules file -- so it must not surface as MemberRulesUnreadable.
+        raw = read_bytes_with_retry(path).decode("utf-8")
+    except FileNotFoundError:
+        return ""
+    except (OSError, UnicodeError) as exc:
+        raise MemberRulesUnreadable(
+            f"member rules for {slug!r} exist at {path} but cannot be read; "
+            f"the member will not run until the file is repaired — rewrite or "
+            f"clear the rules via PUT /api/members/{slug}/rules"
+        ) from exc
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise MemberRulesUnreadable(
+            f"member rules for {slug!r} at {path} are malformed (not valid "
+            f"JSON); the member will not run until the file is repaired — "
+            f"rewrite or clear the rules via PUT /api/members/{slug}/rules"
+        ) from exc
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("member"), str)
+        or not isinstance(data.get("rules"), str)
+    ):
+        raise MemberRulesUnreadable(
+            f"member rules for {slug!r} at {path} are malformed (unexpected "
+            f"shape); the member will not run until the file is repaired — "
+            f"rewrite or clear the rules via PUT /api/members/{slug}/rules"
+        )
+    if data["member"] != member:
+        # A colliding slug's file holds another exact name's rules; for THIS
+        # member that is "never set", not an error.
+        return ""
+    return data["rules"].strip()
+
+
+def write_member_rules(slug: str, *, member: str, text: str) -> None:
+    """Persist a member's permanent rules atomically (human write path only).
+
+    Records the EXACT member name in the payload so the name-scoped read can
+    attribute the file across lossy-slug collisions. Raises rather than
+    degrading: the caller is the dashboard rules endpoint — a human action —
+    and the human must know their rules did not land. ``ValueError`` on an
+    over-cap payload (refused loudly, never truncated: silently dropping the
+    tail of a rules document would drop rules), and ``OSError`` propagates
+    like :func:`write_dm_binding`.
+
+    An empty/whitespace *text* deletes the rules file: "no rules" is the
+    documented absent state, so clearing the editor clears the state instead
+    of leaving a zero-byte file that reads back differently from "never set".
+
+    fsync, like the DM binding: rules are the user's safety boundary for this
+    member, so they must not silently vanish to a crash after the dashboard
+    confirmed the save.
+    """
+    path = member_rules_path(slug)
+    if len(text) > MEMBER_RULES_MAX_CHARS:
+        raise ValueError(
+            f"member rules for {slug!r} exceed {MEMBER_RULES_MAX_CHARS} chars ({len(text)})"
+        )
+    # JSON permits escaped lone surrogates ("\ud800"), so request-parsed text
+    # can hold code points UTF-8 cannot encode. Reject them HERE, before any
+    # state changes: letting the write raise mid-flight (atomic_write encodes
+    # to UTF-8) turns a bad payload into a 500, and escaping them into the
+    # file (ensure_ascii=True) only defers the same crash to prompt-encode
+    # time — inside the member's turn instead of at the save.
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            f"member rules for {slug!r} contain characters UTF-8 cannot encode"
+        ) from exc
+    if not text.strip():
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        # The unlink changed a directory ENTRY, which atomic_write's file-level
+        # fsync never covers: without syncing the parent, a power-off after the
+        # 200 can bring the cleared rules back. best_effort: the clear is
+        # already committed — see fsync_dir's contract for why a raise here
+        # would report completed work as failed.
+        fsync_dir(path.parent, best_effort=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Same defence-in-depth mode tightening as the DM binding: the trust
+    # subtree is owner-only everywhere else, and a chmod failure must not
+    # cost the save (the sensitive-path floor is the real fence).
+    for _dir in (path.parent, path.parent.parent):
+        try:
+            platform_compat.restrict_dir_to_owner(_dir)
+        except OSError:
+            logger.debug("could not tighten mode on %s", _dir, exc_info=True)
+    payload = {"member": member, "slug": slug, "rules": text}
+    atomic_write(path, json.dumps(payload, ensure_ascii=False), fsync=True)
+    # atomic_write's fsync=True forces the file DATA; the rename that
+    # publishes it — and, on first save, the just-created member-rules
+    # directory's own entry in ITS parent — live in directory metadata a
+    # power-off can still lose, returning the dashboard's confirmed save to
+    # the old (or no) rules. Sync both levels, raising like the write itself:
+    # the caller is the rules PUT endpoint and the human must know their
+    # safety boundary did not land.
+    fsync_dir(path.parent)
+    fsync_dir(path.parent.parent)
+
+
+def member_briefing_path(slug: str) -> Path:
+    """Absolute path to one member's self-maintained briefing file.
+
+    Inside :func:`member_dir` — deliberately agent-writable (see
+    ``BRIEFING_FILE_NAME``). Does NOT create the directory; the member's own
+    file tools do when it first writes its briefing.
+    """
+    return member_dir(slug) / BRIEFING_FILE_NAME
+
+
+def member_briefing_supported() -> bool:
+    """Whether this platform can read a member briefing race-free (layer 4).
+
+    Two requirements, both open-time controls (no check-then-open race):
+    a truthy ``O_NOFOLLOW`` to refuse a symlink at the final name, and the
+    descriptor-relative pinned walk (:func:`~kiro_crew.pinned_fs
+    .supports_pinned_walk`) to refuse an ancestor swapped for a link. Where
+    either is missing (Windows), briefing reads FAIL CLOSED and the section
+    builder renders the layer as unavailable rather than inviting the member
+    into a futile write-then-never-injected loop.
+    """
+    return bool(getattr(os, "O_NOFOLLOW", 0)) and supports_pinned_walk()
+
+
+def read_member_briefing(slug: str) -> str:
+    """Return a member's briefing text capped for injection, or ``""``.
+
+    Total by contract: every failure reads as "no briefing yet", which is the
+    normal state of a fresh member. Content past
+    :data:`MEMBER_BRIEFING_MAX_CHARS` is cut at the cap with a visible marker,
+    so the member SEES that its briefing overflowed (and can prune it) rather
+    than silently losing the tail.
+
+    The file is AGENT-WRITTEN, so two properties are enforced at the open,
+    not after it:
+
+    * **No symlink following anywhere on the path, no non-regular files, no
+      blocking open.** The gateway reads this file with its own privileges
+      while building context, so a briefing replaced by a symlink would pull
+      any gateway-readable file — including the keystone-gated ``trust/``
+      payloads the agent's tools cannot reach — into the prompt, and a
+      briefing replaced by a FIFO would make a plain ``open`` block forever,
+      hanging the member's turn and exhausting the embed workers. The leaf is
+      opened through :func:`~kiro_crew.pinned_fs.open_in_pinned_parent`, which
+      walks the ancestor chain one descriptor-relative ``openat`` at a time,
+      each carrying ``O_NOFOLLOW`` — an ``O_NOFOLLOW`` on the final component
+      alone is not enough, because the member's own directory
+      (``members/<slug>/``) is agent-writable too, and swapping IT for a link
+      redirects the whole traversal while the leaf open still finds an
+      ordinary file (the same ancestor-swap shape that closed #2446).
+      ``O_NONBLOCK`` makes a FIFO open return immediately instead of waiting
+      for a writer (both at open time — no check-then-open race); ``fstat``
+      then rejects anything that is not a regular file. Where the pinned walk
+      or ``O_NOFOLLOW`` is unavailable (Windows —
+      :func:`member_briefing_supported`) the read FAILS CLOSED to "no
+      briefing": a check-then-open probe is exactly the TOCTOU an
+      agent-writable path invites (swap a symlink in after the check), and
+      the repo's posture on hosts lacking an OS-level control is to refuse,
+      not to run the racy approximation.
+    * **Bounded read.** At most ``(cap + 2) * 4`` bytes are read (4 = max
+      UTF-8 bytes per char), so an arbitrarily large briefing costs a bounded
+      allocation, never gateway memory.
+
+    Blocking file IO: call via ``asyncio.to_thread`` from async code.
+    """
+    try:
+        path = member_briefing_path(slug)
+    except (MemberSlugError, OSError, RuntimeError):
+        return ""
+    byte_cap = (MEMBER_BRIEFING_MAX_CHARS + 2) * 4
+    if not member_briefing_supported():
+        # Fail closed (see the docstring): without O_NOFOLLOW and the pinned
+        # ancestor walk there is no race-free way to refuse a symlink on an
+        # agent-writable path.
+        return ""
+    try:
+        # ``path.parent`` comes from :func:`member_dir`, which resolves and
+        # containment-checks it — the "caller resolves once" contract of the
+        # pinned walk. The walk then refuses any component swapped for a link
+        # after that resolution, ``members/<slug>/`` included.
+        fd = open_in_pinned_parent(
+            str(path.parent),
+            path.name,
+            flags=os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            mode=0o600,
+            what="member briefing",
+        )
+    except (PinnedPathRefusal, OSError):
+        # Missing file/dir, a symlink refused anywhere on the pinned walk
+        # (ancestor or leaf), or any unreadable state — all read as "no
+        # briefing yet".
+        return ""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            # A FIFO, device or socket is never a briefing; reading one can
+            # block or misbehave, so it reads as "no briefing yet".
+            return ""
+        data = os.read(fd, byte_cap + 1)
+    except OSError:
+        return ""
+    finally:
+        os.close(fd)
+    truncated_bytes = len(data) > byte_cap
+    if truncated_bytes:
+        # The cut can split a multi-byte character; the tail is being
+        # truncated anyway, so drop the partial character rather than failing
+        # the whole read over it.
+        text = data[:byte_cap].decode("utf-8", errors="ignore").strip()
+    else:
+        try:
+            text = data.decode("utf-8").strip()
+        except UnicodeError:
+            return ""
+    if truncated_bytes or len(text) > MEMBER_BRIEFING_MAX_CHARS:
+        return text[:MEMBER_BRIEFING_MAX_CHARS] + "\n[... briefing truncated at cap — prune it]"
+    return text
 
 
 def record_activity(

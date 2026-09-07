@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { Zap, FolderOpen, ChevronRight, TriangleAlert, Check } from 'lucide-react'
+import { Zap, FolderOpen, ChevronRight, Check } from 'lucide-react'
 import Modal from './Modal'
+import ErrorNotice from './ErrorNotice'
 import { Input, Btn } from './ui'
 import ProjectPicker from './ProjectPicker'
 import SimpleSelect from './SimpleSelect'
@@ -270,13 +271,10 @@ export default function FolderConfigModal({
         }
       >
         <div className="flex flex-col gap-4">
-          {saveErr && (
-            <div data-testid="folder-config-error" role="alert"
-              className="flex items-start gap-2 text-[11.5px] text-text bg-danger-subtle border border-danger rounded-lg px-3 py-2">
-              <TriangleAlert size={13} className="shrink-0 mt-[1px] text-danger" />
-              <span className="min-w-0 break-words">{saveErr}</span>
-            </div>
-          )}
+          {/* No hand-off: the folder name / color / project dir / default agent /
+              tags form is unsaved — the save that failed is exactly what the
+              draft was about, and the navigation would discard it. */}
+          <ErrorNotice message={saveErr} testId="folder-config-error" />
 
           {/* Read-only destination. Not an input: the entry point already fixed it. */}
           <div data-testid="folder-config-destination" className="flex items-center gap-1.5 flex-wrap text-[11.5px] text-muted bg-bg-accent border border-border rounded-lg px-3 py-2">
@@ -366,13 +364,20 @@ export default function FolderConfigModal({
             <div className="flex flex-col gap-1.5">
               <span className="text-[11.5px] font-semibold text-muted">{i18nT('components.folderConfigModal.tags')}</span>
               {availableTagsFailed ? (
-                <span data-testid="folder-config-tags-error" className="text-[11px] text-danger">
-                  {i18nT('components.folderConfigModal.tags_error_hint')}
+                <span className="flex items-center gap-1.5 flex-wrap">
+                  {/* No hand-off: the same unsaved folder form (see the save
+                      notice above) — a read failure, but it sits inside it. */}
+                  <ErrorNotice
+                    variant="inline"
+                    className="text-[11px]"
+                    message={i18nT('components.folderConfigModal.tags_error_hint')}
+                    testId="folder-config-tags-error"
+                  />
                   <button
                     type="button"
                     data-testid="folder-config-tags-retry"
                     onClick={onRetryTags}
-                    className="ml-1.5 underline underline-offset-2 text-danger hover:opacity-80"
+                    className="text-[11px] underline underline-offset-2 text-danger hover:opacity-80 bg-transparent border-none p-0 cursor-pointer"
                   >
                     {i18nT('components.folderConfigModal.tags_retry')}
                   </button>

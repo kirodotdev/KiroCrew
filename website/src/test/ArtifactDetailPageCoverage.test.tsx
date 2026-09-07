@@ -723,13 +723,18 @@ describe('ArtifactDetailPage — mutation paths', () => {
   })
 
   // ── not-found ─────────────────────────────────────────────────────────────
-  it('renders the not-found notice when a selected version yields no record', async () => {
-    // The detail query succeeds, so the error card is not what renders — the
-    // page falls through to the bare not-found notice for the missing snapshot.
+  it('reports a snapshot fetch that yields no record as a load failure, with a way back', async () => {
+    // The detail query succeeds but the snapshot query settles in error (a
+    // record-less answer is one, not an absence) — the page used to fall through
+    // to the bare "Not found." as if the snapshot simply did not exist. It now
+    // renders the shared notice with the agent hand-off plus Back to Live.
     vi.mocked(api).artifactVersion = vi.fn().mockResolvedValue(undefined)
     await mount(mkArtifact({ version: 2 }))
     await pickVersion('v1')
-    expect(await screen.findByText('Not found.')).toBeInTheDocument()
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent(/Failed to load artifact/i)
+    expect(screen.queryByText('Not found.')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Back to Live' })).toBeInTheDocument()
   })
 
   // ── nav guards while dirty ────────────────────────────────────────────────

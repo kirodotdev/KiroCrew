@@ -22,10 +22,12 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.apps import job_sdk
 from kiro_crew.apps.job_sdk import (
     _CLEANUP_JOIN_SECS,
@@ -38,6 +40,7 @@ from kiro_crew.apps.job_sdk import (
     STARTING,
     TERMINAL_STATES,
     CleanupResult,
+    JobCancelled,
     JobError,
     JobHandle,
     JobRun,
@@ -210,6 +213,13 @@ class TestHappyRun:
             # field wearing a new name.
             "interrupted_from",
             "interrupt_cause",
+            # An SDK-minted boolean recording whether the runner reached a
+            # ``handle.checkpoint`` -- an OBSERVED fact, not the runner's return
+            # value. Set by the SDK from the handle at the terminal write, never
+            # supplied by the runner, so like the two above it is a lifecycle fact
+            # and not the result payload this guard blocks. Its arrival is the
+            # deliberate design decision #7804 asked for.
+            "work_observed",
         }
 
 
@@ -295,6 +305,119 @@ class TestCancellation:
 
 
 # ---------------------------------------------------------------------------
+# 5a. checkpoint - the progress OBSERVATION and the observed-stop cancel (#7804/#7814)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpoint:
+    """The checkpoint channel: one call reports progress AND observes cancel.
+
+    #7804 asked the record to STATE observed progress rather than infer it from
+    the return value; #7814 asked ``cancelled`` to name an observed stop rather
+    than a set flag. Both are answered by ``handle.checkpoint``, and the pairing
+    is the point: a checkpoint that reports progress necessarily observes the
+    cancel signal at the same call, so a progress channel that could not carry
+    cancellation is not representable.
+    """
+
+    def test_checkpoint_records_work_observed_on_done(self, sdk: JobSDK) -> None:
+        """A runner that checkpoints and returns leaves ``work_observed`` True."""
+
+        def runner(h, **kw):
+            h.checkpoint()
+            return {}
+
+        sdk.register("obs", runner)
+        run_id = sdk.start("obs")
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == DONE
+        assert run.work_observed is True
+
+    def test_no_checkpoint_leaves_work_observed_false_but_still_done(self, sdk: JobSDK) -> None:
+        """Absence of a checkpoint is NOT penalised: the run is still ``done``,
+        and the classifier stays the backstop. ``work_observed`` reads False so a
+        consumer can tell "did work, observed" from "may have done work"."""
+
+        sdk.register("silent", lambda h, **kw: {})
+        run_id = sdk.start("silent")
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == DONE
+        assert run.work_observed is False
+
+    def test_checkpoint_raises_and_records_cancelled_as_observed_stop(self, sdk: JobSDK) -> None:
+        """A cancel pending at a checkpoint raises ``JobCancelled``; the run is
+        recorded ``cancelled`` because the stack unwound at the checkpoint -- an
+        observed stop, not the flag alone. Work done BEFORE the cancel is still
+        observed."""
+        started = threading.Event()
+        ran_on = []
+
+        def runner(h, **kw):
+            h.checkpoint()  # progress observed before any cancel
+            started.set()
+            for _ in range(500):
+                # Reaches a checkpoint each iteration; raises once cancel lands.
+                h.checkpoint()
+                ran_on.append(1)
+                time.sleep(0.01)
+
+        sdk.register("stoppable", runner, cancellable=True)
+        run_id = sdk.start("stoppable")
+        assert started.wait(5.0)
+        assert sdk.cancel(run_id) is True
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == CANCELLED
+        # The stop was observed at a checkpoint, so work_observed is True and no
+        # error was recorded (a cancel is an outcome, not a fault).
+        assert run.work_observed is True
+        assert run.error == ""
+
+    def test_checkpoint_after_cancel_does_not_reach_a_false_done(self, sdk: JobSDK) -> None:
+        """The concrete #7814 hazard for in-thread work: a runner that would
+        run on to a ``done`` after a cancel cannot, because the next checkpoint
+        raises before the return."""
+        started = threading.Event()
+        reached_end = threading.Event()
+
+        def runner(h, **kw):
+            started.set()
+            while not h.cancelled.is_set():
+                time.sleep(0.01)
+            # A cancel is now pending. The runner tries to finish anyway; the
+            # checkpoint refuses to let it record success.
+            h.checkpoint()
+            reached_end.set()
+            return {}
+
+        sdk.register("racer", runner, cancellable=True)
+        run_id = sdk.start("racer")
+        assert started.wait(5.0)
+        assert sdk.cancel(run_id) is True
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == CANCELLED
+        assert not reached_end.is_set()
+
+    def test_checkpoint_cancel_check_precedes_progress(self) -> None:
+        """A checkpoint reached in an already-cancelled run credits no progress:
+        the cancel check comes first, so the raise happens before the flag is
+        set. Tested on a bare handle to isolate the ordering."""
+        run = JobRun(run_id="a" * 32, app="x", kind="k", cancellable=True)
+        handle = JobHandle(run)
+        handle.cancelled.set()
+        with pytest.raises(JobCancelled):
+            handle.checkpoint()
+        assert handle.work_observed is False
+
+    def test_jobcancelled_is_not_a_joberror(self) -> None:
+        """A cancel is the runner's cooperative exit, not an SDK refusal, so it
+        must not be caught by handlers that catch ``JobError``; and it is an
+        ``Exception`` not a ``BaseException`` so a runner's own ``except
+        Exception`` cleanup guard still runs."""
+        assert not issubclass(JobCancelled, JobError)
+        assert issubclass(JobCancelled, Exception)
+
+
+# ---------------------------------------------------------------------------
 # 5b. the cancelling snapshot — the read side of "cancel writes nothing"
 # ---------------------------------------------------------------------------
 
@@ -338,6 +461,13 @@ class TestCancellingIds:
             release.set()
         run = _wait_terminal(sdk, run_id)
         assert run.status == CANCELLED
+        # The terminal RECORD lands before the worker drops its live entry
+        # (``_execute`` writes, then re-takes the lock to pop), so a read of the
+        # record can return terminal while the entry -- and with it the derived
+        # cancelling flag -- is still a few instructions from disappearing. That
+        # is the documented closing window, not a defect; wait for the drop
+        # itself rather than inferring it from the status.
+        _wait_until(lambda: run_id not in sdk.cancelling_and_live_ids()[1])
         # The worker recorded the outcome and the live entry is gone, so the
         # status now carries the answer and nothing is pending.
         assert sdk.cancelling_and_live_ids()[0] == frozenset()
@@ -896,6 +1026,551 @@ class TestRemoveAll:
         # record would make this second call report 1.
         assert sdk.get(run_id) is None
         assert asyncio.run(sdk.remove_all_async()) == CleanupResult(0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# 11a. Disable trace — one SEL line per killed run (issue #7583)
+# ---------------------------------------------------------------------------
+
+
+class TestDisableTrace:
+    """Disable deletes every record, so the SEL trail is the only place "which
+    runs were killed" survives. ``remove_all_async`` emits one
+    ``job_killed_on_disable`` entry per formerly-live run (and per stale
+    non-terminal record) BEFORE the delete; the count-only summary stays.
+    """
+
+    @staticmethod
+    def _capture_sel(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+        events: list[dict] = []
+        monkeypatch.setattr(
+            job_sdk,
+            "sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+        )
+        return events
+
+    @staticmethod
+    def _killed(events: list[dict]) -> list[dict]:
+        return [e for e in events if e["operation"] == "jobs.job_killed_on_disable"]
+
+    def test_one_audit_entry_per_killed_live_run(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events = self._capture_sel(monkeypatch)
+        started = {"alpha": threading.Event(), "beta": threading.Event()}
+
+        def runner(h, **kw):
+            started[h.kind].set()
+            for _ in range(500):
+                if h.cancelled.is_set():
+                    return
+                time.sleep(0.01)
+
+        sdk.register("alpha", runner, cancellable=True)
+        sdk.register("beta", runner, cancellable=True)
+        a = sdk.start("alpha")
+        b = sdk.start("beta")
+        assert started["alpha"].wait(5.0)
+        assert started["beta"].wait(5.0)
+
+        cleanup = asyncio.run(sdk.remove_all_async())
+        assert cleanup.removed == 2
+
+        killed = self._killed(events)
+        assert {e["resources"] for e in killed} == {f"{a} kind=alpha", f"{b} kind=beta"}
+        assert all(e["outcome"] == "ok" for e in killed)
+        # Cooperative workers stopped inside the join, so nothing is flagged.
+        assert all("still_running" not in e["resources"] for e in killed)
+        # The count-only summary is unchanged and still fires.
+        summary = [e for e in events if e["operation"] == "jobs.job_remove_all"]
+        assert len(summary) == 1
+        assert "removed=2" in summary[0]["resources"]
+
+    def test_worker_that_outlives_the_join_is_flagged_still_running(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events = self._capture_sel(monkeypatch)
+        # Shrink the bounded join so this test does not pay the full deadline;
+        # `_join_workers` reads the module global at call time.
+        monkeypatch.setattr(job_sdk, "_CLEANUP_JOIN_SECS", 0.2)
+        started = threading.Event()
+        stop = threading.Event()
+        worker: list[threading.Thread] = []
+
+        def runner(h, **kw):
+            worker.append(threading.current_thread())
+            started.set()
+            # Ignores the cancel signal outright, so cleanup must report it.
+            stop.wait(10.0)
+            return {}
+
+        sdk.register("stubborn", runner, cancellable=True)
+        run_id = sdk.start("stubborn")
+        assert started.wait(5.0)
+
+        try:
+            cleanup = asyncio.run(sdk.remove_all_async())
+            assert cleanup.still_running == 1
+
+            killed = self._killed(events)
+            assert len(killed) == 1
+            assert killed[0]["resources"] == f"{run_id} kind=stubborn still_running"
+            summary = [e for e in events if e["operation"] == "jobs.job_remove_all"]
+            assert len(summary) == 1
+            assert summary[0]["outcome"] == "partial"
+        finally:
+            # In a finally so a failed assertion cannot leak the worker into
+            # later tests: left running it would write into the removed
+            # tmp_path.
+            stop.set()
+            for t in worker:
+                t.join(timeout=5.0)
+                assert not t.is_alive(), "the stubborn worker outlived its test"
+
+    def test_same_kind_siblings_are_attributed_per_run_not_per_kind(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Thread names are minted per KIND, so two concurrent runs of one kind
+        share a name. The still_running flag must come off each entry's own
+        thread: the cooperative sibling of a stubborn run is NOT flagged."""
+        events = self._capture_sel(monkeypatch)
+        monkeypatch.setattr(job_sdk, "_CLEANUP_JOIN_SECS", 0.5)
+        gate = threading.Event()
+        stop = threading.Event()
+        behavior: dict[str, str] = {}
+        both_running = threading.Event()
+        worker: list[threading.Thread] = []
+
+        def runner(h, **kw):
+            # list.append is atomic under the GIL, so this doubles as the
+            # "both workers are up" counter.
+            worker.append(threading.current_thread())
+            if len(worker) >= 2:
+                both_running.set()
+            gate.wait(5.0)
+            if behavior.get(h.run_id) == "stubborn":
+                stop.wait(10.0)  # ignores the cancel signal outright
+                return {}
+            for _ in range(500):
+                if h.cancelled.is_set():
+                    return
+                time.sleep(0.01)
+
+        sdk.register("work", runner, cancellable=True)
+        coop = sdk.start("work")
+        stubborn = sdk.start("work")
+        assert both_running.wait(5.0)
+        behavior[stubborn] = "stubborn"
+        gate.set()
+
+        try:
+            cleanup = asyncio.run(sdk.remove_all_async())
+            assert cleanup.still_running == 1
+
+            by_id = {e["resources"].split(" ")[0]: e["resources"] for e in self._killed(events)}
+            assert by_id[coop] == f"{coop} kind=work"
+            assert by_id[stubborn] == f"{stubborn} kind=work still_running"
+        finally:
+            stop.set()
+            for t in worker:
+                t.join(timeout=5.0)
+                assert not t.is_alive(), "a worker outlived its test"
+
+    def test_planted_terminal_disk_status_cannot_suppress_kill_line(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The record files live in an app-writable directory, so a planted
+        ``status=done`` body on a STILL-RUNNING run's record must not veto its
+        kill line: whether a live run was killed is decided from in-memory
+        state only, never from disk."""
+        events = self._capture_sel(monkeypatch)
+        started = threading.Event()
+        release = threading.Event()
+        worker: list[threading.Thread] = []
+
+        def runner(h, **kw):
+            worker.append(threading.current_thread())
+            started.set()
+            for _ in range(500):
+                if h.cancelled.is_set() or release.is_set():
+                    return
+                time.sleep(0.01)
+
+        sdk.register("work", runner, cancellable=True)
+        run_id = sdk.start("work")
+        assert started.wait(5.0)
+        try:
+            # The plant: the worker is demonstrably still running, but its
+            # disk record claims DONE.
+            record = sdk.get(run_id)
+            assert record is not None
+            record.status = DONE
+            sdk.store.write(record)
+
+            cleanup = asyncio.run(sdk.remove_all_async())
+            assert cleanup.removed == 1
+            assert cleanup.still_running == 0
+            # The disable's cancel stopped the worker -- exactly a killed run,
+            # and the forged disk status must not have silenced it.
+            killed = self._killed(events)
+            assert len(killed) == 1
+            assert killed[0]["resources"] == f"{run_id} kind=work"
+        finally:
+            # In a finally so a failed assertion cannot leak a non-discarded
+            # worker that would write into the removed tmp_path.
+            release.set()
+            for t in worker:
+                t.join(timeout=5.0)
+                assert not t.is_alive(), "the worker outlived its test"
+
+    def test_rogue_record_claiming_live_id_cannot_suppress_kill_line(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A record FILE whose body claims a live run's id with terminal status
+        must not shadow the live run. Live statuses are read by canonical
+        filename (``store.read``), never from an id-keyed index over
+        ``iter_runs`` -- an index keyed on body ids would let the lying file
+        overwrite the live record's entry and suppress its kill line."""
+        events = self._capture_sel(monkeypatch)
+        started = threading.Event()
+
+        def runner(h, **kw):
+            started.set()
+            for _ in range(500):
+                if h.cancelled.is_set():
+                    return
+                time.sleep(0.01)
+
+        sdk.register("work", runner, cancellable=True)
+        run_id = sdk.start("work")
+        assert started.wait(5.0)
+
+        rogue = JobRun(run_id=run_id, app="test-app", kind="work", status=DONE)
+        sdk.store.dir.mkdir(parents=True, exist_ok=True)
+        (sdk.store.dir / ("d" * 32 + ".json")).write_text(json.dumps(rogue.to_dict(), indent=1))
+
+        cleanup = asyncio.run(sdk.remove_all_async())
+        assert cleanup.removed == 2  # the real record and the rogue file
+        killed = self._killed(events)
+        # Exactly one line: the live run, unsuppressed. The rogue file gets no
+        # stale line either -- its claimed id belongs to a live run.
+        assert [e["resources"] for e in killed] == [f"{run_id} kind=work"]
+
+    def test_worker_done_before_cancel_is_not_reported_killed(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A worker that computed DONE before the disable's cancel landed, but
+        whose terminal write the discard guard then refused, has already
+        audited its own completion -- it must NOT also get a kill line. The
+        terminal write is held until the disable marks the handle discarded
+        (the exact interleaving under test), then the worker finishes promptly
+        so the bounded join observes it cooperative, not stubborn."""
+        events = self._capture_sel(monkeypatch)
+        started = threading.Event()
+        inside_write = threading.Event()
+        worker: list[threading.Thread] = []
+
+        def runner(h, **kw):
+            worker.append(threading.current_thread())
+            started.set()
+            return {}  # completes on its own; never sees the cancel signal
+
+        # Patch BEFORE starting the run: the worker heads for the terminal
+        # write as soon as the runner returns, so a later patch could race it.
+        orig_write = sdk._write_terminal
+
+        def held_write(run, handle):
+            inside_write.set()
+            # DONE is already assigned in memory here, and no cancel was seen.
+            # Wait for the disable to mark the handle discarded, then proceed:
+            # the write is refused and the worker exits inside the join.
+            handle.discarded.wait(10.0)
+            orig_write(run, handle)
+
+        monkeypatch.setattr(sdk, "_write_terminal", held_write)
+        sdk.register("work", runner, cancellable=True)
+        sdk.start("work")
+        assert started.wait(5.0)
+        assert inside_write.wait(5.0)
+
+        try:
+            cleanup = asyncio.run(sdk.remove_all_async())
+            assert cleanup.removed == 1
+            assert cleanup.still_running == 0  # it exited inside the join
+            killed = self._killed(events)
+            assert killed == []  # in-memory DONE: completion already audited
+        finally:
+            for t in worker:
+                t.join(timeout=5.0)
+                assert not t.is_alive(), "the held worker outlived its test"
+
+    def test_sel_failure_refuses_deletion_until_trace_is_durable(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The kill trace is fail-closed: if SEL cannot durably record which
+        runs are being deleted, the records are NOT deleted -- the disable
+        reports a failed cleanup, and a retry after SEL recovers emits the
+        survivors as ``stale`` lines and only then removes them."""
+        stale = JobRun(
+            run_id="e" * 32,
+            app="test-app",
+            kind="work",
+            status=RUNNING,
+            origin="foreign-origin-token",
+        )
+        sdk.store.write(stale)
+
+        def broken():
+            raise RuntimeError("sel down")
+
+        monkeypatch.setattr(job_sdk, "sel", broken)
+        cleanup = asyncio.run(sdk.remove_all_async())
+        assert cleanup.removed == 0
+        assert cleanup.failed == 1
+        assert not cleanup.is_clean
+        assert sdk.store.read(stale.run_id) is not None  # identity preserved
+
+        events = self._capture_sel(monkeypatch)  # SEL recovers
+        cleanup = asyncio.run(sdk.remove_all_async())
+        assert cleanup.removed == 1
+        killed = self._killed(events)
+        assert len(killed) == 1
+        assert killed[0]["resources"].endswith("stale")
+
+    def test_stubborn_worker_that_fails_after_deadline_keeps_its_kill_line(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A worker recorded stubborn at its join deadline can raise AFTERWARDS,
+        flipping its in-memory status to FAILED. The deadline observation must
+        win: the summary already counted it stubborn, so suppressing its line
+        would leave a stubborn count no line identifies."""
+        events = self._capture_sel(monkeypatch)
+        monkeypatch.setattr(job_sdk, "_CLEANUP_JOIN_SECS", 0.2)
+        started = threading.Event()
+        stop = threading.Event()
+        worker: list[threading.Thread] = []
+
+        def runner(h, **kw):
+            worker.append(threading.current_thread())
+            started.set()
+            stop.wait(10.0)  # ignores the cancel signal through the deadline
+            raise RuntimeError("boom after the deadline")
+
+        sdk.register("stubborn", runner, cancellable=True)
+        run_id = sdk.start("stubborn")
+        assert started.wait(5.0)
+
+        orig_read = sdk.store.read
+
+        def releasing_read(run_id):
+            # Runs inside the record scan -- after the join deadline recorded
+            # the worker stubborn, before the kill-line loop reads its status:
+            # release the worker and wait for it to raise and settle FAILED.
+            stop.set()
+            for t in worker:
+                t.join(timeout=5.0)
+            return orig_read(run_id)
+
+        monkeypatch.setattr(sdk.store, "read", releasing_read)
+
+        try:
+            cleanup = asyncio.run(sdk.remove_all_async())
+            assert cleanup.still_running == 1
+            killed = self._killed(events)
+            assert len(killed) == 1
+            assert killed[0]["resources"] == f"{run_id} kind=stubborn still_running"
+        finally:
+            stop.set()
+            for t in worker:
+                t.join(timeout=5.0)
+                assert not t.is_alive(), "the stubborn worker outlived its test"
+
+    def test_unreadable_record_is_traced_by_filename_before_deletion(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A record file the store cannot parse is still deleted by
+        ``remove_all`` -- so its FILENAME must leave a trace line: an identity
+        must not vanish just because its record went corrupt."""
+        events = self._capture_sel(monkeypatch)
+        sdk.store.dir.mkdir(parents=True, exist_ok=True)
+        corrupt_stem = "f" * 32
+        (sdk.store.dir / f"{corrupt_stem}.json").write_text("{not valid json")
+
+        cleanup = asyncio.run(sdk.remove_all_async())
+        assert cleanup.removed == 1
+
+        killed = self._killed(events)
+        assert len(killed) == 1
+        assert killed[0]["resources"] == f"{corrupt_stem!r} unreadable stale"
+
+    def test_run_claimed_but_never_started_is_marked_never_started(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disable can snapshot a run whose thread has not started yet. Its
+        record is deleted like the rest, so it MUST get a line -- but no worker
+        existed, so the line says ``never_started`` rather than implying a
+        kill or a still-running worker."""
+        events = self._capture_sel(monkeypatch)
+        claimed = threading.Event()
+        release = threading.Event()
+        orig_persist = sdk._persist
+
+        def held_persist(*args, **kwargs):
+            # Hold the starter in the claim->launch window. The initial persist
+            # runs AFTER the claim landed in ``_live`` and BEFORE the guarded
+            # launch section, and -- unlike ``thread.start``, which runs inside
+            # the SDK lock -- it holds no lock, so the disable can proceed and
+            # deterministically win the race the old gate-on-Thread.start
+            # version only won by timing luck.
+            result = orig_persist(*args, **kwargs)
+            claimed.set()
+            release.wait(10.0)
+            return result
+
+        monkeypatch.setattr(sdk, "_persist", held_persist)
+        sdk.register("work", lambda h, **kw: {}, cancellable=True)
+
+        def racing_start():
+            try:
+                sdk.start("work")
+            except JobError:
+                pass  # the disable won the race and refused the launch -- expected
+
+        starter = threading.Thread(target=racing_start)
+        starter.start()
+        # The claim (and the record) landed; thread.start has not been reached.
+        assert claimed.wait(5.0)
+
+        try:
+            cleanup = asyncio.run(sdk.remove_all_async())
+            assert cleanup.still_running == 0
+            killed = self._killed(events)
+            assert len(killed) == 1
+            assert killed[0]["resources"].endswith(" never_started")
+            assert "still_running" not in killed[0]["resources"]
+        finally:
+            release.set()
+            starter.join(timeout=5.0)
+            assert not starter.is_alive(), "the starter thread outlived its test"
+
+    @requires_symlinks
+    def test_symlink_record_is_refused_unopened_and_traced_unreadable(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The disable scan walks agent-writable filenames, so a planted
+        symlink ``<id>.json`` must be refused WITHOUT following it (a link at
+        /dev/zero would hang the read and make disable unreachable) -- and its
+        filename still leaves an ``unreadable`` line before deletion."""
+        events = self._capture_sel(monkeypatch)
+        sdk.store.dir.mkdir(parents=True, exist_ok=True)
+        target = sdk.store.dir / "target.txt"
+        target.write_text("not a record")
+        link_stem = "a1" * 16
+        (sdk.store.dir / f"{link_stem}.json").symlink_to(target)
+
+        cleanup = asyncio.run(sdk.remove_all_async())
+        assert cleanup.removed == 1  # the link itself is unlinked
+
+        killed = self._killed(events)
+        assert len(killed) == 1
+        assert killed[0]["resources"] == f"{link_stem!r} unreadable stale"
+
+    def test_permission_denied_record_is_classified_unreadable_not_fatal(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable REGULAR record (permission denied, an exhausted
+        Windows sharing retry) must not abort the disable: the refused read
+        classifies the record unreadable, deletion proceeds, and the filename
+        still leaves its line."""
+        events = self._capture_sel(monkeypatch)
+        sdk.store.dir.mkdir(parents=True, exist_ok=True)
+        denied_stem = "d" * 32
+        (sdk.store.dir / f"{denied_stem}.json").write_text("{}")
+        real_open = os.open
+
+        def denying_open(path, flags, *args, **kwargs):
+            if str(path).endswith(f"{denied_stem}.json"):
+                raise PermissionError(13, "denied", str(path))
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", denying_open)
+
+        cleanup = asyncio.run(sdk.remove_all_async())
+        assert cleanup.removed == 1
+
+        killed = self._killed(events)
+        assert len(killed) == 1
+        assert killed[0]["resources"] == f"{denied_stem!r} unreadable stale"
+
+    def test_long_kind_cannot_push_the_marker_off_the_audit_line(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_audit`` truncates long lines from the right, so an oversized
+        kind must be clipped BEFORE the marker lands -- otherwise the summary
+        counts a stubborn run that no line marks ``still_running``."""
+        events = self._capture_sel(monkeypatch)
+        monkeypatch.setattr(job_sdk, "_CLEANUP_JOIN_SECS", 0.2)
+        long_kind = "k" * 300
+        started = threading.Event()
+        stop = threading.Event()
+        worker: list[threading.Thread] = []
+
+        def runner(h, **kw):
+            worker.append(threading.current_thread())
+            started.set()
+            stop.wait(10.0)
+            return {}
+
+        sdk.register(long_kind, runner, cancellable=True)
+        run_id = sdk.start(long_kind)
+        assert started.wait(5.0)
+
+        try:
+            cleanup = asyncio.run(sdk.remove_all_async())
+            assert cleanup.still_running == 1
+
+            killed = self._killed(events)
+            assert len(killed) == 1
+            assert killed[0]["resources"] == f"{run_id} kind={'k' * 32} still_running"
+        finally:
+            stop.set()
+            for t in worker:
+                t.join(timeout=5.0)
+                assert not t.is_alive(), "the stubborn worker outlived its test"
+
+    def test_stale_nonterminal_record_is_traced_and_terminal_is_not(
+        self, sdk: JobSDK, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-terminal record with no live worker (a foreign process's run
+        that never got reconciled) vanishes in the same delete, so it gets the
+        same line marked ``stale``. A terminal record finished on its own --
+        nothing was killed, so it must NOT be traced."""
+        events = self._capture_sel(monkeypatch)
+        stale = JobRun(
+            run_id="b" * 32,
+            app="test-app",
+            kind="work",
+            status=RUNNING,
+            origin="foreign-origin-token",
+        )
+        finished = JobRun(
+            run_id="c" * 32,
+            app="test-app",
+            kind="work",
+            status=DONE,
+            origin="foreign-origin-token",
+        )
+        sdk.store.write(stale)
+        sdk.store.write(finished)
+
+        cleanup = asyncio.run(sdk.remove_all_async())
+        assert cleanup.removed == 2
+
+        killed = self._killed(events)
+        assert len(killed) == 1
+        # `kind` comes off disk, so it is redacted, bounded, and repr-quoted.
+        assert killed[0]["resources"] == f"{stale.run_id} kind='work' stale"
 
 
 # ---------------------------------------------------------------------------
@@ -1505,6 +2180,12 @@ class TestSanitizeInvariant:
             # can reach either, so the one-line backstop still has one input.
             "interrupted_from",
             "interrupt_cause",
+            # A boolean the SDK sets from the handle at the terminal write: the
+            # runner CALLS ``checkpoint`` (a method), it does not SUPPLY this
+            # value. A runner cannot write True here without having reached a
+            # checkpoint, and cannot write a payload through it -- so it stays a
+            # lifecycle fact the one-line backstop need not sanitize.
+            "work_observed",
         }
         fields = set(JobRun.__dataclass_fields__)
         assert fields - sdk_minted == {"error"}

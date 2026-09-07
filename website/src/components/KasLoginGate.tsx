@@ -23,6 +23,7 @@ import {
 } from './OnboardingChapterShell'
 import GithubLogo from './icons/GithubLogo'
 import { Btn } from './ui'
+import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 
 import { i18nT } from '../i18n/t'
@@ -313,19 +314,20 @@ function Chooser({
           />
         )}
       </div>
-      {/* role="alert": the failure appears in place after the click, with no
-          route change a screen reader would announce. */}
-      {beginError ? (
-        <div className="mt-4 max-w-md" role="alert">
-          <p className="text-[13px] leading-relaxed text-danger">
-            {i18nT('components.kasLogin.could_not_start_sign_in')}
-          </p>
-          {/* Raw backend detail stays visible for bug reports, but on its own
-              muted line — never suffixed onto the connection advice, where
-              "Unknown provider: x" reads as a contradiction. */}
-          <p className="mt-1 font-mono text-[12px] leading-relaxed text-muted">{beginError}</p>
-        </div>
-      ) : null}
+      {/* The failure appears in place after the click (ErrorNotice is
+          role="alert"), with no route change a screen reader would announce.
+          The raw backend detail is the `message` (kept verbatim for bug
+          reports) under the fixed title — never suffixed onto the connection
+          advice, where "Unknown provider: x" reads as a contradiction. */}
+      {/* No hand-off: the Company SSO start-URL field (the form above) is
+          unsaved, and this gate stands between the user and the chat the
+          hand-off would navigate to. */}
+      <ErrorNotice
+        className="mt-4 max-w-md"
+        title={i18nT('components.kasLogin.could_not_start_sign_in')}
+        message={beginError || null}
+        testId="kas-login-begin-error"
+      />
       <p className="mt-5 max-w-md text-[13px] leading-relaxed text-muted">
         {i18nT('components.kasLogin.browser_note')}
       </p>
@@ -337,6 +339,7 @@ function LoopbackWaiting({
   session,
   provider,
   busy,
+  notice,
   onUseCode,
   onCancel,
 }: {
@@ -344,6 +347,8 @@ function LoopbackWaiting({
   provider: KasLoginProvider
   /** True while a cancel is settling: every transition off this screen is disabled. */
   busy: boolean
+  /** A cancel that did not settle (see settleCancel): shown, never swallowed. */
+  notice: string
   onUseCode: () => void
   onCancel: () => void
 }) {
@@ -386,6 +391,8 @@ function LoopbackWaiting({
           {i18nT('components.kasLogin.loopback_slow_hint')}
         </p>
       ) : null}
+      {/* No hand-off: sign-in gate — the chat behind it is not reachable. */}
+      <ErrorNotice className="mt-4 max-w-md" message={notice || null} testId="kas-login-settle-error" />
       <div className="mt-6 flex flex-wrap items-center gap-2">
         <Btn type="button" primary disabled={busy} onClick={() => openAuthTab(session.auth_url)}>
           <ExternalLink className="lucide-inline" />
@@ -412,6 +419,7 @@ function DeviceWaiting({
   provider,
   fellBack,
   busy,
+  notice,
   onCancel,
 }: {
   session: KasLoginDeviceSession
@@ -420,6 +428,8 @@ function DeviceWaiting({
   fellBack?: boolean
   /** True while a cancel is settling: leaving this screen is disabled until then. */
   busy: boolean
+  /** A cancel that did not settle (see settleCancel): shown, never swallowed. */
+  notice: string
   onCancel: () => void
 }) {
   return (
@@ -492,6 +502,8 @@ function DeviceWaiting({
       <p className="mt-2 text-[12px] text-muted">
         {i18nT('components.kasLogin.code_valid_note')}
       </p>
+      {/* No hand-off: sign-in gate — the chat behind it is not reachable. */}
+      <ErrorNotice className="mt-4 max-w-md" message={notice || null} testId="kas-login-settle-error" />
       <button
         type="button"
         disabled={busy}
@@ -538,9 +550,14 @@ function SignInProblem({
           ? i18nT('components.kasLogin.the_code_expired_body')
           : i18nT('components.kasLogin.sign_in_failed_body')}
       </h1>
-      {detail ? (
-        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">{detail}</p>
-      ) : null}
+      {/* No hand-off: this is the sign-in gate — the chat the hand-off would
+          open sits behind it, and without a signed-in account there is no
+          agent to hand the failure to. Start over is the remedy. */}
+      <ErrorNotice
+        className="mt-3 max-w-lg"
+        message={detail || null}
+        testId="kas-login-problem-detail"
+      />
       <div className="mt-6">
         <Btn type="button" primary onClick={onStartOver}>
           <RefreshCw className="lucide-inline" />
@@ -574,6 +591,10 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
   // stays up with its transition buttons disabled, so no second login can be
   // started while the first is still being unwound.
   const [settling, setSettling] = useState(false)
+  // A cancel (or the status read after it) that failed used to leave the
+  // waiting screen up with no explanation — buttons re-enabled, nothing said.
+  // Held here and rendered on that screen; cleared by the next attempt.
+  const [settleError, setSettleError] = useState('')
   const statusQuery = useQuery({
     queryKey: QUERY_KEY,
     queryFn: api.kasLoginStatus,
@@ -696,9 +717,10 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
     // or the status read failed) keeps it and lets the poll resume, because the
     // old login may still complete and the chooser must not offer a second one.
     setSettling(true)
+    setSettleError('')
     const outcome = await settleCancel(loginId)
     setSettling(false)
-    if (outcome === 'unknown') return
+    if (outcome === 'unknown') { setSettleError(i18nT('components.kasLogin.cancel_unsettled')); return }
     setSession(null)
     setFellBack(false)
   }
@@ -707,11 +729,12 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
     if (!session) return
     const { provider, login_id: loginId } = session
     setSettling(true)
+    setSettleError('')
     const outcome = await settleCancel(loginId)
     setSettling(false)
     // Unknown: the cancel never settled, so the old login is still live -- stay
     // on its waiting screen with polling resumed rather than racing it.
-    if (outcome === 'unknown') return
+    if (outcome === 'unknown') { setSettleError(i18nT('components.kasLogin.cancel_unsettled')); return }
     setSession(null)
     setFellBack(true)
     // Signed in after all (the portal redirect landed while the user reached
@@ -741,11 +764,14 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
         <h1 className="mt-6 text-3xl font-bold tracking-tight text-text-strong">
           {i18nT('components.kasLogin.sign_in_status_unavailable')}
         </h1>
-        {statusQuery.error?.message ? (
-          <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-            {statusQuery.error.message}
-          </p>
-        ) : null}
+        {/* No hand-off: the gate cannot tell whether anyone is signed in, so
+            the chat behind it (and the agent) is not reachable from here;
+            Check again is the remedy. */}
+        <ErrorNotice
+          className="mt-3 max-w-lg"
+          message={statusQuery.error?.message || null}
+          testId="kas-login-status-error"
+        />
         <div className="mt-6">
           <Btn
             type="button"
@@ -784,6 +810,7 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
           session={session}
           provider={session.provider}
           busy={settling}
+          notice={settleError}
           onUseCode={useCodeInstead}
           onCancel={reset}
         />
@@ -795,6 +822,7 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
         provider={session.provider}
         fellBack={fellBack}
         busy={settling}
+        notice={settleError}
         onCancel={reset}
       />
     )

@@ -1,18 +1,10 @@
 /**
- * Staged mounting for file-change diff rows.
+ * File-change rows bypass the shared Pierre staging queue.
  *
- * The cost being spread: each row mounts a Pierre file-pair, and mounting all of
- * a switch's rows in one commit measured ~950ms of main-thread blocking with a
- * single 474ms task across 28 rows. Staging releases them in idle slices.
- *
- * The hazard being guarded: releasing a row must not change its height, or the
- * transcript moves under the reader — a scroll jump per released row. That is
- * why `STAGED_ROW_HEIGHT_PX` is asserted against the placeholder's own reserved
- * height here rather than left to the utility class to keep.
- *
- * Pierre paints behind a lazy chunk that never resolves under vitest, so
- * `PierreFilePair` is mocked and its presence in the DOM means "this row
- * mounted".
+ * Closed rows render complete lightweight headers and mount no Pierre surface;
+ * disclosure mounts only the selected row. The scheduler tests below remain
+ * here because other Pierre consumers still rely on its eager budget, scroll
+ * hold, cancellation, and remount latch.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, act, fireEvent } from '@testing-library/react'
@@ -24,7 +16,7 @@ vi.mock('../pierre', async importOriginal => ({
   ),
 }))
 
-import FileChangeChips, { STAGED_ROW_HEIGHT_PX } from '../components/FileChangeChips'
+import FileChangeChips from '../components/FileChangeChips'
 import {
   EAGER_ROWS,
   STAGE_SLICE_BUDGET_MS,
@@ -42,7 +34,6 @@ const change = (i: number) => ({
 
 const mounted = (c: HTMLElement) => c.querySelectorAll('[data-testid="pierre-pair"]').length
 const rows = (c: HTMLElement) => c.querySelectorAll('[data-testid^="fcc-row-"]').length
-const staged = (c: HTMLElement) => c.querySelectorAll('[aria-busy="true"]').length
 
 /** Drain every pending idle slice. The scheduler re-arms itself per batch, so
  *  one advance is not enough for a queue longer than `STAGE_BATCH`. */
@@ -61,80 +52,36 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('staged row mounting', () => {
-  it('reserves exactly the mounted row height, so releasing a row cannot move the transcript', () => {
-    // Two assertions, because one alone is self-referential: the placeholder is
-    // tied to the constant (so deleting the reservation reddens), and the
-    // constant is tied to the MEASURED value (so drifting it reddens too). A
-    // single `toBe(STAGED_ROW_HEIGHT_PX)` would follow the constant anywhere.
-    expect(STAGED_ROW_HEIGHT_PX).toBe(36)
+describe('FileChangeChips bypasses Pierre staging', () => {
+  it('renders every closed row immediately without mounting or queueing Pierre', () => {
+    const count = EAGER_ROWS + 3
     const { container } = render(
-      <FileChangeChips fileChanges={Array.from({ length: EAGER_ROWS + 2 }, (_, i) => change(i))} />,
+      <FileChangeChips fileChanges={Array.from({ length: count }, (_, i) => change(i))} />,
     )
-    const placeholder = container.querySelector('[aria-busy="true"] > div') as HTMLElement
-    expect(placeholder).toBeTruthy()
-    // The inline height IS the contract: `.fcc-row` adds no box of its own, so
-    // this is the row's height both before and after release.
-    expect(placeholder.style.height).toBe(`${STAGED_ROW_HEIGHT_PX}px`)
+    expect({ rows: rows(container), mounted: mounted(container), queued: __stagedWaitingCount() })
+      .toEqual({ rows: count, mounted: 0, queued: 0 })
+    expect(container.querySelectorAll('[data-testid^="fcc-header-"]')).toHaveLength(count)
   })
 
-  it('mounts the eager budget in the first commit and stages the rest', () => {
+  it('mounts only the row the reader opens', () => {
+    const count = EAGER_ROWS + 3
     const { container } = render(
-      <FileChangeChips fileChanges={Array.from({ length: EAGER_ROWS + 3 }, (_, i) => change(i))} />,
+      <FileChangeChips fileChanges={Array.from({ length: count }, (_, i) => change(i))} />,
     )
-    expect({ rows: rows(container), mounted: mounted(container), staged: staged(container) })
-      .toEqual({ rows: EAGER_ROWS + 3, mounted: EAGER_ROWS, staged: 3 })
+    const path = `/repo/file-${count - 1}.ts`
+    fireEvent.click(container.querySelector(`[data-testid="fcc-toggle-${path}"]`) as HTMLElement)
+    expect({ mounted: mounted(container), queued: __stagedWaitingCount() })
+      .toEqual({ mounted: 1, queued: 0 })
   })
 
-  it('releases every staged row, so nothing is dropped', () => {
-    const { container } = render(
-      <FileChangeChips fileChanges={Array.from({ length: EAGER_ROWS + 3 }, (_, i) => change(i))} />,
-    )
-    flushStaging()
-    expect({ mounted: mounted(container), staged: staged(container) })
-      .toEqual({ mounted: EAGER_ROWS + 3, staged: 0 })
-  })
-
-  it('remounts a previously admitted row immediately instead of re-queueing it', () => {
-    // The starvation that read as "text vanished to background" on a phone: a
-    // virtualized row REMOUNTS every time it scrolls back into the window, and
-    // re-queueing it each time keeps whole screens of chips as stand-ins
-    // forever (the queue never drains faster than scroll churn refills it).
-    // Admission is a one-way latch per row identity: only the FIRST mount
-    // pays the queue.
+  it('remounts closed rows as lightweight headers without touching the staging queue', () => {
     const changes = Array.from({ length: EAGER_ROWS + 3 }, (_, i) => change(i))
     const first = render(<FileChangeChips fileChanges={changes} />)
-    flushStaging()
-    expect(mounted(first.container)).toBe(EAGER_ROWS + 3)
+    expect(mounted(first.container)).toBe(0)
     first.unmount()
-    // The eager budget is already spent by the first render (module state, not
-    // reset between renders), so an unlatched row here could only queue.
     const second = render(<FileChangeChips fileChanges={changes} />)
-    expect({ mounted: mounted(second.container), staged: staged(second.container) })
-      .toEqual({ mounted: EAGER_ROWS + 3, staged: 0 })
-  })
-
-  it('never stages a degenerate change, which mounts to a zero-height row', () => {
-    // Reserving a header's height for a row that ends at 0px would ADD height on
-    // release — the same jump, inverted.
-    const same = Array.from({ length: EAGER_ROWS + 3 }, (_, i) => ({
-      path: `/repo/gone-${i}.ts`, before: '', after: '',
-    }))
-    const { container } = render(<FileChangeChips fileChanges={same} />)
-    expect({ mounted: mounted(container), staged: staged(container) })
-      .toEqual({ mounted: EAGER_ROWS + 3, staged: 0 })
-  })
-
-  it('mounts a staged row at once when the reader opens it', () => {
-    const { container } = render(
-      <FileChangeChips fileChanges={Array.from({ length: EAGER_ROWS + 1 }, (_, i) => change(i))} />,
-    )
-    const last = `/repo/file-${EAGER_ROWS}.ts`
-    expect(container.querySelector(`[data-testid="fcc-row-${last}"][aria-busy="true"]`)).toBeTruthy()
-
-    fireEvent.click(container.querySelector(`[data-testid="fcc-toggle-${last}"]`) as HTMLElement)
-
-    expect(container.querySelector(`[data-testid="fcc-row-${last}"][aria-busy="true"]`)).toBeNull()
+    expect({ mounted: mounted(second.container), queued: __stagedWaitingCount() })
+      .toEqual({ mounted: 0, queued: 0 })
   })
 })
 

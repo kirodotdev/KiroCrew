@@ -28,7 +28,7 @@ import logging
 import socket
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urljoin, urlsplit
 
@@ -51,6 +51,7 @@ from kiro_crew.link_unfurl import (
     build_icon_data_uri,
     decode_html,
     extract_meta,
+    is_login_page_title,
     normalize_cache_key,
     vet_unfurl_url,
 )
@@ -375,6 +376,17 @@ async def _build_payload(url: str) -> Dict[str, Any]:
         # untouched: `cut` is False there, so a genuinely titleless page still gets
         # its domain-only preview.
         raise _UnfurlFailed("title did not survive the read cap")
+    if is_login_page_title(meta.title):
+        # An auth-gated page answered this ANONYMOUS fetch with its sign-in
+        # interstitial, so every text field describes the gate, not the page the
+        # link names ("Sign in to Amazon | Slack" for a Slack thread). Blank
+        # them and the client falls back to the domain — the one label that is
+        # still true. Deliberately left a POSITIVE cache entry: the fetcher
+        # never carries credentials, so retrying on the negative TTL would
+        # re-fetch the same gate every 10 minutes for no gain. The icon fetch
+        # below still runs — a gate serves the site's own favicon, which keeps
+        # identifying the chip.
+        meta = replace(meta, title="", description="", site_name="")
     icon = await _fetch_icon(meta.icon_candidates)
     # Fetched only when the page actually declares a dark variant, and after the
     # default icon rather than beside it: concurrent icon fetches would double
@@ -529,8 +541,8 @@ async def link_meta_get(request: web.Request) -> web.Response:
     """GET /api/link-meta?url=... — title/description/favicon for one link.
 
     Non-2xx bodies carry only a machine-readable ``code`` (no English prose):
-    the dashboard ships in 10 languages and translates these client-side, per
-    AGENTS.md on backend-owned strings.
+    the dashboard is translated client-side, per
+    docs/system-specs/common/code-style.md on backend-owned strings.
     """
     # Offloaded: KiroCrewConfig.load() stats, reads and validates config files,
     # and this endpoint is hit once per distinct link in a transcript.

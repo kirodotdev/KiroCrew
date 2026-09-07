@@ -6,6 +6,7 @@ import { safeHttpUrl } from '../../../../lib/safeUrl'
 import ShimmerLine from '../../components/ShimmerLine'
 
 import { i18nT } from '../../../../i18n/t'
+import ErrorNotice from '../../../../components/ErrorNotice'
 /** One row of the untagged queue — deliberately ONE line high, so a 50-issue
  * batch is scannable without scrolling past a card per issue.
  *
@@ -175,7 +176,8 @@ export default function UntaggedIssueCard({
         </span>
       </div>
 
-      {error && <div className="text-[12px] text-danger mt-1 ml-[42px]">{error}</div>}
+      {/* Applying labels acts on the persisted issue; the card has no input. */}
+      <ErrorNotice message={error} variant="inline" askAgent className="mt-1 ml-[42px]" />
     </div>
   )
 }

@@ -23,6 +23,7 @@ direction by the bind mount itself.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -85,6 +86,10 @@ def _run_seal_loop(targets: list[str]) -> list[tuple[str, int]]:
             "_MS_BIND": _MS_BIND,
             "_MS_REMOUNT": _MS_REMOUNT,
             "_MS_RDONLY": _MS_RDONLY,
+            # Stubbed to 0 so this test keeps asserting the bind+remount PAIR
+            # exactly; the flag re-assertion itself is covered by
+            # test_sandbox_seal_locked_flags.py against the real helper.
+            "_locked_mount_flags": lambda _target: 0,
         },
     )
     return calls
@@ -573,3 +578,179 @@ class TestCeilingsThatMustNotBeMaterialized:
         sandbox._materialize_sealable_ceilings()
 
         assert not (crew_home / leaf).exists()
+
+
+class TestMaskableDirsAreMaterializedBeforeTheSpawn:
+    """An on-demand HIDDEN directory gets the mirror treatment of the ceilings above.
+
+    The ``SENSITIVE_DIRS`` loop is guarded on ``isdir``, so a leaf the gateway creates
+    lazily is unmasked in every sandbox spawned before its first use -- and once the
+    gateway does create it, that running sandbox sees it. Creating it empty before the
+    spawn is what gives the mask a name to bind over.
+    """
+
+    def test_every_maskable_leaf_is_created_owner_only(self, crew_home):
+        created = sandbox._materialize_maskable_dirs()
+
+        for leaf in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES:
+            path = crew_home / leaf
+            assert str(path) in created
+            assert path.is_dir()
+            # The mode is a POSIX property; this materialisation feeds the Linux
+            # namespace launcher, and Windows ignores the mode argument.
+            if os.name == "posix":
+                assert stat.S_IMODE(path.stat().st_mode) == 0o700
+
+    def test_the_leaf_is_created_directly_under_the_data_home(self, crew_home):
+        # A top-level leaf on purpose: every intermediate directory between the
+        # data home and the mask would be an agent-writable ancestor that a rename
+        # could swap out from under a transfer (see storage.STAGING_DIR_LEAF).
+        sandbox._materialize_maskable_dirs()
+        for leaf in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES:
+            assert "/" not in leaf
+            assert (crew_home / leaf).is_dir()
+
+    def test_an_existing_directory_is_left_alone_and_not_reported(self, crew_home):
+        target = crew_home / "aws-control-staging"
+        target.mkdir(parents=True)
+        marker = target / "drive-preview-live"
+        marker.mkdir()
+
+        assert sandbox._materialize_maskable_dirs() == []
+        assert marker.is_dir()
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize("mode", ["standard", "cc", "strict"])
+    def test_created_dirs_are_in_the_launcher_hidden_list(self, crew_home, mode):
+        """Creating a path is only useful if the mask loop is handed it."""
+        created = sandbox._materialize_maskable_dirs()
+        script = sandbox._build_launcher_script(mode)
+        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
+        assert match
+        hidden = set(json.loads(match.group(1)))
+
+        assert created
+        assert set(created) <= hidden
+
+    @_POSIX_ONLY
+    def test_namespace_argv_materializes_the_masked_dirs(self, crew_home):
+        sandbox.namespace_argv(["/bin/true"])
+
+        assert (crew_home / "aws-control-staging").is_dir()
+
+    def test_a_file_squatting_the_name_refuses_the_spawn(self, crew_home):
+        # A plain file where the directory should be cannot be masked by the dir
+        # loop (``isdir`` is false) and would be skipped silently; refuse instead.
+        squat = crew_home / "aws-control-staging"
+        squat.parent.mkdir(parents=True, exist_ok=True)
+        squat.write_text("not a directory", encoding="utf-8")
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_maskable_dirs()
+
+    def test_an_unresolvable_data_home_refuses_the_spawn(self, monkeypatch):
+        # Skipping the mask because the data home could not be resolved would
+        # run the agent with the staging directory visible -- the exposure this
+        # function exists to prevent. Fail closed, like every other reason.
+        def boom():
+            raise OSError("data home unavailable")
+
+        monkeypatch.setattr(sandbox, "config_dir", boom)
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_maskable_dirs()
+
+
+@_POSIX_ONLY
+class TestASymlinkMaskableLeafRefusesTheSpawn:
+    """A HIDDEN-dir leaf that is a symlink is GPT's staging-mask bypass, and is refused.
+
+    ``os.path.isdir`` follows a link, so a leaf that RESOLVES to a real directory reads as
+    a directory and the mask loop would bind over the link's TARGET, not the leaf name.
+    The name lives in the writable data home, so a sandboxed process can unlink it and put
+    an agent-owned directory in its place -- and the pre-created staging directory the
+    preview CLI writes into is then one the agent controls. ``_refuse_if_dangling_symlink``
+    only rejects a link that resolves to nothing, so ``_refuse_if_symlink_leaf`` closes the
+    RESOLVING case; the create-race re-check closes the swap-during-the-window case.
+    """
+
+    def test_the_unguarded_chain_really_is_exploitable(self, crew_home):
+        """Pin the mechanism: isdir() follows the link, so it reads as a maskable dir."""
+        victim = crew_home / "agent-writable"
+        victim.mkdir()
+        target = crew_home / "aws-control-staging"
+        target.symlink_to(victim)
+
+        assert os.path.islink(target) is True
+        assert os.path.isdir(target) is True, "isdir() follows the link -> reads as a dir"
+        # Without the guard the loop would hit the isdir() branch and mask the link's
+        # target, leaving the replaceable leaf name pointing at an agent-owned tree.
+
+    def test_a_resolving_symlink_leaf_refuses(self, crew_home):
+        victim = crew_home / "agent-writable"
+        victim.mkdir()
+        target = crew_home / "aws-control-staging"
+        target.symlink_to(victim)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as err:
+            sandbox._materialize_maskable_dirs()
+
+        assert "aws-control-staging" in str(err.value)
+        assert "agent-writable" in str(err.value), "the destination is the diagnostic value"
+
+    def test_the_symlink_leaf_is_never_removed(self, crew_home):
+        """Removing it is a data-loss path; the link is the operator's to resolve."""
+        victim = crew_home / "agent-writable"
+        victim.mkdir()
+        target = crew_home / "aws-control-staging"
+        target.symlink_to(victim)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_maskable_dirs()
+
+        assert target.is_symlink(), "the link is not ours to delete"
+
+    def test_a_symlink_swapped_in_after_a_lost_create_race_refuses(self, crew_home, monkeypatch):
+        # The window between our checks and ``mkdir``: a sandboxed process wins the
+        # create with a symlink to a tree it owns, so mkdir raises FileExistsError and a
+        # plain isdir() re-check would follow the link and mask its target. The
+        # no-follow re-validation must refuse instead.
+        victim = crew_home / "agent-writable"
+        victim.mkdir()
+        target = crew_home / "aws-control-staging"
+
+        real_mkdir = os.mkdir
+
+        def racing_mkdir(path, mode=0o777, *args, **kwargs):
+            if os.path.abspath(path) == os.path.abspath(str(target)):
+                # Simulate the racer landing a symlink at the leaf, then report the
+                # collision the kernel would have raised.
+                os.symlink(str(victim), str(target))
+                raise FileExistsError(errno.EEXIST, "File exists", str(path))
+            return real_mkdir(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(os, "mkdir", racing_mkdir)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as err:
+            sandbox._materialize_maskable_dirs()
+
+        assert "aws-control-staging" in str(err.value)
+        assert target.is_symlink(), "the raced-in link is not ours to delete"
+
+    def test_a_real_dir_winning_the_create_race_is_accepted(self, crew_home, monkeypatch):
+        # The benign race: another spawn created the real directory first. mkdir raises
+        # FileExistsError, the no-follow re-check finds a real dir, and the spawn proceeds.
+        target = crew_home / "aws-control-staging"
+
+        real_mkdir = os.mkdir
+
+        def racing_mkdir(path, mode=0o777, *args, **kwargs):
+            if os.path.abspath(path) == os.path.abspath(str(target)):
+                real_mkdir(str(target), 0o700)
+                raise FileExistsError(errno.EEXIST, "File exists", str(path))
+            return real_mkdir(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(os, "mkdir", racing_mkdir)
+
+        # Must not raise: a real directory won the race.
+        sandbox._materialize_maskable_dirs()
+        assert target.is_dir() and not target.is_symlink()

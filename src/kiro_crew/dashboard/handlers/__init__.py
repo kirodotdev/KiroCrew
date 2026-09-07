@@ -21,6 +21,7 @@ from kiro_crew.dashboard.handlers_system import (  # noqa: F401
     api_system,
 )
 from kiro_crew.dashboard.origin import is_loopback  # noqa: F401
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import (  # noqa: F401
     is_sensitive_path,
     redact_credentials,
@@ -114,6 +115,7 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_history_detail,
     api_cron_run,
     api_cron_script_source,
+    api_cron_secret_grant,
     api_cron_to_chat,
     api_cron_update,
     api_crons,
@@ -224,6 +226,8 @@ from kiro_crew.dashboard.handlers.mcp_apps import (  # noqa: E402, F401
 # ── Crew Members (handlers/members.py) ──
 from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_activity,
+    api_member_rules_get,
+    api_member_rules_put,
     api_member_thread,
     api_members,
 )
@@ -304,6 +308,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_spawn_retry,
     api_spawn_status,
     api_spawn_steer,
+    api_spawn_stop_all,
     api_teams_activity,
     api_teams_config_get,
     api_teams_config_save,
@@ -318,7 +323,13 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     MAX_PROMPT_BYTES,
     _extract_sop_description,
     _find_prompt,
+    _gated_sop_description,
+    _local_prompt_scan_root,
+    _plain_stem_ok,
+    _prompt_read_root,
+    _prompt_read_within_root,
     _redact_prompt,
+    _resolve_prompt_dir,
     api_prompt_detail,
     api_prompts,
     api_prompts_create,
@@ -373,6 +384,7 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_session_tool_policy,
     api_sessions,
     api_sessions_clear,
+    api_sessions_clearable_count,
     api_sessions_context,
     api_sessions_health,
     api_sessions_memory,
@@ -471,6 +483,11 @@ from kiro_crew.dashboard.handlers.themes import (  # noqa: E402, F401
     api_themes_install,
 )
 
+# ── Browser UI preference backup (extracted to handlers/ui_prefs.py) ──
+from kiro_crew.dashboard.handlers.ui_prefs import (  # noqa: E402, F401
+    api_ui_prefs,
+)
+
 # ── Updates & Logs (extracted to handlers/updates.py) ──
 # NOTE: api_stream passes update_available= to status_snapshot (see updates.py)
 from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
@@ -530,7 +547,149 @@ def _invalidate_prompt_cache() -> None:
     _prompt_cache = None
 
 
-def _list_aim_prompts() -> list[dict[str, Any]]:
+def _prompt_dir_entry(path: Path, root_real: Path, src: str) -> dict[str, Any] | None:
+    """A user-prompt entry for *path* under *root_real*, or ``None`` to refuse it.
+
+    *root_real* is the prompt root RESOLVED ONCE by the caller, for the whole
+    enumeration, never the root as the caller addressed it. Re-resolving that name
+    here is what a directory swap defeats: with the root replaced by a link, both
+    sides of the containment comparison resolve into the link's destination and
+    every file under the directory the swap named looks confined. Compared against
+    a value pinned before the swap, they are all refused instead — see
+    ``prompts._local_prompt_scan_root``, which is where the pin is taken and where
+    the window before it is closed.
+
+    Every user-prompt entry is minted here — by the directory scan and by the
+    exact-name lookup alike — so "the file a prompt names is a plain file inside
+    that prompt's own directory" is a property of the entry rather than something
+    each consumer has to re-establish. That matters because a consumer of the
+    entry reads ``path``: the listing publishes its description, and an
+    ``@mention`` injects the whole file into an agent turn.
+
+    A project's ``.kiro/prompts`` is content the user CLONED, not content they
+    authored, so the entry is refused when the name does not RESOLVE to a plain
+    file still inside *prompts_dir*, or resolves onto an ``is_sensitive_path``
+    target. Without that, a repository shipping
+    ``creds.md -> ~/.aws/credentials`` gets that file's first heading published
+    as a prompt description and the whole file injected on ``@creds`` — a file
+    the agent's own read gate refuses outright. The same predicate the edition
+    SOP walk above applies to its own entries; the difference is only that a
+    project directory has an untrusted author.
+
+    Refusals are narrow on purpose, because this decides whether a prompt EXISTS
+    at all:
+
+    * A linked ENTRY is refused, whatever it points at, and the test is
+      ``is_link_or_junction`` — lstat-based, so nothing is dereferenced to reach
+      the verdict, and a Windows junction (which ``is_symlink`` calls False) is
+      covered. This is the SAME predicate the scoped read and both write verbs
+      apply, and matching it is the point: those verbs refuse every link in
+      either scope, so an entry this listing kept because the link happened to
+      stay inside the directory named a file no other verb on this API would
+      open, edit or delete. Refusing it here is what makes the LOCAL half of the
+      listing offer exactly the names the local scoped read, update and delete
+      can address. The cost is a hand-symlinked individual prompt under
+      ``~/.kiro/prompts`` no longer appearing; a symlinked ``~/.kiro`` or a
+      symlinked project root, the shapes a dotfile manager actually produces,
+      are ancestor links rather than entry links and are unaffected.
+    * Containment is compared resolved-to-resolved, because an ancestor link the
+      user chose (that dotfile-managed ``~/.kiro``) must keep working — the same
+      tolerance ``_local_prompt_dir_in_project`` sets.
+
+      This gate deliberately says NOTHING about whether the root it is handed
+      belongs where the caller thinks: a link is transparent to a resolved-to-
+      resolved comparison, exactly as ``_linked_prompt_root`` documents. Deciding
+      that a redirected root may not be served is therefore its callers' job, and
+      for the local scope both of them do it — ``_list_aim_prompts`` and
+      ``prompts._local_prompt_entry`` gate AND pin the root through
+      ``prompts._local_prompt_scan_root`` first, so a checkout shipping
+      ``.kiro/prompts -> ~/Documents`` yields an empty local library rather than a
+      published one. The GLOBAL root is NOT symmetric: the global scoped read
+      refuses a symlinked ``~/.kiro/prompts`` while ``_build_prompt_base`` still
+      lists through it. That asymmetry predates the per-slot resolution and is left
+      alone on purpose — ``~/.kiro/prompts`` is a location the OPERATOR chose, not
+      one a cloned repository can name, and refusing it would withdraw the whole
+      global library from anyone who stows that directory. It is still PINNED for
+      the duration of the scan, which costs that scope nothing and keeps a swap
+      landing mid-scan from redirecting it.
+    * ``st_nlink > 1`` is refused: nothing legitimately hardlinks a prompt, and
+      the scoped read already refuses a hardlinked prompt outright, so a listing
+      that offered one would advertise a file its own scope will not serve.
+    * An unreadable file is NOT refused. It keeps its entry with an empty
+      description, exactly as before — a bad mode or a transient I/O error must
+      surface as the read path's own error, not as a prompt silently vanishing
+      from the user's library.
+    * The stem must satisfy ``_plain_stem_ok``, the single predicate create, the
+      scoped read and both write verbs already address a prompt by. A stem it
+      rejects is one every other verb on this API answers ``invalid_name`` for, so
+      listing it advertised a name nothing could open, edit or delete.
+
+    A refusal to name one file must never be able to become an error for the
+    library around it, so every filesystem call is wrapped and ``RuntimeError``
+    is caught alongside ``OSError`` and ``ValueError``. The link refusal is what
+    keeps a cloned project's ``loop.md -> loop.md`` out of ``resolve()`` in the
+    first place — lstat sees a link and stops, dereferencing nothing — but
+    ``resolve()`` signals a symlink loop with ``RuntimeError``, which is NOT an
+    ``OSError``, so the ordinary catch would let an entry swapped for a loop
+    between that lstat and this resolve take the whole listing down with a 500.
+    """
+    if not _plain_stem_ok(path.stem):
+        return None
+    try:
+        if is_link_or_junction(path):
+            return None
+        resolved = path.resolve()
+        if resolved.parent != root_real:
+            return None
+        # Not a link, so ``is_file`` dereferences nothing beyond the ancestor
+        # links the containment check above has already vetted; it answers False
+        # for a directory or a device node.
+        if not path.is_file() or path.stat().st_nlink > 1:
+            return None
+        if is_sensitive_path(str(resolved)):
+            return None
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return {
+        "name": path.stem,
+        "fullName": path.stem,
+        # Read through the no-link gate, pinned inside the ROOT this entry was
+        # gated against: opening by name would re-resolve the path, so an entry
+        # swapped for a link between the lstat above and that open would publish
+        # its TARGET's heading here. The pinned root rather than the addressed one,
+        # because the gate realpaths what it is given. See _gated_sop_description.
+        "description": _gated_sop_description(path, root_real),
+        # The as-addressed path, not the resolved one: the write paths address
+        # this same name, and ``api_prompts`` displays it with ``$HOME`` folded to
+        # ``~``, which a resolved path under a linked ``~/.kiro`` would defeat.
+        "path": str(path),
+        "package": "",
+        "source": src,
+    }
+
+
+def _scan_prompt_dir(prompts_dir: Path, root_real: Path, src: str) -> list[dict[str, Any]]:
+    """Emit prompt entries for every ``*.md`` under ``prompts_dir`` tagged ``src``.
+
+    *prompts_dir* is the root as ADDRESSED, which is what must be walked — the
+    entry reports that spelling, and ``api_prompts`` folds ``$HOME`` to ``~`` in
+    it. *root_real* is the same root RESOLVED once by the caller, and it is the
+    only thing every entry's containment is compared against; the two differ under
+    a link, which is the whole reason the caller resolves it rather than this
+    walk. Entries are minted by :func:`_prompt_dir_entry`, whose ``None`` is a
+    refusal to name the file at all rather than a missing description.
+    """
+    entries: list[dict[str, Any]] = []
+    if not prompts_dir.is_dir():
+        return entries
+    for f in sorted(prompts_dir.glob("*.md")):
+        entry = _prompt_dir_entry(f, root_real, src)
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
+def _list_aim_prompts(project_dir: Path | None = None) -> list[dict[str, Any]]:
     """Discover agent SOPs from edition-contributed prompt roots and user prompts.
 
     Edition SOP roots come from ``PromptSourceProvider.prompt_source_roots()`` (CPP
@@ -538,13 +697,77 @@ def _list_aim_prompts() -> list[dict[str, Any]]:
     Each root is walked generically (``rglob('*.sop.md')``) — no ``~/.aim``
     package layout or eventId resolution — and every SOP is emitted with
     ``source: "package"``. User-authored prompts under ``~/.kiro/prompts`` are
-    still discovered (``source: "global"``/``"local"``).
+    still discovered (``source: "global"``).
+
+    ``project_dir`` is the caller's already-resolved local project (or ``None``).
+    The caller resolves it — ``slot.project`` on the chat surface,
+    ``prompts._prompt_local_project`` on the HTTP surface — because this function
+    is shared by callers whose notion of "the current project" differs, and the
+    process-wide ``KIROCREW_PROJECT_DIR`` is neither of them. Resolving in the
+    caller is also what lets ``list`` and ``create`` be handed the SAME project
+    and so agree on where "local" is. When ``project_dir`` is given, its
+    ``.kiro/prompts`` are emitted with ``source: "local"``.
+
+    Caching: only the project-independent portion (package SOPs + global user
+    prompts, i.e. the ``project_dir is None`` result) is cached under the
+    5s TTL. When ``project_dir`` is supplied the cached global portion is reused
+    (or built) but the local prompts are appended fresh and the combined result
+    is never cached — otherwise a cached answer for one project would be served
+    to a caller that resolved a different one.
     """
     global _prompt_cache, _prompt_cache_ts  # noqa: PLW0603
     now = time.monotonic()
     if _prompt_cache is not None and now - _prompt_cache_ts < _PROMPT_CACHE_TTL:
-        return [dict(p) for p in _prompt_cache]
+        base = [dict(p) for p in _prompt_cache]
+    else:
+        base = _build_prompt_base()
+        _prompt_cache = base
+        _prompt_cache_ts = now
+        base = [dict(p) for p in base]
 
+    if project_dir is not None:
+        # Append this project's local prompts fresh; never cache the COMBINED
+        # result under the single-slot _prompt_cache above — that slot is keyed by
+        # nothing, so one project's local prompts stored in it are served to a
+        # caller that resolved another. Keying a second cache by path would be
+        # sound; it is left out because the invalidation surface is what costs:
+        # every create/update/delete would have to invalidate the right key, and
+        # a stale key is a prompt the user just wrote not appearing. The scan
+        # itself is one directory's glob('*.md') plus a short read per file, so
+        # the cache buys little. Every caller that reaches this branch is off the
+        # event loop — the HTTP listers in an executor job, the palette build in
+        # asyncio.to_thread — which is what makes an uncached scan affordable here.
+        # The one PER-TURN caller, chat_runner's @mention expansion, deliberately
+        # does NOT reach it: a scan there would cost a description read per prompt
+        # in the directory on every turn beginning with '@', so it resolves its
+        # single local candidate by exact name through prompts._local_prompt_entry
+        # instead of scanning.
+        #
+        # The ROOT goes through _local_prompt_scan_root, which gates it with the
+        # same _resolve_prompt_dir the scoped read and both write verbs use and
+        # then PINS the inode that gate approved, rather than joining
+        # ".kiro/prompts" onto the project. _prompt_dir_entry gates an ENTRY
+        # against the root it is given, which by construction says nothing about
+        # whether that root belongs to the project: a checkout shipping
+        # ".kiro/prompts -> ~/Documents" makes every path inside it look
+        # confined, so the listing would publish the filename and first heading
+        # of every *.md in a directory the repository named, and @<stem> would
+        # inject its contents — while every serving verb answers
+        # linked_prompt_root for the same name. Pinning is what extends that to a
+        # root swapped AFTER the gate ran: the entries then resolve outside the
+        # pinned value and are refused. Either way a redirected root is a local
+        # library with NO entries, which is what makes "listed" and "serveable"
+        # one set for this scope.
+        local_roots = _local_prompt_scan_root(Path(project_dir))
+        if local_roots is not None:
+            base.extend(_scan_prompt_dir(local_roots[0], local_roots[1], "local"))
+    return base
+
+
+def _build_prompt_base() -> list[dict[str, Any]]:
+    """Build the project-independent prompt list: edition SOP roots + global user
+    prompts under ``~/.kiro/prompts``. This portion is safe to cache because it
+    does not depend on any caller's project."""
     result: list[dict[str, Any]] = []
 
     # Edition-contributed prompt/SOP roots (CPP seam). Deferred import (sel.py
@@ -585,31 +808,23 @@ def _list_aim_prompts() -> list[dict[str, Any]]:
                 }
             )
 
-    # Also scan ~/.kiro/prompts/ for user-created prompts
+    # Also scan ~/.kiro/prompts/ for user-created global prompts (project-independent).
+    # The root is resolved ONCE and every entry is contained against that value,
+    # not against a name re-resolved per entry. This scope deliberately does NOT
+    # refuse a linked root — that directory is a location the operator chose, and
+    # refusing it would withdraw the whole global library from anyone who stows it
+    # — so the resolution FOLLOWS the operator's link and its destination is the
+    # root. Pinning it still costs nothing and denies a swap landing mid-scan, and
+    # a resolve that cannot answer (a cyclic ~/.kiro, which raises RuntimeError
+    # rather than OSError) yields no global entries instead of an unaudited 500.
     home = Path.home()
-    prompt_dirs: list[tuple[Path, str]] = [(home / ".kiro" / "prompts", "global")]
-    from kiro_crew.agent import _project_dir
-
-    proj = _project_dir()
-    if proj:
-        prompt_dirs.append((proj / ".kiro" / "prompts", "local"))
-    for prompts_dir, src in prompt_dirs:
-        if not prompts_dir.is_dir():
-            continue
-        for f in sorted(prompts_dir.glob("*.md")):
-            result.append(
-                {
-                    "name": f.stem,
-                    "fullName": f.stem,
-                    "description": _extract_sop_description(f),
-                    "path": str(f),
-                    "package": "",
-                    "source": src,
-                }
-            )
-    _prompt_cache = result
-    _prompt_cache_ts = now
-    return [dict(p) for p in result]
+    global_dir = home / ".kiro" / "prompts"
+    try:
+        global_real = global_dir.resolve()
+    except (OSError, RuntimeError):
+        return result
+    result.extend(_scan_prompt_dir(global_dir, global_real, "global"))
+    return result
 
 
 # Paid-AWS-service consent — the operator's confirmation surface for Amazon
@@ -653,6 +868,7 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     api_session_agents_list,
     api_shutdown,
     api_stt_config,
+    api_stt_ffmpeg_download,
     api_stt_prepare,
     api_stt_prewarm,
     api_stt_status,
@@ -664,6 +880,14 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     index,
     logo,
     pwa_file,
+)
+
+# Flagged-file delivery consent — owner-gated, and the ONLY writer of
+# ``file_delivery_consent.json``. No CLI counterpart, deliberately.
+from kiro_crew.dashboard.handlers.file_delivery_consent import (  # noqa: E402, F401
+    api_file_delivery_consent_delete,
+    api_file_delivery_consent_get,
+    api_file_delivery_consent_post,
 )
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_push_notification,

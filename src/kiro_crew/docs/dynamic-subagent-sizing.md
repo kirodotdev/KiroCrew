@@ -144,4 +144,4 @@ memory floor. They are independent guards.
   `/proc/meminfo` and therefore remains inert (fails open) on non-Linux hosts —
   auto-sizing and the runtime gate are independent guards.
 - Design rationale and worked examples:
-  `~/.kiro/crew/workspace/dynamic-subagent-sizing.md`.
+  [`docs/system-specs/modules/subagent.md`](https://github.com/kirodotdev/KiroCrew/blob/main/docs/system-specs/modules/subagent.md).

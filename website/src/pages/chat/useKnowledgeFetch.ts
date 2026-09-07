@@ -72,11 +72,20 @@ export function useKnowledgeFetch(slotKey?: string | null) {
 
   const [searchQuery, setSearchQuery] = useState<string | null>(null)
 
-  const { data: searchData, isFetching: loading } = useQuery<SearchResponse>({
+  const { data: searchData, isFetching: loading, error: searchError, refetch } = useQuery<SearchResponse>({
     queryKey: ['knowledge-search', searchQuery],
     queryFn: () => api.knowledgeSearch(searchQuery!) as Promise<SearchResponse>,
     enabled: !!searchQuery,
   })
+  // A refused search used to fall through to the picker's "no knowledge found"
+  // empty state, which is a claim the failed request cannot back. Exposed as the
+  // backend's own message so the picker can render it through ErrorNotice.
+  const error = searchQuery && searchError
+    ? (searchError instanceof Error && searchError.message ? searchError.message : String(searchError))
+    : null
+  // Same key, so `searchKnowledge(query)` again would just re-read the cached
+  // rejection; this is the real re-request the picker's Retry needs.
+  const retrySearch = useCallback(() => { void refetch() }, [refetch])
 
   const searchKnowledge = useCallback((q: string) => {
     setQuery(q)
@@ -99,5 +108,5 @@ export function useKnowledgeFetch(slotKey?: string | null) {
   const clearPending = useCallback(() => setPendingKnowledge(null), [])
   const clearResults = useCallback(() => { setSearchQuery(null); setQuery('') }, [])
 
-  return { results, query, loading, pendingKnowledge, searchKnowledge, inject, clearPending, clearResults }
+  return { results, query, loading, error, retrySearch, pendingKnowledge, searchKnowledge, inject, clearPending, clearResults }
 }

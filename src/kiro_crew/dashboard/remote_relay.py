@@ -665,8 +665,8 @@ async def forward_peer_selection(
                 return accepted
         return {}
     # The peer's own refusal is the useful message — it knows why (an agent that
-    # was removed there, a model its account cannot serve, a workspace with
-    # messages already sent). Only its `error` string is surfaced, and only when
+    # was removed there, a model its account cannot serve, a turn in flight on
+    # the peer). Only its `error` string is surfaced, and only when
     # it is a short string: the rest of a peer reply is not trusted for display.
     detail = ""
     if len(raw) <= _MAX_PEER_SLOT_REPLY_BYTES:

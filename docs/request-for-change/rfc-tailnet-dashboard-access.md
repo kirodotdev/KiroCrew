@@ -13,6 +13,11 @@ superseded-by: []
 ---
 # RFC: Tailnet-native dashboard access
 
+> **Current behaviour: see `docs/system-specs/modules/dashboard-token-auth.md`,**
+> which owns the shipped `ts:node:` / `ts:login:` peer pin,
+> `dashboard.tailscale.trust_identity` and the enforced claim. Phases 2–4 below
+> are the open plan.
+
 - Status: partial — **Phase 1 landed** as PR #1761 (merged commit `f8afcff7`):
   `is_proxied_request()`, the per-binding `proxied` flag, the tri-state Security
   Posture row, and the guide correction across all three tunnel providers.

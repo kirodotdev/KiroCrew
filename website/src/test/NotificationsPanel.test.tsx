@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, fireEvent, screen } from '@testing-library/react'
+import { render as rtlRender, fireEvent, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
 import { __resetForTests, playPreset } from '../hooks/useNotificationSound'
+
+// The channels section reads through React Query, so every render needs a
+// client. Same call shape as RTL's render so the cases below stay unchanged.
+function render(ui: React.ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+}
 
 // Mock only playPreset: the panel's Test buttons and dropdown previews call it,
 // and the assertions below need to observe the (preset, volume) pair without

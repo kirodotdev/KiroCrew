@@ -66,7 +66,7 @@
 1 src/kiro_crew/session_cleanup.py
 2 src/kiro_crew/session_compaction.py
 1 src/kiro_crew/session_map.py
-3 src/kiro_crew/session_pid.py
+2 src/kiro_crew/session_pid.py
 1 src/kiro_crew/session_pool.py
 3 src/kiro_crew/slack/gateway.py
 3 src/kiro_crew/slack/handler.py

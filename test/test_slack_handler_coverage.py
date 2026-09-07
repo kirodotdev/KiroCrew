@@ -177,6 +177,49 @@ class TestYoloCommand:
         assert "ON" in _texts(slack)
 
     @pytest.mark.asyncio
+    async def test_off_revokes_while_policy_masks_the_grant(
+        self, slack, sessions, owner, monkeypatch
+    ):
+        """An explicit off must not be gated on the POLICY-FILTERED liveness.
+
+        ``!yolo`` computes ``yolo_active = is_yolo_mode()``, which policy can veto. A
+        grant that policy masks but that still EXISTS therefore reads False, so the
+        off branch reported "already off" and never called ``disable_yolo()`` --
+        leaving a grant standing that the operator had explicitly revoked.
+        ``disable_yolo`` itself was corrected to read ``has_grant``; this covers its
+        CALLER, which was still gating it out.
+
+        A deny normally destroys the grant at ceiling-install time, so the mask is the
+        fail-closed floor for a teardown that did not complete -- which is exactly the
+        state where an explicit off has work to do.
+
+        Driven through ``_slash`` on purpose: an earlier attempt re-implemented the
+        gate inside the test and therefore exercised no handler code, passing even
+        with the fix reverted.
+        """
+        from kiro_crew import safety_override as so
+
+        await _slash("!yolo on", slack, sessions)
+        assert h.is_yolo_mode() is True
+        slack.actions.clear()
+
+        # Push a DENY without going through a ceiling install, so the grant survives
+        # and only the policy mask is in force -- which is the state that misled the
+        # branch under test.
+        monkeypatch.setattr(so, "_yolo_policy_permitted", False)
+        monkeypatch.setattr(so, "_yolo_policy_resolved", True)
+        assert h.is_yolo_mode() is False, "the filtered reading is what misled the branch"
+        assert so.safety_override().has_grant() is True, "the grant is still standing"
+
+        await _slash("!yolo off", slack, sessions)
+
+        assert "disabled" in _texts(slack), "the off must be reported as an off"
+        with so.safety_override()._lock:
+            assert (
+                so.safety_override()._active is False
+            ), "the grant must be torn down even while the verdict is unknown"
+
+    @pytest.mark.asyncio
     async def test_off_when_active_and_when_already_off(self, slack, sessions, owner):
         await _slash("!yolo on", slack, sessions)
         slack.actions.clear()

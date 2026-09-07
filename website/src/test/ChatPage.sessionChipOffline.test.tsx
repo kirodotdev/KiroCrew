@@ -290,18 +290,22 @@ describe('chip roster carries only surfaces ChatPage can show', () => {
 describe('one session-entry path', () => {
   // A SOURCE guard: the two callees were behaviourally identical, so only the
   // structure can distinguish the collapsed form from the duplicated one.
-  const source = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf-8')
+  const pageSource = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf-8')
+  const sessionSource = readFileSync(join(__dirname, '..', 'pages', 'chat', 'useChatPageSessionController.ts'), 'utf-8')
 
   it('routes the in-message chip through the shared switch callee', () => {
-    expect(source).toContain('onSessionOpen={selectSessionTab}')
+    expect(pageSource).toContain('onSessionOpen={selectSessionTab}')
   })
 
   it('keeps no second spelling of the session-open guard', () => {
     // The duplicate would diverge the first time either side gained a side effect.
-    expect(source).not.toContain('handleSessionOpen')
+    expect(pageSource).not.toContain('handleSessionOpen')
+    expect(sessionSource).not.toContain('handleSessionOpen')
   })
 
   it('declares the shared callee exactly once', () => {
-    expect(source.match(/const selectSessionTab = useCallback/g)).toHaveLength(1)
+    // The callee is owned by the session controller; the page only receives it.
+    expect(sessionSource.match(/const selectSessionTab = useCallback/g)).toHaveLength(1)
+    expect(pageSource).not.toContain('const selectSessionTab = useCallback')
   })
 })

@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Palette, Pencil, Pin, Plus, Trash2, Type } from 'lucide-react'
 import { Btn, Card, CardTitle, EmptyState, Input, SendBtn } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
 import { i18nT } from '../../i18n/t'
 import { pptxMakerApi, type StyleEntry, type TemplateEntry } from './api'
@@ -88,7 +89,8 @@ function RenameRow({
         {i18nT('apps.pptxMaker.libraryPanel.save')}
       </SendBtn>
       <Btn onClick={onCancel}>{i18nT('apps.pptxMaker.libraryPanel.cancel')}</Btn>
-      {error && <span className="text-[12px] text-danger w-full">{error}</span>}
+      {/* No hand-off: the new name typed into this row is unsaved. */}
+      <ErrorNotice className="w-full" message={error} />
     </div>
   )
 }
@@ -286,11 +288,9 @@ export default function LibraryPanel({ kind }: { kind: LibraryKind }) {
         />
       </div>
 
-      {error && (
-        <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 text-[13px] text-danger animate-rise">
-          {error}
-        </div>
-      )}
+      {/* The hand-off is offered except while the rename row is open: its name
+          input is the one unsaved value in this panel (imports are file picks). */}
+      <ErrorNotice className="mb-4 animate-rise" message={error} askAgent={!renaming} />
       {notice && <div className="mb-3 text-[13px] text-muted">{notice}</div>}
 
       <div className="flex flex-col sm:flex-row gap-4 flex-1 min-h-0">

@@ -29,6 +29,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import extras
+from kiro_crew import transcribe as transcribe_mod
 from kiro_crew.config.loader import (
     MAX_SUBAGENTS_FIXED_FLOOR,
     SUBAGENT_AUTO_MAX_CEILING,
@@ -370,13 +371,21 @@ class TestFfmpegInstallCommands:
         assert any("dnf install -y gcc make nasm diffutils" in c for c in cmds)
         assert any("build-ffmpeg.sh" in c for c in cmds)
 
-    def test_without_a_build_script_points_at_upstream(self, monkeypatch) -> None:
+    def test_without_a_build_script_there_is_nothing_to_tell_a_terminal(self, monkeypatch) -> None:
+        """No fallback command, because the fallback was a dead end.
+
+        A distribution with no ffmpeg package and no build script in reach used to
+        be handed ``echo 'Build ffmpeg from source: …'``, which a user pasted into a
+        terminal and got a URL echoed back. An empty list is what makes the Settings
+        page offer the decoder fetch, or the agent hand-off, instead.
+        """
         monkeypatch.setattr(platform, "system", lambda: "Linux")
         monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: None)
         monkeypatch.setattr(core_mod.shutil, "which", lambda _n, path=None: None)
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
         cmds = core_mod._ffmpeg_install_commands()
-        assert cmds == ["echo 'Build ffmpeg from source: https://ffmpeg.org/releases/'"]
+        assert cmds == []
+        assert not any("echo" in c for c in cmds)
 
 
 class TestSttPrereqCommands:
@@ -909,6 +918,11 @@ class TestSttStatus:
         monkeypatch.setattr(
             "kiro_crew.stt.engine.shared_engine", lambda *a, **k: SimpleNamespace(loaded=False)
         )
+        # The decoder probe stats the operator's real package directories and can
+        # hash an 80 MB executable, so the default answer is pinned; the tests
+        # that assert on it override this.
+        monkeypatch.setattr(core_mod, "ensure_ffmpeg_in_path", lambda: None)
+        monkeypatch.setattr(core_mod, "ffmpeg_source", lambda: None)
 
     @pytest.mark.asyncio
     async def test_status_reports_the_resolved_model_and_the_whole_catalog(
@@ -1003,6 +1017,64 @@ class TestSttStatus:
             "total_bytes": 147_951_465,
             "error": "",
         }
+
+    @pytest.mark.asyncio
+    async def test_status_reports_which_decoder_the_transcode_path_would_run(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        """`source` names WHICH decoder, because each one is repaired differently.
+
+        A bundled payload is fixed by reinstalling the app, a system one by the
+        host's package manager, and the store one by the decoder fetch — so a bare
+        "present: true" would send the reader looking for the wrong remedy.
+        """
+        monkeypatch.setattr(core_mod, "ffmpeg_source", lambda: transcribe_mod.FFMPEG_SOURCE_STORE)
+        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: False)
+        body = json.loads((await core_mod.api_stt_status(_req())).body)["ffmpeg"]
+        assert body["present"] is True
+        assert body["source"] == "store"
+        assert body["auto_fetch"] == core_mod.AUTO_FETCH_AVAILABLE
+        # The GATEWAY's platform, not the browser's: a dashboard can be open
+        # against another machine, and the hand-off prompt names the host that
+        # actually needs fixing.
+        assert body["os"] == platform.system()
+        assert body["arch"] == platform.machine()
+        assert body["download"] == dict(core_mod.stt_decoder.store().status)
+
+    @pytest.mark.asyncio
+    async def test_status_reports_no_decoder_as_absent_with_no_source(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        monkeypatch.setattr(core_mod, "ffmpeg_source", lambda: None)
+        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: False)
+        body = json.loads((await core_mod.api_stt_status(_req())).body)["ffmpeg"]
+        assert body["present"] is False
+        assert body["source"] is None
+
+    @pytest.mark.asyncio
+    async def test_status_marks_a_platform_with_no_pinned_artifact_unsupported(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        """`unsupported` is not a failure: nothing a fetch does can change it.
+
+        The page has to offer the manual system-decoder route there rather than a
+        retry, which is why this is a separate value from a failed download.
+        """
+        monkeypatch.setattr(core_mod, "ffmpeg_source", lambda: None)
+        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: False)
+        monkeypatch.setattr(core_mod.stt_decoder, "artifact_for", lambda *a, **k: None)
+        body = json.loads((await core_mod.api_stt_status(_req())).body)["ffmpeg"]
+        assert body["auto_fetch"] == core_mod.AUTO_FETCH_UNSUPPORTED
+
+    @pytest.mark.asyncio
+    async def test_status_marks_a_desktop_release_as_bundled(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        """A release carries its own authenticated decoder and repairs by reinstall."""
+        monkeypatch.setattr(core_mod, "ffmpeg_source", lambda: None)
+        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: True)
+        body = json.loads((await core_mod.api_stt_status(_req())).body)["ffmpeg"]
+        assert body["auto_fetch"] == core_mod.AUTO_FETCH_BUNDLED
 
     @pytest.mark.asyncio
     async def test_status_refuses_an_app_token(self, seeded_config, fake_sel, model_store) -> None:
@@ -1132,6 +1204,131 @@ class TestSttPrepare:
         assert json.loads(resp.body)["code"] == "dashboard_user_required"
         assert await _drain_stt_background() == []
         assert self.requested == []
+
+
+class TestSttFfmpegDownload:
+    """``POST /api/stt/ffmpeg/download`` fetches the audio decoder into the store.
+
+    Same 202-then-poll contract as the model transfer: a ~30 MB wheel is not
+    something to hold a request open behind, and the caller reads progress from
+    ``GET /api/stt/status``'s ``ffmpeg.download``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_tasks(self, stt_background):
+        """Every test here asserts on what was scheduled, so the set must be ours."""
+
+    @pytest.fixture(autouse=True)
+    def decoder_store(self, monkeypatch):
+        """Give the test its own decoder store, and never let it reach the network.
+
+        The real one is a process global holding live transfer state, so a test
+        that let the handler touch it would hand its progress block to whatever
+        test ran next on the same xdist worker.
+        """
+        store = core_mod.stt_decoder.DecoderStore()
+        self.ensured: list[str] = []
+
+        async def _fake_ensure():
+            self.ensured.append("ensure")
+            return None
+
+        store.ensure = _fake_ensure  # type: ignore[method-assign]
+        monkeypatch.setattr(core_mod.stt_decoder, "_store", store)
+        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: False)
+        return store
+
+    @pytest.mark.asyncio
+    async def test_answers_202_and_starts_the_fetch(self, seeded_config, decoder_store) -> None:
+        resp = await core_mod.api_stt_ffmpeg_download(_req())
+        assert resp.status == 202
+        assert json.loads(resp.body)["download"] == dict(decoder_store.status)
+        assert await _drain_stt_background() == [None]
+        assert self.ensured == ["ensure"]
+
+    @pytest.mark.asyncio
+    async def test_joins_a_fetch_already_running(self, seeded_config, decoder_store) -> None:
+        """A polling panel must not accumulate one task per poll.
+
+        Concurrent callers are made safe by the store's own lock, so this only has
+        to avoid piling up work nobody will read.
+        """
+        decoder_store._set(
+            stage=core_mod.stt_decoder.STAGE_DOWNLOADING,
+            artifact="ffmpeg-linux-x86_64-v7.0.2",
+            done=512,
+            total=29_498_237,
+        )
+        resp = await core_mod.api_stt_ffmpeg_download(_req())
+        assert resp.status == 202
+        assert json.loads(resp.body)["download"]["downloaded_bytes"] == 512
+        assert await _drain_stt_background() == []
+        assert self.ensured == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_platform_with_no_pinned_artifact(
+        self, seeded_config, monkeypatch, decoder_store
+    ) -> None:
+        """409 rather than a 202 that can never finish: nothing is pinned to fetch."""
+        monkeypatch.setattr(core_mod.stt_decoder, "artifact_for", lambda *a, **k: None)
+        resp = await core_mod.api_stt_ffmpeg_download(_req())
+        assert resp.status == 409
+        body = json.loads(resp.body)
+        assert body["code"] == core_mod.stt_decoder.CODE_UNSUPPORTED
+        assert body["auto_fetch"] == core_mod.AUTO_FETCH_UNSUPPORTED
+        assert await _drain_stt_background() == []
+        assert self.ensured == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_bundled_desktop_release(
+        self, seeded_config, monkeypatch, decoder_store
+    ) -> None:
+        """A release already carries an authenticated decoder its resolver uses.
+
+        Its resolver deliberately never looks outside that payload, so a fetch here
+        would spend the operator's bandwidth on a file nothing can execute — and
+        the real remedy (reinstall the app) is what the page says instead.
+        """
+        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: True)
+        resp = await core_mod.api_stt_ffmpeg_download(_req())
+        assert resp.status == 409
+        body = json.loads(resp.body)
+        assert body["code"] == core_mod._CODE_STT_DECODER_BUNDLED
+        assert body["auto_fetch"] == core_mod.AUTO_FETCH_BUNDLED
+        assert await _drain_stt_background() == []
+        assert self.ensured == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_an_app_token(self, seeded_config, fake_sel, decoder_store) -> None:
+        """An app naming this path must not start a transfer on the operator's line."""
+        resp = await core_mod.api_stt_ffmpeg_download(_req(app_token="meetings"))
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "dashboard_user_required"
+        assert await _drain_stt_background() == []
+        assert self.ensured == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_request_with_no_app_claim_at_all(
+        self, seeded_config, fake_sel, decoder_store
+    ) -> None:
+        resp = await core_mod.api_stt_ffmpeg_download(_req(app_token=None))
+        assert resp.status == 403
+        assert self.ensured == []
+
+    def test_the_route_is_registered(self) -> None:
+        """The handler is unreachable without its route, and 404 says nothing."""
+        from aiohttp import web as _web
+
+        from kiro_crew.dashboard.routes import memory as memory_routes
+
+        app = _web.Application()
+        memory_routes.register(app)
+        paths = {
+            (route.method, route.resource.canonical)
+            for route in app.router.routes()
+            if route.resource is not None
+        }
+        assert ("POST", "/api/stt/ffmpeg/download") in paths
 
 
 class TestSttPrewarm:

@@ -136,12 +136,21 @@ export function VoicePanel() {
 
   return (
     <>
-      <ErrorNotice message={saveError} onDismiss={() => setSaveError('')} className="mb-4 animate-rise" />
+      {/* askAgent ON: `onError` above has already reverted localProfile /
+          localRegion / localPiperBinary / localPiperModel to the server value
+          by the time this banner shows, so the navigation cannot destroy an
+          unsaved edit — the fields hold exactly what is persisted. */}
+      <ErrorNotice message={saveError} onDismiss={() => setSaveError('')} className="mb-4 animate-rise" askAgent />
 
       <SettingsSection title={i18nT('pages.settings.voicePanel.text_to_speech')}>
         <SettingsCard>
           {voiceQ.isError ? (
-            <div className="text-[13px] text-danger mb-2">{i18nT('pages.settings.voicePanel.failed_to_load_voice_config')} <button className="underline cursor-pointer bg-transparent border-none text-danger" onClick={() => voiceQ.refetch()}>{i18nT('pages.settings.voicePanel.retry')}</button></div>
+            // Load failure: no control is mounted in this branch, so the
+            // hand-off is on. Retry stays as a sibling.
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <ErrorNotice variant="inline" message={i18nT('pages.settings.voicePanel.failed_to_load_voice_config')} askAgent />
+              <button className="underline cursor-pointer bg-transparent border-none text-[13px] text-danger" onClick={() => voiceQ.refetch()}>{i18nT('pages.settings.voicePanel.retry')}</button>
+            </div>
           ) : !voiceQ.isSuccess ? (
             <FormSkeleton rows={['toggle', 'field', 'field', 'field', 'field', 'field']} />
           ) : (
@@ -154,6 +163,13 @@ export function VoicePanel() {
                     service="polly"
                     onConsentChange={() => qc.invalidateQueries({ queryKey: ['voiceVoices'] })}
                   />
+                  {/* The catalogue read failed and the picker below is showing the
+                      offline fallback list, not Polly's. No hand-off: the profile /
+                      region inputs further down commit on blur, so a click here
+                      mid-edit would drop what is in them. */}
+                  {voicesQ.isError && (
+                    <ErrorNotice variant="inline" className="mb-2" message={i18nT('pages.settings.voicePanel.voice_catalogue_unavailable')} />
+                  )}
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.voice')} description={i18nT('pages.settings.voicePanel.amazon_polly_voice_for_tts')} value={voiceCfg.voice} options={voiceOptions.map(o => o.value)} optionLabels={voiceOptions.map(o => o.label)} onChange={v => { const engines = voiceOptions.find(o => o.value === v)?.engines ?? ENGINE_OPTIONS; const patch: Partial<VoiceConfig> = { voice: v }; if (!engines.includes(voiceCfg.engine)) patch.engine = engines[0]; setVoice(patch) }} disabled={voiceDisabled} />
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.engine')} description={i18nT('pages.settings.voicePanel.polly_engine_type')} value={voiceCfg.engine} options={selectedVoiceEngines} onChange={v => setVoice({ engine: v })} disabled={voiceDisabled} />
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} description={i18nT('pages.settings.voicePanel.speech_rate')} value={voiceCfg.rate} options={SPEED_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled} />

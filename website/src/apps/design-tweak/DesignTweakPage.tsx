@@ -17,6 +17,7 @@ import {
   MessageSquare, Archive, Trash2, MoreHorizontal,
 } from 'lucide-react'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import { FolderBody } from '../../components/FolderBody'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -500,6 +501,10 @@ export default function DesignTweak() {
   }, [])
   const [mode, setMode] = useState<'preview' | 'edit'>('preview')
   const [status, setStatus] = useState('')
+  // A capture or follow-up the overlay handed up that the backend refused. Kept
+  // apart from `status` (progress prose) so it renders as an error notice, not
+  // as a muted line that fades into the next status update.
+  const [bridgeError, setBridgeError] = useState('')
   const [reqOpen, setReqOpen] = useState<Record<string, boolean>>({})     // requestId -> expanded?
   const [sendingId, setSendingId] = useState('') // request currently being sent
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
@@ -1084,17 +1089,22 @@ export default function DesignTweak() {
               thread: [{ role: 'user', text: d.payload.comment }],
             })
             setReqOpen((m) => ({ ...m, [out.id as string]: true }))   // reveal the draft
+            setBridgeError('')
             setStatus(i18nT('apps.designTweak.status.added_comment', {
               label: out.label ?? '', n: out.commentCount ?? 0, number: out.number ?? 0,
             }))
             refresh()
           } else {
-            setStatus(i18nT('apps.designTweak.status.capture_failed', {
-              error: out?.error || i18nT('apps.designTweak.status.unknown'),
-            }))
+            const error = out?.error || i18nT('apps.designTweak.status.unknown')
+            setBridgeError(i18nT('apps.designTweak.status.capture_failed', { error }))
+            // Tell the overlay too: without this its composer sits on "Adding to
+            // request…" with the comment stranded, since `created` was its only
+            // exit. On `create_failed` it reopens the composer with the text.
+            postToOverlay({ type: 'create_failed', clientRef: d.clientRef, error })
           }
         } catch (err) {
-          setStatus(i18nT('apps.designTweak.status.capture_failed', { error: errMsg(err) }))
+          setBridgeError(i18nT('apps.designTweak.status.capture_failed', { error: errMsg(err) }))
+          postToOverlay({ type: 'create_failed', clientRef: d.clientRef, error: errMsg(err) })
         }
         return
       }
@@ -1104,7 +1114,12 @@ export default function DesignTweak() {
       if (d.type === 'dispatch' && d.id && d.text) {
         try {
           const origin = commentIndexRef.current[d.id]
-          if (!origin) { setStatus(i18nT('apps.designTweak.status.follow_up_origin_missing')); return }
+          if (!origin) {
+            const error = i18nT('apps.designTweak.status.follow_up_origin_missing')
+            setBridgeError(error)
+            postToOverlay({ type: 'dispatch_failed', id: d.id, text: d.text, error })
+            return
+          }
           const out: SubmitResponse = await submitComment({
             type: 'visual_edit_request',
             comment: d.text,
@@ -1115,17 +1130,22 @@ export default function DesignTweak() {
           })
           if (out?.ok) {
             setReqOpen((m) => ({ ...m, [out.id as string]: true }))
+            setBridgeError('')
             setStatus(i18nT('apps.designTweak.status.follow_up_added', {
               label: out.label ?? '', number: out.number ?? 0,
             }))
             refresh()
           } else {
-            setStatus(i18nT('apps.designTweak.status.follow_up_failed', {
-              error: out?.error || i18nT('apps.designTweak.status.unknown'),
-            }))
+            const error = out?.error || i18nT('apps.designTweak.status.unknown')
+            setBridgeError(i18nT('apps.designTweak.status.follow_up_failed', { error }))
+            // The overlay drew the reply optimistically; this lets it take the
+            // bubble back and restore the text instead of showing a sent reply
+            // that was never persisted.
+            postToOverlay({ type: 'dispatch_failed', id: d.id, text: d.text, error })
           }
         } catch (err) {
-          setStatus(i18nT('apps.designTweak.status.follow_up_failed', { error: errMsg(err) }))
+          setBridgeError(i18nT('apps.designTweak.status.follow_up_failed', { error: errMsg(err) }))
+          postToOverlay({ type: 'dispatch_failed', id: d.id, text: d.text, error: errMsg(err) })
         }
         return
       }
@@ -1688,6 +1708,10 @@ export default function DesignTweak() {
         </div>
 
         {status && <div className="px-5 py-1 text-[11px] text-muted truncate">{status}</div>}
+        {/* No hand-off: the refused comment is sitting restored in the preview
+            overlay's composer (see `create_failed` / `dispatch_failed`), and the
+            navigation would unmount the iframe that holds it. */}
+        <ErrorNotice message={bridgeError} onDismiss={() => setBridgeError('')} className="mx-5 my-1" />
 
         {/* request tree + history (nesting mirrors the Sessions folder view) */}
         <div className="flex-1 min-h-0 flex flex-col">
@@ -1829,18 +1853,11 @@ export default function DesignTweak() {
                     })}
                   </div>
                 )}
-                {devError && (
-                  <div
-                    className="text-[12px] leading-snug"
-                    style={{
-                      color: 'var(--danger)', background: 'var(--danger-subtle)',
-                      padding: '8px 10px', borderRadius: 8, whiteSpace: 'pre-wrap',
-                    }}
-                    role="alert"
-                  >
-                    {devError}
-                  </div>
-                )}
+                {/* The edit requests are persisted server-side, so the only draft this
+                    page can hold is the dev-server URL field in the rail: the hand-off
+                    is gated on that disclosure being closed. No hand-off while
+                    `devOpen`: `devDraft` is unsaved. */}
+                <ErrorNotice message={devError} askAgent={!devOpen} className="w-full" />
               </div>
             </div>
           )

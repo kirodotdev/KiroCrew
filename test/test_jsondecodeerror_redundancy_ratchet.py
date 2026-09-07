@@ -55,7 +55,19 @@ def test_no_except_tuple_pairs_jsondecodeerror_with_bare_valueerror() -> None:
     for root in SCAN_ROOTS:
         for path in sorted(root.rglob("*.py")):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue  # not this ratchet's job
+            # A violation needs BOTH names in the same except tuple, so a file
+            # missing either token textually cannot contain one -- necessary,
+            # not sufficient, so parsing the survivors still decides it. This
+            # is the whole tree's ~1250+ modules down to a couple dozen: the
+            # cost was one `ast.parse` per file for a check the text already
+            # answers "no" for on every file that lacks one of the two names.
+            if "JSONDecodeError" not in text or "ValueError" not in text:
+                continue
+            try:
+                tree = ast.parse(text)
             except SyntaxError:
                 continue  # not this ratchet's job
             for lineno in _redundant_handlers(tree):

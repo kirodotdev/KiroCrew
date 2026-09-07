@@ -10,18 +10,31 @@ The most powerful workflow: Kiro Crew digs through your issue backlog, picks up
 tasks, implements them, runs tests, opens pull requests, and handles review
 comments — all autonomously. It can push 20+ PRs overnight.
 
-```
-kirocrew run docs/task-specs/backlog-crusher.md
+The task runner reads a spec you write. Save the steps below as
+`backlog-crusher.md`:
+
+```markdown
+# Backlog crusher
+
+1. List open issues in the project's tracker.
+2. Pick the highest-priority unassigned issue.
+3. Read the issue description and the code it links to.
+4. Implement the change.
+5. Run the test suite (e.g. `pytest`).
+6. Open a pull request targeting the correct branch.
+7. Move to the next issue.
 ```
 
-A typical spec:
-1. List open issues in the project's tracker
-2. Pick the highest-priority unassigned issue
-3. Read the issue description and linked code
-4. Implement the change
-5. Run the test suite (e.g. `pytest`)
-6. Open a pull request targeting the correct branch
-7. Move to the next issue
+Then hand that file to the runner. The path is resolved as given, so run this from
+the directory holding the file, or pass its absolute path:
+
+```
+kirocrew run backlog-crusher.md
+```
+
+`kirocrew run --help` lists the flags that matter for a long run: `--fresh`
+ignores an existing checkpoint, `--no-test` skips verification between steps,
+and `--timeout` caps the whole run.
 
 For unattended operation with the `yolo` approval mode, use an isolated `KIROCREW_HOME`; the gateway refuses `--approval yolo` for the main data home.
 

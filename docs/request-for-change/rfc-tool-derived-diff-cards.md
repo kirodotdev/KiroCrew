@@ -95,6 +95,11 @@ diff-shaped text never promotes) renders a first-class diff presentation:
   diffs (whole-file creates, large refactors) degrade to a summary chip —
   filename, −N/+M counts, click expands the details panel — never to nothing,
   because the relaxed prompt means no model-authored fallback exists.
+- `FileChangeChips` follows the same mount discipline for the independent
+  assistant-message snapshot channel. Closed rows render a lightweight header
+  with the filename, counts, diffstat, artifact badge, and file-open action but
+  do not mount Pierre. Opening a row mounts Pierre until its collapse animation
+  completes.
 - The presentation renders INSIDE `ToolCallLine`, below the pill (the same
   anchoring the MCP-app iframe uses). One render site covers every transcript
   surface — `ChatPage`, split-pane `ChatPane`, and app-sdk `ChatMessageList`
@@ -179,8 +184,7 @@ exact-string pin.
 
 - `make_unified_diff` and the ACP diff-content-block parsing
   (`_dispatch.py:669-692`) — already correct.
-- The `file_changes` snapshot pipeline, `FileChangeChips`, and
-  `/api/file-diff` (Activity Files tab) — independent channels, untouched.
+- The `/api/file-diff` Activity Files tab — an independent channel, untouched.
 - `DiffBlock`, `diffUtils`, `useBlockAssembler` — the model can still emit
   diff blocks (fallback cases) and they render exactly as today.
 - Backend event shapes and history persistence.
@@ -201,7 +205,9 @@ exact-string pin.
   gating, bash false-positive rejection, over-cap summary degradation);
   TurnBlock predicate tests (diff row out of the default tool fold, folded
   under collapseAll, execute-kind never promotes); render tests for the card,
-  the summary chip, and the historical-meta path.
+  the summary chip, and the historical-meta path. `FileChangeChips` mount-count
+  tests prove closed rows request no Pierre surface, direct disclosure mounts
+  one, and collapse unmounts it after the closing animation.
 - Backend: `test_tool_meta_persists_kind` (meta carries the ACP kind);
   `test_diff_rule_is_runtime_selected` (dashboard gets the don't-repeat rule,
   channel/cron/CLI keep the mandate, explicit `runtime_source` wins over the

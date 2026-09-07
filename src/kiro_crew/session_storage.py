@@ -64,6 +64,7 @@ home isolated from the store it reads (see :func:`reclaim_block_reason`).
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -1518,19 +1519,70 @@ def _unlisted_files(batch: Path) -> list[Path]:
     listed: set[str] = set(_manifest_rels(batch))
     failures: list[OSError] = []
     unlisted = []
-    for root, _dirs, names in os.walk(batch, onerror=failures.append):
-        for name in names:
-            path = Path(root) / name
-            if name == MANIFEST_NAME:
-                continue
-            try:
-                if not path.is_file():
+    # os.fwalk where the platform has it: this guard must complete on trees
+    # whose component paths exceed the platform PATH_MAX (1024 on macOS, where
+    # a name-based walk dies with ENAMETOOLONG and permanently wedges the batch
+    # as ``unreadable_batch`` — #8724). fwalk traverses and stats via directory
+    # descriptors, so only the MANIFEST-RELATIVE strings below ever use the
+    # textual path, and those are pure string operations with no length limit.
+    # This also matches #7011's descriptor discipline for the approval scan,
+    # chain-open, and removal passes; the guard was the one name-based walk left.
+    #
+    # CPython defines fwalk only where ``{open, stat} <= os.supports_dir_fd``
+    # — on native Windows it does not exist, mirroring this module's
+    # ``_FD_SAFE_DELETE`` coarse path. There the ORIGINAL name-based walk is
+    # kept: Windows never had the macOS 1024-byte wedge, so status quo is
+    # exactly right, and an unconditional fwalk would crash every Empty-Trash
+    # with an AttributeError no caller catches (fork-review finding).
+    fwalk = getattr(os, "fwalk", None)
+    if fwalk is not None:
+        # Unlike os.walk, fwalk RAISES when the top itself cannot be statted or
+        # opened rather than routing that first error through ``onerror`` — catch
+        # it into the same failure list so an unopenable batch stays a refusal
+        # with a reason, never an escaping OSError. RecursionError is belt only:
+        # CPython's fwalk is iterative on every Python this package supports
+        # (>=3.12; verified at depth 5000 under the default 1000-frame limit),
+        # but the guard's contract is that NO traversal failure escapes as a
+        # crash, so the impossible case still lands in the failure list.
+        try:
+            for root, _dirs, names, rootfd in fwalk(batch, onerror=failures.append):
+                for name in names:
+                    if name == MANIFEST_NAME:
+                        continue
+                    try:
+                        # follow_symlinks=True mirrors the Path.is_file() this
+                        # replaces: a symlink to a regular file counts, a broken
+                        # link does not.
+                        st = os.stat(name, dir_fd=rootfd)
+                    except OSError as exc:
+                        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP):
+                            # The same cases Path.is_file() reports as False.
+                            continue
+                        failures.append(exc)
+                        continue
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    path = Path(root) / name
+                    if path.relative_to(batch).as_posix() not in listed:
+                        unlisted.append(path)
+        except OSError as exc:
+            failures.append(exc)
+        except RecursionError as exc:
+            failures.append(OSError(f"traversal exceeded the recursion limit: {exc}"))
+    else:
+        for root, _dirs, names in os.walk(batch, onerror=failures.append):
+            for name in names:
+                path = Path(root) / name
+                if name == MANIFEST_NAME:
                     continue
-            except OSError as exc:
-                failures.append(exc)
-                continue
-            if path.relative_to(batch).as_posix() not in listed:
-                unlisted.append(path)
+                try:
+                    if not path.is_file():
+                        continue
+                except OSError as exc:
+                    failures.append(exc)
+                    continue
+                if path.relative_to(batch).as_posix() not in listed:
+                    unlisted.append(path)
     if failures:
         raise SessionStorageError(
             f"could not read all of {batch.name!r}, so it is not known whether it "

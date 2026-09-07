@@ -90,8 +90,8 @@ const DRY_RUN = CHECK || process.argv.includes('--dry-run')
 const MERGE = process.argv.includes('--merge')
 
 /**
- * Ratchet, mirroring `npx eslint --max-warnings 1116` in `ci.yml`: 76 user-visible
- * strings are unextracted today, so a hard `--check` would fail on arrival and get
+ * Ratchet, mirroring the `--max-warnings` ceiling on `npx eslint` in `ci.yml`: the CI
+ * gate runs `--baseline=3`, and a hard `--check` would fail on arrival and get
  * disabled. `--baseline=N` fails only ABOVE N. Lower it when convenient, never
  * raise it — but a count below N is tolerated rather than failed, because the
  * literal lives in `scripts/lib/i18n-gate-table.mjs` and forcing every improving branch to edit

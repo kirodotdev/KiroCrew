@@ -113,14 +113,10 @@ class TestContextBuilder:
         assert ctx.index("in the USER's voice") < ctx.index("SELF-CONTAINED")
         # The per-turn reminder is the version most models actually act on;
         # it must carry the same constraint.
-        msg, _ = builder.build_message(
-            "pick one", is_new_session=False, interactive=True
-        )
+        msg, _ = builder.build_message("pick one", is_new_session=False, interactive=True)
         assert "self-contained" in msg, "interactive reminder missing self-contained rule"
         # Non-interactive turns get no OPTIONS reminder at all, so no rule either.
-        auto_msg, _ = builder.build_message(
-            "pick one", is_new_session=False, interactive=False
-        )
+        auto_msg, _ = builder.build_message("pick one", is_new_session=False, interactive=False)
         assert "self-contained" not in auto_msg
 
     def test_url_backtick_carve_out_follows_the_path_rule(self, tmp_path):
@@ -296,9 +292,7 @@ class TestContextBuilder:
         """With the flag set on a continuing session, the index comes back
         wrapped in the marker so the model can still discover skills."""
         builder = self._reinject_builder(tmp_path)
-        msg, _ = builder.build_message(
-            "carry on", is_new_session=False, needs_reinjection=True
-        )
+        msg, _ = builder.build_message("carry on", is_new_session=False, needs_reinjection=True)
         assert "[REINJECTED AFTER COMPACTION" in msg
         assert "[END REINJECTED]" in msg
         assert "widget-maker" in msg, "the re-injected block must carry the skill index"
@@ -313,9 +307,7 @@ class TestContextBuilder:
         """A new session already gets the index from the session context;
         re-injecting would duplicate it in the same prompt."""
         builder = self._reinject_builder(tmp_path)
-        msg, _ = builder.build_message(
-            "first turn", is_new_session=True, needs_reinjection=True
-        )
+        msg, _ = builder.build_message("first turn", is_new_session=True, needs_reinjection=True)
         assert "[REINJECTED AFTER COMPACTION" not in msg
 
     def test_no_reinjection_for_an_unmapped_custom_agent(self, tmp_path):
@@ -452,9 +444,7 @@ class TestContextBuilder:
             memory=MemoryStore(workspace=tmp_path / "ws"),
             skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
         )
-        msg, _ = builder.build_message(
-            "hello", is_new_session=False, folder_path="Backend › 0812"
-        )
+        msg, _ = builder.build_message("hello", is_new_session=False, folder_path="Backend › 0812")
         assert "[FOLDER]" in msg
         assert "Backend › 0812" in msg
 

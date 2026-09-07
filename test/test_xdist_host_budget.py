@@ -23,6 +23,7 @@ import warnings
 import pytest
 
 import xdist_budget as ct
+from conftest import absent_sysconf
 
 needs_symlinks = pytest.mark.skipif(
     os.name != "posix", reason="symlink creation needs privileges on Windows"
@@ -65,6 +66,13 @@ def _deterministic_live_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(ct, "_cgroup_limit_mib", lambda: 0)
     monkeypatch.setattr(ct, "_host_available_mib", lambda: 0)
+    # The third reading that describes the CALLER rather than the host: Kiro
+    # Crew seeds ``PYTEST_XDIST_AUTO_NUM_WORKERS`` at every agent spawn
+    # boundary (``resource_status.inject_xdist_auto_cap``), so a run started
+    # from an agent shell inherits a cap of e.g. 7 and every "10-core host
+    # gets 10" assertion here reads 7 instead. Tests about that ceiling set it
+    # themselves; nothing else in this file is about who launched pytest.
+    monkeypatch.delenv(ct._XDIST_ENV_CAP, raising=False)
 
 
 @pytest.fixture
@@ -163,10 +171,16 @@ def test_slot_path_is_zero_padded(tmp_path: pathlib.Path) -> None:
 
 
 def test_host_total_gib_converts_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_sysconf = getattr(os, "sysconf", absent_sysconf)
+    fake = {"SC_PHYS_PAGES": 2097152, "SC_PAGE_SIZE": 16384}
+    # ``os`` here is the process-wide stdlib module, not a module-local alias, so
+    # an unscoped fake would also answer SC_OPEN_MAX/SC_CLK_TCK wrong for any other
+    # thread reading them concurrently. Fall through to the real sysconf for every
+    # name this test does not care about.
     monkeypatch.setattr(
         os,
         "sysconf",
-        lambda name: {"SC_PHYS_PAGES": 2097152, "SC_PAGE_SIZE": 16384}[name],
+        lambda name: fake[name] if name in fake else real_sysconf(name),
         raising=False,
     )
     assert ct._host_total_gib() == 32
@@ -189,10 +203,12 @@ def no_win32_memory(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_host_total_gib_rejects_nonsense(
     monkeypatch: pytest.MonkeyPatch, no_win32_memory: None, pages: int, size: int
 ) -> None:
+    real_sysconf = getattr(os, "sysconf", absent_sysconf)
+    fake = {"SC_PHYS_PAGES": pages, "SC_PAGE_SIZE": size}
     monkeypatch.setattr(
         os,
         "sysconf",
-        lambda name: {"SC_PHYS_PAGES": pages, "SC_PAGE_SIZE": size}[name],
+        lambda name: fake[name] if name in fake else real_sysconf(name),
         raising=False,
     )
     assert ct._host_total_gib() == 0
@@ -398,7 +414,7 @@ def test_claim_fails_open_when_the_dir_cannot_be_made(
 
 
 def test_an_unwritable_slot_dir_drops_to_one_worker_and_says_why(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    slot_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A directory that EXISTS but cannot be written is the case ``mkdir`` misses.
 
@@ -408,6 +424,13 @@ def test_an_unwritable_slot_dir_drops_to_one_worker_and_says_why(
     concurrent one, so both would get the full cap with no coordination, which is the
     oversubscription the budget exists to prevent. One worker, and a warning naming the
     fix, because a silent hour-long suite is a bug nobody can see.
+
+    Requests the ``slot_dir`` fixture (rather than a bare ``tmp_path``) so
+    ``ct._slot_dir()`` resolves under the per-test root: this test's own ``os.open``
+    denial only fires for a path containing ``"worker-"``, but without the pin
+    ``_slot_dir()`` still calls the real ``ct._slot_root()`` default
+    (``~/.cache/kirocrew/test-slots``), and the ``mkdir(exist_ok=True)`` this
+    module calls before the denied ``open`` runs against that real host directory.
     """
     monkeypatch.setattr(ct, "_held_slots", [])
     real_open = os.open

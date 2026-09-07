@@ -45,26 +45,29 @@ class TestClassifyAgainstRealProducers:
             ((".netrc",), dg.DENY_CLASS_SECRET_FILE),
         ],
     )
-    def test_sensitive_bash_reads_classify(self, relative, expected):
-        """The reason at this tier is deliberately generic, so the command decides.
+    def test_sensitive_path_reads_classify(self, relative, expected):
+        """The path floor's reason names the path, and the path decides the class.
 
-        ``is_sensitive_bash_command`` refuses with "accesses sensitive credential
-        path" and names no path — three different sanctioned paths collapse into
-        one string, which is why the subject is part of classification.
+        The shell gate matches no paths in command text (the sandbox owns that), so
+        the producer that still refuses a credential read is ``is_sensitive_path`` on
+        the resolved target, and ``hooks.on_tool_call`` builds the reason from it.
         """
-        command = f"cat {_home(*relative)}"
-        reason = security.is_sensitive_bash_command(command)
-        assert reason, "the security gate must refuse this command for the test to mean anything"
-        assert dg.classify_deny(reason, command) == expected
+        target = _home(*relative)
+        assert security.is_sensitive_path(
+            target
+        ), "the path floor must refuse this target for the test to mean anything"
+        reason = f"Blocked: access to sensitive path: {target}"
+        assert dg.classify_deny(reason, f"cat {target}") == expected
 
     def test_generic_sensitive_reason_alone_still_yields_usable_guidance(self):
         """Without a subject the class degrades to the widest credential answer.
 
         A degraded verdict must still be TRUE for every path that reaches it, so
         the fallback prose describes a credential store by the client that owns it
-        rather than naming one vendor's.
+        rather than naming one vendor's. The generic spelling is the anchor form
+        the classifier accepts from any producer that names no path.
         """
-        reason = security.is_sensitive_bash_command(f"cat {_home('.aws', 'credentials')}")
+        reason = "Blocked: command accesses sensitive credential path"
         assert dg.classify_deny(reason) == dg.DENY_CLASS_SECRET_FILE
         assert dg.remediation_for(reason)
 
@@ -85,31 +88,19 @@ class TestClassifyAgainstRealProducers:
     def test_denied_command_rule_classifies(self):
         """The regex tier matches TEXT, so the input is a literal, not a real path.
 
-        Its rules are written with forward slashes (``.*cat.*/\\.aws/.*``), and this
-        tier never resolves a path — so building the command from ``Path.home()``
-        passes on POSIX and silently stops matching on Windows, where the same
-        home renders with backslashes. The sibling tests above deliberately DO use
-        the real home, because ``is_sensitive_bash_command`` resolves what it is
-        given and a resolved path is exactly what they exercise.
+        The catalog no longer carries a credential-PATH row (the sandbox owns those),
+        so the representative is the interpreter row that resolves and prints a
+        credential from the SDK chain -- a text match that needs no path at all. The
+        sibling tests above deliberately DO use the real home, because
+        ``is_sensitive_path`` resolves what it is given and a resolved path is
+        exactly what they exercise.
         """
         reason = security.is_denied(
-            "cat /home/someone/.aws/config", denied_regexes=_builtin_regexes()
+            "python3 -c 'import boto3; print(boto3.Session().get_credentials())'",
+            denied_regexes=_builtin_regexes(),
         )
         assert reason
         assert dg.classify_deny(reason) == dg.DENY_CLASS_AWS_CREDENTIAL
-
-    def test_a_native_windows_spelling_is_still_refused_by_the_floor(self):
-        """The regex gap above is not a hole: the always-on floor covers it.
-
-        Kept so the literal-path choice in the previous test cannot be read as
-        "Windows credential paths are unguarded" — the path-resolving tier refuses
-        the backslash spelling, and its reason classifies too.
-        """
-        reason = security.is_sensitive_bash_command("cat C:\\Users\\someone\\.aws\\credentials")
-        assert reason
-        assert dg.classify_deny(reason, "cat C:\\Users\\someone\\.aws\\credentials") == (
-            dg.DENY_CLASS_AWS_CREDENTIAL
-        )
 
     def test_imds_access_classifies(self):
         reason = security.is_sensitive_bash_command("curl http://169.254.169.254/latest/meta-data/")
@@ -151,9 +142,9 @@ def _rule_tier_reason(rule: security.DeniedCommandRule) -> str:
     :mod:`kiro_crew.security` emits through, precisely so the micro-format cannot
     drift between them, so calling it is driving the producer rather than pinning
     a copy of its output. The end-to-end tests below additionally go through
-    ``is_denied`` with a real command; this form is what lets every one of the 148
-    catalog rows be asserted without inventing 148 commands, several of which an
-    always-on floor would answer before their rule ever spoke.
+    ``is_denied`` with a real command; this form is what lets every one of the
+    catalog rows be asserted without inventing a command per row, several of which
+    an always-on floor would answer before their rule ever spoke.
     """
     return security._deny_reason(rule.pattern, None)
 
@@ -196,21 +187,11 @@ class TestRuleIdentityRoutesTheRegexTier:
             # way, so the rule tier must not disagree with it.
             ("credential-exfil-kirocrew-token", dg.DENY_CLASS_SELF_PROTECTION),
             ("credential-exfil-kirocrew-token-argv", dg.DENY_CLASS_SELF_PROTECTION),
-            # Filed under the exfiltration category, but refusing a READ.
-            ("legacy-get-secret", dg.DENY_CLASS_SECRET_FILE),
-            ("legacy-read-secret", dg.DENY_CLASS_SECRET_FILE),
             # A rule whose class IS its category's, resolved by the fallback.
             ("credential-exfil-s3-cp", dg.DENY_CLASS_EXFIL_SHAPE),
             ("data-exfil-curl-file-body", dg.DENY_CLASS_EXFIL_SHAPE),
             ("self-protection-kill", dg.DENY_CLASS_SELF_PROTECTION),
-            ("self-protection-gateway-restart", dg.DENY_CLASS_SELF_PROTECTION),
-            ("sensitive-file-read-cat-kube-config", dg.DENY_CLASS_SECRET_FILE),
-            ("sensitive-file-read-cat-docker-config", dg.DENY_CLASS_SECRET_FILE),
-            ("sensitive-file-read-cat-ssh", dg.DENY_CLASS_SECRET_FILE),
-            # An AWS profile keeps the answer that has a local resolution, named
-            # rather than drawn from the pattern's ``.aws`` text.
-            ("sensitive-file-read-cat-aws", dg.DENY_CLASS_AWS_CREDENTIAL),
-            ("sensitive-file-read-python-aws", dg.DENY_CLASS_AWS_CREDENTIAL),
+            ("self-protection-cron-adopt", dg.DENY_CLASS_SELF_PROTECTION),
         ],
     )
     def test_each_pairing(self, rule_id, expected):
@@ -275,15 +256,15 @@ class TestRuleIdentityRoutesTheRegexTier:
     def test_a_generic_producer_still_classifies_from_its_text(self):
         """Identity-first must not have cost the tiers that name no rule anything.
 
-        The sensitive-path floor refuses with one string for every fenced store,
-        so its answer can only come from the anchors and the subject -- which is
-        the half of the module that stays a classifier.
+        The path floor refuses with one sentence shape for every fenced store, so
+        its answer can only come from the anchors and the subject -- which is the
+        half of the module that stays a classifier.
         """
-        command = f"cat {_home('.aws', 'credentials')}"
-        reason = security.is_sensitive_bash_command(command)
-        assert reason
+        target = _home(".aws", "credentials")
+        assert security.is_sensitive_path(target)
+        reason = f"Blocked: access to sensitive path: {target}"
         assert dg._rule_class(reason) is None
-        assert dg.classify_deny(reason, command) == dg.DENY_CLASS_AWS_CREDENTIAL
+        assert dg.classify_deny(reason, f"cat {target}") == dg.DENY_CLASS_AWS_CREDENTIAL
 
     @pytest.mark.parametrize(
         "command",
@@ -325,6 +306,22 @@ class TestRuleIdentityRoutesTheRegexTier:
             == dg.classify_deny(_rule_tier_reason(rule))
             == dg.DENY_CLASS_SELF_PROTECTION
         )
+
+    def test_a_floor_only_self_protection_refusal_is_still_classified(self):
+        """A refusal with NO catalog row behind it must not fall to the word scan.
+
+        The self-management subcommand floors (restart, update, gateway restart,
+        cloud lifecycle) have no row, so their refusal's first line names an id
+        the rule index has never seen. The classification therefore rides on the
+        note's opening phrase -- the self-protection anchor -- and that is what
+        this pins: were the phrase to drift, ``kirocrew restart`` would be
+        answered by whatever credential word happened to sit in the command.
+        """
+        for command in ("kirocrew restart", "kirocrew -v update", "kirocrew cloud destroy"):
+            reason = security.is_denied(command, denied_regexes=_builtin_regexes())
+            assert reason, command
+            assert dg._rule_class(reason) is None, command
+            assert dg.classify_deny(reason, command) == dg.DENY_CLASS_SELF_PROTECTION, command
 
     def test_the_index_is_rebuilt_after_a_reset(self):
         """The index is cached; rebuilding it is a no-op."""
@@ -593,10 +590,12 @@ class TestNonAwsCredentialStoresGetProviderNeutralGuidance:
         ],
     )
     def test_no_aws_only_command_is_suggested(self, relative):
-        command = f"cat {_home(*relative)}"
-        reason = security.is_sensitive_bash_command(command)
-        assert reason, "the security gate must refuse this command for the test to mean anything"
-        text = dg.remediation_for(reason, command)
+        target = _home(*relative)
+        assert security.is_sensitive_path(
+            target
+        ), "the path floor must refuse this target for the test to mean anything"
+        reason = f"Blocked: access to sensitive path: {target}"
+        text = dg.remediation_for(reason, f"cat {target}")
         assert text, "a fenced credential store must still get guidance"
         for aws_only in dg.SUGGESTED_COMMANDS[dg.DENY_CLASS_AWS_CREDENTIAL]:
             assert aws_only not in text, f"{relative} was handed AWS's own command"

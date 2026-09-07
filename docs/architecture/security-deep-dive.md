@@ -253,9 +253,12 @@ granted).
 
 Every MCP tool call is checked against a declarative `FieldSpec` + `ToolSchema`
 before the handler sees it: NFC unicode normalization with hidden-character
-stripping (control, format, private-use and surrogate code points, preserving
-`\n`/`\r`/`\t`), enum allow-lists, regex patterns for identifiers, range checks,
-unknown-field rejection, tiered length caps (`MAX_TOOL_NAME_LEN` 256,
+stripping (control, format and surrogate code points, preserving `\n`/`\r`/`\t`
+plus the four shaping marks in `_ALLOWED_FORMAT` when they sit next to non-ASCII
+text; private-use code points are deliberately kept, because Nerd Font and
+terminal-theme icon glyphs live there and are visible to a reader, so they cannot
+hide a credential from one), enum allow-lists, regex patterns for identifiers,
+range checks, unknown-field rejection, tiered length caps (`MAX_TOOL_NAME_LEN` 256,
 `MAX_SHORT_STRING` 500, `MAX_MEDIUM_STRING` 5 000, `MAX_LONG_STRING` 50 000, and
 the field-specific `MAX_CRON_MESSAGE` 50 000 for the cron `message` — a task
 prompt, enforced on the MCP schemas, both REST cron endpoints, and the

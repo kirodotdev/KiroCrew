@@ -102,6 +102,17 @@ export interface RegisterProfilesResult {
 }
 
 /**
+ * Outcome of dropping profiles from the registry. Registry-only: nothing in
+ * AWS or in the operator's AWS CLI configuration changes. `consentWithdrawn`
+ * names the paid services whose grant named a removed profile.
+ */
+export interface UnregisterProfilesResult {
+  removed: number
+  skipped: number
+  consentWithdrawn: string[]
+}
+
+/**
  * Payload of `GET /profiles/{name}/reconnect-plan`.
  *
  * `command` is a literal shell command and is never translated. `method` is
@@ -182,6 +193,36 @@ export interface DriveListing {
 export interface DriveDownload {
   url: string
   expiresSecs: number
+  /** The object's stored Content-Type from the same HEAD that gates the
+   *  presign, or null when S3 recorded none. The preview uses it to tell a
+   *  real PDF from a `.pdf`-named object served as octet-stream. */
+  contentType?: string | null
+}
+
+/** Payload of `GET /drive/{account}/preview` — the head bytes of a text file,
+ *  decoded utf-8. `truncated` says the file continues past the preview window;
+ *  `redacted` says the egress redactor masked at least one value, so what is
+ *  shown is not byte-for-byte what the file holds. */
+export interface DrivePreview {
+  content: string
+  truncated: boolean
+  redacted: boolean
+}
+
+/** One filename-search hit. `key` is section-relative (full path, not basename). */
+export interface DriveSearchHit {
+  key: string
+  size: number
+  modified: string
+}
+
+/** Payload of `GET /drive/{account}/search`. `capped` says the walk stopped at
+ *  `limit` hits — more matches may exist beyond it. The server owns the cap
+ *  and echoes it so the notice can name the real number. */
+export interface DriveSearch {
+  results: DriveSearchHit[]
+  capped: boolean
+  limit: number
 }
 
 /** Result of `POST /drive/{account}/upload`. */

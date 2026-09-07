@@ -11,7 +11,7 @@ vi.mock('../../hooks/useIsMobile', () => ({
   useIsMobile: () => narrowViewport,
 }))
 import { i18nT } from '../../i18n/t'
-import { fmtNumber } from '../../i18n/format'
+import { fmtNumber, fmtBytes, fmtCurrency } from '../../i18n/format'
 import type {
   AwsAccountsResponse, AvailableProfilesResponse, DriveStatus, SharesResponse,
   CostReport, LibraryResponse, BackupStatus,
@@ -30,6 +30,7 @@ vi.mock('./api', async () => {
       reconnectPlan: vi.fn(),
       availableProfiles: vi.fn(),
       registerProfiles: vi.fn(),
+      unregisterProfiles: vi.fn(),
       iamPolicy: vi.fn(),
       drive: vi.fn(),
       driveBootstrapPreview: vi.fn(),
@@ -204,14 +205,18 @@ beforeEach(() => {
 })
 
 describe('AwsControlPage shell', () => {
-  it('lands on the Files pane with the rail, no account chooser in the way', async () => {
+  it('lands on the Overview pane with the rail, no account chooser in the way', async () => {
     renderWithProviders(<AwsControlPage />)
 
-    // The rail mounts, Files is the active item, and its pane renders.
+    // The rail mounts, Overview is the active item, and its pane renders. The
+    // landing pane is the read-only room that answers "is everything fine" —
+    // the drive sections are one click away, not the front door.
     const rail = await screen.findByTestId('aws-rail')
-    expect(within(rail).getByTestId('rail-files').getAttribute('aria-current')).toBe('page')
+    expect(within(rail).getByTestId('rail-overview').getAttribute('aria-current')).toBe('page')
+    expect(within(rail).getByTestId('rail-files').getAttribute('aria-current')).toBeNull()
     expect(within(rail).getByTestId('rail-library').getAttribute('aria-current')).toBeNull()
-    expect(await screen.findByTestId('drive-section')).toBeTruthy()
+    expect(await screen.findByTestId('overview-pane')).toBeTruthy()
+    expect(screen.queryByTestId('drive-section')).toBeNull()
 
     // The account card names the first resolved account — as context, not a chooser.
     expect(screen.getByTestId('switcher-name')).toHaveTextContent('personal')
@@ -238,7 +243,11 @@ describe('AwsControlPage shell', () => {
 
   it('each rail item opens its pane', async () => {
     renderWithProviders(<AwsControlPage />)
-    await screen.findByTestId('drive-section')
+    await screen.findByTestId('overview-pane')
+
+    fireEvent.click(screen.getByTestId('rail-files'))
+    expect(await screen.findByTestId('drive-section')).toBeTruthy()
+    expect(screen.queryByTestId('overview-pane')).toBeNull()
 
     fireEvent.click(screen.getByTestId('rail-library'))
     expect(await screen.findByTestId('library-section')).toBeTruthy()
@@ -257,8 +266,259 @@ describe('AwsControlPage shell', () => {
     expect(await screen.findByTestId('accounts-pane')).toBeTruthy()
     expect(screen.getByTestId('rail-accounts').getAttribute('aria-current')).toBe('page')
 
+    fireEvent.click(screen.getByTestId('rail-overview'))
+    expect(await screen.findByTestId('overview-pane')).toBeTruthy()
+    expect(screen.getByTestId('rail-overview').getAttribute('aria-current')).toBe('page')
+
     fireEvent.click(screen.getByTestId('rail-files'))
     expect(await screen.findByTestId('drive-section')).toBeTruthy()
+  })
+})
+
+describe('overview pane', () => {
+  it('reads six metrics off the mocked queries, each with its own sub-line', async () => {
+    vi.mocked(awsControlApi.shares).mockResolvedValue({ shares: [share('a'), share('b')] })
+    renderWithProviders(<AwsControlPage />)
+    await screen.findByTestId('overview-pane')
+
+    const value = async (id: string) =>
+      within(await screen.findByTestId(id)).findByTestId('stat-card-value')
+
+    // Accounts: the count, and the one fact that turns it into a reading.
+    expect(await value('overview-stat-accounts')).toHaveTextContent(fmtNumber(2))
+    expect(screen.getByTestId('overview-stat-accounts-sub')).toHaveTextContent(
+      i18nT('apps.awsControl.overview.stat_accounts_attention', { count: 1 }),
+    )
+    // Keys: healthy over total, from the totals the backend already sends.
+    expect(await value('overview-stat-keys')).toHaveTextContent(`${fmtNumber(1)}/${fmtNumber(2)}`)
+    // Drive: the bucket's bytes, once the drive query answers.
+    expect(await value('overview-stat-drive')).toHaveTextContent(fmtBytes(3_500_000_000))
+    // Month to date: the bill, from the same cache entry the usage pane reads.
+    expect(await value('overview-stat-spend')).toHaveTextContent(fmtCurrency(12.5, 'USD'))
+    // Share links: the ledger's own endpoint, not a drive-usage figure.
+    expect(await value('overview-stat-shares')).toHaveTextContent(fmtNumber(2))
+    // Backups: a word, not a number — and "Manual" is a state, not an error.
+    expect(await value('overview-stat-backups')).toHaveTextContent(
+      i18nT('apps.awsControl.overview.stat_backups_manual'),
+    )
+  })
+
+  it('says WHY there is no bill instead of leaving an unexplained dash', async () => {
+    // A dash with its reason only on hover left a mouse-less reader with a
+    // blank they could not account for.
+    vi.mocked(awsControlApi.costs).mockResolvedValue({ ...costsFresh, consentMissing: true })
+    renderWithProviders(<AwsControlPage />)
+
+    expect(await within(await screen.findByTestId('overview-stat-spend')).findByTestId('stat-card-value'))
+      .toHaveTextContent('—')
+    await waitFor(() => {
+      expect(screen.getByTestId('overview-stat-spend-sub')).toHaveTextContent(
+        i18nT('apps.awsControl.overview.stat_spend_consent'),
+      )
+    })
+  })
+
+  it('a failed bill read is an error notice with a retry, not a quiet dash', async () => {
+    // A 5xx that settled to the same dash as "consent missing" made a broken
+    // read indistinguishable from a deliberate one, with no way to re-issue it.
+    vi.mocked(awsControlApi.costs).mockRejectedValue(new AwsControlError('http_500', 500))
+    renderWithProviders(<AwsControlPage />)
+
+    // The costs query carries retry:1, so its error settles after one backoff.
+    const notice = await screen.findByTestId('overview-costs-error', {}, { timeout: 4000 })
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.costs_unavailable'))
+    expect(screen.getByTestId('overview-costs-error-retry')).toBeTruthy()
+    expect(within(screen.getByTestId('overview-stat-spend')).getByTestId('stat-card-value'))
+      .toHaveTextContent('—')
+    // No caption under the dash: the notice is the one place the failure is said.
+    expect(screen.queryByTestId('overview-stat-spend-sub')).toBeNull()
+  })
+
+  it('a stale bill served from cache keeps its figure AND says the refresh failed', async () => {
+    // A 200 carrying `fetchError` is a failed read the backend softened with its
+    // cache; the number is the last true reading, the failure is still a fact.
+    vi.mocked(awsControlApi.costs).mockResolvedValue({ ...costsFresh, fetchError: 'Throttling' })
+    renderWithProviders(<AwsControlPage />)
+
+    expect(await within(await screen.findByTestId('overview-stat-spend')).findByTestId('stat-card-value'))
+      .toHaveTextContent(fmtCurrency(12.5, 'USD'))
+    const notice = await screen.findByTestId('overview-costs-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.costs_refresh_failed'))
+    expect(screen.getByTestId('overview-costs-error-retry')).toBeTruthy()
+  })
+
+  it('a failed drive read is NOT "no drive yet": the card says it failed and offers a retry', async () => {
+    vi.mocked(awsControlApi.drive).mockRejectedValue(new AwsControlError('http_500', 500))
+    renderWithProviders(<AwsControlPage />)
+
+    const notice = await screen.findByTestId('overview-drive-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.drive_status_failed'))
+    expect(screen.getByTestId('overview-drive-error-retry')).toBeTruthy()
+    // The setup empty state would have promised a bucket that may well exist.
+    expect(screen.queryByTestId('overview-drive-empty')).toBeNull()
+    expect(screen.queryByTestId('overview-stat-drive-sub')).toBeNull()
+  })
+
+  it('tells a consent 409 from a stale-connection 409 by its code, not its status', async () => {
+    // Only `aws_consent_required` is the reader's own pending decision; a dead
+    // connection also answers 409, and showing THAT as "set up your drive"
+    // would hide the one condition the pane exists to surface.
+    vi.mocked(awsControlApi.drive).mockRejectedValue(new AwsControlError('account_unavailable', 409))
+    const r = renderWithProviders(<AwsControlPage />)
+
+    const notice = await screen.findByTestId('overview-drive-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.account_unavailable'))
+    expect(screen.queryByTestId('overview-drive-empty')).toBeNull()
+    r.unmount()
+
+    vi.mocked(awsControlApi.drive).mockRejectedValue(new AwsControlError('aws_consent_required', 409))
+    renderWithProviders(<AwsControlPage />)
+    expect(await screen.findByTestId('overview-drive-empty')).toBeTruthy()
+    expect(screen.queryByTestId('overview-drive-error')).toBeNull()
+  })
+
+  it('a degraded row keeps two controls: Reconnect is an item in its menu', async () => {
+    // The row is the select surface and the menu is its one other control; a
+    // visible Reconnect made three, and the cluster stopped fitting at 320px.
+    renderWithProviders(<AwsControlPage />)
+    const card = await screen.findByTestId('overview-accounts')
+    const rows = within(card).getAllByTestId('account-card')
+    const workRow = rows[1].parentElement!
+
+    expect(within(workRow).getByTestId('account-health-word')).toBeTruthy()
+    expect(screen.queryByTestId('account-reconnect')).toBeNull()
+
+    fireEvent.click(within(workRow).getByTestId('account-more'))
+    fireEvent.click(await screen.findByTestId('account-reconnect'))
+    expect(await screen.findByTestId('row-reconnect')).toBeTruthy()
+  })
+
+  it('the Accounts card offers the SAME remove flow as the accounts pane', async () => {
+    // One `AccountRow` serves both surfaces, so removal must not be a
+    // pane-only capability: a registration is reversible from wherever the
+    // account is listed, or the row on the landing pane is a dead end.
+    vi.mocked(awsControlApi.unregisterProfiles).mockResolvedValue({
+      removed: 1, skipped: 0, consentWithdrawn: [],
+    })
+    renderWithProviders(<AwsControlPage />)
+    const card = await screen.findByTestId('overview-accounts')
+
+    const rows = within(card).getAllByTestId('account-card')
+    expect(rows).toHaveLength(2)
+    const workRow = rows[1].parentElement!
+    fireEvent.click(within(workRow).getByTestId('account-more'))
+    fireEvent.click(await screen.findByTestId('account-remove'))
+
+    // The strip names the account and says the removal is registry-only.
+    expect(await screen.findByTestId('account-remove-confirm')).toHaveTextContent(
+      i18nT('apps.awsControl.page.remove_account_confirm', { name: 'work' }),
+    )
+    expect(awsControlApi.unregisterProfiles).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId('account-remove-confirm-action'))
+    await waitFor(() => {
+      expect(awsControlApi.unregisterProfiles).toHaveBeenCalledWith(['work'])
+    })
+  })
+
+  it("'Add account' lands on the accounts pane with the disclosure already open", async () => {
+    // The action is a request to REGISTER a profile, so it must not drop the
+    // reader on the list and leave them hunting for a chevron.
+    renderWithProviders(<AwsControlPage />)
+    await screen.findByTestId('overview-pane')
+
+    fireEvent.click(screen.getByTestId('overview-add-account'))
+    expect(await screen.findByTestId('accounts-pane')).toBeTruthy()
+    expect(await screen.findByTestId('add-accounts-body')).toBeTruthy()
+    expect(screen.getByTestId('add-accounts-toggle').getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('the Cloud drive card carries the setup action when there is no bucket', async () => {
+    vi.mocked(awsControlApi.drive).mockResolvedValue({ exists: false })
+    renderWithProviders(<AwsControlPage />)
+
+    const empty = await screen.findByTestId('overview-drive-empty')
+    expect(empty).toHaveTextContent(i18nT('apps.awsControl.overview.drive_empty_title'))
+    // No meter to draw and no tiles to count until the bucket exists.
+    expect(screen.queryByTestId('overview-storage')).toBeNull()
+    expect(screen.queryByTestId('overview-tile-drive')).toBeNull()
+
+    // The Files pane owns the actual creation, so the action goes there.
+    fireEvent.click(screen.getByTestId('overview-drive-setup'))
+    expect(await screen.findByTestId('capability-drive-setup')).toBeTruthy()
+    expect(screen.getByTestId('rail-files').getAttribute('aria-current')).toBe('page')
+  })
+
+  it('counts ONE population: the Accounts card, its sub-line and the list agree, unresolved row included', async () => {
+    // `totals.accounts` counts resolved accounts only; a "2" over a list headed
+    // "3" was the pane contradicting itself in its first two lines.
+    const base = accountsPayload()
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(accountsPayload({
+      accounts: [...base.accounts, UNRESOLVED_ROW],
+      totals: { accounts: 2, profiles: 3, profilesHealthy: 1 },
+    }))
+    renderWithProviders(<AwsControlPage />)
+    const card = await screen.findByTestId('overview-accounts')
+
+    expect(within(card).getAllByTestId('account-card')).toHaveLength(3)
+    expect(within(await screen.findByTestId('overview-stat-accounts')).getByTestId('stat-card-value'))
+      .toHaveTextContent(fmtNumber(3))
+    // Only the rows that wear the "Needs attention" word: the unresolved row
+    // says "Unknown", so it is in the count of accounts but not in this one.
+    expect(screen.getByTestId('overview-stat-accounts-sub')).toHaveTextContent(
+      i18nT('apps.awsControl.overview.stat_accounts_attention', { count: 1 }),
+    )
+  })
+
+  it('never says "All healthy" over a row that is Unknown', async () => {
+    const base = accountsPayload()
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(accountsPayload({
+      accounts: [{ ...base.accounts[0] }, UNRESOLVED_ROW],
+      totals: { accounts: 1, profiles: 2, profilesHealthy: 1 },
+    }))
+    renderWithProviders(<AwsControlPage />)
+    await screen.findByTestId('overview-stat-accounts')
+    await waitFor(() => {
+      expect(within(screen.getByTestId('overview-stat-accounts')).getByTestId('stat-card-value'))
+        .toHaveTextContent(fmtNumber(2))
+    })
+    // Nothing to count as needing attention, and nothing true to say instead.
+    expect(screen.queryByTestId('overview-stat-accounts-sub')).toBeNull()
+  })
+
+  it('each metric card opens the pane that owns its figure', async () => {
+    // StatCard lifts on hover whether or not it is a target, so a card that
+    // went nowhere signalled a click it did not have.
+    renderWithProviders(<AwsControlPage />)
+    fireEvent.click(await screen.findByTestId('overview-stat-spend'))
+    expect(screen.getByTestId('rail-usage').getAttribute('aria-current')).toBe('page')
+  })
+
+  it('a drive tile opens the pane that owns its section', async () => {
+    // A bordered tile reads as a target, so it is one: the Overview's tiles
+    // navigate, and the read-only ones elsewhere draw flat instead.
+    renderWithProviders(<AwsControlPage />)
+
+    fireEvent.click(await screen.findByTestId('overview-tile-library'))
+    expect(screen.getByTestId('rail-library').getAttribute('aria-current')).toBe('page')
+  })
+
+  it('splits the drive three ways, with a named legend and a tile per section', async () => {
+    renderWithProviders(<AwsControlPage />)
+    await screen.findByTestId('overview-drive')
+
+    // The bar is never colour alone: every section is spelled out with its size.
+    const bar = await screen.findByTestId('overview-storage')
+    expect(within(bar).getByTestId('overview-storage-legend-drive')).toHaveTextContent(
+      fmtBytes(3_000_000_000),
+    )
+    expect(within(bar).getByTestId('overview-storage-legend-library')).toBeTruthy()
+    expect(within(bar).getByTestId('overview-storage-legend-backup')).toBeTruthy()
+    // Tiles count OBJECTS, which is the figure the bar cannot show.
+    expect(screen.getByTestId('overview-tile-drive-count')).toHaveTextContent(
+      i18nT('apps.awsControl.console.root_section_objects', { count: 30, objects: fmtNumber(30) }),
+    )
+    expect(screen.getByTestId('overview-drive-bucket')).toHaveTextContent('kirocrew-drive-abc123')
   })
 })
 
@@ -317,7 +577,9 @@ describe('account selection', () => {
     // account A it must not stay armed once the reader switches to B, or the
     // action fires against B's same-named object. The pane container is keyed
     // by the selected account, so a switch remounts the pane tree clean.
-    renderWithProviders(<AwsControlPage />)
+    // Deep-linked to Files: this case is about the DRIVE pane's transient
+    // state, and the app's landing pane is Overview, which holds none.
+    renderWithProviders(<AwsControlPage />, { route: '/aws-control/files' })
     await screen.findByTestId('drive-section')
 
     // Arm account-bound transient state: open the folder-creation disclosure.
@@ -344,7 +606,7 @@ describe('account selection', () => {
 
   it("the switcher menu's last item opens the accounts pane", async () => {
     renderWithProviders(<AwsControlPage />)
-    await screen.findByTestId('drive-section')
+    await screen.findByTestId('overview-pane')
 
     await openSwitcher()
     fireEvent.click(screen.getByTestId('switcher-manage'))
@@ -353,9 +615,9 @@ describe('account selection', () => {
     expect(screen.getByTestId('rail-accounts').getAttribute('aria-current')).toBe('page')
   })
 
-  it('selecting a resolved row on the accounts pane switches account AND jumps to Files', async () => {
+  it('selecting a resolved row on the accounts pane switches account and STAYS on the pane', async () => {
     renderWithProviders(<AwsControlPage />)
-    await screen.findByTestId('drive-section')
+    await screen.findByTestId('overview-pane')
     fireEvent.click(screen.getByTestId('rail-accounts'))
 
     const rows = await screen.findAllByTestId('account-card')
@@ -365,20 +627,36 @@ describe('account selection', () => {
     expect(rows[1].getAttribute('data-current')).toBeNull()
 
     fireEvent.click(rows[1])
-    // Back on Files, on the newly selected account, and remembered.
-    expect(await screen.findByTestId('drive-section')).toBeTruthy()
-    expect(screen.queryByTestId('accounts-pane')).toBeNull()
+    // Still on Accounts — a row that looks informational must not teleport the
+    // reader to Files — with the app now on the selected account: the rail
+    // card, the check, and the keys section all follow it, and it is remembered.
+    expect(screen.getByTestId('accounts-pane')).toBeTruthy()
+    expect(screen.queryByTestId('drive-section')).toBeNull()
     expect(screen.getByTestId('switcher-id')).toHaveTextContent('444455556666')
+    await waitFor(() => {
+      const after = screen.getAllByTestId('account-card')
+      expect(after[1].getAttribute('data-current')).toBe('true')
+      expect(after[0].getAttribute('data-current')).toBeNull()
+    })
+    // The keys section is scoped by name to the account it lists.
+    expect(screen.getByTestId('connections-section')).toHaveTextContent('Keys for work')
     await waitFor(() => expect(localStorage.getItem(SELECTED_KEY)).toBe('444455556666'))
   })
 })
 
 describe('DrivePaneGate', () => {
+  /**
+   * Every case here is about a DRIVE pane, and the app now lands on Overview,
+   * so each renders the Files route directly rather than relying on the default
+   * pane happening to be a gated one.
+   */
+  const atFiles = () => renderWithProviders(<AwsControlPage />, { route: '/aws-control/files' })
+
   it('renders the pane header while the drive status is still loading', async () => {
     vi.mocked(awsControlApi.drive).mockReturnValue(
       new Promise(() => {}) as ReturnType<typeof awsControlApi.drive>,
     )
-    renderWithProviders(<AwsControlPage />)
+    atFiles()
 
     // The rail selection and the pane title agree even before the drive answers.
     expect(await screen.findByTestId('gate-files')).toBeTruthy()
@@ -389,7 +667,7 @@ describe('DrivePaneGate', () => {
 
   it('a storage-consent 409 renders the s3 ask with a recheck that refetches the drive', async () => {
     vi.mocked(awsControlApi.drive).mockRejectedValue(new AwsControlError('aws_consent_required', 409))
-    renderWithProviders(<AwsControlPage />)
+    atFiles()
 
     expect(await screen.findByTestId('console-storage-consent')).toBeTruthy()
     expect(screen.getByTestId('console-consent-recheck')).toBeTruthy()
@@ -406,7 +684,7 @@ describe('DrivePaneGate', () => {
 
   it('any other 409 points back at the connection, not at consent', async () => {
     vi.mocked(awsControlApi.drive).mockRejectedValue(new AwsControlError('account_unavailable', 409))
-    renderWithProviders(<AwsControlPage />)
+    atFiles()
 
     expect(await screen.findByTestId('console-unavailable')).toBeTruthy()
     expect(screen.queryByTestId('console-storage-consent')).toBeNull()
@@ -415,7 +693,7 @@ describe('DrivePaneGate', () => {
 
   it('no drive yet renders the setup card, and the usage counts stay off the rail', async () => {
     vi.mocked(awsControlApi.drive).mockResolvedValue({ exists: false })
-    renderWithProviders(<AwsControlPage />)
+    atFiles()
 
     const setup = await screen.findByTestId('capability-drive-setup')
     expect(within(setup).getByTestId('drive-setup')).toBeTruthy()
@@ -433,7 +711,7 @@ describe('DrivePaneGate', () => {
 
   it('the gate covers every drive pane, not just Files', async () => {
     vi.mocked(awsControlApi.drive).mockResolvedValue({ exists: false })
-    renderWithProviders(<AwsControlPage />)
+    atFiles()
     await screen.findByTestId('gate-files')
 
     fireEvent.click(screen.getByTestId('rail-library'))
@@ -467,7 +745,7 @@ describe('edge states', () => {
 
     fireEvent.click(screen.getByTestId('error-retry'))
     expect(await screen.findByTestId('aws-rail')).toBeTruthy()
-    expect(await screen.findByTestId('drive-section')).toBeTruthy()
+    expect(await screen.findByTestId('overview-pane')).toBeTruthy()
   })
 
   it('a 403 that is NOT app_disabled is an error to diagnose, not a disabled app', async () => {
@@ -568,13 +846,64 @@ describe('edge states', () => {
     expect(screen.getByTestId('aws-control-empty-title')).toBeTruthy()
     expect(screen.queryByTestId('aws-control-empty-subtitle')).toBeNull()
   })
+
+  it('the empty state points at Add accounts, which opens itself', async () => {
+    // With nothing to select, the disclosure below the empty state is the only
+    // useful action on the pane, so it must not hide behind a chevron — and the
+    // sentence above it must name it rather than send the reader to Settings.
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(
+      accountsPayload({ accounts: [], totals: { accounts: 0, profiles: 0, profilesHealthy: 0 } }),
+    )
+    renderWithProviders(<AwsControlPage />)
+
+    await screen.findByTestId('aws-control-empty')
+    expect(await screen.findByTestId('add-accounts-body')).toBeTruthy()
+    expect(screen.getByTestId('add-accounts-toggle').getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByTestId('aws-control-empty')).toHaveTextContent(
+      i18nT('apps.awsControl.page.empty_body'),
+    )
+    expect(screen.getByTestId('aws-control-empty')).not.toHaveTextContent('Settings')
+    // The reader can still collapse it by hand.
+    fireEvent.click(screen.getByTestId('add-accounts-toggle'))
+    expect(screen.queryByTestId('add-accounts-body')).toBeNull()
+  })
+
+  it('a non-healthy account says so in words, in the same tone as its dot', async () => {
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(accountsPayload({
+      accounts: [...accountsPayload().accounts, UNRESOLVED_ROW],
+      totals: { accounts: 3, profiles: 3, profilesHealthy: 1 },
+    }))
+    renderWithProviders(<AwsControlPage />)
+    await screen.findByTestId('overview-pane')
+    fireEvent.click(screen.getByTestId('rail-accounts'))
+    await screen.findByTestId('accounts-pane')
+
+    // Accounts list: the word carries the dot's hue — the warn badge for
+    // degraded, the neutral badge for unknown — never one fact in two colours.
+    // The word is a `Badge` now rather than a bare span, so the tone is the
+    // badge's variant tokens (`text-warn` / the muted var pair).
+    const words = screen.getAllByTestId('account-health-word')
+    expect(words).toHaveLength(2)
+    expect(words[0]).toHaveTextContent(i18nT('apps.awsControl.page.health_degraded'))
+    expect(words[0].className).toContain('text-warn')
+    expect(words[0].className).toContain('bg-warn-subtle')
+    expect(words[1]).toHaveTextContent(i18nT('apps.awsControl.page.health_unknown'))
+    expect(words[1].className).toContain('--muted')
+    expect(words[1].className).not.toContain('warn')
+
+    // Switcher: the degraded entry gets the word too, the healthy one stays quiet.
+    fireEvent.click(screen.getByTestId('account-switcher'))
+    const health = await screen.findAllByTestId('switcher-option-health')
+    expect(health).toHaveLength(1)
+    expect(health[0]).toHaveTextContent(i18nT('apps.awsControl.page.health_degraded'))
+  })
 })
 
 describe('accounts pane', () => {
   /** Land on the accounts pane with the default two-account payload. */
   async function openAccountsPane() {
     renderWithProviders(<AwsControlPage />)
-    await screen.findByTestId('drive-section')
+    await screen.findByTestId('overview-pane')
     fireEvent.click(screen.getByTestId('rail-accounts'))
     await screen.findByTestId('accounts-pane')
   }
@@ -695,11 +1024,135 @@ describe('accounts pane', () => {
   })
 })
 
+describe('remove account', () => {
+  async function openAccountsPane() {
+    renderWithProviders(<AwsControlPage />)
+    await screen.findByTestId('overview-pane')
+    fireEvent.click(screen.getByTestId('rail-accounts'))
+    await screen.findByTestId('accounts-pane')
+  }
+
+  async function openRemoveOn(row: HTMLElement) {
+    fireEvent.click(within(row).getByTestId('account-more'))
+    fireEvent.click(await screen.findByTestId('account-remove'))
+  }
+
+  it('every row offers removal from a menu that does not select the account', async () => {
+    await openAccountsPane()
+    const rows = await screen.findAllByTestId('account-card')
+    // The menu sits BESIDE the select button, so opening it must not switch
+    // the app onto that account (which would also jump to Files).
+    const workRow = rows[1].parentElement!
+    // The menu item carries the safety fact before anything is clicked.
+    fireEvent.click(within(workRow).getByTestId('account-more'))
+    expect(await screen.findByTestId('account-remove-hint')).toHaveTextContent(
+      i18nT('apps.awsControl.page.remove_account_hint'),
+    )
+    fireEvent.click(screen.getByTestId('account-remove'))
+    expect(await screen.findByTestId('account-remove-confirm')).toBeTruthy()
+    expect(screen.getByTestId('accounts-pane')).toBeTruthy()
+    expect(rows[1].getAttribute('data-current')).toBeNull()
+    // The strip names the account and says the removal is registry-only.
+    expect(screen.getByTestId('account-remove-confirm')).toHaveTextContent(
+      i18nT('apps.awsControl.page.remove_account_confirm', { name: 'work' }),
+    )
+    // Nothing was sent yet: the menu item only opens the confirm.
+    expect(awsControlApi.unregisterProfiles).not.toHaveBeenCalled()
+  })
+
+  it('confirming posts every key of that account and refetches the list', async () => {
+    vi.mocked(awsControlApi.unregisterProfiles).mockResolvedValue({
+      removed: 2, skipped: 0, consentWithdrawn: ['s3'],
+    })
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(accountsPayload({
+      accounts: [
+        {
+          ...accountsPayload().accounts[0],
+          profiles: [
+            accountsPayload().accounts[0].profiles[0],
+            { ...accountsPayload().accounts[0].profiles[0], name: 'personal-admin', default: false },
+          ],
+        },
+        accountsPayload().accounts[1],
+      ],
+    }))
+    await openAccountsPane()
+    expect(awsControlApi.accounts).toHaveBeenCalledTimes(1)
+
+    const rows = await screen.findAllByTestId('account-card')
+    await openRemoveOn(rows[0].parentElement!)
+    fireEvent.click(screen.getByTestId('account-remove-confirm-action'))
+
+    await waitFor(() => {
+      expect(awsControlApi.unregisterProfiles).toHaveBeenCalledWith(['personal', 'personal-admin'])
+    })
+    // The registry changed, so both views of it refetch and the strip closes.
+    await waitFor(() => {
+      expect(awsControlApi.accounts).toHaveBeenCalledTimes(2)
+    })
+    await waitFor(() => {
+      expect(screen.queryByTestId('account-remove-confirm')).toBeNull()
+    })
+  })
+
+  it('cancel closes the strip and sends nothing', async () => {
+    await openAccountsPane()
+    const rows = await screen.findAllByTestId('account-card')
+    await openRemoveOn(rows[0].parentElement!)
+    fireEvent.click(screen.getByTestId('account-remove-confirm-cancel'))
+    expect(screen.queryByTestId('account-remove-confirm')).toBeNull()
+    expect(awsControlApi.unregisterProfiles).not.toHaveBeenCalled()
+  })
+
+  it('a refused removal stays on the strip as a notice, never silently', async () => {
+    vi.mocked(awsControlApi.unregisterProfiles).mockRejectedValue(
+      new AwsControlError('unknown_profile', 404),
+    )
+    await openAccountsPane()
+    const rows = await screen.findAllByTestId('account-card')
+    await openRemoveOn(rows[0].parentElement!)
+    fireEvent.click(screen.getByTestId('account-remove-confirm-action'))
+
+    const notice = await screen.findByTestId('account-remove-confirm-error')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.page.remove_account_error'))
+    // The strip is the only place the outcome renders, so it stays open.
+    expect(screen.getByTestId('account-remove-confirm')).toBeTruthy()
+  })
+
+  it('the unresolved row names the keys it will forget, since it has no account name', async () => {
+    vi.mocked(awsControlApi.accounts).mockResolvedValue(accountsPayload({
+      accounts: [
+        accountsPayload().accounts[0],
+        {
+          account: '',
+          name: '',
+          health: 'unknown',
+          profiles: [{
+            name: 'stale-key', region: 'us-east-1', kind: 'other', identityOk: false,
+            account: '', arn: '', detail: 'token expired', default: false,
+          }],
+          summary: { storage: null, sites: null, tasks: null, costMonthToDate: null },
+        },
+      ],
+    }))
+    await openAccountsPane()
+    const rows = await screen.findAllByTestId('account-card')
+    await openRemoveOn(rows[1].parentElement!)
+    expect(await screen.findByTestId('account-remove-confirm')).toHaveTextContent(
+      i18nT('apps.awsControl.page.forget_key_confirm', { name: 'stale-key' }),
+    )
+    // The verb on the button matches the verb in the sentence.
+    expect(screen.getByTestId('account-remove-confirm-action')).toHaveTextContent(
+      i18nT('apps.awsControl.page.forget_key_action'),
+    )
+  })
+})
+
 describe('add accounts', () => {
   /** The disclosure lives on the accounts pane; reach it through the rail. */
   async function openAccountsPane() {
     renderWithProviders(<AwsControlPage />)
-    await screen.findByTestId('drive-section')
+    await screen.findByTestId('overview-pane')
     fireEvent.click(screen.getByTestId('rail-accounts'))
     await screen.findByTestId('accounts-pane')
   }
@@ -835,18 +1288,22 @@ describe('AwsControlPage — path-based navigation', () => {
     // length>=2 check treat the level as drilled-in. Pin the same class here:
     // /aws-control/ must render exactly what /aws-control renders.
     renderWithProviders(<AwsControlPage />, { route: '/aws-control/' })
-    expect(await screen.findByTestId('drive-section')).toBeTruthy()
-    expect(screen.getByTestId('rail-files').getAttribute('aria-current')).toBe('page')
+    expect(await screen.findByTestId('overview-pane')).toBeTruthy()
+    expect(screen.getByTestId('rail-overview').getAttribute('aria-current')).toBe('page')
   })
 
-  it('an unknown segment falls back to Files rather than a blank pane', async () => {
+  it('an unknown segment falls back to the default pane rather than a blank one', async () => {
+    // The fallback follows the DEFAULT pane, which is Overview now that the app
+    // lands there. What matters is that it is a concrete pane and the same one
+    // on every width: mapping the segment to null would read as Overview on a
+    // desktop and as the root list on a phone, two meanings for one address.
     renderWithProviders(<AwsControlPage />, { route: '/aws-control/nonsense' })
-    expect(await screen.findByTestId('drive-section')).toBeTruthy()
+    expect(await screen.findByTestId('overview-pane')).toBeTruthy()
   })
 
   it('a rail click writes the pane path (deep-linkable)', async () => {
     renderWithProviders(<AwsControlPage />, { route: '/aws-control' })
-    await screen.findByTestId('drive-section')
+    await screen.findByTestId('overview-pane')
     fireEvent.click(screen.getByTestId('rail-backup'))
     expect(await screen.findByTestId('backup-section')).toBeTruthy()
     expect(screen.getByTestId('rail-backup').getAttribute('aria-current')).toBe('page')
@@ -862,7 +1319,7 @@ describe('AwsControlPage — narrow viewport (iOS push stack)', () => {
     expect(screen.queryByTestId('aws-rail')).toBeNull()
     // Account card on top, then every pane as a tappable row.
     expect(screen.getByTestId('account-switcher')).toBeTruthy()
-    for (const pane of ['files', 'library', 'backup', 'shares', 'accounts', 'usage']) {
+    for (const pane of ['overview', 'files', 'library', 'backup', 'shares', 'accounts', 'usage']) {
       expect(screen.getByTestId(`root-${pane}`)).toBeTruthy()
     }
   })
@@ -884,31 +1341,11 @@ describe('AwsControlPage — narrow viewport (iOS push stack)', () => {
     expect(screen.queryByTestId('aws-pane-detail')).toBeNull()
   })
 
-  it('an unknown segment reads as Files on a phone too — one meaning per URL', async () => {
+  it('an unknown segment reads as the default pane on a phone too — one meaning per URL', async () => {
     renderWithProviders(<AwsControlPage />, { route: '/aws-control/bogus' })
     expect(await screen.findByTestId('aws-pane-detail')).toBeTruthy()
-    expect(await screen.findByTestId('drive-section')).toBeTruthy()
+    expect(await screen.findByTestId('overview-pane')).toBeTruthy()
     expect(screen.queryByTestId('aws-root-list')).toBeNull()
-  })
-
-  it('a pane->pane move keeps the push marker, so back still pops to the list', async () => {
-    // Drill in from the root list (a PUSH), then move pane->pane via the
-    // accounts pane's row (a REPLACE). The replace must carry the entry's
-    // push marker forward — dropping it would stack a duplicate root entry
-    // on back and leave the next platform back visibly inert.
-    renderWithProviders(<AwsControlPage />, { route: '/aws-control' })
-    await screen.findByTestId('aws-root-list')
-
-    fireEvent.click(screen.getByTestId('root-accounts'))
-    expect(await screen.findByTestId('accounts-pane')).toBeTruthy()
-
-    // Selecting an account jumps to Files (pane->pane replace).
-    fireEvent.click(screen.getAllByTestId('account-card')[0])
-    expect(await screen.findByTestId('drive-section')).toBeTruthy()
-
-    // Back must POP to the root list (marker preserved), not replace-write.
-    fireEvent.click(screen.getByText('AWS Control'))
-    expect(await screen.findByTestId('aws-root-list')).toBeTruthy()
   })
 
   it('a deep link goes straight to the detail pane', async () => {

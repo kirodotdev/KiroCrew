@@ -13,6 +13,7 @@ import {
 import { Tabs, TabsContent, TabsCount, TabsList, TabsTrigger, type TabItem } from '../../components/ui/tabs'
 import { TABS_RAIL_ROW_CLASS } from '../../components/ui/tabsPill'
 import { Btn } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import {
   Dialog,
   DialogBody,
@@ -468,44 +469,54 @@ function MeasureControl({ unmeasuredCount }: { unmeasuredCount: number }) {
   const settled = asked && !running && measured > 0 && !failed
 
   return (
-    <div className="flex flex-wrap items-center gap-3">
-      <button
-        type="button"
-        onClick={() => start.mutate()}
-        disabled={running || start.isPending || unmeasuredCount === 0}
-        className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-[13px] text-[var(--text)] hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <Gauge size={14} className="shrink-0" />
-        {unmeasuredCount > 0
-          ? i18nT('pages.mcpManagement.assessment.measure_unmeasured', {
-              count: unmeasuredCount,
-            })
-          : i18nT('pages.mcpManagement.assessment.measure_none_left')}
-      </button>
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => start.mutate()}
+          disabled={running || start.isPending || unmeasuredCount === 0}
+          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-[13px] text-[var(--text)] hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Gauge size={14} className="shrink-0" />
+          {unmeasuredCount > 0
+            ? i18nT('pages.mcpManagement.assessment.measure_unmeasured', {
+                count: unmeasuredCount,
+              })
+            : i18nT('pages.mcpManagement.assessment.measure_none_left')}
+        </button>
 
-      {running && (
-        <span role="status" className="text-[12.5px] text-[var(--muted)]">
-          {i18nT('pages.mcpManagement.assessment.measure_running', { done, total })}
-        </span>
-      )}
-      {settled && (
-        <span role="status" className="text-[12.5px] text-[var(--muted)]">
-          {i18nT('pages.mcpManagement.assessment.measure_finished', { count: measured })}
-        </span>
-      )}
+        {running && (
+          <span role="status" className="text-[12.5px] text-[var(--muted)]">
+            {i18nT('pages.mcpManagement.assessment.measure_running', { done, total })}
+          </span>
+        )}
+        {settled && (
+          <span role="status" className="text-[12.5px] text-[var(--muted)]">
+            {i18nT('pages.mcpManagement.assessment.measure_finished', { count: measured })}
+          </span>
+        )}
+      </div>
+      {/* Failures sit UNDER the Measure row, not beside the button: each notice
+          carries a hand-off link, and a link in that row is a third action
+          (max-two-buttons-per-row). */}
       {/* A pass that stopped early is reported here rather than only in the log:
           the operator is watching this readout and would otherwise read a short
-          pass as a completed one. */}
-      {failed && (
-        <span role="status" className="text-[12.5px] text-[var(--danger)]">
-          {i18nT('pages.mcpManagement.assessment.measure_failed')}
-        </span>
-      )}
-      {start.isError && (
-        <span role="status" className="text-[12.5px] text-[var(--danger)]">
-          {i18nT('pages.mcpManagement.assessment.measure_failed')}
-        </span>
-      )}
+          pass as a completed one. One notice for both causes -- a died pass and a
+          start that never got going read the same string, and two copies of it
+          side by side said nothing the first did not. */}
+      <ErrorNotice
+        variant="inline"
+        message={failed || start.isError ? i18nT('pages.mcpManagement.assessment.measure_failed') : null}
+        askAgent
+      />
+      {/* A failed progress read is not a failed pass: the pass may be running
+          fine behind an endpoint this tab cannot reach. Left silent, the readout
+          simply froze, which reads as "nothing is happening". */}
+      <ErrorNotice
+        variant="inline"
+        message={progress.isError ? i18nT('pages.mcpManagement.assessment.measure_progress_failed') : null}
+        askAgent
+      />
     </div>
   )
 }
@@ -606,8 +617,8 @@ function AssessmentView({
             ))}
             {isError && (
               <tr className="border-t border-[var(--border)]">
-                <td colSpan={4} className="px-4 py-6 text-center text-[13px] text-[var(--danger)]">
-                  {i18nT('pages.mcpManagement.servers_failed')}
+                <td colSpan={4} className="px-4 py-4">
+                  <ErrorNotice message={i18nT('pages.mcpManagement.servers_failed')} askAgent />
                 </td>
               </tr>
             )}
@@ -651,6 +662,11 @@ export function McpManagement() {
   // stub-set change and `restartNotice` reports a pending restart, and one banner
   // shared by unrelated actions would let either overwrite the other's result.
   const [resolveNotice, setResolveNotice] = useState<string | null>(null)
+  // The failed-install outcomes of that same pass, kept apart from
+  // `resolveNotice` so a per-package install failure renders as an error (with
+  // the agent hand-off) while "already fresh" and "already running" stay plain
+  // status. One variable carrying both made every outcome look like a status.
+  const [resolveError, setResolveError] = useState<string | null>(null)
 
   const statusQ = useQuery<GatewayStatus>({
     queryKey: ['mcpGatewayStatus'],
@@ -742,7 +758,7 @@ export function McpManagement() {
       // response; count it rather than inferring from `ready` alone.
       const failed = Object.values(res.resolved ?? {}).filter(state => state === 'error').length
       if (failed > 0) {
-        setResolveNotice(
+        setResolveError(
           ready > 0
             ? i18nT('pages.mcpManagement.resolve_partly_ready', {
                 ready: String(ready),
@@ -966,6 +982,14 @@ export function McpManagement() {
         </TabsList>
       </div>
 
+      {/* `supported` defaults to true and `enabled` to off, so a failed status
+          read used to paint a healthy, switchable card over a state this tab
+          knows nothing about. Above both views because both derive from it. */}
+      <ErrorNotice
+        message={statusQ.isError ? i18nT('pages.mcpManagement.status_failed') : null}
+        askAgent
+      />
+
       <TabsContent value="assessment">
         <AssessmentView
           servers={servers}
@@ -1013,15 +1037,9 @@ export function McpManagement() {
         </p>
       </header>
 
-      {error && (
-        <div
-          role="alert"
-          className="flex items-start gap-2 rounded-lg border border-[var(--danger)] bg-[var(--danger-subtle,transparent)] px-3.5 py-2.5 text-[13px] text-[var(--text)]"
-        >
-          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[var(--danger)]" />
-          <span>{error}</span>
-        </div>
-      )}
+      {/* Hand-off is safe here: this page is switches only, every input is
+          already persisted before any of these errors can show. */}
+      <ErrorNotice message={error} askAgent onDismiss={() => setError(null)} />
 
       {restartNotice && (
         <div
@@ -1123,6 +1141,7 @@ export function McpManagement() {
                 {resolveNotice}
               </p>
             )}
+            <ErrorNotice variant="inline" className="mt-2" message={resolveError} askAgent />
           </div>
           <button
             type="button"
@@ -1131,6 +1150,7 @@ export function McpManagement() {
             onClick={() => {
               setError(null)
               setResolveNotice(null)
+              setResolveError(null)
               resolveRefresh.mutate()
             }}
             className="shrink-0 rounded-lg border border-[var(--border)] px-3 py-1.5 text-[13px] text-[var(--text)] transition-colors hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-60"
@@ -1295,11 +1315,11 @@ export function McpManagement() {
             })}
             {serversQ.isError && (
               <tr className="border-t border-[var(--border)]">
-                <td colSpan={4} className="px-4 py-6 text-center text-[13px] text-[var(--danger)]">
+                <td colSpan={4} className="px-4 py-4">
                   {/* Distinct from the empty state on purpose: a failed request
                       knows nothing about the operator's servers, and saying
                       "none are configured" would be a claim we cannot make. */}
-                  {i18nT('pages.mcpManagement.servers_failed')}
+                  <ErrorNotice message={i18nT('pages.mcpManagement.servers_failed')} askAgent />
                 </td>
               </tr>
             )}

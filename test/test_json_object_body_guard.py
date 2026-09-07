@@ -173,6 +173,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "TEAMS_MAX_ACTIVITY_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # The UI-preference backup stores values up to MAX_VALUE_BYTES (64 KB) and a
+    # document up to MAX_TOTAL_BYTES, so the shared 64 KB default -- exactly one
+    # legal value, with no room for the JSON envelope -- would 413 a patch the
+    # store itself accepts. The cap is owned in kiro_crew/ui_prefs.py beside the
+    # limits it has to cover, so the two cannot drift apart again.
+    "handlers/ui_prefs.py::api_ui_prefs": ("MAX_REQUEST_BYTES", _BOUNDED_EXPLICIT),
     # agents.py tranche.
     "handlers/agents.py::api_agent_config": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/agents.py::api_default_agent": ("None", _CONTROL_FIELDS_CAP_PENDING),

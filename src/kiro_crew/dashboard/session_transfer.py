@@ -37,7 +37,8 @@ agent *hint* only:
   nothing. The imported session arrives with no project so the user re-picks it.
 * ``model`` is not carried. Accounts differ in entitlement, so a model id that
   the source account is served can fail at runtime on the target; the target
-  resolves its own default instead (see AGENTS.md § Model selection).
+  resolves its own default instead (see
+  docs/system-specs/common/model-selection.md).
 * ``workspace`` is not carried. Workspaces are per-instance memory scopes, and a
   name that matches on both hosts still means two different memories.
 * ``agent`` is carried as a hint and applied ONLY if the target has an agent by

@@ -26,6 +26,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { ApiError } from '../api/apiError'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatFolder } from '../types'
@@ -115,6 +116,7 @@ const mocks = vi.hoisted(() => ({
   updateChatFolder: vi.fn(),
   deleteChatFolder: vi.fn(),
   createChatSlot: vi.fn(),
+  chatSlotProject: vi.fn(),
   setSlotColor: vi.fn(),
   sessions: vi.fn(),
   sessionsSearch: vi.fn(),
@@ -257,6 +259,7 @@ beforeEach(() => {
   mocks.updateChatFolder.mockResolvedValue({ ok: true })
   mocks.deleteChatFolder.mockResolvedValue({ ok: true })
   mocks.createChatSlot.mockResolvedValue({ key: 'k-new', title: '', running: false, messages: 0 })
+  mocks.chatSlotProject.mockResolvedValue(undefined)
   mocks.setSlotColor.mockResolvedValue({ ok: true })
   mocks.sessions.mockResolvedValue({ sessions: [], has_more: false })
   mocks.sessionsSearch.mockResolvedValue({ sessions: [] })
@@ -433,6 +436,55 @@ describe('ChatSidebar — list-view folder header', () => {
     renderSidebar()
     fireEvent.click(screen.getByLabelText('New chat in Alpha'))
     await waitFor(() => expect(err).toHaveBeenCalledWith('Failed to create chat in folder:', expect.anything()))
+    // The failure also surfaces inline under the folder row (the generic path
+    // renders the raw error message), announced to screen readers.
+    const notice = await screen.findByTestId('folder-create-error-f1')
+    expect(notice.getAttribute('role')).toBe('alert')
+    expect(notice.textContent).toContain('no capacity')
+  })
+
+  it('names the stale project directory when the backend refuses the folder scope', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // The create itself succeeds; the follow-up project-scope POST is refused
+    // (HTTP 400 "Not a directory") — createSlot rolls the session back and
+    // rethrows, and the sidebar maps it to the specific stale-directory
+    // message naming the folder's resolved project path.
+    mocks.chatSlotProject.mockRejectedValue(new ApiError(400, 'Not a directory'))
+    renderSidebar({ folders: [{ ...ALPHA, project_dir: '/renamed-away/proj' }] })
+    fireEvent.click(screen.getByLabelText('New chat in Alpha'))
+    const notice = await screen.findByTestId('folder-create-error-f1')
+    expect(notice.textContent).toContain('/renamed-away/proj')
+    expect(notice.textContent).toContain('no longer exists')
+  })
+
+  it('clears the inline notice on the next successful create in the folder', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    mocks.createChatSlot.mockRejectedValueOnce(new Error('no capacity'))
+    renderSidebar()
+    fireEvent.click(screen.getByLabelText('New chat in Alpha'))
+    await screen.findByTestId('folder-create-error-f1')
+    // The next create in the same folder goes through (the beforeEach default
+    // resolves), which supersedes the notice.
+    fireEvent.click(screen.getByLabelText('New chat in Alpha'))
+    await waitFor(() => expect(screen.queryByTestId('folder-create-error-f1')).toBeNull())
+  })
+
+  it('surfaces a failed folder create in flat view, where no folder header mounts', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Flat view renders no folder headers, so the per-folder notice mount
+    // points do not exist — the lane-level fallback must carry the failure.
+    // Drive the failure from the tree view's folder row (the reliable path in
+    // happy-dom — the New menu folders live in a Radix submenu it cannot
+    // open), then flip to flat view with the error state live.
+    mocks.chatSlotProject.mockRejectedValue(new ApiError(400, 'Not a directory'))
+    renderSidebar({ folders: [{ ...ALPHA, project_dir: '/renamed-away/proj' }] })
+    fireEvent.click(screen.getByLabelText('New chat in Alpha'))
+    await screen.findByTestId('folder-create-error-f1')
+    fireEvent.click(screen.getByTestId('flat-view-toggle'))
+    await screen.findByTestId('flat-view-lane')
+    // The tree's per-folder mount is gone; the lane-level fallback carries it.
+    const notice = await screen.findByTestId('folder-create-error-f1')
+    expect(notice.textContent).toContain('/renamed-away/proj')
   })
 })
 

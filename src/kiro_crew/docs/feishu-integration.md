@@ -72,7 +72,7 @@ session, editing the files on the gateway's own machine is the way in.
 
 </details>
 
-## Who can reach it
+## Access control
 
 Deny-by-default, in both directions:
 
@@ -113,7 +113,7 @@ Deny-by-default, in both directions:
   would reset the conversation on a message you addressed to a colleague, and
   that is not recoverable, so anything ambiguous is treated as a prompt.
 
-## Settings
+## Settings reference
 
 | Key | Default | What it does |
 | --- | --- | --- |
@@ -144,7 +144,7 @@ masked preview: a saved secret can be **replaced or cleared, never read back**.
 
 Anything else is a prompt.
 
-## What this channel can and cannot do
+## Limits
 
 Feishu v1 is deliberately single-shot: the agent's answer is buffered and sent
 as **one reply** when the turn completes, rather than streamed. There are no
@@ -176,7 +176,7 @@ Known gaps, all follow-up work rather than defects:
 
 The channel is a thin transport over the shared messaging core — the same
 `TurnDriver` (credential redaction, tool-approval ladder, SEL audit) every other
-channel uses. See [messaging-transport.md](messaging-transport.md).
+channel uses.
 
 | File | Role |
 | --- | --- |
@@ -185,3 +185,9 @@ channel uses. See [messaging-transport.md](messaging-transport.md).
 | `feishu/renderer.py` | Buffers the turn, sends one reply |
 | `feishu/transport_dispatch.py` | Drives `TurnDriver`, handles `/new` `/compact` |
 | `feishu/gateway.py` | `maybe_start_feishu()` boot entry point |
+
+## Related docs
+
+- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
+- [Getting Started](getting-started.md): install, first run, connecting a channel
+- [Configuration](configuration.md): the config file and environment variables

@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { Trans } from 'react-i18next'
 import { SourceBadge } from './SourceBadge'
+import ErrorNotice from './ErrorNotice'
 import { Star, Check, Users } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
@@ -126,8 +127,15 @@ export function ManageAgentsFooter({ onManage, error }: { onManage: () => void; 
   return (
     <>
       {error && (
-        <div role="alert" className="shrink-0 border-t border-border px-3 py-2 text-[12px] text-danger">
-          {i18nT('components.agentDropdownList.could_not_change_the_default_agent')}
+        <div className="shrink-0 border-t border-border px-2 py-2">
+          {/* Pop-up holds no draft (the default-agent write already fired), so the hand-off loses nothing.
+              Block variant: the pop-up is narrow, so the wrapped message and the link stack instead of
+              fighting for one line. */}
+          <ErrorNotice
+            askAgent
+            testId="agent-dropdown-default-error"
+            message={i18nT('components.agentDropdownList.could_not_change_the_default_agent')}
+          />
         </div>
       )}
       <button

@@ -202,17 +202,11 @@ def test_the_launch_config_is_write_protected_from_the_agent(
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     path = str(mod.launch_config_path())
 
-    # 1. the file-edit gate
+    # The file-edit gate. The shell gate matches no paths in command text, and the
+    # sandbox keeps this leaf VISIBLE on purpose (the CLI opens it on every
+    # invocation), so a shell write is the accepted residual: the agent can already
+    # point PLAYWRIGHT_MCP_CONFIG at a file of its own.
     assert security.is_sensitive_write_path(path) is True
-    # 2. the shell gate, across the spellings it does cover
-    for command in (
-        "echo x > ~/.kiro/crew/playwright-cli-config.json",
-        "echo x > $HOME/.kiro/crew/playwright-cli-config.json",
-        "echo x > ~/.kirocrew/playwright-cli-config.json",  # legacy data home
-        "tee ~/.kiro/crew/playwright-cli-config.json",
-        "cp /tmp/evil.json ~/.kiro/crew/playwright-cli-config.json",
-    ):
-        assert security.is_sensitive_bash_command(command) is not None, command
     # Readable through Python: the CLI opens it on every invocation.
     assert security.is_sensitive_path(path) is False
 
@@ -220,15 +214,9 @@ def test_the_launch_config_is_write_protected_from_the_agent(
 def test_launch_config_shell_protection_matches_an_existing_protected_leaf() -> None:
     """The shell gate treats this leaf exactly as it treats a long-standing one.
 
-    Parity is the honest assertion, and the durable one. The leaf is deliberately
-    ANCHORED rather than bare-token: per the scope note on
-    ``_BARE_TOKEN_PROTECTED_LEAVES``, a leaf earns anchor-independent matching only
-    when the filename IS the grant, and here it is not -- the agent can point
-    ``PLAYWRIGHT_MCP_CONFIG`` at a file of its own. So a ``cd``-relative write is
-    the accepted residual, exactly as it is for the on-call schedule.
-
-    Asserting parity is what protects the invariant: it fails if someone protects
-    one leaf and not the other, and it does not pretend a gap is closed.
+    Parity is the honest assertion, and the durable one: the gate matches no paths
+    in command text, so neither leaf is refused there, and this fails the moment
+    someone fences one of the two by text without the other.
     """
     from kiro_crew import security
 

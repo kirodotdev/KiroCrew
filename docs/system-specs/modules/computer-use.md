@@ -180,7 +180,7 @@ with a driver. `KIROCREW_SESSION_KEY` reaches a child only from a launcher that
 already knows which session it is spawning for — the ACP spawn path
 (`acp/client.py`) and the script-cron launcher (`cron_script.py`, which spawns one
 process per job under `cron:<job id>`) — and `KIROCREW_HOST_PID` only from the Linux
-sandbox launcher (`sandbox.py:666`). A GUI-launched kiro-cli has no such launcher
+sandbox launcher (`sandbox.main`, which exports it before re-exec). A GUI-launched kiro-cli has no such launcher
 above it, so it carries neither. An earlier revision refused in the shim on the
 reasoning that an unproven key is indistinguishable from an unattended surface —
 with the unattended rule gone, that left the feature returning *"the calling

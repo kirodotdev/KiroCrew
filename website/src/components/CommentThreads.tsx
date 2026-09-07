@@ -21,6 +21,7 @@ import type { PullRequestComment, PullRequestSource } from '../types'
 import { platformShortcut } from '../utils/platform'
 import { OWNER_SETTINGS_TARGET, pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import { SettingsLink } from './SettingsLink'
+import ErrorNotice from './ErrorNotice'
 import { sourceProviderCapabilities } from '../utils/sourceProviderMeta'
 import { timeAgo } from '../utils/timeAgo'
 
@@ -228,8 +229,9 @@ function ReplyBox({
           {i18nT('components.commentThreads.cancel')}
         </button>
         {error && (
-          <span className="text-[12px] text-danger">
-            {error}
+          <span className="inline-flex items-center gap-1 text-[12px]">
+            {/* No hand-off: the reply/comment textarea draft above is unsaved. */}
+            <ErrorNotice variant="inline" testId="comment-reply-error" message={error} />
             {errorAction && <> {errorAction}</>}
           </span>
         )}
@@ -381,9 +383,15 @@ export default function CommentThreads(
                 && setResolved.variables?.threadId === t.threadId && (() => {
                   const resolveErr = pullRequestErrorDetails(setResolved.error)
                   return (
-                    <span className="text-[11.5px] text-danger">
-                      {resolveErr.message
-                        || i18nT('components.commentThreads.could_not_change_the_thread_s_state')}
+                    <span className="inline-flex items-center gap-1 text-[11.5px]">
+                      {/* No hand-off: this thread's ReplyBox may hold an unsaved reply draft
+                          (its open/text state is local to ReplyBox, invisible from here). */}
+                      <ErrorNotice
+                        variant="inline"
+                        testId="comment-thread-resolve-error"
+                        message={resolveErr.message
+                          || i18nT('components.commentThreads.could_not_change_the_thread_s_state')}
+                      />
                       {resolveErr.ownerNotConfigured && <> <OwnerSettingsLink /></>}
                     </span>
                   )

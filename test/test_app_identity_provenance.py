@@ -37,6 +37,23 @@ def _admit_registry_execution(monkeypatch):
     monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
 
 
+@pytest.fixture(autouse=True)
+def _catalog_absent(monkeypatch):
+    """Pin "official catalog reachable, app absent" for the whole module.
+
+    ``get_registry_app`` is patched to a per-test stub everywhere in this file, but
+    its real implementation is upstream of ``official_catalog.inventory_for_install``,
+    whose real lookup performs a fresh uncached HTTPS fetch on every call. Without
+    this guard, any test added here later that forgets to stub ``get_registry_app``
+    (or exercises the real lookup path some other way) would silently depend on the
+    runner's live network being up.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.apps.official_catalog.inventory_for_install",
+        lambda name: None,
+    )
+
+
 @pytest.fixture()
 def sel_calls(monkeypatch) -> MagicMock:
     """Capture SEL audit emissions from the registry install path."""

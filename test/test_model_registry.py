@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from kiro_crew import model_registry as mr
 
 
@@ -449,19 +451,33 @@ class TestAdvertisedModelCache:
     test (it is process-wide runtime state, like ``_KIRO_WINDOWS``).
     """
 
-    def test_seed_falls_back_to_registry_on_cold_cache(self, monkeypatch):
+    def test_seed_is_empty_on_cold_cache_rather_than_registry_derived(self, monkeypatch):
+        # The seed is provider-advertised ONLY. Falling back to the static registry
+        # here is what pinned a served-but-unregistered model to the base window:
+        # the adapter merges availableModels union+dedup, so a registry list that
+        # has not caught up REPLACES the adapter's correct provider list with one
+        # carrying no [1m] id for that model. Seeding nothing leaves the adapter on
+        # its own list, so no registry edit is needed per new model per provider.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
-        # The registry allowlist, deduped so a base-window id never rides next to
-        # its 1M sibling (the pre-dedup list still shipped both).
-        assert mr.seed_available_models("claude_code") == mr._dedup_window_siblings(
-            mr.available_models("claude_code")
-        )
+        assert mr.seed_available_models("claude_code") == []
+        # The registry itself still answers the picker/window questions — only the
+        # seed path stopped reading it.
+        assert mr.available_models("claude_code")
 
     def test_seed_drops_base_window_sibling_of_a_1m_id(self, monkeypatch):
-        # The 4.8 fix: the registry emits both the [1m] and the 200K spelling of
-        # Opus 4.8; the seed must carry only the 1M one so the adapter cannot
-        # collapse a 4.8 pick to the base window.
-        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        # The 4.8 fix: when a backend advertises both the [1m] and the 200K
+        # spelling of Opus 4.8, the seed must carry only the 1M one so the adapter
+        # cannot collapse a 4.8 pick to the base window.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-opus-4-8[1m]",
+                    "global.anthropic.claude-opus-4-8",
+                ]
+            },
+        )
         seed = mr.seed_available_models("claude_code")
         assert "global.anthropic.claude-opus-4-8[1m]" in seed
         assert "global.anthropic.claude-opus-4-8" not in seed
@@ -582,3 +598,63 @@ class TestAdvertisedModelCache:
             mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-5[1m]"]}
         )
         assert mr.to_provider_id("claude-opus-5", "claude_code") == "claude-opus-5"
+
+
+class TestImportDoesNotCreateTheDataHome:
+    """Importing the registry must not ``mkdir`` the data home.
+
+    ``_load_kiro_windows`` runs at import to pick up the persisted window
+    sidecar. Resolving that path through ``config_dir()`` would CREATE
+    ``~/.kiro/crew`` (and refresh the recovery breadcrumb) as a side effect of a
+    plain import -- observed as a real-host write from every test collector, and
+    a surprise for any read-only tool that imports the package. The import must
+    only ever peek at the path.
+    """
+
+    def test_a_fresh_interpreter_import_leaves_an_absent_home_absent(self, tmp_path):
+        import subprocess
+        import sys
+
+        home = tmp_path / "home"
+        home.mkdir()
+        # The audit hook names the call site on failure, so a regression is
+        # diagnosable from the assertion message alone.
+        probe = (
+            "import os, sys, traceback\n"
+            "def hook(ev, args):\n"
+            "    if ev == 'os.mkdir' and str(args[0]).startswith(sys.argv[1]):\n"
+            "        sys.stderr.write('mkdir %s\\n' % args[0])\n"
+            "        sys.stderr.write(''.join(traceback.format_stack(limit=12)[:-1]))\n"
+            "sys.addaudithook(hook)\n"
+            "import kiro_crew.model_registry\n"
+            "from kiro_crew.config import paths\n"
+            "sys.exit(1 if paths._default_home().exists() else 0)\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "KIROCREW_HOME"}
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        proc = subprocess.run(
+            # ``-B``: the child imports the source package; without it the import
+            # leaves ``__pycache__`` in the checkout (no-test-side-effects).
+            [sys.executable, "-B", "-c", probe, str(home)],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert not (home / ".kiro").exists()
+
+    def test_the_sidecar_path_follows_the_data_home_without_creating_it(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.config import paths
+
+        data = tmp_path / "data"
+        monkeypatch.setenv("KIROCREW_HOME", str(data))
+        assert mr._kiro_windows_cache_path() == data.resolve() / "model_windows.json"
+        assert mr._advertised_models_cache_path() == data.resolve() / "provider_models.json"
+        assert not data.exists(), "resolving a sidecar path must not create the home"
+        assert mr._kiro_windows_cache_path().parent == paths.config_dir()

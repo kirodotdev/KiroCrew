@@ -67,6 +67,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import refuse_if_markerless
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.validation import (
     MCP_CORE_SCHEMAS,
@@ -1856,16 +1857,25 @@ def _classify_slack_identity() -> tuple[str, str | None]:
 
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
-    return call_tool_with_logging(
+    # Tag a directive tool's marker-less result as a refusal at the OUTERMOST
+    # return, which is the only point that sees every way such a tool can
+    # decline — argument validation runs inside the wrapper below, ahead of the
+    # handler, so a schema rejection never reaches code that could tag itself
+    # (#8635). Without the tag the consumer reads a decline as a LOST directive
+    # marker and fires a WARNING meant for a transport regression.
+    return refuse_if_markerless(
         name,
-        raw_args,
-        _validate_args,
-        _call_tool_inner,
-        # Real caller identity when resolvable (per-call caller context in
-        # pooled backends, env/PID otherwise) — a hardcoded "mcp_core" lost
-        # attribution for every standard tool audit in shared backends.
-        session_key=_resolve_session_key() or "mcp_core",
-        downstream_service="kirocrew-core",
+        call_tool_with_logging(
+            name,
+            raw_args,
+            _validate_args,
+            _call_tool_inner,
+            # Real caller identity when resolvable (per-call caller context in
+            # pooled backends, env/PID otherwise) — a hardcoded "mcp_core" lost
+            # attribution for every standard tool audit in shared backends.
+            session_key=_resolve_session_key() or "mcp_core",
+            downstream_service="kirocrew-core",
+        ),
     )
 
 

@@ -88,12 +88,13 @@ class TestSessionsSearchHandler:
             calls.append(("urls", text))
             return (text, [])
 
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.redact_credentials", _fake_redact_creds
-        )
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.redact_exfiltration_urls", _fake_redact_urls
-        )
+        # Patched on `kiro_crew.security`, not on the `handlers` re-exports: the
+        # handler redacts through `security.redact`, which resolves both passes
+        # from security's own globals, so patching the handlers-level names would
+        # no longer reach it -- and this test's subject is that BOTH passes run
+        # over the title, which is what these two fakes assert.
+        monkeypatch.setattr("kiro_crew.security.redact_credentials", _fake_redact_creds)
+        monkeypatch.setattr("kiro_crew.security.redact_exfiltration_urls", _fake_redact_urls)
         async with TestClient(TestServer(_make_app(log))) as client:
             resp = await client.get("/api/sessions/search?q=matches")
             sessions = (await resp.json())["sessions"]

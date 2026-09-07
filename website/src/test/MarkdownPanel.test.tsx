@@ -58,10 +58,15 @@ beforeEach(() => {
   // Desktop present by default: the backend acted, nothing to copy back.
   vi.mocked(api).revealPath = vi.fn().mockResolvedValue({ ok: true })
   vi.spyOn(window, 'alert').mockImplementation(() => {})
+  overflowError.mockReset()
 })
 
+/** Where a standalone OverflowMenu reports a failed row action (the panel
+ *  renders it through ErrorNotice in production). */
+const overflowError = vi.fn()
+
 function openMenu() {
-  render(<OverflowMenu filePath="/tmp/hello.txt" content={'line one\nline two\n'} />, { wrapper })
+  render(<OverflowMenu onError={overflowError} filePath="/tmp/hello.txt" content={'line one\nline two\n'} />, { wrapper })
   fireEvent.click(screen.getAllByRole('button')[0])
 }
 
@@ -92,7 +97,7 @@ describe('MarkdownPanel OverflowMenu', () => {
   })
 
   it('Copy content copies an empty string for an empty file without throwing', () => {
-    render(<OverflowMenu filePath="/tmp/empty.txt" content="" />, { wrapper })
+    render(<OverflowMenu onError={overflowError} filePath="/tmp/empty.txt" content="" />, { wrapper })
     fireEvent.click(screen.getAllByRole('button')[0])
     fireEvent.click(screen.getByText('Copy content'))
     expect(writeText).toHaveBeenCalledExactlyOnceWith('')
@@ -186,7 +191,8 @@ describe('MarkdownPanel OverflowMenu', () => {
     vi.mocked(api).revealPath = vi.fn().mockRejectedValue(new Error('access denied'))
     openMenu()
     fireEvent.click(screen.getByText('Open with default app'))
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed')))
+    await waitFor(() => expect(overflowError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed')))
+    expect(window.alert).not.toHaveBeenCalled()
   })
 })
 
@@ -228,7 +234,7 @@ describe('OverflowMenu inventory (regression guard for #1083)', () => {
 
   it('renders exactly six entries with no optional props and no library match', async () => {
     stubKnowledge({ enabled: false, alreadyAdded: false })
-    render(<OverflowMenu filePath="/tmp/hello.bin" content="x" />, { wrapper })
+    render(<OverflowMenu onError={overflowError} filePath="/tmp/hello.bin" content="x" />, { wrapper })
     fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
     await waitFor(() => expect(screen.getByText('Add to artifacts')).toBeInTheDocument())
     expect(itemsInOrder()).toEqual([
@@ -246,7 +252,7 @@ describe('OverflowMenu inventory (regression guard for #1083)', () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [{ slug: 'notes-md', name: 'notes.md' }] })
     vi.mocked(api).artifact = vi.fn().mockResolvedValue({ live_dirty: false, pinned: false })
     render(
-      <OverflowMenu
+      <OverflowMenu onError={overflowError}
         filePath="/tmp/notes.md"
         content="x"
         onRefresh={vi.fn()}
@@ -274,7 +280,7 @@ describe('OverflowMenu inventory (regression guard for #1083)', () => {
   it('swaps Full screen for Exit full screen without changing the rest of the list', async () => {
     stubKnowledge({ enabled: false, alreadyAdded: false })
     render(
-      <OverflowMenu filePath="/tmp/hello.bin" content="x" onFullscreen={vi.fn()} fullscreen />,
+      <OverflowMenu onError={overflowError} filePath="/tmp/hello.bin" content="x" onFullscreen={vi.fn()} fullscreen />,
       { wrapper },
     )
     fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
@@ -304,7 +310,7 @@ describe('OverflowMenu inventory (regression guard for #1083)', () => {
       headers: new Headers({ 'X-Truncated': 'true' }),
       text: () => Promise.resolve('the first 512 KB only'),
     }) as never
-    render(<OverflowMenu filePath="/tmp/huge.txt" content={'prefix'} />, { wrapper })
+    render(<OverflowMenu onError={overflowError} filePath="/tmp/huge.txt" content={'prefix'} />, { wrapper })
     fireEvent.click(screen.getAllByRole('button')[0])
     fireEvent.click(await screen.findByText('Add to artifacts'))
 
@@ -318,7 +324,7 @@ describe('OverflowMenu inventory (regression guard for #1083)', () => {
       headers: new Headers(),
       text: () => Promise.resolve('the whole file'),
     }) as never
-    render(<OverflowMenu filePath="/tmp/small.txt" content={'the whole file'} />, { wrapper })
+    render(<OverflowMenu onError={overflowError} filePath="/tmp/small.txt" content={'the whole file'} />, { wrapper })
     fireEvent.click(screen.getAllByRole('button')[0])
     fireEvent.click(await screen.findByText('Add to artifacts'))
 
@@ -330,7 +336,7 @@ describe('OverflowMenu inventory (regression guard for #1083)', () => {
 
   it('renders the already-in-library row as a non-actionable status, not a menu item', async () => {
     stubKnowledge({ enabled: true, alreadyAdded: true })
-    render(<OverflowMenu filePath="/tmp/notes.md" content="x" />, { wrapper })
+    render(<OverflowMenu onError={overflowError} filePath="/tmp/notes.md" content="x" />, { wrapper })
     fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
     await waitFor(() => expect(screen.getByText('In Library')).toBeInTheDocument())
     // It is a <span>: nothing happens when it is activated, so exposing it to
@@ -357,7 +363,7 @@ describe('OverflowMenu roving-focus tint', () => {
 
   it('focuses the first row on open and tints rows only under :focus-visible', async () => {
     render(
-      <OverflowMenu filePath="/tmp/notes.md" content="x" onRefresh={vi.fn()} onFullscreen={vi.fn()} />,
+      <OverflowMenu onError={overflowError} filePath="/tmp/notes.md" content="x" onRefresh={vi.fn()} onFullscreen={vi.fn()} />,
       { wrapper },
     )
     fireEvent.click(screen.getByTestId('markdown-panel-more-options'))

@@ -1,48 +1,72 @@
 # Decoupling the MCP stub from the pooling allowlist
 
-Status: implemented. Records why the stub is emitted for every server and why a
-connection-private backend sits outside the pooling budget.
+The stub roster is **opt-in per server**: `mcp_gateway.stub_servers` is empty by
+default, so a default install runs no stub, no daemon and no gateway in the request
+path. What this note records is why *whether a stub exists* is a separate question
+from *whether the backend is shared*, and why a connection-private backend sits
+outside the pooling budget.
 
-## Problem
+## The config surface
 
-A stub used to be emitted only for a server the operator had marked poolable.
-That welded two unrelated decisions together. The stub is the **addressing
-layer**: it is what gives an `(ACP connection, server)` pair a name that gatewayd
-can route a callback back to. Poolability is a **resource** decision: may several
-connections share one backend process. You could not have the first without
-accepting the second.
+- **`mcp_gateway.stub_servers`** — the stub ROSTER, empty by default. Routing is what
+  interposes a stub, so this is the per-server decision and the only thing that can
+  grant MCP Apps for that server. It is a layer an edition can own: a distribution
+  that wants its known servers stubbed out of the box ships them here and keeps
+  adding to it, because a toggle does not rewrite it.
+- **`mcp_gateway.stub_overrides`** — the operator's deviations from that roster, as a
+  sparse `name -> bool` map, and what MCP Management writes. A name the operator never
+  touched keeps following the roster, so growing the roster reaches them while their
+  own opt-outs survive it. An override that agrees with the roster is pruned rather
+  than stored: identical in effect, and storing it would pin that server against the
+  next roster change. A flat resulting list cannot do both — unstubbing one name out
+  of a shipped roster means writing back the survivors, and that list then answers the
+  question forever.
+- **`mcp_gateway.enabled`** — share backends. Global over the stub set; there is no
+  per-server sharing switch.
+- **`mcp_gateway.poolable_servers`** — deprecated alias, read only when `stub_servers`
+  is absent. A pooled server already ran behind a stub, so migrating it to the stub
+  set preserves behaviour rather than granting anything.
+- **`mcp_gateway.apps_enabled`** — deprecated and ignored. Capability follows the stub;
+  a preference cannot grant it and cannot honestly withdraw it.
+- **The broker starts iff something is stubbed.**
 
-The consequences that motivated the change:
+A stub for every stdio server is the shape this note originally argued for, and the
+reason it is not the default is cost, not incoherence: it adds a daemon plus one proxy
+process per (server, session) to an install that asked for neither — measured at 166
+stub processes at ~15.3 MB PSS each on one developer machine. A topology change
+belongs behind a choice rather than in a default.
 
-- **MCP Apps required pooling.** The render and callback paths live behind the
-  stub, so a server that was not poolable could not host an MCP App at all — no
-  matter how the MCP Apps switch was set.
-- **The default configuration had the feature off in practice.**
-  `poolable_servers` defaults to an empty list, so a fresh install could have MCP
-  Apps on, the broker running, and nothing able to render.
-- **Wanting isolation cost you the feature.** An operator who deliberately kept a
-  stateful server unpooled lost MCP Apps for it as a side effect they never chose.
+## Why the two decisions are separate
 
-## Current behaviour
+The stub is the **addressing layer**: it gives an `(ACP connection, server)` pair a
+name gatewayd can route a callback back to. Poolability is a **resource** decision:
+may several connections share one backend process. Welding them together has three
+consequences:
 
-The baseline behaviour of MCP is **one backend per ACP connection per server** —
-what happens with no gateway at all: the agent process spawns its own MCP server
-processes. Pooling is the *deviation* that collapses many connections onto one
-process. The stub is orthogonal to both.
+- **MCP Apps require the stub.** The render and callback paths live behind it, so a
+  server with no stub cannot host an MCP App at all, however the MCP Apps switch is
+  set.
+- **A grant has to be per server.** A single global switch either stubs everything or
+  nothing, and neither answers "MCP Apps for this one server".
+- **Wanting isolation must not cost the feature.** An operator who deliberately keeps
+  a stateful server unshared still gets its stub, and so still gets MCP Apps for it.
 
-So:
+## Baseline topology
 
-- The stub is emitted **unconditionally** for every stdio server. It is the
-  interposition point, always present.
+The baseline behaviour of MCP is **one backend per ACP connection per server** — what
+happens with no gateway at all: the agent process spawns its own MCP server processes.
+Pooling is the *deviation* that collapses many connections onto one process. The stub
+is orthogonal to both.
+
 - `poolable` does not decide whether a stub exists. It is a field in the stub's
-  `register` payload — an input to *how the backend is acquired*. Absent means
-  private, so an overlay predating the flag never silently starts sharing.
-- Not on the allowlist therefore means exactly one thing: **you get a stub, and
-  your backend stays 1:1 with your ACP connection.** Same process topology as
-  no-gateway, plus a name.
-- `mcp_gateway.enabled` false means no stub is marked shareable — stubs stay,
-  every connection gets its own backend. The broker starts when either that
-  switch or `apps_enabled` is on.
+  `register` payload — an input to *how the backend is acquired*. Absent means private,
+  so an overlay predating the flag never silently starts sharing.
+- A stubbed server that is not shared therefore gets exactly this: **a stub, and a
+  backend 1:1 with its ACP connection.** Same process topology as no-gateway, plus a
+  name. That is the common case, and the exclusive-backend machinery below is what
+  carries it.
+- `mcp_gateway.enabled` false means no stub is marked shareable — stubs stay, every
+  connection gets its own backend.
 
 ## Why this is not just deleting the guard
 
@@ -150,43 +174,3 @@ unrelated session.
 - HTTP/SSE MCP entries. They need no stub and merge raw from the real settings
   file.
 - Per-server MCP Apps control. Orthogonal to stub emission.
-
-## Superseded: the stub is opt-in per server, not unconditional
-
-Making the stub unconditional separated two questions that had been fused — *does
-a stub exist* and *is the backend shared* — and that separation is what this note
-still describes correctly. Its **default** did not survive.
-
-Emitting a stub for every stdio server made an upgrade add a daemon plus one proxy
-process per (server, session) to installs that had asked for neither. On one
-developer machine that was 166 stub processes at ~15.3 MB PSS each. The cost is the
-symptom; the mistake is that a topology change shipped as a default rather than as
-a choice.
-
-What replaced it:
-
-- **`mcp_gateway.stub_servers`** — the stub ROSTER, empty by default. Routing is
-  what interposes a stub, so this is the per-server decision and the only thing
-  that can grant MCP Apps for that server. It is a layer an edition can own: a
-  distribution that wants its known servers stubbed out of the box ships them
-  here, and keeps adding to it, because a toggle no longer rewrites it.
-- **`mcp_gateway.stub_overrides`** — the operator's deviations from that roster,
-  as a sparse `name -> bool` map. This is what MCP Management writes: a name the
-  operator never touched keeps following the roster, so growing the roster reaches
-  them and their own opt-outs survive it. An override that agrees with the roster
-  is pruned rather than stored — identical in effect, and storing it would pin
-  that server against the next roster change. A flat resulting list could not do
-  both: unstubbing one name out of a shipped roster means writing back the
-  survivors, and that list then answers the question forever.
-- **`mcp_gateway.enabled`** — unchanged meaning (share backends), now global over the
-  stub set. There is no per-server sharing switch.
-- **`mcp_gateway.poolable_servers`** — deprecated alias, read only when
-  `stub_servers` is absent. A pooled server already ran behind a stub, so
-  migrating it to the stub set preserves behaviour rather than granting anything.
-- **`mcp_gateway.apps_enabled`** — deprecated and ignored. Capability follows the
-  stub; a preference could not grant it and could not honestly withdraw it.
-- **The broker starts iff something is stubbed.** An empty stub set means no stub,
-  no daemon, and no gateway in the path at all.
-
-The exclusive-backend machinery this note introduced is unchanged and now carries
-the common case: a stubbed server with sharing off gets a connection-private backend.

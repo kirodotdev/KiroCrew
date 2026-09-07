@@ -139,6 +139,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "the backend.",
     ),
     (
+        "Project-scan warning reasons",
+        "project_scan.py",
+        "The per-file warning strings the folder scanner returns "
+        "(`CandidateTree.warnings`), which ride the scan/scaffold API responses "
+        "into the dashboard's preview surface. A warning reason embeds the "
+        "exception text of a failed parse, and a parser quotes the offending "
+        "source line back -- tree content the user merely pointed at, so a "
+        "malformed workspace declaration holding a credential would otherwise "
+        "be echoed verbatim. Redacted at construction (`_warning_reason`), so "
+        "no unredacted copy of the reason ever exists for a later consumer (a "
+        "log line, a persisted report) to leak.",
+    ),
+    (
         "AWS identity-probe failures",
         "aws_consent.py",
         "The stderr of a failed `aws sts get-caller-identity`, run to show the "
@@ -1222,6 +1235,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "peer's bytes become this dashboard's transcript re-applies the "
         "credential + exfiltration-URL chain itself, before any broadcast.",
     ),
+    (
+        "Host-side UI preference backup",
+        "ui_prefs.py",
+        "Every value read back from `~/.kiro/crew/ui-prefs.json` before it is "
+        "served by `GET /api/ui-prefs` and written into the renderer's "
+        "localStorage. The values are opaque strings the server never parses, "
+        "and the file sits in the agent-writable data home, so a credential or "
+        "exfiltration URL smuggled inside an innocent key would otherwise reach "
+        "the dashboard verbatim. A value the credential + exfiltration-URL chain "
+        "would alter is DROPPED rather than served redacted: a redacted "
+        "preference is not one the client can use, and the sync loop would "
+        "write the sentinel back over the file.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -2057,7 +2083,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "Paths the agent cannot read or write. Enforced at the PreToolUse gate on the "
             "resolved target, so a symlink into a blocked directory is refused too."
         ),
-        source="src/kiro_crew/security.py",
+        source="src/kiro_crew/security/__init__.py",
         items_fn=_sensitive_path_items,
     ),
     PostureControl(
@@ -2068,7 +2094,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "Readable but not writable by agent tools — config carrying resource ceilings "
             "and the data-home migration marker."
         ),
-        source="src/kiro_crew/security.py",
+        source="src/kiro_crew/security/__init__.py",
         items_fn=_write_protected_items,
     ),
     PostureControl(
@@ -2081,7 +2107,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "off. The count is the SHIPPED catalogue -- the set actually enforced is "
             "this minus any rule disabled below, so it can be smaller."
         ),
-        source="src/kiro_crew/security.py",
+        source="src/kiro_crew/security/__init__.py",
         items_fn=_denied_command_items,
     ),
     PostureControl(
@@ -2094,7 +2120,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "PreToolUse gate — the gate enforces the narrower denied-command rules "
             "and exfiltration checks above."
         ),
-        source="src/kiro_crew/security.py",
+        source="src/kiro_crew/security/__init__.py",
         items_fn=_suspicious_pattern_items,
     ),
     PostureControl(
@@ -2121,7 +2147,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "service runs a redaction pass first. Most run both scanners; the few "
             "that run only one say so on their own row."
         ),
-        source="src/kiro_crew/security.py",
+        source="src/kiro_crew/security/__init__.py",
         items_fn=_redaction_sink_items,
     ),
     PostureControl(
@@ -2132,7 +2158,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "Credential classes the redaction scanner recognizes, in plaintext and "
             "base64-encoded form."
         ),
-        source="src/kiro_crew/security.py",
+        source="src/kiro_crew/security/__init__.py",
         items_fn=_credential_family_items,
     ),
     PostureControl(
@@ -2143,7 +2169,7 @@ _CONTROLS: tuple[PostureControl, ...] = (
             "Domain-agnostic — flags the payload, not the destination. A URL matching "
             "any heuristic is replaced with a redaction marker."
         ),
-        source="src/kiro_crew/security.py",
+        source="src/kiro_crew/security/__init__.py",
         items_fn=_exfil_heuristic_items,
     ),
     PostureControl(

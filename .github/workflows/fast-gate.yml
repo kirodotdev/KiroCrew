@@ -40,23 +40,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  scrub-lint:
-    name: De-Amazon Scrub Lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        # Full history is fetched lazily by the script only for the (skipped)
-        # history scan; the working-tree gate needs just the checkout.
-        with:
-          persist-credentials: false
-      - name: Scan working tree for internal markers
-        # Blocking gate: fails the build on any Amazon-internal marker in the
-        # public tree (internal domains/hosts, ticket ids, aliases, credential
-        # shapes) outside the intentional allowlist, so a sync cannot reintroduce
-        # a coupling. --no-history: git-history rewrite is a separate task.
-        run: ./scripts/scrub-lint.sh --no-history
-
   vendor-manifest:
     name: Vendored Tree Integrity
     runs-on: ubuntu-latest

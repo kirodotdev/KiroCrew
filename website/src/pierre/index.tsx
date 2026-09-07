@@ -12,11 +12,12 @@
  * user has turned off highlighted diffs (see `usePlainDiff`), which is why the
  * fallback component is a real surface here rather than a loading state.
  */
-import { Suspense, forwardRef, lazy, memo, useContext, useEffect, useRef, useState } from 'react'
+import { Suspense, forwardRef, lazy, memo, type CSSProperties, useContext, useEffect, useRef, useState } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import type { PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
-import { PlainCodeFallback } from './PlainCodeFallback'
+import { PlainCodeFallback, PlainFilePairFallback } from './PlainCodeFallback'
+import { isPierreFilePairWithinBudget } from './renderBudget'
 import { PierreFarmHoldContext } from '../components/pierreStaging'
 import { usePlainDiff } from '../hooks/usePlainDiff'
 
@@ -113,7 +114,12 @@ function warmKeyOf(text: string): string {
  * invisibly (absolute, zero footprint) so its chunk load, worker round-trip,
  * and paint all happen while the fallback holds the layout.
  */
-function WarmSwap({ fallback, children, warmKey }: { fallback: React.ReactNode; children: React.ReactNode; warmKey?: string }) {
+function WarmSwap({ fallback, children, warmKey, onVisible }: {
+  fallback: React.ReactNode
+  children: React.ReactNode
+  warmKey?: string
+  onVisible?: () => void
+}) {
   const boxRef = useRef<HTMLDivElement | null>(null)
   const [painted, setPainted] = useState(false)
   // Measure-farm render: the fallback IS the measured geometry -- mounting the
@@ -158,6 +164,9 @@ function WarmSwap({ fallback, children, warmKey }: { fallback: React.ReactNode; 
       clearTimeout(deadline)
     }
   }, [painted, farm, warmKey])
+  useEffect(() => {
+    if (painted) onVisible?.()
+  }, [onVisible, painted])
   if (farm) return <>{fallback}</>
   return (
     <div
@@ -243,11 +252,19 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   )
 })
 
-export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
+export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, fallbackText, fallbackClassName, fallbackContentStyle, onVisible, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
   oldFile: FileContents | null
   newFile: FileContents | null
   options?: PierreDiffOptions
   className?: string
+  /** Optional caller-specific warm/Suspense fallback text and bounds. */
+  fallbackText?: string
+  fallbackClassName?: string
+  /** Light-DOM sizing for the plain oversized fallback. Pierre's `unsafeCSS`
+   *  styles its shadow root and cannot reach that fallback. */
+  fallbackContentStyle?: CSSProperties
+  /** Called after WarmSwap reveals the real implementation. */
+  onVisible?: () => void
   /** Injected into the file header's metadata slot. Also rendered while
    *  `options.collapsed` is set, where the header IS the whole surface. */
   renderHeaderMetadata?: () => React.ReactNode
@@ -256,8 +273,28 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   /** Injected directly after the filename in the header. */
   renderHeaderFilenameSuffix?: () => React.ReactNode
 }) {
+  if (!isPierreFilePairWithinBudget(oldFile, newFile)) {
+    return (
+      <PlainFilePairFallback
+        oldFile={oldFile}
+        newFile={newFile}
+        options={options}
+        className={className}
+        contentStyle={fallbackContentStyle}
+        renderHeaderMetadata={renderHeaderMetadata}
+        renderHeaderPrefix={renderHeaderPrefix}
+        renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+      />
+    )
+  }
+  const fallbackNode = (
+    <PlainCodeFallback
+      text={fallbackText ?? (newFile ?? oldFile)?.contents ?? ''}
+      className={fallbackClassName}
+    />
+  )
   const impl = (
-    <Suspense fallback={<PlainCodeFallback text={(newFile ?? oldFile)?.contents ?? ''} />}>
+    <Suspense fallback={fallbackNode}>
       <FilePairImpl
         oldFile={oldFile}
         newFile={newFile}
@@ -276,7 +313,11 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   // Patch: readable text holds the layout until the diff paints.
   if (options?.collapsed) return impl
   return (
-    <WarmSwap warmKey={warmKeyOf((newFile ?? oldFile)?.contents ?? '')} fallback={<PlainCodeFallback text={(newFile ?? oldFile)?.contents ?? ''} />}>
+    <WarmSwap
+      warmKey={warmKeyOf((newFile ?? oldFile)?.contents ?? '')}
+      fallback={fallbackNode}
+      onVisible={onVisible}
+    >
       {impl}
     </WarmSwap>
   )

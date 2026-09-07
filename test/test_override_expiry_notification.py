@@ -28,7 +28,7 @@ def test_dispatch_skipped_when_disabled() -> None:
     state = _make_state()
     factory = MagicMock()
     with patch("kiro_crew.dashboard.server.KiroCrewConfig.load", return_value=_cfg(False)):
-        scheduled = _dispatch_override_expiry_notification(state, factory)
+        scheduled = _dispatch_override_expiry_notification(state, factory, "slack")
 
     assert scheduled is False
     assert state._background_tasks == set()
@@ -41,11 +41,11 @@ def test_dispatch_schedules_when_enabled() -> None:
     async def _run() -> bool:
         state = _make_state()
 
-        async def _noop() -> None:
+        async def _noop(source: str) -> None:
             return None
 
         with patch("kiro_crew.dashboard.server.KiroCrewConfig.load", return_value=_cfg(True)):
-            scheduled = _dispatch_override_expiry_notification(state, _noop)
+            scheduled = _dispatch_override_expiry_notification(state, _noop, "slack")
         # A task was registered (tracked to prevent GC); drain it to completion.
         assert len(state._background_tasks) == 1
         await asyncio.gather(*list(state._background_tasks))
@@ -59,10 +59,96 @@ def test_dispatch_skipped_without_event_loop() -> None:
     state = _make_state()
     factory = MagicMock()
     with patch("kiro_crew.dashboard.server.KiroCrewConfig.load", return_value=_cfg(True)):
-        scheduled = _dispatch_override_expiry_notification(state, factory)
+        scheduled = _dispatch_override_expiry_notification(state, factory, "slack")
 
     assert scheduled is False
     assert state._background_tasks == set()
+
+
+class TestOverrideExpiryDmWording:
+    """The DM must be worded by CAUSE (issue #8850).
+
+    After a POLICY revocation, ``_commit_activation``'s fail-closed
+    ``approval_modes`` gate refuses the very ``/kirocrew yolo`` the generic text
+    suggests, so the policy-source DM must name organization policy and must NOT
+    direct the operator into that wall. Every other source keeps the original
+    re-armable wording byte-identical.
+    """
+
+    # The pre-#8850 string, pinned byte-for-byte for every non-policy source.
+    _LEGACY_TEXT = (
+        "\U0001f512 Safety override expired. Tools now require approval. "
+        "Reply `/kirocrew yolo` to re-authorize."
+    )
+
+    def test_policy_source_names_policy_and_omits_the_rearm_instruction(self) -> None:
+        # Imported inside the test so a revert of the production hunks fails
+        # HERE (phase call), proving red-before-green. The source sentinel is
+        # imported from safety_override — the EMITTING end of the contract — so
+        # a re-spelling there cannot silently strand this branch (round-trip
+        # assertion, not a copied literal).
+        from kiro_crew.dashboard.server import _override_expiry_dm_text
+        from kiro_crew.safety_override import POLICY_REVOKED_SOURCE
+
+        text = _override_expiry_dm_text(POLICY_REVOKED_SOURCE)
+        assert "organization policy" in text
+        # The re-arm instruction must be absent: the approval_modes gate refuses it.
+        assert "/kirocrew yolo" not in text
+        assert "re-authorize" not in text
+
+    def test_non_policy_sources_keep_the_legacy_text_byte_identical(self) -> None:
+        from kiro_crew.dashboard.server import _override_expiry_dm_text
+
+        for source in ("slack", "dashboard", "config", "declared", ""):
+            assert _override_expiry_dm_text(source) == self._LEGACY_TEXT
+
+    def test_the_slack_notify_path_composes_source_into_the_dm(self) -> None:
+        """End-to-end through the module-level notify function: the seam this fix
+        added (source travelling from the expiry callback into the DM body) is
+        asserted as a composition, not two separately-stubbed halves."""
+        from kiro_crew.dashboard.server import _notify_slack_override_expired
+        from kiro_crew.safety_override import POLICY_REVOKED_SOURCE
+
+        state = _slack_state()
+        asyncio.run(_notify_slack_override_expired(state, POLICY_REVOKED_SOURCE))
+        body = state.slack_client.post_message.await_args.args[1]
+        assert "organization policy" in body
+        assert "/kirocrew yolo" not in body
+
+    def test_the_slack_notify_path_keeps_the_legacy_text_for_a_ttl_lapse(self) -> None:
+        from kiro_crew.dashboard.server import _notify_slack_override_expired
+
+        state = _slack_state()
+        asyncio.run(_notify_slack_override_expired(state, "slack"))
+        body = state.slack_client.post_message.await_args.args[1]
+        assert body == self._LEGACY_TEXT
+
+    def test_dispatch_threads_source_to_the_factory(self) -> None:
+        """The dedup/config gate path hands ``source`` through unchanged, and the
+        gate itself does not vary by source (the mute covers the class)."""
+
+        async def _run() -> None:
+            state = _make_state()
+            seen: list[str] = []
+
+            async def _record(source: str) -> None:
+                seen.append(source)
+
+            with patch("kiro_crew.dashboard.server.KiroCrewConfig.load", return_value=_cfg(True)):
+                assert _dispatch_override_expiry_notification(state, _record, "policy") is True
+            await asyncio.gather(*list(state._background_tasks))
+            assert seen == ["policy"]
+
+        asyncio.run(_run())
+
+    def test_dispatch_config_mute_covers_the_policy_source_too(self) -> None:
+        """The recurring-expiry mute is class-wide: disabling the config skips the
+        DM for a policy revocation exactly as for a TTL lapse."""
+        state = _make_state()
+        factory = MagicMock()
+        with patch("kiro_crew.dashboard.server.KiroCrewConfig.load", return_value=_cfg(False)):
+            assert _dispatch_override_expiry_notification(state, factory, "policy") is False
+        factory.assert_not_called()
 
 
 def _slack_state(slack_client=..., owner_id="U123") -> MagicMock:

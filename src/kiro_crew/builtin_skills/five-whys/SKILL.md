@@ -97,8 +97,9 @@ current node but off to the side.
 - **Offer to fold findings in:** when the discussion yields something worth
   keeping (and again when it ends), tell the user they can (a) **add** a new
   branch — emit an `ask` (+`answer`) event, (b) **remove** a node — emit a `prune`
-  event, or (c) keep it as discussion-only. Emit those events **only on their
-  explicit say-so.**
+  event, which is refused if the node is the current focus or an ancestor of it
+  (`focus` elsewhere first), or (c) keep it as discussion-only. Emit those events
+  **only on their explicit say-so.**
 - **Exit:** the user says "end discussion" / "resume 5 whys". Append a `discuss`
   summary line, apply any approved `ask`/`prune` events, then **resume the main
   loop exactly where it paused** — the last `focus` event in the log is the cursor.
@@ -111,6 +112,10 @@ dir if there is no project). **The log IS the state.** You never rewrite it and
 never keep a separate hand-maintained tree — the tree, the current question, the
 open branches and the report are all **projections you fold from the log** when
 you need them, so they can never drift out of sync.
+
+That path is a convention of this skill: the script never derives it. `<log>` is
+a required positional on every subcommand, and finding an existing log to resume
+is your own step — list `five-whys/` yourself before starting a new one.
 
 Every line: `{"ts": <ISO-8601>, "type": <type>, ...}`. The types:
 
@@ -167,8 +172,10 @@ python3 scripts/five_whys.py validate <log>      # schema + integrity gate, exit
 ```
 
 The script allocates ids, so you never invent them; `prune` cascades to
-descendants; unknown (plugin) event types validate fine and are ignored by the
-core folds. `report` prints the finished markdown — close-out is one command.
+descendants, and it REFUSES when the target is the current focus or an ancestor
+of it — `focus` another node first, otherwise resume would land on a pruned node.
+Unknown (plugin) event types validate fine and are ignored by the core folds.
+`report` prints the finished markdown — close-out is one command.
 
 **Free text never rides the shell command line.** A question, answer, note,
 citation, title, or plugin-event JSON can contain `$(...)`, backticks or quotes,

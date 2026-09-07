@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
-import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER, pruneVerdictLabel, gatewayRecovered } from '../pages/DevFleetPage'
+import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER, pruneVerdictLabel, gatewayRecovered, __resetDevFleetNoticesForTests } from '../pages/DevFleetPage'
 
 function renderPage() {
   return renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
@@ -19,6 +19,11 @@ const FLEET = {
     { name: 'unprov', is_main: false, running: false, has_dist: false, behind: 0, last_updated_at: Date.now() / 1000 - 7200 },
   ],
 }
+
+// The page keeps its latest action failure in module state (so a failure that
+// lands while the page is unmounted is still shown on return); a suite must
+// not carry one test's failure into the next.
+beforeEach(() => { __resetDevFleetNoticesForTests() })
 
 describe('DevFleetPage', () => {
   beforeEach(() => {
@@ -330,7 +335,7 @@ describe('DevFleetPage', () => {
     // The last log line renders twice (inline strip + expanded <pre> panel).
     await waitFor(() => expect(screen.getByText('Provision failed (exit 1)')).toBeInTheDocument(), { timeout: 3000 })
     expect(screen.getAllByText('npm ERR! build failed').length).toBeGreaterThanOrEqual(2)
-    fireEvent.click(screen.getByLabelText('Dismiss provision status'))
+    fireEvent.click(within(screen.getByTestId('provision-error-unprov')).getByLabelText('Dismiss'))
     await waitFor(() => expect(dismissBody).toEqual({ name: 'unprov', run_id: 'run-prov-dead' }))
     await waitFor(() => expect(screen.queryByText('Provision failed (exit 1)')).toBeNull())
   })
@@ -374,7 +379,7 @@ describe('DevFleetPage', () => {
       await waitFor(() => expect(screen.getByText('Provision failed (exit 1)')).toBeInTheDocument(), { timeout: 3000 })
 
       // Dismiss the OLD failure; the POST stays in flight.
-      fireEvent.click(screen.getByLabelText('Dismiss provision status'))
+      fireEvent.click(within(screen.getByTestId('provision-error-unprov')).getByLabelText('Dismiss'))
 
       // A replacement provision fails and the next fleet poll reattaches it.
       rid = 'run-prov-new'
@@ -1429,12 +1434,12 @@ describe('DevFleetPage', () => {
     fireEvent.click(screen.getByText('Provision'))
     // The persistent strip is proven by its dismiss button (the toast has no
     // this uniquely targets the persisted stepper) survives instead of vanishing.
-    await waitFor(() => expect(screen.getByLabelText('Dismiss provision status')).toBeInTheDocument(), { timeout: 4000 })
+    await waitFor(() => expect(screen.getByTestId('provision-error-unprov')).toBeInTheDocument(), { timeout: 4000 })
     // The log auto-expands on failure: a non-last output line shows in the panel.
     expect(screen.getByText(/npm ERR! boom/)).toBeInTheDocument()
     // Dismiss clears the persisted stepper and restores the Provision entry point.
-    fireEvent.click(screen.getByLabelText('Dismiss provision status'))
-    await waitFor(() => expect(screen.queryByLabelText('Dismiss provision status')).toBeNull())
+    fireEvent.click(within(screen.getByTestId('provision-error-unprov')).getByLabelText('Dismiss'))
+    await waitFor(() => expect(screen.queryByTestId('provision-error-unprov')).toBeNull())
     expect(screen.getByText('Provision')).toBeInTheDocument()
   }, 15000)
 
@@ -1510,7 +1515,7 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Provision'))
     // Ends in failure so the accumulated log auto-expands and persists.
-    await waitFor(() => expect(screen.getByLabelText('Dismiss provision status')).toBeInTheDocument(), { timeout: 10000 })
+    await waitFor(() => expect(screen.getByTestId('provision-error-unprov')).toBeInTheDocument(), { timeout: 10000 })
     // Both the earliest line (window 1, only ever in the first poll) and the
     // latest (final window) are present, proving windows were merged not
     // replaced. 'line-early-1' is unique to the panel; 'line-5' also shows in
@@ -2091,9 +2096,9 @@ describe('provision singleflight guard (issue #5294)', () => {
     await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
     // First click — provision fails.
     fireEvent.click(screen.getByText('Provision'))
-    await waitFor(() => expect(screen.getByLabelText('Dismiss provision status')).toBeInTheDocument(), { timeout: 6000 })
+    await waitFor(() => expect(screen.getByTestId('provision-error-unprov')).toBeInTheDocument(), { timeout: 6000 })
     // Dismiss the failure stepper.
-    fireEvent.click(screen.getByLabelText('Dismiss provision status'))
+    fireEvent.click(within(screen.getByTestId('provision-error-unprov')).getByLabelText('Dismiss'))
     await waitFor(() => expect(screen.getByText('Provision')).toBeInTheDocument(), { timeout: 3000 })
     // Retry — must succeed (guard was released in finally).
     fireEvent.click(screen.getByText('Provision'))

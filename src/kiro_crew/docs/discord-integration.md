@@ -145,7 +145,7 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 | Bot can read but cannot reply in a thread | Missing guild permission or private-thread membership | Grant View Channel, Read Message History, Send Messages in Threads; add the bot to private threads |
 | Logs are silent on successful connection | `agent.log_level` is `WARNING` | Trust the Connected badge or lower the log level |
 
-## Security model
+## Access control
 
 - **Two allow-lists for threads.** A server-thread turn runs only when both the
   sender and exact thread are approved. An empty user list denies all traffic;
@@ -261,3 +261,9 @@ credentials and suspicious URLs before they reach Discord.
 While a reply is running, prefix a message with `!steer` to fold it into the
 running turn or `!queue` to answer it afterward. `[OPTIONS:]` choices render as
 buttons, and interactive tool approvals render as Approve/Deny buttons.
+
+## Related docs
+
+- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
+- [Getting Started](getting-started.md): install, first run, connecting a channel
+- [Configuration](configuration.md): the config file and environment variables

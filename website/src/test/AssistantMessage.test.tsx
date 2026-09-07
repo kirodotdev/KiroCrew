@@ -1002,3 +1002,80 @@ describe('pin toggle a11y state', () => {
     expect(screen.getByTitle('Unpin message')).toHaveAttribute('aria-pressed', 'true')
   })
 })
+
+/**
+ * #7819 — the selection toolbar used to be gated on `!isStreaming`, so Quote /
+ * Ask in Side Chat / Copy were unavailable for the minutes a reply takes to
+ * arrive. Nothing about the actions needs the turn to be over: `SelectionToolbar`
+ * snapshots the selected text and rect at selection time and its click handler
+ * reads those snapshots, so a mid-stream re-render cannot hand an action stale
+ * or empty content.
+ *
+ * These drive the real desktop path — a DOM range plus `mouseup`, which the
+ * toolbar debounces by 50ms — rather than the `externalSelection` shortcut, so
+ * the gate under test is the one the reader actually goes through.
+ */
+describe('AssistantMessage selection toolbar while streaming (#7819)', () => {
+  beforeEach(() => {
+    // happy-dom implements no range geometry, and the toolbar positions itself
+    // from `getBoundingClientRect`. Same shim the sibling selection suites use.
+    if (!Range.prototype.getBoundingClientRect) {
+      Range.prototype.getBoundingClientRect = () => new DOMRect(10, 10, 100, 20)
+    }
+  })
+  afterEach(() => { window.getSelection()?.removeAllRanges() })
+
+  /** Select the whole of `node`'s text, then fire the mouseup the toolbar listens for. */
+  function selectAllOf(node: Node, target: Element) {
+    const range = document.createRange()
+    range.selectNodeContents(node)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    act(() => {
+      target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: 40, clientY: 30 }))
+    })
+    act(() => { vi.advanceTimersByTime(60) })
+  }
+
+  it('offers Quote / Ask in Side Chat / Copy on a selection made mid-stream', () => {
+    render(
+      <AssistantMessage content="a partial answer" isStreaming={true} slotRunning={true}
+        onQuote={() => {}} onAsk={() => {}} />
+    )
+    const md = screen.getByTestId('md')
+    selectAllOf(md, md)
+
+    expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask in Side Chat' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
+  })
+
+  it('hands Quote the text that was selected, not a live range', () => {
+    const onQuote = vi.fn()
+    render(
+      <AssistantMessage content="quote me while streaming" isStreaming={true} slotRunning={true}
+        onQuote={onQuote} onAsk={() => {}} />
+    )
+    const md = screen.getByTestId('md')
+    selectAllOf(md, md)
+
+    act(() => { screen.getByRole('button', { name: 'Quote' }).click() })
+    expect(onQuote).toHaveBeenCalledWith('quote me while streaming', expect.anything())
+  })
+
+  // Scope pin: only the toolbar's gate was lifted. The end-of-turn summaries have
+  // no partial form to show, so they must stay suppressed mid-stream — otherwise a
+  // future edit could drop all four `!isStreaming` gates and still look correct.
+  it('leaves the end-of-turn summaries suppressed while streaming', () => {
+    render(
+      <AssistantMessage content="still going" isStreaming={true} slotRunning={true}
+        onQuote={() => {}} onAsk={() => {}} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />
+    )
+    const md = screen.getByTestId('md')
+    selectAllOf(md, md)
+
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
+    expect(screen.queryByTestId('turn-stats')).not.toBeInTheDocument()
+  })
+})

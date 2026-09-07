@@ -23,6 +23,7 @@ export default function PublicPublishAckModal({
   open,
   target,
   ttlHours,
+  persistentExposureNote,
   busy = false,
   onCancel,
   onConfirm,
@@ -37,6 +38,14 @@ export default function PublicPublishAckModal({
    * different decision from one that dies tomorrow, so the modal says which.
    */
   ttlHours: number
+  /**
+   * Overrides the persistent-exposure sentence for a destination that ends the
+   * exposure some other way. The default names `recall` and `destroy`, which are
+   * the DEPLOY surface's actions; a destination without them would be telling the
+   * user their way out is something that does not exist for it. Ignored when
+   * ``ttlHours`` is set, since the link then expires on its own.
+   */
+  persistentExposureNote?: string
   /** Publish in flight — both buttons are held so the modal cannot double-fire. */
   busy?: boolean
   /** Backdrop, Escape, the close button, and Cancel all land here (safe direction). */
@@ -80,7 +89,8 @@ export default function PublicPublishAckModal({
             decision the human is actually making here. */}
         {ttlHours > 0
           ? i18nT('components.publicPublishAckModal.exposure_window_ttl', { count: ttlHours })
-          : i18nT('components.publicPublishAckModal.exposure_window_persistent')}
+          : persistentExposureNote ||
+            i18nT('components.publicPublishAckModal.exposure_window_persistent')}
       </div>
     </Modal>
   )

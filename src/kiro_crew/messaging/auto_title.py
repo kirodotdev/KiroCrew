@@ -19,7 +19,8 @@ What the turn is, and is not
 * **No model id anywhere.** The turn runs on the shared background session via
   ``llm_helpers.background_turn``, so the model is whatever that session was
   created with (``agent.role_models.background``, default ``"auto"``). Never
-  pass a concrete model id here — see ``AGENTS.md`` § Model selection.
+  pass a concrete model id here — see
+  ``docs/system-specs/common/model-selection.md``.
 * **Serialized.** :func:`get_lock` gates the shared background session so two
   conversations titling at once do not interleave on it. The lock is taken
   OUTSIDE the session acquire, matching the ordering every other background

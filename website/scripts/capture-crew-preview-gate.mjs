@@ -169,13 +169,13 @@ async function main() {
       await page.close()
     }
 
-    // ── Developer > Feature Previews: the card, off then on ────────────────
+    // ── Settings > Developer > Feature Previews: the card, off then on ─────
     // One page for both frames, driven by the TOGGLE rather than by seeded
     // storage: what this pair has to show is that clicking the switch is what
     // puts the rail row back, live, which a reload from seeded state cannot.
     const dev = await newPage(browser, { crewOn: false })
-    await dev.goto(base + '/developer?tab=feature-previews', { waitUntil: 'domcontentloaded' })
-    const crewToggle = dev.getByRole('switch', { name: /^crew$/i })
+    await dev.goto(base + '/settings/developer', { waitUntil: 'domcontentloaded' })
+    const crewToggle = dev.getByRole('switch', { name: /^crew members and crew mode$/i })
     await crewToggle.waitFor({ state: 'visible', timeout: 15000 })
     await dev.waitForTimeout(500) // the card's rise animation
     if (await dev.locator('[data-onboarding-nav="members"]').count() !== 0) {

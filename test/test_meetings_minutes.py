@@ -59,13 +59,15 @@ class TestOwnership:
         self, monkeypatch, tmp_path: Path
     ):
         """The production hook gate enforces the owner boundary for actual fs tools."""
+        from kiro_crew import sandbox
         from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
-        from kiro_crew.security import is_sensitive_bash_command, is_sensitive_path
+        from kiro_crew.security import is_sensitive_path
 
         relative_edit = "apps/meetings/data/edits/m1/note-taker.md"
         assert is_sensitive_path(f"~/.kiro/crew/{relative_edit}") is True
         assert is_sensitive_path(f"~/.kirocrew/{relative_edit}") is True
-        assert is_sensitive_bash_command(f"cat ~/.kiro/crew/{relative_edit}") is not None
+        # The shell plane is masked by the sandbox, not matched by text.
+        assert "apps/meetings/data/edits" in sandbox._CREW_HIDDEN_LEAVES
 
         crew_home = tmp_path / "crew-home"
         monkeypatch.setenv("KIROCREW_HOME", str(crew_home))

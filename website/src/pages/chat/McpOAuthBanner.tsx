@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
-import { Lock, ExternalLink, CheckCircle, XCircle, History } from 'lucide-react'
+import { Lock, ExternalLink, CheckCircle, History } from 'lucide-react'
 import type { ChatMessage } from '../../types'
 
+import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import OAuthRelayAffordance, { isSafeOAuthUrl } from '../../components/OAuthRelayAffordance'
 
@@ -89,13 +90,17 @@ export default function McpOAuthBanner({
   const [confirmedSignedIn, setConfirmedSignedIn] = useState(false)
 
   if (failed) {
+    // A failed OAuth exchange is a backend error the agent can diagnose, so it
+    // takes the shared notice with the hand-off on. This is a transcript row,
+    // but the composer draft is persisted per slot and an in-chat hand-off opens
+    // a fresh slot without navigating away, so nothing here is at risk. The
+    // server name is the bold lead; the sentence stays the journal key.
     return (
-      <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-danger/40 bg-danger/10 text-sm leading-5">
-        <XCircle className="shrink-0 text-danger lucide-inline" />
-        <span className="flex-1 text-text">
-          <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.authentication_failed')}{error ? `: ${error}` : '.'}
-        </span>
-      </div>
+      <ErrorNotice
+        title={label}
+        message={`${i18nT('pages.chat.mcpOAuthBanner.authentication_failed')}${error ? `: ${error}` : '.'}`}
+        askAgent
+      />
     )
   }
 

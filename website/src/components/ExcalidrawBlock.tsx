@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import { TriangleAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import ErrorNotice from './ErrorNotice'
 
 /**
  * Inline Excalidraw diagram.
@@ -81,10 +81,15 @@ export const ExcalidrawBlock = memo(function ExcalidrawBlock({
     return (
       <div className={className}>
         <div className="w-full rounded-md border border-border bg-bg-elevated p-3">
-          <div className="flex items-center gap-1.5 mb-2 text-muted text-[12px]">
-            <TriangleAlert className="lucide-inline" />
-            {t('components.excalidrawBlock.render_failed')}
-          </div>
+          {/* The renderer threw (a caught exception). The block holds no draft —
+              the raw source below is read-only — so the hand-off is on. */}
+          <ErrorNotice
+            variant="inline"
+            askAgent
+            testId="excalidraw-render-error"
+            className="mb-2"
+            message={t('components.excalidrawBlock.render_failed')}
+          />
           <pre className="m-0 max-h-64 overflow-auto text-muted text-[12px] font-mono whitespace-pre-wrap break-all">{code}</pre>
         </div>
       </div>

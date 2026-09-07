@@ -61,7 +61,9 @@ def _event(tool_input: str, title: str = _BENIGN_TITLE) -> LLMEvent:
     )
 
 
-async def _resolve(tool_input: str) -> tuple[bool, _RecordingProvider, list[dict]]:
+async def _resolve(
+    tool_input: str, title: str = _BENIGN_TITLE
+) -> tuple[bool, _RecordingProvider, list[dict]]:
     """Drive ``_resolve_permission`` and capture every SEL row it logged."""
     provider = _RecordingProvider()
     rows: list[dict] = []
@@ -70,7 +72,7 @@ async def _resolve(tool_input: str) -> tuple[bool, _RecordingProvider, list[dict
     with patch.object(sel_mod, "sel", lambda: sel_stub):
         approved = await _resolve_permission(
             provider,  # type: ignore[arg-type]
-            _event(tool_input),
+            _event(tool_input, title),
             ToolApprovalPolicy.AUTO_APPROVE,
             None,
         )
@@ -171,8 +173,6 @@ class TestOffLoop:
         real = llm_helpers.is_sensitive_path
 
         def _probe(s: str, *a, **kw):
-            # The title-tier check calls this on the loop by design; only the
-            # tool_input string's call is under test here.
             if s == probe_target:
                 seen.append(threading.get_ident())
             return real(s, *a, **kw)
@@ -323,3 +323,94 @@ class TestLiveness:
             f"the event loop made no progress during the scan (ticks stuck at "
             f"{before}); the scan is still blocking the loop"
         )
+
+
+class TestTitleTierOffLoop:
+    """The title -- for a shell tool, the command itself -- is scanned on the
+    same worker hop as tool_input, with the reasons and mechanisms the on-loop
+    checks produced. The field crash was a ~9 KB shell TITLE parked on the loop
+    for 25 s while only the tool_input tier was offloaded."""
+
+    @pytest.mark.asyncio
+    async def test_title_bash_denial_keeps_reason_and_mechanism(self) -> None:
+        approved, provider, rows = await _resolve("", title="env | grep AWS_SECRET")
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        outcome, error, mechanism = _decision(rows)
+        assert outcome == "denied"
+        assert (
+            error.splitlines()[0]
+            == "Blocked: command reads AWS credentials from environment variables"
+        )
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_title_path_denial_keeps_reason_and_mechanism(self) -> None:
+        _approved, _provider, rows = await _resolve("", title="~/.ssh/id_rsa")
+        outcome, error, mechanism = _decision(rows)
+        assert outcome == "denied"
+        assert error == "Blocked: sensitive path: ~/.ssh/id_rsa"
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_title_regex_denial_keeps_mechanism(self) -> None:
+        _approved, _provider, rows = await _resolve("", title="rm -rf /")
+        outcome, error, mechanism = _decision(rows)
+        assert outcome == "denied"
+        assert error
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_title_decides_before_tool_input(self) -> None:
+        """Both tiers would deny; the title's reason wins, as it did when the
+        title was checked inline before the tool_input loop ran."""
+        payload = json.dumps({"path": "~/.ssh/id_rsa"})
+        _approved, _provider, rows = await _resolve(payload, title="~/.aws/credentials")
+        _outcome, error, mechanism = _decision(rows)
+        assert error == "Blocked: sensitive path: ~/.aws/credentials"
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_title_predicates_run_off_the_loop_in_the_same_hop(self) -> None:
+        loop_ident = threading.get_ident()
+        title = "echo offload-title-probe"
+        input_target = "offload-input-probe.md"
+        seen: dict[str, int] = {}
+        real_bash = llm_helpers.is_sensitive_bash_command
+        real_path = llm_helpers.is_sensitive_path
+
+        def _bash_probe(s: str, *a, **kw):
+            if s == title:
+                seen["title"] = threading.get_ident()
+            return real_bash(s, *a, **kw)
+
+        def _path_probe(s: str, *a, **kw):
+            if s == input_target:
+                seen["input"] = threading.get_ident()
+            return real_path(s, *a, **kw)
+
+        with (
+            patch.object(llm_helpers, "is_sensitive_bash_command", _bash_probe),
+            patch.object(llm_helpers, "is_sensitive_path", _path_probe),
+        ):
+            approved, _provider, _rows = await _resolve(
+                json.dumps({"path": input_target}), title=title
+            )
+
+        assert approved is True
+        assert set(seen) == {"title", "input"}, seen
+        assert loop_ident not in seen.values(), (
+            "a title-tier predicate ran on the event loop thread; a long shell "
+            "title there is the crash path this offload exists to close"
+        )
+        assert seen["title"] == seen["input"], "title and tool_input scans took separate hops"
+
+    @pytest.mark.asyncio
+    async def test_missing_title_is_still_denied_on_the_loop(self) -> None:
+        with patch.object(llm_helpers, "_title_denial", side_effect=AssertionError("scanned")):
+            approved, provider, rows = await _resolve("", title="")
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        _outcome, error, mechanism = _decision(rows)
+        assert error == "Blocked: missing tool title"
+        assert mechanism == "always_deny"

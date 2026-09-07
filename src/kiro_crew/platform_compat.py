@@ -939,6 +939,17 @@ _DARWIN_PROC_BSDINFO_SIZE = 136
 _DARWIN_PBI_START_TVSEC_OFFSET = 120
 _DARWIN_PBI_START_TVUSEC_OFFSET = 128
 
+# ``proc_pidinfo(PROC_PIDTASKINFO)`` fills a ``proc_taskinfo`` struct that opens
+# with six uint64 fields — ``pti_virtual_size``, ``pti_resident_size``,
+# ``pti_total_user``, ``pti_total_system``, ``pti_threads_user``,
+# ``pti_threads_system`` (48 bytes) — followed by twelve int32 counters (48),
+# for a struct size of 96. Only the two total-CPU fields matter here, and both
+# are already NANOSECONDS; the total size doubles as the layout check.
+_DARWIN_PROC_PIDTASKINFO = 4
+_DARWIN_PROC_TASKINFO_SIZE = 96
+_DARWIN_PTI_TOTAL_USER_OFFSET = 16
+_DARWIN_PTI_TOTAL_SYSTEM_OFFSET = 24
+
 _darwin_libproc: Any = None
 _darwin_libproc_loaded = False
 
@@ -1038,6 +1049,245 @@ def _darwin_process_start_microtime(pid: int) -> str | None:
         if sec <= 0:
             return None
         return f"{sec}.{usec:06d}"
+    except Exception:
+        return None
+
+
+def _darwin_process_cpu_nanos(pid: int) -> int | None:
+    """macOS total (user+system) CPU nanoseconds of *pid* via ``libproc``.
+
+    Same contract as the start-time probe above: no entitlement is needed for a
+    same-uid process, nothing is exec'd, and a fill size other than the exact
+    struct size means the assumed layout no longer matches, so the answer is
+    refused rather than sliced out of the wrong place.
+    """
+    lib = _darwin_libproc_handle()
+    if lib is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(_DARWIN_PROC_TASKINFO_SIZE)
+        filled = lib.proc_pidinfo(
+            pid,
+            _DARWIN_PROC_PIDTASKINFO,
+            0,
+            buf,
+            _DARWIN_PROC_TASKINFO_SIZE,
+        )
+        if filled != _DARWIN_PROC_TASKINFO_SIZE:
+            return None
+        # Both x86_64 and arm64 macOS are little-endian.
+        user = int.from_bytes(
+            buf.raw[_DARWIN_PTI_TOTAL_USER_OFFSET:_DARWIN_PTI_TOTAL_SYSTEM_OFFSET], "little"
+        )
+        system = int.from_bytes(
+            buf.raw[_DARWIN_PTI_TOTAL_SYSTEM_OFFSET : _DARWIN_PTI_TOTAL_SYSTEM_OFFSET + 8],
+            "little",
+        )
+        return user + system
+    except Exception:
+        return None
+
+
+# Further ``proc_bsdinfo`` fields the liveness backend reads: ``pbi_status`` is
+# the second uint32 (offset 4). ``SZOMB`` is the BSD process-state code for
+# a zombie; in practice the kernel refuses ``PROC_PIDTBSDINFO`` for a zombie
+# outright, so the code is a second line of defence, not the primary test.
+_DARWIN_PBI_STATUS_OFFSET = 4
+_DARWIN_SZOMB = 5
+
+# ``proc_pidpath`` fails unless handed ``PROC_PIDPATHINFO_MAXSIZE`` bytes, which
+# is four times ``MAXPATHLEN``.
+_DARWIN_PIDPATH_MAXSIZE = 4 * _DARWIN_MAXPATHLEN
+
+# ``sysctl(CTL_KERN, KERN_PROCARGS2, pid)`` returns an ``int`` argc, the exec
+# path, NUL padding, then the argv strings and finally the environment. The
+# kernel truncates silently to the buffer handed in (no error), so a bounded
+# buffer costs at most the tail of an unusually long argv — never a failure.
+_DARWIN_CTL_KERN = 1
+_DARWIN_KERN_PROCARGS2 = 49
+_DARWIN_PROCARGS_BUFSIZE = 64 * 1024
+
+# ``proc_listchildpids`` writes ``pid_t`` values and returns HOW MANY it wrote.
+# A childless parent and a pid that does not exist both answer 0, so a caller
+# that needs to tell them apart reads the parent's own facts first.
+_DARWIN_CHILD_LIST_INITIAL = 1024
+
+
+class DarwinProcessFacts(NamedTuple):
+    """One process as ``PROC_PIDTBSDINFO`` describes it.
+
+    ``start_secs`` is the absolute wall-clock start instant (``pbi_start_tvsec``
+    + ``pbi_start_tvusec``), i.e. the same clock ``time.time()`` reads — the pair
+    a caller compares to date a process against an event it stamped itself.
+    """
+
+    zombie: bool
+    start_secs: float
+
+
+_darwin_libproc_tree_bound = False
+
+
+def _darwin_libproc_tree_handle() -> Any:
+    """The cached ``libproc`` handle with the tree-walk entry points declared.
+
+    Declared lazily and separately from :func:`_darwin_libproc_handle` so a
+    libproc missing either symbol still serves the cwd / start-time / CPU probes
+    that need only ``proc_pidinfo``. Returns None when the extra entry points
+    cannot be bound.
+    """
+    global _darwin_libproc_tree_bound
+    lib = _darwin_libproc_handle()
+    if lib is None:
+        return None
+    if _darwin_libproc_tree_bound:
+        return lib
+    try:
+        lib.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        lib.proc_listchildpids.restype = ctypes.c_int
+        lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        lib.proc_pidpath.restype = ctypes.c_int
+    except Exception:
+        return None
+    _darwin_libproc_tree_bound = True
+    return lib
+
+
+def darwin_child_pids(ppid: int) -> list[int] | None:
+    """Direct children of *ppid* via ``proc_listchildpids``; None when unreadable.
+
+    In-process and unprivileged: pid enumeration needs no entitlement for any
+    process. The buffer grows until the kernel's answer fits, so a parent with
+    more children than the initial capacity is enumerated completely rather than
+    truncated. An empty list is a genuine answer only for a parent that exists —
+    the syscall answers 0 for an unknown pid too — so callers that assert
+    absence pair this with :func:`darwin_process_facts` on the parent.
+    """
+    lib = _darwin_libproc_tree_handle()
+    if lib is None:
+        return None
+    capacity = _DARWIN_CHILD_LIST_INITIAL
+    try:
+        while True:
+            buf = ctypes.create_string_buffer(capacity * 4)
+            count = lib.proc_listchildpids(ppid, buf, capacity * 4)
+            if count < 0:
+                return None
+            if count < capacity:
+                return list(struct.unpack_from(f"<{count}i", buf.raw, 0))
+            capacity *= 2
+    except Exception:
+        return None
+
+
+def darwin_process_facts(pid: int) -> DarwinProcessFacts | None:
+    """``PROC_PIDTBSDINFO`` of *pid*, or None when the process cannot be read.
+
+    None covers "gone", "zombie" (the kernel refuses the query for one) and
+    "not ours to inspect" (another user's process) alike: each is a process the
+    caller cannot attribute work to. A same-uid live process always answers.
+    """
+    lib = _darwin_libproc_handle()
+    if lib is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(_DARWIN_PROC_BSDINFO_SIZE)
+        filled = lib.proc_pidinfo(pid, _DARWIN_PROC_PIDTBSDINFO, 0, buf, _DARWIN_PROC_BSDINFO_SIZE)
+        if filled != _DARWIN_PROC_BSDINFO_SIZE:
+            return None
+        status = struct.unpack_from("<I", buf.raw, _DARWIN_PBI_STATUS_OFFSET)[0]
+        sec = struct.unpack_from("<Q", buf.raw, _DARWIN_PBI_START_TVSEC_OFFSET)[0]
+        usec = struct.unpack_from("<Q", buf.raw, _DARWIN_PBI_START_TVUSEC_OFFSET)[0]
+        if sec <= 0:
+            return None
+        return DarwinProcessFacts(zombie=status == _DARWIN_SZOMB, start_secs=sec + usec / 1_000_000)
+    except Exception:
+        return None
+
+
+def darwin_process_path(pid: int) -> str | None:
+    """Executable path of *pid* via ``proc_pidpath``, or None when unreadable."""
+    lib = _darwin_libproc_tree_handle()
+    if lib is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(_DARWIN_PIDPATH_MAXSIZE)
+        length = lib.proc_pidpath(pid, buf, _DARWIN_PIDPATH_MAXSIZE)
+        if length <= 0:
+            return None
+        return buf.raw[:length].decode("utf-8", errors="replace") or None
+    except Exception:
+        return None
+
+
+_darwin_libc_sysctl: Any = None
+_darwin_libc_sysctl_loaded = False
+
+
+def _darwin_sysctl_handle() -> Any:
+    """Cached ``libc`` handle with ``sysctl`` declared, or None when unavailable.
+
+    Cached for the same reason as the libproc handle: the argv probe runs per
+    descendant on the liveness oracle's cadence, and a fresh ``CDLL`` per call
+    would dlopen every time.
+    """
+    global _darwin_libc_sysctl, _darwin_libc_sysctl_loaded
+    if _darwin_libc_sysctl_loaded:
+        return _darwin_libc_sysctl
+    _darwin_libc_sysctl_loaded = True
+    try:
+        path = ctypes.util.find_library("c")
+        if path is None:
+            return None
+        libc = ctypes.CDLL(path)
+        libc.sysctl.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+        ]
+        libc.sysctl.restype = ctypes.c_int
+        _darwin_libc_sysctl = libc
+    except Exception:
+        _darwin_libc_sysctl = None
+    return _darwin_libc_sysctl
+
+
+def darwin_process_argv(pid: int) -> list[str] | None:
+    """argv of *pid* via ``sysctl KERN_PROCARGS2``, or None when unreadable.
+
+    Same-uid processes only (the kernel answers EPERM for another user's), and
+    bounded to :data:`_DARWIN_PROCARGS_BUFSIZE` — the kernel truncates rather
+    than fails, so a very long argv comes back with its tail cut, which still
+    carries the program and the head of its arguments. Returns None rather than
+    an empty list when the record cannot be parsed, so a caller can fall back to
+    the executable path instead of treating "unreadable" as "no arguments".
+    """
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return None
+    try:
+        mib = (ctypes.c_int * 3)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROCARGS2, pid)
+        buf = ctypes.create_string_buffer(_DARWIN_PROCARGS_BUFSIZE)
+        size = ctypes.c_size_t(_DARWIN_PROCARGS_BUFSIZE)
+        if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+        raw = buf.raw[: size.value]
+        if len(raw) < 4:
+            return None
+        argc = struct.unpack_from("<i", raw, 0)[0]
+        if argc <= 0:
+            return None
+        rest = raw[4:]
+        exe_end = rest.find(b"\0")
+        if exe_end < 0:
+            return None
+        rest = rest[exe_end:].lstrip(b"\0")
+        parts = rest.split(b"\0")[:argc]
+        argv = [p.decode("utf-8", errors="replace") for p in parts if p]
+        return argv or None
     except Exception:
         return None
 
@@ -3479,6 +3729,87 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
     os.unlink(path)
 
 
+#: ``CreateFileW`` arguments for :func:`pin_directory`. ``BACKUP_SEMANTICS`` is
+#: what lets a directory be opened at all; ``OPEN_REPARSE_POINT`` opens the
+#: reparse point ITSELF instead of following it, so a junction planted at the
+#: name is seen for what it is rather than silently traversed. The share mode
+#: deliberately omits ``FILE_SHARE_DELETE``: that omission is the pin.
+_WIN_GENERIC_READ = 0x80000000
+_WIN_FILE_SHARE_READ_WRITE = 0x00000001 | 0x00000002
+_WIN_OPEN_EXISTING = 3
+_WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WIN_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+
+
+def pin_directory(path: str | os.PathLike) -> int:
+    """Open *path* as a directory and return a descriptor that PINS it.
+
+    For code that must let a child process write to ``<dir>/<name>`` by path:
+    the string is re-resolved at the child's open, so a same-UID watcher that
+    renames ``<dir>`` away and plants a link at its name between our check and
+    that open redirects the write. Holding the directory open closes the
+    window differently on each platform:
+
+    * Windows: the handle is opened without ``FILE_SHARE_DELETE``, and a
+      directory with such a handle open can be neither renamed nor deleted --
+      nor can any directory above it -- for as long as the handle lives. The
+      open itself refuses to follow a reparse point, so a junction already
+      sitting at the name fails here instead of being pinned in its target's
+      place.
+    * POSIX: ``O_DIRECTORY | O_NOFOLLOW`` refuses a symlink or a file at the
+      name, and the returned descriptor is usable as ``dir_fd`` so the caller's
+      own opens resolve against the directory it inspected. Holding it does not
+      block a rename (POSIX has no such lock); callers rely on the sandbox mask
+      for that and use the descriptor for their own opens.
+
+    Refuses anything that is not a real directory: a file or a Windows reparse
+    point raises ``NotADirectoryError``; a POSIX symlink fails with whichever
+    of ``ENOTDIR`` / ``ELOOP`` the kernel reports for ``O_DIRECTORY |
+    O_NOFOLLOW``. Release with ``os.close``.
+    """
+    if IS_POSIX:
+        return os.open(
+            os.fspath(path),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel32.CreateFileW(
+        os.fspath(path),
+        _WIN_GENERIC_READ,
+        _WIN_FILE_SHARE_READ_WRITE,
+        None,
+        _WIN_OPEN_EXISTING,
+        _WIN_FILE_FLAG_BACKUP_SEMANTICS | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+    # Wrapping the handle in a CRT descriptor lets ``os.fstat`` read the
+    # attributes of what was actually opened, and ``os.close`` release it.
+    fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)  # type: ignore[attr-defined]
+    try:
+        attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
+        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY or attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+            raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 # Well-known SID for the file's *owner* (implicit). Under a self-relative DACL
 # with inheritance stripped, S-1-3-4 grants access to whoever currently owns
 # the file. See:
@@ -4729,6 +5060,76 @@ def _proc_cpu_jiffies(pid: int) -> int:
             return _parse_cpu_jiffies(fh.read())
     except OSError:
         return 0
+
+
+def proc_cpu_nanos_for_pid(pid: int) -> int | None:
+    """Total (user+system) CPU time of *pid* in NANOSECONDS, or None.
+
+    The per-pid, cross-platform counterpart to :func:`proc_cpu_seconds`, which
+    can only measure the CALLING process. A caller samples this twice and
+    consumes the DELTA as evidence that a process is doing work; ``None`` means
+    no per-pid counter is readable on this host, which is evidence of neither
+    work nor death.
+
+    - Linux: ``_proc_cpu_jiffies`` scaled by ``SC_CLK_TCK``. Never None — an
+      unreadable pid reads 0 there, which a delta correctly sees as flat.
+    - macOS: ``libproc.proc_pidinfo(PROC_PIDTASKINFO)``, already nanoseconds.
+    - Windows: ``GetProcessTimes`` kernel+user (100-ns units) over a query-only
+      handle.
+    - Any other platform: None.
+
+    Root pid ONLY — deliberately no subtree walk here: this probe runs on a read
+    loop's cadence and Windows has no child enumeration cheap enough for that. A
+    caller that needs the subtree total uses :func:`proc_subtree_sample` on Linux,
+    or walks :func:`darwin_child_pids` and sums this per pid on macOS (the
+    liveness oracle's darwin backend does exactly that).
+    """
+    if type(pid) is not int or pid <= 0:
+        return None
+    if IS_LINUX:
+        try:
+            ticks = os.sysconf("SC_CLK_TCK") or 100
+        except (AttributeError, OSError, ValueError):
+            ticks = 100
+        return _proc_cpu_jiffies(pid) * (1_000_000_000 // ticks)
+    if IS_MACOS:
+        return _darwin_process_cpu_nanos(pid)
+    if not IS_WINDOWS:
+        return None
+    handle = _open_process_query_handle(pid)
+    if handle is None:
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        creation = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not kernel32.GetProcessTimes(
+            wintypes.HANDLE(handle),
+            ctypes.byref(creation),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+
+        def _hundred_ns(value: "wintypes.FILETIME") -> int:
+            return (value.dwHighDateTime << 32) | value.dwLowDateTime
+
+        return (_hundred_ns(kernel) + _hundred_ns(user)) * 100
+    except Exception:
+        return None
+    finally:
+        _close_process_handle(handle)
 
 
 class SubtreeSample(NamedTuple):

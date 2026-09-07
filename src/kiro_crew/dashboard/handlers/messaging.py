@@ -47,6 +47,7 @@ from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     _remove_queued_by_id,
     dashboard_slot_key,
+    effective_session_key,
     mint_options_token,
     remember_slack_options,
     slack_options_owner_key,
@@ -883,6 +884,45 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
         state.subagents._agents.pop(agent_id, None)
         state.subagents._tasks.pop(agent_id, None)
     return web.json_response({"ok": True, "cancelled": cancelled})
+
+
+async def api_spawn_stop_all(request: web.Request) -> web.Response:
+    """POST /api/spawn/stop-all — stop one chat's running and queued subagents."""
+    state: DashboardState = request.app["state"]
+    request_app = request.get("app", "")
+    if "app" not in request or request_app:
+        _sel().log_api_access(
+            caller=request_app or "unknown",
+            operation="spawn.stop_all",
+            outcome="denied",
+            source="app_isolation",
+            resources="dashboard-only bulk cancellation",
+            error="app tokens cannot stop dashboard subagent waves",
+        )
+        return web.json_response(
+            {"error": "app token not allowed", "code": "app_token_forbidden"}, status=403
+        )
+    if not state.subagents:
+        return web.json_response(
+            {"error": "subagents not available", "code": "subagents_unavailable"},
+            status=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    slot_name = body.get("slot") if isinstance(body, dict) else None
+    if not isinstance(slot_name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", slot_name):
+        return web.json_response(
+            {"error": "valid slot is required", "code": "invalid_slot"}, status=400
+        )
+    slot = state.get_slot(slot_name)
+    if slot is None:
+        return web.json_response({"error": "slot not found", "code": "slot_not_found"}, status=404)
+    running, queued = await state.subagents.cancel_for_parent(effective_session_key(slot))
+    return web.json_response(
+        {"ok": True, "stopped": running + queued, "running": running, "queued": queued}
+    )
 
 
 async def api_spawn_clear(request: web.Request) -> web.Response:
@@ -4708,17 +4748,15 @@ async def api_teams_activity(request: web.Request) -> web.Response:
     source = request.remote or "unknown"
     throttled_source = "" if is_proxied_request(request) else source
     if throttled_source and webhooks.auth_throttle_blocked(throttled_source):
-        # Off the loop: the first ``sel()`` of a process CONSTRUCTS the log
-        # (trust-dir creation, key validation — blocking file IO), and this
-        # route can be the first request a fresh gateway ever serves.
-        await asyncio.to_thread(
-            lambda: _sel().log_api_access(
-                caller=source,
-                operation="teams.activity",
-                outcome="denied",
-                source="teams",
-                error="auth failures throttled",
-            )
+        # A bare enqueue: SEL is warmed at gateway startup
+        # (sel.warm_sel_singleton, #8608), so even when this route is the
+        # first request a fresh gateway serves, no construction runs here.
+        _sel().log_api_access(
+            caller=source,
+            operation="teams.activity",
+            outcome="denied",
+            source="teams",
+            error="auth failures throttled",
         )
         return web.json_response(
             {"error": "too many failed attempts", "code": "auth_throttled"}, status=429

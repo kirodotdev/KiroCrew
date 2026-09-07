@@ -27,7 +27,7 @@
  *   glyph is a density decision, and it must not quietly become a
  *   touch-target regression. 40px is a convention miss against the 44px
  *   convention and well clear of WCAG 2.5.8's 24px floor -- see
- *   `docs/page-layout.md`'s two-tier grading.
+ *   `docs/narrow-viewport.md`'s two-tier grading.
  * - `HOVER_NONE_ACTION_BTN_CLS` goes on a SINGLE action button (the element
  *   itself, not an ancestor): `[&_button]` cannot match it, so the padding is
  *   applied directly, and `flex-wrap` is meaningless on one absolutely

@@ -183,6 +183,12 @@ describe('LinkedSurfacesSection', () => {
       await waitFor(() => expect(notifications(store)).toEqual([
         `error:${L('disconnect_failed', { label: 'Discord', reason: 'zzq-pause-broke' })}`,
       ]))
+      // The notification is the durable record; the failure ALSO renders in
+      // place under the row (a toast-only report of a write that did not
+      // persist is the shape errors-use-error-notice forbids).
+      const inPlace = screen.getByTestId('linked-surfaces-error-discord')
+      expect(inPlace).toHaveAttribute('role', 'alert')
+      expect(inPlace).toHaveTextContent('zzq-pause-broke')
       expect(slotOf(store).links?.[0].paused).toBeUndefined()
     })
 

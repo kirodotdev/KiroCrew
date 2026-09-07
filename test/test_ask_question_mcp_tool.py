@@ -66,12 +66,17 @@ def default_install(monkeypatch):
 # ── Tool contract ─────────────────────────────────────────────────────────────
 
 
-def test_ask_question_returns_directive_with_validated_questions(default_install):
+def test_ask_question_returns_directive_with_validated_questions(default_install, gateway_posts):
     """A valid call on a default install returns a directive that decodes to the
     validated questions payload — no session key, no HTTP round-trip."""
     result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
     args = session_directive.decode(result, "ask_question")
     assert args == {"questions": _validated_questions()}
+    # BOTH halves of the delivery contract: the marker above, and the
+    # out-of-band record parked for a consumer that never sees the marker.
+    assert gateway_posts == [
+        ("/api/session-directive", {"kind": "ask_question", "args": args})
+    ]
 
 
 def test_ask_question_directive_confirmation_tells_the_model_to_end_its_turn(default_install):
@@ -81,7 +86,7 @@ def test_ask_question_directive_confirmation_tells_the_model_to_end_its_turn(def
     assert "end your turn" in result.lower()
 
 
-def test_non_dashboard_session_is_refused_with_options_hint(monkeypatch):
+def test_non_dashboard_session_is_refused_with_options_hint(monkeypatch, gateway_posts):
     """A non-empty, non-dashboard key (Slack/Discord) has no question card, so
     the tool steers to the [OPTIONS:] tag and emits NO directive."""
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "slack:C1")
@@ -90,6 +95,8 @@ def test_non_dashboard_session_is_refused_with_options_hint(monkeypatch):
     assert "[OPTIONS:" in result
     # It is a plain message, not a directive.
     assert session_directive.decode(result, "ask_question") is None
+    # A refusal must not publish: no marker, no parked record.
+    assert gateway_posts == []
 
 
 def test_questions_is_required(default_install):

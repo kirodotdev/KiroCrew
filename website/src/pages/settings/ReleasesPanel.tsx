@@ -34,6 +34,7 @@ import { api } from '../../api/client'
 import { sanitize } from '../../api/helpers'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 
 /** Mirrors `kiro_crew.changelog.Release`. */
@@ -112,7 +113,8 @@ export default function ReleasesPanel() {
     // with no cached entries: a failed REFETCH keeps `data`, and the archive is
     // a static document, so stale-but-present beats both messages.
     if (isError) {
-      return <div className="p-6 text-sm text-muted">{i18nT('pages.settings.releases.load_failed')}</div>
+      // Nothing to lose: the archive is read-only, so the hand-off is on.
+      return <ErrorNotice className="m-6" message={i18nT('pages.settings.releases.load_failed')} askAgent />
     }
     return <div className="p-6 text-sm text-muted">{i18nT('pages.settings.releases.unavailable')}</div>
   }

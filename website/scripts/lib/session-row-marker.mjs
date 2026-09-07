@@ -22,5 +22,6 @@ export const MARKER_SELECTORS = [
   'svg.lucide-goal',                             // goal loop
   'svg.lucide-bot',                              // sub-agents (running or awaiting approval)
   'svg.lucide-workflow',                         // dynamic workflow run
+  'svg.lucide-triangle-alert',                   // interrupted turn — manual attention
   'span.rounded-full',                           // unread — "your turn"
 ]

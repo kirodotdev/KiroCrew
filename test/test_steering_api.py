@@ -1112,15 +1112,20 @@ class TestUpdateDeleteEndpoints:
             ).status == 200
 
         kwargs = captured["kwargs"]
-        # On a platform with the xattr syscalls the handler must hand over a real
-        # descriptor; where they do not exist (Windows) the contract is the
-        # opposite -- open_access_control_source returns None ON PURPOSE, because
-        # os.replace there fails while any other handle is open on either path.
-        # Asserting `int` unconditionally would demand the very handle that would
-        # break every save. Either way the kwarg must be PASSED, so a revert to
-        # the bits-only call still fails here.
+        # The handler's gate is PIN-FIRST, not xattr-first. When the parent
+        # pins (its own _DIR_FD_SUPPORTED plus the stage-and-rename probe),
+        # open_access_control_source hands back a real descriptor even where
+        # the xattr syscalls are absent — the MODE carry below reads the bits
+        # off that descriptor so they come from the pinned inode (macOS:
+        # openat and no listxattr). Only on the unpinned floor does the xattr
+        # flag decide, and None there (Windows) is deliberate — os.replace
+        # fails while any other handle is open on either path. Asserting
+        # `int` unconditionally would demand the very handle that would break
+        # every save there. Either way the kwarg must be PASSED, so a revert
+        # to the bits-only call still fails here.
+        handler_pins = mod._DIR_FD_SUPPORTED and aw.pinned_parent_replace_supported()
         assert "preserve_access_control_from" in kwargs
-        if aw.ACCESS_CONTROL_XATTRS_SUPPORTED:
+        if handler_pins or aw.ACCESS_CONTROL_XATTRS_SUPPORTED:
             assert isinstance(kwargs["preserve_access_control_from"], int)
             assert captured["source_bytes"] == b"original\n"
         else:  # pragma: no cover - exercised on Windows CI only

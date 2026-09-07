@@ -12,6 +12,7 @@ import ShimmerLine from './ShimmerLine'
 import { relativeTimeOrDate } from '../lib/format'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtDateTimeNumeric } from '../../../i18n/format'
 /** Fast typewriter reveal for a freshly-generated summary. Returns a growing
  * prefix of `text` plus a `typing` flag. When `enabled` is false (a cached
@@ -136,17 +137,26 @@ export default function AiSummaryCard({
           // away would lose good content — but must say so, or the stale text plus
           // its old timestamp reads as a successful refresh.
           <>
-            <div className="mb-2 text-[11.5px] text-danger">
-              {i18nT('apps.issueRadar.components.aiSummaryCard.couldn_t_regenerate_showing_the_previous_summary')}{' '}
-              <button onClick={onRegenerate} className="underline cursor-pointer bg-transparent text-danger">{i18nT('apps.issueRadar.components.aiSummaryCard.retry')}</button>
+            {/* Generation acts on a persisted issue / PR; the card holds no input. */}
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <ErrorNotice
+                message={i18nT('apps.issueRadar.components.aiSummaryCard.couldn_t_regenerate_showing_the_previous_summary')}
+                variant="inline"
+                askAgent
+              />
+              <button onClick={onRegenerate} className="text-[11.5px] underline cursor-pointer bg-transparent text-danger">{i18nT('apps.issueRadar.components.aiSummaryCard.retry')}</button>
             </div>
             <MarkdownRenderer content={summary} />
           </>
         ) : error ? (
-          <span className="text-danger">
-            {i18nT('apps.issueRadar.components.aiSummaryCard.couldn_t_generate_a_summary')}{' '}
-            <button onClick={onRegenerate} className="underline cursor-pointer bg-transparent text-danger">{i18nT('apps.issueRadar.components.aiSummaryCard.retry')}</button>
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <ErrorNotice
+              message={i18nT('apps.issueRadar.components.aiSummaryCard.couldn_t_generate_a_summary')}
+              variant="inline"
+              askAgent
+            />
+            <button onClick={onRegenerate} className="text-[11.5px] underline cursor-pointer bg-transparent text-danger">{i18nT('apps.issueRadar.components.aiSummaryCard.retry')}</button>
+          </div>
         ) : summary ? (
           <MarkdownRenderer content={typing ? shown : summary} />
         ) : (

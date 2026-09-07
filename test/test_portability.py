@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
+from conftest import requires_o_nofollow
+from kiro_crew.jsonl_util import UnreadableRecord
 from kiro_crew.portability import (
     EXPORT_EXCLUDE,
     _is_excluded,
@@ -459,6 +461,73 @@ class TestImportMerge:
             # Should still have only 1 entry (same ts)
             lines = [line for line in (target / "notifications.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
             assert len(lines) == 1
+        finally:
+            os.unlink(str(zip_path))
+
+    @requires_o_nofollow
+    def test_import_merge_notifications_refuses_an_undecodable_record(
+        self, patched_config_dir, tmp_path
+    ):
+        """The copy branch: no live file yet, so the merge branch never runs.
+
+        ``apply_import_zip`` reports ``notifications (copied)`` in its summary and
+        the dashboard handler turns that into ``ok: True``, so accepting the
+        record here tells an API caller the import succeeded while the live
+        reader -- which decodes the whole file inside one ``try`` and returns
+        ``[]`` -- has lost every row it will ever load. The refusal therefore has
+        to RAISE, and must leave no partially copied file behind.
+        """
+        (patched_config_dir / "notifications.jsonl").write_bytes(
+            b'{"ts":"1700000001","title":"ok"}\n{"ts":"1700000002","title":"\xff"}\n'
+        )
+        zip_path = self._make_export(patched_config_dir)
+        try:
+            target = tmp_path / "target_mc"
+            target.mkdir()
+            assert not (target / "notifications.jsonl").exists()
+
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    with pytest.raises(UnreadableRecord):
+                        apply_import_zip(zip_path, mode="merge")
+
+            assert not (target / "notifications.jsonl").exists(), (
+                "an unvalidated prefix was installed where the reader will find it"
+            )
+        finally:
+            os.unlink(str(zip_path))
+
+    def test_import_reports_the_platform_skip_instead_of_claiming_a_copy(
+        self, patched_config_dir, tmp_path, monkeypatch
+    ):
+        """Where ``O_NOFOLLOW`` does not exist the import skips notifications and SAYS so.
+
+        The summary is what the dashboard handler turns into a result for an API caller,
+        so this is the one place the refusal could go silent: reporting
+        ``notifications (copied)`` for a copy that did not happen, or omitting the item
+        entirely, would be the same bug class this change removes -- telling a caller the
+        import succeeded when the records are not there.
+
+        The rest of the import must still complete. A missing platform primitive is not a
+        reason to refuse the other components.
+        """
+        zip_path = self._make_export(patched_config_dir)
+        try:
+            target = tmp_path / "target_mc"
+            target.mkdir()
+            monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    summary = apply_import_zip(zip_path, mode="merge")
+
+            items = summary["items"]
+            notif = [i for i in items if i.startswith("notifications")]
+            assert notif, f"the skip was not reported at all: {items}"
+            assert "SKIPPED" in notif[0], notif[0]
+            assert "O_NOFOLLOW" in notif[0], notif[0]
+            assert not (target / "notifications.jsonl").exists()
+            assert len(items) > 1, f"the whole import stopped on a platform refusal: {items}"
         finally:
             os.unlink(str(zip_path))
 

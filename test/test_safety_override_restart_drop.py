@@ -285,6 +285,91 @@ class TestThisProcessOwnRecordIsNotADropNotice:
         assert not _isolated_breadcrumb.exists()
 
 
+class TestAQueuedPublishActsOnThePathItWasQueuedFor:
+    """A publish runs LATER, on the worker thread. It must act on the file its own
+    transition was about -- not on whatever ``_breadcrumb_path`` names by then.
+
+    Regression for #8586. Sibling test files in the same xdist worker call real
+    transitions, so they enqueue real publishes onto this module's long-lived
+    queue; this file's autouse fixture repoints ``_breadcrumb_path`` at its own
+    tmp_path. A job that resolved the path when it RAN therefore deleted or
+    overwrote THIS test's record, and the read that followed reported no notice --
+    surfacing on CI as ``assert None is not None`` in whichever test happened to
+    be running, unreproducible by rerunning and structurally unreproducible when
+    this file is run alone, because then nothing else ever enqueues anything.
+
+    The publish is CAPTURED rather than run on the worker: that makes the
+    interleaving exact instead of load-dependent, runs the real ``_publish``
+    closure, and leaves no thread behind. Each test asserts on BOTH paths, so a
+    job that quietly did nothing cannot pass either of them.
+    """
+
+    def test_a_queued_clear_does_not_unlink_a_later_path(self, tmp_path: Path, monkeypatch) -> None:
+        sibling = tmp_path / "sibling" / "last_grant.json"
+        victim = tmp_path / "victim" / "last_grant.json"
+        for parent in (sibling.parent, victim.parent):
+            parent.mkdir(parents=True, exist_ok=True)
+
+        jobs: list = []
+        monkeypatch.setattr(so, "_breadcrumb_path", lambda: sibling)
+        monkeypatch.setattr(so, "_enqueue_breadcrumb", jobs.append)
+
+        override = so.safety_override()
+        override.adhoc_ttl = 3600
+        override.activate("slack")
+        override.deactivate("slack")
+        assert len(jobs) == 2, "expected a publish for the activation and one for the revocation"
+
+        jobs[0]()  # the sibling's activation lands its own record
+        assert sibling.exists(), "the captured publish never ran, so this test proves nothing"
+
+        # Now this file's fixture-style repoint, and this test's own record.
+        monkeypatch.setattr(so, "_breadcrumb_path", lambda: victim)
+        _write(victim, source="dashboard", offset_secs=600)
+
+        jobs[1]()  # the sibling's revocation, arriving late
+
+        assert not sibling.exists(), "the queued clear did not act at all"
+        assert victim.exists(), "a clear queued for another path unlinked this record"
+        dropped = so.take_dropped_grant()
+        assert dropped is not None, "the notice was owed and a foreign clear swallowed it"
+        assert dropped.source == "dashboard"
+
+    def test_a_queued_write_does_not_overwrite_a_later_path(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The same defect's other arm, and the one the issue's remaining candidate
+        # named: a foreign write stamps THIS image's token, so the own-image guard
+        # then correctly refuses a record that is no longer this test's.
+        sibling = tmp_path / "sibling" / "last_grant.json"
+        victim = tmp_path / "victim" / "last_grant.json"
+        for parent in (sibling.parent, victim.parent):
+            parent.mkdir(parents=True, exist_ok=True)
+
+        jobs: list = []
+        monkeypatch.setattr(so, "_breadcrumb_path", lambda: sibling)
+        monkeypatch.setattr(so, "_enqueue_breadcrumb", jobs.append)
+
+        override = so.safety_override()
+        override.adhoc_ttl = 3600
+        override.activate("slack")
+        assert len(jobs) == 1
+
+        monkeypatch.setattr(so, "_breadcrumb_path", lambda: victim)
+        _write(victim, source="dashboard", offset_secs=600)
+
+        jobs[0]()  # the sibling's activation, arriving late
+
+        # Each path holds its OWN record -- pairing, not merely non-emptiness.
+        assert sibling.exists(), "the queued write did not act at all"
+        assert _record(sibling)["source"] == "slack"
+        assert _record(victim)["source"] == "dashboard"
+        assert "image" not in _record(victim), "a foreign write stamped this image onto the record"
+        dropped = so.take_dropped_grant()
+        assert dropped is not None, "the notice was owed and a foreign write swallowed it"
+        assert dropped.source == "dashboard"
+
+
 class TestTheCourtesyNeverEndangersTheGrant:
     """The record is a courtesy; the grant is a decision. Failures stay separated."""
 

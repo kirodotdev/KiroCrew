@@ -1,5 +1,6 @@
 # Investigation: Gateway memory climb (issue #6827)
 
+> Archived analysis; owning spec: [metrics](../../../../system-specs/modules/metrics.md).
 ## Summary
 
 Issue #6827 reports the Kiro Crew Python Gateway (`python.exe`) climbing from a

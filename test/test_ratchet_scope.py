@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -90,22 +91,36 @@ def _commit_file(repo: Path, name: str, message: str) -> None:
     _git(repo, "commit", "-m", message)
 
 
-def _repo_with_diverged_feature(tmp_path: Path) -> Path:
-    """One base repo both shapes start from.
+def _build_repo_with_diverged_feature(repo: Path) -> None:
+    """Populate ``repo`` with the one base shape every test in this module starts
+    from.
 
     ``main`` gains ``mainline.txt`` AFTER ``feature`` branches off with its own
     ``feature.py``, so the two sides of every merge below differ and a wrong
     parent choice shows up in the returned path set, not just the label.
     """
-    repo = tmp_path / "repo"
-    repo.mkdir()
     _git(repo, "init", "-b", "main", ".")
     _commit_file(repo, "base.txt", "base")
     _git(repo, "checkout", "-b", "feature")
     _commit_file(repo, "feature.py", "the change under judgment")
     _git(repo, "checkout", "main")
     _commit_file(repo, "mainline.txt", "someone else's change, landed after the branch point")
-    return repo
+
+
+@pytest.fixture(scope="session")
+def _repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Build the diverged-feature repo once per session; ``repo`` copies it per test.
+
+    Six git subprocesses (~2-3s) were previously paid on every one of the 23
+    tests in this module. Session scope is safe here because the template is
+    never handed to a test, only copied from via ``shutil.copytree`` -- so a
+    test that adds a commit, merges, or moves a branch cannot reach another's
+    copy.
+    """
+    template = tmp_path_factory.mktemp("ratchet-scope-seed") / "repo"
+    template.mkdir()
+    _build_repo_with_diverged_feature(template)
+    return template
 
 
 def _set_origin_main(repo: Path) -> None:
@@ -115,7 +130,7 @@ def _set_origin_main(repo: Path) -> None:
 
 
 @pytest.fixture()
-def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _repo_template: Path) -> Path:
     # The fixture's own git calls build a scrubbed env per call, but the
     # RESOLVER under test runs git with the ambient process environment: an
     # exported GIT_DIR (pytest run from a git hook, `git rebase --exec`,
@@ -125,7 +140,12 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # builder strips.
     for var in _GIT_LOCATION_VARS:
         monkeypatch.delenv(var, raising=False)
-    fixture_repo = _repo_with_diverged_feature(tmp_path)
+    fixture_repo = tmp_path / "repo"
+    shutil.copytree(_repo_template, fixture_repo)
+    # A copied checkout reads as "unstaged changes" on Windows (fresh inode/ctime
+    # invalidate the index stat cache); nothing in the template is uncommitted, so
+    # this changes no content and only re-stats the index.
+    _git(fixture_repo, "reset", "--hard", "HEAD")
     # The module runs git with cwd=ROOT; retarget it at the synthetic repo.
     monkeypatch.setattr(scope, "ROOT", fixture_repo)
     return fixture_repo

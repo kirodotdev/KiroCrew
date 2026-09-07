@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { FileText, Folder, Eye } from 'lucide-react'
 import { api } from '../api/client'
+import ErrorNotice from './ErrorNotice'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import type { SendMode } from '../pages/chat/ChatSettings'
@@ -220,13 +221,32 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // live region rather than a mount — what screen readers announce least well.
   const empty = <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>
 
+  // A SETTLED search failure gets its own surface: the ordinary "no matches"
+  // copy would claim the search ran and found nothing, when it did not run at
+  // all. Rendered above whatever (stale, placeholder) results are still on
+  // screen so the keyboard gate above keeps working unchanged.
+  const searchFailed = isError && query.length >= 2 && debounced === query && !isFetching
+
   return createPortal(
     <div
       className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg overflow-y-auto py-1 animate-slide-up"
       role="listbox"
       style={{ ...(above ? { bottom } : { top }), left, width: Math.min(width, 420), maxHeight }}
     >
-      {results.length === 0 ? empty : results.map((f, i) => {
+      {searchFailed && (
+        <div className="px-3 py-2">
+          {/* No hand-off: the composer draft this picker is completing an
+              @-mention inside is unsaved — the hand-off would navigate away
+              from it. */}
+          <ErrorNotice
+            variant="inline"
+            className="whitespace-normal"
+            message={i18nT('components.filePickerMenu.search_failed')}
+            testId="file-picker-search-error"
+          />
+        </div>
+      )}
+      {results.length === 0 ? (searchFailed ? null : empty) : results.map((f, i) => {
         const kind = resultKind(f)
         const isDir = kind === 'dir'
         return (

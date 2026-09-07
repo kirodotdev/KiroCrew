@@ -182,7 +182,16 @@ def known_kiro_cli_dirs(
     *,
     include_inherited_path: bool = True,
 ) -> list[str]:
-    """Return fixed and inherited directories where Kiro CLI may be installed."""
+    """Return fixed and inherited directories where Kiro CLI may be installed.
+
+    Every home-derived path comes from the ``home`` argument, never from a live
+    ``os.path.expanduser("~")``, so a caller that pins ``(platform_name, home,
+    environ)`` gets the same account's directories from this function and from
+    :func:`find_kiro_cli_candidates`, and may report them as the directories
+    that were searched. (:func:`~kiro_crew.env.mise_data_dir` still honours the
+    process-level ``MISE_DATA_DIR``/``XDG_DATA_HOME`` overrides, so the mise
+    shim entry is home-pinned only in their absence.)
+    """
 
     if platform_name == "win32":
         local_app_data = Path(environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
@@ -211,8 +220,19 @@ def known_kiro_cli_dirs(
         # standard user tool directories and the venv Scripts fallback.
         dirs.extend(part for part in augmented_path("", home=str(home)).split(os.pathsep) if part)
     elif include_inherited_path:
+        # `home=` is forwarded for the same reason the win32 branch above does it:
+        # `augmented_path` falls back to a LIVE `os.path.expanduser("~")` when the
+        # keyword is omitted, so the `{home}`-templated extras and the Node/mise bin
+        # dirs would come from the process's account while the `.local/bin` and
+        # `.cargo/bin` entries above come from the caller's `home`. That makes this
+        # function's result depend on state outside its arguments, which is exactly
+        # what the ACP resolver's "the directories named in a not-found message are
+        # the directories that were actually searched" contract relies on it NOT
+        # doing (see acp/client.py's `_resolve_kiro_cli_for_spawn` docstring).
         dirs.extend(
-            part for part in augmented_path(environ.get("PATH", "")).split(os.pathsep) if part
+            part
+            for part in augmented_path(environ.get("PATH", ""), home=str(home)).split(os.pathsep)
+            if part
         )
     return _unique(dirs)
 

@@ -10,6 +10,7 @@ import { SaveDialog } from './SaveDialog'
 import { EditorFooter } from './EditorFooter'
 import { NumberField } from './NumberField'
 import SimpleSelect from '../../components/SimpleSelect'
+import ErrorNotice from '../../components/ErrorNotice'
 import { detectFrameSize } from './spriteDetect'
 import { useLang, useSaveWithDialog } from './editorHooks'
 import { galleryApi } from './petBridge'
@@ -429,11 +430,9 @@ export const SpriteImporter: React.FC<Props> = ({ existingPack, onDone, onCancel
         )}
       </div>
 
-      {saveError ? (
-        <p role="alert" style={{ margin: '0 20px 8px', fontSize: 12, color: 'var(--danger, #d33)' }}>
-          {saveError}
-        </p>
-      ) : null}
+      {/* No hand-off: the imported sprite sheet, its frame grid and the state
+          mapping above are unsaved until the pack save succeeds. */}
+      <ErrorNotice message={saveError} className="mx-5 mb-2" />
       <EditorFooter
         missingStates={rows.length > 0 ? missingStates : []}
         canSave={canSave}

@@ -106,7 +106,8 @@ def test_loader_defaults_match_the_handle_snapshot_defaults() -> None:
 def test_over_ceiling_window_is_clamped_with_a_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    cfg = _fake_config(tool_stall_suspect_secs=10800.0, tool_stall_hard_cap_secs=10800.0)
+    over = _WINDOW_BUDGET * 2
+    cfg = _fake_config(tool_stall_suspect_secs=over, tool_stall_hard_cap_secs=over)
     with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
         wd = _load_with(monkeypatch, cfg)
 

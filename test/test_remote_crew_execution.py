@@ -39,7 +39,6 @@ from kiro_crew.dashboard.state import _ChatSlot
 
 #: Every async test here needs the loop; the repo runs pytest-asyncio in strict
 #: mode, so the marker is explicit rather than inferred from the coroutine.
-pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
@@ -232,11 +231,13 @@ class TestSseFraming:
 
 
 class TestVersionParity:
+    @pytest.mark.asyncio
     async def test_an_equal_version_passes(self):
         mgr = MagicMock()
         mgr.peer_version = AsyncMock(return_value=(True, kiro_crew.__version__))
         await ensure_version_parity(mgr, "nobita")  # does not raise
 
+    @pytest.mark.asyncio
     async def test_a_different_version_is_refused_naming_both_sides(self):
         mgr = MagicMock()
         mgr.peer_version = AsyncMock(return_value=(True, "0.5.9"))
@@ -245,6 +246,7 @@ class TestVersionParity:
         assert "0.5.9" in str(excinfo.value)
         assert kiro_crew.__version__ in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_a_patch_skew_in_the_same_series_passes(self):
         """0.6.0 and 0.6.3 share the frame vocabulary, so a patch skew is allowed.
 
@@ -260,6 +262,7 @@ class TestVersionParity:
         mgr.peer_version = AsyncMock(return_value=(True, peer))
         await ensure_version_parity(mgr, "nobita")  # does not raise
 
+    @pytest.mark.asyncio
     async def test_a_different_minor_is_refused(self):
         """A feature release (minor bump on 0.x) moves the vocabulary — refuse it."""
         from kiro_crew.apps.version import parse_version
@@ -272,6 +275,7 @@ class TestVersionParity:
             await ensure_version_parity(mgr, "nobita")
         assert "major.minor" in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_a_non_semver_build_id_falls_back_to_strict_equality(self, monkeypatch):
         """When a side is a packaging build id, series parity is unprovable.
 
@@ -288,6 +292,7 @@ class TestVersionParity:
         with pytest.raises(RemoteTurnError):
             await ensure_version_parity(mgr, "nobita")
 
+    @pytest.mark.asyncio
     async def test_an_oversized_numeric_version_is_refused_not_crashed(self):
         """A peer-controlled version of thousands of digits must not 500 the create.
 
@@ -302,6 +307,7 @@ class TestVersionParity:
         with pytest.raises(RemoteTurnError):
             await ensure_version_parity(mgr, "nobita")
 
+    @pytest.mark.asyncio
     async def test_an_unknown_version_is_a_mismatch_not_a_pass(self):
         """A peer too old to report its version cannot be proven equal.
 
@@ -315,6 +321,7 @@ class TestVersionParity:
             await ensure_version_parity(mgr, "nobita")
         assert "older Kiro Crew" in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_an_unreachable_peer_is_refused_with_a_different_remedy(self):
         """ "Too old" and "unreachable" need different advice, so they differ.
 
@@ -332,6 +339,7 @@ class TestVersionParity:
 
 
 class TestRelayReplay:
+    @pytest.mark.asyncio
     async def test_chunks_replay_as_local_chat_chunk_frames(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -353,6 +361,7 @@ class TestRelayReplay:
         assert [c.args[1]["seq"] for c in chunk_calls] == [1, 2]
         assert all(c.args[1]["slot"] == slot.key for c in chunk_calls)
 
+    @pytest.mark.asyncio
     async def test_a_mirrored_frame_is_rebroadcast_under_the_local_key(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -381,6 +390,7 @@ class TestRelayReplay:
         assert tool_calls[0].args[1]["slot"] == slot.key
         assert tool_calls[0].args[1]["tool"] == "fs_read"
 
+    @pytest.mark.asyncio
     async def test_the_peers_user_row_is_not_replayed(self, tmp_path):
         """The local side already appended the user's message before dispatch."""
         state = _make_state(tmp_path)
@@ -396,6 +406,7 @@ class TestRelayReplay:
         )
         assert [m["role"] for m in slot.messages] == []
 
+    @pytest.mark.asyncio
     async def test_the_finalized_assistant_row_replaces_its_chunks(self, tmp_path):
         """Keeping both would render the answer twice, once streamed once final."""
         state = _make_state(tmp_path)
@@ -416,6 +427,7 @@ class TestRelayReplay:
         # in the pending queue, so a leak there would strand every token.
         assert [r for r in slot._pending if r.get("role") == "chunk"] == []
 
+    @pytest.mark.asyncio
     async def test_a_stop_row_between_chunks_and_final_does_not_strand_them(self, tmp_path):
         """A mid-stream stop must not leave the streamed deltas rendering twice.
 
@@ -447,6 +459,7 @@ class TestRelayReplay:
         ]
         assert [r for r in slot._pending if r.get("role") == "chunk"] == []
 
+    @pytest.mark.asyncio
     async def test_a_turn_always_ends_with_chat_done(self, tmp_path):
         """Without it the composer stays blocked and the session looks hung."""
         state = _make_state(tmp_path)
@@ -462,6 +475,7 @@ class TestRelayReplay:
             pytest.param(lambda: _stream(), id="truncated"),
         ],
     )
+    @pytest.mark.asyncio
     async def test_the_turn_is_persisted_before_the_composer_unblocks(
         self, tmp_path, monkeypatch, chunks_factory
     ):
@@ -503,6 +517,7 @@ class TestRelayReplay:
         last_save = max(i for i, e in enumerate(order) if e == "save")
         assert last_save < order.index("chat_done")
 
+    @pytest.mark.asyncio
     async def test_a_failing_stream_yields_an_error_row_and_still_finishes(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -516,6 +531,7 @@ class TestRelayReplay:
         assert slot.messages[-1]["role"] == "error"
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
 
+    @pytest.mark.asyncio
     async def test_a_stream_that_ends_without_the_terminator_is_not_a_success(self, tmp_path):
         """EOF is not completion, and the difference is invisible to the reader.
 
@@ -541,6 +557,7 @@ class TestRelayReplay:
         # Still unblocked: a truncation is reported, not left hanging.
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
 
+    @pytest.mark.asyncio
     async def test_an_empty_stream_is_not_a_success(self, tmp_path):
         """The degenerate case of the same defect: nothing arrived at all."""
         state = _make_state(tmp_path)
@@ -551,6 +568,7 @@ class TestRelayReplay:
 
         assert slot.messages[-1]["role"] == "error"
 
+    @pytest.mark.asyncio
     async def test_rows_after_the_terminator_are_not_replayed(self, tmp_path):
         """The terminator still ends the replay, exactly as the early return did.
 
@@ -744,6 +762,7 @@ class TestBindingAuthorization:
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.create_peer_slot", spy)
         return spy
 
+    @pytest.mark.asyncio
     async def test_a_non_owner_identity_cannot_bind_a_session_to_a_crew(self, tmp_path, peer):
         """Authenticated is not the same as authorized on this route.
 
@@ -762,6 +781,7 @@ class TestBindingAuthorization:
             assert resp.status == 403
         peer.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_an_unbound_create_is_untouched_by_the_owner_gate(self, tmp_path, peer):
         """The gate gates the BINDING, not the endpoint.
 
@@ -778,6 +798,7 @@ class TestBindingAuthorization:
             assert resp.status == 200
         peer.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_an_app_token_cannot_bind_a_session_to_a_crew(self, tmp_path, peer):
         """Binding is a human act from the composer's crew picker.
 
@@ -793,6 +814,7 @@ class TestBindingAuthorization:
             assert (await resp.json())["code"] == "slot_not_found"
         peer.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_an_app_token_refusal_names_no_slot(self, tmp_path, peer):
         """One code for both refusal reasons, so it cannot be an existence oracle."""
         from aiohttp.test_utils import TestClient, TestServer
@@ -809,6 +831,7 @@ class TestBindingAuthorization:
             assert "chat-1" not in json.dumps(body)
         peer.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_an_already_bound_slot_is_not_rebound(self, tmp_path, peer):
         """`name` can address an EXISTING slot, and rebinding it is destructive.
 
@@ -833,6 +856,7 @@ class TestBindingAuthorization:
         assert slot.instance_id == "shizuka"
         assert slot.remote_slot == "peer-chat-1"
 
+    @pytest.mark.asyncio
     async def test_an_existing_local_slot_is_not_converted_to_remote(self, tmp_path, peer):
         """The destructive half of the same hole: local -> remote is not a create.
 
@@ -858,6 +882,7 @@ class TestBindingAuthorization:
         assert slot.is_remote is False
         assert len(slot.messages) == 1
 
+    @pytest.mark.asyncio
     async def test_a_dashboard_caller_binds_a_new_slot(self, tmp_path, peer):
         """The allowed path, so the gates above are not just refusing everything."""
         from aiohttp.test_utils import TestClient, TestServer
@@ -875,6 +900,7 @@ class TestBindingAuthorization:
         assert state._slots["chat-1"].remote_slot == "peer-chat-9"
         peer.assert_awaited_once()
 
+    @pytest.mark.asyncio
     async def test_a_peer_that_refuses_leaves_no_local_slot_bound(self, tmp_path, monkeypatch):
         """Peer first, local slot second: a failure over there creates nothing here."""
         from aiohttp.test_utils import TestClient, TestServer
@@ -894,6 +920,7 @@ class TestBindingAuthorization:
         assert "older version" in body["error"]
         assert "chat-1" not in state._slots
 
+    @pytest.mark.asyncio
     async def test_an_app_token_may_still_create_an_ordinary_local_slot(self, tmp_path, peer):
         """The gate is scoped to `instance_id`, not a blanket app refusal."""
         from aiohttp.test_utils import TestClient, TestServer
@@ -918,6 +945,7 @@ class TestBindingAuthorization:
         ],
         ids=["mode", "memory_mode", "remote_mode_unsupported"],
     )
+    @pytest.mark.asyncio
     async def test_a_request_refused_for_its_body_never_reaches_the_peer(
         self, tmp_path, peer, body, code
     ):
@@ -940,6 +968,7 @@ class TestBindingAuthorization:
                 assert (await resp.json())["code"] == code
         peer.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_a_member_name_never_reaches_the_peer(self, tmp_path, peer):
         """A ``member-`` name is reserved for the DM-thread endpoint.
 
@@ -963,6 +992,7 @@ class TestBindingAuthorization:
         assert "member-alice" not in state._slots
 
     @pytest.mark.parametrize("bad_name", [123, ["a"], {"k": "v"}], ids=["int", "list", "dict"])
+    @pytest.mark.asyncio
     async def test_a_non_string_name_never_reaches_the_peer(self, tmp_path, peer, bad_name):
         """A name the slot store cannot key on must not cost a peer session.
 
@@ -986,6 +1016,7 @@ class TestBindingAuthorization:
             # slot exists locally, so the peer session is not orphaned.
             assert any(s.is_remote for s in state._slots.values())
 
+    @pytest.mark.asyncio
     async def test_a_name_taken_while_the_peer_was_awaited_is_not_rebound(
         self, tmp_path, monkeypatch
     ):
@@ -1028,6 +1059,7 @@ class TestBindingAuthorization:
         assert raced.is_remote is False
         assert len(raced.messages) == 1
 
+    @pytest.mark.asyncio
     async def test_an_invalid_folder_project_never_reaches_the_peer(
         self, tmp_path, peer, monkeypatch
     ):
@@ -1081,6 +1113,7 @@ class TestBoundCreateDefaults:
             ),
         )
 
+    @pytest.mark.asyncio
     async def test_a_bound_create_records_no_agent(self, tmp_path, peer, local_default):
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -1097,6 +1130,7 @@ class TestBoundCreateDefaults:
         # peer is told to apply its own default.
         assert peer.await_args.kwargs == {"agent": "", "model": ""}
 
+    @pytest.mark.asyncio
     async def test_a_local_create_still_stamps_the_default(self, tmp_path, peer, local_default):
         """The counterpart, so the skip above is scoped to the binding."""
         from aiohttp.test_utils import TestClient, TestServer
@@ -1107,6 +1141,7 @@ class TestBoundCreateDefaults:
 
         assert body["agent"] == "local-only-crew"
 
+    @pytest.mark.asyncio
     async def test_an_explicit_pick_is_recorded_and_forwarded(self, tmp_path, peer, local_default):
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -1137,6 +1172,7 @@ class TestRemotePickApplication:
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.forward_peer_selection", spy)
         return spy
 
+    @pytest.mark.asyncio
     async def test_an_agent_pick_mirrors_the_workspace_the_peer_committed(
         self, tmp_path, monkeypatch
     ):
@@ -1164,6 +1200,7 @@ class TestRemotePickApplication:
         assert slot.agent == "reviewer"
         assert slot.workspace == "peer-ws"
 
+    @pytest.mark.asyncio
     async def test_a_peer_that_names_no_workspace_changes_nothing(self, tmp_path, forward):
         """Only a non-empty string is taken, so an older or terser peer is safe:
         a missing field leaves the local value alone rather than blanking it."""
@@ -1177,6 +1214,7 @@ class TestRemotePickApplication:
 
         assert slot.workspace == "kept"
 
+    @pytest.mark.asyncio
     async def test_only_an_agent_pick_moves_the_workspace(self, tmp_path, monkeypatch):
         """A model or effort pick does not re-resolve bindings, so a `workspace`
         key in its reply is not a commitment this slot should adopt."""
@@ -1194,6 +1232,7 @@ class TestRemotePickApplication:
 
         assert slot.workspace == "kept"
 
+    @pytest.mark.asyncio
     async def test_a_failed_persist_rearms_the_flush_and_still_reports_success(
         self, tmp_path, forward
     ):
@@ -1221,6 +1260,7 @@ class TestRemotePickApplication:
         assert slot.model == "opus"
         assert slot._dirty is True
 
+    @pytest.mark.asyncio
     async def test_the_mirrored_workspace_is_persisted_with_the_agent(self, tmp_path, monkeypatch):
         """One write, or a restart restores the pair inconsistent — an agent from
         the peer next to a workspace the peer never agreed to."""
@@ -1239,6 +1279,7 @@ class TestRemotePickApplication:
         written = state.conversation_log.update_metadata.call_args.args[1]
         assert written == {"agent": "reviewer", "workspace": "peer-ws"}
 
+    @pytest.mark.asyncio
     async def test_an_accepted_pick_is_mirrored_on_the_slot(self, tmp_path, forward):
         from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
 
@@ -1257,6 +1298,7 @@ class TestRemotePickApplication:
         }
         assert slot.agent == "reviewer"
 
+    @pytest.mark.asyncio
     async def test_a_refused_pick_leaves_the_slot_untouched(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
 
@@ -1278,6 +1320,7 @@ class TestRemotePickApplication:
         assert "no such agent" in body["error"]
         assert slot.agent == "coder"
 
+    @pytest.mark.asyncio
     async def test_a_model_pick_bumps_the_pick_generation(self, tmp_path, forward):
         """Same reason the local path bumps it: an explicit pick has to outrank
         the model-fallback restore probe, which would otherwise treat the pick as
@@ -1302,6 +1345,7 @@ class TestRemotePickApplication:
             ("reasoning_effort", "high"),
         ],
     )
+    @pytest.mark.asyncio
     async def test_an_accepted_pick_is_persisted_immediately(
         self, tmp_path, forward, control, value
     ):
@@ -1325,6 +1369,7 @@ class TestRemotePickApplication:
 
         assert state.conversation_log.get_metadata("dashboard:chat-1").get(control) == value
 
+    @pytest.mark.asyncio
     async def test_a_refused_pick_persists_nothing(self, tmp_path, monkeypatch):
         """The write is downstream of the peer's acceptance, like the mirror."""
         from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
@@ -1343,6 +1388,7 @@ class TestRemotePickApplication:
 
         assert "agent" not in state.conversation_log.get_metadata("dashboard:chat-1")
 
+    @pytest.mark.asyncio
     async def test_a_workspace_pick_does_not_rewrite_the_local_project(self, tmp_path, forward):
         """``project`` is a path on THIS machine (file search, @-mentions).
 
@@ -1389,12 +1435,14 @@ def _mgr_returning(status: int, body: bytes):
 
 
 class TestCreatePeerSlot:
+    @pytest.mark.asyncio
     async def test_the_peers_slot_key_is_returned(self, tmp_path):
         state = _make_state(tmp_path)
         state.instances_manager = _mgr_returning(200, b'{"key": "peer-chat-9"}')
 
         assert await create_peer_slot(state, "nobita") == "peer-chat-9"
 
+    @pytest.mark.asyncio
     async def test_no_agent_is_sent_to_the_peer(self, tmp_path):
         """The peer has its own roster, its own default and its own projects.
 
@@ -1411,6 +1459,7 @@ class TestCreatePeerSlot:
         _, kwargs = mgr.proxy_request.call_args
         assert json.loads(kwargs["data"]) == {}
 
+    @pytest.mark.asyncio
     async def test_an_explicit_pick_rides_the_create(self, tmp_path):
         """A pick made in the crew picker comes from the PEER's roster.
 
@@ -1435,6 +1484,7 @@ class TestCreatePeerSlot:
             ({"agent": "", "model": ""}, {}),
         ],
     )
+    @pytest.mark.asyncio
     async def test_only_the_named_picks_are_sent(self, tmp_path, kwargs, expected):
         """An empty pick is OMITTED, not sent as "".
 
@@ -1449,6 +1499,7 @@ class TestCreatePeerSlot:
 
         assert json.loads(mgr.proxy_request.call_args.kwargs["data"]) == expected
 
+    @pytest.mark.asyncio
     async def test_a_gateway_without_instances_refuses(self, tmp_path):
         state = _make_state(tmp_path)
         state.instances_manager = None
@@ -1457,6 +1508,7 @@ class TestCreatePeerSlot:
             await create_peer_slot(state, "nobita")
         assert "not available" in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_a_version_skewed_peer_is_never_asked_to_open_a_slot(self, tmp_path):
         state = _make_state(tmp_path)
         mgr = _mgr_returning(200, b'{"key": "peer-chat-9"}')
@@ -1467,6 +1519,7 @@ class TestCreatePeerSlot:
             await create_peer_slot(state, "nobita")
         mgr.proxy_request.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_a_refusing_peer_reports_its_status(self, tmp_path):
         state = _make_state(tmp_path)
         state.instances_manager = _mgr_returning(503, b"{}")
@@ -1475,6 +1528,7 @@ class TestCreatePeerSlot:
             await create_peer_slot(state, "nobita")
         assert "503" in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_an_unreachable_peer_says_so_without_leaking_the_cause(self, tmp_path):
         """The transcript is a surface the user copies out of.
 
@@ -1492,6 +1546,7 @@ class TestCreatePeerSlot:
         assert "17777" not in str(excinfo.value)
         assert "Reconnect" in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_an_oversized_reply_is_refused_rather_than_decoded(self, tmp_path):
         state = _make_state(tmp_path)
         state.instances_manager = _mgr_returning(200, b"x" * (64 * 1024 + 8))
@@ -1500,6 +1555,7 @@ class TestCreatePeerSlot:
             await create_peer_slot(state, "nobita")
         assert "oversized" in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_a_malformed_reply_is_refused(self, tmp_path):
         state = _make_state(tmp_path)
         state.instances_manager = _mgr_returning(200, b"{not json")
@@ -1509,6 +1565,7 @@ class TestCreatePeerSlot:
         assert "malformed" in str(excinfo.value)
 
     @pytest.mark.parametrize("body", [b"{}", b'{"key": ""}', b'{"key": 7}', b"[]"])
+    @pytest.mark.asyncio
     async def test_a_reply_that_names_no_slot_is_refused(self, tmp_path, body):
         """A missing key would otherwise bind the session to the empty string."""
         state = _make_state(tmp_path)
@@ -1537,6 +1594,7 @@ class TestForwardPeerSelection:
             ("reasoning_effort", {"reasoning_effort": "high"}, "reasoning-effort"),
         ],
     )
+    @pytest.mark.asyncio
     async def test_each_control_reaches_the_peers_own_slot(self, tmp_path, control, body, segment):
         state = _make_state(tmp_path)
         mgr = _mgr_returning(200, b'{"ok": true}')
@@ -1551,6 +1609,7 @@ class TestForwardPeerSelection:
         assert args[2] == f"api/chat/slots/peer-chat-9/{segment}"
         assert json.loads(kwargs["data"]) == body
 
+    @pytest.mark.asyncio
     async def test_the_peers_accepted_state_is_returned_not_discarded(self, tmp_path):
         """What the peer ACCEPTED is not always what was asked for.
 
@@ -1574,6 +1633,7 @@ class TestForwardPeerSelection:
         [b"not json at all", b'"a bare string"', b"", b"[]"],
         ids=["unparseable", "not-an-object", "empty", "array"],
     )
+    @pytest.mark.asyncio
     async def test_a_reply_that_is_not_an_object_yields_nothing_to_mirror(self, tmp_path, body):
         """The pick SUCCEEDED over there — a reply this side cannot read must not
         turn it into a failure. An empty dict degrades to "nothing to mirror"."""
@@ -1582,6 +1642,7 @@ class TestForwardPeerSelection:
 
         assert await forward_peer_selection(state, _remote_slot(), "model", {"model": "opus"}) == {}
 
+    @pytest.mark.asyncio
     async def test_an_oversized_success_reply_is_not_decoded(self, tmp_path):
         """Same byte ceiling the refusal path enforces, and for the same reason:
         a hostile or broken peer must not be able to make the hub decode an
@@ -1594,6 +1655,7 @@ class TestForwardPeerSelection:
 
         assert await forward_peer_selection(state, _remote_slot(), "agent", {"agent": "r"}) == {}
 
+    @pytest.mark.asyncio
     async def test_an_unlisted_control_is_a_programming_error(self, tmp_path):
         """A closed map, because ``control`` is interpolated into a proxied URL.
 
@@ -1609,6 +1671,7 @@ class TestForwardPeerSelection:
             await forward_peer_selection(state, _remote_slot(), "project", {"project": "/etc"})
         mgr.proxy_request.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_a_version_skewed_peer_is_never_asked_to_apply_a_pick(self, tmp_path):
         state = _make_state(tmp_path)
         mgr = _mgr_returning(200, b"{}")
@@ -1619,6 +1682,7 @@ class TestForwardPeerSelection:
             await forward_peer_selection(state, _remote_slot(), "agent", {"agent": "x"})
         mgr.proxy_request.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_the_peers_own_refusal_is_what_the_user_reads(self, tmp_path):
         """Only the peer knows WHY: the agent was deleted there, the model is not
         available to that account, the workspace already has messages."""
@@ -1643,6 +1707,7 @@ class TestForwardPeerSelection:
             pytest.param(b"x" * (64 * 1024 + 8), id="oversized"),
         ],
     )
+    @pytest.mark.asyncio
     async def test_an_unusable_refusal_falls_back_to_the_status(self, tmp_path, body):
         """A peer reply is untrusted: only a short ``error`` STRING is surfaced."""
         state = _make_state(tmp_path)
@@ -1652,6 +1717,7 @@ class TestForwardPeerSelection:
             await forward_peer_selection(state, _remote_slot(), "model", {"model": "x"})
         assert "500" in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_an_overlong_peer_message_is_truncated(self, tmp_path):
         state = _make_state(tmp_path)
         detail = json.dumps({"error": "y" * 900}).encode()
@@ -1661,6 +1727,7 @@ class TestForwardPeerSelection:
             await forward_peer_selection(state, _remote_slot(), "model", {"model": "x"})
         assert len(str(excinfo.value)) == 200
 
+    @pytest.mark.asyncio
     async def test_an_unreachable_peer_says_so_without_leaking_the_cause(self, tmp_path):
         state = _make_state(tmp_path)
         mgr = MagicMock()
@@ -1673,6 +1740,7 @@ class TestForwardPeerSelection:
         assert "17777" not in str(excinfo.value)
         assert "Reconnect" in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_a_gateway_without_instances_refuses(self, tmp_path):
         state = _make_state(tmp_path)
         state.instances_manager = None
@@ -1682,12 +1750,14 @@ class TestForwardPeerSelection:
 
 
 class TestForwardPeerStop:
+    @pytest.mark.asyncio
     async def test_a_local_slot_is_not_forwarded(self, tmp_path):
         state = _make_state(tmp_path)
         state.instances_manager = _mgr_returning(200, b"{}")
 
         assert await forward_peer_stop(state, _ChatSlot("chat-1"), False) is False
 
+    @pytest.mark.asyncio
     async def test_an_accepted_stop_reports_true(self, tmp_path):
         state = _make_state(tmp_path)
         mgr = _mgr_returning(200, b"{}")
@@ -1700,6 +1770,7 @@ class TestForwardPeerStop:
         assert args[2] == "api/chat/slots/peer-chat-9/stop"
         assert kwargs["params"] is None
 
+    @pytest.mark.asyncio
     async def test_a_forced_stop_carries_the_flag(self, tmp_path):
         state = _make_state(tmp_path)
         mgr = _mgr_returning(200, b"{}")
@@ -1709,6 +1780,7 @@ class TestForwardPeerStop:
 
         assert mgr.proxy_request.call_args.kwargs["params"] == {"force": "true"}
 
+    @pytest.mark.asyncio
     async def test_a_refused_stop_reports_false_rather_than_raising(self, tmp_path):
         """The caller turns False into an actionable error for the user.
 
@@ -1720,6 +1792,7 @@ class TestForwardPeerStop:
 
         assert await forward_peer_stop(state, _remote_slot(), False) is False
 
+    @pytest.mark.asyncio
     async def test_an_unreachable_peer_reports_false(self, tmp_path):
         state = _make_state(tmp_path)
         mgr = MagicMock()
@@ -1730,6 +1803,7 @@ class TestForwardPeerStop:
 
 
 class TestPeerTurnRequest:
+    @pytest.mark.asyncio
     async def test_the_turn_asks_the_peer_to_mirror_its_frames(self, tmp_path):
         """Without ``relay=1`` the reply carries the prose and no tool activity."""
         state = _make_state(tmp_path)
@@ -1756,6 +1830,7 @@ class TestPeerTurnRequest:
         # The PEER's slot key, and only the message — see the known gap in the PR.
         assert json.loads(kwargs["data"]) == {"message": "hi", "slot": "peer-chat-9"}
 
+    @pytest.mark.asyncio
     async def test_a_peer_that_refuses_the_turn_becomes_an_error_row(self, tmp_path):
         """The refusal must reach the transcript, not just the log.
 
@@ -1776,6 +1851,7 @@ class TestPeerTurnRequest:
         assert "503" in slot.messages[-1]["content"]
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
 
+    @pytest.mark.asyncio
     async def test_a_version_skew_found_at_send_time_is_a_transcript_error(self, tmp_path):
         """The gate is re-checked per turn: a peer can be updated mid-session."""
         state = _make_state(tmp_path)
@@ -1794,6 +1870,7 @@ class TestPeerTurnRequest:
 
 
 class TestRowReplayDetails:
+    @pytest.mark.asyncio
     async def test_a_thinking_row_is_replayed_as_reasoning(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -1812,6 +1889,7 @@ class TestRowReplayDetails:
         assert [(m["role"], m["content"]) for m in slot.messages] == [("thinking", "hmm")]
         assert [c.args[0] for c in state.broadcast_ws.call_args_list].count("chat_thinking") == 1
 
+    @pytest.mark.asyncio
     async def test_a_rows_meta_survives_the_replay(self, tmp_path):
         """Tool rows carry their identity in `meta`; dropping it breaks folding."""
         state = _make_state(tmp_path)
@@ -1838,6 +1916,7 @@ class TestRowReplayDetails:
         # same dict, and the peer's id is what the frontend folds tool rows by.
         assert slot.messages[-1]["meta"]["tool_call_id"] == "t1"
 
+    @pytest.mark.asyncio
     async def test_a_non_string_content_is_carried_as_json(self, tmp_path):
         """A structured row must not vanish because it is not a string."""
         state = _make_state(tmp_path)
@@ -1855,6 +1934,7 @@ class TestRowReplayDetails:
 
         assert json.loads(slot.messages[-1]["content"]) == {"a": 1}
 
+    @pytest.mark.asyncio
     async def test_a_row_with_no_type_is_ignored(self, tmp_path):
         state = _make_state(tmp_path)
         slot = _remote_slot()
@@ -1868,6 +1948,7 @@ class TestRowReplayDetails:
 
         assert slot.messages == []
 
+    @pytest.mark.asyncio
     async def test_a_mirrored_frame_keyed_by_key_is_also_rewritten(self, tmp_path):
         """`slot_title` and `session_summary` name the session in `key`."""
         state = _make_state(tmp_path)
@@ -1893,6 +1974,7 @@ class TestRowReplayDetails:
         assert titles[0].args[1] == {"key": slot.key, "title": "Deploy"}
 
     @pytest.mark.parametrize("payload", ["{not json", '"a string"', "[1, 2]"])
+    @pytest.mark.asyncio
     async def test_an_undecodable_mirrored_frame_is_dropped_not_raised(self, tmp_path, payload):
         """One bad frame must not end an otherwise healthy turn."""
         state = _make_state(tmp_path)
@@ -1912,6 +1994,7 @@ class TestRowReplayDetails:
         assert [c.args[0] for c in state.broadcast_ws.call_args_list] == ["chat_done"]
         assert slot.messages == []
 
+    @pytest.mark.asyncio
     async def test_the_done_sentinel_stops_the_replay(self, tmp_path):
         """Rows after the terminator belong to no turn and must not be appended."""
         state = _make_state(tmp_path)
@@ -1929,9 +2012,11 @@ class TestRowReplayDetails:
 
         assert slot.messages == []
 
+    @pytest.mark.asyncio
     async def test_a_record_with_no_data_line_is_not_a_row(self):
         assert parse_sse_record(b"event: ping\nid: 7") is None
 
+    @pytest.mark.asyncio
     async def test_a_garbled_record_does_not_end_the_turn(self, tmp_path):
         """The rest of the stream is still worth replaying."""
         state = _make_state(tmp_path)
@@ -1951,6 +2036,7 @@ class TestRowReplayDetails:
 
         assert [(m["role"], m["content"]) for m in slot.messages] == [("assistant", "Hello")]
 
+    @pytest.mark.asyncio
     async def test_only_the_trailing_run_of_chunks_is_replaced(self, tmp_path):
         """An earlier segment's finished message must survive the next finalize.
 
@@ -2004,6 +2090,7 @@ class TestPeerStringRedaction:
     so each runs the same chain.
     """
 
+    @pytest.mark.asyncio
     async def test_a_frames_class_is_redacted_like_its_content(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -2022,6 +2109,7 @@ class TestPeerStringRedaction:
         assert _BAIT not in json.dumps([list(c.args) for c in state.broadcast_ws.call_args_list])
         assert _BAIT not in json.dumps(slot.messages)
 
+    @pytest.mark.asyncio
     async def test_a_peers_refusal_message_is_redacted_before_the_clamp(self, tmp_path):
         """Redacted BEFORE the 200-char clamp, or a credential survives by
         sitting past it."""
@@ -2034,6 +2122,7 @@ class TestPeerStringRedaction:
 
         assert _BAIT not in str(excinfo.value)
 
+    @pytest.mark.asyncio
     async def test_a_mirrored_workspace_is_redacted_before_it_is_persisted(
         self, tmp_path, monkeypatch
     ):
@@ -2074,6 +2163,7 @@ class TestRelayedRedaction:
     credentials into this machine's history.
     """
 
+    @pytest.mark.asyncio
     async def test_an_assistant_row_is_redacted_before_it_is_stored(self, tmp_path):
         state = _make_state(tmp_path)
         slot = _remote_slot()
@@ -2090,6 +2180,7 @@ class TestRelayedRedaction:
 
         _assert_redacted(slot.messages[-1]["content"])
 
+    @pytest.mark.asyncio
     async def test_a_streamed_chunk_is_redacted_on_the_wire(self, tmp_path):
         """The chunk frame is its own broadcast, not a by-product of ``append``."""
         state = _make_state(tmp_path)
@@ -2110,6 +2201,7 @@ class TestRelayedRedaction:
         _assert_redacted(chunks[0].args[1]["content"])
         _assert_redacted(slot.messages[-1]["content"])
 
+    @pytest.mark.asyncio
     async def test_a_thinking_row_is_redacted_on_both_surfaces(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -2129,6 +2221,7 @@ class TestRelayedRedaction:
         _assert_redacted(thinking[0].args[1]["content"])
         _assert_redacted(slot.messages[-1]["content"])
 
+    @pytest.mark.asyncio
     async def test_a_rows_meta_is_redacted_too(self, tmp_path):
         """`meta` holds the tool input — the field most likely to carry a secret."""
         state = _make_state(tmp_path)
@@ -2157,6 +2250,7 @@ class TestRelayedRedaction:
         # row's identity still folds.
         assert meta["tool_call_id"] == "t1"
 
+    @pytest.mark.asyncio
     async def test_a_mirrored_frames_nested_strings_are_redacted(self, tmp_path):
         """The mirror is a denylist, so the frame shape is open-ended."""
         state = _make_state(tmp_path)
@@ -2191,6 +2285,7 @@ class TestRelayedRedaction:
         # Redaction runs BEFORE the key rewrite, so the local key still lands.
         assert payload["slot"] == slot.key
 
+    @pytest.mark.asyncio
     async def test_clean_prose_is_passed_through_unchanged(self, tmp_path):
         """Both redactors return their input when nothing matches."""
         state = _make_state(tmp_path)
@@ -2219,6 +2314,7 @@ class TestPeerVersionIsNotAnEchoChannel:
     same reason every other peer string is.
     """
 
+    @pytest.mark.asyncio
     async def test_a_credential_in_the_peers_version_is_redacted(self):
         mgr = MagicMock()
         mgr.peer_version = AsyncMock(return_value=(True, f"0.5.9 {_BAIT}"))
@@ -2231,6 +2327,7 @@ class TestPeerVersionIsNotAnEchoChannel:
         # move, so redacting the peer's half must not cost them that.
         assert kiro_crew.__version__ in message
 
+    @pytest.mark.asyncio
     async def test_an_oversized_peer_version_is_bounded(self):
         mgr = MagicMock()
         mgr.peer_version = AsyncMock(return_value=(True, "9" * 5000))
@@ -2253,6 +2350,7 @@ class TestMirroredClearCannotDestroyLocalRows:
     the next reload.
     """
 
+    @pytest.mark.asyncio
     async def test_a_mirrored_clear_leaves_the_local_rows_and_the_dirty_flag_alone(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -2286,6 +2384,7 @@ class TestMirroredClearCannotDestroyLocalRows:
         # stored transcript never took.
         assert [c.args[0] for c in state.broadcast_ws.call_args_list] == ["chat_done"]
 
+    @pytest.mark.asyncio
     async def test_an_ordinary_mirrored_frame_leaves_the_rows_alone(self, tmp_path):
         """The clear branch must key on the frame type, not fire on every frame."""
         state = _make_state(tmp_path)
@@ -2325,6 +2424,7 @@ class TestRelayedTurnDoesNotDrainLocally:
     tools and local credentials is worse, so the local drain stays out.
     """
 
+    @pytest.mark.asyncio
     async def test_a_queued_message_is_not_handed_to_the_local_runner(self, tmp_path, monkeypatch):
         """``_start_next_queued_turn`` dispatches ``_run_chat``, so it stays unused.
 
@@ -2349,6 +2449,7 @@ class TestRelayedTurnDoesNotDrainLocally:
         # message to work with.
         assert [q["content"] for q in slot._queue] == ["the second send"]
 
+    @pytest.mark.asyncio
     async def test_an_empty_queue_leaves_the_turn_end_untouched(self, tmp_path):
         """The drain must not fire the local finaliser on the common path.
 
@@ -2365,6 +2466,7 @@ class TestRelayedTurnDoesNotDrainLocally:
         assert [c.args[0] for c in state.broadcast_ws.call_args_list] == ["chat_done"]
         assert [m["cls"] for m in slot.messages] != ["done"]
 
+    @pytest.mark.asyncio
     async def test_a_failed_relay_does_not_fall_back_to_the_local_runner(
         self, tmp_path, monkeypatch
     ):
@@ -2436,6 +2538,7 @@ class TestBusyRemoteSlotRefusesInsteadOfQueueing:
         state._slots[slot.key] = slot
         return slot
 
+    @pytest.mark.asyncio
     async def test_a_second_send_is_refused_with_remote_turn_busy(self, tmp_path):
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -2458,6 +2561,7 @@ class TestBusyRemoteSlotRefusesInsteadOfQueueing:
         finally:
             slot.task.cancel()
 
+    @pytest.mark.asyncio
     async def test_a_busy_LOCAL_slot_still_queues(self, tmp_path):
         """The refusal is scoped to remote slots; local queueing is untouched.
 
@@ -2492,6 +2596,7 @@ class TestRemotePicksAreSerialised:
     that runs the next turn took the other.
     """
 
+    @pytest.mark.asyncio
     async def test_a_second_pick_waits_for_the_first_transaction(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
 
@@ -2534,6 +2639,7 @@ class TestRemotePicksAreSerialised:
         assert order == ["enter:a", "exit:a", "enter:b", "exit:b"]
         assert slot.model == "b"
 
+    @pytest.mark.asyncio
     async def test_the_lock_is_not_the_message_window_lock(self, tmp_path):
         """`slot._lock` must stay free while a pick is in flight.
 
@@ -2669,6 +2775,7 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
             first = call.args[0]
             assert isinstance(first, ast.Name) and first.id == "request", name
 
+    @pytest.mark.asyncio
     async def test_a_non_owner_cannot_send_to_a_bound_crew(self, tmp_path, monkeypatch):
         """403 before the relay, so the tunnel is never spent."""
         from aiohttp.test_utils import TestClient, TestServer
@@ -2685,6 +2792,7 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
             assert resp.status == 403
         relay.assert_not_called()
 
+    @pytest.mark.asyncio
     async def test_a_non_owner_keeps_its_reach_on_a_LOCAL_slot(self, tmp_path):
         """The gate is scoped to the BINDING, exactly like the create path's.
 
@@ -2704,6 +2812,7 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
             )
             assert resp.status != 403
 
+    @pytest.mark.asyncio
     async def test_a_non_owner_cannot_stop_a_bound_crew(self, tmp_path, monkeypatch):
         """The stop travels over the owner's tunnel and aborts the owner's turn."""
         from aiohttp import web
@@ -2730,6 +2839,7 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
             assert resp.status == 403
         forwarded.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_a_non_owner_cannot_reconfigure_a_bound_crew(self, tmp_path, monkeypatch):
         """Reconfiguring is the same credential spend as sending.
 
@@ -2754,6 +2864,7 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
         # Not mirrored locally either: a refused pick must leave the header alone.
         assert slot.model == "kept"
 
+    @pytest.mark.asyncio
     async def test_the_pick_chokepoint_still_lets_the_owner_through(self, tmp_path, monkeypatch):
         """The gate must not be a blanket refusal of the feature it protects."""
         from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
@@ -2772,6 +2883,7 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
         assert resp.status == 200
         assert slot.model == "ok"
 
+    @pytest.mark.asyncio
     async def test_a_missing_app_claim_is_refused_on_a_bound_slot(self, tmp_path, monkeypatch):
         """An ABSENT ``app`` key means the auth middleware never ran.
 
@@ -2803,6 +2915,7 @@ class TestRelayedContextUsageFeedsTheMeterNotTheTranscript:
     moved.
     """
 
+    @pytest.mark.asyncio
     async def test_a_relayed_reading_broadcasts_and_appends_nothing(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -2835,6 +2948,7 @@ class TestRelayedContextUsageFeedsTheMeterNotTheTranscript:
         # here, and the meter is keyed by slot.
         assert payload["slot"] == slot.key
 
+    @pytest.mark.asyncio
     async def test_an_unparseable_reading_is_dropped_not_appended(self, tmp_path):
         """A missing reading leaves the meter at its last value; a JSON row in the
         transcript would be permanent."""
@@ -2913,6 +3027,7 @@ class TestRemoteSessionLockedWhileTunnelDown:
         assert peer_is_connected(raising, "nobita") is False
         assert peer_is_connected(None, "nobita") is False
 
+    @pytest.mark.asyncio
     async def test_a_send_is_refused_while_the_tunnel_is_down(self, tmp_path):
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -2941,6 +3056,7 @@ class TestRemoteSessionLockedWhileTunnelDown:
 class TestInterruptedTurnSurvivesRestart:
     """F1: a turn in flight when the gateway crashes comes back marked, not silent."""
 
+    @pytest.mark.asyncio
     async def test_relay_clears_the_in_flight_marker_when_the_turn_ends(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -2960,6 +3076,7 @@ class TestInterruptedTurnSurvivesRestart:
         # durability save, so a reload has nothing to recover.
         assert slot._relay_in_flight is False
 
+    @pytest.mark.asyncio
     async def test_cancellation_preserves_the_in_flight_marker(self, tmp_path):
         """A cancelled relay is NOT a terminal outcome — the marker must survive.
 
@@ -3077,6 +3194,7 @@ class TestRelayMirrorIsDetachedIfPrepareFails:
     ownership on that error path so the set comes back clean.
     """
 
+    @pytest.mark.asyncio
     async def test_a_prepare_failure_leaves_no_mirror_registration(self, tmp_path, monkeypatch):
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
@@ -3127,6 +3245,7 @@ class TestPreStreamRefusalRollsBackTheUserRow:
     running the turn — so that row stays.
     """
 
+    @pytest.mark.asyncio
     async def test_a_pre_stream_refusal_removes_the_user_row(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -3145,6 +3264,7 @@ class TestPreStreamRefusalRollsBackTheUserRow:
         assert [m["role"] for m in slot.messages] == ["error"]
         assert slot.total_messages == before_total
 
+    @pytest.mark.asyncio
     async def test_a_mid_stream_truncation_keeps_the_user_row(self, tmp_path):
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -3165,6 +3285,7 @@ class TestPreStreamRefusalRollsBackTheUserRow:
         assert any(m["role"] == "user" for m in slot.messages)
         assert slot.messages[-1]["role"] == "error"
 
+    @pytest.mark.asyncio
     async def test_a_zero_byte_2xx_stream_keeps_the_user_row(self, tmp_path):
         """A 2xx response that closes before a byte is ACCEPTANCE, not refusal.
 
@@ -3254,6 +3375,7 @@ class TestRelayedSendToBusyPeerSlotIsRefused:
     reader raise and surface a reconnect prompt instead.
     """
 
+    @pytest.mark.asyncio
     async def test_a_relayed_send_to_a_busy_local_slot_is_refused(self, tmp_path):
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -3283,6 +3405,7 @@ class TestRemoteSessionIsPlainChatOnly:
     the sibling: the post-create mode switch that would otherwise reopen it.
     """
 
+    @pytest.mark.asyncio
     async def test_a_remote_slot_cannot_switch_to_a_non_plain_mode(self, tmp_path):
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -3358,6 +3481,7 @@ class TestBoundSlotRefusesTurnRestartingActions:
             ("/api/chat/slots/chat-1/continue", None),
         ],
     )
+    @pytest.mark.asyncio
     async def test_each_action_is_refused_and_nothing_is_truncated(
         self, tmp_path, monkeypatch, path, body
     ):
@@ -3406,6 +3530,7 @@ class TestBoundSlotRefusesTurnRestartingActions:
             ("/api/chat/slots/chat-1/continue", None),
         ],
     )
+    @pytest.mark.asyncio
     async def test_a_foreign_app_gets_the_anti_enumeration_404_not_the_409(
         self, tmp_path, monkeypatch, path, body
     ):
@@ -3443,6 +3568,7 @@ class TestRemoteSlotNeverRunsLocally:
     (GPT #7693) — so a new entry point cannot silently reintroduce the divergence.
     """
 
+    @pytest.mark.asyncio
     async def test_run_chat_refuses_a_remote_slot_before_any_execution(self, tmp_path):
         from kiro_crew.dashboard.chat_runner import _run_chat
 

@@ -33,6 +33,8 @@ from pathlib import Path
 import pytest
 from skill_script_helpers import load_skill_script
 
+from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr"
 SCRIPTS_DIR = SKILL_DIR / "scripts"
@@ -69,9 +71,46 @@ FAKE_VALUES = {
 }
 
 
+def _fixture_git_env() -> dict[str, str]:
+    """Env for a fixture git call: no host config, templates, hooks, or identity bleed.
+
+    The session/module-scoped template builders below run BEFORE the function-scoped
+    ``_git_identity`` autouse fixture in ``test/conftest.py`` has pinned anything, so
+    they would otherwise read the developer's real ``~/.gitconfig`` -- a
+    ``commit.gpgSign`` aborts the whole template, and a ``core.hooksPath`` or
+    ``init.templateDir`` would EXECUTE host hooks from inside the test run. The
+    ``GIT_DIR`` location family is dropped (the production list, so an exported
+    ``GIT_DIR`` from a hook or ``rebase --exec`` cannot retarget the fixture), both
+    template channels are emptied, and identity is supplied. Deliberately NOT
+    ``git_command_env()``: that pins ``diff.external`` empty for commands that never
+    diff, and these fixtures run ``git diff``.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
+    env.update(
+        {
+            "GIT_TEMPLATE_DIR": "",
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "init.templateDir",
+            "GIT_CONFIG_VALUE_0": "",
+        }
+    )
+    return env
+
+
 def _git(cwd, *args):
     proc = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+        env=_fixture_git_env(),
     )
     return proc.stdout.strip()
 
@@ -196,21 +235,17 @@ def no_gh(monkeypatch):
     return fake
 
 
-@pytest.fixture
-def parity_repo(tmp_path):
-    """A synthetic repo that resolve_profile.py recognises as Kiro Crew.
+@pytest.fixture(scope="session")
+def _parity_repo_template(tmp_path_factory):
+    """Build the parity repo once per session; ``parity_repo`` copies it per test.
 
-    Carries real copies of both reviewer workflows and both base-ref prompt
-    files, a backend AUTOSDE.yaml, and deliberately NO website/AUTOSDE.yaml so
-    the absent-file fallback path is exercised. One base commit on ``main`` plus
-    one feature commit, so BASE...HEAD is non-empty.
-
-    Both contract workflows are committed on ``main`` - the base branch - not
-    only written to the worktree, because the extractor reads a reviewer's
-    contract out of the base commit. A workflow present only in the checkout is
-    not authority and fails the run closed.
+    Ten git subprocesses plus the workflow/prompt copies were paid on every one
+    of the ~130 tests below (~2.5s each under load, the largest single setup
+    cost in the suite). Session scope is safe because this directory is never
+    handed to a test -- only copied from -- so a test that commits, checks out
+    ``main``, or rewrites a workflow in its copy cannot reach another test's.
     """
-    root = tmp_path / "repo"
+    root = tmp_path_factory.mktemp("parity-seed") / "repo"
     (root / ".github" / "workflows").mkdir(parents=True)
     (root / ".github" / "review-prompts").mkdir(parents=True)
     shutil.copy(GPT_WORKFLOW, root / ".github" / "workflows" / GPT_WORKFLOW.name)
@@ -229,6 +264,31 @@ def parity_repo(tmp_path):
     (root / "changed.py").write_text("VALUE = 1\n", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-m", "feat(thing): add VALUE\n\nA body line for intent.")
+    return root
+
+
+@pytest.fixture
+def parity_repo(tmp_path, _parity_repo_template):
+    """A synthetic repo that resolve_profile.py recognises as Kiro Crew.
+
+    Carries real copies of both reviewer workflows and both base-ref prompt
+    files, a backend AUTOSDE.yaml, and deliberately NO website/AUTOSDE.yaml so
+    the absent-file fallback path is exercised. One base commit on ``main`` plus
+    one feature commit, so BASE...HEAD is non-empty.
+
+    Both contract workflows are committed on ``main`` - the base branch - not
+    only written to the worktree, because the extractor reads a reviewer's
+    contract out of the base commit. A workflow present only in the checkout is
+    not authority and fails the run closed.
+
+    Each test receives its own ``copytree`` of the session template. The repo
+    has no remote, so nothing recorded in ``.git`` names the template's path;
+    the ``reset --hard`` re-stats the copied files against the index, because a
+    copied checkout otherwise reads as having "unstaged changes" on Windows.
+    """
+    root = tmp_path / "repo"
+    shutil.copytree(_parity_repo_template, root)
+    _git(root, "reset", "--hard", "HEAD")
     return root
 
 
@@ -454,12 +514,12 @@ def test_model_pins_agree_with_the_bundled_profile():
 
 
 def test_the_gpt_pin_is_the_reviewers_not_its_adjudicators():
-    """The GPT lane embeds a claude-code-action for the Opus stage that
+    """The GPT lane embeds a claude-code-action for the Fable stage that
     adjudicates its blocking verdict. Reading THAT pin as the reviewer's would
-    make every local brief report drift and claim the GPT lane runs on Opus."""
+    make every local brief report drift and claim the GPT lane runs on Fable."""
     text = _gpt_text()
     scalars = local_review.block_scalars(text)
-    assert "us.anthropic.claude-opus-4-8" in text
+    assert "us.anthropic.claude-fable-5-1" in text
     assert local_review._extract_ci_model(text, scalars, prefer="cli") == "openai.gpt-5.6-sol"
 
 

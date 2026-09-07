@@ -23,21 +23,26 @@
  * react-query key. All AWS access runs through the gateway's audited CLI
  * chokepoint; this surface never talks to AWS from the browser.
  */
-import { Fragment, useRef, useState } from 'react'
-import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import {
   ChevronDown, RefreshCw, Library, Archive, Share2,
-  Download, Trash2, Upload, FolderClosed, FolderPlus, FileText, X,
-  MoreHorizontal, Code, LayoutGrid, List, Search, CloudOff, Plus, AlertTriangle,
+  Download, Trash2, Upload, FolderClosed, FolderOpen, FolderPlus, FolderInput, FileText, X,
+  MoreHorizontal, Code, LayoutGrid, List, Search, CloudOff, Plus, AlertTriangle, Pencil,
+  Database, Link2,
 } from 'lucide-react'
-import { Btn, Badge, Toggle, Input, ContentSkeleton, IconButton } from '../../components/ui'
+import type { LucideIcon } from 'lucide-react'
 import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+  Btn, Badge, Toggle, Input, ContentSkeleton, IconButton,
+  Card, EmptyState, FilteredEmpty, PanelSectionHeader, SearchInput,
+} from '../../components/ui'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from '../../components/ui/dropdown-menu'
 import SegmentedControl from '../../components/SegmentedControl'
-import { LibraryTableHead } from '../../components/library/LibraryTable'
+import { LibraryTableHead, PINNED_SURFACE } from '../../components/library/LibraryTable'
 import type { LibraryColumn } from '../../components/library/LibraryTable'
 import {
   WidgetThumb, ContentThumb, ImageThumb, WebAppThumb,
@@ -55,7 +60,7 @@ import type {
   DriveSection, DriveStatus, ArtifactKind, LibraryArtifact,
   BackupKind, BackupRun, BackupJobState, Share, DriveUsage,
 } from './types'
-import { CopyBtn, PaneHeader, AwsErrorNotice } from './shared'
+import { CopyBtn, PaneHeader, AwsErrorNotice, StorageBar, QuickTile } from './shared'
 
 /* Literal-key maps from enum → full catalog key, so no i18nT() call assembles a
  * key by interpolation (dynamicKeys gate): extractors and unused-key tooling
@@ -180,6 +185,13 @@ function useViewMode(section: keyof typeof VIEW_MODE_STORAGE_KEY, fallback: View
  * column, which is the same reason the gallery passes it. Each section owns its
  * own `layoutId` -- the indicator is a framer shared-layout animation, and two
  * live controls sharing one id fight over it.
+ *
+ * `iconOnly`, where the gallery shows labels: this toggle shares a pane header
+ * with two more actions (New folder, Upload) that the gallery's toolbar does
+ * not carry, and the header sits in a pane the rail has already narrowed. Two
+ * labelled segments plus two labelled buttons wrap to a second toolbar row at
+ * ordinary desktop widths; the glyphs are the same ones the gallery draws, so
+ * the control is recognised from there rather than re-learned.
  */
 function ViewModeToggle({ section, mode, onChange }: {
   section: keyof typeof VIEW_MODE_STORAGE_KEY
@@ -550,6 +562,9 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
           this folder holds, so the blurb restated the same two facts about
           100px above it. Kept during loading, so it does not flash out and
           back in as the listing resolves. */}
+      {/* Not the pane header's `subtitle` slot, although one exists: that slot
+          is unconditional, and this sentence must leave when the empty state
+          arrives. */}
       {!(listQ.isSuccess && slugs.length === 0) && (
       <p className="mb-3 text-[12px] text-muted" data-testid="library-blurb">
         {i18nT('apps.awsControl.console.library_blurb')}
@@ -562,7 +577,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
           the blurb over blank space, which reads as "there is nothing here" --
           the one conclusion we specifically cannot draw. */}
       {listQ.isError && (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-border bg-card p-6" data-testid="library-error">
+        <Card className="flex flex-col items-center gap-3 p-6" data-testid="library-error">
           <AwsErrorNotice
             askAgent
             error={listQ.error}
@@ -573,7 +588,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
             <RefreshCw size={13} />
             {i18nT('apps.awsControl.console.retry')}
           </Btn>
-        </div>
+        </Card>
       )}
 
       {/* The cloud listing can succeed while the LOCAL lookup behind it fails.
@@ -585,8 +600,8 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
           never appears, with nothing anywhere explaining why. The cards stay;
           only the silence goes. */}
       {localQ.isError && (
-        <div
-          className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border bg-card px-3 py-2.5"
+        <Card
+          className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5"
           data-testid="library-local-error"
         >
           <AwsErrorNotice
@@ -600,41 +615,42 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
             <RefreshCw size={13} />
             {i18nT('apps.awsControl.console.retry')}
           </Btn>
-        </div>
+        </Card>
       )}
 
       {listQ.isSuccess && slugs.length === 0 && (
-        <div className="rounded-lg border border-dashed border-border p-8 text-center" data-testid="library-empty">
-          <div className="mb-1.5 text-[13px] font-medium text-text-strong">
-            {i18nT('apps.awsControl.console.library_empty_title')}
-          </div>
-          <p className="mx-auto mb-4 max-w-[52ch] text-[12px] leading-relaxed text-muted">
-            {i18nT('apps.awsControl.console.library_empty_body')}
-          </p>
-          {/* With nothing addable the count read "(0 ready)" on a button that
-              opens a picker refusing everything in it. Say that instead. */}
-          {/* Every branch below asserts something about the LOCAL library, so
-              none may render until it answered -- otherwise a failed lookup
-              produces a confident "everything is already here" built on nothing.
-              Same mistake as reading orphan-hood out of an empty map. */}
-          {!localAnswered || nothingLocalYet ? null : pushable.length > 0 ? (
-            <Btn primary onClick={() => setPicking(true)} data-testid="library-empty-add">
-              <Plus size={13} />
-              {i18nT('apps.awsControl.console.library_add_count', { count: fmtNumber(pushable.length) })}
-            </Btn>
-          ) : (
-            <p className="text-[12px] text-muted" data-testid="library-empty-none">
-              {onlyUnaddable
-                ? i18nT('apps.awsControl.console.library_not_pushable')
-                : i18nT('apps.awsControl.console.library_add_nothing')}
-            </p>
-          )}
-        </div>
+        <EmptyState
+          icon={<Library className="h-10 w-10" aria-hidden="true" />}
+          title={i18nT('apps.awsControl.console.library_empty_title')}
+          subtitle={i18nT('apps.awsControl.console.library_empty_body')}
+          testId="library-empty"
+          /* With nothing addable the count read "(0 ready)" on a button that
+             opens a picker refusing everything in it. Say that instead.
+
+             Every branch here asserts something about the LOCAL library, so
+             none may render until it answered -- otherwise a failed lookup
+             produces a confident "everything is already here" built on nothing.
+             Same mistake as reading orphan-hood out of an empty map. */
+          action={
+            !localAnswered || nothingLocalYet ? undefined : pushable.length > 0 ? (
+              <Btn primary onClick={() => setPicking(true)} data-testid="library-empty-add">
+                <Plus size={13} />
+                {i18nT('apps.awsControl.console.library_add_count', { count: fmtNumber(pushable.length) })}
+              </Btn>
+            ) : (
+              <p className="text-[12px] text-muted" data-testid="library-empty-none">
+                {onlyUnaddable
+                  ? i18nT('apps.awsControl.console.library_not_pushable')
+                  : i18nT('apps.awsControl.console.library_add_nothing')}
+              </p>
+            )
+          }
+        />
       )}
 
       {slugs.length > 0 && mode === 'grid' && (
-        <div className="-mr-3" data-testid="library-grid">
-          <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
+        <div data-testid="library-grid">
+          <div className="grid items-start gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
             {slugs.map((slug) => (
               <LibraryCloudCard
                 key={slug}
@@ -735,14 +751,12 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
                   {RowBody}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="cursor-pointer rounded border-none bg-transparent p-1 text-muted transition-colors hover:text-text"
+                      <IconButton
                         aria-label={i18nT('apps.awsControl.console.library_actions')}
                         data-testid="library-more"
                       >
-                        <MoreHorizontal size={14} />
-                      </button>
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </IconButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onSelect={() => askRemove(slug)} data-testid="library-remove">
@@ -801,7 +815,7 @@ export function LibrarySection({ account, bucket }: { account: string; bucket: s
  * menu click reads as a no-op while a live destructive control sits parked out
  * of sight.
  */
-function TileConfirm({ label, error, errorSource, askAgent, pending, onCancel, onConfirm, action, testId = 'drive-grid-confirm' }: {
+export function TileConfirm({ label, error, errorSource, askAgent, pending, onCancel, onConfirm, action, testId = 'drive-grid-confirm' }: {
   /* A NODE, not a string: the library's removal names the cloud folder it will
      empty, and a bucket path belongs in a <code> chip inside the sentence rather
      than flattened into it. Every existing caller passes a string, which is a
@@ -912,7 +926,7 @@ function LibraryCloudCard({ slug, local, localAnswered, confirm, failed, failedW
     </>
   )
 
-  const SHELL = 'relative mb-3 mr-3 overflow-hidden rounded-lg border border-border bg-card'
+  const SHELL = 'relative overflow-hidden rounded-lg border border-border bg-card'
   /* A card backed by a local copy has somewhere to go: the artifact's own page.
      A cloud-only card does NOT -- there is no local artifact to open -- so it
      stays inert rather than offering a link that would 404, and it keeps the flat
@@ -964,14 +978,13 @@ function LibraryCloudCard({ slug, local, localAnswered, confirm, failed, failedW
       <div className="absolute right-2 top-2">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="cursor-pointer rounded border-none bg-card/85 p-1 text-muted backdrop-blur-sm transition-colors hover:text-text"
+            <IconButton
+              className="bg-card/85 backdrop-blur-sm"
               aria-label={i18nT('apps.awsControl.console.library_actions')}
               data-testid="library-more"
             >
-              <MoreHorizontal size={14} />
-            </button>
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             {/* Offered on EVERY listed object, including one with no local row.
@@ -1136,7 +1149,7 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
     >
       <div
         ref={panelRef}
-        className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg"
+        className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg"
         role="dialog"
         aria-modal="true"
         aria-label={i18nT('apps.awsControl.console.library_add')}
@@ -1145,14 +1158,13 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
           <h3 className="text-sm font-semibold text-text-strong">
             {i18nT('apps.awsControl.console.library_add')}
           </h3>
-          <button
+          <IconButton
             onClick={onClose}
-            className="cursor-pointer border-none bg-transparent p-0 text-muted hover:text-text"
             aria-label={i18nT('apps.awsControl.console.close')}
             data-testid="library-add-close"
           >
-            <X size={16} />
-          </button>
+            <X className="h-4 w-4" />
+          </IconButton>
         </div>
 
         {/* The disclosure has to be HERE, where the adding happens: adding fills
@@ -1164,8 +1176,11 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
             cards below carry a Remove control, so any claim about removal being
             unavailable would be disproved by a button in the same dialog on
             every open, and a banner a button contradicts costs the reader their
-            trust in both. */}
-        <p className="border-b border-border px-4 py-2 text-[12px] leading-snug text-muted" data-testid="library-add-oneway">
+            trust in both.
+
+            Body tone, not muted: this is the dialog's only cost disclosure, and
+            it was the most de-emphasised line in it. */}
+        <p className="border-b border-border px-4 py-2 text-[12px] leading-snug text-text" data-testid="library-add-oneway">
           {i18nT('apps.awsControl.console.library_add_oneway')}
         </p>
 
@@ -1247,14 +1262,23 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
               </Btn>
             </div>
           )}
-          {libQ.data && shown.length === 0 && (
+          {/* Two different "nothing": an EMPTY library (the first-run path,
+              nothing was searched) and a search or chip that matched nothing.
+              "No artifacts match." told a reader with zero artifacts that a
+              search they never ran had failed. */}
+          {libQ.data && artifacts.length === 0 && (
+            <p className="py-6 text-center text-[13px] text-muted" data-testid="library-add-empty">
+              {i18nT('apps.awsControl.console.library_add_empty')}
+            </p>
+          )}
+          {libQ.data && artifacts.length > 0 && shown.length === 0 && (
             <p className="py-6 text-center text-[13px] text-muted" data-testid="library-add-none">
               {i18nT('apps.awsControl.console.library_add_none')}
             </p>
           )}
           {shown.length > 0 && (
-            <div className="-mr-3">
-              <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
+            <div>
+              <div className="grid items-start gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
                 {shown.map((a) => (
                   <PickerCard
                     key={a.slug}
@@ -1316,7 +1340,7 @@ function PickerCard({
      that the object being emptied is one the bucket actually reported, and that
      a cloud copy with no local row at all becomes reachable. */
   return (
-    <div className="mb-3 mr-3 overflow-hidden rounded-lg border border-border bg-card" data-testid="library-tile">
+    <div className="overflow-hidden rounded-lg border border-border bg-card" data-testid="library-tile">
       <div className="pointer-events-none">
         <ArtifactPreview slug={artifact.slug} kind={artifact.kind} />
       </div>
@@ -1407,6 +1431,15 @@ const DRIVE_COLUMNS: LibraryColumn[] = [
   { key: '', label: 'apps.awsControl.console.col_modified', className: 'w-[120px]' },
 ]
 
+/** Search hits carry no Kind column: the full relative key already names the
+ *  extension, and the header's job here is to keep the result rows on the same
+ *  grid the folder listing uses so a search does not read as a different page. */
+const SEARCH_COLUMNS: LibraryColumn[] = [
+  { key: '', label: 'apps.awsControl.console.col_name', className: 'min-w-[200px]' },
+  { key: '', label: 'apps.awsControl.console.col_size', className: 'w-[90px]' },
+  { key: '', label: 'apps.awsControl.console.col_modified', className: 'w-[120px]' },
+]
+
 /**
  * The Kind cell for a stored object: its extension, upper-cased.
  *
@@ -1445,10 +1478,251 @@ const noSort = () => {}
 
 const KEY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9 ._()+@=-]*$/
 
+/** How long the row a search hit landed on stays marked, counted from the
+ *  moment the row APPEARS (the listing behind "Open containing folder" is a
+ *  CLI round-trip, so counting from the click could spend the window before
+ *  there is anything to mark). Long enough to find with the eye, short enough
+ *  that it never reads as a selection. */
+const HIT_HIGHLIGHT_MS = 4000
+
 /** A sentence for the reader plus, when a request failed, what it rejected
  *  with — so the notice can hand the agent the real refusal. A client-side
  *  name check has no `error`; the sentence is the whole story. */
 type Failure = { message: string; error?: unknown }
+
+/* Preview routes by EXTENSION, not by fetching first: the two transports
+   differ. Media (img/video/audio/iframe tags) load the presigned URL directly
+   — those tags are exempt from CORS, which a browser fetch of the same URL is
+   not (the bucket carries no CORS config). Text goes through the gateway's
+   preview endpoint for the same reason. Anything else gets an honest
+   "download to view" instead of a broken pane. */
+const PREVIEW_IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'])
+const PREVIEW_VIDEO = new Set(['mp4', 'webm', 'm4v', 'mov'])
+const PREVIEW_AUDIO = new Set(['mp3', 'wav', 'm4a', 'ogg', 'flac'])
+const PREVIEW_TEXT = new Set([
+  'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'log', 'yaml', 'yml', 'xml', 'html', 'css',
+  'js', 'ts', 'tsx', 'jsx', 'py', 'sh', 'toml', 'ini', 'cfg', 'sql', 'go', 'rs', 'java', 'rb',
+])
+
+type PreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'none'
+
+function previewKind(key: string): PreviewKind {
+  const ext = key.includes('.') ? (key.split('.').pop() ?? '').toLowerCase() : ''
+  if (PREVIEW_IMAGE.has(ext)) return 'image'
+  if (PREVIEW_VIDEO.has(ext)) return 'video'
+  if (PREVIEW_AUDIO.has(ext)) return 'audio'
+  if (ext === 'pdf') return 'pdf'
+  if (PREVIEW_TEXT.has(ext)) return 'text'
+  return 'none'
+}
+
+/** In-place file preview. Same scrim/panel/focus-trap shape as
+ *  AddFromArtifactsDialog — no third dialog grammar. */
+function PreviewDialog({
+  account, entry, onDownload, downloadError, onClose,
+}: {
+  account: string
+  entry: { key: string; size: number }
+  onDownload: (key: string) => void
+  /** The pane's download failure, when the click came from THIS dialog's
+   *  header: the pane's own notice renders behind the dialog's scrim, so a
+   *  failed download from here would show only a tab flashing closed. */
+  downloadError: Failure | null
+  onClose: () => void
+}) {
+  const kind = previewKind(entry.key)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const backdropDown = useRef(false)
+  useDialogFocusTrap(panelRef, onClose)
+  const [mediaError, setMediaError] = useState(false)
+  const isMedia = kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'pdf'
+  const urlQ = useQuery({
+    queryKey: ['aws-control', 'drive-preview-url', account, entry.key],
+    queryFn: () => awsControlApi.driveDownload(account, 'drive', entry.key),
+    enabled: isMedia,
+    // The presign is minted per open on purpose: it is short-lived, and a
+    // cached URL that outlives its signature renders as a broken image.
+    gcTime: 0,
+    staleTime: 0,
+    retry: false,
+  })
+  /* The download presign is a 60-second grant sized for one click, and a
+     <video>/<audio> keeps issuing ranged GETs for as long as it plays -- so a
+     clip longer than the grant hits S3 403 mid-file. The element reports that
+     as a media error; the response is to re-mint the URL (another short grant,
+     not a longer one) and resume from where playback stopped. Each successful
+     resume re-arms the re-mint, so a clip spanning many grants keeps playing;
+     what stops it is two errors in a row with no media loaded between them --
+     that is a URL that never worked, not a grant that ran out. */
+  const remintPendingRef = useRef(false)
+  const resumeAtRef = useRef(0)
+  const onMediaError = (el?: HTMLMediaElement) => {
+    if (remintPendingRef.current) { setMediaError(true); return }
+    remintPendingRef.current = true
+    resumeAtRef.current = el?.currentTime ?? 0
+    void urlQ.refetch()
+  }
+  const onMediaReady = (e: { currentTarget: HTMLMediaElement }) => {
+    remintPendingRef.current = false
+    if (resumeAtRef.current > 0) {
+      e.currentTarget.currentTime = resumeAtRef.current
+      resumeAtRef.current = 0
+    }
+  }
+  const textQ = useQuery({
+    queryKey: ['aws-control', 'drive-preview-text', account, entry.key],
+    queryFn: () => awsControlApi.drivePreview(account, 'drive', entry.key),
+    enabled: kind === 'text',
+    retry: false,
+  })
+  const name = entry.key.split('/').pop() ?? entry.key
+  const dir = entry.key.includes('/') ? entry.key.slice(0, entry.key.lastIndexOf('/')) : ''
+  const loading = kind === 'text' ? textQ.isLoading : isMedia ? urlQ.isLoading : false
+  const failed = mediaError || (kind === 'text' ? textQ.isError : isMedia ? urlQ.isError : false)
+  /* A `.pdf` key is only renderable when S3 serves it as a PDF. Objects
+     uploaded before content types were set come back as octet-stream, which
+     the sandboxed iframe (no allow-downloads) can neither render nor hand to
+     the browser -- it shows an empty frame and fires no error. The HEAD behind
+     the presign carries the stored type, so those route to the same "cannot
+     be previewed, download it" fallback an unknown extension gets. A missing
+     type (null) is left to the frame: S3 always records one, so null means
+     the field was not reported, not that the object is wrong. */
+  const pdfNotRenderable =
+    kind === 'pdf' && typeof urlQ.data?.contentType === 'string' &&
+    !urlQ.data.contentType.toLowerCase().startsWith('application/pdf')
+  const unsupported = kind === 'none' || pdfNotRenderable
+  const url = urlQ.data?.url
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 sm:p-8"
+      data-testid="drive-preview-dialog"
+      role="presentation"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
+      onClick={(e) => { if (e.target === e.currentTarget && backdropDown.current) onClose(); backdropDown.current = false }}
+    >
+      <div
+        ref={panelRef}
+        className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-label={name}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <FileText size={14} className="shrink-0 text-muted" aria-hidden="true" />
+            <h3 className="flex min-w-0 items-baseline gap-1.5 text-sm font-semibold text-text-strong">
+              <span className="truncate">{name}</span>
+              {/* Opened from search, two same-named hits from different folders
+                  would be indistinguishable once the dialog is up; the folder
+                  rides along muted whenever the key has one. */}
+              {dir && (
+                <span className="truncate text-[11px] font-normal text-muted" data-testid="drive-preview-dir">{dir}/</span>
+              )}
+            </h3>
+            <span className="shrink-0 text-[11px] text-muted">{fmtBytes(entry.size)}</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Btn onClick={() => onDownload(entry.key)} data-testid="drive-preview-download">
+              <Download size={13} />{i18nT('apps.awsControl.console.download')}
+            </Btn>
+            <IconButton
+              onClick={onClose}
+              aria-label={i18nT('apps.awsControl.console.close')}
+              data-testid="drive-preview-close"
+            >
+              <X className="h-4 w-4" />
+            </IconButton>
+          </div>
+        </div>
+        <div className="min-h-[160px] overflow-auto p-4">
+          <AwsErrorNotice
+            error={downloadError?.error}
+            message={downloadError?.message}
+            askAgent
+            className="mb-3"
+            testId="drive-preview-download-error"
+          />
+          {loading && <ContentSkeleton rows={4} />}
+          {/* Two different "nothing to show". An unsupported TYPE is a status,
+              not a failure — nothing was tried — so it stays plain text. A
+              failed load is an error and goes through the shared notice like
+              every other failure in this app: Try again re-issues the read
+              (the presign for media, the gateway read for text), and the
+              hand-off carries the thrown value when there is one. The dialog
+              holds no draft, so the hand-off is always offered. */}
+          {!loading && !failed && unsupported && (
+            <p className="text-[13px] text-muted" data-testid="drive-preview-fallback">
+              {i18nT('apps.awsControl.console.preview_unsupported')}
+            </p>
+          )}
+          {!loading && failed && (
+            <AwsErrorNotice
+              error={kind === 'text' ? textQ.error : urlQ.error}
+              message={i18nT('apps.awsControl.console.preview_failed')}
+              askAgent
+              onRetry={() => {
+                setMediaError(false)
+                remintPendingRef.current = false
+                void (kind === 'text' ? textQ.refetch() : urlQ.refetch())
+              }}
+              testId="drive-preview-error"
+            />
+          )}
+          {!loading && !failed && kind === 'image' && url && (
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is a load-failure hook, not an interaction
+            <img
+              src={url}
+              alt={name}
+              className="mx-auto max-h-[70vh] max-w-full object-contain"
+              onError={() => onMediaError()}
+              data-testid="drive-preview-image"
+            />
+          )}
+          {!loading && !failed && kind === 'video' && url && (
+            // eslint-disable-next-line jsx-a11y/media-has-caption -- user files carry no caption track
+            <video src={url} controls aria-label={name} className="mx-auto max-h-[70vh] max-w-full" onError={(e) => onMediaError(e.currentTarget)} onLoadedMetadata={onMediaReady} data-testid="drive-preview-video" />
+          )}
+          {!loading && !failed && kind === 'audio' && url && (
+            // eslint-disable-next-line jsx-a11y/media-has-caption -- user files carry no caption track
+            <audio src={url} controls aria-label={name} className="w-full" onError={(e) => onMediaError(e.currentTarget)} onLoadedMetadata={onMediaReady} data-testid="drive-preview-audio" />
+          )}
+          {!loading && !failed && kind === 'pdf' && !pdfNotRenderable && url && (
+            // Only reached when the stored Content-Type says PDF (or was not
+            // reported): an octet-stream `.pdf` is routed to the unsupported
+            // fallback above instead of an empty frame. The empty sandbox is
+            // load-bearing: the extension picks this branch, so a `.pdf` key
+            // holding HTML would otherwise run script and could navigate the
+            // top window. Rendering a PDF needs no sandbox permission.
+            <iframe src={url} title={name} sandbox="" className="h-[70vh] w-full rounded border border-border" data-testid="drive-preview-pdf" />
+          )}
+          {!loading && !failed && kind === 'text' && textQ.data && (
+            <>
+              {textQ.data.truncated && (
+                <p className="mb-2 text-[11px] text-muted" data-testid="drive-preview-truncated">
+                  {i18nT('apps.awsControl.console.preview_truncated')}
+                </p>
+              )}
+              {/* The redactor rewrites the text silently; a reader checking a
+                  config file would otherwise take the masked value for the
+                  file's own bytes. NOT the truncation note's muted weight: that
+                  one says "there is more below", this one changes the meaning
+                  of what is shown, so it reads at body weight. */}
+              {textQ.data.redacted && (
+                <p className="mb-2 text-[12px] font-medium text-text" data-testid="drive-preview-redacted">
+                  {i18nT('apps.awsControl.console.preview_redacted')}
+                </p>
+              )}
+              <pre className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-text" data-testid="drive-preview-text">
+                {textQ.data.content}
+              </pre>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export function DriveSectionView({ account, bucket }: { account: string; bucket: string }) {
   const qc = useQueryClient()
@@ -1456,14 +1730,153 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   const [path, setPath] = useState('')
   const [share, setShare] = useState<{ key: string } | null>(null)
   const [uploadError, setUploadError] = useState<Failure | null>(null)
-  const [downloadError, setDownloadError] = useState<Failure | null>(null)
-  const [crumbMenu, setCrumbMenu] = useState(false)
+  /** Keyed by the object whose download failed, so the preview dialog shows
+   *  only ITS failure: a lingering error from file A must not surface inside
+   *  a later preview of file B as if B's download had failed. */
+  const [downloadError, setDownloadError] = useState<(Failure & { key: string }) | null>(null)
+  const [preview, setPreview] = useState<{ key: string; size: number } | null>(null)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  /** Mirror of `renaming` for the rename mutation's callbacks, which fire
+   *  after the request and would otherwise read the row that was open when
+   *  the mutation was created, not the one open now. */
+  const renamingRef = useRef<string | null>(null)
+  useEffect(() => {
+    renamingRef.current = renaming
+  }, [renaming])
+  const [renameValue, setRenameValue] = useState('')
+  const [renameError, setRenameError] = useState('')
+  const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  useEffect(() => {
+    // Debounced, not immediate: each keystroke would otherwise fire a full
+    // section walk on the backend. An EMPTIED box is the exception -- there is
+    // no walk to save, and waiting would leave the old query's hits sitting
+    // under an empty field for a beat.
+    if (!query.trim()) {
+      setDebouncedQuery('')
+      return
+    }
+    const t = setTimeout(() => setDebouncedQuery(query.trim()), 300)
+    return () => clearTimeout(t)
+  }, [query])
+  /** The file a search hit's "Open containing folder" landed on. The listing
+   *  scrolls it into view and marks it for a few seconds so the reader is not
+   *  left re-finding it by eye in a large folder. Cleared on a timer that runs
+   *  from the moment the ROW appears, by the next search, and by navigating to
+   *  a folder that is not the file's own. */
+  const [highlightKey, setHighlightKey] = useState<string | null>(null)
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const highlightRef = useCallback((node: HTMLElement | null) => {
+    // A callback ref rather than an effect: the row mounts only once the
+    // folder's listing has loaded -- a CLI round-trip that can take longer
+    // than the whole window -- so both the scroll and the clock start when
+    // the element appears, not when the key was set. A clock started at the
+    // click would run out during a slow load and drop the marker before it
+    // was ever seen.
+    if (!node) return
+    node.scrollIntoView?.({ block: 'center' })
+    // Focus follows too: the menu trigger the reader activated unmounted with
+    // the search view, so keyboard focus has dropped to <body>, and the accent
+    // ring is a cue assistive technology never announces. The row carries
+    // tabIndex={-1} (see highlightProps) so it can take focus without joining
+    // the tab order.
+    node.focus({ preventScroll: true })
+    if (highlightTimer.current) clearTimeout(highlightTimer.current)
+    highlightTimer.current = setTimeout(() => setHighlightKey(null), HIT_HIGHLIGHT_MS)
+  }, [])
+  useEffect(
+    () => () => {
+      if (highlightTimer.current) clearTimeout(highlightTimer.current)
+    },
+    [],
+  )
+  useEffect(() => {
+    // The marker belongs to one folder. Landing anywhere else (crumbs, a
+    // folder tile) retires it, so a listing that never loaded cannot leave a
+    // stale ring waiting for a later visit.
+    if (highlightKey && highlightKey.split('/').slice(0, -1).join('/') !== path) {
+      setHighlightKey(null)
+    }
+  }, [path, highlightKey])
+  const highlighted = (key: string) => highlightKey === key
+  const highlightProps = (key: string) =>
+    highlighted(key) ? { ref: highlightRef, 'data-highlighted': 'true', tabIndex: -1 } : {}
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  /** Mirror of `confirmDelete` for the delete mutation's callbacks, which fire
+   *  after the request and must know which row's strip is open NOW. */
+  const confirmDeleteRef = useRef<string | null>(null)
+  useEffect(() => {
+    confirmDeleteRef.current = confirmDelete
+  }, [confirmDelete])
   const [confirmFolder, setConfirmFolder] = useState<string | null>(null)
   const [newFolder, setNewFolder] = useState('')
   /** Folder-name input is a disclosure: visible only after "New folder". */
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [folderError, setFolderError] = useState('')
+  /** The "New folder" button the disclosure replaces. When the disclosure
+   *  closes it unmounts the input and both buttons, and focus falls to `<body>`
+   *  unless it is handed somewhere — so it goes back to the control that opened
+   *  it, which is where the reader was. The effect runs on the close EDGE
+   *  only: on the first render nothing was open, and a reader who never used
+   *  the keyboard must not have their focus yanked to a toolbar button. */
+  const folderToggleRef = useRef<HTMLButtonElement>(null)
+  const wasCreatingFolder = useRef(false)
+  useEffect(() => {
+    if (wasCreatingFolder.current && !creatingFolder) {
+      folderToggleRef.current?.focus({ preventScroll: true })
+    }
+    wasCreatingFolder.current = creatingFolder
+  }, [creatingFolder])
+  /** The file a "Move to folder…" picker is open for, or null. */
+  const [moveTarget, setMoveTarget] = useState<string | null>(null)
+  /** Who opened the row menu that is closing, and whether one of its items
+   *  opened a dialog. Two Radix behaviours meet here. Item select is
+   *  dispatched with `flushSync`, so a dialog set from `onSelect` mounts in a
+   *  commit where the menu is STILL trapping focus — the dialog focuses itself
+   *  and the trap yanks focus straight back into a menu that then unmounts,
+   *  stranding it on `body`. So the open is deferred one macrotask, past the
+   *  menu's own close commit. Then Radix restores focus to the trigger one
+   *  macrotask after the content unmounts — by which time the dialog owns
+   *  focus — so when an item opened a dialog that restore is suppressed, and
+   *  the dialog hands focus back to the opener itself on close. */
+  const menuOpenerRef = useRef<HTMLElement | null>(null)
+  const menuOpenedDialogRef = useRef(false)
+  /** Recorded from the trigger's OWN pointer/keyboard event, not from
+   *  `document.activeElement` at open time: Safari does not focus a button on
+   *  pointer click, so the active element there would still be whatever had
+   *  focus before, and the dialog would hand focus back to the wrong place. */
+  const rememberMenuOpener = (e: React.SyntheticEvent<HTMLElement>) => {
+    menuOpenerRef.current = e.currentTarget
+  }
+  const skipRestoreIfDialog = (e: Event) => {
+    if (!menuOpenedDialogRef.current) return
+    e.preventDefault()
+    menuOpenedDialogRef.current = false
+  }
+  const openShare = (key: string) => {
+    menuOpenedDialogRef.current = true
+    setTimeout(() => setShare({ key }), 0)
+  }
+  const openMove = (key: string) => {
+    menuOpenedDialogRef.current = true
+    moveDialogOpenRef.current = true
+    // A refusal from an earlier drag belongs to that drag, not to the picker
+    // that is about to open.
+    setMoveError(null)
+    setTimeout(() => setMoveTarget(key), 0)
+  }
+  const returnFocusToOpener = () => menuOpenerRef.current?.focus({ preventScroll: true })
+  /** Whether the Move picker is on screen, readable from a mutation callback
+   *  that may fire after the reader has already dismissed it. */
+  const moveDialogOpenRef = useRef(false)
+  /** The one way the Move picker closes — Escape, X, backdrop, or a landed
+   *  move. Never refused: a move still in flight keeps running without it. */
+  const closeMoveDialog = () => {
+    moveDialogOpenRef.current = false
+    setMoveTarget(null)
+    setMoveError(null)
+    returnFocusToOpener()
+  }
   /** The ONE way out of the folder disclosure (Escape, Cancel, blur-on-empty),
    *  carrying the whole close invariant: (1) it refuses while a create is in
    *  flight — collapsing mid-request would erase the very name being created,
@@ -1479,18 +1892,28 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
     setCreatingFolder(false)
   }
   /** Whether a notice on THIS pane may hand off to the agent. The folder-name
-   *  field is the one draft the pane holds, and every notice here — a failed
-   *  listing, upload, move, download or delete — shares the screen with it
-   *  while the disclosure is open. Gated on the disclosure rather than on the
-   *  field having text, so the button does not flicker in and out as the
-   *  reader types. */
-  const handOff = !creatingFolder
+   *  field and an open rename editor are the two drafts the pane can hold, and
+   *  every notice here — a failed listing, search, upload, move, download or
+   *  delete — shares the screen with them while either is open. Gated on the
+   *  disclosure / editor being open rather than on the field having text, so
+   *  the button does not flicker in and out as the reader types. */
+  const handOff = !creatingFolder && renaming === null
   /* How many objects the last folder delete actually removed. One click can
      remove far more than one file, and the count is only knowable AFTER the
      fact - the response carries it, while a figure shown BEFORE consent would
      cost a second full recursive listing of the prefix. So the page reports
      what was removed rather than pretending to predict it. */
-  const [deletedCount, setDeletedCount] = useState<number | null>(null)
+  const [deleted, setDeleted] = useState<{ count: number; name: string; inPath: string } | null>(null)
+  /** The "Deleted N files" line belongs to the folder it happened in — the
+   *  deleted folder's PARENT, taken from the request rather than from the path
+   *  at response time, so a reader who navigated while the delete ran does not
+   *  find the count in the folder they landed in. It shows only while that
+   *  folder is the current path, and leaving the folder RETIRES it (rather than
+   *  merely hiding it), so coming back later does not replay it. */
+  const deletedHere = deleted && deleted.inPath === path ? deleted : null
+  useEffect(() => {
+    setDeleted((d) => (d && d.inPath !== path ? null : d))
+  }, [path])
   const fileRef = useRef<HTMLInputElement>(null)
   /* The pinned Actions cell paints its seam only when the table actually
      overflows, so the edge is measured rather than assumed. */
@@ -1517,7 +1940,28 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
      from these, so page boundaries stay invisible to the reader. */
   const folders = (listQ.data?.pages ?? []).flatMap((pg) => pg.folders)
   const files = (listQ.data?.pages ?? []).flatMap((pg) => pg.files)
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
+  /* A search hit can sit past the first listing page. The marker and the
+     scroll fire when its ROW mounts, and a row on page three never mounts
+     until the reader presses Load more -- so while a marker is pending for
+     this folder, pages are pulled one at a time until the row is in hand or
+     the folder runs out. Bounded by the folder itself; a key that is not in
+     it (deleted between the search and the click) stops at the last page. */
+  useEffect(() => {
+    if (!highlightKey || !listQ.data) return
+    if (highlightKey.split('/').slice(0, -1).join('/') !== path) return
+    if (files.some((f) => f.key === highlightKey)) return
+    if (listQ.hasNextPage && !listQ.isFetchingNextPage) void listQ.fetchNextPage()
+    // `files` is derived from listQ.data; listing it would re-run this on every
+    // render for the same pages.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightKey, path, listQ.data, listQ.hasNextPage, listQ.isFetchingNextPage])
+  // Search results are a second view of the same objects: a delete, upload
+  // or folder change from the results must refresh them too, or the hit the
+  // reader just removed stays on screen.
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
+    qc.invalidateQueries({ queryKey: ['aws-control', 'drive-search', account] })
+  }
 
   const uploadMut = useMutation({
     // The KEY is the caller's, not derived from the browse path here: the
@@ -1540,8 +1984,38 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   })
   const deleteMut = useMutation({
     mutationFn: (key: string) => awsControlApi.driveDelete(account, 'drive', key),
+    onMutate: () => setPageError(null),
     onSuccess: invalidate,
+    onError: (e: unknown, key) => {
+      // The inline notice lives in the confirmation strip under the row. When
+      // that strip is gone by the time the request fails -- the view swapped
+      // to search results, or the reader moved the confirmation to another
+      // row -- the failure has no surface of its own and goes to the page-level
+      // notice, named, so a file that is still there never looks deleted.
+      if (confirmDeleteRef.current === key) return
+      setPageError({
+        message: i18nT('apps.awsControl.console.delete_failed_named', {
+          name: key.split('/').pop() ?? key,
+        }),
+        error: e,
+      })
+    },
   })
+  /** The one way a delete confirmation strip opens. The strip renders
+   *  `deleteMut.error` inline, and the mutation is shared by every row, so a
+   *  failed delete on file A would otherwise sit pre-rendered under a strip
+   *  opened later on file B -- "Delete failed" before anything was tried. The
+   *  reset is skipped while a delete is still flying: it would drop that
+   *  request's pending state, not the stale error this is for. */
+  const openConfirmDelete = (key: string) => {
+    if (!deleteMut.isPending) deleteMut.reset()
+    setConfirmDelete(key)
+  }
+  /** Whether the shared delete mutation's error belongs to THIS row. Opening a
+   *  strip on file B while A's delete is still flying is allowed; when A then
+   *  fails, its error goes to the page-level notice (onError above) and must
+   *  not also surface under B's strip just because the mutation is shared. */
+  const deleteFailedFor = (key: string) => deleteMut.isError && deleteMut.variables === key
   const folderCreateMut = useMutation({
     mutationFn: (name: string) =>
       awsControlApi.driveFolderCreate(account, 'drive', path ? `${path}/${name}` : name),
@@ -1549,7 +2023,13 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   })
   const folderDeleteMut = useMutation({
     mutationFn: (folder: string) => awsControlApi.driveFolderDelete(account, 'drive', folder),
-    onSuccess: (res) => { setDeletedCount(res.objects); invalidate() },
+    // The count belongs where the folder WAS -- its parent -- not wherever the
+    // reader is when the response lands.
+    onSuccess: (res, folder) => {
+      const parts = folder.split('/')
+      setDeleted({ count: res.objects, name: parts[parts.length - 1] ?? folder, inPath: parts.slice(0, -1).join('/') })
+      invalidate()
+    },
   })
 
   const onCreateFolder = () => {
@@ -1600,7 +2080,15 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
    *  flight. Drives the highlight only — the drop handlers re-derive their own
    *  target so a missed dragleave cannot misroute a drop. */
   const [dropTarget, setDropTarget] = useState<string | null>(null)
+  /** The most recent refused move. One slot is enough: moves are serialized
+   *  (see `moveBusy`), so a refusal can only ever belong to the last move. */
   const [moveError, setMoveError] = useState<Failure | null>(null)
+  /** A delete or rename that failed after its row's own strip was gone. Kept
+   *  apart from `moveError` because the Move picker renders that slot as its
+   *  refusal: sharing it would show "could not delete X" inside a picker that
+   *  is moving Y. The page strip carries this one whether or not the picker
+   *  is open. */
+  const [pageError, setPageError] = useState<Failure | null>(null)
 
   const moveMut = useMutation({
     mutationFn: ({ fromKey, toKey }: { fromKey: string; toKey: string }) =>
@@ -1608,7 +2096,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
     onSuccess: () => {
       setMoveError(null)
       qc.invalidateQueries({ queryKey: ['aws-control', 'drive-list', account] })
-      qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
+      invalidate()
     },
     onError: (e: unknown) => {
       // Two refusals worth their own sentences: share_active (the source has
@@ -1627,9 +2115,142 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
     },
   })
 
+  /** ONE move at a time. While a copy runs, the other rows' "Move to
+   *  folder…" items are disabled, rows are not draggable, and a drop is
+   *  ignored — so there is never a second in-flight move whose busy marker,
+   *  refusal, or completion could be confused with the first one's. The
+   *  original ask was a visible busy state for the move in flight, not
+   *  concurrent moves. */
+  const moveBusy = moveMut.isPending
+  /** The source key of the move in flight, or null. Exact, because at most
+   *  one move runs at a time and `variables` is read only while pending. */
+  const movingKey = moveBusy ? moveMut.variables?.fromKey ?? null : null
+
   /** The wire format an internal file drag travels as. A custom MIME keeps OS
    *  file drops (types includes 'Files') and internal moves distinguishable. */
   const DRAG_MIME = 'application/x-drive-object-key'
+
+  /* Rename IS a move with the directory held fixed — the backend endpoint is
+     the same one, so every move guarantee (no overwrite, live-share refusal)
+     applies to a rename for free; only the refusal WORDING is rename's own.
+     Both callbacks are scoped to the row that STARTED the rename: the editor
+     may have moved on to another row while this one was in flight, and an
+     unconditional close would throw away the name being typed there, while
+     an unconditional error would land under the wrong file. */
+  const renameMut = useMutation({
+    mutationFn: ({ fromKey, toKey }: { fromKey: string; toKey: string }) =>
+      awsControlApi.driveMove(account, 'drive', fromKey, toKey),
+    onMutate: () => setPageError(null),
+    onSuccess: (_data, { fromKey }) => {
+      if (renamingRef.current === fromKey) {
+        setRenaming(null)
+        setRenameError('')
+      }
+      qc.invalidateQueries({ queryKey: ['aws-control', 'drive-list', account] })
+      // A rename from a search hit must re-run the search so the new name
+      // (or the hit's disappearance, if it no longer matches) shows.
+      invalidate()
+    },
+    onError: (e: unknown, { fromKey }) => {
+      const err = e instanceof AwsControlError ? e : null
+      // Same error CODES as move (it is the move endpoint), but the sentences
+      // name the verb the user pressed: a failed rename that talks about a
+      // "destination folder" reads as a move they never made.
+      const reason = i18nT(
+        err?.message === 'share_active'
+          ? 'apps.awsControl.console.rename_shared'
+          : err?.status === 409
+            ? 'apps.awsControl.console.rename_conflict'
+            : 'apps.awsControl.console.rename_failed')
+      if (renamingRef.current === fromKey) {
+        setRenameError(reason)
+        return
+      }
+      // The editor has moved to another row, so there is no strip under this
+      // file to carry the message; the page-level notice names the file
+      // instead, because a rename that fails without a word leaves the old
+      // name in the listing looking like it was never attempted.
+      setPageError({
+        message: i18nT('apps.awsControl.console.rename_failed_named', {
+          name: fromKey.split('/').pop() ?? fromKey,
+          reason,
+        }),
+        error: e,
+      })
+    },
+  })
+
+  const openRename = (key: string) => {
+    setRenaming(key)
+    setRenameValue(key.split('/').pop() ?? key)
+    setRenameError('')
+  }
+
+  const closeRename = () => {
+    // Same in-flight guard the folder disclosure carries, scoped to the row
+    // being committed: closing THAT editor mid-flight would discard the name
+    // on its way to the server, but an editor opened on another row while it
+    // flies is the reader's own, and closes freely.
+    if (renameMut.isPending && renameMut.variables?.fromKey === renaming) return
+    setRenaming(null)
+    setRenameError('')
+    // Another row's rename may still be flying; resetting the observer would
+    // drop its pending state while the request runs on.
+    if (!renameMut.isPending) renameMut.reset()
+  }
+
+  /* A query change swaps the whole view (folder listing <-> search hits), and
+     any in-place editor open under a row goes with it. Left as-is, `renaming`
+     would stay set for a row that no longer renders: the half-typed name is
+     gone with no word, and `handOff` keeps every later notice from offering the
+     agent. So the editors close with the view they belonged to -- WITHOUT the
+     in-flight guard: a rename or delete still on the wire finishes regardless,
+     and because its editor is gone its outcome is routed by the mutation
+     callbacks to the page-level notice, where a late failure is still seen. */
+  useEffect(() => {
+    setRenaming(null)
+    setRenameError('')
+    setConfirmDelete(null)
+    // A new search also retires the marker the last "Open containing folder"
+    // left; the goto itself clears the query to '' which is a no-op here.
+    if (debouncedQuery) setHighlightKey(null)
+    // Keyed on the debounced query alone: that is the value the view switches on.
+  }, [debouncedQuery])
+
+  const commitRename = (fromKey: string) => {
+    // The name is committed AS TYPED. Trimming it would silently move a file
+    // whose name legitimately ends in a space (the key grammar allows one) the
+    // moment its owner opens Rename and saves without touching anything — a
+    // no-op that changes the key. Whitespace-only is the one shape refused,
+    // and the key grammar below rejects a leading space on its own.
+    const name = renameValue
+    if (!name.trim()) return
+    const base = fromKey.split('/').pop() ?? fromKey
+    if (name === base) {
+      closeRename()
+      return
+    }
+    if (!KEY_SEGMENT.test(name)) {
+      // Rename's own wording: the shared upload message says "Rename it and
+      // try again", which inside the rename editor tells the reader to do the
+      // thing they are already doing.
+      setRenameError(i18nT('apps.awsControl.console.rename_bad_name'))
+      return
+    }
+    const dir = fromKey.split('/').slice(0, -1).join('/')
+    setRenameError('')
+    renameMut.mutate({ fromKey, toKey: dir ? `${dir}/${name}` : name })
+  }
+
+  const searching = debouncedQuery.length > 0
+  const searchQ = useQuery({
+    queryKey: ['aws-control', 'drive-search', account, debouncedQuery],
+    queryFn: () => awsControlApi.driveSearch(account, 'drive', debouncedQuery),
+    enabled: searching,
+    // Each refinement is a new key; without this "rep" -> "report" blanks the
+    // list the user is scanning back to a skeleton for the round-trip.
+    placeholderData: keepPreviousData,
+  })
 
   /** The key of the drag THIS component started, or null. The drop handler
    *  trusts this ref, never the DataTransfer payload: drag data is
@@ -1642,8 +2263,11 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   const dragKeyRef = useRef<string | null>(null)
 
   /** Move `fromKey` into `folder` (full path, '' = section root). A drop onto
-   *  the folder the file already lives in is a no-op, not an error. */
+   *  the folder the file already lives in is a no-op, not an error; so is a
+   *  drop while another move is still running (rows are not draggable then,
+   *  but a drag that began before the gate closed can still land). */
   const moveInto = (fromKey: string, folder: string) => {
+    if (moveBusy) return
     const base = fromKey.split('/').pop() ?? fromKey
     const fromDir = fromKey.split('/').slice(0, -1).join('/')
     if (fromDir === folder) return
@@ -1679,9 +2303,27 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
     },
   })
 
-  /** Draggable wiring for a file row/tile. */
+  /** What the section carries while a search is active: the drop is swallowed
+   *  (preventDefault, so the browser never navigates to a dropped file) and
+   *  nothing is uploaded, because the folder it would land in is off-screen.
+   *  The drag-over highlight stays off too -- a highlighted target that does
+   *  nothing on release would read as a failed upload. */
+  const inertDropProps = {
+    onDragOver: (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      dragKeyRef.current = null
+    },
+  }
+
+  /** Draggable wiring for a file row/tile. Not draggable while a move runs:
+   *  one move at a time. */
   const dragProps = (key: string) => ({
-    draggable: true,
+    draggable: !moveBusy,
     onDragStart: (e: React.DragEvent) => {
       dragKeyRef.current = key
       e.dataTransfer.setData(DRAG_MIME, key)
@@ -1718,24 +2360,69 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
       // from an onClick with no catch, so a rethrow becomes an unhandled
       // rejection that tells the USER nothing. Report it in the row instead.
       tab?.close()
-      setDownloadError({ message: i18nT('apps.awsControl.console.download_failed'), error: e })
+      setDownloadError({ message: i18nT('apps.awsControl.console.download_failed'), error: e, key })
     }
   }
 
   const crumbs = path.split('/').filter(Boolean)
 
   return (
-    <section data-testid="drive-section" {...dropProps(path)} className={dropTarget === path ? 'rounded-lg ring-1 ring-inset ring-accent' : undefined}>
+    <section
+      data-testid="drive-section"
+      /* The section-level drop targets the OPEN folder, which search hides
+         along with its crumbs -- the same invisible-destination problem the
+         toolbar's Upload button has, so the drop goes INERT while searching.
+         Inert, not absent: this section is the page's only dragover/drop
+         preventDefault, and without one the browser answers a dropped OS file
+         by navigating the tab to it, tearing down the dashboard for a gesture
+         this same surface trained. */
+      {...(searching ? inertDropProps : dropProps(path))}
+      className={!searching && dropTarget === path ? 'rounded-lg ring-1 ring-inset ring-accent' : undefined}
+    >
       <PaneHeader icon={<FolderClosed size={18} />} title={i18nT('apps.awsControl.console.section_files')} actions={
         <div className="flex flex-wrap items-center gap-2">
-        <ViewModeToggle section="drive" mode={mode} onChange={setMode} />
+        {/* The shared `SearchInput`, not a hand-rolled Input plus an absolutely
+            positioned Search glyph: the glyph, its offset and the field metrics
+            live in one place, and a second spelling of them is how this toolbar
+            drifted from every other search box in the app. The clear button
+            stays a sibling in the relative wrapper, which is the same idiom
+            ChatSidebar's search boxes use -- `[&>input]:pr-8` buys it the room,
+            because the primitive owns the input's own padding. */}
+        <div className="relative w-full sm:w-[260px]">
+          <SearchInput
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') setQuery('') }}
+            placeholder={i18nT('apps.awsControl.console.search_files')}
+            aria-label={i18nT('apps.awsControl.console.search_files')}
+            className="w-full [&>input]:pr-8"
+            data-testid="drive-search-input"
+          />
+          {query && (
+            <IconButton
+              onClick={() => setQuery('')}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2"
+              aria-label={i18nT('apps.awsControl.console.search_clear')}
+              data-testid="drive-search-clear"
+            >
+              <X className="h-3 w-3" />
+            </IconButton>
+          )}
+        </div>
+        {/* Search replaces the folder view and hides the crumbs, so the two
+            folder-scoped WRITE controls go with them: an upload or a new folder
+            mid-search would land in a folder the reader cannot see, succeed,
+            and show nothing. The view toggle goes too -- results are always a
+            table, so a toggle that visibly does nothing reads as broken. The
+            search box stays: clearing it is how the reader gets back. */}
+        {!searching && <ViewModeToggle section="drive" mode={mode} onChange={setMode} />}
         {/* The name field appears when the reader ASKS to create a folder.
             Parked permanently in the toolbar it was two dead controls (an empty
             input and a disabled button) on every visit that isn't about
             folders — which is most of them. Escape, Cancel, or blurring the
             empty field puts the toolbar back; Upload hides while creating so
             the expanded row stays one action group of two buttons. */}
-        {creatingFolder ? (
+        {searching ? null : creatingFolder ? (
           <>
             <Input
               value={newFolder}
@@ -1761,7 +2448,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
           </>
         ) : (
           <>
-            <Btn onClick={() => setCreatingFolder(true)} data-testid="drive-folder-toggle">
+            <Btn ref={folderToggleRef} onClick={() => setCreatingFolder(true)} data-testid="drive-folder-toggle">
               <FolderPlus size={13} />
               {i18nT('apps.awsControl.console.folder_new')}
             </Btn>
@@ -1792,7 +2479,26 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
         className="mb-2"
         testId="drive-upload-error"
       />
-      <AwsErrorNotice askAgent={handOff} error={moveError?.error} message={moveError?.message} className="mb-2" testId="drive-move-error" />
+      {/* While the Move picker is open it reports the refusal itself; the strip
+          would only double the same sentence behind the modal. Moves are
+          serialized, so the refusal on screen is always the picker's own. */}
+      <AwsErrorNotice
+        askAgent={handOff}
+        error={moveTarget ? undefined : moveError?.error}
+        message={moveTarget ? null : moveError?.message}
+        className="mb-2"
+        testId="drive-move-error"
+      />
+      {/* A delete or rename failure has its own notice: it is never held back by
+          an open picker, and a stale move refusal above never stands in for it --
+          the two are different failures and each keeps its own line. */}
+      <AwsErrorNotice
+        askAgent={handOff}
+        error={pageError?.error}
+        message={pageError?.message ?? null}
+        className="mb-2"
+        testId="drive-page-error"
+      />
       <AwsErrorNotice message={folderError} askAgent={false} className="mb-2" testId="drive-folder-error" />
       {/* Also no hand-off: a failed create leaves the typed name in the still-open
           input, and the hand-off navigates away from it. */}
@@ -1803,9 +2509,9 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
         className="mb-2"
         testId="drive-folder-create-error"
       />
-      {deletedCount !== null && (
+      {deletedHere && (
         <p className="mb-2 text-[12px] text-muted" data-testid="drive-folder-deleted">
-          {i18nT('apps.awsControl.console.folder_deleted', { objects: deletedCount })}
+          {i18nT('apps.awsControl.console.folder_deleted', { count: deletedHere.count, name: deletedHere.name })}
         </p>
       )}
       <AwsErrorNotice askAgent={handOff} error={downloadError?.error} message={downloadError?.message} className="mb-2" testId="drive-download-error" />
@@ -1815,43 +2521,280 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
           ancestors go into the same inline overflow the file rows use, which
           keeps the jump-to-an-ancestor navigation that rendering the whole path
           as flat text would have removed. */}
-      {crumbs.length > 0 && (
+      {!searching && crumbs.length > 0 && (
       <div className="mb-2 flex flex-wrap items-center gap-1 text-[12px] text-muted" data-testid="drive-crumbs">
         <button className="hover:text-text cursor-pointer bg-transparent border-none p-0" onClick={() => setPath('')}>
           {i18nT('apps.awsControl.console.section_files')}
         </button>
         {crumbs.length > 1 && (
-          <span className="relative flex items-center gap-1">
+          <span className="flex items-center gap-1">
             {' / '}
-            <IconButton
-              aria-label={i18nT('apps.awsControl.console.parent_folders')}
-              onClick={() => setCrumbMenu((v) => !v)}
-              data-testid="drive-crumb-more"
-            >
-              <MoreHorizontal size={14} />
-            </IconButton>
-            {crumbMenu && (
-              <div className="absolute left-0 top-full z-10 mt-1 flex flex-col gap-1 rounded-md border border-border bg-card p-1 shadow-md" data-testid="drive-crumb-menu">
+            {/* The same `ui/dropdown-menu` the row menus use, for the same
+                reason: it dismisses on Escape and on an outside click and
+                returns focus to its trigger. A hand-rolled `absolute` popover
+                here did none of that, so this one menu behaved unlike the
+                menus a few rows below it. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <IconButton
+                  aria-label={i18nT('apps.awsControl.console.parent_folders')}
+                  data-testid="drive-crumb-more"
+                >
+                  <MoreHorizontal size={14} />
+                </IconButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" data-testid="drive-crumb-menu">
                 {crumbs.slice(0, -1).map((c, i) => (
-                  <Btn
+                  <DropdownMenuItem
                     key={i}
-                    onClick={() => {
-                      setCrumbMenu(false)
-                      setPath(crumbs.slice(0, i + 1).join('/'))
-                    }}
+                    onSelect={() => setPath(crumbs.slice(0, i + 1).join('/'))}
                   >
-                    {c}
-                  </Btn>
+                    <FolderClosed size={13} />{c}
+                  </DropdownMenuItem>
                 ))}
-              </div>
-            )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </span>
         )}
         <span data-testid="drive-crumb-current">{' / '}{crumbs[crumbs.length - 1]}</span>
       </div>
       )}
 
-      {listQ.isLoading && <ContentSkeleton rows={2} />}
+      {/* Search replaces the folder view wholesale: results span the WHOLE
+          section (the full relative key is shown), so rendering them beside
+          one folder's crumbs would claim a scope the listing does not have. */}
+      {searching && (
+        <div data-testid="drive-search-results">
+          {searchQ.isLoading && <ContentSkeleton rows={2} />}
+          {/* A refinement ("rep" -> "report") keeps the PREVIOUS query's rows on
+              screen through `keepPreviousData`, so without a pending signal
+              they read as the new answer for the whole section walk. The stale
+              set dims and the line below names what is happening. */}
+          {searchQ.isFetching && !searchQ.isLoading && (
+            <p className="mb-2 flex items-center gap-1.5 text-[11px] text-muted" data-testid="drive-search-pending" role="status">
+              <RefreshCw size={11} className="animate-spin" aria-hidden="true" />
+              {i18nT('apps.awsControl.console.search_pending')}
+            </p>
+          )}
+          {/* A failed search is a READ the reader can re-issue, so it carries
+              Try again like the listing's own failure, and hands off to the
+              agent under the same draft gate every notice on this pane uses. */}
+          <AwsErrorNotice
+            error={searchQ.error}
+            message={searchQ.isError ? i18nT('apps.awsControl.console.search_failed') : null}
+            askAgent={handOff}
+            onRetry={() => searchQ.refetch()}
+            className="mb-2"
+            testId="drive-search-error"
+          />
+          <div className={searchQ.isFetching && !searchQ.isLoading ? 'opacity-60 transition-opacity' : undefined} aria-busy={searchQ.isFetching && !searchQ.isLoading ? true : undefined} data-testid="drive-search-body">
+          {/* Not an empty FOLDER: the objects exist and the query hid them, which
+              is exactly the distinction `FilteredEmpty` draws (no big icon, the
+              query echoed back, and a clear control right there). The clear
+              callback is the same one the toolbar's X calls, so there is one way
+              back rather than two. */}
+          {searchQ.isSuccess && searchQ.data.results.length === 0 && (
+            <FilteredEmpty
+              query={debouncedQuery}
+              onClear={() => setQuery('')}
+              noun={i18nT('apps.awsControl.console.section_files')}
+              testId="drive-search-empty"
+            />
+          )}
+          {searchQ.isSuccess && searchQ.data.capped && (
+            <p className="mb-2 text-[11px] text-muted" data-testid="drive-search-capped">
+              {i18nT('apps.awsControl.console.search_capped', { count: searchQ.data.limit })}
+            </p>
+          )}
+          {searchQ.isSuccess && searchQ.data.results.length > 0 && (
+            <div className="overflow-x-auto" data-testid="drive-search-table">
+              <table className="w-full border-collapse text-[13px]">
+                <LibraryTableHead
+                  sort={null}
+                  onSort={noSort}
+                  columns={SEARCH_COLUMNS}
+                  actionsLabelKey="apps.awsControl.console.col_actions"
+                  surface="bg"
+                />
+                <tbody>
+                  {searchQ.data.results.map((hit) => (
+                    <Fragment key={hit.key}>
+                    <tr className="border-b border-border last:border-0 hover:bg-bg-hover" data-testid="drive-search-hit">
+                      <td className="px-2.5 py-2">
+                        <button
+                          type="button"
+                          onClick={() => setPreview({ key: hit.key, size: hit.size })}
+                          className="flex min-w-0 max-w-full cursor-pointer items-center gap-2 border-none bg-transparent p-0 text-left text-text hover:underline"
+                          title={hit.key}
+                          data-testid="drive-search-open"
+                        >
+                          <FileText size={14} className="shrink-0 text-muted" aria-hidden="true" />
+                          {/* The FULL relative key, not the basename: results
+                              come from the whole section, and the path is what
+                              tells two same-named files apart. The FOLDER half
+                              is what truncates on a long path -- the basename
+                              is what the reader searched for, so it stays
+                              whole -- and the title carries the untruncated key. */}
+                          <span className="flex min-w-0">
+                            {hit.key.includes('/') && (
+                              <span className="truncate text-muted">{hit.key.slice(0, hit.key.lastIndexOf('/') + 1)}</span>
+                            )}
+                            <span className="shrink-0">{hit.key.slice(hit.key.lastIndexOf('/') + 1)}</span>
+                          </span>
+                        </button>
+                      </td>
+                      <td className="px-2.5 py-2 text-muted">{fmtBytes(hit.size)}</td>
+                      <td className="px-2.5 py-2 text-muted">{fmtRelative(hit.modified)}</td>
+                      <td className="px-2.5 py-2">
+                        {/* Same one-overflow grammar as the file rows, and the
+                            SAME items: a reader who searched in order to rename
+                            or delete a file must not have to leave the results
+                            and re-find it. Rename, Share and Delete all key off
+                            the object's own path, so they need no folder
+                            context; Open containing folder is the one hit-only
+                            item. The go-to action is a WORDED item -- a bare
+                            folder icon on this page means "a folder object",
+                            not a verb. */}
+                        <div className="flex items-center justify-end gap-1">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <IconButton
+                                aria-label={i18nT('apps.awsControl.console.file_actions')}
+                                onPointerDown={rememberMenuOpener}
+                                onKeyDown={rememberMenuOpener}
+                                data-testid="drive-search-more"
+                              >
+                                <MoreHorizontal className="h-3.5 w-3.5" />
+                              </IconButton>
+                            </DropdownMenuTrigger>
+                            {/* Third of the three menus that open ShareDialog: the
+                                dialog hands focus back to whichever trigger was
+                                remembered, so this one must remember itself too. */}
+                            <DropdownMenuContent align="end" onCloseAutoFocus={skipRestoreIfDialog}>
+                              <DropdownMenuItem onSelect={() => download(hit.key)} data-testid="drive-search-download">
+                                <Download size={13} />{i18nT('apps.awsControl.console.download')}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => openRename(hit.key)} data-testid="drive-search-rename">
+                                <Pencil size={13} />{i18nT('apps.awsControl.console.rename')}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => openShare(hit.key)} data-testid="drive-search-share">
+                                <Share2 size={13} />{i18nT('apps.awsControl.console.share')}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onSelect={() => {
+                                  setPath(hit.key.split('/').slice(0, -1).join('/'))
+                                  // Mark the file the reader came for: the folder
+                                  // may hold hundreds of rows, and landing on the
+                                  // listing with no pointer to the hit makes them
+                                  // re-find by eye what they just searched for.
+                                  setHighlightKey(hit.key)
+                                  setQuery('')
+                                }}
+                                data-testid="drive-search-goto"
+                              >
+                                <FolderOpen size={13} />{i18nT('apps.awsControl.console.search_goto')}
+                              </DropdownMenuItem>
+                              {/* The destructive item sits alone below a rule: the
+                                  likeliest action from a hit (go to its folder) must
+                                  not be a slip away from Delete at identical weight. */}
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onSelect={() => openConfirmDelete(hit.key)} data-testid="drive-search-delete">
+                                <Trash2 size={13} />{i18nT('apps.awsControl.console.delete')}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </td>
+                    </tr>
+                    {/* The same in-place editors the folder listing opens under
+                        its rows, so the flow from a search hit is identical:
+                        the rename commits against the hit's OWN directory, and
+                        both mutations refresh the results. The editor strips
+                        carry the folder rows' sticky-left viewport-width wrapper
+                        too: the search table is wider (a path column), so on a
+                        narrow, horizontally scrolled viewport an unpinned strip
+                        would put Cancel/Rename off-screen. */}
+                    {renaming === hit.key && (
+                      // eslint-disable-next-line jsx-a11y/control-has-associated-label -- the row's control is the Input, which carries its own aria-label; the rule cannot see through the component wrapper
+                      <tr className="border-b border-border bg-bg-elevated" data-testid="drive-rename-row">
+                        <td colSpan={SEARCH_COLUMNS.length + 1} className="px-2.5 py-2">
+                          <div className="sticky left-0 flex max-w-[calc(100vw-2.5rem)] flex-wrap items-center gap-2 pr-4">
+                            <Input
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') commitRename(hit.key)
+                                if (e.key === 'Escape') closeRename()
+                              }}
+                              autoFocus
+                              aria-label={i18nT('apps.awsControl.console.rename')}
+                              className="w-full min-w-0 sm:w-[260px]"
+                              data-testid="drive-rename-input"
+                            />
+                            {/* No hand-off: beside a live input, and the agent
+                                navigation would take the half-typed name with it. */}
+                            <AwsErrorNotice message={renameError} askAgent={false} variant="inline" testId="drive-rename-error" />
+                            <Btn onClick={closeRename} disabled={renameMut.isPending} data-testid="drive-rename-cancel">
+                              {i18nT('apps.awsControl.console.cancel')}
+                            </Btn>
+                            <Btn
+                              primary
+                              disabled={renameMut.isPending || !renameValue.trim()}
+                              onClick={() => commitRename(hit.key)}
+                              data-testid="drive-rename-save"
+                            >
+                              <Pencil size={13} />{i18nT('apps.awsControl.console.rename')}
+                            </Btn>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {confirmDelete === hit.key && (
+                      // eslint-disable-next-line jsx-a11y/control-has-associated-label -- the row's text is the confirmation sentence in the span below, one level deeper than the rule's default search depth
+                      <tr className="border-b border-border bg-bg-elevated" data-testid="drive-delete-confirm">
+                        <td colSpan={SEARCH_COLUMNS.length + 1} className="px-2.5 py-2">
+                          <div className="sticky left-0 flex max-w-[calc(100vw-2.5rem)] flex-wrap items-center gap-2 pr-4">
+                            <span className="min-w-0 flex-1 text-text">
+                              {/* The FULL relative key, unlike the folder rows: search
+                                  is the one view where same-named files from different
+                                  folders sit side by side, and the basename alone would
+                                  not say which one is about to go. */}
+                              {i18nT('apps.awsControl.console.delete_confirm', { name: hit.key })}
+                            </span>
+                            <AwsErrorNotice
+                              askAgent={handOff}
+                              error={deleteFailedFor(hit.key) ? deleteMut.error : null}
+                              message={deleteFailedFor(hit.key) ? i18nT('apps.awsControl.console.delete_failed') : null}
+                              variant="inline"
+                              className="basis-full"
+                              testId="drive-delete-error"
+                            />
+                            <Btn onClick={() => setConfirmDelete(null)} data-testid="drive-delete-cancel">
+                              {i18nT('apps.awsControl.console.cancel')}
+                            </Btn>
+                            <Btn
+                              danger
+                              disabled={deleteMut.isPending}
+                              onClick={() => deleteMut.mutate(hit.key, { onSuccess: () => setConfirmDelete((cur) => (cur === hit.key ? null : cur)) })}
+                              data-testid="drive-delete-confirm-action"
+                            >
+                              <Trash2 size={13} />{i18nT('apps.awsControl.console.delete_confirm_action')}
+                            </Btn>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          </div>
+        </div>
+      )}
+
+      {!searching && listQ.isLoading && <ContentSkeleton rows={2} />}
 
       {/* A failed listing is not an empty folder — the Library folder beside
           this one already says so, and this one rendered NOTHING: no skeleton,
@@ -1870,19 +2813,19 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
           question was asked in exactly those words. So the empty state names
           what belongs here and how it differs from Library, and carries the
           upload action rather than making the reader find it in the header. */}
-      {listQ.isSuccess && folders.length === 0 && files.length === 0 && (
-        <div className="rounded-lg border border-dashed border-border p-8 text-center" data-testid="drive-empty">
-          <div className="mb-1.5 text-[13px] font-medium text-text-strong">
-            {i18nT('apps.awsControl.console.files_empty_title')}
-          </div>
-          <p className="mx-auto mb-4 max-w-[56ch] text-[12px] leading-relaxed text-muted">
-            {i18nT('apps.awsControl.console.files_empty_body')}
-          </p>
-          <Btn primary onClick={() => fileRef.current?.click()} data-testid="drive-empty-upload">
-            <Upload size={13} />
-            {i18nT('apps.awsControl.console.drive_upload')}
-          </Btn>
-        </div>
+      {!searching && listQ.isSuccess && folders.length === 0 && files.length === 0 && (
+        <EmptyState
+          icon={<FolderClosed className="h-10 w-10" aria-hidden="true" />}
+          title={i18nT('apps.awsControl.console.files_empty_title')}
+          subtitle={i18nT('apps.awsControl.console.files_empty_body')}
+          testId="drive-empty"
+          action={
+            <Btn primary onClick={() => fileRef.current?.click()} data-testid="drive-empty-upload">
+              <Upload size={13} />
+              {i18nT('apps.awsControl.console.drive_upload')}
+            </Btn>
+          }
+        />
       )}
 
       {/* Grid mode. A stored object has no preview we can draw without a presign
@@ -1893,11 +2836,16 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
           choice persists per section a reader who preferred tiles would
           otherwise lose Share and Delete on every future visit with nothing to
           tell them the controls existed. */}
-      {mode === 'grid' && (folders.length > 0 || files.length > 0) && (
-        <div className="-mr-3" data-testid="drive-grid">
-          <div className="grid items-start" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
+      {!searching && mode === 'grid' && (folders.length > 0 || files.length > 0) && (
+        /* `gap-3` rather than the old `-mr-3` bleed plus `mr-3 mb-3` on every
+           tile: the negative margin existed only to cancel a per-tile right
+           margin, and `gap` states the same gutter once without pulling the grid
+           past its container. The auto-fill TEMPLATE is untouched (the source-level
+           pin in DrivePage.gridAutoFill.test.tsx reads it byte-for-byte). */
+        <div data-testid="drive-grid">
+          <div className="grid items-start gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
             {folders.map((name) => {
-              const open = () => { setPath(name); setDeletedCount(null) }
+              const open = () => setPath(name)
               return (
               <div
                 key={`gf-${name}`}
@@ -1919,22 +2867,26 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                 }}
                 aria-label={i18nT('apps.awsControl.console.folder_open', { name: name.split('/').pop() ?? name })}
                 {...dropProps(name)}
-                className={`mb-3 mr-3 flex cursor-pointer flex-col items-start gap-2 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-border-strong hover:bg-bg-hover ${dropTarget === name ? 'ring-1 ring-inset ring-accent bg-bg-hover' : ''}`}
+                className={`flex cursor-pointer flex-col items-start gap-2 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-border-strong hover:bg-bg-hover ${dropTarget === name ? 'border-accent bg-bg-hover' : ''}`}
                 data-testid="drive-grid-folder"
               >
                 <div className="flex w-full items-start justify-between gap-2">
-                  <FolderClosed size={22} className="text-accent" aria-hidden="true" />
+                  {/* The glyph sits on its own `bg-bg-elevated` block, which is
+                      what gives a tile its recognisable left edge in the mockup
+                      -- and what tells a folder tile from a file tile at a
+                      glance, since both are otherwise one flat card. */}
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-elevated text-accent">
+                    <FolderClosed className="h-4 w-4" aria-hidden="true" />
+                  </span>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
+                      <IconButton
                         onClick={(e) => e.stopPropagation()}
-                        className="cursor-pointer rounded border-none bg-transparent p-1 text-muted transition-colors hover:text-text"
                         aria-label={i18nT('apps.awsControl.console.folder_actions')}
                         data-testid="drive-grid-folder-more"
                       >
-                        <MoreHorizontal size={14} />
-                      </button>
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </IconButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onSelect={() => setConfirmFolder(name)} data-testid="drive-grid-folder-delete">
@@ -1946,7 +2898,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                 <span className="w-full truncate text-[13px] font-medium text-text-strong">
                   {name.split('/').pop()}
                 </span>
-                <span className="text-[11px] text-muted">{i18nT('apps.awsControl.console.kind_folder')}</span>
+                <span className="text-[12px] text-muted">{i18nT('apps.awsControl.console.kind_folder')}</span>
                 {confirmFolder === name && (
                   <TileConfirm
                     label={i18nT('apps.awsControl.console.folder_delete_confirm', { name: name.split('/').pop() ?? name })}
@@ -1972,11 +2924,15 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                    The folder tile beside it keeps its hover because it IS
                    clickable. */
                 {...dragProps(f.key)}
-                className="mb-3 mr-3 flex flex-col items-start gap-2 rounded-lg border border-border bg-card p-3"
+                {...highlightProps(f.key)}
+                className={`flex flex-col items-start gap-2 rounded-lg border bg-card p-3 ${highlighted(f.key) ? 'border-accent' : 'border-border'} ${movingKey === f.key ? 'opacity-50' : ''}`}
+                aria-busy={movingKey === f.key || undefined}
                 data-testid="drive-grid-file"
               >
                 <div className="flex w-full items-start justify-between gap-2">
-                  <FileText size={22} className="text-muted" aria-hidden="true" />
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-elevated text-muted">
+                    <FileText className="h-4 w-4" aria-hidden="true" />
+                  </span>
                   {/* ONE home for per-item actions. Download used to sit outside
                       the menu as a bare button while Share and Delete were
                       inside it, so a card offered two different grammars for
@@ -1986,16 +2942,16 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                       same change rather than left to recreate the problem. */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="cursor-pointer rounded border-none bg-transparent p-1 text-muted transition-colors hover:text-text"
+                      <IconButton
                         aria-label={i18nT('apps.awsControl.console.file_actions')}
                         data-testid="drive-grid-more"
+                        onPointerDown={rememberMenuOpener}
+                        onKeyDown={rememberMenuOpener}
                       >
-                        <MoreHorizontal size={14} />
-                      </button>
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </IconButton>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
+                    <DropdownMenuContent align="end" onCloseAutoFocus={skipRestoreIfDialog}>
                       {/* `onSelect` is dispatched synchronously from the item's
                           own click handler, so the window.open inside
                           `download` still runs within the user gesture and is
@@ -2003,32 +2959,86 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                       <DropdownMenuItem onSelect={() => download(f.key)} data-testid="drive-grid-download">
                         <Download size={13} />{i18nT('apps.awsControl.console.download')}
                       </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => setShare({ key: f.key })} data-testid="drive-grid-share">
+                      <DropdownMenuItem onSelect={() => openRename(f.key)} data-testid="drive-grid-rename">
+                        <Pencil size={13} />{i18nT('apps.awsControl.console.rename')}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => openShare(f.key)} data-testid="drive-grid-share">
                         <Share2 size={13} />{i18nT('apps.awsControl.console.share')}
                       </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => setConfirmDelete(f.key)} data-testid="drive-grid-delete">
+                      <DropdownMenuItem onSelect={() => openMove(f.key)} disabled={moveBusy} data-testid="drive-grid-move">
+                        <FolderInput size={13} />{i18nT('apps.awsControl.console.move_to')}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => openConfirmDelete(f.key)} data-testid="drive-grid-delete">
                         <Trash2 size={13} />{i18nT('apps.awsControl.console.delete')}
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
-                <span className="w-full truncate text-[13px] font-medium text-text-strong">{f.key.split('/').pop()}</span>
-                <span className="text-[11px] text-muted">
-                  {/* A dash is the ABSENCE of a kind, not a kind -- do not print
-                      it as one beside the size. */}
-                  {objectKind(f.key) === '-' ? fmtBytes(f.size) : `${objectKind(f.key)} · ${fmtBytes(f.size)}`}
+                {/* The name is the preview trigger; while its rename editor is
+                    open the editor IS the name, and a preview opened over it
+                    would stack two editing contexts on one tile. */}
+                {renaming !== f.key && (
+                  <button
+                    type="button"
+                    onClick={() => setPreview({ key: f.key, size: f.size })}
+                    className="w-full cursor-pointer truncate border-none bg-transparent p-0 text-left text-[13px] font-medium text-text-strong hover:underline"
+                    data-testid="drive-grid-preview-open"
+                  >
+                    {f.key.split('/').pop()}
+                  </button>
+                )}
+                <span className="text-[12px] text-muted tabular-nums">
+                  {/* Size and modified time, the two facts a file manager puts
+                      under a tile name -- the kind is already carried by the
+                      glyph and by the extension in the name itself, so printing
+                      it a third time crowded out the date the list view shows.
+                      While the tile's move runs, the state goes here in words
+                      (the list row does the same). */}
+                  {movingKey === f.key
+                    ? <span data-testid="drive-moving">{i18nT('apps.awsControl.console.move_moving')}</span>
+                    : `${fmtBytes(f.size)} · ${fmtRelative(f.modified)}`}
                 </span>
                 {confirmDelete === f.key && (
                   <TileConfirm
                     label={i18nT('apps.awsControl.console.delete_confirm', { name: f.key.split('/').pop() ?? f.key })}
-                    error={deleteMut.isError ? i18nT('apps.awsControl.console.delete_failed') : ''}
-                    errorSource={deleteMut.error}
+                    error={deleteFailedFor(f.key) ? i18nT('apps.awsControl.console.delete_failed') : ''}
+                    errorSource={deleteFailedFor(f.key) ? deleteMut.error : null}
                     askAgent={handOff}
                     pending={deleteMut.isPending}
                     onCancel={() => setConfirmDelete(null)}
-                    onConfirm={() => deleteMut.mutate(f.key, { onSuccess: () => setConfirmDelete(null) })}
+                    onConfirm={() => deleteMut.mutate(f.key, { onSuccess: () => setConfirmDelete((cur) => (cur === f.key ? null : cur)) })}
                     action={i18nT('apps.awsControl.console.delete_confirm_action')}
                   />
+                )}
+                {renaming === f.key && (
+                  <div className="flex w-full flex-wrap items-center gap-2" data-testid="drive-grid-rename-row">
+                    <Input
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') commitRename(f.key)
+                        if (e.key === 'Escape') closeRename()
+                      }}
+                      autoFocus
+                      aria-label={i18nT('apps.awsControl.console.rename')}
+                      className="w-full min-w-0"
+                      data-testid="drive-grid-rename-input"
+                    />
+                    {/* No hand-off: beside a live input, and the agent
+                        navigation would take the half-typed name with it. */}
+                    <AwsErrorNotice message={renameError} askAgent={false} variant="inline" testId="drive-grid-rename-error" />
+                    <Btn onClick={closeRename} disabled={renameMut.isPending} data-testid="drive-grid-rename-cancel">
+                      {i18nT('apps.awsControl.console.cancel')}
+                    </Btn>
+                    <Btn
+                      primary
+                      disabled={renameMut.isPending || !renameValue.trim()}
+                      onClick={() => commitRename(f.key)}
+                      data-testid="drive-grid-rename-save"
+                    >
+                      <Pencil size={13} />{i18nT('apps.awsControl.console.rename')}
+                    </Btn>
+                  </div>
                 )}
               </div>
             ))}
@@ -2036,7 +3046,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
         </div>
       )}
 
-      {mode === 'list' && (folders.length > 0 || files.length > 0) && (
+      {!searching && mode === 'list' && (folders.length > 0 || files.length > 0) && (
         /* Borderless, the stock shadcn table posture: row dividers only, no
            frame and no card fill — the heavy outer border read as chrome on a
            page that is mostly this one table. The div stays: it is the
@@ -2055,6 +3065,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
               edgeRight={edges.right}
               columns={DRIVE_COLUMNS}
               actionsLabelKey="apps.awsControl.console.col_actions"
+              surface="bg"
             />
             <tbody>
               {folders.map((name) => (
@@ -2067,7 +3078,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                    still reachable and operable from the keyboard. */
                 <Fragment key={`f-${name}`}>
                 <tr
-                  onClick={() => { setPath(name); setDeletedCount(null) }}
+                  onClick={() => setPath(name)}
                   {...dropProps(name)}
                   className={`cursor-pointer border-b border-border last:border-0 hover:bg-bg-hover ${dropTarget === name ? 'bg-bg-hover ring-1 ring-inset ring-accent' : ''}`}
                   data-testid="drive-folder"
@@ -2085,7 +3096,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                   <td className="px-2.5 py-2 text-muted">{i18nT('apps.awsControl.console.kind_folder')}</td>
                   <td className="px-2.5 py-2 text-muted">-</td>
                   <td className="px-2.5 py-2 text-muted">-</td>
-                  <td className="sticky right-0 bg-card px-2.5 py-2">
+                  <td className={`sticky right-0 ${PINNED_SURFACE.bg.fill} px-2.5 py-2`}>
                     {/* The seam is spelled exactly as the shared rows spell it:
                         a 1px child div plus a `right-full` gradient, both gated
                         on the measured overflow. Not `border-l` (under
@@ -2093,9 +3104,11 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                         layout slot and stays behind the scrolling columns), and
                         not a box-shadow either - a third spelling of the same
                         seam is how the two drift apart, which is the whole
-                        reason the head is shared rather than copied. */}
+                        reason the head is shared rather than copied. The fill
+                        and the gradient paint the PAGE surface: this table has
+                        no card fill, so a `bg-card` pin here is a stripe. */}
                     {edges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
-                    {edges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" />}
+                    {edges.right && <div aria-hidden="true" className={`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l ${PINNED_SURFACE.bg.seam} to-transparent`} />}
                     {/* One overflow trigger, and the menu comes from
                         `ui/dropdown-menu`, which portals its content to the body
                         - a hand-rolled `absolute` menu is CLIPPED here, because
@@ -2110,15 +3123,13 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                     <div className="flex items-center justify-end">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <button
-                            type="button"
+                          <IconButton
                             onClick={(e) => e.stopPropagation()}
-                            className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
                             aria-label={i18nT('apps.awsControl.console.folder_actions')}
                             data-testid="drive-folder-more"
                           >
-                            <MoreHorizontal size={14} />
-                          </button>
+                            <MoreHorizontal className="h-3.5 w-3.5" />
+                          </IconButton>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                           <DropdownMenuItem
@@ -2183,51 +3194,72 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                    key belongs on the fragment - on the inner <tr> React has
                    nothing to reconcile the pair by. */
                 <Fragment key={`o-${f.key}`}>
-                  <tr {...dragProps(f.key)} className="border-b border-border last:border-0 hover:bg-bg-hover" data-testid="drive-file">
+                  <tr
+                    {...dragProps(f.key)}
+                    {...highlightProps(f.key)}
+                    /* Dimmed while ITS move is in flight: a server-side copy of a
+                       large object leaves the row otherwise inert until the
+                       listing refetches, and a reader re-drags or assumes the
+                       drop missed. */
+                    className={`border-b border-border last:border-0 hover:bg-bg-hover ${highlighted(f.key) ? 'ring-2 ring-inset ring-accent' : ''} ${movingKey === f.key ? 'opacity-50' : ''}`}
+                    aria-busy={movingKey === f.key || undefined}
+                    data-testid="drive-file"
+                  >
                     <td className="px-2.5 py-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <FileText size={14} className="shrink-0 text-muted" />
-                        <span className="truncate text-text">{f.key.split('/').pop()}</span>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPreview({ key: f.key, size: f.size })}
+                        className="flex min-w-0 max-w-full cursor-pointer items-center gap-2 border-none bg-transparent p-0 text-left"
+                        data-testid="drive-preview-open"
+                      >
+                        <FileText size={14} className="shrink-0 text-muted" aria-hidden="true" />
+                        <span className="truncate text-text hover:underline">{f.key.split('/').pop()}</span>
+                      </button>
                     </td>
                     <td className="px-2.5 py-2 text-muted">{objectKind(f.key)}</td>
                     <td className="px-2.5 py-2 text-muted">{fmtBytes(f.size)}</td>
-                    <td className="px-2.5 py-2 text-muted">{fmtRelative(f.modified)}</td>
-                    <td className="sticky right-0 bg-card px-2.5 py-2">
-                    {/* The seam is spelled exactly as the shared rows spell it:
-                        a 1px child div plus a `right-full` gradient, both gated
-                        on the measured overflow. Not `border-l` (under
-                        `border-collapse: collapse` a border paints at the cell's
-                        layout slot and stays behind the scrolling columns), and
-                        not a box-shadow either - a third spelling of the same
-                        seam is how the two drift apart, which is the whole
-                        reason the head is shared rather than copied. */}
+                    {/* While its move runs the row is dimmed and `aria-busy`, but
+                        opacity alone reads as "unavailable, somehow" -- say the
+                        state in words where the picker's own "Moving…" was. */}
+                    <td className="px-2.5 py-2 text-muted">
+                      {movingKey === f.key ? <span data-testid="drive-moving">{i18nT('apps.awsControl.console.move_moving')}</span> : fmtRelative(f.modified)}
+                    </td>
+                    <td className={`sticky right-0 ${PINNED_SURFACE.bg.fill} px-2.5 py-2`}>
+                    {/* Same seam, same page-surface fill as the folder row above. */}
                     {edges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
-                    {edges.right && <div aria-hidden="true" className="pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l from-card to-transparent" />}
+                    {edges.right && <div aria-hidden="true" className={`pointer-events-none absolute right-full top-0 bottom-0 w-6 bg-gradient-to-l ${PINNED_SURFACE.bg.seam} to-transparent`} />}
                       {/* ONE overflow, holding every per-item action. Download
                           used to sit beside it as a bare button while Share and
                           Delete were inside, which is the same split the grid
-                          card above just lost. */}
+                          card above just lost. Move lives here too, so a
+                          keyboard or touch reader has a path to it that is not
+                          a pointer drag. */}
                       <div className="flex items-center justify-end gap-1">
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <button
-                              type="button"
-                              className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
+                            <IconButton
                               aria-label={i18nT('apps.awsControl.console.file_actions')}
                               data-testid="drive-more"
+                              onPointerDown={rememberMenuOpener}
+                              onKeyDown={rememberMenuOpener}
                             >
-                              <MoreHorizontal size={14} />
-                            </button>
+                              <MoreHorizontal className="h-3.5 w-3.5" />
+                            </IconButton>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
+                          <DropdownMenuContent align="end" onCloseAutoFocus={skipRestoreIfDialog}>
                             <DropdownMenuItem onSelect={() => download(f.key)} data-testid="drive-download">
                               <Download size={13} />{i18nT('apps.awsControl.console.download')}
                             </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={() => setShare({ key: f.key })} data-testid="drive-share">
+                            <DropdownMenuItem onSelect={() => openRename(f.key)} data-testid="drive-rename">
+                              <Pencil size={13} />{i18nT('apps.awsControl.console.rename')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => openShare(f.key)} data-testid="drive-share">
                               <Share2 size={13} />{i18nT('apps.awsControl.console.share')}
                             </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={() => setConfirmDelete(f.key)} data-testid="drive-delete">
+                            <DropdownMenuItem onSelect={() => openMove(f.key)} disabled={moveBusy} data-testid="drive-move">
+                              <FolderInput size={13} />{i18nT('apps.awsControl.console.move_to')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => openConfirmDelete(f.key)} data-testid="drive-delete">
                               <Trash2 size={13} />{i18nT('apps.awsControl.console.delete')}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -2235,6 +3267,41 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                       </div>
                     </td>
                   </tr>
+                  {renaming === f.key && (
+                    // eslint-disable-next-line jsx-a11y/control-has-associated-label -- the row's control is the Input, which carries its own aria-label; the rule cannot see through the component wrapper
+                    <tr className="border-b border-border bg-bg-elevated" data-testid="drive-rename-row">
+                      <td colSpan={5} className="px-2.5 py-2">
+                        <div className="sticky left-0 flex max-w-[calc(100vw-2.5rem)] flex-wrap items-center gap-2 pr-4">
+                          <Input
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') commitRename(f.key)
+                              if (e.key === 'Escape') closeRename()
+                            }}
+                            autoFocus
+                            aria-label={i18nT('apps.awsControl.console.rename')}
+                            className="w-full min-w-0 sm:w-[260px]"
+                            data-testid="drive-rename-input"
+                          />
+                          {/* Beside a live input, so no agent hand-off: the
+                              navigation would take the half-typed name with it. */}
+                          <AwsErrorNotice message={renameError} askAgent={false} variant="inline" testId="drive-rename-error" />
+                          <Btn onClick={closeRename} disabled={renameMut.isPending} data-testid="drive-rename-cancel">
+                            {i18nT('apps.awsControl.console.cancel')}
+                          </Btn>
+                          <Btn
+                            primary
+                            disabled={renameMut.isPending || !renameValue.trim()}
+                            onClick={() => commitRename(f.key)}
+                            data-testid="drive-rename-save"
+                          >
+                            <Pencil size={13} />{i18nT('apps.awsControl.console.rename')}
+                          </Btn>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {confirmDelete === f.key && (
                     <tr className="border-b border-border bg-bg-elevated" data-testid="drive-delete-confirm">
                       <td colSpan={5} className="px-2.5 py-2">
@@ -2246,8 +3313,8 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                           {/* Same `basis-full` reason as the folder strip above. */}
                           <AwsErrorNotice
                             askAgent={handOff}
-                            error={deleteMut.error}
-                            message={deleteMut.isError ? i18nT('apps.awsControl.console.delete_failed') : null}
+                            error={deleteFailedFor(f.key) ? deleteMut.error : null}
+                            message={deleteFailedFor(f.key) ? i18nT('apps.awsControl.console.delete_failed') : null}
                             variant="inline"
                             className="basis-full"
                             testId="drive-delete-error"
@@ -2258,7 +3325,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
                           <Btn
                             danger
                             disabled={deleteMut.isPending}
-                            onClick={() => deleteMut.mutate(f.key, { onSuccess: () => setConfirmDelete(null) })}
+                            onClick={() => deleteMut.mutate(f.key, { onSuccess: () => setConfirmDelete((cur) => (cur === f.key ? null : cur)) })}
                             data-testid="drive-delete-confirm-action"
                           >
                             <Trash2 size={13} />{i18nT('apps.awsControl.console.delete_confirm_action')}
@@ -2274,7 +3341,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
         </div>
       )}
 
-      {listQ.hasNextPage && (
+      {!searching && listQ.hasNextPage && (
         <div className="mt-2">
           <Btn
             onClick={() => listQ.fetchNextPage()}
@@ -2289,9 +3356,163 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
       <CliDrawer bucket={bucket} prefix="drive/" />
 
       {share && (
-        <ShareDialog account={account} section="drive" fileKey={share.key} onClose={() => setShare(null)} />
+        <ShareDialog
+          account={account}
+          section="drive"
+          fileKey={share.key}
+          onClose={() => { setShare(null); returnFocusToOpener() }}
+        />
+      )}
+
+      {/* The keyboard / touch path to a move. Drag is a convention a pointer
+          user may discover; this is the one every reader can reach from the
+          row's own menu. Destinations are the folders this listing already
+          knows -- the parent, the top level, and the sub-folders on screen --
+          which is the same set a drop could have landed on. The dialog closes
+          on success; a refused move keeps it open with the same sentence the
+          drop path reports, so the reader can pick another folder. Dismissing
+          it MID-MOVE is allowed: the move keeps going, the source row stays
+          dimmed until it lands, and the page strip reports a refusal once the
+          picker is gone — so a slow or hung copy never traps the reader. */}
+      {moveTarget && (
+        <MoveDialog
+          fileKey={moveTarget}
+          currentPath={path}
+          folders={folders}
+          pending={moveBusy}
+          error={moveError}
+          askAgent={handOff}
+          onMove={(folder) => {
+            const base = moveTarget.split('/').pop() ?? moveTarget
+            setMoveError(null)
+            moveMut.mutate(
+              { fromKey: moveTarget, toKey: folder ? `${folder}/${base}` : base },
+              // The reader may have dismissed the picker while this was in
+              // flight; only a picker that is still open hands focus back.
+              // Moves are serialized, so a picker open when this lands can
+              // only be this move's own — no other could have opened meanwhile.
+              { onSuccess: () => { if (moveDialogOpenRef.current) closeMoveDialog() } },
+            )
+          }}
+          onClose={closeMoveDialog}
+        />
+      )}
+      {preview && (
+        <PreviewDialog
+          account={account}
+          entry={preview}
+          onDownload={download}
+          downloadError={downloadError?.key === preview.key ? downloadError : null}
+          onClose={() => setPreview(null)}
+        />
       )}
     </section>
+  )
+}
+
+/* ── Move dialog ─────────────────────────────────────────────────────────── */
+
+/**
+ * A folder picker for one file. Small on purpose: the destinations a reader
+ * can see from the current folder, one button each, no tree walk. Modal
+ * keyboard behaviour (focus in, Tab ring, Escape, focus restore) comes from the
+ * shared hook, exactly as the picker dialog above.
+ */
+function MoveDialog({ fileKey, currentPath, folders, pending, error, askAgent, onMove, onClose }: {
+  fileKey: string
+  /** The folder the file lives in ('' = top level). */
+  currentPath: string
+  /** Full paths of the sub-folders in the current listing. */
+  folders: string[]
+  pending: boolean
+  /** The refused move, reported inside the picker so the reader can pick again. */
+  error: Failure | null
+  /** The picker holds no draft of its own, so the hand-off is the page's call. */
+  askAgent: boolean
+  onMove: (folder: string) => void
+  onClose: () => void
+}) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  // `restoreFocus: false`: at mount the previously focused element is a menu
+  // item that unmounted in the same commit, so the hook would capture `body`.
+  // The caller knows who opened the menu and focuses them on close.
+  useDialogFocusTrap(panelRef, onClose, { restoreFocus: false })
+  const backdropDown = useRef(false)
+  const name = fileKey.split('/').pop() ?? fileKey
+  const crumbs = currentPath.split('/').filter(Boolean)
+  const parent = crumbs.length > 1 ? crumbs.slice(0, -1).join('/') : null
+  // Up-links first (the way a file manager orders them), then the sub-folders
+  // in listing order. Top level appears only when the file is not already
+  // there; the parent only when it is not the top level (which the first
+  // entry already covers).
+  const options: Array<{ folder: string; label: string; testId: string }> = []
+  if (currentPath) options.push({ folder: '', label: i18nT('apps.awsControl.console.move_root'), testId: 'move-root' })
+  if (parent) options.push({ folder: parent, label: i18nT('apps.awsControl.console.move_up', { name: crumbs[crumbs.length - 2] }), testId: 'move-up' })
+  for (const f of folders) options.push({ folder: f, label: f.split('/').pop() ?? f, testId: 'move-folder' })
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="presentation"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
+      onClick={(e) => { if (e.target === e.currentTarget && backdropDown.current) onClose(); backdropDown.current = false }}
+    >
+      <div
+        ref={panelRef}
+        className="w-full max-w-sm rounded-xl border border-border bg-card p-4 shadow-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="aws-move-title"
+        aria-busy={pending || undefined}
+        data-testid="move-dialog"
+      >
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 id="aws-move-title" className="min-w-0 truncate text-sm font-semibold text-text-strong">
+            {i18nT('apps.awsControl.console.move_title', { name })}
+          </h3>
+          <IconButton
+            onClick={onClose}
+            aria-label={i18nT('apps.awsControl.console.close')}
+            data-testid="move-close"
+          >
+            <X className="h-4 w-4" />
+          </IconButton>
+        </div>
+        {options.length === 0 ? (
+          <p className="text-[13px] text-muted" data-testid="move-no-folders">
+            {i18nT('apps.awsControl.console.move_no_folders')}
+          </p>
+        ) : (
+          <div className="flex max-h-72 flex-col gap-1 overflow-y-auto" data-testid="move-options">
+            {options.map((o) => (
+              <button
+                key={o.testId + o.folder}
+                onClick={() => onMove(o.folder)}
+                disabled={pending}
+                className="flex w-full items-center gap-2 rounded-md border-none bg-transparent px-2.5 py-2 text-left text-[13px] text-text cursor-pointer hover:bg-bg-hover focus-ring disabled:opacity-50"
+                data-testid={o.testId}
+                data-folder={o.folder}
+              >
+                <FolderClosed size={14} className="shrink-0 text-muted" aria-hidden="true" />
+                <span className="min-w-0 truncate">{o.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {pending && (
+          <p className="mt-2 text-[12px] text-muted" data-testid="move-pending">
+            {i18nT('apps.awsControl.console.move_moving')}
+          </p>
+        )}
+        <AwsErrorNotice
+          error={error?.error}
+          message={error?.message}
+          askAgent={askAgent}
+          className="mt-2"
+          testId="move-error"
+        />
+      </div>
+    </div>
   )
 }
 
@@ -2313,12 +3534,44 @@ function ShareDialog({ account, section, fileKey, onClose }: { account: string; 
   })
   const url = shareMut.data?.url
 
+  /* Modal keyboard behaviour from the shared hook, as every dialog in this
+     file: focus moves in on open, Tab cycles inside, Escape closes. Escape is
+     refused while the link is being minted -- closing then would discard a
+     share that is about to exist with no way to see its URL. Focus RETURN is
+     the opener's job (`restoreFocus: false`): this dialog is opened from a
+     Radix menu item that unmounts in the same commit, so the element focused
+     at mount is `body`, and the drive section knows the real opener. */
+  const panelRef = useRef<HTMLDivElement>(null)
+  const backdropDown = useRef(false)
+  const close = () => { if (!shareMut.isPending) onClose() }
+  useDialogFocusTrap(panelRef, close, { restoreFocus: false })
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" data-testid="share-dialog" role="dialog" aria-modal="true">
-      <div className="w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-lg">
+    // Scrim and panel are two elements: the scrim owns click-to-dismiss (a
+    // press that starts AND ends on it), the panel is the dialog. Same shape
+    // as the picker dialog above.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="presentation"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) backdropDown.current = true }}
+      onClick={(e) => { if (e.target === e.currentTarget && backdropDown.current) close(); backdropDown.current = false }}
+    >
+      <div
+        ref={panelRef}
+        className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-lg"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="aws-share-title"
+        data-testid="share-dialog"
+      >
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-text-strong">{i18nT('apps.awsControl.console.share_title')}</h3>
-          <button onClick={onClose} className="text-muted hover:text-text cursor-pointer bg-transparent border-none p-0" aria-label={i18nT('apps.awsControl.console.close')} data-testid="share-close"><X size={16} /></button>
+          <h3 id="aws-share-title" className="min-w-0 truncate text-sm font-semibold text-text-strong">
+            {/* Names the file: a link publishes it externally, so the reader
+                must see WHICH file before creating one — the Move picker
+                beside this dialog already does the same. */}
+            {i18nT('apps.awsControl.console.share_title', { name: fileKey.split('/').pop() ?? fileKey })}
+          </h3>
+          <IconButton onClick={close} disabled={shareMut.isPending} aria-label={i18nT('apps.awsControl.console.close')} data-testid="share-close"><X className="h-4 w-4" /></IconButton>
         </div>
 
         {!url ? (
@@ -2373,6 +3626,14 @@ function ShareDialog({ account, section, fileKey, onClose }: { account: string; 
 /* ── Section 6: Backup ───────────────────────────────────────────────────── */
 
 const BACKUP_KINDS: BackupKind[] = ['snapshot', 'sessions']
+
+/** The glyph each backup kind is recognised by. A snapshot is an archive of the
+ *  workspace; the sessions archive is a database dump, so they are not the same
+ *  picture. */
+const BACKUP_KIND_ICON: Record<BackupKind, React.ReactNode> = {
+  snapshot: <Archive className="h-4 w-4" aria-hidden="true" />,
+  sessions: <Database className="h-4 w-4" aria-hidden="true" />,
+}
 
 /**
  * One backup kind's row.
@@ -2435,7 +3696,10 @@ function BackupRow({
     : ''
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5" data-testid={`backup-row-${kind}`}>
+    <div className="flex flex-wrap items-center gap-3 px-3 py-2.5" data-testid={`backup-row-${kind}`}>
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-elevated text-muted">
+        {BACKUP_KIND_ICON[kind]}
+      </span>
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text">{i18nT(BACKUP_KIND_LABEL_KEY[kind])}</div>
         <div className="text-[12px] text-muted">
@@ -2466,10 +3730,26 @@ function BackupRow({
           </div>
         )}
       </div>
-      <Btn onClick={() => runMut.mutate()} disabled={busy} data-testid={`backup-run-${kind}`}>
-        <RefreshCw size={13} className={busy ? 'animate-spin' : ''} />
-        {busy ? i18nT('apps.awsControl.console.backup_running') : i18nT('apps.awsControl.console.backup_run_now')}
-      </Btn>
+      {/* The badge states ONLY what the ledger records: a recorded run, or none.
+          It is deliberately not a health verdict -- the ledger holds successes,
+          so "a run exists" is the whole claim, and the failure line above is
+          where a bad outcome is reported. A third state would be invented.
+
+          Badge and Run travel together in one shrink-0 cluster, and the ROW
+          wraps: at 320px the label + meta + badge + button do not fit on one
+          line, and a non-wrapping row would push the button past the viewport
+          edge instead of dropping the pair beneath. */}
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <Badge variant={run ? 'ok' : 'muted'} data-testid={`backup-state-${kind}`}>
+          {run
+            ? i18nT('apps.awsControl.console.backup_state_current')
+            : i18nT('apps.awsControl.console.backup_state_never')}
+        </Badge>
+        <Btn onClick={() => runMut.mutate()} disabled={busy} data-testid={`backup-run-${kind}`}>
+          <RefreshCw size={13} className={busy ? 'animate-spin' : ''} />
+          {busy ? i18nT('apps.awsControl.console.backup_running') : i18nT('apps.awsControl.console.backup_run_now')}
+        </Btn>
+      </div>
     </div>
   )
 }
@@ -2518,7 +3798,13 @@ export function BackupSection({ account }: { account: string }) {
         testId="backup-status-error"
       />
       {data && (
-        <div className="rounded-md border border-border bg-card divide-y divide-border">
+        <Card className="px-2 py-3 md:px-3">
+          <PanelSectionHeader
+            label={i18nT('apps.awsControl.console.backup_title')}
+            count={BACKUP_KINDS.length}
+            className="mb-1 px-1"
+          />
+          <div className="divide-y divide-border">
           {BACKUP_KINDS.map((kind) => (
             <BackupRow
               key={kind}
@@ -2533,7 +3819,7 @@ export function BackupSection({ account }: { account: string }) {
               onStarted={invalidate}
             />
           ))}
-          <div className="flex items-center justify-between px-3 py-2.5" data-testid="backup-nightly">
+          <div className="flex items-center justify-between gap-3 px-3 py-2.5" data-testid="backup-nightly">
             <div className="min-w-0">
               <div className="text-[13px] font-medium text-text">{i18nT('apps.awsControl.console.backup_nightly')}</div>
               <div className="text-[12px] text-muted">{i18nT('apps.awsControl.console.backup_nightly_hint')}</div>
@@ -2554,7 +3840,8 @@ export function BackupSection({ account }: { account: string }) {
               />
             </div>
           )}
-        </div>
+          </div>
+        </Card>
       )}
 
       {/* The remote half failed INSIDE a 200: the backend read the local ledger
@@ -2669,12 +3956,25 @@ export function AccessSection({ account }: { account: string }) {
         testId="access-forget-error"
       />
       {sharesQ.data && shares.length === 0 && (
-        <p className="text-[13px] text-muted" data-testid="access-empty">{i18nT('apps.awsControl.console.access_empty')}</p>
+        <EmptyState
+          icon={<Share2 className="h-10 w-10" aria-hidden="true" />}
+          title={i18nT('apps.awsControl.console.access_empty')}
+          testId="access-empty"
+        />
       )}
       {shares.length > 0 && (
-        <div className="rounded-md border border-border bg-card divide-y divide-border" data-testid="access-list">
+        <Card className="px-2 py-3 md:px-3" data-testid="access-list">
+          <PanelSectionHeader
+            label={i18nT('apps.awsControl.console.access_title')}
+            count={shares.length}
+            className="mb-1 px-1"
+          />
+          <div className="divide-y divide-border">
           {shares.map((s: Share) => (
-            <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 text-[13px]" data-testid="access-row">
+            <div key={s.id} className="flex flex-wrap items-center gap-3 px-3 py-2.5 text-[13px]" data-testid="access-row">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-elevated text-muted">
+                <Link2 className="h-4 w-4" aria-hidden="true" />
+              </span>
               <div className="min-w-0 flex-1">
                 {/* WRAPS, and the key keeps a floor. A narrow row puts a
                   * truncating filename and its badges in one cluster beside a
@@ -2701,10 +4001,16 @@ export function AccessSection({ account }: { account: string }) {
                   {i18nT('apps.awsControl.console.access_expires_in', { when: fmtRelative(s.expiresAt) })}
                 </div>
               </div>
-              <Btn onClick={() => forgetMut.mutate(s.id)} disabled={forgetMut.isPending} data-testid="access-forget">{i18nT('apps.awsControl.console.access_forget')}</Btn>
+              {/* `ml-auto shrink-0`, and the ROW wraps: the glyph block this
+                * change adds costs 44px the old row did not spend, which at
+                * 320px is exactly enough to push a fixed-width "Remove from
+                * list" past the viewport edge. Wrapping drops it beneath
+                * instead; nothing moves at any ordinary width. */}
+              <Btn className="ml-auto shrink-0" onClick={() => forgetMut.mutate(s.id)} disabled={forgetMut.isPending} data-testid="access-forget">{i18nT('apps.awsControl.console.access_forget')}</Btn>
             </div>
           ))}
-        </div>
+          </div>
+        </Card>
       )}
       {/* Only with rows to qualify: an unchecked EMPTY ledger has no claim to
         * qualify, and saying so would be noise on the empty state. Without this
@@ -2748,84 +4054,71 @@ const SECTION_LABEL_ON_PAGE: Record<DriveSection, string> = {
   backup: 'apps.awsControl.console.section_backup',
 }
 
-
-
-/**
- * Each section's meter colour, as a SEMANTIC token — never a hex.
- *
- * The three must be visually distinct AND survive a theme switch (including the
- * light themes), so each is one of the palette's own role tokens rather than a
- * literal: `accent` for the drive, `info` for the library, `warn` for backups.
- * The legend swatch and the bar segment read the SAME token, so a segment and
- * its legend entry can never drift to different colours.
- */
-/* Three CATEGORICAL colours, telling the segments apart -- this meter reports no
-   health, so it must not borrow a status colour. `bg-warn` sat on Backup and read
-   as "something is wrong with your backups" on a bar that only states sizes. */
-const SECTION_TONE: Record<DriveSection, string> = {
-  drive: 'bg-accent',
-  library: 'bg-info',
-  backup: 'bg-muted',
+/** The glyph each section is recognised by, the same one its pane header wears. */
+const SECTION_ICON: Record<DriveSection, LucideIcon> = {
+  drive: FolderClosed,
+  library: Library,
+  backup: Archive,
 }
 
 /**
- * The storage meter: total usage, and one horizontal bar split by section.
+ * The one section → glyph + label map every section tile draws from. The
+ * storage meter here and the Overview's drive card render the same three
+ * tiles, and two maps for one fact is how a renamed section ends up with two
+ * icons.
+ */
+export const SECTION_TILES: { section: DriveSection; icon: LucideIcon; labelKey: string }[] =
+  SECTIONS.map((section) => ({ section, icon: SECTION_ICON[section], labelKey: SECTION_LABEL_ON_PAGE[section] }))
+
+/**
+ * The storage meter: one horizontal bar split by section, and a quick tile per
+ * section.
  *
  * The bar is proportional to each section's BYTES, but a section with zero
  * bytes still gets a legible legend row (its swatch and a `0` size) — a section
  * that exists is worth naming even when empty, and a 0-width bar segment alone
  * would silently drop it. When the whole drive is empty the bar renders as a
  * single muted track so the card is never a bare outline.
+ *
+ * Exported because the pane that owns "what is using storage" places it; this
+ * file only owns what it looks like. Its section readings are read-only rows:
+ * the meter sits on the Usage pane, and every section it names is one rail
+ * click away already.
  */
 export function StorageMeter({ usage }: { usage: DriveUsage }) {
-  const total = usage.bytes
   return (
-    <div className="mb-4 rounded-lg border border-border bg-card p-4" data-testid="drive-storage-meter">
-      {/* Heading only. This card used to restate the grand total on its right,
-          ~50px below the header's identical "size | items" -- and both read
-          `usage.bytes` / `usage.objects`, the SAME fields, so they could never
-          disagree. I twice defended the pair as a cross-check of whole against
-          sum-of-parts; that was wrong. The parts live in the legend below, which
-          is the information this card actually adds. The total belongs to the
-          header, once. */}
-      <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
-        <span className="text-[13px] font-medium text-text-strong">
-          {i18nT('apps.awsControl.console.root_storage_used')}
-        </span>
+    <Card data-testid="drive-storage-meter">
+      <PanelSectionHeader label={i18nT('apps.awsControl.console.root_storage_used')} />
+
+      {/* No headline figure here: the Usage pane's stat cards own the byte
+          total and the object count, and this card owns the SPLIT — one
+          rendering per fact per pane. */}
+      {/* The bar and its legend are the shared `StorageBar`: the Overview card
+          draws the same split, and two drawings of one figure would drift. */}
+      <div className="mt-3">
+        <StorageBar usage={usage} testId="drive-meter" />
       </div>
 
-      {/* The bar. Proportional segments when there is anything to show; a single
-          muted track when the drive is empty, so it is never a bare outline. */}
-      <div
-        className="mt-3 flex h-2.5 w-full overflow-hidden rounded-full bg-bg-hover"
-        data-testid="drive-meter-bar"
-      >
-        {total > 0 &&
-          SECTIONS.map((s) => {
-            const pct = (usage.sections[s].bytes / total) * 100
-            if (pct <= 0) return null
-            return (
-              <div
-                key={s}
-                className={`h-full ${SECTION_TONE[s]}`}
-                style={{ width: `${pct}%` }}
-                data-testid={`drive-meter-segment-${s}`}
-              />
-            )
-          })}
-      </div>
-
-      {/* Legend — every section, including 0-byte ones, with its own size. */}
-      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5" data-testid="drive-meter-legend">
-        {SECTIONS.map((s) => (
-          <div key={s} className="flex items-center gap-1.5 text-[12px]" data-testid={`drive-meter-legend-${s}`}>
-            <span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${SECTION_TONE[s]}`} aria-hidden="true" />
-            <span className="text-muted">{i18nT(SECTION_LABEL_ON_PAGE[s])}</span>
-            <span className="font-mono text-text">{fmtBytes(usage.sections[s].bytes)}</span>
-          </div>
+      {/* One reading per section: the glyph it is recognised by, its name, and
+          how many objects are in it. Read-only here — this pane IS the usage
+          view and every section is one rail click away — so the tiles draw as
+          flat rows rather than as the bordered targets the Overview uses.
+          Stacked on a phone, three across from `sm`. */}
+      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3" data-testid="drive-meter-tiles">
+        {SECTION_TILES.map(({ section, icon: Icon, labelKey }) => (
+          <QuickTile
+            key={section}
+            testId={`drive-meter-tile-${section}`}
+            icon={<Icon className="h-4 w-4" aria-hidden="true" />}
+            label={i18nT(labelKey)}
+            count={i18nT('apps.awsControl.console.root_section_objects', {
+              count: usage.sections[section].objects,
+              objects: fmtNumber(usage.sections[section].objects),
+            })}
+          />
         ))}
       </div>
-    </div>
+    </Card>
   )
 }
 

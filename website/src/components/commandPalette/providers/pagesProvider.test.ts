@@ -15,6 +15,12 @@ const { getBuiltinSurfaces } = vi.hoisted(() => ({
     { navId: 'crs', label: 'Code Reviews', route: '/crs', icon: null },
     // Same route as the EXTRA_PAGES 'Logs' entry — registry must win on dedup.
     { navId: 'logs-surface', label: 'Logs Surface', route: '/logs', icon: null },
+    // A promotable sub-item (`pinnable`), which is how Knowledge reaches the
+    // palette now that it is a registered surface rather than an EXTRA_PAGES
+    // row. It is in `getAdvertisedSurfaces()` whether or not the user has
+    // pinned it — only its RAIL row is opt-in — so the palette sees it here
+    // exactly as production does.
+    { navId: 'capabilities-knowledge', label: 'Knowledge', route: '/capabilities?tab=knowledge', icon: null },
   ]),
 }))
 
@@ -78,28 +84,42 @@ describe('createPagesProvider — registry + extras', () => {
     expect(spy).toHaveBeenCalledWith('/crs')
   })
 
-  it('includes routed-but-not-in-rail EXTRA_PAGES (e.g. Hooks)', async () => {
+  it('includes routed-but-not-in-rail EXTRA_PAGES (e.g. Developer)', async () => {
+    // Was exemplified by Hooks until `capabilities-hooks` became a registered
+    // surface: two rows then resolved to the same HooksPage under the identical
+    // title "Hooks", which this file's own webhooks comment forbids ("differ in
+    // BOTH title and icon"), so the hand-list row went. Developer is the same
+    // KIND of entry -- a real route with no rail surface -- so the property this
+    // test exists for is unchanged; only the specimen moved.
     const { nav, spy } = navigate()
     const p = createPagesProvider(nav)
 
-    const arr = await run(p, 'hooks')
-    const hit = arr.find((r) => r.title === 'Hooks')
+    const arr = await run(p, 'developer')
+    const hit = arr.find((r) => r.title === 'Developer')
     expect(hit).toBeDefined()
     hit!.onActivate()
-    expect(spy).toHaveBeenCalledWith('/hooks')
+    expect(spy).toHaveBeenCalledWith('/developer')
   })
 
   it('offers Knowledge and lands on the Capabilities knowledge tab', async () => {
-    // Knowledge has no rail surface, so ⌘K is the discoverability lifeline for
-    // anyone who used to click it in the sidebar — the entry must resolve and
-    // must target the tab, not the removed page.
+    // Knowledge has no rail row unless the user promotes it, so this is the
+    // discoverability lifeline for anyone who used to click it in the sidebar.
+    // The entry now comes from the REGISTRY (a `pinnable` surface) rather than
+    // from EXTRA_PAGES; the guarantee is unchanged, only its owner moved, and
+    // THIS TEST IS WHAT PINS THE MOVE -- drop the surface from the fixture above
+    // and the count below goes to 0.
+    //
+    // The count also documents a property it cannot itself falsify: a
+    // reintroduced EXTRA_PAGES twin is skipped by `collectPages`' exact-route
+    // dedup, verified by mutation, so it can never produce a second row. Read
+    // the 1 as "the registry supplies it", not as "a twin would be caught".
     const { nav, spy } = navigate()
     const p = createPagesProvider(nav)
 
     const arr = await run(p, 'knowledge')
-    const hit = arr.find((r) => r.subtitle === '/capabilities?tab=knowledge')
-    expect(hit).toBeDefined()
-    hit!.onActivate()
+    const hits = arr.filter((r) => r.subtitle === '/capabilities?tab=knowledge')
+    expect(hits).toHaveLength(1)
+    hits[0].onActivate()
     expect(spy).toHaveBeenCalledWith('/capabilities?tab=knowledge')
   })
 

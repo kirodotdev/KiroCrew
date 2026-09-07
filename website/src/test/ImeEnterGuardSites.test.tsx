@@ -437,8 +437,12 @@ describe('file-explorer PathBar — Tab accepts a suggestion INTO the draft', ()
     fireEvent.click(screen.getByTitle('Click to edit path'))
     const input = screen.getByPlaceholderText('/path/to/folder') as HTMLInputElement
     fireEvent.change(input, { target: { value: '/home/user/s' } })
-    // The suggestion query is debounced, so the row is what proves it arrived.
-    await waitFor(() => expect(screen.getByText('/home/user/src')).toBeInTheDocument())
+    // The suggestion query is debounced (150ms) behind the file-explorer
+    // `complete` fetch, so the row can arrive after the default waitFor
+    // timeout (1000ms) under a loaded, concurrent run -- widen it rather than
+    // assume the debounce + query always resolves within 1s (same class as
+    // DiffBlock.streaming.test.tsx / PierreWorkspaceTree.lazy.test.tsx).
+    await waitFor(() => expect(screen.getByText('/home/user/src')).toBeInTheDocument(), { timeout: 5000 })
     return input
   }
 

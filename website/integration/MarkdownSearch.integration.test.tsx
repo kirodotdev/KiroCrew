@@ -58,13 +58,23 @@ describe('AssistantMessage search highlighting', () => {
   it('single occurrence counter across markdown and code blocks', async () => {
     const content = 'The word deploy here.\n\n```python\nprint("deploy")\n```\n\nAnd deploy again.'
     const { container } = renderWithSearch(content, 'deploy', 1)
+    // The code block's "deploy" starts as plain text (the `pierre-plain`
+    // stand-in in CodeBlock.tsx) and is re-highlighted once Pierre's staged,
+    // chunk-loaded mount admits it -- a MutationObserver re-runs the TreeWalker
+    // pass when that swap lands (AssistantMessage.tsx). On Windows that chunk
+    // load + staged-mount queue can outlast the default waitFor timeout
+    // (1000ms), so the assertion below can observe an in-between DOM state
+    // where the occurrence count is right but the swap hasn't finished
+    // reordering text nodes yet. Same class as DiffBlock.streaming.test.tsx /
+    // PierreWorkspaceTree.lazy.test.tsx; widen rather than assume it always
+    // settles within 1s.
     await waitFor(() => {
       const marks = container.querySelectorAll('mark')
       expect(marks).toHaveLength(3)
       expect(marks[0].className).toBe('search-match')
       expect(marks[1].className).toBe('search-current')
       expect(marks[2].className).toBe('search-match')
-    })
+    }, { timeout: 5000 })
   })
 
   it('highlights clear when term changes to empty', async () => {

@@ -322,6 +322,105 @@ def _fallback_profile(name: str) -> Profile:
     return deny_all_profile(name)
 
 
+# Monotonic counter of profile-layer RECOMPOSES, bumped by ``ProfileStore._ensure_fresh``
+# whenever the directory fingerprint missed and a reload actually published a new
+# snapshot.  Deliberately a MODULE global rather than instance state, for two reasons:
+#
+#   * ``reset_store()`` replaces the store, and an instance counter would restart at 0.
+#     A consumer comparing a combined token could then see it move BACKWARD, or — worse
+#     — not move at all when a ceiling bump and a profile reset cancel out.
+#   * it mirrors ``context._GOVERNANCE_GENERATION``, which is the sibling this pairs
+#     with and is a process-global for the same reason.
+#
+# NOT folded into ``_ceiling_token()``.  That is load-bearing, not an oversight: the
+# ceiling token is an INPUT to the store's own freshness key, so feeding this counter
+# back into it would make every reload invalidate the fingerprint it just committed
+# (``_ensure_fresh`` computes ``fp`` BEFORE ``_reload``, so the committed value is
+# pre-bump) and the store would reload on every single access forever — on the event
+# loop, since the synchronous PreToolUse gate reaches this path.  This counter is an
+# OUTPUT of the store and must never become an input to it.
+_PROFILE_GENERATION = 0
+_PROFILE_GENERATION_LOCK = threading.Lock()
+
+
+def _profile_generation() -> int:
+    """Monotonic counter of how many profile snapshots have been published.
+
+    Opaque and comparison-only, exactly like ``context.governance_generation()``:
+    callers may test it for equality with a value they stored, never interpret its
+    magnitude.  Module-private on purpose: the public contract is the combined
+    :func:`governance_answer_generation`, and a bare generation accessor with no
+    consumer outside this module would be surface to honor forever.
+    """
+    with _PROFILE_GENERATION_LOCK:
+        return _PROFILE_GENERATION
+
+
+def _bump_profile_generation() -> None:
+    """The single writer of ``_PROFILE_GENERATION``."""
+    global _PROFILE_GENERATION
+    with _PROFILE_GENERATION_LOCK:
+        _PROFILE_GENERATION += 1
+
+
+def poll_profiles_fresh() -> None:
+    """Re-stat the profiles directory and reload if it changed.  MAY BLOCK.
+
+    This is the filesystem half of the #8623 notification edge, kept SEPARATE from
+    :func:`governance_answer_generation` so the read is never accidentally coupled to
+    a directory walk.  ``_dir_fingerprint`` runs ``iterdir`` plus a ``stat`` per file,
+    which is exactly the "large synchronous file IO or filesystem walks" that
+    AUTOSDE's ``no-blocking-call-on-event-loop`` prohibits, so an async caller MUST
+    offload it::
+
+        await asyncio.to_thread(poll_profiles_fresh)
+
+    Measured on one host: 57us at 5 profile files, 107us at 15, 303us at 50, 1.12ms
+    at 200.  Small at a realistic count and unbounded in principle, which is why it
+    is offloaded rather than defended by the measurement.
+
+    Best-effort: a failure here leaves the last published snapshot and its generation
+    in place, so a consumer sees a stale-but-coherent token rather than an exception
+    on a status tick.
+    """
+    try:
+        _STORE._ensure_fresh()
+    except Exception:  # pragma: no cover - defensive; freshness is best-effort here
+        logger.debug("profile freshness poll failed; serving last token", exc_info=True)
+
+
+def governance_answer_generation() -> int:
+    """One opaque token covering BOTH layers that can change a governance answer.
+
+    ``GET /api/dashboard/config`` derives fields (``social_share_enabled``) from the
+    ceiling ∩ profile intersection, so a consumer watching for "the answer may have
+    changed" has to watch both layers.  Watching the ceiling counter alone is issue
+    #8623: a profile-layer tightening is enforced on the next decision but never
+    reaches the dashboard's cache invalidation, so the UI keeps offering an entry
+    policy has withdrawn.
+
+    Both components are monotonic non-decreasing for the life of the process, so
+    their sum is too, and the sum therefore changes if and only if at least one
+    component changed.  That is all a consumer needs: the wire field is documented
+    opaque and comparison-only, so combining is not a change of meaning.
+
+    PURE READ - two locked integer reads, NO filesystem access, safe to call on the
+    event loop.  Detecting a profile edit needs :func:`poll_profiles_fresh`, which is
+    the caller's job precisely because only the caller knows whether it can block;
+    the periodic watcher offloads that to a thread, while the synchronous slots
+    broadcast does not poll at all and simply reads what has been published.
+
+    Re-entrancy: a bump can cause the watcher to call ``push_slots_update()``, whose
+    broadcast reads this token again.  That read touches no filesystem and cannot
+    bump anything, so the cycle terminates immediately.  No listener writes profiles
+    on notify either: the only consumer is a client-side ``dashboardConfig``
+    invalidation, which issues a GET.
+    """
+    from kiro_crew.platform.context import governance_generation
+
+    return governance_generation() + _profile_generation()
+
+
 def _ceiling_token() -> Tuple[bool, int]:
     """The active ceiling's identity, as far as the profile store needs to know it.
 
@@ -462,6 +561,14 @@ class ProfileStore:
             if self._snap.loaded and fp == self._fingerprint:
                 return True  # already fresh (another thread reloaded, or unchanged)
             self._reload(directory)
+            # A new snapshot is published as of the line above, so the generation
+            # describes PUBLISHED snapshots rather than attempted reloads. This is
+            # the notification edge issue #8623 was missing: enforcement already
+            # observed the new profiles (the authorization path calls this method),
+            # but nothing told a cache-invalidation consumer that the governance
+            # answer may have moved. Bumped INSIDE the reload lock, so two threads
+            # cannot publish two snapshots and record one bump.
+            _bump_profile_generation()
             # Commit the fingerprint. An unreadable/malformed file is a
             # bind-preserving deny-all (fail-closed), so the cached state is the SAFE
             # (denying) state; a metadata change (fix/delete/chmod — all bump the

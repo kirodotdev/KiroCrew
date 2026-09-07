@@ -3,7 +3,7 @@
 One surface answers "which accounts can Kiro Crew use, do their credentials
 still work, and what does that cost" — and later phases grow the S3-backed
 cloud drive (Drive / Library / Backup) plus sharing on the same console.
-Spec: ``docs/system-specs/features/aws-control.md``.
+Spec: ``docs/system-specs/modules/aws-control.md``.
 
 Architecture — in-process builtin, like ``issue_radar`` and ``crew_companion``:
 

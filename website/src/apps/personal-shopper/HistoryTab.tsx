@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Clock, Lightbulb, Search, ShoppingCart, SkipForward, ThumbsUp } from 'lucide-react'
 import * as shopApi from './api'
 import { EmptyState, Input } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 import { fmtCurrency } from '../../i18n/format'
@@ -97,6 +98,12 @@ export function HistoryTab() {
           {i18nT('apps.personalShopper.historyTab.no_sessions_matching', { query: searchQuery })}
         </p>
       )}
+
+      {/* A rejected thumbs-up / purchased / skipped used to vanish. Nothing here
+          is a draft (the search box is a filter), so the hand-off loses nothing. */}
+      {feedbackMutation.isError ? (
+        <ErrorNotice message={(feedbackMutation.error as Error).message} askAgent />
+      ) : null}
 
       {/* Session cards */}
       {filtered.map((session) => (

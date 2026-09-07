@@ -20,6 +20,13 @@ const CONFIG_KEY = 'agent.acp_backend'
 const KIRO = ''
 const CLAUDE = 'claude'
 const KAS = 'kas'
+/**
+ * Named for `caveat` alone, and deliberately NOT added to `NAMED`: this frontend
+ * has no translated label for Codex, so its chip carries the server's `policy_id`
+ * (see the fallback in `nameOf`). Listing it as NAMED without a translated entry
+ * would trade a legible wire name for a chip with no text.
+ */
+const CODEX = 'codex'
 
 /**
  * The agents this frontend has a translated name and an icon for.
@@ -260,10 +267,11 @@ export function AgentBackendTab() {
    * the same mistake as disabling one. `current` joins for the same reason: the saved
    * value must always have a chip.
    *
-   * Sorted rather than left in arrival order: KIRO first because it is the default
-   * and the floor, then by `policy_id`, which is the order the probe endpoint already
-   * sorts by. Set iteration order would otherwise follow whichever query resolved
-   * first and reshuffle the control between renders.
+   * Sorted rather than left in arrival order: the two kiro-family harnesses first —
+   * KIRO because it is the default and the floor, then KAS — and everything else by
+   * `policy_id`, which is the order the probe endpoint already sorts by. Set iteration
+   * order would otherwise follow whichever query resolved first and reshuffle the
+   * control between renders.
    */
   const candidates = Array.from(
     new Set<string>([
@@ -275,6 +283,15 @@ export function AgentBackendTab() {
   ).sort((a, b) => {
     if (a === KIRO) return -1
     if (b === KIRO) return 1
+    // KAS second, ahead of the byte order below. It is not an adapter: it is kiro-cli's
+    // own ACP relay, resolved from the same binary and sharing kiro's install verdict
+    // (`_probe_kas` delegates to `_probe_kiro`), so the two harnesses that are really
+    // one install belong adjacent at the head of the row. Under `policy_id` alone it
+    // sorts on 'k' and lands behind every adapter whose name happens to start earlier
+    // ('claude', 'codex'), which reads to the operator as a rank rather than an
+    // alphabet.
+    if (a === KAS) return -1
+    if (b === KAS) return 1
     // Byte order, not `localeCompare`/`compareText`: these are machine identifiers,
     // and the point of the sort (see above) is to reproduce the order the probe
     // endpoint already returned them in. A collator reads the READER's locale, so
@@ -336,9 +353,27 @@ export function AgentBackendTab() {
    * means the guarantee differs per harness. An operator choosing between harnesses is
    * choosing between governance models, so the panel names the difference instead of
    * letting them find it in a shell command that never asked.
+   *
+   * Codex carries the OTHER thing a harness can be missing. Its adapter ships a Codex
+   * binary of its own, so `installed` answers the whole binary question and a session
+   * can still die on the first turn for want of a credential — which the install line
+   * then has nothing to say about. The remedy is two-branched (Codex's own sign-in, or
+   * a `model_provider` in `~/.codex/config.toml` where the credentials come from
+   * elsewhere entirely), so it is stated once rather than inferred from a failure.
+   *
+   * A caveat and not a probe line, deliberately. Reading those files would make this a
+   * measurement, and a measurement here gates the control: `missing` disables the chip,
+   * and the checkable paths are not the only ones that authenticate a Codex — an
+   * ambient key, a relocated `CODEX_HOME`, a `CODEX_ACP_BIN` adapter with its own
+   * configuration. Every one of those is an operator we would have disabled the switch
+   * for while they were already signed in, which the probe module names as the more
+   * expensive mistake. A standing sentence cannot be wrong in that direction.
    */
-  const caveat = (value: string): string =>
-    value === CLAUDE ? i18nT('pages.developer.agentBackendTab.claude_uses_its_own_permissions') : ''
+  const caveat = (value: string): string => {
+    if (value === CLAUDE) return i18nT('pages.developer.agentBackendTab.claude_uses_its_own_permissions')
+    if (value === CODEX) return i18nT('pages.developer.agentBackendTab.codex_signs_in_separately')
+    return ''
+  }
 
   /**
    * Translated display names for the agents this frontend knows by name.

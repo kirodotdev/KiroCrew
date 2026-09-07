@@ -58,7 +58,7 @@ export function SecretsPanel() {
   const [newValue, setNewValue] = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
-  const { data, isLoading } = useQuery<SecretsListResponse>({
+  const { data, isLoading, isError, error: listError } = useQuery<SecretsListResponse>({
     queryKey: ['secrets'],
     queryFn: () => get('/api/secrets').then(j),
   })
@@ -99,7 +99,19 @@ export function SecretsPanel() {
 
         {isLoading && <p className="text-sm text-muted">{i18nT('settings.secrets.loading')}</p>}
 
-        {!isLoading && names.length === 0 && !showAdd && (
+        {/* A failed list read must not look like "no secrets". askAgent is gated
+            on the add form: while `showAdd` is open, `newName` / `newValue` are an
+            unsaved draft the navigation would discard (see the save notice below
+            for the same reasoning). */}
+        {isError && (
+          <ErrorNotice
+            className="mb-4"
+            message={i18nT('settings.secrets.load_error', { error: (listError as Error).message })}
+            askAgent={!showAdd}
+          />
+        )}
+
+        {!isLoading && !isError && names.length === 0 && !showAdd && (
           <p className="text-sm text-muted italic">
             {i18nT('settings.secrets.no_secrets')}
           </p>
@@ -128,9 +140,14 @@ export function SecretsPanel() {
                         {i18nT('settings.secrets.cancel')}
                       </Btn>
                     </div>
+                    {/* The delete row shares the card with the add form: while
+                        `showAdd` is open, `newName` / `newValue` are an unsaved
+                        draft, so the hand-off is only offered when it is closed.
+                        No hand-off in that case: the add-secret draft. */}
                     {deleteMutation.isError && (
                       <ErrorNotice
                         variant="inline"
+                        askAgent={!showAdd}
                         message={i18nT('settings.secrets.delete_error', {
                           error: (deleteMutation.error as Error).message,
                         })}
@@ -202,6 +219,9 @@ export function SecretsPanel() {
                 {i18nT('settings.secrets.cancel')}
               </Btn>
             </div>
+            {/* No hand-off: `newName` / `newValue` — the secret the user just typed
+                and that this failure means was NOT stored — live only in this
+                form's state; the navigation would discard them. */}
             {setMutation.isError && (
               <ErrorNotice
                 variant="inline"

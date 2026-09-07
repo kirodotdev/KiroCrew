@@ -1453,6 +1453,20 @@ class TestRequeueSuppression:
 
 
 class TestConsumePendingReset:
+    async def _drain_retry(self, slot_key: str) -> None:
+        """Cancel and await the slot's pending-reset retry task, if armed.
+
+        The decline paths arm a real background task; leaving it pending when
+        the test's loop closes emits 'Task was destroyed but it is pending'.
+        """
+        entry = chat_runner._pending_reset_retries.pop(slot_key, None)
+        if entry is not None:
+            entry[1].cancel()
+            try:
+                await entry[1]
+            except asyncio.CancelledError:
+                pass
+
     @pytest.mark.asyncio
     async def test_no_pending_key_is_a_noop(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
@@ -1465,19 +1479,166 @@ class TestConsumePendingReset:
     async def test_successful_reset_clears_the_flag(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         slot._pending_reset_history_key = "dashboard:chat-cov-1"
+        state.sessions.reset = AsyncMock(return_value=True)
 
         await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
-        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1")
+        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1", skip_if_busy=True)
         assert slot._pending_reset_history_key is None
+
+    @pytest.mark.asyncio
+    async def test_busy_decline_leaves_the_flag_armed(self, tmp_path):
+        # The pending key can name a LIVE channel session (a linked slot's
+        # project change arms slack:<ts>): a busy decline must leave the flag
+        # armed for a later consume instead of tearing down the streaming
+        # reply — the discard branch's pattern. The withhold verdict survives
+        # too: it describes the session that advertised the model list, and
+        # that session is still live and accurate after a decline.
+        state, slot = _state(tmp_path), _slot()
+        slot.linked_session_key = "slack:123.456"
+        slot._pending_reset_history_key = "slack:123.456"
+        slot.model = "some-model"
+        slot.record_model_withheld(True)
+        state.sessions.reset = AsyncMock(return_value=False)
+        state.sessions.get_provider = MagicMock(return_value=MagicMock())
+
+        torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
+
+        assert torn_down is False
+        assert slot._pending_reset_history_key == "slack:123.456"
+        assert slot.model_withheld is True
+        await self._drain_retry(slot.key)
+
+    @pytest.mark.asyncio
+    async def test_busy_decline_arms_a_retry_that_lands_the_reset(self, tmp_path, monkeypatch):
+        # A channel-linked slot's turns never pass a dashboard turn boundary,
+        # so a busy decline arms a bounded retry task; once the channel turn
+        # releases the session, the retry lands the teardown and spends the
+        # flag — no eager reuse of the stale provider in between.
+        monkeypatch.setattr(chat_runner, "_PENDING_RESET_RETRY_DELAY_SECS", 0.01)
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot.linked_session_key = "slack:123.456"
+        slot._pending_reset_history_key = "slack:123.456"
+        # First consume declines (turn in flight), the retry's consume lands.
+        state.sessions.reset = AsyncMock(side_effect=[False, True])
+
+        torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=False)
+        assert torn_down is False
+        assert slot._pending_reset_history_key == "slack:123.456"
+
+        task = chat_runner._pending_reset_retries.get(slot.key)
+        assert task is not None
+        assert task[0] is slot
+        await asyncio.wait_for(task[1], timeout=2.0)
+        assert slot._pending_reset_history_key is None
+        assert state.sessions.reset.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_replacement_slot_retry_is_not_suppressed(self, tmp_path, monkeypatch):
+        # A retiring owner's still-live retry task must not dedupe away a
+        # REPLACEMENT slot's retry under the same key: the old task exits on
+        # its own identity check and cannot clear the flag the replacement
+        # owns, so suppressing the new registration would strand the
+        # replacement on the stale project forever.
+        monkeypatch.setattr(chat_runner, "_PENDING_RESET_RETRY_DELAY_SECS", 0.01)
+        state = _state(tmp_path)
+        old_owner = _slot()
+
+        async def _sleep_forever() -> None:
+            await asyncio.sleep(30)
+
+        stale_task = asyncio.get_running_loop().create_task(_sleep_forever())
+        chat_runner._pending_reset_retries[old_owner.key] = (old_owner, stale_task)
+
+        replacement = _slot()  # same key, different object
+        replacement.linked_session_key = "slack:123.456"
+        state._slots[replacement.key] = replacement
+        replacement._pending_reset_history_key = "slack:123.456"
+        state.sessions.reset = AsyncMock(side_effect=[False, True])
+
+        await chat_runner._consume_pending_reset(state, replacement, allow_discard=False)
+        entry = chat_runner._pending_reset_retries.get(replacement.key)
+        assert entry is not None
+        assert entry[0] is replacement
+        await asyncio.wait_for(entry[1], timeout=2.0)
+        assert replacement._pending_reset_history_key is None
+
+        stale_task.cancel()
+        try:
+            await stale_task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_no_teardown_leaves_the_flag_armed(self, tmp_path):
+        # reset() returns False for a busy decline, for "nothing registered
+        # under the key", AND for a key whose session is cold-starting and
+        # not yet registered — the three cannot be told apart from here, so
+        # the flag is spent only on a real teardown. Clearing on a None
+        # provider probe would let a concurrent cold start carrying the old
+        # CWD register after the clear and serve the stale project.
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_reset_history_key = "dashboard:chat-cov-1"
+        state.sessions.reset = AsyncMock(return_value=False)
+
+        torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
+
+        assert torn_down is False
+        assert slot._pending_reset_history_key == "dashboard:chat-cov-1"
+        await self._drain_retry(slot.key)
+
+    @pytest.mark.asyncio
+    async def test_a_rebind_re_arms_the_current_key_and_does_not_reset_the_stale_one(
+        self, tmp_path, monkeypatch
+    ):
+        # The flag was armed for session A, then the slot REBOUND to B (a
+        # cron/workflow slot gets linked when its first result is injected, a
+        # channel link can land between arming and consume). Resetting A and
+        # clearing the flag would tear down a session nobody is on and let B
+        # keep the old CWD forever. The consume must re-arm the flag to B and
+        # leave A alone, so a later consume lands the reset where the turns run.
+        monkeypatch.setattr(chat_runner, "_PENDING_RESET_RETRY_DELAY_SECS", 0.01)
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot.linked_session_key = "slack:B.new"  # slot now runs turns on B
+        slot._pending_reset_history_key = "slack:A.old"  # flag armed for A
+
+        torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=False)
+
+        assert torn_down is False
+        # A was never reset; the flag re-points at the slot's current session.
+        state.sessions.reset.assert_not_awaited()
+        assert slot._pending_reset_history_key == "slack:B.new"
+        await self._drain_retry(slot.key)
+
+    @pytest.mark.asyncio
+    async def test_attached_subagents_defer_the_pending_reset(self, tmp_path):
+        # The reset releases the shared runtime attached children run on —
+        # a slot with children leaves the flag armed for a later consume,
+        # the same policy as the discard branch.
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_reset_history_key = "dashboard:chat-cov-1"
+        subs = MagicMock()
+        subs.running_agents_for = MagicMock(return_value=["child-1"])
+        state.subagents = subs
+
+        torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=False)
+
+        assert torn_down is False
+        state.sessions.reset.assert_not_awaited()
+        assert slot._pending_reset_history_key == "dashboard:chat-cov-1"
+        await self._drain_retry(slot.key)
 
     @pytest.mark.asyncio
     async def test_a_key_queued_during_the_await_is_not_clobbered(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
+        slot.linked_session_key = "old-key"
         slot._pending_reset_history_key = "old-key"
 
-        async def _reset(_key):
+        async def _reset(_key, **_kwargs):
             slot._pending_reset_history_key = "newer-key"
+            return True
 
         state.sessions.reset = AsyncMock(side_effect=_reset)
 
@@ -1488,6 +1649,7 @@ class TestConsumePendingReset:
     @pytest.mark.asyncio
     async def test_reset_failure_leaves_the_flag_armed(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
+        slot.linked_session_key = "old-key"
         slot._pending_reset_history_key = "old-key"
         state.sessions.reset = AsyncMock(side_effect=RuntimeError("no session"))
 
@@ -1564,7 +1726,7 @@ class TestConsumePendingReset:
 
         await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
-        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1")
+        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1", skip_if_busy=True)
         state.sessions.discard_conversation.assert_awaited_once_with(
             "dashboard:chat-cov-1", replay=False, skip_if_busy=True
         )
@@ -1574,6 +1736,7 @@ class TestConsumePendingReset:
     @pytest.mark.asyncio
     async def test_a_failed_project_reset_does_not_block_the_discard(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
+        slot.linked_session_key = "old-key"
         slot._pending_reset_history_key = "old-key"
         slot._pending_discard_conversation_key = "old-key"
         state.sessions.reset = AsyncMock(side_effect=RuntimeError("no session"))
@@ -1633,7 +1796,7 @@ class TestConsumePendingDiscardBoundary:
 
         torn_down = await chat_runner._consume_pending_reset(state, slot)
 
-        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1")
+        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1", skip_if_busy=True)
         assert torn_down is True
 
     @pytest.mark.asyncio
@@ -1797,23 +1960,33 @@ class TestConsumePendingDiscardWaitsForSubagents:
         )
 
     @pytest.mark.asyncio
-    async def test_the_project_reset_is_not_gated_on_children(self, tmp_path):
-        """Scope pin: the guard covers the conversation discard this change
-        introduced. The pre-existing project-change reset keeps its behaviour."""
+    async def test_the_project_reset_is_deferred_on_children(self, tmp_path):
+        """The project reset releases the shared runtime attached children run
+        on, so a slot with children leaves the flag armed for a later consume
+        (the same policy as the discard branch, and what
+        test_attached_subagents_defer_the_pending_reset pins)."""
         state, slot = _state(tmp_path), _slot()
         state.subagents = _subs([{"id": "a1"}])
         slot._pending_reset_history_key = "dashboard:chat-cov-1"
 
         torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
-        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1")
-        assert slot._pending_reset_history_key is None
-        assert torn_down is True
+        state.sessions.reset.assert_not_awaited()
+        assert slot._pending_reset_history_key == "dashboard:chat-cov-1"
+        assert torn_down is False
+        _entry = chat_runner._pending_reset_retries.pop(slot.key, None)
+        if _entry is not None:
+            _entry[1].cancel()
+            try:
+                await _entry[1]
+            except asyncio.CancelledError:
+                pass
 
     @pytest.mark.asyncio
-    async def test_a_deferred_discard_does_not_hide_a_project_reset(self, tmp_path):
-        """Both queued, children attached: the project reset still runs and the
-        discard stays armed, so neither deferral swallows the other."""
+    async def test_both_deferrals_stay_armed_when_children_are_attached(self, tmp_path):
+        """Both queued, children attached: neither the project reset nor the
+        discard runs — both release the shared runtime attached children run
+        on — so both flags stay armed for a later consume."""
         state, slot = _state(tmp_path), _slot()
         state.subagents = _subs([{"id": "a1"}])
         slot._pending_reset_history_key = "dashboard:chat-cov-1"
@@ -1821,11 +1994,18 @@ class TestConsumePendingDiscardWaitsForSubagents:
 
         torn_down = await chat_runner._consume_pending_reset(state, slot, allow_discard=True)
 
-        state.sessions.reset.assert_awaited_once_with("dashboard:chat-cov-1")
+        state.sessions.reset.assert_not_awaited()
         state.sessions.discard_conversation.assert_not_awaited()
-        assert slot._pending_reset_history_key is None
+        assert slot._pending_reset_history_key == "dashboard:chat-cov-1"
         assert slot._pending_discard_conversation_key == "dashboard:chat-cov-1"
-        assert torn_down is True
+        assert torn_down is False
+        _entry = chat_runner._pending_reset_retries.pop(slot.key, None)
+        if _entry is not None:
+            _entry[1].cancel()
+            try:
+                await _entry[1]
+            except asyncio.CancelledError:
+                pass
 
     @pytest.mark.asyncio
     async def test_no_registry_abstains_rather_than_blocking_forever(self, tmp_path):
@@ -1996,7 +2176,9 @@ class TestSteerLifecycle:
             chat_runner._settle_consumed_steers(slot, "a")
 
         assert slot._pending_steers == ["b"]
-        assert settle.call_args.kwargs["settle_all_on_empty"] is True
+        # No opt-out kwarg: the shared rules settle nothing on an empty echo,
+        # and this call site must not select anything else.
+        assert settle.call_args.kwargs == {}
 
     def test_requeue_is_a_noop_without_pending_steers(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
@@ -2785,7 +2967,7 @@ class TestRunChatLocalCommands:
         slot = _slot()
 
         with patch.object(
-            chat_runner, "_expand_prompt_mention", return_value=("@secret", "blocked")
+            chat_runner, "_resolve_prompt_mention", return_value=("@secret", "blocked", "")
         ):
             await _drive(state, slot, "/prompts get secret")
 
@@ -2798,7 +2980,7 @@ class TestRunChatLocalCommands:
         slot = _slot()
 
         with patch.object(
-            chat_runner, "_expand_prompt_mention", return_value=("@big", "too_large")
+            chat_runner, "_resolve_prompt_mention", return_value=("@big", "too_large", "")
         ):
             await _drive(state, slot, "/prompts get big")
 
@@ -2810,7 +2992,7 @@ class TestRunChatLocalCommands:
         slot = _slot()
 
         with patch.object(
-            chat_runner, "_expand_prompt_mention", return_value=("@nope", "not_found")
+            chat_runner, "_resolve_prompt_mention", return_value=("@nope", "not_found", "")
         ):
             await _drive(state, slot, "/prompts get nope")
 

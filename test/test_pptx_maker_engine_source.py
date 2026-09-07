@@ -251,7 +251,7 @@ class TestDownloadVerification:
         assert ok is False and engine_source.SKIP_DOWNLOAD_ENV in error
         assert not opener.called
 
-    def test_the_ssl_context_is_installed_on_the_handler_not_the_open_call(self):
+    def test_the_ssl_context_is_installed_on_the_handler_not_the_open_call(self, tmp_path):
         """`OpenerDirector.open` has NO `context` parameter — passing one there
         raises TypeError on every real download while every mock passes. This
         pins the context onto an HTTPSHandler instead."""
@@ -268,7 +268,7 @@ class TestDownloadVerification:
             return mock.Mock(open=mock.Mock(side_effect=urllib.error.URLError("stop")))
 
         with mock.patch.object(engine_source.urllib.request, "build_opener", spy):
-            engine_source.download_archive(Path("/tmp/kc-unused-engine.tar.gz"))
+            engine_source.download_archive(tmp_path / "kc-unused-engine.tar.gz")
         https = [h for h in captured if isinstance(h, engine_source.urllib.request.HTTPSHandler)]
         assert https, "an HTTPSHandler carrying the SSL context must be installed"
         assert getattr(https[0], "_context", None) is not None

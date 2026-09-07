@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ChevronRight, ChevronUp, ListChecks, ListTree, RefreshCw, Clock, RotateCcw, MoveUpRight, Sparkles, Loader2 } from 'lucide-react'
+import { ChevronRight, ChevronUp, ListChecks, ListTree, RefreshCw, Clock, RotateCcw, MoveUpRight, Sparkles, Loader2 } from 'lucide-react'
 
 import { api, ApiError } from '../../api/client'
 import { parseErrorCode } from '../../utils/errorReport'
@@ -8,6 +8,7 @@ import { i18nT } from '../../i18n/t'
 import { fmtRelative } from '../../i18n/format'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { Btn, PanelSectionHeader } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useAppSelector } from '../../store'
 import { selectSlotStreamState } from '../../store/chatSlice'
 import {
@@ -439,19 +440,20 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
   // In all three the honest state is the summary the person already has. The
   // failure screen belongs to the case with genuinely nothing to render.
   if (error && !data) {
-    // Give the failure the same icon + title + body shape the off and
-    // not-generated states use, and a Retry. A failure needs at least the weight
-    // of the two harmless empty states: it is the one state with something to
-    // recover. The header's reload button is not a substitute — this branch
-    // returns before the header renders, so this Retry is the only control that
-    // can fix it.
+    // A failure needs at least the weight of the two harmless empty states: it
+    // is the one state with something to recover. The header's reload button is
+    // not a substitute — this branch returns before the header renders, so the
+    // Retry here is the only control that can fix it. Retry and the agent
+    // hand-off are kept as two separate affordances (retry vs hand-off split).
+    // askAgent on: a read failure of a read-only panel — nothing here is a draft.
     return (
       <Centered>
-        <AlertTriangle className="lucide-inline text-danger" />
-        <div className="text-text">{i18nT('pages.chat.sessionSummary.failed_title')}</div>
-        <div className="text-[12px] text-muted max-w-[280px] text-center">
-          {i18nT('pages.chat.sessionSummary.failed')}
-        </div>
+        <ErrorNotice
+          title={i18nT('pages.chat.sessionSummary.failed_title')}
+          message={i18nT('pages.chat.sessionSummary.failed')}
+          askAgent
+          className="w-full max-w-[420px]"
+        />
         <Btn
           onClick={() => refetch()}
           className="mt-1 text-[12px] border-border-strong bg-card"
@@ -546,11 +548,15 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
             </Btn>
           </>
         )}
-        {generateError && (
-          <div className="text-[11px] text-warn max-w-[280px] text-center">
-            {generateError}
-          </div>
-        )}
+        {/* An action failure whose inputs are already persisted (the session
+            itself), so askAgent on. Previously coloured text-warn, which
+            dressed a refused request as a warning. */}
+        <ErrorNotice
+          variant="inline"
+          message={generateError}
+          askAgent
+          className="max-w-[280px] justify-center"
+        />
       </Centered>
     )
   }

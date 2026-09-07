@@ -769,7 +769,9 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     // permanently discarded the user's local correction.
     saveOutput: (agentId: string, content: string) =>
       editOutputMutation.mutateAsync({ agentId, content }),
-    revertOutput: (agentId: string) => revertOutputMutation.mutate(agentId),
+    // Also a promise, for the same reason: the toast in `onError` fades, and the
+    // panel needs the rejection to keep an in-page notice that the revert did not land.
+    revertOutput: (agentId: string) => revertOutputMutation.mutateAsync(agentId),
     tasks,
     transcript,
     partialTranscript,

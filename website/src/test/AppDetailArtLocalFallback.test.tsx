@@ -248,7 +248,7 @@ describe('AppDetailPage hero — local-art fallback on load failure (#6864)', ()
   })
 
   it('not-installed page: hero stays hide-on-error with no fallback attempt', async () => {
-    getApp.mockRejectedValue(new Error('not installed'))
+    getApp.mockRejectedValue(Object.assign(new Error('not installed'), { status: 404 }))
     listRegistry.mockResolvedValue({
       apps: [registryRow({ heroImage: R_HERO, screenshots: [R_S1] })],
       serverPlatform: { os: 'linux', arch: 'x86_64' },
@@ -486,7 +486,7 @@ describe('ScreenshotGallery — component contract', () => {
   })
 
   it('page survives a registry-only row carrying a malformed screenshotsFallback key', async () => {
-    getApp.mockRejectedValue(new Error('not installed'))
+    getApp.mockRejectedValue(Object.assign(new Error('not installed'), { status: 404 }))
     listRegistry.mockResolvedValue({
       apps: [registryRow({ screenshots: [R_S1], screenshotsFallback: {} })],
       serverPlatform: { os: 'linux', arch: 'x86_64' },

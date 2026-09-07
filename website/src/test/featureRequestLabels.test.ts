@@ -14,7 +14,7 @@ import { FEATURE_REQUEST_PROMPT_FALLBACK } from '../prompts/featureRequest'
 // These tests lock that contract on BOTH copies so they cannot drift apart.
 
 const skill = readFileSync(
-  resolve(__dirname, '../../../skills/feature-request/SKILL.md'),
+  resolve(__dirname, '../../../src/kiro_crew/builtin_skills/feature-request/SKILL.md'),
   'utf-8',
 )
 

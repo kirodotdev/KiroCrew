@@ -1426,9 +1426,16 @@ describe('publishToProvider', () => {
 describe('every api method issues one well-formed /api request', () => {
   // Exercised individually above with the fixtures they need (a Blob, a
   // ReadableStream, a File list, an object-URL download).
-  // `skills` and `slashCommands` join them because each wraps its fetch in a
-  // deadline, so it USES the signal argument rather than forwarding it.
-  const HAND_TESTED = new Set(['sttTranscribe', 'uploadFiles', 'uploadCrewAvatar', 'installFromRegistryStream', 'exportPlanYaml', 'skills', 'slashCommands'])
+  // `skills` joins them because it wraps the fetch in a deadline, so it USES the
+  // signal argument rather than forwarding it; junk there is not a URL question.
+  // `appSessionStatus` cannot be probed positionally: its 4th argument is a
+  // boolean selecting between the two prefixes an app backend may be served at,
+  // and the generic probe passes the truthy string 'sw-4', which legitimately
+  // routes to the reverse-proxy base `/apps/<app>/api/` rather than `/api/`.
+  // Covered exhaustively by `appSessionStatus.test.ts` — both prefixes, app-name
+  // encoding, the statusPath guard, and the junk-leak assertions this table
+  // would otherwise apply.
+  const HAND_TESTED = new Set(['sttTranscribe', 'uploadFiles', 'uploadCrewAvatar', 'installFromRegistryStream', 'exportPlanYaml', 'skills', 'slashCommands', 'appSessionStatus'])
 
   type AnyFn = (...args: unknown[]) => unknown
   const methods = Object.entries(api as unknown as Record<string, AnyFn>)

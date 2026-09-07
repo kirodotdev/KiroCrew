@@ -422,7 +422,7 @@ The scope is deliberately only the signal-0 *probe* form. The tree contains many
 raw POSIX call sites — `fcntl`, `resource`, `os.killpg`, `pty`, `termios` — and
 nearly all are legitimately POSIX-gated implementation detail, so auditing them
 here would bury the signal in noise; those are governed by the shim table in
-`AGENTS.md` and by review. What makes signal-0 worth its own gate is that getting
+[platform-compat](../system-specs/common/platform-compat.md) and by review. What makes signal-0 worth its own gate is that getting
 it wrong is destructive rather than merely unavailable, and that the added-line CI
 check cannot see a probe which arrives by a file move or a rebase. This test reads
 the whole tree on every run.
@@ -504,7 +504,7 @@ branches read `/proc`, `sysctl` or `resource` instead of calling Win32.
 
 Taking `ctypes.POINTER()` is what pins the type, so a struct that is only ever
 instantiated (never pointed at) does not leak — but the distinction is too subtle
-to rely on, and `test_platform_compat.py::TestWin32StructsAreModuleScoped`
+to rely on, and `test_platform_compat.py::TestCtypesStructsAreModuleScoped`
 enforces the blanket rule by parsing each helper's source. That check runs on the
 POSIX fleet too, where the Windows branches never execute.
 
@@ -579,6 +579,6 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
 
 - [README](../../README.md) — quick-start Platforms note
 - [install](install.md) — the build-target table shared with macOS and Linux
-- [AGENTS.md](../../AGENTS.md) — the cross-platform shim table
+- [platform-compat](../system-specs/common/platform-compat.md) — the cross-platform shim table
 - `src/kiro_crew/platform_compat.py` — the cross-platform shim
 - `make.ps1` — the Windows build driver

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import math
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import fields
 from typing import Protocol
 
-from kiro_crew.monitoring.decision import decide_monitor, monitor_budget_reason
+from kiro_crew.monitoring.decision import (
+    decide_monitor,
+    monitor_budget_reason,
+    terminal_decision_for_outcome,
+)
 from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResult
 from kiro_crew.monitoring.models import (
     MonitorDecision,
@@ -17,6 +20,7 @@ from kiro_crew.monitoring.models import (
     MonitorOutcome,
     MonitorState,
     ProviderErrorKind,
+    is_finite_non_negative_number,
 )
 
 ShadowStatePersistence = Callable[[MonitorState], Awaitable[None]]
@@ -50,18 +54,12 @@ async def run_shadow_probe(
         raise ShadowWakeDeliveryRefused("wake delivery is unavailable in shadow mode")
     if state.kind != "github_pull_request" or state.objective != "review_ready":
         raise ValueError("shadow mode supports only github_pull_request review_ready")
-    if isinstance(now, bool) or not isinstance(now, (int, float)) or now < 0:
-        raise ValueError("now must be a finite non-negative number")
-    try:
-        now_is_finite = math.isfinite(now)
-    except OverflowError as exc:
-        raise ValueError("now must be a finite non-negative number") from exc
-    if not now_is_finite:
+    if not is_finite_non_negative_number(now):
         raise ValueError("now must be a finite non-negative number")
     if not callable(persist):
         raise ValueError("persist must be callable")
 
-    terminal = _decision_for_outcome(state.outcome)
+    terminal = terminal_decision_for_outcome(state.outcome)
     if terminal is not None:
         return terminal
     budget_reason = monitor_budget_reason(state, now=now)
@@ -135,13 +133,3 @@ def _terminal_outcome(
     if provider_error is ProviderErrorKind.NOT_FOUND:
         return MonitorOutcome.TARGET_UNAVAILABLE
     return MonitorOutcome.BLOCKED
-
-
-def _decision_for_outcome(outcome: MonitorOutcome | None) -> MonitorDecision | None:
-    if outcome is MonitorOutcome.SUCCESS:
-        return MonitorDecision.STOP_SUCCESS
-    if outcome is MonitorOutcome.BUDGET:
-        return MonitorDecision.STOP_BUDGET
-    if outcome is not None:
-        return MonitorDecision.STOP_BLOCKED
-    return None

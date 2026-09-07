@@ -369,15 +369,22 @@ class TestApiFileSearchDirs:
         assert "widgets.py" in names, "the file was crowded out by directory candidates"
 
     @pytest.mark.asyncio
-    async def test_files_and_dirs_have_independent_scan_budgets(self, tmp_path, mock_sel):
+    async def test_files_and_dirs_have_independent_scan_budgets(
+            self, tmp_path, mock_sel, monkeypatch):
         """A file-heavy root must not starve the directory scan.
 
         A single shared scan counter let files spend the whole budget before any
         directory was examined, so directory search returned nothing even though
         it was enabled. Non-matching files are used so only the SCAN budget (not
         the candidate cap) is under test.
+
+        Budgets patched DOWN (module-level exactly so tests can, per
+        ``files.py``'s comment on ``_WALK_MAX_SCAN_SCOPED``) so a much smaller
+        tree still exceeds them and exercises the same starvation path.
         """
-        for i in range(5_000):
+        monkeypatch.setattr(files_mod, "_WALK_MAX_SCAN_SCOPED", 100)
+        monkeypatch.setattr(files_mod, "_WALK_MAX_SCAN_UNSCOPED", 100)
+        for i in range(200):
             (tmp_path / f"zz{i:04d}.py").write_text("x")
         (tmp_path / "widgets_dir").mkdir()
 

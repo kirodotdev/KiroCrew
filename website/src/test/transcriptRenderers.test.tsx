@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
-import { GROUPED_ROLES, mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
+import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
 import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
@@ -151,16 +151,20 @@ describe('narrow rows win over the broad row they refine', () => {
 })
 
 describe('the tool row keeps the deny-sibling guard', () => {
-  it('claims only the visible 🔧 message', () => {
-    // The hidden 🚫 sibling shares the role and is read for the auto-denied
-    // flag — drawing it would double the row.
-    expect(idFor(msg('tool', { content: '🚫 denied by policy' }))).toBeUndefined()
-    expect(idFor(msg('tool', { content: 'plain text' }))).toBeUndefined()
+  it('draws only the visible 🔧 message; the completion sibling resolves to a row that draws nothing', () => {
+    // The hidden 🚫 / ✅ sibling shares the role and is read for the auto-denied
+    // flag -- drawing it would double the row. It is CLAIMED (by
+    // `tool_completion`) rather than left unclaimed, so no surface's
+    // unclaimed-role fallback can print it.
+    expect(idFor(msg('tool', { content: '🚫 denied by policy' }))).toBe('tool_completion')
+    expect(idFor(msg('tool', { content: 'plain text' }))).toBe('tool_completion')
+    const entry = resolveRenderer(msg('tool', { content: '✅ done' }), registry())!
+    expect(entry.render(msg('tool', { content: '✅ done' }), ctx())).toBeNull()
   })
 
   it('does not treat a launch-shaped output as a launch without the 🔧 prefix', () => {
     const denied = msg('tool', { content: '🚫 denied', meta: { output: 'Started workflow run `wf_abc123`' } })
-    expect(idFor(denied)).toBeUndefined()
+    expect(idFor(denied)).toBe('tool_completion')
   })
 })
 
@@ -226,56 +230,38 @@ describe('rows the defaults already draw correctly are left to them', () => {
   })
 })
 
-describe('drift guard against the single-chat row chain', () => {
-  // The single-chat surface still renders from its own inline role chain, so
-  // this module is a SECOND row set that has to agree with it. Nothing in the
-  // type system notices when they diverge: a branch added to ChatPage lands
-  // only there, and panes quietly regress to a reduced transcript again — the
-  // exact failure mode this PR exists to fix.
-  //
-  // So pin the agreement mechanically. Every role ChatPage dispatches on must
-  // be CLAIMED by some entry in the registry a pane renders through. This is
-  // deliberately a claim check, not a render check: several rows resolve only
-  // with a content guard (a tool row needs its 🔧 prefix), and what drift
-  // breaks is coverage, not the guard.
-  //
-  // This guard is PERMANENT. Converging the two row sets by moving ChatPage
-  // onto this registry was considered and rejected (#3332, closed not-planned):
-  // the single-chat surface has no problem to fix, so migrating it is risk
-  // without payoff. The asymmetry is what makes the guard sufficient — ChatPage
-  // owns the policy, so drift can only ever degrade a DOWNSTREAM surface, never
-  // that one. If a row both sides draw ever diverges in component or props,
-  // strengthen this into a static comparison of what each side passes rather
-  // than migrating.
+describe('the single-chat surface renders from THIS row set', () => {
+  // Until chat-core P5-b the single-chat surface rendered from its own inline
+  // role chain, so this module was a SECOND row set that had to agree with it,
+  // and the guard here pinned that agreement role by role. ChatPage now
+  // dispatches through the app-sdk registry and SPREADS this factory into its
+  // host list (RFC chat-core extraction, P5), so agreement is by construction:
+  // a row added here reaches the page and every pane at once, and a page-only
+  // row is an explicit entry AFTER the spread. What can still drift is the
+  // spread itself -- so pin that, not the roles.
   const chatPageSrc = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
 
-  const rolesInChatPage = [...new Set(
-    [...chatPageSrc.matchAll(/\.role === '([a-z_]+)'/g)].map(m => m[1]),
-  )].sort()
-
-  it('finds the role chain it is guarding (a rename must fail loudly, not silently pass)', () => {
-    // If ChatPage stops matching this shape the extraction returns nothing and
-    // every assertion below becomes vacuous, so assert the corpus itself.
-    expect(rolesInChatPage.length).toBeGreaterThan(8)
-    expect(rolesInChatPage).toContain('assistant')
-    expect(rolesInChatPage).toContain('user')
-    expect(rolesInChatPage).toContain('tool')
+  it('ChatPage spreads createTranscriptRenderers into its host list, ahead of its page-only rows', () => {
+    expect(chatPageSrc).toMatch(/import \{ createTranscriptRenderers \} from '\.\/chat\/transcriptRenderers'/)
+    const list = chatPageSrc.indexOf('const renderers = mergeRenderers([')
+    const spread = chatPageSrc.indexOf('...shared,', list)
+    const bubble = chatPageSrc.indexOf('\n      bubble,\n    ])', list)
+    expect(list).toBeGreaterThanOrEqual(0)
+    expect(spread).toBeGreaterThan(list)
+    expect(bubble).toBeGreaterThan(spread)
+    expect(chatPageSrc).toMatch(/const shared = createTranscriptRenderers\(\{/)
   })
 
-  it('claims every role the single-chat chain dispatches on', () => {
-    const active = registry()
-    // A `'*'` entry carrying a `match` is SHAPE-matched (a stop event, a
-    // sub-agent completion) and claims no role — counting it would make this
-    // guard vacuous, since every role would look covered by it.
-    const claims = (role: string) =>
-      active.some(r => r.roles.includes(role) || (r.roles.includes('*') && !r.match))
-    // A grouped role is assembled into the collapsible group BEFORE per-row
-    // resolution, so no row entry is expected to claim it — the group owns its
-    // display. Read from the SDK's own export rather than hardcoded, so a
-    // change to what gets grouped moves this exclusion with it.
-    const unclaimed = rolesInChatPage
-      .filter(role => !GROUPED_ROLES.includes(role))
-      .filter(role => !claims(role))
-    expect(unclaimed).toEqual([])
+  it('ChatPage keeps no private copy of a row this set draws', () => {
+    // A page entry reusing one of this set's ids would shadow the shared row
+    // on the page only -- the fork the spread exists to end. Zero exceptions:
+    // the page's one behavioural difference (an unparseable file row falls to
+    // its bubble) is a factory OPTION, not a shadowing entry.
+    const list = chatPageSrc.indexOf('const renderers = mergeRenderers([')
+    const end = chatPageSrc.indexOf('return { renderers, fallback: bubble }', list)
+    const pageIds = [...chatPageSrc.slice(list, end).matchAll(/^\s+id: '([a-z_]+)',?$/gm)].map(m => m[1])
+    const shared = createTranscriptRenderers({ slot: 's1' }).map(r => r.id)
+    const duplicated = pageIds.filter(id => shared.includes(id))
+    expect(duplicated).toEqual([])
   })
 })

@@ -13,6 +13,7 @@ import math
 import os
 import re
 import shlex
+import sys
 import threading
 import time
 import traceback
@@ -83,7 +84,7 @@ from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
 from kiro_crew.notifications.settings import ChannelSettings
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -265,6 +266,57 @@ def _safe_folder_tree(folders: object) -> list[dict[str, Any]]:
     if not isinstance(folders, list):
         return []
     return [f for f in folders if isinstance(f, dict) and isinstance(f.get("id"), str)]
+
+
+def _slots_serialization_note(slots_data: object) -> str:
+    """Name the slot and field that broke JSON serialization, for a traceback note.
+
+    A dump failure on the slots projection means EVERY slots read path is broken
+    (GET ``/api/chat/slots``, the WS snapshot, and this broadcast all serialize
+    the same shape), and the stock message — "Object of type X is not JSON
+    serializable" — names neither the slot nor the field, which is how #6522 was
+    first misread as a broadcast bug (#8745). Values are withheld by design: slot
+    state can carry user text, and the type is enough to find the producer.
+
+    Diagnosis must never make the failure worse, so any surprise in the walk
+    degrades to a generic note instead of raising.
+    """
+    try:
+        if not isinstance(slots_data, list):
+            return (
+                "[slots-broadcast] slot projection is "
+                f"{type(slots_data).__name__}, not a list (value withheld)"
+            )
+        for i, entry in enumerate(slots_data):
+            try:
+                json.dumps(entry)
+                continue
+            except (TypeError, ValueError):
+                pass
+            if not isinstance(entry, dict):
+                return (
+                    f"[slots-broadcast] slot entry #{i} is not JSON-serializable: "
+                    f"type {type(entry).__name__} (value withheld)"
+                )
+            key = entry.get("key")
+            slot_name = key if isinstance(key, str) else f"#{i}"
+            for field, value in entry.items():
+                try:
+                    json.dumps(value)
+                except (TypeError, ValueError):
+                    return (
+                        f"[slots-broadcast] slot {slot_name!r} field {field!r} is not "
+                        f"JSON-serializable: type {type(value).__name__} (value withheld)"
+                    )
+            # Every field dumps on its own, yet the entry does not: a non-string
+            # key is the one shape that gets here.
+            return (
+                f"[slots-broadcast] slot {slot_name!r} fails serialization as a whole; "
+                "no single offending field — check for non-string dict keys (value withheld)"
+            )
+        return "[slots-broadcast] slot list fails serialization; no offending entry found"
+    except Exception:  # pragma: no cover - defensive: a diagnostic must not raise
+        return "[slots-broadcast] slot projection is not JSON-serializable (offender walk failed)"
 
 
 def _slots_ws_frame(
@@ -2830,12 +2882,14 @@ def build_refusal_recovery_prompt(
 #: The notice's INVARIANT half — that this was not a user action, the generic
 #: string it is correcting, and the instruction to decide inside this turn — is
 #: identical for every cause; only the clause naming the cause and the guidance
-#: about what to do next differ. Kept as data rather than three near-copies of
-#: the notice so the invariant half cannot drift between them, which is the half
-#: doing the actual work of overwriting the model's wrong conclusion.
+#: about what to do next differ. Kept as data rather than a near-copy of the
+#: notice per cause so the invariant half cannot drift between them, which is the
+#: half doing the actual work of overwriting the model's wrong conclusion.
 DENY_CAUSE_POLICY = "policy"
 DENY_CAUSE_INVALID_NAME = "invalid_name"
 DENY_CAUSE_HOOK_ERROR = "hook_error"
+DENY_CAUSE_BATCH_CASCADE = "batch_cascade"
+DENY_CAUSE_APPROVAL_TIMEOUT = "approval_timeout"
 
 #: cause → (clause completing "The tool call you just made …", what to do next).
 _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
@@ -2856,6 +2910,23 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "treat this as a host fault, not a verdict on the action: nothing judged the "
         "call itself. Retrying the identical call is reasonable once; if it faults "
         "again, say what happened rather than working around it silently.",
+    ),
+    DENY_CAUSE_BATCH_CASCADE: (
+        "was auto-declined along with every remaining call in its batch, because "
+        "the host declined an earlier tool of the same batch",
+        "nothing judged these calls themselves — the group was cut short as a "
+        "whole. Address what declined that earlier tool (the reason above), then "
+        "re-issue the calls you still need; if you genuinely cannot proceed "
+        "without them, say so and stop with the reason.",
+    ),
+    DENY_CAUSE_APPROVAL_TIMEOUT: (
+        "was auto-declined because its approval prompt expired unanswered",
+        "nobody answered within the window, so the action itself was never judged — "
+        "do not abandon it or route around it on this evidence. State the "
+        "permission you need and why, then continue with what you can do without "
+        "it. Do not immediately reissue the same call: the person who did not "
+        "answer is still away, and re-prompting re-arms the same wait for the "
+        "same silence.",
     ),
 }
 
@@ -2887,9 +2958,11 @@ def build_refusal_steer_notice(
 
     *cause* selects the wording. The distinction is not cosmetic: a policy block
     is a verdict the model must route around, an invalid tool name is the model's
-    own malformed output and is the one case it can simply fix, and a hook fault
-    judged nothing at all. Telling the model "safety policy" for the latter two
-    would send it looking for an allowed alternative to an action nobody refused.
+    own malformed output and is the one case it can simply fix, a hook fault
+    judged nothing at all, a batch cascade cut the group short without judging
+    its members, and an expired approval prompt means nobody answered. Telling
+    the model "safety policy" for any non-policy cause would send it looking for
+    an allowed alternative to an action nobody refused.
     An unknown cause degrades to the policy wording rather than raising: a wrong
     noun is recoverable, and losing the notice would hand the model back
     kiro-cli's "user denied" with nothing to correct it.
@@ -2901,19 +2974,20 @@ def build_refusal_steer_notice(
         return ""
     clause, guidance = _DENY_CAUSE_TEXT.get(cause, _DENY_CAUSE_TEXT[DENY_CAUSE_POLICY])
     what = f"{title}: {reason}" if reason else title
-    # Class-specific remediation, for the policy cause only. The other two causes
-    # judged nothing about the action — an invalid tool name is the model's own
-    # malformed output and a hook fault is a host fault — so naming a sanctioned
-    # alternative there would answer a question nobody asked and imply the action
-    # itself had been refused.
+    # Class-specific remediation, for the policy cause only. The non-policy
+    # causes judged nothing about the action — an invalid tool name is the
+    # model's own malformed output, a hook fault is a host fault, a cascaded
+    # batch member was never reached, and an expired approval prompt was simply
+    # never answered — so naming a sanctioned alternative there would answer a
+    # question nobody asked and imply the action itself had been refused.
     remediation = (
         remediation_for(reason, title, credential_tool_hint=credential_tool_hint)
         if cause == DENY_CAUSE_POLICY
         else ""
     )
     tail = f"\n\nHow to do this properly: {remediation}" if remediation else ""
-    # "host notice", not "policy notice": the tag has to be true for all three
-    # causes, and only one of them IS a policy. Naming the ACTOR is also what the
+    # "host notice", not "policy notice": the tag has to be true for every
+    # cause, and only one of them IS a policy. Naming the ACTOR is also what the
     # notice exists to do — the model has just been told the user denied this, and
     # every sentence after this one is spent correcting that.
     return (
@@ -3249,6 +3323,7 @@ class _ChatSlot:
         "_promise_only_stop_gen",
         "_compaction_continue_retries",
         "_batch_rejected",
+        "_batch_rejected_cause",
         "_compaction_failed_retries",
         "_compaction_fail_streak",
         "_compaction_fail_cooldown_until",
@@ -3708,6 +3783,15 @@ class _ChatSlot:
         # the other per-turn retry budgets on a landed turn.
         self._compaction_continue_retries: int = 0
         self._batch_rejected: bool = False
+        # WHO/WHAT set ``_batch_rejected``: empty for an interactive user
+        # decline, else a short host-authored sentence naming the auto-decline
+        # (approval timeout, no turn budget, Slack delivery failure). The
+        # cascade site reads it to decide attribution: a user's refusal makes
+        # kiro-cli's "User denied tool execution" TRUE for the cascaded
+        # remainder, while a host-caused decline makes it false and worth a
+        # cause-specific in-band correction. Same lifetime as the flag itself —
+        # set together, cleared together.
+        self._batch_rejected_cause: str = ""
         # Per-turn compaction-status failure tracking (Mesh compaction-spam
         # fix). Distinct from SessionManager._compact_cooldown_until, which
         # only gates the *proactive* session-level auto-compact trigger —
@@ -3918,14 +4002,14 @@ class _ChatSlot:
         # live and terminal state on the slot so reconnects can hydrate cards.
         self._native_subagent_tracker: dict[str, dict[str, Any]] = {}
         self._native_subagent_output: dict[str, list[str]] = {}
-        # Delivery ids whose steer a NON-EMPTY echo actually accounted for. The
-        # settle path can remove an entry from `_pending_steers` for two reasons
-        # that look identical afterwards: a matched echo (evidence), or the
-        # `settle_all_on_empty` sweep on an EMPTY echo (no evidence at all).
-        # `chat_delivery` infers `consumed` from the entry being gone, so without
-        # this it reads an empty frame as a confirmed injection and persists a
-        # success badge nothing proved. Keyed on the delivery id, not the text, so
-        # a later identical steer cannot inherit an earlier one's evidence.
+        # Delivery ids whose steer a NON-EMPTY echo actually accounted for. An
+        # entry can leave `_pending_steers` for reasons that look identical
+        # afterwards, and only a matched, non-empty echo is evidence of
+        # consumption. `chat_delivery` therefore infers `consumed` from
+        # positive evidence rather than from the entry being gone, so no
+        # remover -- present or added later -- can turn an evidence-free frame
+        # into a confirmed injection. Keyed on the delivery id, not the text,
+        # so a later identical steer cannot inherit an earlier one's evidence.
         self._steer_confirmed: set[str] = set()
         # Mid-turn steers handed to the backend but not yet confirmed consumed
         # (no steering_consumed / EVENT_STEER_CONSUMED echo yet). Appended by
@@ -5575,6 +5659,10 @@ class DashboardState:
         branch, commit = self._build_info
         return {
             "uptime": _fmt_duration(uptime),
+            # Auto-approve modes forbidden by the ``approval_modes`` policy
+            # scope. In the shared snapshot so HTTP/SSE/WS frames all agree —
+            # the picker hides these and the value must survive a WS push.
+            "disabled_approval_modes": cached_disabled_approval_modes(),
             "start_time": self.start_time,
             "sessions": self.sessions.count,
             "messages": self.messages_received,
@@ -5740,11 +5828,11 @@ class DashboardState:
     MAX_BACKGROUND_TURNS_CEIL = 16  # hard ceiling — config can raise up to here
     # Longest a queued turn may sit waiting for a permit. Needed because the
     # queue wait happens INSIDE the coroutine ``spawn_guarded_turn`` already
-    # bounds at ``CHAT_TURN_TIMEOUT`` (7200s), so an unbounded wait would let a
+    # bounds at ``CHAT_TURN_TIMEOUT`` (14400s), so an unbounded wait would let a
     # fully-saturated cap consume a turn's whole ceiling and then kill it with
-    # "turn exceeded the 7200s ceiling" — a true statement that names the wrong
-    # cause. 1800s never trips under ordinary throttling and leaves 90 minutes
-    # of the ceiling for the turn itself; on expiry the turn fails with a
+    # "turn exceeded the 14400s ceiling" — a true statement that names the wrong
+    # cause. 1800s never trips under ordinary throttling and leaves three and a half
+    # hours of the ceiling for the turn itself; on expiry the turn fails with a
     # message that says what actually happened.
     _BACKGROUND_QUEUE_WAIT_SECS = 1800
 
@@ -7573,7 +7661,11 @@ class DashboardState:
 
         Depth-counted so nested use is safe (an inner block must not flush early),
         and ``@contextmanager``'s try/finally unwinds the depth even if the body
-        raises. Only flushes if something actually asked to push.
+        raises. Only flushes if something actually asked to push. A flush that
+        itself fails while the body's own exception is unwinding annotates its
+        exception (`PEP 678`) so the buried original stays visible — the flush's
+        exception otherwise replaces the body's in the caller's view, demoting
+        the actual fault to ``__context__`` (how #6522 was first misread).
         """
         self._slots_push_suspend += 1
         try:
@@ -7582,7 +7674,19 @@ class DashboardState:
             self._slots_push_suspend -= 1
             if self._slots_push_suspend == 0 and self._slots_push_pending:
                 self._slots_push_pending = False
-                self.push_slots_update()
+                # Captured BEFORE the flush call: inside the `except` block below,
+                # sys.exc_info() would already name the flush's own exception.
+                unwinding_over = sys.exc_info()[1]
+                try:
+                    self.push_slots_update()
+                except BaseException as flush_exc:
+                    if unwinding_over is not None and unwinding_over is not flush_exc:
+                        flush_exc.add_note(
+                            "[slots-flush] the owed slots flush raised while unwinding "
+                            f"over an in-flight {type(unwinding_over).__name__}; that "
+                            "original exception is chained below as __context__"
+                        )
+                    raise
 
     def push_slots_update(self) -> None:
         """Push slots, keeping provider status confined to owner websockets.
@@ -7706,7 +7810,9 @@ class DashboardState:
         from kiro_crew.dashboard.handlers.source_providers import (
             gitlab_hosts_generation,
         )
-        from kiro_crew.platform.context import governance_generation
+        from kiro_crew.platform.governance_profiles import (
+            governance_answer_generation,
+        )
 
         yolo_active = self.is_yolo_active()  # expire first if needed
         # PUBLIC-repo chip status rides the general frame so any authenticated
@@ -7725,8 +7831,30 @@ class DashboardState:
         # ``_serialize_for_client`` re-filters app tokens.
         slots_data = self.serialize_slots()
         slots_data_ws = self.serialize_slots(dashboard_user=True)
+        # The evidenced way this broadcast fails is a non-serializable value in
+        # slot state (#6522, #8745): the dump raises, and the bare TypeError
+        # names neither the slot nor the field. Serialize up front and annotate
+        # the failure with the offender so one traceback is enough to find it.
+        # Both coalescing branches (leading edge and trailing timer) funnel
+        # through this method, so both report identically by construction.
+        # Diagnosis only: the exception still propagates unchanged.
+        try:
+            slots_json = json.dumps(slots_data)
+        except (TypeError, ValueError) as exc:
+            exc.add_note(_slots_serialization_note(slots_data))
+            raise
         mgr = getattr(self, "channel_manager", None)
         ch_trusted = bool(mgr and any(ch.trusted for ch in mgr._channels.values()))
+        # ONE read, shared by the generic and owner frames below. Two independent
+        # reads could straddle a ceiling install or a profile reload and ship two
+        # different tokens for one broadcast, which would make one of the two
+        # audiences invalidate while the other did not.
+        # test_public_repo_status_rides_general_frame_owner_gets_full asserts the two
+        # frames' governanceGeneration values are equal, so a torn read reddens it.
+        # Filesystem-free by contract: governance_answer_generation is two locked
+        # integer reads. The profiles directory re-stat lives in poll_profiles_fresh,
+        # which only the async watcher calls, and only off the event loop.
+        answer_generation = governance_answer_generation()
         # Piggyback the allowlist generation so clients invalidate the cached
         # ['dashboardConfig'] query only when the GitLab-hosts allowlist actually
         # changed -- an event-driven refresh that replaces a constant 30s poll
@@ -7753,7 +7881,7 @@ class DashboardState:
                 # unfiltered stream.
                 "_slots_list_ws": slots_data_ws,
                 "_yolo": yolo_active,
-                "slots": json.dumps(slots_data),
+                "slots": slots_json,
                 "channelTrusted": ch_trusted,
                 "gitlabHostsGeneration": gitlab_hosts_generation(),
                 # getattr, not self._folders: this read path runs on EVERY slots
@@ -7772,7 +7900,7 @@ class DashboardState:
                 # blinked": this frame fires on routine slot activity, so the
                 # tree alone is not a change signal.
                 "foldersGeneration": self.folders_generation(),
-                "governanceGeneration": governance_generation(),
+                "governanceGeneration": answer_generation,
             }
         )
         # The owner frame is the owner's ONLY slots frame — `_send_ws_all` skips
@@ -7794,7 +7922,7 @@ class DashboardState:
                     gitlab_hosts_gen=gitlab_hosts_generation(),
                     folders=_safe_folder_tree(getattr(self, "_folders", None)),
                     folders_gen=self.folders_generation(),
-                    governance_gen=governance_generation(),
+                    governance_gen=answer_generation,
                 )
             )
 
@@ -8023,6 +8151,9 @@ class DashboardState:
     def ws_client_count(self) -> int:
         return _websocket_for(self).ws_client_count()
 
+    def dashboard_user_ws_count(self) -> int:
+        return _websocket_for(self).dashboard_user_ws_count()
+
     def broadcast_browser_event(self, event_type: str, data: dict) -> None:
         _websocket_for(self).broadcast_browser_event(event_type, data)
 
@@ -8201,18 +8332,34 @@ def _load_notifications() -> list[dict[str, Any]]:
 
 # Notification file I/O runs exclusively on this single-worker executor when
 # an event loop is running: appends (from the delivery sink) and rewrites
-# (from delete/ack/clear) execute strictly in submission order, so no lock is
-# needed and the loop never blocks on file I/O.
+# (from delete/ack/clear) execute strictly in submission order, so the QUEUE
+# needs no lock and the loop never blocks on file I/O. Creating the executor
+# does need one -- see _notification_io_executor.
 _notification_io_pool: concurrent.futures.ThreadPoolExecutor | None = None
+_notification_io_pool_lock = threading.Lock()
 
 
 def _notification_io_executor() -> concurrent.futures.ThreadPoolExecutor:
-    """Lazily create the single-worker executor for notification persistence."""
+    """Lazily create the single-worker executor for notification persistence.
+
+    The creation is locked, not just the queue. An unlocked check-then-set let two
+    threads each observe ``None``, each construct a pool, and each proceed: one
+    assignment won the global while the loser's worker was already live with its job
+    already queued, so the two callers were not serialised against one another at all
+    -- which is the single guarantee this executor exists to provide. Narrow window
+    (the first notification I/O of the process, twice at once) and unbounded harm: an
+    append landing inside a ``_rewrite_notifications`` whole-file write is simply gone,
+    because the rewrite did not include it and overwrote the bytes.
+
+    Double-checked so the lock is paid once rather than on every call. Issue #8788.
+    """
     global _notification_io_pool
     if _notification_io_pool is None:
-        _notification_io_pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="notif-io"
-        )
+        with _notification_io_pool_lock:
+            if _notification_io_pool is None:
+                _notification_io_pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="notif-io"
+                )
     return _notification_io_pool
 
 

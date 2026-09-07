@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from conftest import drain_breadcrumb_writes
 from kiro_crew.safety_override import (
     ActivationResult,
     OverrideStatus,
@@ -1340,7 +1341,11 @@ class TestStatusDoesNotBlockTheEventLoop:
         from kiro_crew.dashboard import handlers_system
 
         src = inspect.getsource(handlers_system.api_status)
-        assert "to_thread(_yolo_duration_fields)" in src, (
+        # Whitespace-insensitive: black may wrap the to_thread(...) call across
+        # lines, so collapse whitespace before matching rather than relying on a
+        # literal substring that a line-break would defeat.
+        compact = "".join(src.split())
+        assert "to_thread(_yolo_duration_fields)" in compact, (
             "the duration/permission fields must be resolved via asyncio.to_thread"
         )
 
@@ -1355,6 +1360,143 @@ class TestStatusDoesNotBlockTheEventLoop:
             "kiro_crew.dashboard.handlers_system.until_shutdown_permitted",
             side_effect=RuntimeError("governance down"),
         ):
-            label, permitted = _yolo_duration_fields()
+            label, permitted, disabled_modes = _yolo_duration_fields()
         assert label == "6h"
         assert permitted is True
+        # Fail-soft: the call returns cleanly. disabled_modes reflects the
+        # real governance layer (not patched here), so assert only its type.
+        assert isinstance(disabled_modes, list)
+
+
+# ─── Breadcrumb path resolution (host-isolation regression) ────────────────
+
+
+class TestBreadcrumbPathResolvedAtEnqueueTime:
+    """The breadcrumb publish must resolve ``config_dir()`` on the CALLING
+    thread, before the job is handed to the worker -- never inside the worker
+    itself.
+
+    ``_sync_breadcrumb`` runs synchronously on whatever thread committed the
+    state transition (an event-loop callback, or a test). The actual file I/O
+    is queued onto a long-lived daemon worker (``kirocrew-safety-breadcrumb``)
+    so that thread never blocks the caller. If the worker resolved
+    ``config_dir()`` itself -- lazily, at write time -- then a caller whose
+    ``KIROCREW_HOME`` override has since been reverted (a test's monkeypatch
+    torn down at fixture teardown, or a production reload that changes the
+    active home) would have its publish land wherever ``config_dir()``
+    resolves to BY THEN, not where it resolved when the grant was actually
+    committed.
+    """
+
+    def test_write_and_clear_receive_a_caller_resolved_path(
+        self, override: SafetyOverride, tmp_path, monkeypatch
+    ) -> None:
+        """Mutation guard: ``_write_breadcrumb``/``_clear_breadcrumb`` must be
+        handed the path, not resolve it themselves.
+
+        Pins ``config_dir()`` to *tmp_path* only while the transition commits,
+        then swaps it out for a path that does not exist BEFORE the worker gets
+        a chance to run, and confirms the write still lands under *tmp_path*.
+        If either helper called ``_breadcrumb_path()`` internally instead of
+        using the path handed to it, the swapped-out resolver would send the
+        write somewhere else (or make it fail outright), which this test would
+        catch by finding no breadcrumb under *tmp_path*.
+        """
+        import kiro_crew.safety_override as so_mod
+
+        real_config_dir = so_mod.config_dir
+        pinned_dir = tmp_path / "pinned-home"
+        pinned_dir.mkdir()
+        # A different directory the resolver is swapped to AFTER commit, so any
+        # write happening on the worker under the OLD (reverted) resolver would
+        # land here instead of under pinned_dir -- exactly the bug this test
+        # guards against.
+        diverted_dir = tmp_path / "diverted-home"
+        diverted_dir.mkdir()
+
+        monkeypatch.setattr(so_mod, "config_dir", lambda: pinned_dir)
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            result = override.activate("dashboard", ttl=60)
+        assert result.active is True
+
+        # Revert BEFORE the worker has necessarily run: the fix must have
+        # already captured the path on this (calling) thread inside
+        # activate()/_sync_breadcrumb(), synchronously, before this line.
+        monkeypatch.setattr(so_mod, "config_dir", lambda: diverted_dir)
+
+        drain_breadcrumb_writes()
+
+        pinned_breadcrumb = pinned_dir / so_mod._BREADCRUMB_FILE
+        diverted_breadcrumb = diverted_dir / so_mod._BREADCRUMB_FILE
+        assert pinned_breadcrumb.exists(), (
+            "breadcrumb must land under the home resolved at commit time"
+        )
+        assert not diverted_breadcrumb.exists(), (
+            "breadcrumb must NOT land under a home resolved after the "
+            "calling thread's context changed"
+        )
+        payload = json.loads(pinned_breadcrumb.read_text(encoding="utf-8"))
+        assert payload["source"] == "dashboard"
+
+        monkeypatch.setattr(so_mod, "config_dir", real_config_dir)
+
+    def test_deactivate_clears_the_breadcrumb_under_the_committing_home(
+        self, override: SafetyOverride, tmp_path, monkeypatch
+    ) -> None:
+        """Same guard on the clear path: deactivate() must remove the file
+        under the home that was active when it committed, not wherever
+        ``config_dir()`` resolves to once the worker actually runs.
+        """
+        import kiro_crew.safety_override as so_mod
+
+        real_config_dir = so_mod.config_dir
+        pinned_dir = tmp_path / "pinned-home"
+        pinned_dir.mkdir()
+
+        monkeypatch.setattr(so_mod, "config_dir", lambda: pinned_dir)
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.activate("dashboard", ttl=60)
+        drain_breadcrumb_writes()
+        pinned_breadcrumb = pinned_dir / so_mod._BREADCRUMB_FILE
+        assert pinned_breadcrumb.exists()
+
+        # Divert the resolver AFTER the commit (deactivate() resolves the path
+        # synchronously on this thread before it returns), then drain -- the
+        # worker's clear must still target the home resolved AT COMMIT TIME,
+        # not whatever config_dir() answers once it actually runs.
+        diverted_dir = tmp_path / "diverted-home"
+        diverted_dir.mkdir()
+        with patch("kiro_crew.safety_override.sel") as mock_sel:
+            mock_sel.return_value = MagicMock()
+            override.deactivate("dashboard")
+        monkeypatch.setattr(so_mod, "config_dir", lambda: diverted_dir)
+        drain_breadcrumb_writes()
+
+        assert not pinned_breadcrumb.exists(), "deactivate must clear the pinned breadcrumb"
+        assert not (diverted_dir / so_mod._BREADCRUMB_FILE).exists()
+
+        monkeypatch.setattr(so_mod, "config_dir", real_config_dir)
+
+    def test_drain_helper_raises_on_a_starved_worker(self, monkeypatch) -> None:
+        """Mutation guard for the drain helper itself: a worker that never
+        empties its queue must make ``drain_breadcrumb_writes`` raise rather
+        than return silently, or a test relying on it to prove isolation would
+        pass without having proven anything.
+
+        Reverts the patch itself (rather than relying on ``monkeypatch``'s own
+        teardown order) because this suite's ``test/conftest.py`` autouse
+        fixture calls the same helper at its OWN teardown, which -- as an autouse
+        fixture with no explicit dependency on ``monkeypatch`` -- is torn down
+        BEFORE ``monkeypatch`` reverts anything. Leaving the stub in place would
+        make that unrelated teardown call also raise.
+        """
+        import kiro_crew.safety_override as so_mod
+
+        monkeypatch.setattr(so_mod, "flush_breadcrumb_writes", lambda timeout=5.0: False)
+        try:
+            with pytest.raises(TimeoutError):
+                drain_breadcrumb_writes(timeout=0.01)
+        finally:
+            monkeypatch.undo()

@@ -140,6 +140,37 @@ def grant_presence(mcp_url: str, *, cache_dir: Path | None = None) -> bool | Non
     return True
 
 
+def grant_fingerprint(mcp_url: str, *, cache_dir: Path | None = None) -> tuple[int, int] | None:
+    """``(mtime_ns, size)`` of the TOKEN artifact, or ``None`` when it cannot be read.
+
+    Presence answers "is there a grant"; this answers "is it the SAME grant". The
+    distinction matters wherever a caller has already established that the pair
+    currently on disk does not work: presence alone cannot then tell a completed
+    consent from the dead pair it is waiting to replace, because both are simply
+    "present". Completing an OAuth exchange makes kiro-cli REWRITE the token
+    artifact, so a changed fingerprint is the observable event.
+
+    Only the token artifact is fingerprinted. The registration is written once at
+    dynamic-client-registration time and is not rewritten by a token exchange, so
+    including it would add a value that never changes and dilute the signal.
+
+    Stats only -- the artifact is never opened, so no token byte can enter the
+    process, the same boundary :func:`grant_presence` keeps. ``None`` on any
+    failure INCLUDING absence: a caller comparing two readings must treat
+    "unknown" as "no evidence of change" rather than as a change, and collapsing
+    absence into a sentinel tuple would manufacture one.
+
+    Blocking for the same reason as :func:`grant_presence`, so async callers route
+    it off the event loop.
+    """
+    token_path, _registration = grant_artifact_paths(mcp_url, cache_dir=cache_dir)
+    try:
+        stat = token_path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 def _labelled_grant_artifacts(
     mcp_url: str, *, cache_dir: Path | None = None
 ) -> tuple[tuple[str, Path], ...]:

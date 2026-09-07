@@ -9,9 +9,10 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Download, FileCheck2, FilePlus2, GitBranch, Loader2, ScrollText, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Download, FileCheck2, FilePlus2, GitBranch, Loader2, ScrollText, Trash2 } from 'lucide-react'
 import { Btn, Card, CardTitle, ContentSkeleton, EmptyState, Input, PageHeader, SendBtn, StatCard } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
 import { fmtBytes, fmtDateTime } from '../../i18n/format'
 import { papyrusApi, type Project } from './api'
@@ -226,23 +227,14 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
           </div>
         )}
 
-        {error && (
-          <div
-            className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise"
-            role="alert"
-          >
-            <AlertTriangle className="lucide-inline text-danger shrink-0 mt-0.5" />
-            <div className="flex-1 text-[13px] text-text break-words">{error}</div>
-            <button
-              type="button"
-              onClick={() => setError('')}
-              aria-label={i18nT('apps.papyrus.page.dismiss_error')}
-              className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors"
-            >
-              <X className="lucide-inline" />
-            </button>
-          </div>
-        )}
+        {/* The hand-off is offered only while the new-paper name and clone-URL
+            fields are empty: with either typed, the navigation would discard it. */}
+        <ErrorNotice
+          className="mb-4 animate-rise"
+          message={error}
+          onDismiss={() => setError('')}
+          askAgent={!newName && !cloneUrl}
+        />
 
         <Card>
           <CardTitle>

@@ -28,6 +28,22 @@ def _msg(role, content):
     return {"role": role, "content": content}
 
 
+def test_side_prompt_states_the_tool_boundary_without_fake_remediation():
+    """An explicit tool request is still unavailable and must point to main chat.
+
+    The old prompt said tool calls were permitted when explicitly requested while
+    the execution path unconditionally used ``REJECT_ALL``. That contradiction
+    made the model claim an MCP was unconfigured and suggest enabling it.
+    """
+    prompt = sc.build_side_message(_slot([]), "use Builder MCP", is_first_turn=True)
+
+    assert "tool and MCP execution is unavailable here" in prompt
+    assert "even when the user explicitly requests it" in prompt
+    assert "ask in the main chat" in prompt
+    assert "Never claim that a tool is unconfigured" in prompt
+    assert "Do not emit tool calls" not in prompt
+
+
 def test_short_session_includes_all_turns_in_order():
     """A session under the cap carries every user/assistant turn, chronological."""
     messages = [

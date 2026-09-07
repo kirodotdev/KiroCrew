@@ -24,6 +24,7 @@ import type { Band, ReportRow, RunReport } from '../lib/types'
 
 import { fmtDateTime } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 /** Sort order for the three bands — the report leads with what needs review. */
 const BAND_RANK: Record<Band, number> = { red: 0, yellow: 1, green: 2 }
 
@@ -432,7 +433,7 @@ export default function ReportView({
       </div>
 
       {archiveError && (
-        <div className="text-[12px] text-danger">{archiveError}</div>
+        <ErrorNotice message={archiveError} variant="inline" askAgent />
       )}
 
       <BandChips bands={report.bands} active={active} onSelect={setActive} />

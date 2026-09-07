@@ -30,7 +30,7 @@
  * so the backend degrades an `open` to a clipboard copy), which would make the
  * row promise a launch it can never perform. Reveal still works on Windows.
  */
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { ExternalLink, FolderOpen, Copy, Check, AlertCircle } from 'lucide-react'
 import {
   ContextMenu,
@@ -38,6 +38,7 @@ import {
   ContextMenuContent,
   ContextMenuItem,
 } from './ui/context-menu'
+import ErrorNotice from './ErrorNotice'
 import { useBranding } from '../hooks/useBranding'
 import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import { api, ApiError } from '../api/client'
@@ -83,10 +84,17 @@ type FilePathKind = 'file' | 'dir'
  * boolean is the only evidence the clipboard actually changed; claiming a write
  * that did not happen is worse than saying nothing, because the user then pastes
  * whatever was there before.
+ *
+ * A failed reveal/open is reported through `onError` with the (already
+ * localized) message, and the caller renders it in place through the shared
+ * `ErrorNotice` (the `errors-use-error-notice` rule) — there is no blocking
+ * `alert()` path any more. `useRevealFailure` below is the ready-made state for
+ * a caller that has nothing else to hang it on.
  */
 export async function revealOrOpen(
   filePath: string,
-  action: 'open' | 'reveal' = 'reveal',
+  action: 'open' | 'reveal',
+  { onError }: { onError: (message: string) => void },
 ): Promise<{ copied: boolean; copyFailed: boolean }> {
   try {
     const r = await api.revealPath(filePath, action)
@@ -99,11 +107,29 @@ export async function revealOrOpen(
     // eslint-disable-next-line no-console -- surface reveal failures for diagnostics
     console.error('revealPath failed', err)
     const blockedByPolicy = err instanceof ApiError && err.status === 403 && !err.authRequired
-    alert(i18nT(blockedByPolicy
+    onError(i18nT(blockedByPolicy
       ? 'components.filePathMenu.reveal_blocked'
       : 'components.filePathMenu.reveal_failed'))
     return { copied: false, copyFailed: false }
   }
+}
+
+/**
+ * The failure state a `revealOrOpen` caller renders: pass `onError` to the
+ * helper, render `<ErrorNotice message={error} onDismiss={clear} …/>` where the
+ * click happened. Shared so every reveal button (folder panels, file viewer,
+ * deck viewer, transcript chips) reports the same way instead of each holding
+ * its own copy of the state.
+ */
+export function useRevealFailure(subject?: string) {
+  const [error, setError] = useState<string | null>(null)
+  // A failure belongs to the path it was raised for: when the caller moves on
+  // to another file / folder, a late rejection for the old one must not be
+  // shown under the new one.
+  useEffect(() => { setError(null) }, [subject])
+  const onError = useCallback((message: string) => setError(message), [])
+  const clear = useCallback(() => setError(null), [])
+  return { error, onError, clear }
 }
 
 /**
@@ -204,16 +230,29 @@ export function useCopyAck(filePath: string) {
   // (files.py cannot drive a file manager there), so acknowledge that instead of
   // leaving a click that silently copied looking like a no-op — no blocking
   // alert, no new toast surface.
+  //
+  // A reveal/open that FAILED (policy-blocked path, backend error) is held here
+  // too, so the consumer renders it in place through the shared `ErrorNotice`
+  // rather than the legacy blocking `alert()`. Cleared when the path changes,
+  // on the next attempt, and by the consumer's dismiss.
+  const [revealError, setRevealError] = useState<string | null>(null)
+  useEffect(() => { setRevealError(null) }, [filePath])
   const revealOrOpenWithAck = async (action: 'open' | 'reveal') => {
     const attempt = ++copyAttemptRef.current
-    const { copied, copyFailed } = await revealOrOpen(filePath, action)
+    setRevealError(null)
+    const { copied, copyFailed } = await revealOrOpen(filePath, action, {
+      // Guarded like the copy ack: a stale failure must not land on a path
+      // this component has already moved on from.
+      onError: (message) => { if (attempt === copyAttemptRef.current) setRevealError(message) },
+    })
     if (copied) flashCopyStatus(attempt, 'copied')
     // A degrade that could not reach the clipboard flips to the same
     // `copy_failed` wording, rather than leaving a click that did nothing
     // looking like one that worked.
     else if (copyFailed) flashCopyStatus(attempt, 'failed')
   }
-  return { copyStatus, copyPath, revealOrOpenWithAck }
+  const clearRevealError = () => setRevealError(null)
+  return { copyStatus, copyPath, revealOrOpenWithAck, revealError, clearRevealError }
 }
 
 /**
@@ -234,7 +273,7 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
   // (see useCopyAck, shared with the Office card). The Copy item keeps the menu
   // open on select so the confirmation is not taken off screen the instant it is
   // earned.
-  const { copyStatus, copyPath, revealOrOpenWithAck } = useCopyAck(filePath)
+  const { copyStatus, copyPath, revealOrOpenWithAck, revealError, clearRevealError } = useCopyAck(filePath)
   const copyLabel = copyStatus === 'copied'
     ? i18nT('components.filePathMenu.path_copied')
     : copyStatus === 'failed'
@@ -243,6 +282,22 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
 
   return (
     <>
+      {/* A failed reveal/open renders IN the menu (which the rows keep open on
+          select) instead of the old blocking alert(). askAgent on: a context
+          menu holds no draft, and a policy-blocked or failed reveal is a
+          gateway-side condition the agent can explain. */}
+      {revealError && (
+        <div className="px-2 py-1.5 max-w-[260px]">
+          <ErrorNotice
+            variant="inline"
+            className="whitespace-normal"
+            message={revealError}
+            askAgent
+            onDismiss={clearRevealError}
+            testId="file-path-menu-error"
+          />
+        </div>
+      )}
       {canOpen && (
         <ContextMenuItem
           // preventDefault keeps the menu open, matching the Copy row: on a

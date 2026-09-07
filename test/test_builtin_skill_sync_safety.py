@@ -798,8 +798,15 @@ class TestConcurrentSync:
         )
 
 
+@pytest.mark.real_builtin_skills_sync
 class TestEventLoopGuard:
-    """Loader construction on a running event loop must not run the sync."""
+    """Loader construction on a running event loop must not run the sync.
+
+    Both tests construct the loader with its REAL default (``install_builtins``
+    omitted, so ``True``): the rootdir conftest floor that defaults an omitted
+    argument to ``False`` for every other test is switched off here by the
+    marker, because the default is exactly what these two assert on.
+    """
 
     def test_sync_skipped_on_running_loop(
         self, builtin_root: Path, base: Path

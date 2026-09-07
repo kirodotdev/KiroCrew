@@ -2225,16 +2225,36 @@ class TestLiveRunIsReOwned:
         assert not CrewStore("s1").forwards, "a live run must not be reported interrupted"
 
 
+def _fill_idle_topics(st, count: int, *, offset: int) -> None:
+    """Append *count* idle filler topics with ascending ``last_activity``.
+
+    Built directly rather than through ``add_topic()``, which persists (a
+    3-file write plus a prune scan) on EVERY call -- O(n^2) disk writes the
+    cap tests do not need, since only the state after the FINAL ``save()``
+    is ever asserted on. Same record shape as ``CrewStore.add_topic``.
+    """
+    for i in range(count):
+        st.topics.append(
+            {
+                "topic_id": f"t{i}",
+                "active_run_id": f"r{i}",
+                "title": f"topic {i}",
+                "digest": "",
+                "status": "idle",
+                "last_activity": float(i + offset),
+                "origin_msg_id": f"m{i}",
+                "held": [],
+            }
+        )
+
+
 class TestTopicCap:
     """topics.json is read INLINE when a slot's store is first touched, so it must
     stay bounded — an unbounded file puts a growing parse on the event loop."""
 
     def test_idle_topics_are_pruned_oldest_first(self) -> None:
         st = CrewStore("s1")
-        for i in range(crew_mod._TOPIC_IDLE_CAP + 25):
-            t = st.add_topic(f"t{i}", f"r{i}", f"topic {i}", f"m{i}")
-            t["status"] = "idle"
-            t["last_activity"] = float(i)          # ascending: t0 is the oldest
+        _fill_idle_topics(st, crew_mod._TOPIC_IDLE_CAP + 25, offset=0)
         st.save()
         kept = {t["topic_id"] for t in CrewStore("s1").topics}
         assert len(kept) == crew_mod._TOPIC_IDLE_CAP
@@ -2250,10 +2270,7 @@ class TestTopicCap:
         old_held["status"] = "idle"
         old_held["held"] = ["m9"]
         old_held["last_activity"] = 0.0
-        for i in range(crew_mod._TOPIC_IDLE_CAP + 10):
-            t = st.add_topic(f"t{i}", f"r{i}", f"topic {i}", f"m{i}")
-            t["status"] = "idle"
-            t["last_activity"] = float(i + 1)
+        _fill_idle_topics(st, crew_mod._TOPIC_IDLE_CAP + 10, offset=1)
         st.save()
         kept = {t["topic_id"] for t in CrewStore("s1").topics}
         assert "keep-running" in kept, "a running topic was pruned"
@@ -2276,10 +2293,7 @@ class TestTopicCap:
             e = st.add_msg("the in-flight request")
             e["state"] = pinning_state
             e["topic_id"] = "keep-claimed"
-            for i in range(crew_mod._TOPIC_IDLE_CAP + 10):
-                t = st.add_topic(f"t{i}", f"r{i}", f"topic {i}", f"m{i}")
-                t["status"] = "idle"
-                t["last_activity"] = float(i + 1)
+            _fill_idle_topics(st, crew_mod._TOPIC_IDLE_CAP + 10, offset=1)
             st.save()
             kept = {t["topic_id"] for t in CrewStore(f"pin-{pinning_state}").topics}
             assert "keep-claimed" in kept, (
@@ -2298,10 +2312,7 @@ class TestTopicCap:
         e = st.add_msg("finished request")
         e["state"] = "done"
         e["topic_id"] = "prunable"
-        for i in range(crew_mod._TOPIC_IDLE_CAP + 10):
-            t = st.add_topic(f"t{i}", f"r{i}", f"topic {i}", f"m{i}")
-            t["status"] = "idle"
-            t["last_activity"] = float(i + 1)
+        _fill_idle_topics(st, crew_mod._TOPIC_IDLE_CAP + 10, offset=1)
         st.save()
         kept = {t["topic_id"] for t in CrewStore("no-pin").topics}
         assert "prunable" not in kept

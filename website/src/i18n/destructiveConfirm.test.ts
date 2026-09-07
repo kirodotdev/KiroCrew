@@ -173,6 +173,8 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.awsControl.console.delete_confirm', // filename operand, quoted per locale
   'apps.awsControl.console.folder_delete_confirm', // folder-name operand, quoted per locale #4821
   'apps.awsControl.console.library_remove_confirm', // artifact-name operand, quoted per locale #6987
+  'apps.awsControl.page.remove_account_confirm', // account-name operand, quoted per locale
+  'apps.awsControl.page.forget_key_confirm', // key-name operand, quoted per locale
   'apps.codeReviewSage.components.learningRail.confirm_delete', // quoted since #4653
   'apps.crewCompanion.gallery.deleteConfirm', // ASCII quotes → locale pair #4821
   'apps.mdNotebook.row.deleteTitle', // already quoted; pin + fr NNBSP fix #5725
@@ -250,6 +252,9 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
  * kind-word form and record that decision.
  */
 export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'components.awsConsentGate.confirmed_on':
+    'not a confirmation prompt: a past-tense receipt fragment whose only operand is a '
+    + 'machine-formatted date from fmtDate, never user-supplied text',
   'apps.awsControl.console.library_remove_confirm_slug':
     'the {{folder}} operand is an S3 key prefix rendered inside a <folder> tag as a '
     + 'monospace <code> chip, so the tag already delimits it and glyph quotes would '

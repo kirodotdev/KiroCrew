@@ -51,6 +51,7 @@ import {
 } from '../../../components/ui/dialog'
 import { Badge, Btn, IconButton, Input, Toggle } from '../../../components/ui'
 import SimpleSelect from '../../../components/SimpleSelect'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { useAgents } from '../../../hooks/useAgents'
 import { useAvailableModels } from '../../../hooks/useAvailableModels'
 import CrewGhost, { djb2, ghostVariantCount } from './CrewGhost'
@@ -694,15 +695,17 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
                 {t('apps.issueRadar.views.crews.editor.name_roll')}
               </Btn>
             </div>
+            {/* No hand-off: the crew editor form (name, description, base branch,
+                worktree root) is unsaved while this shows. The wrapper keeps the
+                id the name input's `aria-describedby` points at. */}
             {nameError && (
-              <p
+              <div
                 id="crew-editor-name-error"
-                role="alert"
                 data-testid="crew-editor-name-error"
-                className="mt-1.5 text-[12px] font-medium text-danger"
+                className="mt-1.5"
               >
-                {nameError}
-              </p>
+                <ErrorNotice message={nameError} variant="inline" />
+              </div>
             )}
             {suggestions.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -751,9 +754,11 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
                   constant trigger otherwise never repeats. */}
               {rosterError && agents.length === 0 && (
                 <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-                  <span role="alert" className="text-[12px] text-danger">
-                    {t('apps.issueRadar.views.crews.editor.agent_roster_failed')}
-                  </span>
+                  {/* No hand-off: the crew editor form around this row is unsaved. */}
+                  <ErrorNotice
+                    message={t('apps.issueRadar.views.crews.editor.agent_roster_failed')}
+                    variant="inline"
+                  />
                   <Btn
                     onClick={reloadRoster}
                     disabled={rosterReloading}
@@ -962,15 +967,14 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
         </DialogBody>
 
         <DialogFooter>
-          {formError && (
-            <p
-              role="alert"
-              data-testid="crew-editor-error"
-              className="mr-auto text-[12px] font-medium text-danger"
-            >
-              {formError}
-            </p>
-          )}
+          {/* No hand-off: the crew editor form above is unsaved — a save banner
+              shows precisely because it did not persist. */}
+          <ErrorNotice
+            message={formError}
+            variant="inline"
+            className="mr-auto"
+            testId="crew-editor-error"
+          />
           <Btn type="button" onClick={requestClose} className="py-1.5">
             {t('apps.issueRadar.views.crews.editor.cancel')}
           </Btn>

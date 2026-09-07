@@ -221,7 +221,13 @@ def _aws(args: list[str], profile: str) -> list[str]:
     return cmd
 
 
-def run_aws(args: list[str], profile: str, timeout: int = 30) -> tuple[int, str, str]:
+def run_aws(
+    args: list[str],
+    profile: str,
+    timeout: int = 30,
+    *,
+    extra_visible_dirs: tuple[str, ...] = (),
+) -> tuple[int, str, str]:
     """Run an ``aws`` CLI command. Returns (returncode, stdout, stderr).
 
     Single subprocess chokepoint — unit tests monkeypatch this. Credentials are
@@ -233,8 +239,16 @@ def run_aws(args: list[str], profile: str, timeout: int = 30) -> tuple[int, str,
     must read ``~/.aws`` to resolve credentials; the argv is fixed (no shell, no
     user-controlled command structure — only ``--profile`` and validated args are
     appended), so ``standard`` is the correct tier (same as app subprocesses).
+
+    ``extra_visible_dirs`` re-exposes an agent-hidden tree to THIS spawn alone: a
+    transfer that must land in a directory every agent sandbox masks (so a
+    same-UID agent cannot swap the destination for a link) still needs the CLI
+    itself to see that directory. Naming it here lifts the mask for the one
+    fixed-argv child, never for the agent.
     """
-    sandboxed, cleanup = wrap_argv(_aws(args, profile), mode="standard")
+    sandboxed, cleanup = wrap_argv(
+        _aws(args, profile), mode="standard", extra_visible_dirs=extra_visible_dirs
+    )
     sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
     try:
         proc = run_limited(  # noqa: S603 — fixed argv, no shell, sandbox-wrapped
@@ -281,9 +295,24 @@ def _trimmed_stderr(err: str, limit: int = 200) -> str:
     return text[:limit]
 
 
-def _checked(args: list[str], profile: str, *, action: str, timeout: int = 30) -> str:
+def _checked(
+    args: list[str],
+    profile: str,
+    *,
+    action: str,
+    timeout: int = 30,
+    extra_visible_dirs: tuple[str, ...] = (),
+) -> str:
     """Run an aws call, raising AWSError (with AccessDenied mapping) on failure."""
-    rc, out, err = run_aws(args, profile, timeout=timeout)
+    # Forwarded only when set: ``run_aws`` is the chokepoint tests monkeypatch,
+    # and a call without a visible-dir grant keeps the exact call shape those
+    # stubs were written against.
+    if extra_visible_dirs:
+        rc, out, err = run_aws(
+            args, profile, timeout=timeout, extra_visible_dirs=extra_visible_dirs
+        )
+    else:
+        rc, out, err = run_aws(args, profile, timeout=timeout)
     if rc != 0:
         # Only attach an IAM-statement remediation hint when the failure is a
         # genuine authorization error. Client-side errors (NoRegion,
@@ -447,8 +476,16 @@ def create_oac(name: str, profile: str) -> str:
     return json.loads(out)["OriginAccessControl"]["Id"]
 
 
-def distribution_config(bucket: str, region: str, oac_id: str) -> dict[str, Any]:
-    """Build the CloudFront DistributionConfig: S3 REST origin + OAC, HTTPS, index.html."""
+def distribution_config(
+    bucket: str, region: str, oac_id: str, response_headers_policy_id: str = ""
+) -> dict[str, Any]:
+    """Build the CloudFront DistributionConfig: S3 REST origin + OAC, HTTPS, index.html.
+
+    ``response_headers_policy_id`` substitutes the managed SecurityHeadersPolicy below.
+    A caller serving MUTUALLY UNTRUSTED documents from one distribution needs headers the
+    managed policy does not carry, and the policy id is the only place a distribution can
+    express them. Omitting it keeps the historical behaviour exactly.
+    """
     origin_domain = f"{bucket}.s3.{region}.amazonaws.com"
     origin_id = f"s3-{bucket}"
     return {
@@ -475,16 +512,29 @@ def distribution_config(bucket: str, region: str, oac_id: str) -> dict[str, Any]
             # nosniff, X-Frame-Options SAMEORIGIN, and Referrer-Policy on every
             # response — without HSTS a MITM could downgrade the first request
             # (CWE-319). Parity with base-stack.yaml's SecurityHeadersPolicy.
-            "ResponseHeadersPolicyId": "67f7725c-6f97-4210-82d7-5512b31e9d03",
+            "ResponseHeadersPolicyId": response_headers_policy_id
+            or "67f7725c-6f97-4210-82d7-5512b31e9d03",
         },
     }
 
 
-def create_distribution(bucket: str, region: str, oac_id: str, site_id: str, profile: str) -> dict[str, str]:
-    """Create a tagged distribution (tag-on-create, §5). Returns id/arn/domain."""
+def create_distribution(bucket: str, region: str, oac_id: str, site_id: str, profile: str,
+                        tags: list[dict[str, str]] | None = None,
+                        response_headers_policy_id: str = "") -> dict[str, str]:
+    """Create a tagged distribution (tag-on-create, §5). Returns id/arn/domain.
+
+    ``tags`` overrides the tag set written on create. It exists because the tags below
+    are the SITE surface's, and a caller needing a different set had no way to get one:
+    it had to create with these and then tag/untag afterwards, which is two more calls,
+    a window in which the resource is mis-tagged, and a ``cloudfront:UntagResource``
+    permission it would otherwise never need. Omitting it keeps the historical behaviour
+    exactly, so every existing caller is unaffected.
+    """
     payload = {
-        "DistributionConfig": distribution_config(bucket, region, oac_id),
-        "Tags": {"Items": [
+        "DistributionConfig": distribution_config(
+            bucket, region, oac_id, response_headers_policy_id
+        ),
+        "Tags": {"Items": tags if tags is not None else [
             {"Key": TAG_MANAGED, "Value": "true"},
             {"Key": TAG_SITE, "Value": site_id},
         ]},

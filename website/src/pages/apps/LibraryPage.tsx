@@ -202,13 +202,15 @@ export default function LibraryPage() {
       />
 
       <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-        {/* Notifications. No hand-off on the error notice: management actions
-            share this page — navigating away would discard in-flight state. */}
+        {/* Notifications. askAgent on: this page holds no text draft — the search box
+            is a filter and the uninstall confirm's keep-data checkboxes reset on close —
+            so the hand-off destroys nothing. */}
         {displayError && (
           <ErrorNotice
             message={displayError}
             onDismiss={dismissError}
             className="mb-4 animate-rise"
+            askAgent
           />
         )}
         {successMsg && (

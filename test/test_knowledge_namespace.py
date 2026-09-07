@@ -33,12 +33,13 @@ def _make_request(body: dict, app_extras: dict | None = None) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_add_source_folds_namespace_into_properties():
+async def test_add_source_folds_namespace_into_properties(tmp_path):
     """Top-level namespace is folded into properties for local_folder."""
+    folder = tmp_path / "test_folder"
     body = {
         "name": "test",
         "source_type": "local_folder",
-        "uri": "/tmp/test_folder",
+        "uri": str(folder),
         "properties": {"recursive": True},
         "namespace": "my-ns",
     }
@@ -49,7 +50,7 @@ async def test_add_source_folds_namespace_into_properties():
             "kiro_crew.dashboard.handlers.knowledge.is_sensitive_path",
             return_value=False,
         ),
-        patch.object(Path, "resolve", return_value=Path("/tmp/test_folder")),
+        patch.object(Path, "resolve", return_value=folder),
         patch.object(Path, "is_dir", return_value=True),
     ):
         store_mock = MagicMock()
@@ -70,12 +71,13 @@ async def test_add_source_folds_namespace_into_properties():
 
 
 @pytest.mark.asyncio
-async def test_add_source_namespace_from_properties_directly():
+async def test_add_source_namespace_from_properties_directly(tmp_path):
     """Namespace already in properties is preserved (no double-fold)."""
+    folder = tmp_path / "test_folder"
     body = {
         "name": "test",
         "source_type": "local_folder",
-        "uri": "/tmp/test_folder",
+        "uri": str(folder),
         "properties": {"recursive": True, "namespace": "existing-ns"},
     }
     req = _make_request(body)
@@ -85,7 +87,7 @@ async def test_add_source_namespace_from_properties_directly():
             "kiro_crew.dashboard.handlers.knowledge.is_sensitive_path",
             return_value=False,
         ),
-        patch.object(Path, "resolve", return_value=Path("/tmp/test_folder")),
+        patch.object(Path, "resolve", return_value=folder),
         patch.object(Path, "is_dir", return_value=True),
     ):
         store_mock = MagicMock()

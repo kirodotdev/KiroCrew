@@ -372,7 +372,6 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     # an empty set, which is indistinguishable from green because the floor is
     # complete. Name a few of the moved gates outright so that silence fails.
     moved_to_fast_gate = {
-        "scripts/scrub-lint.sh",
         "scripts/verify_vendor_manifest.py",
         "scripts/check_brand_name.py",
         "scripts/docs_lint.py",

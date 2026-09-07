@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, sseSubagentDone, isAwaitingSpawnApproval } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
+import ErrorNotice from '../../components/ErrorNotice'
 import type { SubagentActivity } from '../../types'
 
 import { i18nT } from '../../i18n/t'
@@ -155,19 +157,36 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const hasActive = running > 0 || queued > 0 || awaiting > 0
   const visibleList = activeList.slice(0, CHIP_MAX_ROWS)
   const hiddenCount = activeList.length - visibleList.length
-  // Only running/tool agents are cancellable via spawnDelete; pending agents
-  // (awaiting approval) are resolved through the approval reject path instead.
+  // Per-row stop remains limited to agents with a live run id. The header also
+  // includes accepted work waiting behind the stagger/concurrency queue. Pending
+  // spawn approvals keep their explicit approve/reject path.
   const stoppableCount = useMemo(() => activeList.filter(a => a.status === 'running' || a.status === 'tool').length, [activeList])
-  // Cancel a running subagent. A failed spawnDelete is swallowed with only a
-  // debug breadcrumb. The 30s reconcile loop below is the safety net that
-  // drops any agent the backend actually stopped.
-  const stopAgent = useCallback((id: string) => {
-    // eslint-disable-next-line no-console -- names which subagent refused to stop; the 30s reconcile loop hides the failure from the UI, so this is the only place a cancel that never landed is visible
-    api.spawnDelete(id).catch(() => console.warn(`spawnDelete failed for subagent ${id}; reconcile loop will resync`))
+  const stopTargetCount = stoppableCount + queued
+  // The most recent refused wave action (a stop, a stop-all, a retry). One slot,
+  // newest wins: these are all answers to the person's last press, and the row
+  // sits under the header where that press happened. The 30s reconcile loop
+  // below still resyncs the cards, but it can only hide a cancel that never
+  // landed — it cannot tell the person it never landed.
+  const [actionError, setActionError] = useState<string | null>(null)
+  // Cancel a running subagent. A refused spawnDelete used to be swallowed with a
+  // console breadcrumb; it now surfaces on the chip.
+  const stopAgent = useCallback((id: string, name: string) => {
+    setActionError(null)
+    api.spawnDelete(id).catch(() => {
+      setActionError(i18nT('pages.chat.subagentProgressBar.stop_failed', { name }))
+    })
   }, [])
+  const stopAllMutation = useMutation({
+    mutationFn: (targetSlot: string) => api.spawnStopAll(targetSlot),
+    onMutate: () => setActionError(null),
+    onError: () => {
+      setActionError(i18nT('pages.chat.subagentProgressBar.stop_all_failed'))
+    },
+  })
   const stopAll = useCallback(() => {
-    activeListRef.current.forEach(a => { if (a.status === 'running' || a.status === 'tool') stopAgent(a.id) })
-  }, [stopAgent])
+    if (!slot) return
+    stopAllMutation.mutate(slot)
+  }, [slot, stopAllMutation])
   const [retrying, setRetrying] = useState(false)
   // Collapse the agent list to the one-line header. Default expanded; the
   // choice is remembered across sessions via localStorage so a user who
@@ -185,7 +204,18 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   }, [])
   const retryFailed = useCallback(() => {
     setRetrying(true)
-    Promise.allSettled(failedIds.map(id => api.spawnRetry(id))).finally(() => setRetrying(false))
+    setActionError(null)
+    // `allSettled` so one refused retry does not abort the rest — but the
+    // rejections are counted, not discarded: a retry that never landed leaves
+    // the card in `error` with the button back at rest, which read as "nothing
+    // happened" rather than "refused".
+    Promise.allSettled(failedIds.map(id => api.spawnRetry(id)))
+      .then(results => {
+        if (results.some(r => r.status === 'rejected')) {
+          setActionError(i18nT('pages.chat.subagentProgressBar.retry_failed_error'))
+        }
+      })
+      .finally(() => setRetrying(false))
   }, [failedIds])
   const openAgent = useCallback((id: string) => {
     dispatch(selectSubagent(id))
@@ -204,17 +234,25 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
         activeListRef.current.forEach(a => {
           if (!backendIds.has(a.id)) dispatch(sseSubagentDone({ slot, id: a.id, elapsed: Math.round((Date.now() - a.startedAt) / 1000), error: 'reconciliation: agent no longer tracked by backend' }))
         })
-      }).catch(() => {})
+      }).catch(() => {
+        // Deliberately silent: this is a background poll that only ever REMOVES
+        // phantom cards. A refused poll leaves the cards exactly as they were,
+        // the next tick retries in 30s, and the person asked for none of it —
+        // so there is no failed action to report on the chip.
+      })
     }, 30_000)
     return () => { cancelled = true; clearInterval(t); clearInterval(reconcile) }
   }, [hasActive, slot, dispatch])
   if (!hasActive) return null
   return (
     // `relative z-[46]` lifts the wave chip above every theme-experience
-    // overlay: those are clamped to OVERLAY_Z_MAX=45 in ThemeExperienceLayer,
-    // so 46 is the minimal value that no theme (built-in or custom, present or
-    // future) can paint over — while staying below the mute button (z=50) and
-    // consent modal (z=120), and under modal backdrops (z-[46], later in DOM).
+    // overlay. Overlays portal into the shell's decor slot, which is pinned at
+    // OVERLAY_Z_MAX (lib/themeDecorLayer.ts — do not restate the number here);
+    // the chip renders in the same shell stacking context, so 46 is a real
+    // in-context comparison against that ceiling (the test pins 46 >
+    // OVERLAY_Z_MAX). The mute button (z=50) and consent modal (z=120) live at
+    // the document root and outrank the whole shell regardless; the chip also
+    // stays under modal backdrops (z-[46], later in DOM).
     // Without this the chip sits at auto z-index and a fullscreen overlay (e.g.
     // an activate-time transition wipe) covers it for the overlay's lifetime.
     <div className="px-4 mx-auto w-full relative z-[46]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
@@ -259,17 +297,30 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> {i18nT('pages.chat.subagentProgressBar.retry_failed_count', { count: failedIds.length })}
               </button>
             )}
-            {stoppableCount > 0 && (
+            {stopTargetCount > 0 && (
               <button
                 className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
                 onClick={stopAll}
-                aria-label={stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all_running_subagents') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
+                aria-label={queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
               >
-                <X size={11} /> {stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
+                <X size={11} /> {queued > 0 || stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
               </button>
             )}
           </span>
         </div>
+        {actionError && (
+          <div className="px-3 pb-1.5">
+            {/* askAgent on: the chip is a status surface with no editable field,
+                and the composer draft below it is persisted per slot. */}
+            <ErrorNotice
+              variant="inline"
+              message={actionError}
+              askAgent
+              onDismiss={() => setActionError(null)}
+              testId="subagent-action-error"
+            />
+          </div>
+        )}
         <div className={`px-3 pb-2 space-y-0.5${collapsed ? ' hidden' : ''}`}>
           {visibleList.map((a, i) => {
             const isLast = i === visibleList.length - 1 && hiddenCount === 0
@@ -343,7 +394,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 {stoppable && (
                   <button
                     className="shrink-0 flex items-center text-[11px] px-1 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all bg-transparent"
-                    onClick={() => stopAgent(a.id)}
+                    onClick={() => stopAgent(a.id, sanitizeLlmOutput(a.agent || a.id))}
                     aria-label={i18nT('pages.chat.subagentProgressBar.stop_subagent', { name: sanitizeLlmOutput(a.agent || a.id) })}
                     title={i18nT('pages.chat.subagentProgressBar.stop_this_subagent')}
                   >

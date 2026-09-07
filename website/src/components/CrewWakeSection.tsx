@@ -14,9 +14,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Clock, Pause, Play, Zap, ExternalLink, AlarmClockOff, TriangleAlert, Plus, X } from 'lucide-react'
+import { Clock, Pause, Play, Zap, ExternalLink, AlarmClockOff, Plus, X } from 'lucide-react'
 import { api } from '../api/client'
 import { Badge, Btn, IconButton, SendBtn, Skeleton } from './ui'
+import ErrorNotice from './ErrorNotice'
 import { timeAgo } from '../utils/timeAgo'
 import { fmtRelative } from '../i18n/format'
 import type { CronJob } from '../types'
@@ -95,9 +96,14 @@ function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
           </div>
         </div>
       </div>
-      {rowError && (
-        <div className="mt-1 pl-1 text-[11px] text-danger" role="alert">{rowError}</div>
-      )}
+      {/* No hand-off: the section can host the inline create JobForm (`creating`
+          in CrewWakeSection), whose unsaved fields this row cannot see. */}
+      <ErrorNotice
+        variant="inline"
+        className="mt-1 pl-1"
+        testId="crew-wake-row-error"
+        message={rowError}
+      />
     </div>
   )
 }
@@ -192,9 +198,18 @@ export default function CrewWakeSection({ crew, isDefaultCrew, onDraftChange, on
     ? <Skeleton className="h-12" />
     : isError
       ? (
-        <div className="flex items-center gap-2 rounded-md border border-warn-subtle bg-warn-subtle px-3 py-2.5 text-[11.5px] leading-relaxed text-muted" role="alert">
-          <TriangleAlert className="lucide-inline shrink-0" aria-hidden="true" />
-          {i18nT('components.crewWakeSection.could_not_load_this_crew_s_schedules_so_what_wak')}
+        // No hand-off while `creating`: the inline JobForm's unsaved fields
+        // would be lost. With the form closed nothing in the section is a
+        // draft, so the read failure gets the hand-off. Retry sits beside it,
+        // matching the sibling webhooks section on the same page.
+        <div className="flex items-center gap-2">
+          <ErrorNotice
+            askAgent={!creating}
+            testId="crew-wake-load-error"
+            className="flex-1"
+            message={i18nT('components.crewWakeSection.could_not_load_this_crew_s_schedules_so_what_wak')}
+          />
+          <Btn onClick={() => { void refetch() }}>{i18nT('components.crewWakeSection.retry')}</Btn>
         </div>
       )
       : jobs.length === 0

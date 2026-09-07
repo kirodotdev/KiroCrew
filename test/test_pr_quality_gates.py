@@ -711,9 +711,14 @@ class TestDecidableFindingsExitTheTieBreaker:
     def test_ux_tie_breaker_carries_a_closed_exception_list(self, name):
         wf = _flat(_read(name))
         assert "Tie-breaker: when torn between BLOCK and CONCERNS" in wf
-        assert "The tie-breaker does NOT apply to the two below" in wf
+        # Four decidable exits: the two notice rules, plus (PR #6783) a primary
+        # control the blind reader could not use and a hard element swap. Each
+        # is read off the blind-read report or the diff, not judged.
+        assert "The tie-breaker does NOT apply to the four below" in wf
         assert "hedges about state the code already holds" in wf
         assert "assert what happened" in wf
+        assert "A primary control (lens 12) the blind reader misread" in wf
+        assert "A hard swap (lens 13)" in wf
 
     @pytest.mark.parametrize("name", UX_LANES + DESIGN_LANES)
     def test_every_mandated_block_carries_a_falsification_step(self, name):

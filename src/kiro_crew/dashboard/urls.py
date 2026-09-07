@@ -64,6 +64,21 @@ def is_loopback(host: str) -> bool:
         return False
 
 
+def dashboard_socket_name(port: int) -> str:
+    """File name of the dashboard internal-API unix socket for *port*.
+
+    Split out of :func:`dashboard_socket_path` for the one caller that needs the
+    name WITHOUT this process's data home: ``pod api`` talks to a pod gateway
+    whose ``KIROCREW_HOME`` is the pod's isolated home, so it must join this name
+    onto that home rather than the host's. Composing it from
+    ``dashboard_socket_path(port).name`` would work today and read like a
+    simplification waiting to happen -- the directory is the part that is wrong,
+    and a reader who "cleaned up" the ``.name`` would silently point the pod at
+    the host's socket.
+    """
+    return f"dashboard-{int(port)}.sock"
+
+
 def dashboard_socket_path(port: int) -> Path:
     """Path of the dashboard internal-API unix socket for *port*.
 
@@ -82,7 +97,7 @@ def dashboard_socket_path(port: int) -> Path:
     """
     from kiro_crew.config.loader import config_dir
 
-    return config_dir() / f"dashboard-{int(port)}.sock"
+    return config_dir() / dashboard_socket_name(port)
 
 
 # ---------------------------------------------------------------------------

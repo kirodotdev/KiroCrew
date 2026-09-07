@@ -669,7 +669,13 @@ caller cannot re-open the hole by passing the path:
   launcher binds over itself and then **remounts** `MS_RDONLY`. Both mounts are
   load-bearing — `MS_RDONLY` is ignored on the initial `MS_BIND` — and both go through
   `_mount_or_die`, so a seal that does not land refuses the spawn rather than silently
-  granting write. `test_sandbox_mount_checked.py` pins all six mount sites.
+  granting write. The sealing remount also **re-asserts the target's locked mount
+  flags** (`nosuid`/`nodev`/`noexec`, read off the fresh bind via `statvfs`): inside an
+  unprivileged user namespace the kernel rejects a remount that would drop a locked
+  bit, so on hosts whose `/tmp` or `/home` is mounted `nosuid,nodev` the plain
+  `MS_RDONLY` remount got EPERM and every spawn refused (#8386). Re-asserting bits
+  already in force only keeps restrictions. `test_sandbox_mount_checked.py` pins all
+  six mount sites; `test_sandbox_seal_locked_flags.py` pins the flag re-assertion.
 - **macOS** keeps the `file-write*` and `file-link` denies and drops only `file-read*`.
 
 On a host running **unconfined** — no sandbox backend, or `agent.sandbox='off'` with the
@@ -2543,6 +2549,35 @@ during connection setup registers as a change. The client invalidates its cached
 counter restarts with the process) — so a withdrawn entry disappears within one
 status tick rather than waiting out the cache's stale window.
 
+**And follows a profile-layer edit.** The value in that frame is
+`governance_profiles.governance_answer_generation()`, which is
+`context.governance_generation()` plus a module-private `_profile_generation()`
+bumped whenever `ProfileStore._ensure_fresh` publishes a new snapshot. The field's
+contract is unchanged — it stays an opaque, comparison-only integer, so combining two
+monotonic counters is not a change of meaning and no consumer needs to know. This
+exists because the ceiling counter alone missed Level-2 edits: a profile file
+tightening a capability is enforced on the very next decision (the authorization
+path calls `_ensure_fresh`), while the dashboard's cached answer kept the withdrawn
+entry until its 30-second stale window, focus, or an unrelated slot mutation.
+
+Detecting the edit needs the profiles directory re-stat'd, and on an idle dashboard
+nothing else would touch the store, so the watcher has to be what looks. That walk
+lives in a separate `poll_profiles_fresh()`, which the watcher offloads with
+`asyncio.to_thread`: `_dir_fingerprint` is an `iterdir` plus a `stat` per file, and
+AUTOSDE's `no-blocking-call-on-event-loop` names filesystem walks as the prohibited
+class, so a slow or large profile store must delay one socket's tick rather than
+stall chat turns and heartbeats for every session. `governance_answer_generation()`
+itself is two locked integer reads with no filesystem access, which is why the
+synchronous slots broadcast may call it inline. Measured walk cost on one host: 57us
+at 5 profile files, 107us at 15, 303us at 50, 1.12ms at 200 — small at a realistic
+count and unbounded in principle, hence offloaded rather than defended by the number.
+
+`_profile_generation()` is an OUTPUT of the profile store and must never become an
+input to it. Folding it into `_ceiling_token()` — the obvious-looking symmetry with
+the ceiling half described below — would make the store reload on every access
+forever, because `_ensure_fresh` computes its fingerprint *before* reloading and so
+would commit a pre-bump value that the next read can never match.
+
 The Security panel picks the row up automatically (`api_governance_policy` iterates
 `SCOPE_CATALOG`; its label is the humanised leaf, "Social share").
 
@@ -2691,6 +2726,132 @@ binding app activation and the messaging host gates use — see
 
 The Security panel picks the row up automatically — `api_governance_policy`
 iterates `SCOPE_CATALOG`.
+
+### Which tool-approval modes a deployment may select — `approval_modes`
+
+The dashboard approval-mode picker offers four modes: `normal` (interactive —
+ask for every tool), `trust_reads` (auto-approve reads), `trust` (auto-approve
+the active slot), and `yolo` (auto-approve every tool everywhere). The
+`approval_modes` `SCOPE_CATALOG` row (a `ScopedRuleset` on the `identifier`
+matcher — data-only shape, no evaluator change, mirroring `agent_backend`
+above) lets a managed fleet forbid an auto-approve mode and force interactive
+approval.
+
+**Today the scope governs exactly one mode: `yolo`.**
+
+```json
+{"approval_modes": {"mode": "deny", "deny": ["yolo"]}}
+```
+
+This is distinct from the ordinal `approval_mode` scale
+(`yolo < auto < interactive`) documented under the archetypes: that clamps a
+single ceiling, whereas `approval_modes` denies a named mode.
+
+**Three modes are non-deniable, for two different reasons.** Both are declared as
+catalog DATA — `ScopeSpec(..., always_permitted=("normal", "trust", "trust_reads"))`
+— and `_parse_control` refuses any ruleset that forbids one, whether directly
+(`deny: ["trust"]`) or by an allow-list that omits it, with
+`PlatformCompositionError`. Data rather than a scope-name branch, so a second scope
+with a non-deniable member is a catalog entry and not another `if` in the loader:
+
+- **`normal` is the interactive floor.** Denying it would leave no selectable mode
+  and brick tool approval, and the trust-root `security_policy.json` is the one file
+  the dashboard may not write to repair it (see
+  [Self-protection](#self-protection-the-keystone)).
+- **`trust` and `trust_reads` are not yet governed.** Their grants are honoured by
+  consumption predicates this scope does not reach — the in-memory trusted set, and
+  the session `approval_policy` a spawned subagent inherits — spread across the
+  messaging, Slack, Telegram and subagent-admission paths. Accepting a deny for them
+  would advertise a control that does not hold, so the policy is refused **loudly at
+  parse time** instead. Governing those read paths is tracked separately.
+
+The refusal happens at parse time in both cases, because a policy that misdescribes
+the posture is worse than one that fails to load.
+
+**Enforced at every `yolo` surface**, because a mode is only actually off if every
+path that can arm it — and every path that HONOURS an existing grant — refuses:
+
+- `dashboard/chat_handlers.py::api_chat_mode` — the explicit mode switch. Refuses
+  with `403` + `mode_disabled_by_policy` **before any mutation**.
+- `safety_override` arming — `_commit_activation` and `activate_scoped`,
+  fail-closed, so YOLO stays blocked however it is armed (dashboard, Slack `!yolo`,
+  the `/yolo` slash handler, config).
+- `safety_override.is_active` / `is_scope_active` / `renew_scoped` — the consult
+  points that honour a LIVE grant. Gating only at arming left an already-armed grant
+  running to its own TTL, so an admin who denied `yolo` mid-session kept
+  auto-approving every tool for up to 24h.
+
+**A denial REVOKES the grant; it does not merely mask it.** This matters because the
+same predicate answers two different questions. `is_active` is both "may this tool
+auto-approve?" and, for every caller that asks "is there a grant to clear?", the
+liveness test — Slack's `!yolo off` is `if is_yolo_mode(): disable_yolo()`. An earlier
+revision left `_active` set and only reported `False`, so inside a denial window that
+branch reported "already off" and cleared nothing, and a later policy relaxation
+resurrected auto-approve the operator had explicitly revoked. Tearing the grant down
+makes both readings agree. The cost is that a policy which denies and then relaxes
+requires a fresh arm, which is the honest outcome anyway.
+
+The teardown runs at the moment the denying ceiling is INSTALLED, not on the next
+`is_active()` call — `safety_override.revoke_for_policy` drops the session-wide grant
+and every scoped grant, then fires `_on_expired("policy")`. That callback is the rest
+of the revocation, and it is not optional: a dashboard grant also writes
+`approval_policy="auto"` onto the slots and into the shared channel-trust mapping, and
+`subagent_manager.admission.parent_trusted` reads *that policy* rather than any flag in
+`safety_override` — so a revocation that stopped at the flag left `spawn_run`
+auto-approved. `is_active` / `is_scope_active` / `renew_scoped` keep their policy check
+as the fail-closed mask if that teardown was partial.
+
+**Every refusal is SEL-audited.** A governance denial that leaves no trace is
+indistinguishable from the request never having been made, which is exactly the
+record an operator needs after an attempted escalation. The audit is best-effort at
+each site: an SEL write failure never turns a refusal into a grant.
+
+**The verdict is PUSHED at ceiling install, never polled.** Resolving the scope walks
+the profiles dir (`iterdir` + per-file `stat`), and every consumer is on a path that
+must not do that: `status_snapshot` is emitted on the 5s WebSocket push, `is_active` is
+the predicate every transport hands to `TurnDriver` (so it runs per *tool call*), and
+arming reaches the module from the event loop through synchronous callers. So
+`approval_mode_permitted("yolo")` is resolved **once per ceiling**, by a hook
+`safety_override` registers with `platform.context.register_ceiling_install_hook`.
+`platform.context._install` is the single writer of the active context — central
+distribution (`policy_distribution.apply_ceiling`), boot, the lazy default and the test
+reset all go through it — so no ceiling escapes the hook. Every consumer
+(`yolo_policy_permits()`, and `cached_disabled_approval_modes()` on top of it) is then a
+bare attribute read: no TTL, no lock, no thread.
+
+A governance-evaluation error at install time resolves to **denied**, and a process
+that reads the verdict before any ceiling was installed resolves once through
+`current_context()` — which composes and installs the standalone default, firing the
+same hook. A host whose context refuses to compose (a governed profile whose boot did
+not run) leaves the verdict denied, which is the fail-closed direction.
+
+This replaced a pull-based cache — a 5s TTL plus a governance-generation stamp,
+refreshed on a worker thread — and the reason is worth recording. Polling a value that
+only changes on a discrete event needs a freshness key, a third
+`unknown` verdict for the window before a refresh lands, and a per-caller rule for
+collapsing that third state (approval had to fail closed on it; revocation had to *not*
+fire, or an unrelated ceiling install would destroy a live grant permanently). Each of
+those is a window in which a permit resolved under a retired ceiling is still served,
+and the windows — not the scope, the arming gate or the audits — were where every
+security finding against that design landed. Pushing removes them instead of shortening
+them.
+
+The denied set rides the shared `state.status_snapshot()` as
+`disabled_approval_modes`. The picker **hides** each denied mode rather than showing
+it disabled — a mode that cannot be chosen is simply absent, and `normal` keeps the
+list from ever being empty. The one exception is a denied mode that is STILL THE
+ACTIVE one: the trigger renders the active mode regardless, so hiding its row too
+would put a label on the button with no matching row in the menu. That row stays,
+disabled and labelled with the reason, until the user picks something else. The
+Security panel lists the scope and its deny-list automatically —
+`api_governance_policy` iterates `SCOPE_CATALOG` — so an operator can always see
+which modes a policy removed.
+
+**Not yet reached.** Auto-approval also enters through cron
+`approval_mode: "auto"`, the messaging API's approval-mode field, subagent spawn, and
+config `agent.approval_mode`. Those carry their own vocabulary and are tracked
+separately from this scope — see the reserved `approval_mode` ordinal's
+still-reserved note.
 
 ### Computer use is NOT governed (deliberately)
 

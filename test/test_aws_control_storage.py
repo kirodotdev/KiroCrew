@@ -12,6 +12,9 @@ explain WHY a case matters, not what the code does.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -916,6 +919,25 @@ class TestObjectExists:
             with pytest.raises(AWSError):
                 storage.object_exists("p", "r", "b", "drive", "a.txt", account="111122223333")
 
+    def test_head_object_meta_returns_the_parsed_response(self):
+        # The download path reads ContentType off this, so the HEAD asks for
+        # JSON and the parsed dict comes back whole.
+        out = '{"ContentType": "application/pdf", "ContentLength": 5}'
+        with mock.patch.object(engine, "run_aws", return_value=(0, out, "")) as run:
+            meta = storage.head_object_meta("p", "r", "b", "drive", "a.pdf", account="111122223333")
+        assert meta == {"ContentType": "application/pdf", "ContentLength": 5}
+        argv = run.call_args.args[0]
+        assert argv[argv.index("--output") + 1] == "json"
+
+    def test_head_object_meta_is_none_for_a_missing_key_and_empty_for_odd_output(self):
+        with mock.patch.object(engine, "run_aws", return_value=(254, "", "(404) Not Found")):
+            assert storage.head_object_meta("p", "r", "b", "drive", "a", account="1") is None
+        # A present object with unparseable output still reads as PRESENT -- the
+        # absent/raise contract is object_exists's, and it must not flip on a
+        # formatting hiccup.
+        with mock.patch.object(engine, "run_aws", return_value=(0, "not json", "")):
+            assert storage.head_object_meta("p", "r", "b", "drive", "a", account="1") == {}
+
 
 # ---------------------------------------------------------------------------
 # Presign — a bearer URL. Clamp both ends of the expiry, and REFUSE any output
@@ -1031,3 +1053,396 @@ class TestUsage:
         rows = json.dumps([{"Key": "drive/a", "Size": None}])
         result = self._usage(rows)
         assert result["sections"]["drive"] == {"objects": 1, "bytes": 0}
+
+
+# ---------------------------------------------------------------------------
+# Upload Content-Type — inline preview rendering depends on the stored header,
+# so the guess must land on the argv when the extension is known and must NOT
+# override S3's default when it is not.
+# ---------------------------------------------------------------------------
+
+
+class TestPutFileContentType:
+    def _argv(self, key: str, tmp_path):
+        local = tmp_path / "body"
+        local.write_bytes(b"x")
+        with mock.patch.object(storage, "_checked") as checked:
+            storage.put_file("p", "us-east-1", "b", "drive", key, str(local), account="1")
+        return checked.call_args.args[0]
+
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [
+            ("doc.pdf", "application/pdf"),
+            ("pic.png", "image/png"),
+            ("clip.mp4", "video/mp4"),
+            ("track.mp3", "audio/mpeg"),
+        ],
+    )
+    def test_known_extensions_pin_the_inline_renderable_type(self, key, expected, tmp_path):
+        # Without this S3 stores binary/octet-stream and a presigned URL forces
+        # a download; the browser only renders inline what the header names.
+        argv = self._argv(key, tmp_path)
+        assert argv[argv.index("--content-type") + 1] == expected
+        # The guess must never displace the owner pin.
+        assert "--expected-bucket-owner" in argv
+
+    def test_an_unknown_extension_keeps_the_s3_default(self, tmp_path):
+        # Guessing wrong is worse than not guessing: S3's default at least
+        # never lies about what the bytes are.
+        argv = self._argv("mystery.zzzqqq", tmp_path)
+        assert "--content-type" not in argv
+        assert "--expected-bucket-owner" in argv
+
+    @pytest.mark.parametrize("key", ["page.html", "page.htm", "logo.svg", "notes.txt", "app.js"])
+    def test_types_a_browser_would_execute_or_render_as_a_document_stay_opaque(self, key, tmp_path):
+        # A stored text/html or image/svg+xml makes a shared or downloaded
+        # object render as a LIVE document on the bucket origin, script and all,
+        # while the same file opened in-app is inert bytes in the text preview.
+        # Text types are not needed for preview either (that read is proxied),
+        # so only the media/PDF types the dialog embeds by URL are declared.
+        argv = self._argv(key, tmp_path)
+        assert "--content-type" not in argv
+
+
+# ---------------------------------------------------------------------------
+# Preview head bytes — the gateway-proxied read behind /drive/{account}/preview.
+# The range bound, the owner pin, the full-size answer, and the temp-file
+# cleanup are each load-bearing.
+# ---------------------------------------------------------------------------
+
+
+class TestGetObjectHeadBytes:
+    def _run(self, body: bytes, meta: object, max_bytes: int = 1024, tmp_path=None, writer=None):
+        captured: dict = {}
+
+        def fake_checked(argv, profile, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            captured["tmp"] = argv[-1]
+            # The gateway created the destination before the CLI ran, so the
+            # CLI finds a file to write into rather than a name to claim.
+            captured["preexisting"] = os.path.exists(argv[-1])
+            if writer is not None:
+                writer(argv[-1])
+            else:
+                with open(argv[-1], "wb") as fh:
+                    fh.write(body)
+            return meta if isinstance(meta, str) else json.dumps(meta)
+
+        # The staging parent is the sandbox-hidden root under the REAL home;
+        # a test never touches that, so the seam points at a temp dir.
+        parent = tempfile.TemporaryDirectory() if tmp_path is None else None
+        parent_dir = Path(parent.name) if parent else Path(tmp_path)
+        captured["parent"] = parent_dir
+        try:
+            with (
+                mock.patch.object(storage, "_checked", side_effect=fake_checked),
+                mock.patch.object(storage, "_preview_staging_parent", return_value=parent_dir),
+            ):
+                data, size = storage.get_object_head_bytes(
+                    "p",
+                    "us-east-1",
+                    "b",
+                    "drive",
+                    "a.txt",
+                    account="111122223333",
+                    max_bytes=max_bytes,
+                )
+        finally:
+            if parent:
+                parent.cleanup()
+        return data, size, captured
+
+    def test_the_transfer_is_range_bounded_and_owner_pinned(self):
+        # A preview is a WINDOW, not a download: the range caps what one click
+        # moves through the gateway, and the owner pin is put_file's name-reuse
+        # defence applied to the read side.
+        _data, _size, cap = self._run(b"head", {"ContentRange": "bytes 0-3/4"})
+        argv = cap["argv"]
+        assert argv[:2] == ["s3api", "get-object"]
+        assert argv[argv.index("--range") + 1] == "bytes=0-1023"
+        assert argv[argv.index("--expected-bucket-owner") + 1] == "111122223333"
+        assert argv[argv.index("--key") + 1] == "drive/a.txt"
+        # The size answer below is parsed from this response, so the format
+        # cannot be left to the user's ~/.aws/config.
+        assert argv[argv.index("--output") + 1] == "json"
+
+    def test_the_full_size_comes_from_content_range(self):
+        # ContentLength on a ranged GET is the WINDOW's length; only
+        # ContentRange's total tells a truncated preview from a complete one.
+        data, size, _cap = self._run(b"head", {"ContentRange": "bytes 0-3/100", "ContentLength": 4})
+        assert (data, size) == (b"head", 100)
+
+    def test_content_length_is_the_fallback_without_a_range_header(self):
+        data, size, _cap = self._run(b"head", {"ContentLength": 4})
+        assert (data, size) == (b"head", 4)
+
+    def test_a_garbled_response_never_understates_the_size(self):
+        # Reporting a size below the bytes in hand would read as "complete" on
+        # a truncated preview, so the floor is what was actually read.
+        data, size, _cap = self._run(b"abc", "not json at all")
+        assert (data, size) == (b"abc", 3)
+
+    def test_the_staging_temp_file_does_not_outlive_the_call(self):
+        import os as _os
+
+        _data, _size, cap = self._run(b"head", {"ContentRange": "bytes 0-3/4"})
+        assert not _os.path.exists(cap["tmp"])
+        # The whole per-call directory goes, not just the file.
+        assert not _os.path.exists(_os.path.dirname(cap["tmp"]))
+
+    def test_the_staging_file_lives_in_a_fresh_directory_under_the_hidden_root(self, tmp_path):
+        # Never a bare path in the shared temp dir: a same-UID watcher there can
+        # swap the file for a link before the CLI opens it, and the CLI would
+        # write the object through the link. The file is cut inside a fresh
+        # directory under the root every agent sandbox masks.
+        _data, _size, cap = self._run(b"head", {"ContentRange": "bytes 0-3/4"}, tmp_path=tmp_path)
+        staged = Path(cap["tmp"])
+        assert staged.parent.parent == tmp_path
+        assert staged.parent.name.startswith("drive-preview-")
+        assert staged.name == "object"
+
+    def test_the_cli_spawn_is_granted_exactly_its_own_staging_directory(self, tmp_path):
+        # The mask that keeps the agent out would keep the sandboxed CLI out
+        # too, so the per-call directory -- and only that directory -- is named
+        # as visible for this one spawn.
+        _data, _size, cap = self._run(b"head", {"ContentRange": "bytes 0-3/4"}, tmp_path=tmp_path)
+        staged = Path(cap["tmp"])
+        assert cap["kwargs"]["extra_visible_dirs"] == (str(staged.parent),)
+
+    def test_the_destination_is_the_gateways_own_file_before_the_cli_runs(self, tmp_path):
+        # Identity pinning for the host with no sandbox mask (Windows): the
+        # gateway creates the destination exclusively and holds it open, so the
+        # CLI writes into a file that already belongs to the gateway and cannot
+        # be swapped underneath it. The fake CLI sees it there.
+        data, _size, cap = self._run(b"head", {"ContentRange": "bytes 0-3/4"}, tmp_path=tmp_path)
+        assert cap["preexisting"] is True
+        assert data == b"head"
+
+    def test_an_empty_object_reads_as_an_empty_preview_not_a_failure(self, tmp_path):
+        # A bytes=0-N range against a 0-byte object is unsatisfiable and S3
+        # answers 416 InvalidRange -- the file is readable and simply empty.
+        def refuse_range(_path):
+            raise AWSError(
+                "s3:GetObject failed: An error occurred (InvalidRange) when calling the "
+                "GetObject operation: The requested range is not satisfiable"
+            )
+
+        data, size, cap = self._run(b"", {}, tmp_path=tmp_path, writer=refuse_range)
+        assert (data, size) == (b"", 0)
+        # The staging directory is gone on this path too.
+        assert not os.path.exists(os.path.dirname(cap["tmp"]))
+
+    def test_other_cli_failures_still_raise(self, tmp_path):
+        def deny(_path):
+            raise AWSError("s3:GetObject failed: An error occurred (AccessDenied) ...")
+
+        with pytest.raises(AWSError):
+            self._run(b"", {}, tmp_path=tmp_path, writer=deny)
+
+    def test_the_root_and_the_call_directory_are_pinned_while_the_cli_runs(self, tmp_path):
+        # The file pin alone leaves the DIRECTORY swappable: rename it away and
+        # plant a junction at its name before the create, and the CLI's path
+        # resolves into the planted target. Both directories are therefore held
+        # open -- root first, then the per-call directory -- for the whole call.
+        from kiro_crew import platform_compat
+
+        pinned: list[str] = []
+        real_pin = platform_compat.pin_directory
+
+        def spy(path):
+            pinned.append(os.fspath(path))
+            return real_pin(path)
+
+        with mock.patch.object(storage.platform_compat, "pin_directory", side_effect=spy):
+            _data, _size, cap = self._run(
+                b"head", {"ContentRange": "bytes 0-3/4"}, tmp_path=tmp_path
+            )
+        staged = Path(cap["tmp"])
+        assert pinned == [str(tmp_path), str(staged.parent)]
+
+    def test_a_destination_replaced_during_the_transfer_is_refused(self, tmp_path):
+        # A CLI (or anything racing it) that lands the bytes in a DIFFERENT
+        # file under the same name is caught by the identity check -- the bytes
+        # in hand would otherwise be read from whatever now sits at the path.
+        # On Windows the held handle refuses the unlink itself (the pin), so
+        # the swap never gets as far as the check.
+        def swap(path):
+            os.unlink(path)
+            with open(path, "wb") as fh:
+                fh.write(b"swapped")
+
+        expected = ValueError if os.name == "posix" else PermissionError
+        with pytest.raises(expected):
+            self._run(b"head", {"ContentRange": "bytes 0-3/4"}, tmp_path=tmp_path, writer=swap)
+
+    @pytest.mark.skipif(os.name != "posix", reason="hard links need a privilege on Windows CI")
+    def test_a_destination_hard_linked_elsewhere_is_refused(self, tmp_path):
+        # A second name on the staged file means something outside the fence
+        # can read the object bytes after the staging directory is removed.
+        def link_out(path):
+            with open(path, "wb") as fh:
+                fh.write(b"head")
+            os.link(path, tmp_path / "leak")
+
+        with pytest.raises(ValueError):
+            self._run(b"head", {"ContentRange": "bytes 0-3/4"}, tmp_path=tmp_path, writer=link_out)
+
+    def test_the_staging_root_is_fenced_on_both_the_tool_gate_and_the_sandbox(self):
+        # Moving the staging root out of the fenced leaf would silently
+        # re-open the link swap; the three spellings are pinned together.
+        from kiro_crew import sandbox, security
+
+        assert storage.STAGING_DIR_LEAF in security._CREW_SECRET_LEAVES
+        assert storage.STAGING_DIR_LEAF in sandbox._CREW_HIDDEN_LEAVES
+        # And created BEFORE any sandbox spawns: a mask binds over a name that
+        # exists, so a root created lazily on first preview would be visible to
+        # every sandbox already running.
+        assert storage.STAGING_DIR_LEAF in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+
+    def test_the_real_staging_root_sits_under_the_fenced_leaf(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(storage, "data_home", lambda: tmp_path)
+        parent = storage._preview_staging_parent()
+        assert parent == tmp_path / storage.STAGING_DIR_LEAF
+        assert parent.is_dir()
+        # A TOP-LEVEL leaf: its only ancestors are the data home and $HOME, so
+        # there is no agent-writable directory between the fence and the root
+        # that could be renamed out from under a transfer.
+        assert "/" not in storage.STAGING_DIR_LEAF
+
+    @pytest.mark.skipif(os.name != "posix", reason="symlinks need a privilege on Windows")
+    def test_a_link_planted_at_the_staging_root_is_refused(self, tmp_path, monkeypatch):
+        # A linked root puts every staged file outside the fence, which no
+        # per-file check can see -- so the root itself is checked first.
+        monkeypatch.setattr(storage, "data_home", lambda: tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        os.symlink(elsewhere, tmp_path / storage.STAGING_DIR_LEAF)
+        with pytest.raises(ValueError):
+            storage._preview_staging_parent()
+
+    def test_run_aws_forwards_the_visible_dir_grant_to_the_sandbox(self, monkeypatch, tmp_path):
+        seen: dict = {}
+
+        def fake_wrap(argv, mode="auto", **kw):
+            seen["mode"] = mode
+            seen["kw"] = kw
+            return list(argv), None
+
+        class _Proc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        monkeypatch.setattr(engine, "wrap_argv", fake_wrap)
+        monkeypatch.setattr(engine, "cgroup_scope_argv", lambda argv: argv)
+        monkeypatch.setattr(engine, "run_limited", lambda *a, **k: _Proc())
+        engine.run_aws(["s3api", "get-object"], "p", timeout=5, extra_visible_dirs=(str(tmp_path),))
+        assert seen["mode"] == "standard"
+        assert seen["kw"]["extra_visible_dirs"] == (str(tmp_path),)
+
+    @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW is POSIX-only")
+    def test_a_link_planted_at_the_staging_path_is_refused_on_read(self, tmp_path):
+        # Even if a link appeared anyway, the read-back must not follow it and
+        # hand the link's target to the browser.
+        target = tmp_path / "secret"
+        target.write_bytes(b"not for the browser")
+
+        def fake_checked(argv, profile, **kwargs):
+            os.symlink(target, argv[-1])
+            return json.dumps({"ContentRange": "bytes 0-3/4"})
+
+        with (
+            mock.patch.object(storage, "_checked", side_effect=fake_checked),
+            mock.patch.object(storage, "_preview_staging_parent", return_value=tmp_path),
+        ):
+            with pytest.raises(OSError):
+                storage.get_object_head_bytes(
+                    "p", "us-east-1", "b", "drive", "a.txt", account="111122223333", max_bytes=1024
+                )
+
+
+# ---------------------------------------------------------------------------
+# Filename search — bounded pagination is the contract: a broad query on a
+# large drive must stop at the cap instead of listing the world.
+# ---------------------------------------------------------------------------
+
+
+def _search_page(keys: list[str], next_token: str = "") -> str:
+    contents = [{"Key": k, "Size": 7, "LastModified": "2026-01-01T00:00:00+00:00"} for k in keys]
+    page: dict = {"Contents": contents}
+    if next_token:
+        page["NextToken"] = next_token
+    return json.dumps(page)
+
+
+class TestSearchKeys:
+    def _search(self, pages: list[str], query: str):
+        with mock.patch.object(storage, "_checked", side_effect=pages) as checked:
+            results, capped = storage.search_keys(
+                "p", "us-east-1", "b", "drive", query, account="111122223333"
+            )
+        return results, capped, checked
+
+    def test_matching_is_case_insensitive_over_the_whole_relative_key(self):
+        # "reports/20" must find a file by its FOLDER, not just its basename —
+        # the user searching a drive thinks in paths, not leaf names.
+        pages = [_search_page(["drive/Reports/2026.TXT", "drive/other.txt"])]
+        results, capped, _ = self._search(pages, "reports/20")
+        assert [r["key"] for r in results] == ["Reports/2026.TXT"]
+        assert results[0]["size"] == 7
+        assert results[0]["modified"] == "2026-01-01T00:00:00+00:00"
+        assert capped is False
+
+    def test_folder_placeholders_are_not_files(self):
+        # The zero-byte "photos/" marker matches the query textually but is
+        # navigation structure; surfacing it would offer a preview of nothing.
+        pages = [_search_page(["drive/photos/", "drive/photos/a.txt"])]
+        results, _capped, _ = self._search(pages, "photos")
+        assert [r["key"] for r in results] == ["photos/a.txt"]
+
+    def test_the_walk_is_owner_pinned_and_section_prefixed(self):
+        pages = [_search_page(["drive/a.txt"])]
+        _results, _capped, checked = self._search(pages, "a")
+        argv = checked.call_args.args[0]
+        assert argv[argv.index("--prefix") + 1] == "drive/"
+        assert argv[argv.index("--expected-bucket-owner") + 1] == "111122223333"
+
+    def test_hitting_the_cap_stops_before_the_next_page(self):
+        # The second page must never be REQUESTED once a match past the cap
+        # is seen — that early exit is what bounds a broad query on a large
+        # drive. The cap is a module constant (not a caller-tunable), so the
+        # test lowers it in place rather than passing one.
+        pages = [
+            _search_page(
+                ["drive/a-match.txt", "drive/b-match.txt", "drive/c-match.txt"],
+                next_token="t2",
+            ),
+            _search_page(["drive/d-match.txt"]),
+        ]
+        with mock.patch.object(storage, "SEARCH_MAX_RESULTS", 2):
+            results, capped, checked = self._search(pages, "match")
+        assert [r["key"] for r in results] == ["a-match.txt", "b-match.txt"]
+        assert capped is True
+        assert checked.call_count == 1
+
+    def test_exactly_the_cap_is_a_complete_result_not_a_truncated_one(self):
+        # ``capped`` promises "there were more" — a drive holding exactly the
+        # cap's worth of matches must not be told its results were cut off.
+        pages = [_search_page(["drive/a-match.txt", "drive/b-match.txt"])]
+        with mock.patch.object(storage, "SEARCH_MAX_RESULTS", 2):
+            results, capped, _ = self._search(pages, "match")
+        assert len(results) == 2
+        assert capped is False
+
+    def test_the_next_page_resumes_from_the_token(self):
+        pages = [
+            _search_page(["drive/miss.txt"], next_token="t2"),
+            _search_page(["drive/hit.txt"]),
+        ]
+        results, capped, checked = self._search(pages, "hit")
+        assert [r["key"] for r in results] == ["hit.txt"]
+        assert capped is False
+        second_argv = checked.call_args_list[1].args[0]
+        assert second_argv[second_argv.index("--starting-token") + 1] == "t2"

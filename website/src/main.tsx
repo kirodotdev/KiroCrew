@@ -30,6 +30,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 import DashboardBootstrap from './components/DashboardBootstrap'
 import { installPageZoomSuppression } from './utils/pageZoom'
 import { installStaleShellHeal } from './lib/staleShellHeal'
+import { hydrateUiPrefs, needsHydrate, startUiPrefsSync } from './lib/uiPrefs'
 import 'katex/dist/katex.min.css'
 import './index.css'
 import './styles/cli-mode.css'
@@ -99,7 +100,7 @@ if (import.meta.env.DEV) {
   // The finding is not noise — it is the only recurring reminder that suppressing page
   // zoom is an accessibility trade nobody has yet accepted in writing, and "nobody can
   // action it" was wrong: it is a decision, and a decision stays owed.
-  // See the page-zoom section of website/docs/page-layout.md for the policy.
+  // See the page-zoom row in website/docs/page-layout.md for the policy.
   import('react-dom').then(ReactDOM => import('@axe-core/react').then(axe => axe.default(React, ReactDOM, 1000)))
 }
 
@@ -143,7 +144,7 @@ startMemoryWatch('main')
 // element enters the tree on a normal load.
 installCommitProfilerConsoleApi()
 
-createRoot(document.getElementById('root')!).render(
+const appTree = (
   <StrictMode>
     <ErrorBoundary root scope="app-shell">
       <QueryClientProvider client={queryClient}>
@@ -180,5 +181,53 @@ createRoot(document.getElementById('root')!).render(
         </Provider>
       </QueryClientProvider>
     </ErrorBoundary>
-  </StrictMode>,
+  </StrictMode>
 )
+
+// Restore the host-side backup of the renderer's own settings BEFORE the first
+// render, on any profile that has never successfully reached the host — a fresh
+// browser profile, a moved dashboard port (localStorage is per-origin), or a
+// relocated Electron userData directory. That is the case where the user would
+// otherwise see every setting back at its default and conclude the upgrade ate
+// them. Keyed on "never synced" rather than "no settings present" so a boot whose
+// fetch failed retries on the next one instead of forfeiting the restore.
+//
+// When something WAS restored we reload rather than render. Restoring before the
+// first render is not enough on its own: static imports are evaluated before any
+// statement here, so a store that reads its key at module scope (e.g.
+// hooks/useBottomTerminal.ts) has already captured the pre-restore value, and its
+// first write would persist that stale copy back over what we just restored. A
+// reload is the one move that is correct for every module-scope reader, present
+// and future, without a per-store re-init hook a new store would silently miss.
+// It costs one extra load on a fresh profile and cannot loop: hydrateUiPrefs
+// records the synced marker, so the next boot does not hydrate, and even with
+// that write dropped the second pass finds the keys present and restores nothing.
+//
+// Sync starts ONLY once this profile knows the host's state — i.e. the GET landed,
+// which is what clears needsHydrate(). If the fetch failed we render but do NOT
+// sync: the local keys at that moment are whatever the defaults-persisting hooks
+// just wrote, and uploading those would overwrite the very backup the failed
+// restore was trying to read. No sync means no backup for this session and the
+// next boot retries the restore. The asymmetry is deliberate — losing one
+// session's backup is recoverable, overwriting the host's copy is not.
+//
+// A profile that has synced pays nothing: needsHydrate() is a synchronous
+// localStorage read, so the usual launch renders on the same tick as before. The
+// first-time path is bounded by hydrateUiPrefs' own timeout, and a gateway that
+// never answers renders defaults rather than hanging the boot. See lib/uiPrefs.ts.
+function boot(startSync: boolean): void {
+  createRoot(document.getElementById('root')!).render(appTree)
+  if (startSync) startUiPrefsSync()
+}
+
+if (needsHydrate()) {
+  void hydrateUiPrefs().then(
+    (restored) => {
+      if (restored > 0) window.location.reload()
+      else boot(!needsHydrate())
+    },
+    () => boot(false),
+  )
+} else {
+  boot(true)
+}

@@ -58,7 +58,7 @@ export interface ErrorReport {
   status?: number
   /**
    * Machine-readable `code` from a JSON error body. Backend-owned error bodies
-   * carry one by convention (AGENTS.md § User-facing strings) precisely so a
+   * carry one by convention (docs/system-specs/common/code-style.md) precisely so a
    * client can act on the failure instead of regex-matching prose.
    */
   code?: string

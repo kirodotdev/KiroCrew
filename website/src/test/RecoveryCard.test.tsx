@@ -339,25 +339,35 @@ describe('ChatPage – recovery card wiring', () => {
   const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../pages/ChatPage.tsx'), 'utf8')
 
   it('imports the card and its shared resolver', () => {
-    expect(src).toMatch(
-      /import\s+RecoveryCard\s*,\s*\{\s*resolveInjectCard\s*\}\s*from\s*['"][^'"]*RecoveryCard['"]/,
-    )
+    // Since chat-core P5-b the recovery row is a shared dashboard entry
+    // (pages/chat/transcriptRenderers.tsx) that ChatPage spreads into its host
+    // list, so the imports live in the factory and the page imports the factory.
+    const factory = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
+    expect(factory).toMatch(/import\s+RecoveryCard\s*,\s*\{\s*resolveInjectCard\s*\}\s*from\s*['"]\.\/RecoveryCard['"]/)
+    expect(src).toMatch(/import \{ createTranscriptRenderers \} from '\.\/chat\/transcriptRenderers'/)
   })
 
   it('routes inject rows through the shared resolver to the card', () => {
-    expect(src).toMatch(/resolveInjectCard\s*\(\s*m\s*\)/)
-    expect(src).toMatch(/<RecoveryCard\s/)
+    const factory = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
+    expect(factory).toMatch(/resolveInjectCard\s*\(\s*m\s*\)/)
+    expect(factory).toMatch(/<RecoveryCard\s/)
   })
 
   it('checks for a card BEFORE the generic inject bubble renders', () => {
-    // The generic `isInject` branch paints any injected text as a full-width
-    // warning bubble. If the resolver check lands after it, the card is dead
-    // code and the raw prompt reappears.
-    const card = src.indexOf('resolveInjectCard(m)')
-    const generic = src.indexOf("const isInject = m.role === 'inject'")
-    expect(card).toBeGreaterThanOrEqual(0)
-    expect(generic).toBeGreaterThanOrEqual(0)
-    expect(card).toBeLessThan(generic)
+    // Since chat-core P5-b the page spreads the dashboard's shared row set
+    // (pages/chat/transcriptRenderers.tsx) into its host list, and precedence
+    // is list order. The generic bubble entry (which paints any injected text
+    // as a full-width warning bubble) is the LAST entry; the shared set --
+    // which carries the `recovery_inject` shape entry -- must be spread before
+    // it, or the card is dead code and the raw prompt reappears.
+    const list = src.indexOf('const renderers = mergeRenderers([')
+    const shared = src.indexOf('...shared,', list)
+    const generic = src.indexOf('\n      bubble,\n    ])', list)
+    expect(list).toBeGreaterThanOrEqual(0)
+    expect(shared).toBeGreaterThan(list)
+    expect(generic).toBeGreaterThan(shared)
+    const factory = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
+    expect(factory).toMatch(/id: 'recovery_inject',\s*\n\s*roles: \['inject'\],\s*\n\s*match: m => resolveInjectCard\(m\) !== null/)
   })
 })
 

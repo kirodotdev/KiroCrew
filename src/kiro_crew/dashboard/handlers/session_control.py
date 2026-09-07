@@ -11,7 +11,6 @@ that take a target share one guard.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from aiohttp import web
@@ -43,25 +42,21 @@ async def _require_internal(request: web.Request) -> web.Response | None:
     """
     if request.get("internal_auth") is True:
         return None
-    # Off the loop AND best-effort, the two properties `_audit_denied` exists to
-    # carry for exactly this shape of site: a refusal logged BEFORE the audit
-    # middleware has run. `log_api_access` only enqueues, but the FIRST `sel()` of
-    # a process constructs the log -- trust-dir creation and key validation,
-    # blocking file IO -- so a fresh gateway whose first session-control request
-    # is unauthenticated would run that synchronously on
-    # the event loop. And construction can raise (a trust root too short to sign
-    # the chain), which unguarded would turn this 403 into a 500: losing the
+    # Best-effort, the property `_audit_denied` exists to carry for exactly this
+    # shape of site: a refusal logged BEFORE the audit middleware has run.
+    # `log_api_access` only enqueues — SEL is warmed at gateway startup
+    # (sel.warm_sel_singleton, #8608), so no thread hop is needed. Construction
+    # can still raise on a FAILED warm (a trust root too short to sign the
+    # chain), which unguarded would turn this 403 into a 500: losing the
     # denial in order to report it.
     try:
-        await asyncio.to_thread(
-            lambda: sel().log_api_access(
-                caller="unknown",
-                operation=f"session_control.{request.path.rsplit('/', 1)[-1]}",
-                outcome="denied",
-                source="dashboard",
-                resources=request.path,
-                error="internal secret required",
-            )
+        sel().log_api_access(
+            caller="unknown",
+            operation=f"session_control.{request.path.rsplit('/', 1)[-1]}",
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="internal secret required",
         )
     except Exception:
         logger.warning("Failed to log a session-control denial to SEL", exc_info=True)

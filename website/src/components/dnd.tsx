@@ -145,11 +145,12 @@ export function DndDraggable({ id, data, disabled, children }: {
 }
 
 /** Render-prop wrapper exposing a dnd-kit droppable to inline JSX. */
-export function DndDroppable({ id, data, children }: {
+export function DndDroppable({ id, data, disabled, children }: {
   id: string
   data: Record<string, unknown>
+  disabled?: boolean
   children: (p: { setNodeRef: (el: HTMLElement | null) => void; isOver: boolean }) => React.ReactNode
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id, data })
+  const { setNodeRef, isOver } = useDroppable({ id, data, disabled })
   return <>{children({ setNodeRef, isOver })}</>
 }

@@ -31,7 +31,7 @@
  * is faked: grouping, the render dispatch and the handlers run for real.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, act, waitFor, fireEvent, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -770,7 +770,7 @@ describe('ChatPage pinned-messages panel', () => {
     expect(await screen.findByText(UNAVAILABLE)).toBeInTheDocument()
   })
 
-  it('surfaces an unpin failure and auto-dismisses the notice', async () => {
+  it('surfaces an unpin failure that stays until dismissed', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     pinsRemoveMock.mockRejectedValue(new Error('nope'))
     await openPins([msg('user', 'pinned', { ts: 'u1', meta: { mid: 'm-1' } })])
@@ -778,7 +778,13 @@ describe('ChatPage pinned-messages panel', () => {
     act(() => pinsProps!.onUnpin('pin-1'))
     expect(await screen.findByText('Could not unpin the message. Try again.')).toBeInTheDocument()
 
+    // A failure is not a status line: the 8-second timer that clears "not in
+    // this history" must leave it alone.
     await act(async () => { vi.advanceTimersByTime(8100) })
+    const notice = screen.getByTestId('pin-error')
+    expect(notice).toHaveTextContent('Could not unpin the message. Try again.')
+
+    fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss' }))
     await waitFor(() =>
       expect(screen.queryByText('Could not unpin the message. Try again.')).not.toBeInTheDocument(),
     )

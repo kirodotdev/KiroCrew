@@ -6,8 +6,11 @@ import logging
 import threading
 import unicodedata
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard import chat_title
 from kiro_crew.dashboard.chat_title import (
@@ -25,6 +28,7 @@ from kiro_crew.dashboard.chat_title import (
     _message_attachment_paths,
     _title_text,
 )
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 
 def test_prompt_isolates_and_delimits_transcript():
@@ -808,3 +812,81 @@ def test_refresh_note_precedes_the_keep_contract():
     assert prompt is not None
     head = _head_of(prompt)
     assert head.index(_TITLE_TRUNCATION_NOTE.strip()) < head.index("exactly KEEP")
+
+
+class TestSlotTitleRouteRefusalCodes:
+    """The generate-title and rename routes carry machine-readable `code`
+    fields beside their unchanged error prose, on the same contract the
+    error-code worklist drives across the dashboard."""
+
+    def _make_app(self, state: MagicMock) -> web.Application:
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post(
+            "/api/chat/slots/{slot}/generate-title",
+            chat_title.api_chat_slot_generate_title,
+        )
+        app.router.add_patch("/api/chat/slots/{slot}/title", chat_title.api_chat_slot_rename)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_generate_title_unknown_slot_returns_404_with_code(self):
+        state = MagicMock(spec=DashboardState)
+        state._slots = {}
+        async with TestClient(TestServer(self._make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/missing/generate-title")
+            assert resp.status == 404
+            body = await resp.json()
+            assert body["error"] == "not found"
+            assert body["code"] == "slot_not_found"
+
+    @pytest.mark.asyncio
+    async def test_rename_unknown_slot_returns_404_with_code(self):
+        state = MagicMock(spec=DashboardState)
+        state._slots = {}
+        async with TestClient(TestServer(self._make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/missing/title", json={"title": "New name"})
+            assert resp.status == 404
+            body = await resp.json()
+            assert body["error"] == "not found"
+            assert body["code"] == "slot_not_found"
+
+    @pytest.mark.asyncio
+    async def test_rename_unparseable_body_returns_400_with_code(self):
+        slot = _ChatSlot("s")
+        state = MagicMock(spec=DashboardState)
+        state._slots = {"s": slot}
+        async with TestClient(TestServer(self._make_app(state))) as client:
+            resp = await client.patch(
+                "/api/chat/slots/s/title",
+                data="{not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+            body = await resp.json()
+            assert body["error"] == "invalid JSON"
+            assert body["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_rename_non_object_body_returns_400_with_code(self):
+        slot = _ChatSlot("s")
+        state = MagicMock(spec=DashboardState)
+        state._slots = {"s": slot}
+        async with TestClient(TestServer(self._make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s/title", json=["title"])
+            assert resp.status == 400
+            body = await resp.json()
+            assert body["error"] == "invalid JSON"
+            assert body["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    async def test_rename_blank_title_returns_400_with_code(self):
+        slot = _ChatSlot("s")
+        state = MagicMock(spec=DashboardState)
+        state._slots = {"s": slot}
+        async with TestClient(TestServer(self._make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s/title", json={"title": "   "})
+            assert resp.status == 400
+            body = await resp.json()
+            assert body["error"] == "title required"
+            assert body["code"] == "title_required"

@@ -157,20 +157,28 @@ _SUPPLEMENTARY_WINDOWS: dict[str, int] = {
 }
 
 
-def _kiro_windows_cache_path() -> Path:
-    """Path to the persisted kiro-window sidecar under the data home.
+def _sidecar_path(name: str) -> Path:
+    """A data-home sidecar path, resolved WITHOUT creating the data home.
 
-    Resolved lazily (not at import) so tests / KIROCREW_HOME overrides are
-    honoured, and so a home-resolution failure never breaks module import.
-    Routes through ``config_dir()`` (deferred import of the stdlib-only
-    ``config.paths`` leaf to avoid a cycle) so it follows the data-home move to
-    ``~/.kiro/crew`` instead of writing to the now-archived legacy ``~/.kirocrew``
-    — where no reader would ever consult it and which would re-create the very
-    directory the migration just archived.
+    ``config_dir()`` is resolve-and-maintain: it ``mkdir``s the home and
+    refreshes the recovery breadcrumb. The import-time loads below only need to
+    know whether a cache file exists, and importing this module must not mutate
+    the host: a test collector imports it before any isolation fixture runs, and
+    a read-only tool must not create ``~/.kiro/crew`` as a side effect of an
+    import. ``peek_data_home()`` resolves the same home ``config_dir()`` would and
+    stops there. The writers need no directory creation of their own:
+    ``atomic_write`` creates the parent. Deferred import of the stdlib-only
+    ``config.paths`` leaf avoids a cycle, and following the data home keeps the
+    sidecars out of the archived legacy ``~/.kirocrew``.
     """
-    from kiro_crew.config.paths import config_dir
+    from kiro_crew.config.paths import peek_data_home
 
-    return config_dir() / "model_windows.json"
+    return peek_data_home() / name
+
+
+def _kiro_windows_cache_path() -> Path:
+    """Path to the persisted kiro-window sidecar under the data home."""
+    return _sidecar_path("model_windows.json")
 
 
 def _load_kiro_windows() -> None:
@@ -290,15 +298,8 @@ _PROVIDER_ID_PREFIXES: tuple[str, ...] = (
 
 
 def _advertised_models_cache_path() -> Path:
-    """Path to the persisted advertised-model sidecar under the data home.
-
-    Resolved lazily (not at import), for the same reasons as
-    :func:`_kiro_windows_cache_path`: honour ``KIROCREW_HOME`` / test overrides
-    and never let home resolution break module import.
-    """
-    from kiro_crew.config.paths import config_dir
-
-    return config_dir() / "provider_models.json"
+    """Path to the persisted advertised-model sidecar under the data home."""
+    return _sidecar_path("provider_models.json")
 
 
 def _load_advertised_models() -> None:
@@ -435,21 +436,28 @@ def _dedup_window_siblings(ids: Sequence[str]) -> list[str]:
 def seed_available_models(provider: str) -> list[str]:
     """The ``availableModels`` allowlist to seed for ``provider``.
 
-    Provider-first: the ids ``provider`` actually advertised (cached from a live
-    session) when the cache is warm, so the seed reflects what the account is
-    served rather than the static Anthropic-only registry. Falls back to
-    :func:`available_models` on a cold cache (first-ever session, before any
-    ``session/new`` has been captured) — the static registry list, which is then
-    window-deduplicated below just like the warm list.
+    Provider-advertised ONLY: the ids ``provider`` actually served on a real
+    ``session/new`` (cached by :func:`refresh_advertised_models`). A cold cache
+    returns ``[]``, which callers must read as "seed no allowlist at all" —
+    NOT as "fall back to the static registry".
+
+    That fallback used to live here and was actively harmful. The adapter merges
+    ``availableModels`` union+dedup across every settings source, so seeding the
+    hand-maintained registry list POISONS the merge for anything the registry has
+    not caught up on: a model the account is served but the registry never listed
+    (a fresh flagship) contributes no ``[1m]`` id, so the merged list has only
+    base-window spellings and the pick resolves to 200K. Seeding nothing instead
+    leaves the adapter with its own provider-derived list, which already carries
+    the correct versioned ids — the registry is a display/window table, not the
+    authority on what the account can run, and keeping it out of this path is
+    what stops every new model from needing a registry edit per provider.
 
     The result is passed through :func:`_dedup_window_siblings` so a base-window
     id never rides alongside its 1M sibling: seeding both is what lets the adapter
-    collapse a versioned pick (e.g. Opus 4.8 ``[1m]``) back to 200K. Applied to
-    the advertised list too, since a backend can advertise both spellings.
+    collapse a versioned pick (e.g. Opus 4.8 ``[1m]``) back to 200K. A backend can
+    advertise both spellings, so this applies to the advertised list too.
     """
-    cached = advertised_models(provider)
-    base = cached if cached else available_models(provider)
-    return _dedup_window_siblings(base)
+    return _dedup_window_siblings(advertised_models(provider))
 
 
 def resolve_wire_model_id(model_id: str, provider: str) -> str:

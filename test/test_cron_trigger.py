@@ -265,7 +265,7 @@ class TestCronTriggerMCP:
 class TestCronTriggerCLI:
     """Tests for the CLI cron trigger subcommand."""
 
-    def test_cli_subcommand_registered(self):
+    def test_cli_subcommand_registered(self, tmp_path):
         """kirocrew cron trigger is a recognized subcommand with job_id argument."""
         # Verify the handler accepts "trigger" action without crashing
         import argparse
@@ -273,9 +273,8 @@ class TestCronTriggerCLI:
         from kiro_crew.cli_commands import _cron
         args = argparse.Namespace(cron_action="trigger", job_id="abc12345")
         # Will fail with connection error (no gateway) but proves the action is recognized
-        from pathlib import Path
         from unittest.mock import patch as _patch
-        with _patch("kiro_crew.cli_commands.config_dir", return_value=Path("/tmp/nonexistent")):
+        with _patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path / "nonexistent"):
             _cron(args)
         # If we get here without "Usage:" being printed, the action was recognized
 
@@ -301,7 +300,7 @@ class TestCronTriggerCLI:
         assert "Triggered job:" in captured.out
         assert "abc12345" in captured.out
 
-    def test_cli_trigger_invalid_id(self, capsys):
+    def test_cli_trigger_invalid_id(self, capsys, tmp_path):
         """CLI rejects malformed job IDs."""
         import argparse
 
@@ -309,7 +308,6 @@ class TestCronTriggerCLI:
 
         args = argparse.Namespace(cron_action="trigger", job_id="../evil")
 
-        from pathlib import Path
         from unittest.mock import patch as _patch
 
         from kiro_crew.config import loader
@@ -317,7 +315,7 @@ class TestCronTriggerCLI:
         orig_port = loader.DASHBOARD_PORT
         loader.DASHBOARD_PORT = 19999
         try:
-            with _patch("kiro_crew.cli_commands.config_dir", return_value=Path("/tmp")):
+            with _patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
                 _cron(args)
         finally:
             loader.DASHBOARD_PORT = orig_port

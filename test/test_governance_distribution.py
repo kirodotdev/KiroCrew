@@ -1412,8 +1412,13 @@ class TestCeilingSwapInvalidatesProfiles:
             encoding="utf-8",
         )
         gp.reset_store()
-        install_ceiling(governance.parse_policy(_doc("first")))
+        # Spy BEFORE the install: a ceiling install now warms the store eagerly,
+        # because ``safety_override``'s ceiling-install hook resolves ``approval_modes``
+        # against the new ceiling and that read composes a profile. The invariant under
+        # test is unchanged -- one reload per ceiling, and no snapshot composed against
+        # the retired one is ever served -- only who triggers it.
         reloads = self._count_reloads(monkeypatch)
+        install_ceiling(governance.parse_policy(_doc("first")))
         assert gp._STORE._ensure_fresh() is True
         before_token = gp._ceiling_token()
         before_generation = governance_generation()

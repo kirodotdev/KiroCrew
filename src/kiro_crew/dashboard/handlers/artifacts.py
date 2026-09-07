@@ -50,6 +50,7 @@ from kiro_crew.artifacts import (
     ArtifactComment,
     ArtifactError,
     ArtifactNotFoundError,
+    ArtifactStillPublishedError,
     ArtifactValidationError,
     get_default_folder_store,
     get_default_store,
@@ -2005,8 +2006,128 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
         # reaches the delete() call below, which returns a clean 4xx (a bare
         # ArtifactNotFoundError catch here would leak ArtifactValidationError as a 500).
         _existing = None
+    # Withdraw the destination copy BEFORE the local delete, so the publication -- the
+    # only handle that can withdraw it -- still exists while the attempt is made. The
+    # reverse order was tried and reverted twice; this ordering is the one with the
+    # smaller crash residue. Die between the two steps here and the copy is withdrawn but
+    # the artifact remains, which the user simply deletes again. Die between them in the
+    # other order and the record is already gone while the content is still public, with
+    # nothing left to withdraw it by.
+    #
+    # The outcome decides whether the local delete may proceed, on ONE rule: the delete
+    # goes ahead only when there is nothing left to withdraw (never published, or the
+    # destination is CONFIRMED gone) or the destination confirmed the withdrawal. If the
+    # published copy was not withdrawn -- rejected (FAILED) or unreachable so the call was
+    # never made (UNREACHABLE) -- the delete is refused and says so.
+    #
+    # This deliberately refuses deletes that previously succeeded. Erasing the record was
+    # erasing the only handle that could ever withdraw a world-readable copy, and no later
+    # action could recover it, while a refused delete is recoverable by retrying once the
+    # destination answers again. Note what "recoverable" does NOT include: there is no
+    # action that accepts the exposure and clears the record, because `unpublish` keeps it
+    # too unless a removal or a confirmed absence says otherwise. Failing loudly is still
+    # the cheaper error, but the owner is genuinely stuck until the destination answers.
+    if _existing is not None and _existing.publication is not None:
+        withdrawal = await publish_sync.delete_for_artifact(_existing)
+        if withdrawal in (
+            publish_sync.DeleteWithdrawal.FAILED,
+            publish_sync.DeleteWithdrawal.UNREACHABLE,
+        ):
+            if withdrawal is publish_sync.DeleteWithdrawal.FAILED:
+                msg = (
+                    "The destination did not confirm removal of the published copy, so "
+                    "this artifact was not deleted. Try again once the destination stops "
+                    "erroring."
+                )
+            else:
+                msg = (
+                    "The published copy could not be withdrawn because its destination "
+                    "could not be reached, so this artifact was not deleted -- deleting "
+                    "it would leave a public copy with nothing able to take it down. "
+                    "Restore access to that destination and try again. Unpublishing "
+                    "first will not release it either: that refuses for the same reason, "
+                    "because it also keeps the record unless the copy is confirmed gone."
+                )
+            _audit(
+                tool="artifact_delete",
+                request=request,
+                outcome="error",
+                error=msg,
+                extra={"slug": slug},
+            )
+            return _err(msg, status=502)
+        # The withdrawal above is a network round trip, so the slug can be deleted AND
+        # RECREATED while it runs. `delete()` below removes by slug, so a delayed request
+        # would delete the REPLACEMENT -- an artifact the user never asked to delete and
+        # that nothing can restore. The ordering note above reasons that "a save landing
+        # in that window is included in the delete the user asked for", which holds for a
+        # save to the SAME artifact; a recreate is a DIFFERENT artifact wearing the same
+        # slug, which that argument does not cover. `created_at` is minted fresh on create
+        # at microsecond precision, so it identifies the generation rather than the name.
+        # A slug that is simply GONE is not an error here: `delete()` reports that itself.
+        # Off the loop: `store.get` returns the artifact WITH content, so on a large
+        # artifact it is a multi-megabyte synchronous read, and this handler is async.
+        # `_run_off_loop` is this module's helper for exactly that and propagates the
+        # exception unchanged, so the guard below still sees `ArtifactError`.
+        try:
+            _after = await _run_off_loop(lambda: get_default_store().get(slug))
+        except ArtifactError:
+            _after = None
+        if _after is not None and _after.created_at != _existing.created_at:
+            msg = (
+                "This artifact was deleted and a new one created under the same name "
+                "while its published copy was being withdrawn. The published copy was "
+                "withdrawn; the new artifact was left alone. Delete it again if you "
+                "meant to remove the replacement too."
+            )
+            _audit(
+                tool="artifact_delete",
+                request=request,
+                outcome="denied",
+                error=msg,
+                extra={"slug": slug},
+            )
+            return _err(msg, status=409)
+        # The copy is withdrawn, so DROP THE RECORD HERE rather than letting the
+        # directory removal below carry it away implicitly. That is not tidiness: it is
+        # what lets the removal be guarded. `delete(refuse_if_published=True)` re-reads
+        # the record inside the same lock that removes the artifact, so once this clear
+        # has run, a record found there again can only be a publication that landed
+        # AFTER the withdrawal -- a live public copy whose handle the removal would
+        # erase. Clearing first is therefore what converts "the record happens to still
+        # be here" into a usable signal. Without it the record is still present on the
+        # normal successful path and the guard could never fire.
+        #
+        # A vanished artifact is not an error: the removal below reports that itself,
+        # and the copy is already withdrawn either way.
+        try:
+            await _run_off_loop(lambda: get_default_store().clear_publication(slug))
+        except ArtifactNotFoundError:
+            pass
     try:
-        get_default_store().delete(slug)
+        # `refuse_if_published=True` is safe for an artifact that was never published
+        # (its record is None and nothing above touched it) and is the whole guard for
+        # one that was: see the clear directly above.
+        get_default_store().delete(slug, refuse_if_published=True)
+    except ArtifactStillPublishedError as exc:
+        # A publish landed between the withdrawal and the removal. Refusing is the same
+        # rule the withdrawal outcomes follow -- a refused delete is recoverable, an
+        # orphaned public copy is not -- so the NEW publication keeps its handle and the
+        # user is told what happened rather than silently losing the copy.
+        msg = (
+            "This artifact was published again while its earlier copy was being "
+            "withdrawn, so it was not deleted. The earlier copy was withdrawn; the new "
+            "one is still published and can still be taken down. Delete it again if you "
+            "meant to remove the new copy too."
+        )
+        _audit(
+            tool="artifact_delete",
+            request=request,
+            outcome="denied",
+            error=msg,
+            extra={"slug": slug, "detail": str(exc)},
+        )
+        return _err(msg, status=409)
     except ArtifactNotFoundError as exc:
         _audit(
             tool="artifact_delete",
@@ -2495,6 +2616,60 @@ async def api_artifact_refresh_sharing(request: web.Request) -> web.Response:
         return _sync_error_response("artifact_refresh_sharing", request, slug, exc)
     _audit(
         tool="artifact_refresh_sharing",
+        request=request,
+        outcome="success",
+        extra={"slug": slug},
+    )
+    return _json_response(_serialize(art, include_content=True))
+
+
+async def api_artifact_reprobe_notice(request: web.Request) -> web.Response:
+    """POST /api/artifacts/{slug}/publish/reprobe-notice — re-check the
+    destination's serving state and clear a stale publish notice.
+
+    A publish can record a "still rolling out" ``notice`` that later resolves on
+    its own, but nothing on the happy path revisits it, so the amber banner
+    would persist forever after the link works. This re-probes the provider and
+    reconciles ``notice`` / ``notice_code`` to the current truth (clears them
+    only when the condition has actually cleared). Gated like other mutations
+    since it can update meta.json.
+    """
+    state = request.app.get("state")
+    if state is None or _is_restricted_session(state, request):
+        _audit(
+            tool="artifact_reprobe_notice",
+            request=request,
+            outcome="denied",
+            error="restricted session" if state is not None else "missing dashboard state",
+            extra={"slug": request.match_info.get("slug", "")},
+        )
+        return _err("restricted session cannot reprobe artifact notice", status=403)
+    slug = request.match_info.get("slug", "")
+    try:
+        await publish_sync.reprobe_notice(slug)
+        art = await _run_off_loop(lambda: get_default_store().get(slug))
+    except ArtifactNotFoundError as exc:
+        _audit(
+            tool="artifact_reprobe_notice",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc), status=404)
+    except ArtifactValidationError as exc:
+        _audit(
+            tool="artifact_reprobe_notice",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _err(str(exc))
+    except Exception as exc:  # pragma: no cover — reprobe is best-effort
+        return _sync_error_response("artifact_reprobe_notice", request, slug, exc)
+    _audit(
+        tool="artifact_reprobe_notice",
         request=request,
         outcome="success",
         extra={"slug": slug},
@@ -3066,6 +3241,45 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     return _json_response(_serialize_folder(updated, path=fstore.breadcrumb(fid)))
 
 
+async def _withdraw_subtree_publications(folder_id: str, fstore: Any) -> str:
+    """Withdraw every published copy in a folder subtree BEFORE it is cascaded away.
+
+    Returns ``""`` when every copy is withdrawn (or there were none), otherwise the slug
+    of the FIRST artifact whose copy could not be withdrawn -- the caller then refuses the
+    whole cascade and destroys nothing.
+
+    Stops at the first failure rather than collecting them all: the question the caller is
+    asking is "may I destroy this subtree", and one un-withdrawable copy settles it. A copy
+    withdrawn before that point is genuinely gone, so its record is cleared -- it would
+    otherwise keep naming a destination that no longer holds it.
+    """
+    ids = await _run_off_loop(lambda: fstore.subtree_ids(folder_id))
+    if not ids:
+        return ""
+    store = get_default_store()
+    slugs = await _run_off_loop(
+        lambda: [a.slug for a in store.list() if (getattr(a, "folder_id", "") or "") in ids]
+    )
+    for slug in slugs:
+        try:
+            art = await _run_off_loop(lambda s=slug: store.get(s))
+        except ArtifactError:  # pragma: no cover -- listed, then vanished
+            continue
+        if art.publication is None:
+            continue
+        outcome = await publish_sync.delete_for_artifact(art)
+        if outcome in (
+            publish_sync.DeleteWithdrawal.FAILED,
+            publish_sync.DeleteWithdrawal.UNREACHABLE,
+        ):
+            return slug
+        # Withdrawn, or nothing was there: the destination no longer serves this copy, so
+        # the record must stop claiming it. The cascade deletes the artifact moments later;
+        # clearing here keeps the state honest if the cascade itself then fails.
+        await _run_off_loop(lambda s=slug: store.clear_publication(s))
+    return ""
+
+
 async def api_artifact_folder_delete(request: web.Request) -> web.Response:
     """DELETE /api/artifact-folders/{id}?delete_contents=<bool>.
 
@@ -3090,6 +3304,35 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
         return _err("folder not found", status=404)
     raw = (request.query.get("delete_contents") or "").strip().lower()
     delete_contents = raw in ("1", "true", "yes")
+    if delete_contents:
+        # The cascade destroys artifacts through `ArtifactStore.delete`, which knows
+        # nothing about publications -- so before this fix a cascade over a folder holding
+        # a published artifact erased the record while the public copy stayed served, with
+        # nothing left able to withdraw it. Exactly the single-delete defect, reached by a
+        # different door, and it has to obey the same rule.
+        #
+        # Withdraw first, destroy nothing until every published copy in the subtree is
+        # withdrawn. On the first copy that will NOT come down the whole cascade is
+        # refused: a folder that refuses to delete is recoverable, an orphaned public copy
+        # is not. A withdrawal that DID succeed has its record cleared so the artifact
+        # stops claiming a destination that no longer holds it.
+        blocked = await _withdraw_subtree_publications(fid, fstore)
+        if blocked:
+            msg = (
+                "This folder was not deleted: the published copy of "
+                f"{blocked} could not be withdrawn, and deleting it would leave a public "
+                "copy with nothing able to take it down. Restore access to its "
+                "destination and try again. Unpublishing it first will not release it "
+                "either -- that refuses for the same reason."
+            )
+            _audit(
+                tool="artifact_folder_delete",
+                request=request,
+                outcome="error",
+                error=msg,
+                extra={"folder_id": fid, "delete_contents": True, "blocked_slug": blocked},
+            )
+            return _err(msg, status=502)
     try:
         # delete() scans every artifact (O(N)) and, in cascade mode, recursively
         # removes directories — offload off the event loop.
@@ -3111,6 +3354,7 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
             extra={"folder_id": fid},
         )
         return _err(str(exc), status=500)
+    kept = list(summary.get("kept_published_artifact_slugs", []))
     _audit(
         tool="artifact_folder_delete",
         request=request,
@@ -3119,9 +3363,23 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
             "folder_id": fid,
             "delete_contents": delete_contents,
             "deleted_artifacts": len(summary.get("deleted_artifact_slugs", [])),
+            "kept_published_artifacts": len(kept),
         },
     )
-    return _json_response({"ok": True, **summary})
+    payload: dict[str, Any] = {"ok": True, **summary}
+    if kept:
+        # Filed into the subtree AFTER the withdrawal preflight ran, so their copies
+        # were never withdrawn and the cascade refused to destroy them. Say so: a
+        # silently surviving artifact is how someone concludes the delete worked.
+        payload["notice"] = (
+            "The folder was deleted, but "
+            + ", ".join(kept)
+            + (" is" if len(kept) == 1 else " are")
+            + " still published and so were kept rather than destroyed -- deleting "
+            "them would have left a public copy with nothing able to take it down. "
+            "They are now unfiled. Unpublish them first, then delete them."
+        )
+    return _json_response(payload)
 
 
 async def api_artifact_set_folder(request: web.Request) -> web.Response:
@@ -4276,6 +4534,10 @@ async def api_artifact_publish_providers(request: web.Request) -> web.Response:
                 # False + present in this list ⇒ installs on first publish; the
                 # FE may surface an "installs on first use" hint.
                 "available": avail,
+                # The remedy text for `available: false`. Without it the picker can only
+                # send the user somewhere generic, and a provider's own hint is the only
+                # thing that knows WHICH action makes it available.
+                "install_hint": str(getattr(p, "install_hint", "") or ""),
                 "sharing_model": _sharing_model_dict(sm),
                 "sync_model": {
                     "authority": sy.authority,

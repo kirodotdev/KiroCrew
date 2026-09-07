@@ -9,13 +9,13 @@
  */
 import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS } from '../pierre/config'
 
-/* ── Expanded row: ONE Pierre diff per changed file, collapsed to its own
- *   native file header until clicked. Pierre renders a collapsed diff as the
- *   header alone, so the row and the expanded diff share one surface — the
- *   change icon, filename and ±counts are Pierre's, not a hand-rolled
- *   lookalike that would drift from the inline chat blocks.
+/* ── Expanded row: the closed state is a lightweight outer-tree header, so a
+ *   transcript can hydrate many changed files without loading Pierre or
+ *   parsing their diffs. Opening a row swaps in one Pierre surface; the
+ *   collapse animation keeps that surface mounted for one final frame, then
+ *   returns to the lightweight header.
  *
- *   Header layout, left to right: the chevron (header PREFIX slot), Pierre's
+ *   Pierre's OPEN header layout, left to right: the chevron (header PREFIX slot), Pierre's
  *   change icon + filename, then the metadata slot (Open + diffstat cells) and
  *   Pierre's own ±counts last. Pierre's shadow template puts the counts BEFORE
  *   the metadata slot, so the counts are kept rightmost by an `order` flip on

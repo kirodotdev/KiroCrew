@@ -3,6 +3,7 @@ import { SlidersHorizontal } from 'lucide-react'
 import { api, ApiError } from '../../api/client'
 import { Card, CardTitle } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
+import ErrorNotice from '../../components/ErrorNotice'
 import {
   PrivacyCommandList,
   PrivacyDisclosureSections,
@@ -105,18 +106,34 @@ function MetricRecordingToggle() {
         }
         checked={enabled}
         onChange={v => mut.mutate(v)}
-        disabled={statusQ.isLoading || mut.isPending || pinned}
+        // A failed status read must not offer a write against a value the
+        // switch is only guessing at.
+        disabled={statusQ.isLoading || statusQ.isError || mut.isPending || pinned}
         configKey="telemetry.enabled"
         describedBy={describedBy}
       />
+      {/* Load failure: nothing on this card is a draft, so the hand-off is on. */}
+      {statusQ.isError && (
+        <ErrorNotice
+          variant="inline"
+          className="mt-1"
+          askAgent
+          message={i18nT('pages.settings.privacyPanel.recordMetricsStatusUnavailable')}
+        />
+      )}
+      {/* Nothing to lose: the switch rolls back to the server value on failure
+          and this card holds no text draft, so the hand-off is on. */}
       {mut.isError && (
-        <p role="alert" className="text-[12px] text-danger mt-1">
-          {/* A 409 is the egress refusal, and "try again" can never succeed against
-              it — name the actual reason instead. */}
-          {isEgressRefusal(mut.error)
+        <ErrorNotice
+          variant="inline"
+          className="mt-1"
+          askAgent
+          // A 409 is the egress refusal, and "try again" can never succeed against
+          // it — name the actual reason instead.
+          message={isEgressRefusal(mut.error)
             ? i18nT('pages.settings.privacyPanel.recordMetricsSaveRefusedEgress')
             : i18nT('pages.settings.privacyPanel.recordMetricsSaveFailed')}
-        </p>
+        />
       )}
       {/* The egress fact carries body weight, not muted fine print: it contradicts
           the "on this machine" mental model and is a privacy decision. */}

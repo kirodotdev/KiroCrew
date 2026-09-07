@@ -10,6 +10,7 @@ import ReadOnlyTag from '../../components/ReadOnlyTag'
 import ShimmerLine from '../../components/ShimmerLine'
 
 import { i18nT } from '../../../../i18n/t'
+import ErrorNotice from '../../../../components/ErrorNotice'
 /** The repo's tag vocabulary, in one panel: what it already uses (and how much),
  * and what it is missing.
  *
@@ -183,11 +184,13 @@ export default function LabelsPanel({
         </div>
       )}
 
-      {/* What it is missing. */}
+      {/* What it is missing. Generate / refresh / create all act on the persisted
+          repo and its suggestions — this panel has no input to lose. */}
       {(generate.isError || recoQuery.isError || refreshLabels.isError) && (
-        <div className="text-[13px] text-danger">
-          {((generate.error ?? recoQuery.error ?? refreshLabels.error) as Error)?.message}
-        </div>
+        <ErrorNotice
+          message={((generate.error ?? recoQuery.error ?? refreshLabels.error) as Error)?.message}
+          askAgent
+        />
       )}
 
       {generate.isPending && (
@@ -300,9 +303,12 @@ export default function LabelsPanel({
                   </div>
                 </div>
                 {failed && (
-                  <div className="text-[12px] text-danger ml-1 mb-1">
-                    {(createLabel.error as Error).message}
-                  </div>
+                  <ErrorNotice
+                    message={(createLabel.error as Error).message}
+                    variant="inline"
+                    askAgent
+                    className="ml-1 mb-1"
+                  />
                 )}
               </div>
             )

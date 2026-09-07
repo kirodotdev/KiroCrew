@@ -1,11 +1,12 @@
 import { compareText } from '../i18n/format'
-import { useState, useMemo, useRef } from 'react'
+import { Fragment, useCallback, useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { AlertTriangle, Anchor, Link2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
+import { AlertTriangle, Anchor, ChevronDown, Link2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
 import { api } from '../api/client'
 import { useProvider } from '../providers'
 import SkillsMultiSelect from '../components/HookSkillsSelect'
 import { Card, CardTitle, PageHeader, StatCard, Btn, SendBtn, Input, Badge, SearchInput, EmptyState } from '../components/ui'
+import ErrorNotice from '../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import InfoTip from '../components/InfoTip'
 import SimpleSelect from '../components/SimpleSelect'
@@ -166,14 +167,19 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
     queryFn: () => api.hooks().then((r: { hooks?: Hook[] }) => r.hooks || []),
   })
   const error = hooksErr ? i18nT('pages.hooksPage.failed_to_load_hooks', { error: hooksErr instanceof Error ? hooksErr.message : String(hooksErr) }) : null
-  const { data: providerHooks = {}, error: providerHookErr } = useQuery({
+  const { data: providerHooks = {}, error: providerHookErr, refetch: refetchProviderHooks } = useQuery({
     queryKey: ['provider-hooks', provider.id],
     queryFn: () => provider.fetchProviderHooks(),
     enabled: provider.capabilities.hooks,
   })
-  const providerHookError = providerHookErr ? `Failed to load ${provider.labels.hooksSection.toLowerCase()}` : null
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
+  // A HookForm holds unsaved name/command/matcher text while open, and the
+  // agent hand-off unmounts this page — so every ErrorNotice below hands off
+  // only when no form is open.
+  const handoffSafe = !creating && !editing
+  // Which row has its persisted last_error expanded beneath it (one at a time).
+  const [openErrorId, setOpenErrorId] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ id: string; data: HookTestResult } | null>(null)
   // Inline failure state for a rejected hook-test request (network error, 5xx,
   // etc.). This is distinct from testResult (a completed run, which can itself
@@ -219,7 +225,10 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
   // is handed over directly.
   const { armedId: confirmDeleteId, arm: armDelete, confirm: confirmDelete, isDeleting } = useArmedDelete(deleteMut.mutateAsync)
 
-  const mutError = createMut.error?.message || updateMut.error?.message || deleteMut.error?.message || toggleMut.error?.message || testMut.error?.message || null
+  // `testMut` is deliberately absent: a failed hook test is owned by the
+  // titled `hook-test-error` notice beside the row, and a second, bare copy
+  // at the top of the page reads as a page-wide outage.
+  const mutError = createMut.error?.message || updateMut.error?.message || deleteMut.error?.message || toggleMut.error?.message || null
   const handleCreate = (data: Partial<Hook>) => createMut.mutate(data)
   const handleUpdate = (id: string, data: Partial<Hook>) => updateMut.mutate({ id, data })
   const handleToggle = (id: string) => toggleMut.mutate(id)
@@ -252,6 +261,26 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
   // the table overflows whenever its container is narrower than the declared
   // column widths, which a resizable nav rail can cause at any viewport size.
   const [attachHooksScroller, hooksTableEdges, , attachHooksTable] = useScrollEdges<HTMLDivElement>()
+  // The scroller's visible width, for the expanded last_error row: the table
+  // can be wider than its scroller (sticky Actions column, #4296), and a row
+  // that simply spanned the columns would paint its far end under that column
+  // and scroll out of view. The row's notice is instead a sticky-left block
+  // exactly as wide as the viewport onto the table, so it reads in full at
+  // any scroll position.
+  const [hooksScrollerWidth, setHooksScrollerWidth] = useState(0)
+  const hooksScrollerRo = useRef<ResizeObserver | null>(null)
+  const attachHooksScrollerMeasured = useCallback((node: HTMLDivElement | null) => {
+    attachHooksScroller(node)
+    hooksScrollerRo.current?.disconnect()
+    hooksScrollerRo.current = null
+    if (!node) return
+    setHooksScrollerWidth(node.clientWidth)
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => setHooksScrollerWidth(node.clientWidth))
+      ro.observe(node)
+      hooksScrollerRo.current = ro
+    }
+  }, [attachHooksScroller])
 
   if (loading) return <div className="p-6 text-muted">{i18nT('pages.hooksPage.loading')}</div>
 
@@ -269,13 +298,22 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         </div>
 
         {(error || mutError) && (
-          <div className="mb-4 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise">
-            <span className="text-danger text-lg shrink-0"><AlertTriangle className="lucide-inline" /></span>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm text-danger font-medium">{i18nT('pages.hooksPage.error')}</div>
-              <div className="text-[13px] text-danger/90 mt-0.5">{error || mutError}</div>
-            </div>
-            <Btn onClick={() => { createMut.reset(); updateMut.reset(); deleteMut.reset(); toggleMut.reset(); testMut.reset() }} className="text-danger/60 hover:text-danger shrink-0">×</Btn>
+          <div className="mb-4 flex items-start gap-2 animate-rise">
+            {/* No hand-off while a HookForm is open (`creating` / `editing`) —
+                its fields are unsaved. With no form open the failures here are
+                the hooks read or an action on an already-saved hook. A failed
+                READ offers Retry and no dismiss (dismissing a query error would
+                only hide a list that is still missing); a failed action offers
+                dismiss and no Retry — so the row never holds more than two
+                controls (max-two-buttons-per-row). */}
+            <ErrorNotice
+              message={error || mutError}
+              onDismiss={hooksErr ? undefined : () => { createMut.reset(); updateMut.reset(); deleteMut.reset(); toggleMut.reset(); testMut.reset() }}
+              askAgent={handoffSafe}
+              className="flex-1"
+              testId="hooks-error"
+            />
+            {hooksErr && <Btn onClick={() => refresh()} className="shrink-0">{i18nT('pages.hooksPage.retry')}</Btn>}
           </div>
         )}
 
@@ -298,7 +336,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           {hooks.length === 0 ? (
             <EmptyState icon={<Anchor className="lucide-inline" />} title={i18nT('pages.hooksPage.no_hooks_yet')} subtitle={i18nT('pages.hooksPage.create_a_hook_to_run_scripts_on_chat_events')} />
           ) : (
-            <div ref={attachHooksScroller} className="overflow-x-auto">
+            <div ref={attachHooksScrollerMeasured} className="overflow-x-auto">
               {/* This table is AUTO layout (`w-full border-collapse`, no
                   table-fixed), so column edges depend on content and a
                   wrapper-anchored cue cannot know where the pinned column
@@ -343,7 +381,8 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                   {filtered.length === 0 ? (
                     <tr><td colSpan={9} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.hooksPage.no_matching_hooks')}</td></tr>
                   ) : sortedHooks.map((h, i) => (
-                    <tr key={h.id} className={`group/hookrow hover:bg-bg-hover transition-colors ${h.enabled ? '' : 'opacity-50'}`}>
+                    <Fragment key={h.id}>
+                    <tr className={`group/hookrow hover:bg-bg-hover transition-colors ${h.enabled ? '' : 'opacity-50'}`}>
                       <td className="px-2.5 py-2 border-b border-border">
                         <button
                           className={`w-9 h-5 rounded-full relative transition-colors cursor-pointer ${h.enabled ? 'bg-accent' : 'bg-border'}`}
@@ -359,17 +398,25 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                       <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{h.matcher ? esc(h.matcher) : <span className="italic">—</span>}</td>
                       <td className="px-2.5 py-2 border-b border-border text-sm font-mono">{h.run_count}</td>
                       <td className="px-2.5 py-2 border-b border-border text-sm">
+                        {/* The persisted last_error is not tooltip-only: the
+                            chevron expands it beneath the row as an ErrorNotice
+                            (the status column is too narrow to hold it inline). */}
                         {!h.last_status ? <span className="text-muted italic">—</span>
                           : h.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.hooksPage.ok')}</Badge>
-                          : h.last_status === 'error' ? (
+                          : (
                             <span className="inline-flex items-center gap-1">
-                              <Badge variant="err">{i18nT('pages.hooksPage.error')}</Badge>
-                              {h.last_error && <InfoTip text={h.last_error} placement="top" />}
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1">
-                              <Badge variant="warn">{h.last_status}</Badge>
-                              {h.last_error && <InfoTip text={h.last_error} placement="top" />}
+                              <Badge variant={h.last_status === 'error' ? 'err' : 'warn'}>{h.last_status === 'error' ? i18nT('pages.hooksPage.error') : h.last_status}</Badge>
+                              {h.last_error && (
+                                <Btn
+                                  type="button"
+                                  className="px-1 py-0 border-transparent text-muted hover:text-text"
+                                  aria-expanded={openErrorId === h.id}
+                                  aria-label={i18nT('pages.hooksPage.show_last_error', { name: h.name })}
+                                  onClick={() => setOpenErrorId(openErrorId === h.id ? null : h.id)}
+                                >
+                                  <ChevronDown size={13} className={`transition-transform ${openErrorId === h.id ? 'rotate-180' : ''}`} aria-hidden="true" />
+                                </Btn>
+                              )}
                             </span>
                           )}
                       </td>
@@ -436,6 +483,20 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                         </div>
                       </td>
                     </tr>
+                    {openErrorId === h.id && h.last_error && (
+                      <tr>
+                        <td colSpan={9} className="p-0 border-b border-border">
+                          {/* Sticky-left, scroller-wide: see hooksScrollerWidth. */}
+                          <div className="sticky left-0 px-2.5 py-2" style={hooksScrollerWidth ? { width: hooksScrollerWidth } : undefined}>
+                            {/* No hand-off while a HookForm is open (`creating` /
+                                `editing`) — its fields are unsaved. Otherwise the
+                                last_error is persisted server-side; nothing to lose. */}
+                            <ErrorNotice message={h.last_error} askAgent={handoffSafe} />
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -451,7 +512,10 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                   <span className="text-[12px] text-muted font-mono">{testResult.data.duration_ms}{i18nT('pages.hooksPage.ms')}</span>
                   <Btn aria-label={i18nT('app.dismiss')} onClick={() => setTestResult(null)} className="ml-auto shrink-0">×</Btn>
                 </div>
-                {testResult.data.error && <div className="text-[13px] text-danger mb-1">{testResult.data.error}</div>}
+                {/* No hand-off while a HookForm is open (`creating` / `editing`) —
+                    its fields are unsaved. Otherwise the test ran against a saved
+                    hook and nothing is lost. */}
+                <ErrorNotice variant="inline" message={testResult.data.error} askAgent={handoffSafe} className="mb-1" />
                 {testResult.data.stdout && <pre className="whitespace-pre-wrap text-[12px] font-mono text-text/80 bg-bg border border-border rounded-md p-3 max-h-[200px] overflow-auto">{testResult.data.stdout}</pre>}
                 {testResult.data.stderr && <pre className="whitespace-pre-wrap text-[12px] font-mono text-warn bg-bg border border-border rounded-md p-3 max-h-[100px] overflow-auto mt-2">{testResult.data.stderr}</pre>}
               </div>
@@ -460,22 +524,37 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           {testError && (() => {
             const h = hooks.find(x => x.id === testError.id)
             return (
-              <div role="alert" className="mt-3 bg-danger-subtle border border-danger/30 rounded-lg p-4 animate-scale-in">
-                <div className="flex items-center gap-3 mb-2">
-                  <AlertTriangle className="lucide-inline text-danger shrink-0" />
-                  <span className="min-w-0 break-words text-sm font-medium text-text">{i18nT('pages.hooksPage.test_failed')}{h ? `: ${h.name}` : ''}</span>
-                  <Btn aria-label={i18nT('app.dismiss')} onClick={() => setTestError(null)} className="ml-auto shrink-0">×</Btn>
-                </div>
-                <div className="break-words text-[13px] text-danger">{testError.message}</div>
-              </div>
+              <>
+                {/* Same draft decision as the banner: no hand-off while a HookForm
+                    (`creating` / `editing`) is open, otherwise safe. */}
+                <ErrorNotice
+                  title={h ? i18nT('pages.hooksPage.test_failed_for', { name: h.name }) : i18nT('pages.hooksPage.test_failed')}
+                  message={testError.message}
+                  onDismiss={() => setTestError(null)}
+                  askAgent={handoffSafe}
+                  className="mt-3 animate-scale-in"
+                  testId="hook-test-error"
+                />
+              </>
             )
           })()}
         </Card>
         {provider.capabilities.hooks && (
         <Card>
           <CardTitle>{provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} /></CardTitle>
-          {providerHookError ? (
-            <EmptyState icon={<AlertTriangle className="lucide-inline text-warn" />} title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={i18nT('pages.hooksPage.check_your_connection_or_configuration_and_try_a')} />
+          {providerHookErr ? (
+            <div className="flex items-start gap-2">
+              {/* A read failure dressed as an empty state hid the cause. No
+                  hand-off while a HookForm (`creating` / `editing`) is open;
+                  otherwise this read-only view holds nothing to lose. */}
+              <ErrorNotice
+                title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })}
+                message={providerHookErr instanceof Error ? providerHookErr.message : String(providerHookErr)}
+                askAgent={handoffSafe}
+                className="flex-1"
+              />
+              <Btn onClick={() => refetchProviderHooks()} className="shrink-0">{i18nT('pages.hooksPage.retry')}</Btn>
+            </div>
           ) : Object.values(providerHooks).some(entries => entries.length > 0) ? (
             // Focusable, named scrollport. This table is read-only — every cell
             // is plain text — and its columns reserve 700px, so at phone width

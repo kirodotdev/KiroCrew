@@ -194,6 +194,16 @@ class ArtifactValidationError(ArtifactError):
     """Raised when a field fails validation (slug, tag, kind, content, etc.)."""
 
 
+class ArtifactStillPublishedError(ArtifactError):
+    """Raised by ``delete(refuse_if_published=True)`` when the artifact is published.
+
+    The artifact's publication record is the only handle able to withdraw a copy that
+    may still be served, so a caller destroying artifacts in bulk uses this to be told
+    "not this one" instead of silently erasing that handle. Distinct from the base
+    error so such a caller can separate "refused, and correctly" from a real failure.
+    """
+
+
 # ── Data model ────────────────────────────────────────────────────────────────
 
 
@@ -260,6 +270,20 @@ class ArtifactPublication:
     published_at: str = ""
     published_by: str = ""  # gateway owner alias (ownerAlias from the remote store)
     last_error: str = ""  # conflict / sync-failure surfaced to the UI
+    #: A non-error status line for a publish that SUCCEEDED but whose link is
+    #: not usable yet (e.g. CloudFront still rolling out the first deploy). This
+    #: is NOT an error — it must never be written to ``last_error``, which every
+    #: consumer reads as failure (renders the publish red and withholds the URL).
+    notice: str = ""
+    #: Machine-readable discriminator for :attr:`notice`, so the frontend can
+    #: select per-case copy instead of printing one fixed "still rolling out"
+    #: string for every notice. Exactly one of ``"rolling_out"`` /
+    #: ``"distribution_disabled"`` / ``"unknown"``, or ``""`` when there is no
+    #: notice. Always moves with :attr:`notice`: it is set from the publish
+    #: result's ``notice_code`` and cleared wherever ``notice`` is cleared.
+    #: Additive + defaulted, so a legacy meta.json with no ``notice_code`` loads
+    #: as empty (no migration).
+    notice_code: str = ""
     #: sha256 of the LIVE (CRDT) remote body as of the last sync (publish / push
     #: / pull / clone / overwrite). A live CRDT provider canonicalizes markdown on write, so
     #: drift is detected remote-vs-remote against this hash — snapshot_seq bumps
@@ -2213,13 +2237,42 @@ class ArtifactStore:
         art.updated_at = _now_iso()
         self._write_meta(art)
 
-    def delete(self, slug: str) -> None:
-        """Permanently delete an artifact and all of its versions."""
+    def delete(self, slug: str, *, refuse_if_published: bool = False) -> None:
+        """Permanently delete an artifact and all of its versions.
+
+        ``refuse_if_published`` raises :class:`ArtifactStillPublishedError` instead of
+        deleting when the artifact holds a publication record. It defaults to False to
+        keep callers that never publish unchanged, but BOTH delete paths that can reach a
+        published artifact now pass it.
+
+        The flag only means anything to a caller that has already cleared the record for
+        the copy it withdrew. Once that is done, a record found here can only be a
+        publication that landed AFTER the withdrawal, so refusing protects a live copy
+        instead of rejecting an ordinary delete. Both callers are built that way: the
+        folder cascade clears per artifact in its withdrawal pass, and the single-artifact
+        handler clears immediately after its withdrawal is confirmed. A caller that
+        withdrew but did NOT clear would be refused on every published artifact, which is
+        why the flag is off by default rather than always on.
+
+        The check runs inside the same lock as the removal, so unlike a pre-pass it
+        cannot be overtaken by a publish landing after the decision and before the
+        delete -- which is the whole reason the flag is here rather than at the caller.
+        """
         slug = _validate_slug(slug)
         with self._lock:
             adir = self._artifact_dir(slug)
             if not adir.exists():
                 raise ArtifactNotFoundError(f"artifact not found: {slug}")
+            if refuse_if_published:
+                # Deliberately re-read under the lock rather than trusting anything the
+                # caller passed in. `_load_meta` does not take this lock (meta reads are
+                # unlocked by design), so this cannot deadlock.
+                if self._load_meta(slug).publication is not None:
+                    raise ArtifactStillPublishedError(
+                        f"artifact {slug} is still published; withdraw the published "
+                        "copy before deleting it, or its record -- the only handle able "
+                        "to take that copy down -- is lost with it"
+                    )
             self._rmtree(adir)
             logger.info("artifact deleted: slug=%s", slug)
         self._fire_change("delete", slug)
@@ -3423,6 +3476,8 @@ class ArtifactStore:
             published_at=str(raw_pub.get("published_at") or ""),
             published_by=str(raw_pub.get("published_by") or ""),
             last_error=str(raw_pub.get("last_error") or ""),
+            notice=str(raw_pub.get("notice") or ""),
+            notice_code=str(raw_pub.get("notice_code") or ""),
             last_synced_remote_hash=str(raw_pub.get("last_synced_remote_hash") or ""),
         )
 
@@ -3755,6 +3810,17 @@ class ArtifactFolderStore:
         with self._lock:
             return folder_id in self._by_id()
 
+    def subtree_ids(self, folder_id: str) -> set[str]:
+        """Public view of the subtree rooted at ``folder_id`` (inclusive).
+
+        Exists so a caller that must act on a cascade's artifacts BEFORE the cascade
+        runs -- withdrawing their published copies, which this store cannot do because
+        the withdrawal is async and lives a layer up -- can enumerate them without
+        reaching into a private method.
+        """
+        with self._lock:
+            return self._subtree_ids(folder_id)
+
     def create(self, name: str, parent_id: str = "", color: str = "") -> dict[str, Any]:
         """Create a folder under ``parent_id`` (``""`` = root)."""
         name = self._clean_name(name)
@@ -4045,26 +4111,54 @@ class ArtifactFolderStore:
         # Phase 2: artifacts. ``affected_ids`` is the subtree for cascade, or
         # just the single folder for the safe path.
         #
-        # Race window (accepted): Phase 2 runs OUTSIDE the folder lock (the
-        # artifact store has its own independent lock, and holding both would
-        # invite ordering deadlocks). Between Phase 1 removing the folder and
-        # this scan re-parenting/deleting its artifacts, a concurrent
-        # ``ArtifactStore.set_folder()`` could file an artifact into the
-        # just-deleted folder id. Such an artifact simply ends up with a
-        # dangling ``folder_id``, which every reader already tolerates by
+        # Race window: Phase 2 runs OUTSIDE the folder lock (the artifact store
+        # has its own independent lock, and holding both would invite ordering
+        # deadlocks). Between Phase 1 removing the folder and this scan, a
+        # concurrent ``ArtifactStore.set_folder()`` can file an artifact into
+        # the just-deleted folder id.
+        #
+        # On the RE-PARENT path that stays harmless: such an artifact ends up
+        # with a dangling ``folder_id``, which every reader already tolerates by
         # degrading it to Unfiled (see ``list(folder=)`` and the tree view's
-        # dangling-id handling). Acceptable for a single-user local tool; not
-        # worth cross-lock coordination.
+        # dangling-id handling).
+        #
+        # On the CASCADE path it is NOT harmless, because the consequence is
+        # destruction rather than a stale field. The caller withdraws every
+        # published copy in the subtree before calling here and clears each
+        # record it withdrew, so an artifact still holding a publication at this
+        # point is exactly one that arrived after that preflight -- its copy was
+        # never withdrawn, and destroying it would erase the only handle able to
+        # take that copy down.
+        #
+        # The refusal is asked of `delete` itself rather than checked here: a
+        # check in this loop is a check-then-act over a snapshot, so a publish
+        # landing between it and the delete would still be destroyed. Inside
+        # `delete` the check shares the lock with the removal, which is what
+        # makes it hold. Phase 1 has already committed the folder-tree change and
+        # cannot be rolled back here, so a kept artifact survives with a dangling
+        # ``folder_id`` and degrades to Unfiled -- the outcome this path already
+        # tolerates, and a recoverable one: the owner restores access to the
+        # destination, withdraws the copy, and deletes it deliberately. Note that
+        # unpublishing is NOT a second route out of this state -- it refuses on an
+        # unreachable destination for the same reason this delete did.
         deleted_slugs: _List[str] = []
         reparented_slugs: _List[str] = []
+        kept_published_slugs: _List[str] = []
         for art in artifact_store.list():
             fid = getattr(art, "folder_id", "") or ""
             if fid not in affected_ids:
                 continue
             if delete_contents:
                 try:
-                    artifact_store.delete(art.slug)
+                    artifact_store.delete(art.slug, refuse_if_published=True)
                     deleted_slugs.append(art.slug)
+                except ArtifactStillPublishedError:
+                    kept_published_slugs.append(art.slug)
+                    logger.warning(
+                        "cascade kept %s: still published, so destroying it would "
+                        "strand a public copy with no withdrawal handle",
+                        art.slug,
+                    )
                 except ArtifactError as exc:  # pragma: no cover — best-effort
                     logger.warning("cascade delete failed for %s: %s", art.slug, exc)
             else:
@@ -4080,6 +4174,7 @@ class ArtifactFolderStore:
         return {
             "deleted_folder_ids": sorted(affected_ids),
             "deleted_artifact_slugs": deleted_slugs,
+            "kept_published_artifact_slugs": kept_published_slugs,
             "reparented_artifact_slugs": reparented_slugs,
             "reparented_to": parent,
             "delete_contents": delete_contents,

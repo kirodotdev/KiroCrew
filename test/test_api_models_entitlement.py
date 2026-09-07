@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from kiro_crew.acp.client import model_is_unusable
+from kiro_crew.acp.client import model_is_unusable, resolve_pin_spelling
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
@@ -78,27 +78,51 @@ def test_a_spelling_the_wire_rejects_is_not_offered():
     # `set_model` pre-flights the id exactly as given, and the pin validator in
     # handlers/core applies the same raw predicate — so a dotted row here would be
     # offered by the picker and then withheld at spawn, which is the lie this
-    # narrowing exists to remove. The keep/drop decision therefore delegates to
-    # `model_is_unusable` instead of folding spellings.
-    request = _request(_provider([{"modelId": "auto"}, {"modelId": "claude-opus-4-8"},
-                                 {"modelId": "claude-opus-5"}]))
+    # narrowing exists to remove. The only fold the keep/drop applies is the same
+    # `<namespace>::` peel the wire applies (`resolve_pin_spelling`); it never
+    # translates dotted to dashed, so this row still drops.
+    request = _request(
+        _provider(
+            [{"modelId": "auto"}, {"modelId": "claude-opus-4-8"}, {"modelId": "claude-opus-5"}]
+        )
+    )
     assert _names(agents._entitled_kiro_models(request, CATALOG)) == ["auto", "claude-opus-5"]
 
 
 def test_picker_and_wire_never_disagree_row_by_row():
     # The invariant behind the above, asserted directly against the shared
-    # predicate rather than a hardcoded expectation.
-    advertised = ["auto", "claude-opus-4-8", "claude-sonnet-5"]
+    # predicates rather than a hardcoded expectation, in both directions:
+    # every non-auto row the picker offers must pass the RAW predicate (the
+    # agent/crew pin validator and set_model's pre-flight compare the picked
+    # value literally, so a kept row's spelling must survive them verbatim),
+    # and every dropped catalog row must be one the wire withholds under BOTH
+    # spellings (raw miss AND fold miss).
+    advertised = ["auto", "claude-opus-4-8", "claude-sonnet-5", "z-ai/glm-5.3-flash"]
+    catalog = CATALOG + [{"model_name": "openrouter::z-ai/glm-5.3-flash", "description": "GLM"}]
     request = _request(_provider([{"modelId": m} for m in advertised]))
-    kept = set(_names(agents._entitled_kiro_models(request, CATALOG)))
-    for row in CATALOG:
-        name = row["model_name"]
+    kept = set(_names(agents._entitled_kiro_models(request, catalog)))
+    for name in kept:
         if name == "auto":
             continue
-        assert (name in kept) is not model_is_unusable(name, advertised), (
-            f"{name}: picker kept={name in kept}, wire withholds="
-            f"{model_is_unusable(name, advertised)}"
-        )
+        assert not model_is_unusable(
+            name, advertised
+        ), f"{name}: offered by the picker but rejected by the raw wire predicate"
+    for row in catalog:
+        name = row["model_name"]
+        if name == "auto" or name in kept:
+            continue
+        resolved = resolve_pin_spelling(name, advertised)
+        if resolved:
+            # Dropped as spelled, but the MODEL is offered — under the
+            # advertised spelling the fold answers with.
+            assert resolved in kept, f"{name}: resolvable but its advertised spelling not offered"
+        else:
+            assert model_is_unusable(
+                name, advertised
+            ), f"{name}: dropped by the picker but usable on the wire"
+    # The fold-recovered model is offered — under its advertised spelling.
+    assert "z-ai/glm-5.3-flash" in kept
+    assert "openrouter::z-ai/glm-5.3-flash" not in kept
 
 
 def test_auto_survives_a_backend_that_does_not_advertise_it():
@@ -174,6 +198,75 @@ def test_backend_that_advertises_nothing_leaves_the_catalog_alone():
     assert agents._entitled_kiro_models(request, CATALOG) == CATALOG
 
 
+def test_namespaced_row_is_rewritten_to_the_advertised_spelling():
+    # A catalog row can carry a `<namespace>::<bare-id>` qualifier from the
+    # catalog that named it, while the live session advertises the BARE id. The
+    # picker must offer the model — but under the ADVERTISED spelling, because
+    # the selection sinks (the agent/crew pin validator and set_model's
+    # pre-flight) compare the picked value literally and would refuse the
+    # qualified one. The rest of the row (description) is preserved.
+    catalog = CATALOG + [{"model_name": "openrouter::z-ai/glm-5.3-flash", "description": "GLM"}]
+    request = _request(
+        _provider(
+            [
+                {"modelId": "auto"},
+                {"modelId": "claude-sonnet-5"},
+                {"modelId": "z-ai/glm-5.3-flash"},
+            ]
+        )
+    )
+    rows = agents._entitled_kiro_models(request, catalog)
+    assert _names(rows) == ["auto", "claude-sonnet-5", "z-ai/glm-5.3-flash"]
+    assert rows[-1]["description"] == "GLM"
+
+
+def test_namespaced_row_absent_under_both_spellings_still_drops():
+    # The fold clears false drops only: a model served under neither spelling
+    # stays hidden, exactly as the wire would withhold it.
+    catalog = CATALOG + [{"model_name": "openrouter::not-served", "description": "x"}]
+    request = _request(_provider([{"modelId": "auto"}, {"modelId": "claude-sonnet-5"}]))
+    assert _names(agents._entitled_kiro_models(request, catalog)) == ["auto", "claude-sonnet-5"]
+
+
+def test_namespaced_row_duplicating_a_literal_row_is_dropped():
+    # When the catalog lists BOTH the bare id and a qualified variant of the
+    # same model, rewriting the qualified row would duplicate the bare one —
+    # so it drops instead.
+    catalog = CATALOG + [
+        {"model_name": "z-ai/glm-5.3-flash", "description": "bare"},
+        {"model_name": "openrouter::z-ai/glm-5.3-flash", "description": "qualified"},
+    ]
+    request = _request(_provider([{"modelId": "auto"}, {"modelId": "z-ai/glm-5.3-flash"}]))
+    rows = agents._entitled_kiro_models(request, catalog)
+    assert _names(rows) == ["auto", "z-ai/glm-5.3-flash"]
+    assert rows[-1]["description"] == "bare"
+
+
+def test_two_qualifiers_over_one_bare_id_produce_one_row():
+    # Two catalog rows whose qualifiers peel to the same advertised id must not
+    # become two visually distinct rows for one model.
+    catalog = CATALOG + [
+        {"model_name": "openrouter::z-ai/glm-5.3-flash", "description": "first"},
+        {"model_name": "azure::z-ai/glm-5.3-flash", "description": "second"},
+    ]
+    request = _request(_provider([{"modelId": "auto"}, {"modelId": "z-ai/glm-5.3-flash"}]))
+    rows = agents._entitled_kiro_models(request, catalog)
+    assert _names(rows) == ["auto", "z-ai/glm-5.3-flash"]
+    assert rows[-1]["description"] == "first"
+
+
+def test_fold_kept_row_counts_as_comparability_evidence():
+    # A namespaced row resolving against a bare advertised set proves the two
+    # vocabularies line up once the qualifier is peeled — a real narrowing, not
+    # the sentinel-only namespace mismatch that fails open to the full catalog.
+    catalog = CATALOG + [{"model_name": "openrouter::z-ai/glm-5.3-flash", "description": "GLM"}]
+    request = _request(_provider([{"modelId": "z-ai/glm-5.3-flash"}]))
+    assert _names(agents._entitled_kiro_models(request, catalog)) == [
+        "auto",
+        "z-ai/glm-5.3-flash",
+    ]
+
+
 def test_provider_without_getter_is_skipped_not_fatal():
     # First provider has no getter; the second one's list still applies.
     request = _request(
@@ -243,22 +336,21 @@ def test_api_models_returns_only_entitled_rows(tmp_path):
     request = _kiro_request(
         tmp_path, _provider([{"modelId": "auto"}, {"modelId": "claude-sonnet-5"}])
     )
-    with patch.object(
-        agents.KiroCrewConfig, "load", return_value=SimpleNamespace(agent=SimpleNamespace(provider="kiro"))
-    ), patch(
-        "kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"
-    ), patch(
-        "kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None
-    ), patch(
-        "kiro_crew.env.augmented_path", lambda p: p
-    ), patch(
-        "kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv
-    ), patch(
-        "kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv
-    ), patch(
-        "kiro_crew.sandbox.resource_limit_preexec", lambda: None
-    ), patch.object(
-        agents.asyncio, "create_subprocess_exec", return_value=_FakeProc(stdout=payload)
+    with (
+        patch.object(
+            agents.KiroCrewConfig,
+            "load",
+            return_value=SimpleNamespace(agent=SimpleNamespace(provider="kiro")),
+        ),
+        patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value="/usr/bin/kiro-cli"),
+        patch("kiro_crew.acp.client._resolve_ssh_auth_sock", lambda env: None),
+        patch("kiro_crew.env.augmented_path", lambda p: p),
+        patch("kiro_crew.dashboard.handlers.agents.wrap_argv", _stub_wrap_argv),
+        patch("kiro_crew.dashboard.handlers.agents.cgroup_scope_argv", lambda argv: argv),
+        patch("kiro_crew.sandbox.resource_limit_preexec", lambda: None),
+        patch.object(
+            agents.asyncio, "create_subprocess_exec", return_value=_FakeProc(stdout=payload)
+        ),
     ):
         resp = asyncio.get_event_loop().run_until_complete(agents.api_models(request))
     assert resp.status == 200

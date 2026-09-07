@@ -65,7 +65,9 @@ vi.mock('../api/client', () => {
 // is absent, and happy-dom implements neither — the fallback would reject and
 // surface as an unhandled rejection, which reddens CI with a green summary.
 vi.mock('../utils/clipboard', () => ({
-  copyToClipboard: vi.fn().mockResolvedValue(undefined),
+  // Resolves `true` like the real helper: the panel now branches on the boolean
+  // and reports a failed copy instead of painting "Copied" unconditionally.
+  copyToClipboard: vi.fn().mockResolvedValue(true),
   copyCode: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -308,7 +310,10 @@ describe('RemoteCrewPanel — instance actions', () => {
     await u.click(await screen.findByRole('menuitem', { name: 'Diagnose dev-box-1' }))
     expect(await screen.findByText(/m1: host did not answer/, undefined, { timeout: 5_000 })).toBeInTheDocument()
 
-    await u.click(screen.getByRole('button', { name: 'Dismiss diagnosis' }))
+    // The note renders through ErrorNotice now, so its dismiss control carries
+    // the shared "Dismiss" label; scoped by testid because the actionErr notice
+    // on the same surface has an identical one.
+    await u.click(within(screen.getByTestId('remote-crew-diagnosis')).getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByText(/m1: host did not answer/)).not.toBeInTheDocument()
   })
 

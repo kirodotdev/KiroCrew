@@ -26,6 +26,53 @@ _BUILTINS_DIR = (Path(__file__).resolve().parent / "builtins")
 # One-time-per-app guard so the SEC-012 trust warning is not logged on every hook load.
 _warned_third_party_apps: set[str] = set()
 
+#: Per-app cache of the resolved ``on_shutdown`` callable, populated at ENABLE
+#: time (``cache_shutdown_callable``) while the app's files still exist. Teardown
+#: after a CLI uninstall consults this FIRST: ``resolve_loaded_callable`` only
+#: finds a module still in ``sys.modules``, which misses an ``on_shutdown`` living
+#: in a module that startup never imported (separate startup/shutdown modules) --
+#: the disk fallback then raises on the deleted files and the background task the
+#: app spawned would survive trust removal. Caching the bound callable up front
+#: closes that gap: the resident function object stops the running code without
+#: touching disk. Cleared by ``clear_shutdown_callable`` on teardown/unload.
+_shutdown_callables: dict[str, tuple[int, Callable[..., Any]]] = {}
+
+#: Per-app load generation. Bumped every time an app's modules are unloaded (a
+#: disable, or the gateway teardown sweep), so a shutdown callable captured under
+#: one generation can be told apart from the code loaded by a LATER enable. A
+#: cached callable is only honoured while its generation is still current: after
+#: an unload+re-enable, the stale v1 callable is ignored rather than used to tear
+#: down the freshly loaded v2 worker (it would leave v2 running).
+_app_load_generation: dict[str, int] = {}
+
+
+def _current_generation(app_name: str) -> int:
+    return _app_load_generation.get(app_name, 0)
+
+
+def cache_shutdown_callable(app_name: str, func: Callable[..., Any]) -> None:
+    """Remember an app's resolved ``on_shutdown`` callable for post-uninstall teardown.
+
+    Tagged with the app's CURRENT load generation so a later reload invalidates it
+    (see ``_app_load_generation``); ``resolve_loaded_callable`` drops a stale one.
+    """
+    _shutdown_callables[app_name] = (_current_generation(app_name), func)
+
+
+def clear_shutdown_callable(app_name: str) -> None:
+    """Drop the cached ``on_shutdown`` callable (teardown complete / module unloaded)."""
+    _shutdown_callables.pop(app_name, None)
+
+
+def clear_all_shutdown_callables() -> None:
+    """Drop every cached ``on_shutdown`` callable — for the gateway teardown sweep.
+
+    The sweep tears hooks down without going through per-app ``unload_app_modules``,
+    so without this a v1 callable would survive into an in-process restart and be
+    selected to stop a v2 worker. Clearing wholesale on teardown closes that.
+    """
+    _shutdown_callables.clear()
+
 
 def _is_builtin_app(app_name: str, app_resolved: Path) -> bool:
     """Return True when this app name owns the resolved shipped package path."""
@@ -300,6 +347,48 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[
     return func
 
 
+def resolve_loaded_callable(app_name: str, module_path: str) -> Callable[..., Any] | None:
+    """Resolve ``module.path:callable`` from this app's ALREADY-LOADED module.
+
+    For teardown of a gone (uninstalled) app: CLI uninstall deletes the app's
+    files, so ``load_app_module`` -- which reads from disk -- would raise and the
+    ``on_shutdown`` hook would never run, leaving a background task the app's
+    ``on_startup`` spawned alive after trust was removed. But the module the
+    gateway actually imported is still resident in ``sys.modules`` under the
+    app's unique namespace key, so the callable can be resolved from THAT without
+    touching disk. Returns the callable, or ``None`` when no such module/attr is
+    cached (nothing was ever loaded) so the caller can fall back to the disk
+    loader. Deliberately does NOT import anything: it only reads what is already
+    loaded, which is exactly the code whose ``on_shutdown`` must stop it.
+
+    Checks the enable-time ``_shutdown_callables`` cache FIRST: ``sys.modules``
+    only holds modules startup actually imported, so an ``on_shutdown`` in a
+    module startup never touched (separate startup/shutdown modules) is absent
+    there and the disk fallback would raise on the deleted files. The cache holds
+    the bound callable captured at enable while the files existed, closing that
+    gap without touching disk.
+    """
+    cached = _shutdown_callables.get(app_name)
+    if cached is not None:
+        gen, func = cached
+        if gen == _current_generation(app_name):
+            return func
+        # Stale generation: this callable belongs to code that has since been
+        # unloaded/reloaded. Drop it and fall through to what is loaded NOW, so a
+        # v1 shutdown is never used against a v2 worker.
+        _shutdown_callables.pop(app_name, None)
+    if ":" not in module_path:
+        return None
+    dotted_path, callable_name = module_path.rsplit(":", 1)
+    if not dotted_path or not callable_name:
+        return None
+    module = sys.modules.get(_module_namespace(app_name, dotted_path))
+    if module is None:
+        return None
+    resolved = getattr(module, callable_name, None)
+    return resolved if callable(resolved) else None
+
+
 def unload_app_modules(app_name: str) -> int:
     """Remove all cached modules for an app from sys.modules.
 
@@ -312,6 +401,11 @@ def unload_app_modules(app_name: str) -> int:
     to_remove = _app_module_keys(app_name)
     for k in to_remove:
         del sys.modules[k]
+    clear_shutdown_callable(app_name)
+    # Bump the load generation so a NEXT enable's cache entry is distinguishable
+    # from this one -- any callable still cached under the old generation (e.g.
+    # captured by a concurrent path) is treated as stale by resolve_loaded_callable.
+    _app_load_generation[app_name] = _current_generation(app_name) + 1
     if to_remove:
         logger.debug("Unloaded %d module(s) for app %s", len(to_remove), app_name)
     return len(to_remove)

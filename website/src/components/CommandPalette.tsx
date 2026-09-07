@@ -23,6 +23,7 @@ import { useRecentsProvider } from './commandPalette/providers/recentsProvider'
 import { useSettingsProvider } from './commandPalette/providers/settingsProvider'
 import { useAppsProvider } from './commandPalette/providers/appsProvider'
 import { Highlighted } from './commandPalette/Highlighted'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 import { useVisualViewport } from '../hooks/useVisualViewport'
@@ -482,7 +483,13 @@ export default function CommandPalette({
     // tab (or the recents quick-switcher), leaving the All tab's swallow
     // untouched.
     <div className="px-3 py-6 text-center text-[12px] flex flex-col items-center gap-2">
-      <span className="text-muted">{i18nT('components.commandPalette.search_failed')}</span>
+      {/* The palette holds only a transient search string, so the hand-off loses nothing. */}
+      <ErrorNotice
+        variant="inline"
+        askAgent
+        testId="command-palette-search-error"
+        message={i18nT('components.commandPalette.search_failed')}
+      />
       <button
         type="button"
         onClick={() => { void refetch() }}

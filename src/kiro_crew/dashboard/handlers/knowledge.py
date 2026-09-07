@@ -502,13 +502,26 @@ async def delete_item(request: web.Request) -> web.Response:
     item = store.get_item(item_id)
     if not item:
         return web.json_response({"error": "not found"}, status=404)
-    store.delete_item(item_id)
+
+    # BEGIN IMMEDIATE takes the write lock eagerly (busy_timeout 10s, so a
+    # concurrent writer can park this call for that long) and the commit is
+    # followed by _load_graph(), a full scan of entities and entity_relations
+    # that grows linearly with the library -- never on the event loop.
+    # The SEL record rides in the same worker as the commit: a client
+    # disconnect cancels this coroutine at the await, and a cancellation
+    # landing after the worker committed must not skip the audit line. The
+    # worker thread runs to completion regardless, and SEL writes are
+    # lock-guarded, so emitting from it is safe.
+    def _delete_and_audit() -> None:
+        store.delete_item(item_id)
+        _sel_log("item.delete", item_id=item_id)
+
+    await asyncio.to_thread(_delete_and_audit)
     # A now-empty source is reclaimed by the store's own orphan rule on the next
     # open, which checks the document-state tables, in-flight jobs and the location
     # table first. Deleting the row here instead raised on the foreign keys those
     # tables hold -- after the item delete had already committed -- and dropped a
     # source that still held documents by location.
-    _sel_log("item.delete", item_id=item_id)
     return web.json_response({"ok": True})
 
 
@@ -555,6 +568,12 @@ async def get_entity_graph(request: web.Request) -> web.Response:
         depth = min(5, max(1, int(request.query.get("depth", 2) or 2)))
     except ValueError:
         return web.json_response({"error": "invalid depth"}, status=400)
+    # Materialise the graph off-loop before touching it. The store defers the
+    # load to its first reader (#8329), and every `.graph` read below runs on
+    # the event loop, where the loop-stall watchdog is armed -- so the scan has
+    # to happen on a worker thread, the same way this module already offloads
+    # the store's SQL.
+    await asyncio.to_thread(store.ensure_graph_loaded)
     if not store.graph.has_node(entity_id):
         return web.json_response({"error": "entity not found"}, status=404)
     return web.json_response(store.get_entity_subgraph(entity_id, depth))
@@ -635,6 +654,12 @@ async def get_full_graph(request: web.Request) -> web.Response:
         limit = min(200, max(1, int(request.query.get("limit", 100) or 100)))
     except ValueError:
         return web.json_response({"error": "invalid limit"}, status=400)
+
+    # Materialise the graph off-loop before any `.graph` read below. The store
+    # defers the load to its first reader (#8329); this handler already offloads
+    # its SQL for the same reason, and the graph reads were only safe inline
+    # while the graph was built during construction.
+    await asyncio.to_thread(store.ensure_graph_loaded)
 
     # Source filter: restrict to entities mentioned in items from specific sources
     source_id_param = request.query.get("source_id", "").strip()
@@ -1635,8 +1660,25 @@ async def import_bundle(request: web.Request) -> web.Response:
         redacted_type = _redact(rel.get("relation_type"))
         rel["relation_type"] = redacted_type if redacted_type is not None else ""
         rel["description"] = _redact(rel.get("description"))
+    store = _store(request)
+
+    # BEGIN IMMEDIATE takes the write lock eagerly (busy_timeout 10s) and a
+    # large bundle inserts thousands of rows before the commit rebuilds the
+    # entity graph with a full table scan -- never on the event loop. The
+    # success audit rides in the same worker as the commit: a client
+    # disconnect cancels the awaiting coroutine, and a cancellation landing
+    # after the worker committed must not skip the SEL record (the worker
+    # thread runs to completion regardless; SEL writes are lock-guarded).
+    # The worker re-raises here, so every arm below still catches exactly
+    # what the synchronous call raised; the rejection arms keep their own
+    # audit lines because they are tied to the HTTP response they build.
+    def _import_and_audit() -> dict:
+        result = store.import_bundle(body)
+        _sel_log("import", **result)
+        return result
+
     try:
-        result = _store(request).import_bundle(body)
+        result = await asyncio.to_thread(_import_and_audit)
     except KnowledgeBundleError as exc:
         # The store enforces the JSON-column well-formedness invariant
         # (sources.properties / entities.aliases) at the writer; surface its
@@ -1677,7 +1719,6 @@ async def import_bundle(request: web.Request) -> web.Response:
             {"error": "internal server error", "code": "knowledge_import_failed"},
             status=500,
         )
-    _sel_log("import", **result)
     return web.json_response(result)
 
 

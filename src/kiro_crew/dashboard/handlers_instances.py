@@ -29,8 +29,8 @@ from urllib.parse import unquote
 from aiohttp import web
 
 import kiro_crew
-import kiro_crew.dashboard.handlers as _h
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
     build_transfer_bundle_async,
@@ -52,6 +52,7 @@ from kiro_crew.instances.registry import (
 )
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError, TunnelState
 from kiro_crew.instances.warm_set import resolve_warm_set_cap
+from kiro_crew.security import redact
 from kiro_crew.sel import sel
 from kiro_crew.validation import sanitize_string
 
@@ -213,10 +214,17 @@ async def api_instances_list(request: web.Request) -> web.Response:
     # its fsync — so every registry touch in these handlers goes off the loop.
     items = [_instance_view(state, i) for i in await asyncio.to_thread(reg.list)]
     # Resolved here rather than served raw: the automatic mode (0) means "as many
-    # as are connected", and this is the only place that holds both the stored
-    # value and the live per-instance status. The browser therefore always
-    # receives a concrete integer and needs no notion of automatic.
-    connected = sum(1 for i in items if (i.get("status") or {}).get("state") == "connected")
+    # as could be warm at once", and this is the only place that holds both the
+    # stored value and the registry. The browser therefore always receives a
+    # concrete integer and needs no notion of automatic.
+    #
+    # Counted from the REGISTRY, not from live status. A connected-count made the
+    # cap race tunnel startup: a crew that finished connecting just after this
+    # poll was not counted, the cap came back one short, and the viewport evicted
+    # a pane to honour it -- so one crew looked broken, and which one depended on
+    # connection order. Registered crews cannot race, and the count rises by
+    # itself when a crew is added.
+    eligible = len(items)
     _audit("list", "success")
     return web.json_response(
         {
@@ -228,7 +236,7 @@ async def api_instances_list(request: web.Request) -> web.Response:
             "active": getattr(state, "instances_manager", None) is not None,
             "instances": items,
             "warm_set_cap": resolve_warm_set_cap(
-                KiroCrewConfig.load().instances.warm_set_cap, connected
+                KiroCrewConfig.load().instances.warm_set_cap, eligible
             ),
         }
     )
@@ -828,9 +836,8 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
                 # ship megabyte strings to the browser (or feed the redaction
                 # regexes unbounded input).
                 value = value[:_PEER_FIELD_MAX_CHARS]
-                if field in ("title", "snippet"):
-                    value, _ = _h.redact_exfiltration_urls(value)
-                    value, _ = _h.redact_credentials(value)
+                if field in SESSION_SEARCH_TEXT_FIELDS:
+                    value = redact(value)
                 out[field] = value
         for field in ("modified", "messages"):
             value = row.get(field)
@@ -859,12 +866,10 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
         # here before the rows reach the browser.
         redacted_local: list[dict] = []
         for row in local_rows:
-            for field in ("title", "snippet"):
+            for field in SESSION_SEARCH_TEXT_FIELDS:
                 value = row.get(field)
                 if isinstance(value, str) and value:
-                    value, _ = _h.redact_exfiltration_urls(value)
-                    value, _ = _h.redact_credentials(value)
-                    row[field] = value
+                    row[field] = redact(value)
             redacted_local.append(row)
         sources.append(redacted_local)
     for iid, result in zip(connected, results[1:]):

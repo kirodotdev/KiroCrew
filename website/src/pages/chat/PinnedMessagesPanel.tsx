@@ -1,5 +1,5 @@
-import { memo, useEffect, useRef, useState } from 'react'
-import { PinOff, Copy, Link2, Check } from 'lucide-react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
+import { PinOff, Copy, Link2, Check, X } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTime } from '../../i18n/format'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -50,13 +50,17 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [now, setNow] = useState(() => Date.now())
 
-  // Which pin's Copy / Copy-link button is currently showing its "done"
-  // checkmark. Keyed by pin id (not a bool) so only the row the user clicked
-  // flips its icon, matching the in-chat message action buttons which give a
-  // 1.5s Check-icon confirmation. Without this the panel's Copy/Link buttons
-  // ran their side effect silently and looked inert.
-  const [copiedId, setCopiedId] = useState<string | null>(null)
-  const [linkCopiedId, setLinkCopiedId] = useState<string | null>(null)
+  // Which pin's Copy / Copy-link button is currently showing its outcome.
+  // Keyed by pin id (not a bool) so only the row the user clicked flips its
+  // icon, matching the in-chat message action buttons which give a 1.5s
+  // Check-icon confirmation. Without this the panel's Copy/Link buttons ran
+  // their side effect silently and looked inert. `ok: false` is the refused
+  // clipboard write (permission, insecure context): it flips the icon to a
+  // failed state instead of leaving it unchanged, so "did it copy?" has an
+  // answer either way. Not an ErrorNotice — a clipboard refusal has no journal
+  // context and is not something the agent can fix.
+  const [copyFeedback, setCopyFeedback] = useState<{ id: string; ok: boolean } | null>(null)
+  const [linkFeedback, setLinkFeedback] = useState<{ id: string; ok: boolean } | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const linkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -72,15 +76,24 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
     if (linkTimerRef.current) clearTimeout(linkTimerRef.current)
   }, [])
 
-  const flashCopied = (id: string) => {
-    setCopiedId(id)
+  const flashCopied = (id: string, ok: boolean) => {
+    setCopyFeedback({ id, ok })
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
-    copyTimerRef.current = setTimeout(() => { copyTimerRef.current = null; setCopiedId(null) }, 1500)
+    copyTimerRef.current = setTimeout(() => { copyTimerRef.current = null; setCopyFeedback(null) }, 1500)
   }
-  const flashLinkCopied = (id: string) => {
-    setLinkCopiedId(id)
+  const flashLinkCopied = (id: string, ok: boolean) => {
+    setLinkFeedback({ id, ok })
     if (linkTimerRef.current) clearTimeout(linkTimerRef.current)
-    linkTimerRef.current = setTimeout(() => { linkTimerRef.current = null; setLinkCopiedId(null) }, 1500)
+    linkTimerRef.current = setTimeout(() => { linkTimerRef.current = null; setLinkFeedback(null) }, 1500)
+  }
+  /** Outcome glyph for a copy button once its promise settled. */
+  const outcomeIcon = (fb: { id: string; ok: boolean } | null, id: string, idle: ReactNode) => {
+    if (fb?.id !== id) return idle
+    return fb.ok ? <Check size={12} className="text-ok" /> : <X size={12} className="text-danger" />
+  }
+  const copyLabel = (fb: { id: string; ok: boolean } | null, id: string, idle: string) => {
+    if (fb?.id !== id) return idle
+    return fb.ok ? i18nT('pages.chat.pins.copied') : i18nT('pages.chat.pins.copy_failed')
   }
 
   return (
@@ -120,20 +133,20 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
             {/* Hover actions — forced visible + 40px targets where the pointer cannot hover */}
             <div data-testid="pin-actions" className={`flex items-center gap-1 mt-0.5 opacity-0 group-hover/pin:opacity-100 focus-within:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
               <button
-                onClick={(e) => { e.stopPropagation(); copyToClipboard(pin.preview).then((ok) => { if (ok) flashCopied(pin.id) }).catch(() => {}) }}
+                onClick={(e) => { e.stopPropagation(); copyToClipboard(pin.preview).then((ok) => flashCopied(pin.id, ok), () => flashCopied(pin.id, false)) }}
                 className="text-muted hover:text-text p-0.5 rounded transition-colors"
-                title={copiedId === pin.id ? i18nT('pages.chat.pins.copied') : i18nT('pages.chat.pins.copy_preview')}
+                title={copyLabel(copyFeedback, pin.id, i18nT('pages.chat.pins.copy_preview'))}
                 aria-label={i18nT('pages.chat.pins.copy_preview')}
               >
-                {copiedId === pin.id ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
+                {outcomeIcon(copyFeedback, pin.id, <Copy size={12} />)}
               </button>
               <button
-                onClick={(e) => { e.stopPropagation(); copySessionLink(slotKey, slotTitle, pin.message_ts, mode, pin.mid).then((ok) => { if (ok) flashLinkCopied(pin.id) }).catch(() => {}) }}
+                onClick={(e) => { e.stopPropagation(); copySessionLink(slotKey, slotTitle, pin.message_ts, mode, pin.mid).then((ok) => flashLinkCopied(pin.id, ok), () => flashLinkCopied(pin.id, false)) }}
                 className="text-muted hover:text-text p-0.5 rounded transition-colors"
-                title={linkCopiedId === pin.id ? i18nT('pages.chat.pins.copied') : i18nT('pages.chat.pins.copy_link')}
+                title={copyLabel(linkFeedback, pin.id, i18nT('pages.chat.pins.copy_link'))}
                 aria-label={i18nT('pages.chat.pins.copy_link')}
               >
-                {linkCopiedId === pin.id ? <Check size={12} className="text-ok" /> : <Link2 size={12} />}
+                {outcomeIcon(linkFeedback, pin.id, <Link2 size={12} />)}
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); onUnpin(pin.id) }}

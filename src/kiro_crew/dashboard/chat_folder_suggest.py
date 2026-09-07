@@ -40,8 +40,9 @@ logger = logging.getLogger(__name__)
 # No model override. Picking one folder from a short list is a trivial
 # classification, and the shared background session this runs on is already the
 # cheap one: the ``kirocrew-lite`` spec's model is ``_background_agent_model()``,
-# which resolves ``agent.role_models['background']`` -> ``agent.model`` ->
-# ``"auto"`` (AGENTS.md → Model selection). Pinning a concrete id here would both
+# which resolves ``agent.role_models['background']`` -> ``"auto"`` and deliberately
+# does NOT inherit ``agent.model``
+# (docs/system-specs/common/model-selection.md). Pinning a concrete id here would both
 # duplicate that resolution and break accounts not entitled to the pinned model,
 # so an operator who wants this on a specific cheap model sets the background
 # role instead.

@@ -183,7 +183,7 @@ def test_compat_static_map_contents():
 
 
 @pytest.mark.asyncio
-async def test_ttl_hours_string_rejected(monkeypatch):
+async def test_ttl_hours_string_rejected(monkeypatch, tmp_path):
     """F4: ttl_hours as string "12" → 400."""
     from kiro_crew.deploy import handlers
 
@@ -204,8 +204,9 @@ async def test_ttl_hours_string_rejected(monkeypatch):
             return FakeArt()
 
     monkeypatch.setattr("kiro_crew.deploy.handlers.get_default_store", lambda: FakeStore())
+    staged = str(tmp_path / "x")
     monkeypatch.setattr("kiro_crew.deploy.handlers._stage_artifact_html",
-                        lambda kind, content, name: ([], "/tmp/x", 42))
+                        lambda kind, content, name: ([], staged, 42))
 
     status, body = await handlers._do_deploy({
         "site_id": "s", "artifact_slug": "slug", "ttl_hours": "12",
@@ -215,7 +216,7 @@ async def test_ttl_hours_string_rejected(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ttl_hours_float_rejected(monkeypatch):
+async def test_ttl_hours_float_rejected(monkeypatch, tmp_path):
     """F4: ttl_hours as float 12.5 → 400."""
     from kiro_crew.deploy import handlers
 
@@ -236,8 +237,9 @@ async def test_ttl_hours_float_rejected(monkeypatch):
             return FakeArt()
 
     monkeypatch.setattr("kiro_crew.deploy.handlers.get_default_store", lambda: FakeStore())
+    staged = str(tmp_path / "x")
     monkeypatch.setattr("kiro_crew.deploy.handlers._stage_artifact_html",
-                        lambda kind, content, name: ([], "/tmp/x", 42))
+                        lambda kind, content, name: ([], staged, 42))
 
     status, body = await handlers._do_deploy({
         "site_id": "s", "artifact_slug": "slug", "ttl_hours": 12.5,
@@ -247,7 +249,7 @@ async def test_ttl_hours_float_rejected(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ttl_hours_bool_rejected(monkeypatch):
+async def test_ttl_hours_bool_rejected(monkeypatch, tmp_path):
     """F4: ttl_hours as bool True → 400."""
     from kiro_crew.deploy import handlers
 
@@ -268,8 +270,9 @@ async def test_ttl_hours_bool_rejected(monkeypatch):
             return FakeArt()
 
     monkeypatch.setattr("kiro_crew.deploy.handlers.get_default_store", lambda: FakeStore())
+    staged = str(tmp_path / "x")
     monkeypatch.setattr("kiro_crew.deploy.handlers._stage_artifact_html",
-                        lambda kind, content, name: ([], "/tmp/x", 42))
+                        lambda kind, content, name: ([], staged, 42))
 
     status, body = await handlers._do_deploy({
         "site_id": "s", "artifact_slug": "slug", "ttl_hours": True,
@@ -279,7 +282,7 @@ async def test_ttl_hours_bool_rejected(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ttl_hours_int_ok(monkeypatch):
+async def test_ttl_hours_int_ok(monkeypatch, tmp_path):
     """F4: ttl_hours as int 12 → passes validation (hits confirm gate)."""
     from kiro_crew.deploy import handlers
 
@@ -300,8 +303,9 @@ async def test_ttl_hours_int_ok(monkeypatch):
             return FakeArt()
 
     monkeypatch.setattr("kiro_crew.deploy.handlers.get_default_store", lambda: FakeStore())
+    staged = str(tmp_path / "x")
     monkeypatch.setattr("kiro_crew.deploy.handlers._stage_artifact_html",
-                        lambda kind, content, name: ([], "/tmp/x", 42))
+                        lambda kind, content, name: ([], staged, 42))
 
     status, body = await handlers._do_deploy({
         "site_id": "s", "artifact_slug": "slug", "ttl_hours": 12,

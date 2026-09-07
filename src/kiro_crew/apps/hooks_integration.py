@@ -33,6 +33,7 @@ from kiro_crew.apps.job_routes import register_job_routes
 from kiro_crew.apps.job_sdk import forget_sdk, get_sdk, reconcile_all, register_sdk
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import app_dir, list_apps
+from kiro_crew.apps.module_loader import clear_all_shutdown_callables
 from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.executors import subprocess_executor
@@ -51,6 +52,188 @@ _lifecycle_dispatcher: LifecycleDispatcher | None = None
 # never installed. Published here so ``GET /api/apps`` can report it under the
 # same ``hooks.health_status`` spelling the enable response already uses.
 _hook_health: dict[str, dict[str, Any]] = {}
+
+# The ONE source of truth for "which app's backend hooks does this gateway
+# currently have loaded, and against what on-disk identity". Written by whichever
+# path drives the lifecycle -- the dashboard enable/disable handlers, the boot
+# startup pass, AND the out-of-process hook reconciler (apps/hook_reconcile.py)
+# -- so none of them can desync from the others. The reconciler reads it to
+# decide whether disk has drifted from what is loaded; because the dashboard
+# handlers update it too, a dashboard-driven enable/disable leaves nothing for
+# the reconciler to "re-fix", which is what stops it from double-running an
+# app's on_startup/on_shutdown right after an in-process handler already did
+# (see the design note on shared bookkeeping). An entry present = hooks loaded
+# under that signature; absent = not loaded.
+_loaded_hook_signatures: dict[str, tuple[Any, ...]] = {}
+
+# Retained manifest of each loaded app, keyed by name, recorded alongside the
+# signature. Its purpose is the uninstall case: once an app's files are gone from
+# disk its on_shutdown cannot be resolved, so the reconciler falls back to this
+# retained manifest to stop the code it actually loaded (see loaded_hook_manifest).
+_loaded_hook_manifests: dict[str, dict[str, Any]] = {}
+
+
+def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
+    """The hook-identity signature all lifecycle drivers agree on.
+
+    Folds ONLY hook-relevant inputs so a metadata write that does not touch hook
+    code never forces a reload: the app version, a digest of the declared hook
+    source files' (path, mtime, size), and the ``.app_secret`` mtime (a reinstall
+    rotates it, and the live module must pick up the new secret). Deliberately
+    EXCLUDES two things:
+
+    * ``installed.json`` mtime -- a dashboard permissions/config edit rewrites
+      that file without changing any hook, and reloading a healthy running app on
+      such an edit would discard its in-flight hook state for nothing.
+    * the ``enabled`` flag -- enablement is an ORTHOGONAL axis the reconciler
+      already checks separately (it disables a loaded app that turned off and
+      loads an enabled one), so folding it in here caused a spurious mismatch: a
+      denied/disabled path records a signature computed from an ``enabled=False``
+      copy, then the next poll (which re-reads ``enabled=True`` from disk) sees a
+      different signature and runs a needless shutdown/startup cycle against the
+      no-op it was promised. The signature answers "did the hook CODE change",
+      not "is the app on".
+
+    Blocking: it ``stat``s the declared hook files and ``.app_secret``. On the
+    gateway event loop (the dashboard enable/disable handlers, the boot pass) it
+    must be reached via :func:`compute_hook_signature`, which offloads it; the
+    reconcile loop runs it inside its own ``to_thread`` step. Kept here, beside
+    the registry it feeds, so every driver computes the identical value.
+    Import-light and defensive: unreadable files contribute their path alone (so
+    a vanished/relocated hook still perturbs the digest), never an exception.
+    """
+    name = app_info.get("name", "")
+    manifest = app_info.get("manifest", {}) or {}
+    hooks = manifest.get("backend", {}).get("hooks", {}) or {}
+    rels = sorted(
+        {
+            spec.split(":", 1)[0].replace(".", "/") + ".py"
+            for key in ("on_startup", "on_shutdown", "routes")
+            if (spec := hooks.get(key, ""))
+            if spec.split(":", 1)[0]
+        }
+    )
+    root = app_dir(name)
+    mask = (1 << 63) - 1
+    digest = 0
+    for rel in rels:
+        try:
+            st = (root / rel).stat()
+            digest ^= hash((rel, st.st_mtime_ns, st.st_size)) & mask
+        except OSError:
+            digest ^= hash((rel, 0, 0)) & mask
+    try:
+        secret_mtime = (root / ".app_secret").stat().st_mtime_ns
+    except OSError:
+        secret_mtime = 0
+    return (
+        str(app_info.get("version", "")),
+        digest,
+        secret_mtime,
+    )
+
+
+async def compute_hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
+    """``hook_signature`` off the event loop.
+
+    ``hook_signature`` stats files, so every caller that runs on the gateway
+    event loop (the dashboard enable/disable handlers, the boot pass) must reach
+    it through here -- a synchronous stat storm on a slow/network data home would
+    otherwise stall the dashboard and the liveness heartbeat
+    (no-blocking-call-on-event-loop).
+    """
+    return await asyncio.to_thread(hook_signature, app_info)
+
+
+async def record_loaded_hook_signature(app_name: str, app_info: dict[str, Any]) -> None:
+    """Mark an app's hooks loaded under its current on-disk signature.
+
+    Called by every path that successfully wires an app's hooks -- the dashboard
+    enable handler, the boot startup pass, and the reconciler -- so the shared
+    registry reflects reality regardless of who did the loading. Async because it
+    computes the signature off the event loop (see ``compute_hook_signature``).
+
+    Also retains the loaded app's ``manifest`` (the hooks half is what matters):
+    if the app is later UNINSTALLED between reconciler ticks, its files are gone
+    and its ``on_shutdown`` can no longer be resolved from disk -- yet a
+    background task its ``on_startup`` spawned is still live in the gateway after
+    uninstall removed execution trust. The reconciler uses this retained manifest
+    to run ``on_shutdown`` against the code that was ACTUALLY loaded, so that
+    residual third-party work is stopped rather than orphaned.
+    """
+    _loaded_hook_signatures[app_name] = await compute_hook_signature(app_info)
+    _loaded_hook_manifests[app_name] = app_info.get("manifest", {}) or {}
+
+
+async def record_hook_antichurn_signature(app_name: str, app_info: dict[str, Any]) -> None:
+    """Record ONLY the on-disk signature, with NO retained manifest.
+
+    For a path that did NOT healthily load the app's hooks into the gateway but
+    must still stop the out-of-process reconciler from re-running the whole
+    enable path every tick -- specifically the execution-DENIED enable, where the
+    gateway refuses to run the hooks at all. Recording the signature makes the
+    reconciler see no drift (so it retries only when the on-disk hooks actually
+    change, e.g. the admission grant is later added), while deliberately NOT
+    retaining a manifest: nothing of the app's was ever started, so a later
+    teardown must run NO ``on_shutdown`` for it. ``_disable_loaded`` treats the
+    absent manifest as "no app code to stop" and skips app hooks -- without this
+    split a denied app would look loaded and its shutdown-only code could execute
+    on the next disable/uninstall (a shutdown-only execution vector).
+    """
+    _loaded_hook_signatures[app_name] = await compute_hook_signature(app_info)
+    _loaded_hook_manifests.pop(app_name, None)
+
+
+def clear_loaded_hook_signature(app_name: str) -> None:
+    """Forget an app's loaded-hooks record (disable / teardown / uninstall)."""
+    _loaded_hook_signatures.pop(app_name, None)
+    _loaded_hook_manifests.pop(app_name, None)
+
+
+def loaded_hook_signature(app_name: str) -> tuple[Any, ...] | None:
+    """The signature an app's hooks are currently loaded under, or None."""
+    return _loaded_hook_signatures.get(app_name)
+
+
+def loaded_hook_manifest(app_name: str) -> dict[str, Any] | None:
+    """The manifest an app's currently-loaded hooks were wired from, or None.
+
+    Retained at load time so an UNINSTALLED app -- whose files are gone from disk
+    -- can still have its ``on_shutdown`` resolved and run against the code that
+    was actually loaded, stopping residual third-party background work after
+    uninstall removes execution trust.
+    """
+    return _loaded_hook_manifests.get(app_name)
+
+
+def loaded_hook_apps() -> list[str]:
+    """Every app name the gateway currently has hooks loaded for."""
+    return list(_loaded_hook_signatures)
+
+
+def manifest_declares_hooks(app_info: dict[str, Any]) -> bool:
+    """Whether an app's manifest declares any backend hook."""
+    return bool((app_info.get("manifest", {}) or {}).get("backend", {}).get("hooks", {}))
+
+
+def hook_enable_denied(app_name: str) -> str | None:
+    """Non-empty reason string when the gateway must NOT run this app's hooks.
+
+    Wraps ``app_execution_denied`` with the same action/root the enable and boot
+    paths use, so the reconciler asks the identical admission question they do.
+    The reconciler re-checks this UNDER the per-app lifecycle lock immediately
+    before an enable: a trust withdrawal clears the loaded-signature during its
+    teardown, and without this re-check a lock-free reconciler could observe the
+    still-``enabled`` metadata and re-run the app's startup hooks/routes after
+    trust was revoked. Returning the reason here keeps that resurrection from
+    happening.
+    """
+    return app_execution_denied(
+        app_name,
+        action="hook_reconcile_register",
+        app_root=_app_hook_root(app_name),
+        caller="gateway",
+    )
 
 
 def _publish_hook_health(app_name: str, ctx: AppContext) -> dict[str, Any] | None:
@@ -194,6 +377,18 @@ async def on_app_enable(
             await disarm_app_crons_for_execution(app_name, cron_service)
         if _route_registry:
             _route_registry.deregister_app_routes(app_name)
+        # Record the on-disk signature even though nothing was loaded: an
+        # execution-denied app is enabled with hooks the gateway will not run, so
+        # WITHOUT this the reconciler would see no record every tick and re-run
+        # on_app_enable forever (a cron-store mutation + SEL audit write + route
+        # dereg each time) for an app that can never load. Record the SIGNATURE
+        # ONLY (no manifest): the reconciler then retries only when the on-disk
+        # hooks change (e.g. the admission grant is later added and a
+        # reinstall/enable bumps the signature), and because no manifest is
+        # retained a later disable/uninstall runs NO ``on_shutdown`` for this app
+        # -- nothing of its was ever started, so recording a full loaded record
+        # here would be a shutdown-only code-execution vector.
+        await record_hook_antichurn_signature(app_name, app_info)
         return result
 
     manifest = app_info.get("manifest", {})
@@ -280,6 +475,65 @@ async def on_app_enable(
     health_snapshot = _publish_hook_health(app_name, ctx)
     if health_snapshot:
         result["health_status"] = health_snapshot
+
+    # Shared source of truth: record that this app's hooks are now loaded under
+    # its current on-disk signature, so the out-of-process reconciler sees no
+    # drift for an enable THIS handler just performed and does not re-run the
+    # startup hook on its next tick. ``_publish_hook_health`` returns a snapshot
+    # exactly when the context is NOT healthy and ``None`` when it is, so gate on
+    # that return rather than re-reading ``ctx.health`` -- the context object is
+    # the single source for both, and reusing the already-computed result avoids
+    # assuming a ``health`` attribute shape on every caller's context.
+    #
+    # Record ONLY when the wiring came up healthy. A route or startup hook that
+    # failed to import (or a detached/timed-out ``on_startup``) must stay
+    # UN-recorded so the reconciler re-attempts it on its next tick and picks the
+    # app up once a transient failure clears -- the poll-retry-after-recovery the
+    # reconciler exists to provide. Freezing a degraded import as the current
+    # loaded state would strand it until its code changed. A prior record is
+    # cleared on failure for the same reason.
+    if health_snapshot is None:
+        # Cache the declared on_shutdown callable now (files still present) so a
+        # later CLI uninstall can stop background work this app spawned -- even a
+        # ROUTES-ONLY app with no on_startup, and even when on_shutdown lives in a
+        # separate module. Done on healthy wiring independently of on_startup
+        # presence/success (dispatcher no-ops when no on_shutdown is declared).
+        if _lifecycle_dispatcher:
+            await _lifecycle_dispatcher.cache_shutdown_for(app_info)
+        await record_loaded_hook_signature(app_name, app_info)
+    else:
+        # Degraded wiring (e.g. a route import failed) that nonetheless ran a
+        # successful ``on_startup`` -- or a route hook -- may have spawned a
+        # background child that OUTLIVES the startup call (the wrapper returns, the
+        # child keeps running). Clearing the signature alone arms a reconciler
+        # RE-RUN, so ``on_startup`` fires again and a fresh child stacks on the
+        # live one every poll until exhaustion. So run the app's SHUTDOWN lifecycle
+        # first -- ``on_shutdown`` is what actually stops such a spawned child --
+        # and also settle any detached startup hooks. Clear the signature (arming a
+        # retry) ONLY when BOTH confirm clean. If either is unconfirmed the child
+        # may be live, so RETAIN the loaded signature instead: a retained record
+        # keeps the reconciler from re-running and duplicating. Best-effort: a
+        # failure here must not turn a degraded enable into a crash.
+        shutdown_ok = False
+        stopped = False
+        try:
+            if _lifecycle_dispatcher:
+                shutdown_ok = await _lifecycle_dispatcher.dispatch_disable(app_info)
+            stopped = await stop_app_startup_hooks(app_name, bounded=True)
+        except Exception:  # noqa: BLE001 - teardown must not fail the enable
+            logger.exception(
+                "App %s: running the shutdown lifecycle before degraded-retry clear "
+                "failed; retaining the loaded signature so the reconciler does not "
+                "re-run and stack a duplicate worker",
+                app_name,
+            )
+        if shutdown_ok and stopped:
+            clear_loaded_hook_signature(app_name)
+        else:
+            # Teardown did not confirm the spawned work stopped: keep the loaded
+            # record so the poll does not spawn another. record is the retain (it
+            # also carries the manifest the retained-startup teardown path needs).
+            await record_loaded_hook_signature(app_name, app_info)
 
     sel().log_api_access(
         caller="gateway",
@@ -426,6 +680,13 @@ async def on_app_disable(
     # stale claim about an app that is no longer wired up at all.
     clear_hook_health(app_name)
 
+    # Shared source of truth: the app's hooks are now torn down, so drop its
+    # loaded-signature record. Reached only past the startup-ownership guard
+    # above, so a teardown that did NOT settle (retained startup task) leaves the
+    # record in place and the reconciler keeps retrying rather than treating the
+    # app as unloaded.
+    clear_loaded_hook_signature(app_name)
+
     # Clean up cron jobs owned by this app
     permissions = manifest.get("permissions", {})
     if permissions.get("cron"):
@@ -530,6 +791,14 @@ async def on_gateway_startup(
                 await disarm_app_crons_for_execution(name, cron_service)
             if _route_registry:
                 _route_registry.deregister_app_routes(name)
+            # Same anti-churn record as on_app_enable's denied path: a hook-
+            # declaring app the gateway refuses to run must be recorded so the
+            # reconciler does not re-attempt it every tick. Record the SIGNATURE
+            # ONLY (no manifest) so a later teardown runs no on_shutdown for an
+            # app that never started (shutdown-only execution vector). Hookless
+            # denied apps need no record (the reconciler ignores them).
+            if manifest_declares_hooks(app_info):
+                await record_hook_antichurn_signature(name, app_info)
             continue
 
         # Reconcile app-declared crons into the running scheduler.
@@ -588,7 +857,25 @@ async def on_gateway_startup(
         # lifecycle.py:352,396, plus the cancelled site via
         # _mark_cancelled_startup_residual at lifecycle.py:66), so an aggregate
         # would only re-log them, and only ever for this one caller.
-        _publish_hook_health(name, ctx)
+        boot_health = _publish_hook_health(name, ctx)
+
+        # Shared source of truth: record what boot loaded so the out-of-process
+        # reconciler starts already agreeing with the gateway and does not
+        # reimport every app on its first tick. Recorded for any hook-declaring
+        # app the loop reached (it has already `continue`d past hookless apps),
+        # covering routes-only apps as well as those with on_startup -- but ONLY
+        # when the wiring came up healthy (``_publish_hook_health`` returns a
+        # snapshot only when it did NOT). A boot-time import failure stays
+        # un-recorded so the reconciler re-attempts it and picks the app up once a
+        # transient failure clears, rather than freezing the degraded state as
+        # current.
+        if boot_health is None:
+            # Cache the declared on_shutdown regardless of on_startup (routes-only
+            # apps included; dispatcher no-ops when none is declared), so a later
+            # CLI uninstall can stop background work this app spawned.
+            if _lifecycle_dispatcher:
+                await _lifecycle_dispatcher.cache_shutdown_for(app_info)
+            await record_loaded_hook_signature(name, app_info)
 
     # AFTER the loop, deliberately: only here has every enabled app registered
     # its runners, so a run whose kind has no runner can be told apart from an
@@ -666,6 +953,13 @@ async def on_gateway_shutdown() -> None:
         # a single cancel request), instead of force-exiting with every one of
         # them orphaned — the exact defect this function exists to fix.
         await _stop_spawned_backends()
+
+    # Shutdown hooks have run (they needed the cached on_shutdown callables while
+    # the cache was still valid) and backends are stopped. Drop the whole shutdown
+    # cache now: this sweep does not go through per-app unload_app_modules, so
+    # without this a callable captured this generation would survive into an
+    # in-process gateway restart and be selected to stop a NEWLY loaded worker.
+    clear_all_shutdown_callables()
 
 
 async def _stop_spawned_backends() -> None:

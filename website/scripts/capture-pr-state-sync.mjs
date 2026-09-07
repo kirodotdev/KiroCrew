@@ -15,7 +15,7 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:6801'
-const OUT = process.argv[3] || '../docs/screenshots/pr-state-sync'
+const OUT = process.argv[3] || '../.github/screenshots/pr-state-sync'
 const SLOT = 'chat-pr-state'
 const PR_URL = 'https://github.com/kirodotdev/KiroCrew/pull/443'
 const OTHER_URL = 'https://github.com/kirodotdev/KiroCrew/pull/409'

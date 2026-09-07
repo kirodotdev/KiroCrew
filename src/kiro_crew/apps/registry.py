@@ -7125,7 +7125,7 @@ async def install_from_registry(
             # filter_restorable=False and names the genuinely-retained restorable
             # stale rather than letting it sit unlogged until the sweep.
             if official_entry:
-                install_receipt.dispatch(
+                await install_receipt.dispatch_async(
                     name,
                     official=True,
                     kind=(
@@ -7194,7 +7194,7 @@ async def install_from_registry(
             # = False — so the restorable stale is reported, not stranded.
             if official_entry:
                 # Detached best-effort telemetry runs only after durable success.
-                install_receipt.dispatch(
+                await install_receipt.dispatch_async(
                     name,
                     official=True,
                     kind=(

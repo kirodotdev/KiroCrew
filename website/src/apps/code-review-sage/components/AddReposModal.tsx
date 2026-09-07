@@ -22,6 +22,7 @@ import {
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import Clickable from '../../../components/Clickable'
+import ErrorNotice from '../../../components/ErrorNotice'
 
 import EmptyState from '../components/EmptyState'
 import ListSkeleton from '../components/ListSkeleton'
@@ -258,8 +259,10 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
 
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none px-4 md:px-6 pb-5 flex flex-col gap-2.5">
             {setupRequired && <GhNotice message={recent?.error ?? mine?.error} />}
+            {/* No hand-off: the manual repo-URL input below is unsaved — the
+                navigation would take what was typed with the modal. */}
             {err && !setupRequired && (
-              <div className="text-[12.5px] text-danger">{err.message}</div>
+              <ErrorNotice message={err.message} variant="inline" />
             )}
 
             {loading && !setupRequired && (

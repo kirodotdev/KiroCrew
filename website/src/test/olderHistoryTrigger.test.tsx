@@ -18,7 +18,10 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { createTestStore } from './helpers'
-import { loadOlderMessages, resumeFromHistory } from '../store/chatSlice'
+// The walk's page size is asserted through its CONSTANT, never a spelled-out
+// number: what these tests own is "the walk asks for a walk-sized page", and a
+// literal turns a deliberate retune of that size into two unrelated red tests.
+import { loadOlderMessages, resumeFromHistory, OLDER_WALK_PAGE_LIMIT } from '../store/chatSlice'
 import { shouldPaginateOlder } from '../pages/chat/pagination'
 import { shouldAutoFillOlder } from '../pages/ChatPage'
 import { api } from '../api/client'
@@ -256,7 +259,7 @@ describe('older-history trigger — fetch through the gate', () => {
     try {
       const top = container.querySelector('[data-sentinel="top"]') as HTMLElement
       fireIntersection(io.instances[0], top)
-      await waitFor(() => expect(detail).toHaveBeenCalledWith('slot-1', 300, OLDEST, expect.any(AbortSignal)))
+      await waitFor(() => expect(detail).toHaveBeenCalledWith('slot-1', OLDER_WALK_PAGE_LIMIT, OLDEST, expect.any(AbortSignal)))
     } finally {
       io.restore()
     }
@@ -285,7 +288,7 @@ describe('older-history trigger — fetch through the gate', () => {
       .mockResolvedValue({ messages: [], has_more: true, total: TOTAL } as never)
     const store = resumedStore(true)
     const result = await store.dispatch(loadOlderMessages())
-    expect(detail).toHaveBeenCalledWith('slot-1', 300, OLDEST, expect.any(AbortSignal))
+    expect(detail).toHaveBeenCalledWith('slot-1', OLDER_WALK_PAGE_LIMIT, OLDEST, expect.any(AbortSignal))
     expect(result.payload).not.toBeNull()
   })
 

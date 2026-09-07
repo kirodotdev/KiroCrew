@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import env as env_mod
 from kiro_crew.browser_cli import install as mod
 
 # The real implementation, captured before the autouse fixture below replaces
@@ -15,6 +16,27 @@ from kiro_crew.browser_cli import install as mod
 # restore THIS (re-reading ``mod._required_revisions`` there would just re-bind
 # the stub to itself, silently leaving every test on the fallback path).
 _REAL_REQUIRED_REVISIONS = mod._required_revisions
+
+
+@pytest.fixture(autouse=True)
+def _clear_node_bin_dir_caches() -> None:
+    """``node_bin_dirs`` / ``_node_all_bin_dirs`` are ``lru_cache``d for the
+    process lifetime, keyed on nothing (the former) or on ``(home, mise_data)``
+    (the latter). ``cli_path()`` reaches both via ``find_node_tool`` ->
+    ``node_augmented_path`` -> ``node_bin_dirs()``. Once any earlier test in
+    this worker (this file or another) resolves a node tool with the real
+    ``$HOME``, the memoized real-machine mise/volta/nvm directories stay
+    prepended to every later PATH lookup regardless of a test's own ``HOME``
+    override -- ``test_the_cli_is_found_where_the_standalone_installer_puts_it``
+    got the operator's real mise-installed ``playwright-cli`` shim instead of
+    the ``tmp_path``-rooted wrapper it wrote, only when an earlier test had
+    warmed the cache first (no-test-side-effects; mirrors the fixture in
+    test_node_toolchain_resolution.py)."""
+    env_mod.node_bin_dirs.cache_clear()
+    env_mod._node_all_bin_dirs.cache_clear()
+    yield
+    env_mod.node_bin_dirs.cache_clear()
+    env_mod._node_all_bin_dirs.cache_clear()
 
 
 @pytest.fixture(autouse=True)

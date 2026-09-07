@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 if TYPE_CHECKING:
+    from kiro_crew.publish_provider import PublishProvider
     from kiro_crew.platform.interfaces import (
         ImportSource,
         InboundToken,
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.security import DeniedCommandRule
     from kiro_crew.skill_providers.base import SkillProvider
+    from kiro_crew.tips_pool import TipsPool
 
 from kiro_crew import security, sso_status
 from kiro_crew.platform.interfaces import (
@@ -67,16 +69,54 @@ class DefaultProviderRegistry:
 
 
 class DefaultPublishRegistry:
-    """Registers no publish provider — the public edition has no artifact-publish
-    destination.  The ``publish_provider`` registry stays empty, so
-    ``get_provider`` raises ``PublishUnavailableError`` (→ 503) and
-    ``list_providers`` returns ``[]`` (dashboard shows "publishing unavailable")
-    with no core branching.  A companion registers its concrete providers here
-    via the ``publish_provider.register_provider`` side effect — the structural
-    twin of ``DefaultProviderRegistry.register_acp_backends``."""
+    """Registers the personal cloud drive as an OPT-IN publish destination.
+
+    The seam itself stays destination-agnostic: this registry is the ONLY place the
+    public edition names a concrete provider, and ``publish_sync`` reaches it through
+    the neutral ``publish_provider`` registry, so a companion edition that registers a
+    different destination never loads this code.  The structural twin of
+    ``DefaultProviderRegistry.register_acp_backends``.
+
+    The drive registers under its OWN key, not ``DEFAULT_PROVIDER``, so it is available
+    and selectable without being the edition's default: ``publish_sync`` resolves an
+    unnamed destination through the default key, which stays unregistered here, so a
+    publish that names nothing still gets a 503.  What holds the default back is a
+    cross-store contract for whether a publication exists, which is being built
+    separately -- see ``personal_drive.PERSONAL_DRIVE_PROVIDER``.  Whether a publish is
+    PERMITTED remains the orthogonal decision of the governance ceiling
+    (``capabilities.publish``) and the operator's ``publish.allowed_destinations``
+    narrowing knob; this seam only decides who implements the transfer.
+    """
+
+    #: The key the drive registers under, spelled here so bootstrap does not have to
+    #: import the provider module to learn it. It is deliberately duplicated rather than
+    #: imported, and `test_boot_does_not_import_the_publish_stack` pins that this literal
+    #: still equals `personal_drive.PERSONAL_DRIVE_PROVIDER`, so the copy cannot drift.
+    _PERSONAL_DRIVE_KEY = "personal-drive"
 
     def register_publish_providers(self) -> None:
-        return None
+        """Register the drive's FACTORY without importing the provider module.
+
+        `no-new-work-on-gateway-boot-path`: this runs inside platform bootstrap, before
+        the socket is bound, so anything imported here is added to every gateway's
+        time-to-ready. Importing the provider eagerly costs ~0.5s of cumulative import
+        (it reaches the deploy engine's profile registry, the artifact store and the
+        validation stack), for a destination most installs never select -- the drive is
+        opt-in, so a publish that does not name it never touches this code at all.
+
+        The registry is already factory-based and instantiates lazily, so only the IMPORT
+        needed moving: it now happens on first selection, inside the closure. The import
+        also has to stay deferred for the original reason, which is unchanged -- the
+        provider reaches config-resolving code that installs this very platform context.
+        """
+        from kiro_crew.publish_provider import register_provider
+
+        def _build() -> PublishProvider:
+            from kiro_crew.publish import personal_drive
+
+            return personal_drive.PersonalDriveProvider()
+
+        register_provider(self._PERSONAL_DRIVE_KEY, _build)
 
 
 class DefaultAgentRuntime:
@@ -309,6 +349,17 @@ class DefaultSkillDiscoveryProvider:
 
     def skill_providers(self) -> List["SkillProvider"]:
         return []
+
+
+class DefaultTipsProvider:
+    """No edition tip pool — the public curated file + docs-scan catalog.
+
+    ``None`` is the "public pool unchanged" answer, so the standalone edition is
+    behaviorally identical to before the seam existed.
+    """
+
+    def tips_pool(self) -> "Optional[TipsPool]":
+        return None
 
 
 class DefaultDeniedRuleProvider:

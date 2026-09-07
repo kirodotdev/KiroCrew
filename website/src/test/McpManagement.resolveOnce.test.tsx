@@ -125,10 +125,13 @@ describe('McpManagement pre-resolve', () => {
     await pressUpdate()
 
     await waitFor(() => {
-      const text = screen.getByRole('status').textContent ?? ''
+      // Per-package install failures are an error, not a status: they render
+      // through ErrorNotice, so the role is `alert`.
+      const text = screen.getByRole('alert').textContent ?? ''
       expect(text).toMatch(/2/)
       expect(text).not.toMatch(/nothing needed/i)
     })
+    expect(screen.queryByRole('status')).toBeNull()
   })
 
   it('reports both halves of a mixed pass', async () => {
@@ -143,7 +146,8 @@ describe('McpManagement pre-resolve', () => {
     await pressUpdate()
 
     await waitFor(() => {
-      const text = screen.getByRole('status').textContent ?? ''
+      // A mixed pass still carries failures, so it too renders as an alert.
+      const text = screen.getByRole('alert').textContent ?? ''
       // One ready, two failed -- a notice naming only the win would still be a
       // partial all-clear.
       expect(text).toMatch(/1/)

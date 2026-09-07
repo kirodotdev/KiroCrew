@@ -32,6 +32,7 @@ import {
 import { providerDefaultHost, providerTerms } from './lib/links'
 import { relativeTimeOrDate } from './lib/format'
 import type { ActiveRepo } from './lib/types'
+import ErrorNotice from '../../components/ErrorNotice'
 import AzureDevopsLogo from '../../components/icons/AzureDevopsLogo'
 import GithubLogo from '../../components/icons/GithubLogo'
 import GitlabLogo from '../../components/icons/GitlabLogo'
@@ -643,12 +644,9 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
         )}
       </div>
 
-      {flow.error && (
-        <div className="flex items-start gap-1.5 text-danger text-xs flex-shrink-0">
-          <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
-          <span className="break-words">{flow.error}</span>
-        </div>
-      )}
+      {/* No hand-off: the connect wizard's repo URL and ticked repos are unsaved
+          until the connect succeeds. */}
+      <ErrorNotice message={flow.error} className="flex-shrink-0" />
     </div>
   )
 }
@@ -754,9 +752,11 @@ function RecentRepoPicker({
             <RefreshCw size={12} className="animate-spin" /> {i18nT('apps.issueRadar.connectPanel.loading_your_repos')}
           </div>
         )}
+        {/* No hand-off: this picker shares the connect wizard with the repo URL
+            input and the ticked repos, which are unsaved. */}
         {error && !setupRequired && (
-          <div className="text-xs text-danger h-full flex items-center justify-center text-center px-2">
-            {error}
+          <div className="h-full flex items-center justify-center px-2">
+            <ErrorNotice message={error} />
           </div>
         )}
         {setupRequired && (

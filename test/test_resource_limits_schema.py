@@ -546,6 +546,6 @@ class TestSingleParseSite:
         block, so a refactor cannot satisfy the test above by dropping config
         support altogether."""
         src = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
-        for rel in ("sandbox.py", "security.py", "resource_status.py"):
+        for rel in ("sandbox.py", "security/helpers.py", "resource_status.py"):
             body = (src / rel).read_text(encoding="utf-8")
             assert "ResourceLimitsConfig" in body, rel

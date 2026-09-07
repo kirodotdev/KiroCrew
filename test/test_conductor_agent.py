@@ -94,11 +94,15 @@ class TestConductorInstaller:
     def test_prompt_names_the_tools_it_expects_to_be_used(self, tmp_path, monkeypatch):
         """The charter mounts whole servers, so the prompt must name what it wants.
 
-        ``@kirocrew-core`` puts ~70 tools in front of this agent. Naming only the
-        session-control ones left the rest unaddressed, which is how a conductor
-        talks itself into running a work item in its own turn. Both directions are
-        pinned: the tools the four jobs need, and the four that would end-run the
-        no-write property by executing the work here.
+        ``@kirocrew-core`` puts 74 registered tools in front of this agent. Naming
+        only the session-control ones left the rest unaddressed, which is how a
+        conductor talks itself into running a work item in its own turn. Both
+        directions are pinned: the tools the four jobs need, and the four that
+        would end-run the no-write property by executing the work here.
+
+        Those four are also the reason the core grant is per-verb rather than
+        server-wide — the prompt PROHIBITS them, so a blanket auto-approve
+        contradicted the charter it shipped with.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         for named in (
@@ -119,16 +123,18 @@ class TestConductorInstaller:
         """The security properties of the spec, in one place.
 
         No ``fs_write``: the conductor cannot do a work item's work itself.
-        ``@kirocrew-dashboard`` is MOUNTED whole but never granted whole — the
-        auto-approve list names verbs, so the destructive ones keep prompting.
-        ``execute_bash`` is mounted and never granted, because ``allowedTools``
-        has no argument matching and trusting the two bundled scripts cannot be
-        told apart from trusting arbitrary shell.
+        ``@kirocrew-core`` and ``@kirocrew-dashboard`` are MOUNTED whole but never
+        granted whole — the auto-approve list names verbs, so the destructive ones
+        keep prompting. ``execute_bash`` is mounted and never granted, because
+        ``allowedTools`` has no argument matching and trusting the two bundled
+        scripts cannot be told apart from trusting arbitrary shell.
         """
         data = self._install(tmp_path, monkeypatch)
         assert "fs_write" not in data["tools"]
         assert "@kirocrew-dashboard" in data["tools"]
         assert "@kirocrew-dashboard" not in data["allowedTools"]
+        assert "@kirocrew-core" in data["tools"]
+        assert "@kirocrew-core" not in data["allowedTools"]
         assert "execute_bash" in data["tools"]
         assert "execute_bash" not in data["allowedTools"]
 
@@ -185,6 +191,85 @@ class TestConductorInstaller:
         # The bare server must never appear: it would grant every verb, including
         # the four the test above withholds.
         assert "@kirocrew-dashboard" not in granted
+
+    def test_core_grants_are_named_verbs_never_the_whole_server(self, tmp_path, monkeypatch):
+        """Both directions of the core narrowing, because only one of them can rot.
+
+        The positive half — the 14 verbs the charter needs are granted — passes
+        just as well against the server-wide ``@kirocrew-core`` this replaced, so
+        on its own it is vacuous on the thing being changed. The negative half is
+        the real assertion: the verbs the charter never names must be DENIED, and
+        it is the half a future edit can silently undo by restoring the bare
+        server or widening the tuple.
+
+        The denied set carries a representative per family rather than one token
+        case, because they reach ``allowed_tools_to_permissions`` as separate
+        patterns and a family could classify differently: persistent work
+        (``task_run``, the ``workflow_*`` group), agent fan-out (the ``spawn_*``
+        group), session and workspace mutation (``set_project``,
+        ``reset_conversation``), egress (``deploy_artifact``, ``browser``,
+        ``ops_mission_control_api``) and the ``artifact_*`` writes.
+
+        Spelled as literals, deliberately: deriving the expectation from
+        ``agent._CONDUCTOR_CORE_GRANTS`` would let the tuple and its test drift
+        together and assert nothing.
+        """
+        granted = self._install(tmp_path, monkeypatch)["allowedTools"]
+        core = {g for g in granted if g.startswith("@kirocrew-core")}
+        assert core == {
+            "@kirocrew-core/monitor_start",
+            "@kirocrew-core/monitor_update",
+            "@kirocrew-core/autonudge_stop",
+            "@kirocrew-core/wait",
+            "@kirocrew-core/resource_status",
+            "@kirocrew-core/list_sessions",
+            "@kirocrew-core/session_ledger_read",
+            "@kirocrew-core/session_ledger_record",
+            "@kirocrew-core/skill_search",
+            "@kirocrew-core/skill_fetch",
+            "@kirocrew-core/select_crew",
+            "@kirocrew-core/send_message",
+            "@kirocrew-core/send_notification",
+            "@kirocrew-core/ask_question",
+        }
+        # The bare server is what this test exists to keep out: it would re-grant
+        # all 74 registered core tools, including every verb named below.
+        assert "@kirocrew-core" not in granted
+        for denied in (
+            # Persistent work — the three the prompt PROHIBITS by name.
+            "task_run",
+            "workflow_run",
+            "workflow_author",
+            "workflow_rerun_subtree",
+            "workflow_cancel",
+            # Agent fan-out with no human in the loop.
+            "spawn_run",
+            "spawn_sub_agents",
+            "spawn_steer",
+            "spawn_continue",
+            # Mutating the caller's own session or project out from under it.
+            "set_project",
+            "reset_conversation",
+            # Egress and machine reach.
+            "deploy_artifact",
+            "browser",
+            "ops_mission_control_api",
+            "file_send",
+            # Artifact and memory writes.
+            "artifact_save",
+            "artifact_update",
+            "artifact_delete",
+            "learn_add",
+            "knowledge_add_document",
+        ):
+            assert f"@kirocrew-core/{denied}" not in granted, denied
+        # And the projected KAS policy must deny them too, not just the kiro-cli
+        # allowlist: a ``kirocrew-core/*`` pattern here would re-grant every one
+        # of them on the KAS backend while the list above still looked narrow.
+        match = self._install(tmp_path, monkeypatch)["permissions"]["rules"][0]["match"]
+        assert "kirocrew-core/*" not in match
+        for denied in ("task_run", "spawn_run", "set_project", "browser", "artifact_save"):
+            assert f"kirocrew-core/{denied}" not in match, denied
 
     def test_template_grants_never_leak_into_the_conductor_list(self, tmp_path, monkeypatch):
         """No-op proof for #7401: the conductor replaces ``allowedTools``
@@ -287,22 +372,42 @@ class TestConductorInstaller:
     def test_grants_pass_through_the_governance_ceiling(self, tmp_path, monkeypatch):
         """``allowedTools`` never reaches the PreToolUse gate, so it is filtered.
 
-        A ceiling with an opinion about ``@kirocrew-core`` must not be silently
-        bypassed by a static grant list: the ref stays MOUNTED (still in
-        ``tools``) but loses its blanket auto-approve, so its calls prompt and
-        the gate applies the real per-tool rule.
+        A ceiling with an opinion about a granted ref must not be silently
+        bypassed by a static grant list: the server stays MOUNTED (still in
+        ``tools``) but the governed VERB loses its auto-approve, so its calls
+        prompt and the gate applies the real per-tool rule.
+
+        Governs one core verb rather than the whole server, which is what the
+        ceiling now has to be able to reach: after the per-verb narrowing there is
+        no bare ``@kirocrew-core`` entry left for it to have an opinion about.
         """
         data = self._install(
             tmp_path,
             monkeypatch,
-            may_auto_approve=lambda ref: ref != "@kirocrew-core",
+            may_auto_approve=lambda ref: ref != "@kirocrew-core/monitor_start",
         )
         assert "@kirocrew-core" in data["tools"]
         assert "@kirocrew-core" not in data["allowedTools"]
+        assert "@kirocrew-core/monitor_start" not in data["allowedTools"]
+        # Every sibling grant survives — the ceiling removed one verb, not the set.
+        assert "@kirocrew-core/monitor_update" in data["allowedTools"]
         assert data["allowedTools"] == [
             "session",
             "report",
             "tool_search",
+            "@kirocrew-core/monitor_update",
+            "@kirocrew-core/autonudge_stop",
+            "@kirocrew-core/wait",
+            "@kirocrew-core/resource_status",
+            "@kirocrew-core/list_sessions",
+            "@kirocrew-core/session_ledger_read",
+            "@kirocrew-core/session_ledger_record",
+            "@kirocrew-core/skill_search",
+            "@kirocrew-core/skill_fetch",
+            "@kirocrew-core/select_crew",
+            "@kirocrew-core/send_message",
+            "@kirocrew-core/send_notification",
+            "@kirocrew-core/ask_question",
             "@kirocrew-dashboard/chat_folder_tree",
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/session_create",
@@ -312,14 +417,31 @@ class TestConductorInstaller:
     def test_kas_permissions_are_derived_from_the_filtered_grants(self, tmp_path, monkeypatch):
         """The KAS block is derived, not restated — so the ceiling reaches it too.
 
-        Ungoverned: the per-tool dashboard grants project to EXACT ``server/tool``
-        resources rather than a ``kirocrew-dashboard/*`` wildcard, which is what
-        makes the narrowing real on the KAS backend as well as on kiro-cli — a
-        wildcard here would re-grant the ``session_stop`` / ``session_send`` that
-        ``allowedTools`` deliberately withholds. Governed against
-        ``@kirocrew-core``: that pattern is gone while the dashboard ones survive,
-        which is the property a rule list restated as a literal would have lost.
+        Ungoverned: the per-tool grants project to EXACT ``server/tool`` resources
+        rather than ``kirocrew-core/*`` / ``kirocrew-dashboard/*`` wildcards, which
+        is what makes the narrowing real on the KAS backend as well as on kiro-cli
+        — a wildcard here would re-grant the ``task_run`` / ``spawn_run`` and the
+        ``session_stop`` / ``session_send`` that ``allowedTools`` deliberately
+        withholds. Governed against one core verb: that pattern is gone while
+        every sibling survives, which is the property a rule list restated as a
+        literal would have lost.
         """
+        core_resources = [
+            "kirocrew-core/ask_question",
+            "kirocrew-core/autonudge_stop",
+            "kirocrew-core/list_sessions",
+            "kirocrew-core/monitor_start",
+            "kirocrew-core/monitor_update",
+            "kirocrew-core/resource_status",
+            "kirocrew-core/select_crew",
+            "kirocrew-core/send_message",
+            "kirocrew-core/send_notification",
+            "kirocrew-core/session_ledger_read",
+            "kirocrew-core/session_ledger_record",
+            "kirocrew-core/skill_fetch",
+            "kirocrew-core/skill_search",
+            "kirocrew-core/wait",
+        ]
         dashboard_resources = [
             "kirocrew-dashboard/chat_folder_create",
             "kirocrew-dashboard/chat_folder_tree",
@@ -331,28 +453,38 @@ class TestConductorInstaller:
             "rules": [
                 {
                     "capability": "mcp",
-                    "match": ["kirocrew-core/*", *dashboard_resources],
+                    "match": [*core_resources, *dashboard_resources],
                     "effect": "allow",
                 }
             ]
         }
+        assert "kirocrew-core/*" not in data["permissions"]["rules"][0]["match"]
         assert "kirocrew-dashboard/*" not in data["permissions"]["rules"][0]["match"]
 
         governed = self._install(
             tmp_path,
             monkeypatch,
-            may_auto_approve=lambda ref: ref != "@kirocrew-core",
+            may_auto_approve=lambda ref: ref != "@kirocrew-core/monitor_start",
         )
         assert governed["permissions"] == {
-            "rules": [{"capability": "mcp", "match": dashboard_resources, "effect": "allow"}]
+            "rules": [
+                {
+                    "capability": "mcp",
+                    "match": [
+                        *(r for r in core_resources if r != "kirocrew-core/monitor_start"),
+                        *dashboard_resources,
+                    ],
+                    "effect": "allow",
+                }
+            ]
         }
 
     def test_a_fully_governed_host_still_emits_the_permissions_key(self, tmp_path, monkeypatch):
         """``{"rules": []}`` when nothing qualifies — the key's PRESENCE loads the spec.
 
-        Split from the test above once the dashboard grant meant a ceiling on
-        ``@kirocrew-core`` alone no longer empties the rule list: without this,
-        the empty-policy branch would have silently lost its coverage.
+        Split from the test above once the dashboard grant meant a ceiling on one
+        ref alone no longer empties the rule list: without this, the empty-policy
+        branch would have silently lost its coverage.
         """
         data = self._install(tmp_path, monkeypatch, may_auto_approve=lambda ref: False)
         assert data["permissions"] == {"rules": []}
@@ -365,6 +497,10 @@ class TestConductorInstaller:
         ``strip_ungoverned_auto_approve`` names a silent pop as the one withhold
         path with no audit trail. Filtering silently here would make this
         installer exactly that path.
+
+        The withheld ref must be named in the record, which after the per-verb
+        narrowing means the VERB and not just the server — an operator reading
+        "@kirocrew-core was withheld" could not tell which of 14 grants he lost.
         """
         calls: list[dict] = []
 
@@ -373,10 +509,12 @@ class TestConductorInstaller:
                 calls.append(kw)
 
         monkeypatch.setattr(agent, "sel", lambda: _Recorder())
-        self._install(tmp_path, monkeypatch, may_auto_approve=lambda ref: ref != "@kirocrew-core")
+        self._install(
+            tmp_path, monkeypatch, may_auto_approve=lambda ref: ref != "@kirocrew-core/select_crew"
+        )
         withheld = [c for c in calls if c.get("operation") == "mcp_auto_approve_withheld"]
         assert len(withheld) == 1
-        assert "@kirocrew-core" in withheld[0]["resources"]
+        assert "@kirocrew-core/select_crew" in withheld[0]["resources"]
         assert withheld[0]["source"] == "_install_conductor_agent"
 
     def test_no_audit_event_when_nothing_is_withheld(self, tmp_path, monkeypatch):
@@ -400,12 +538,26 @@ class TestConductorInstaller:
 
         monkeypatch.setattr(agent, "sel", lambda: _Broken())
         data = self._install(
-            tmp_path, monkeypatch, may_auto_approve=lambda ref: ref != "@kirocrew-core"
+            tmp_path, monkeypatch, may_auto_approve=lambda ref: ref != "@kirocrew-core/select_crew"
         )
+        assert "@kirocrew-core/select_crew" not in data["allowedTools"]
         assert data["allowedTools"] == [
             "session",
             "report",
             "tool_search",
+            "@kirocrew-core/monitor_start",
+            "@kirocrew-core/monitor_update",
+            "@kirocrew-core/autonudge_stop",
+            "@kirocrew-core/wait",
+            "@kirocrew-core/resource_status",
+            "@kirocrew-core/list_sessions",
+            "@kirocrew-core/session_ledger_read",
+            "@kirocrew-core/session_ledger_record",
+            "@kirocrew-core/skill_search",
+            "@kirocrew-core/skill_fetch",
+            "@kirocrew-core/send_message",
+            "@kirocrew-core/send_notification",
+            "@kirocrew-core/ask_question",
             "@kirocrew-dashboard/chat_folder_tree",
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/session_create",

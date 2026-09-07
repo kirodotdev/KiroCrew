@@ -40,14 +40,14 @@ def _reason(paths: list[str], code: str = "M") -> str:
 
 
 @pytest.fixture(scope="module")
-def clean_leaf() -> str:
+def clean_leaf(all_corpus_gates: list[str]) -> str:
     """A leaf nothing imports, nothing mentions, and that is not itself a gate.
 
     Discovered rather than hardcoded: naming one in a string literal would make
     `mentions_of` find it (that scan covers `scripts/` and `test/`), so the
     fixture would disqualify the very file it selects.
     """
-    gates = set(mod.corpus_gates(REPO_ROOT))
+    gates = set(all_corpus_gates)
     for candidate in sorted(TEST_DIR.glob("test_*.py")):
         rel = mod._rel_posix(candidate, REPO_ROOT)
         if rel in gates:
@@ -189,9 +189,21 @@ def test_the_mention_scan_leaves_a_clean_leaf_alone(clean_leaf: str) -> None:
 # ── corpus gates: tests that read the test/ tree as data ──────────────────────
 
 
-def test_corpus_gate_derivation_is_non_empty() -> None:
+@pytest.fixture(scope="module")
+def all_corpus_gates() -> list[str]:
+    """``corpus_gates(REPO_ROOT)`` is a pure function of the immutable repo tree
+    for the duration of this run — several tests below call it with the exact
+    same arguments and previously each re-ran the ~158-file scan independently.
+    Computed once here; tests that instead need to observe a PATCHED
+    ``mod.corpus_gates`` (the monkeypatch mutation guard) call through ``mod.``
+    directly and do not use this fixture.
+    """
+    return mod.corpus_gates(REPO_ROOT)
+
+
+def test_corpus_gate_derivation_is_non_empty(all_corpus_gates: list[str]) -> None:
     """An empty derivation and a broken scan look identical; fail on empty."""
-    assert mod.corpus_gates(REPO_ROOT), "no corpus gates derived, which cannot be true here"
+    assert all_corpus_gates, "no corpus gates derived, which cannot be true here"
 
 
 @pytest.mark.parametrize(
@@ -205,9 +217,9 @@ def test_corpus_gate_derivation_is_non_empty() -> None:
         "test/test_workflows_presence.py",
     ],
 )
-def test_known_corpus_gates_are_derived(gate: str) -> None:
+def test_known_corpus_gates_are_derived(gate: str, all_corpus_gates: list[str]) -> None:
     assert REPO_ROOT.joinpath(gate).is_file(), f"{gate} vanished; update this gate"
-    assert gate in mod.corpus_gates(REPO_ROOT)
+    assert gate in all_corpus_gates
 
 
 def test_the_missed_gate_needs_the_file_relative_rule(clean_leaf: str) -> None:
@@ -226,11 +238,13 @@ def test_the_missed_gate_needs_the_file_relative_rule(clean_leaf: str) -> None:
     assert mod._SCANS_A_DIR.search(text) and mod._REACHES_TEST_TREE.search(text)
 
 
-def test_accepted_run_always_includes_the_corpus_gates(clean_leaf: str) -> None:
+def test_accepted_run_always_includes_the_corpus_gates(
+    clean_leaf: str, all_corpus_gates: list[str]
+) -> None:
     resolved = _resolved([clean_leaf])
     assert isinstance(resolved, tuple)
     changed, gates = resolved
-    assert set(mod.corpus_gates(REPO_ROOT)) - {clean_leaf} == set(gates)
+    assert set(all_corpus_gates) - {clean_leaf} == set(gates)
 
 
 def test_a_broken_corpus_scan_forfeits_the_reduction(
@@ -326,9 +340,9 @@ def test_rel_posix_normalises_a_windows_style_path() -> None:
     assert mod._rel_posix(win_file, win_root) == "test/test_ai_agent_runner_coverage.py"
 
 
-def test_no_derived_path_carries_a_backslash() -> None:
+def test_no_derived_path_carries_a_backslash(all_corpus_gates: list[str]) -> None:
     """Vacuous on POSIX by construction; it is the Windows shard this guards."""
-    for gate in mod.corpus_gates(REPO_ROOT):
+    for gate in all_corpus_gates:
         assert "\\" not in gate, f"corpus gate is not POSIX-form: {gate!r}"
 
 

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
-import { queryComposer, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
+import { queryComposerOrExpand, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
 import {
   loadPanelToggleOverrides,
@@ -898,11 +898,15 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // Alt+Enter: Focus text input — works even from other inputs
     if (code === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      // Synchronous and unguarded on purpose: no state change precedes this, so
-      // there is no next-frame commit to wait for, and a pressed keyboard
-      // shortcut proves a keyboard exists — the helper's touch-device skip
-      // would wrongly no-op it.
-      queryComposer()?.focus()
+      // Unguarded on purpose: a pressed keyboard shortcut proves a keyboard
+      // exists — `focusComposer`'s touch-device skip would wrongly no-op it.
+      // Still synchronous whenever the composer is on screen: the resolver runs
+      // its callback inline in that case, so the ordering this comment used to
+      // rely on is unchanged. It defers a single frame only when the composer
+      // was COLLAPSED and had to be asked back — without that, "focus text
+      // input" silently did nothing for as long as the user left it collapsed,
+      // which outlives a reload.
+      queryComposerOrExpand(ta => ta.focus())
       return
     }
 

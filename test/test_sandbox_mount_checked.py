@@ -72,6 +72,7 @@ _LANDMARKS = (
     "# Private mount propagation",  # the propagation site
     "for d in SENSITIVE_DIRS:",  # the credential-dir loop
     "for d in READONLY_DIRS:",  # the read-only exposure loop
+    "for d in WRITABLE_DIRS:",  # the write carve-out loop (#8653, fail-open)
     "for f in SENSITIVE_FILES:",  # the sensitive-file loop
     "if HIDE_SSH and os.path.isdir(SSH_DIR):",  # the .ssh block
     "sandbox: BLOCKED",  # the refusal
@@ -131,6 +132,7 @@ def _run(
     fail_at: int | None,
     err: int = errno.EPERM,
     script: str | None = None,
+    writable_dirs: list[str] | None = None,
 ) -> tuple[_FakeLibc, str | None]:
     """Run the mount region. Returns ``(fake_libc, refusal_message_or_None)``.
 
@@ -166,6 +168,9 @@ def _run(
         "_MS_PRIVATE": 1 << 18,
         "_MS_RDONLY": 1,
         "_MS_REMOUNT": 32,
+        "_MS_NOSUID": 2,
+        "_MS_NODEV": 4,
+        "_MS_NOEXEC": 8,
         "ctypes": ctypes,
         "os": os,
         "sys": sys,
@@ -178,6 +183,9 @@ def _run(
         "EXPOSE_FILES": [],
         "SENSITIVE_DIRS": [str(aws)],
         "READONLY_DIRS": [str(cache)],
+        # Empty by default so the six-site call numbering above stays stable;
+        # the carve-out tests inject their own entry (#8653).
+        "WRITABLE_DIRS": list(writable_dirs or []),
         "SENSITIVE_FILES": [str(lone)],
         "SSH_DIR": str(ssh),
         "SSH_KNOWN_HOSTS": str(ssh / "known_hosts"),
@@ -300,6 +308,57 @@ def test_every_tier_routes_all_six_mounts_through_the_guard() -> None:
 
 
 # --------------------------------------------------------------------------
+# Write carve-out (#8653): the ONE access-WIDENING pair, and it fails OPEN
+# --------------------------------------------------------------------------
+
+
+def _carveout_home(tmp_path: Path) -> str:
+    scratch = tmp_path / "home" / "run" / "mcp-tmp" / "probe-x" / "tmp"
+    scratch.mkdir(parents=True)
+    return str(scratch)
+
+
+def test_carveout_mounts_run_and_spawn_proceeds(tmp_path: Path) -> None:
+    """Healthy path: the pair runs (bind + rw remount) and nothing refuses."""
+    scratch = _carveout_home(tmp_path)
+    libc, refusal = _run(tmp_path, fail_at=None, writable_dirs=[scratch])
+    assert refusal is None
+    # six guarded sites + the carve-out bind + its rw remount
+    assert len(libc.calls) == 8
+    bind, remount = libc.calls[4], libc.calls[5]
+    assert bind[1] == scratch.encode() and remount[1] == scratch.encode()
+    # The remount clears the seal: MS_RDONLY must NOT be re-passed.
+    _MS_RDONLY, _MS_REMOUNT = 1, 32
+    assert remount[2] & _MS_REMOUNT
+    assert not remount[2] & _MS_RDONLY
+
+
+@pytest.mark.parametrize("fail_at", [5, 6], ids=["carveout-bind", "carveout-remount"])
+def test_a_failed_carveout_mount_degrades_open(
+    tmp_path: Path, fail_at: int, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The carve-out pair WIDENS access, so its failure must not refuse.
+
+    A refused carve-out means the path stays sealed -- the pre-#8653 behavior,
+    whose one consequence is an unwritable probe temp dir. The spawn must
+    proceed (the remaining hiding mounts still run and still refuse on their
+    own failures), and the operator gets the classifier's ADVISORY severity,
+    not a fatal one.
+    """
+    scratch = _carveout_home(tmp_path)
+    libc, refusal = _run(tmp_path, fail_at=fail_at, writable_dirs=[scratch])
+    assert refusal is None, "an access-widening mount failure must not refuse"
+    # The hiding mounts AFTER the carve-out still ran: sensitive file + ssh,
+    # and on a failed bind the pointless remount is skipped.
+    expected_calls = 7 if fail_at == 5 else 8
+    assert len(libc.calls) == expected_calls
+    advisory = capsys.readouterr().err
+    assert "sandbox: WARNING" in advisory
+    assert "writable carve-out" in advisory
+    assert "sandbox: BLOCKED" not in advisory
+
+
+# --------------------------------------------------------------------------
 # Break-arms: one mutation per assertion above
 # --------------------------------------------------------------------------
 
@@ -324,7 +383,8 @@ _ARMS: dict[str, tuple[str, str]] = {
     ),
     "site4": (
         "_mount_or_die(target, target,\n"
-        "                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY,\n"
+        "                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY\n"
+        "                              | _locked_mount_flags(target),\n"
         '                              "sealing read-only path %s" % d)',
         "_libc.mount(target, target, None, _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None)",
     ),
@@ -339,8 +399,10 @@ _ARMS: dict[str, tuple[str, str]] = {
         "_libc.mount(ssh_tmp, SSH_DIR.encode(), None, _MS_BIND, None)",
     ),
     "happy_path": (
-        "if _libc.mount(source, target, None, flags, None) != 0:",
-        "if _libc.mount(source, target, None, flags, None) == 0:",
+        "if _libc.mount(source, target, None, flags, None) != 0:\n"
+        "        _err = ctypes.get_errno()",
+        "if _libc.mount(source, target, None, flags, None) == 0:\n"
+        "        _err = ctypes.get_errno()",
     ),
     "drop_errno": (
         '"sandbox: BLOCKED -- %s failed: errno %d (%s). The sandbox could not "',

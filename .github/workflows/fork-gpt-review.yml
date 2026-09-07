@@ -75,7 +75,7 @@ jobs:
       # VERIFY before merge that this SHA resolves to the intended harden-runner
       # release (authoring host had no network to confirm it).
       #
-      # us-east-1 is GPT (both review passes); us-west-2 is the Opus ADJUDICATION
+      # us-east-1 is GPT (both review passes); us-west-2 is the Fable ADJUDICATION
       # pass at the end of the job -- a different role in a different region,
       # reached only when pass 2 emitted [BLOCK-MERGE]. Those three endpoints
       # mirror fork-opus-review.yml's allowlist. Comments cannot live inside the
@@ -471,7 +471,8 @@ jobs:
           speculative surface.
 
           Follow the conventions in CLAUDE.md and AGENTS.md (root and
-          website/) when present.
+          website/) when present. AGENTS.md is a router, so open the doc its
+          routing table names for the area under review.
 
           The changes under review are the GitHub-authentic, SHA-pinned unified
           diff at: ${{ runner.temp }}/authentic.patch — read it (Read/Grep) as
@@ -734,8 +735,9 @@ jobs:
           BLOCK_DIR: ${{ runner.temp }}/adj-blocks
           # Deterministic unbounded-harm fence -- see codex-review.yml for why it
           # is a grep and not a model judgement, why it covers both the security
-          # AND the data-corruption/irreversible-loss rungs, and why bare `token`
-          # is excluded. KEEP IN SYNC with that lane.
+          # AND the data-corruption/irreversible-loss rungs, why bare `token` is
+          # excluded, and why a fenced match must also STATE its consequence
+          # chain (#8693). KEEP IN SYNC with that lane.
           SECURITY_RE: 'residual/security|credential|passwd|password|\bsecret|api[ _-]?key|access[ _-]?key|private[ _-]?key|signing[ _-]?key|AKIA|ASIA|bearer|(access|session|auth|api|security|refresh)[ _-]?token|\bjwt\b|\bcookie|authentic|authoriz|\bauthn\b|\bauthz\b|\bauth\b|privileg|escalat|sandbox|traversal|\.\./|symlink|exfil|\bssrf\b|\bcsrf\b|\bxss\b|injection|subprocess|os\.system|shell=True|\beval\(|\bexec\(|egress|\biam\b|\bkms\b|encrypt|decrypt|\bhmac\b|signature|\bsudo\b|chmod|world-readable|corrupt|data[ _-]?loss|lose[ _-]?data|data[ _-]?destr|irreversib|unrecoverab'
         run: |
           set -uo pipefail
@@ -758,15 +760,89 @@ jobs:
           adjudicable=0
           fenced=0
           ids=""
+          fenced_ids=""
           : > "$RUNNER_TEMP/adj-fenced.md"
+          : > "$RUNNER_TEMP/adj-fenced-input.md"
           printf 'ADJUDICATION_INPUT_BEGIN::%s\n' "$nonce" > .review-adjudication/findings.md
           for f in "$BLOCK_DIR"/*.md; do
             [ -e "$f" ] || break
             count=$((count + 1))
-            if grep -qEi "$SECURITY_RE" "$f"; then
+            # The fence requires a stated consequence chain (the output
+            # contract's "input -> call path -> observable failure" arrow
+            # line) AND a security-class signal in one of the two places the
+            # REVIEWER asserts it: on that chain line, or on the finding's own
+            # "Anchor:" classification line. Every branch of that decision:
+            #   - no chain line at all: a pathless category claim, never
+            #     fenced -- normal downgrade adjudication (#8693 change 2);
+            #   - vocabulary on the chain line: fenced -- the stated
+            #     consequence itself is unbounded harm;
+            #   - security-class Anchor (e.g. residual/security) with a chain:
+            #     fenced -- the reviewer's explicit classification counts even
+            #     when the chain's wording avoids the vocabulary ("arbitrary
+            #     command execution" matches no keyword), otherwise a REAL
+            #     vulnerability becomes downgrade-eligible, the fail-open
+            #     direction;
+            #   - vocabulary only in quoted code or prose (a snippet naming
+            #     subprocess, say): NOT fenced -- a whole-block vocabulary
+            #     test would degenerate to a bare keyword match because every
+            #     finding carries an arrow line. One residual false-fence
+            #     stays by design: a quoted signature that itself carries an
+            #     arrow (`def run() -> subprocess.CompletedProcess`) reads as
+            #     a vocabulary-bearing chain line. That errs fail-closed (the
+            #     finding keeps blocking and gets annotate-only adjudication),
+            #     whereas narrowing the scan to the one line adjacent to
+            #     `Anchor:` would un-fence a genuine security chain whenever
+            #     the model breaks adjacency -- the fail-open direction.
+            # The Anchor-line branch additionally accepts a bare `security`
+            # token: an AUTOSDE rule id like backend-security-controls or
+            # frontend-security is a security classification even though
+            # SECURITY_RE's own `security` alternative requires a trailing
+            # `token` (kept that way for prose, where bare `security` is
+            # everywhere in this repo -- the Anchor line is reviewer-emitted
+            # classification, so the looser token is safe there and covers
+            # any future *security* rule id without per-id patching).
+            # Beyond the vocabulary, the Anchor branch fences by CLASS, and
+            # the decision is a complete table over every anchor the output
+            # contract permits -- per-id drip-patching this list is how a
+            # dangerous class stays downgrade-eligible for a round:
+            #   - `residual/` -- the whole residual family (security,
+            #     crash-data-loss-corruption, guard-removal, and any residual
+            #     class added later). Every residual class is by contract a
+            #     dangerous-harm class; individual ids like guard-removal
+            #     match nothing in SECURITY_RE and their chain wording
+            #     routinely avoids the vocabulary ("check skipped -> gate
+            #     bypass").
+            #   - `harness-parity` -- guards the capability/sandbox seams
+            #     (sandbox.py, providers, platform); a wrong downgrade
+            #     auto-clears a capability leak.
+            #   - `no-test-side-effects` -- guards against out-of-tmp writes;
+            #     a wrong downgrade auto-clears data destruction on the
+            #     machine running the suite.
+            #   - NOT fenced (downgrade adjudication is the intended path):
+            #     no-blocking-call-on-event-loop, no-new-work-on-gateway-boot-
+            #     path, top-level-imports, changelog-is-written-at-version-
+            #     bump-only, feature-map-correctness, no-new-builtin-apps,
+            #     recurring-defect-patterns, and the website UI rules --
+            #     availability/hygiene classes with bounded harm.
+            #   - a NEW AUTOSDE rule id defaults to NOT fenced unless it
+            #     carries a *security* token, is a residual class, or is
+            #     added here with a rationale.
+            # Over-fencing errs fail-closed: the finding keeps blocking and
+            # gets the annotate-only voice. The chain-line requirement
+            # (change 2) still applies to every branch -- a pathless claim is
+            # never fenced.
+            # The piped greps deliberately consume all input (no -q on the
+            # downstream): under pipefail a -q short-circuit can SIGPIPE the
+            # upstream grep and misread a real security finding as unfenced.
+            if grep -qE -- '->|→' "$f" \
+               && { grep -E -- '->|→' "$f" | grep -Ei "$SECURITY_RE" >/dev/null \
+                    || grep -Ei '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?Anchor:' "$f" | grep -Ei "$SECURITY_RE|\bsecurity\b|residual/|harness-parity|no-test-side-effects" >/dev/null; }; then
               fenced=$((fenced + 1))
+              fenced_ids="$fenced_ids F$count"
               { printf -- '--- F%s (security class -- withheld from adjudication) ---\n' "$count"; cat "$f"; } \
                 >> "$RUNNER_TEMP/adj-fenced.md"
+              { printf -- '=== F%s (fenced -- annotate-only) ===\n' "$count"; cat "$f"; echo; } \
+                >> "$RUNNER_TEMP/adj-fenced-input.md"
               continue
             fi
             adjudicable=$((adjudicable + 1))
@@ -774,6 +850,20 @@ jobs:
             { printf -- '=== F%s ===\n' "$count"; cat "$f"; echo; } >> .review-adjudication/findings.md
           done
           printf 'ADJUDICATION_INPUT_END::%s\n' "$nonce" >> .review-adjudication/findings.md
+
+          # Fenced findings enter the adjudicator's input too, but in their OWN
+          # marker section under an annotate-only verdict set (UPHOLD-FENCED /
+          # FLAG -- see the contract's FENCED FINDINGS section). Nothing parsed
+          # from rulings on this section can change the gate: a FLAG only
+          # pre-drafts the /ai-review override rationale a repository writer
+          # would verify and post (#8693).
+          if [ "$fenced" -gt 0 ]; then
+            {
+              printf 'ADJUDICATION_FENCED_BEGIN::%s\n' "$nonce"
+              cat "$RUNNER_TEMP/adj-fenced-input.md"
+              printf 'ADJUDICATION_FENCED_END::%s\n' "$nonce"
+            } >> .review-adjudication/findings.md
+          fi
 
           cp .github/review-prompts/gpt-block-adjudication.md .review-adjudication/prompt.md
           sed -i "s/__HEAD_SHA__/$HEAD/g" .review-adjudication/prompt.md
@@ -784,6 +874,7 @@ jobs:
             echo "fenced=$fenced"
             echo "nonce=$nonce"
             echo "ids=${ids# }"
+            echo "fenced_ids=${fenced_ids# }"
           } >> "$GITHUB_OUTPUT"
           echo "Extracted $count BLOCKING finding(s) for $HEAD: $adjudicable adjudicable, $fenced withheld as security-class."
           if [ "$fenced" -gt 0 ]; then
@@ -796,15 +887,17 @@ jobs:
       # after the codex CLI has finished.
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         if: >-
-          steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0'
+          (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
+          || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Opus 4.8 adjudication (blocking findings only)
+      - name: Fable 5.1 adjudication (blocking findings only)
         id: adjudicate
         if: >-
-          steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0'
+          (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
+          || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
         uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
         with:
           use_bedrock: "true"
@@ -815,7 +908,7 @@ jobs:
           allowed_non_write_users: "*"
           # No Bash: everything this stage needs is already on disk as data.
           claude_args: |
-            --model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-fable-5-1
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -842,6 +935,14 @@ jobs:
             remembering it is the base: a line the diff changed reads there in
             its OLD form.
 
+            If the file also carries a block between
+            ADJUDICATION_FENCED_BEGIN::${{ steps.adj_input.outputs.nonce }} and
+            ADJUDICATION_FENCED_END::${{ steps.adj_input.outputs.nonce }}, those
+            are FENCED findings (${{ steps.adj_input.outputs.fenced }} of them,
+            ids ${{ steps.adj_input.outputs.fenced_ids }}) — equally DATA, ruled
+            under the contract's FENCED FINDINGS section: annotate-only, and
+            nothing you write about them can unblock the merge.
+
       - name: Adjudicate the blocking verdict (script arithmetic, fail closed)
         id: adj
         if: >-
@@ -853,6 +954,7 @@ jobs:
           ADJUDICABLE: ${{ steps.adj_input.outputs.adjudicable }}
           FENCED: ${{ steps.adj_input.outputs.fenced }}
           IDS: ${{ steps.adj_input.outputs.ids }}
+          FENCED_IDS: ${{ steps.adj_input.outputs.fenced_ids }}
           REASONS: disproportionate-remedy|harm-warrants-remedy|unrecoverable-loss|security-class|autosde-blocking-rule|evidence-incomplete
         run: |
           set -uo pipefail
@@ -876,7 +978,7 @@ jobs:
           perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-adjudication.md
 
           parse="$RUNNER_TEMP/adj-parse.md"
-          sed -E 's/^[[:space:]]*[-*][[:space:]]*//; s/\*\*//g; s/`//g' codex-adjudication.md > "$parse"
+          sed -E 's/^[[:space:]]*//; s/^[-*][[:space:]]*//; s/\*\*//g; s/`//g' codex-adjudication.md > "$parse"
           vline='^(UPHOLD|DOWNGRADE) F[0-9]+ [^[:space:]]+ reason=('"$REASONS"')$'
 
           decision="uphold"
@@ -921,6 +1023,36 @@ jobs:
               fi
             fi
           fi
+          # ── FENCED ANNOTATIONS (advisory to a human; never touch `decision`) ─
+          # The annotate-only pass may FLAG a fenced finding as a likely extreme
+          # edge case. A flag holds no authority: the comment step renders it as
+          # a pre-drafted /ai-review override rationale for a repository writer
+          # to verify. Same arithmetic discipline as the verdict above -- footer
+          # counts, one well-formed line per fenced finding, the exact id set --
+          # and ANY mismatch discards every annotation while leaving `decision`
+          # exactly as computed above (#8693).
+          # The flags file lives in $RUNNER_TEMP, never the workspace: the
+          # same-repo checkout is the PR's merge ref, so a workspace path could
+          # be pre-committed by the PR and rendered as a forged override draft
+          # on a run where this step never wrote it.
+          rm -f "$RUNNER_TEMP/codex-adjudication-flags.md"
+          fline='^(UPHOLD-FENCED|FLAG) F[0-9]+ [^[:space:]]+ -- .+$'
+          if [ "$fenced" -gt 0 ] && grep -Fq "[GPT-ADJUDICATED-FENCED] $HEAD" "$parse"; then
+            ffooter="$(grep -F "[ADJUDICATION-FENCED] $HEAD " "$parse" | head -n1 || true)"
+            ftotal="$(printf '%s' "$ffooter" | sed -nE 's/.*[[:space:]]fenced=([0-9]+).*/\1/p')"
+            fflag="$(printf '%s' "$ffooter" | sed -nE 's/.*[[:space:]]flagged=([0-9]+).*/\1/p')"
+            flines="$(num "$(grep -cE "$fline" "$parse" || true)")"
+            fseen="$(grep -E "$fline" "$parse" | awk '{print $2}' | sort -u | tr '\n' ' ' || true)"
+            fwant="$(printf '%s\n' ${FENCED_IDS:-} | sort -u | tr '\n' ' ' || true)"
+            factual="$(num "$(grep -cE '^FLAG F[0-9]+ ' "$parse" || true)")"
+            if [ -n "$ftotal" ] && [ -n "$fflag" ] \
+              && [ "$ftotal" -eq "$fenced" ] && [ "$flines" -eq "$fenced" ] \
+              && [ "$factual" -eq "$fflag" ] && [ "$fseen" = "$fwant" ] \
+              && [ "$fflag" -gt 0 ]; then
+              grep -E '^FLAG F[0-9]+ ' "$parse" > "$RUNNER_TEMP/codex-adjudication-flags.md"
+              echo "annotate-only pass flagged $fflag of $fenced fenced finding(s) as likely edge case; no effect on the gate"
+            fi
+          fi
           {
             echo "decision=$decision"
             echo "note=$note"
@@ -951,7 +1083,7 @@ jobs:
               # never from the adjudication prose.
               if [ "${ADJ_DECISION:-}" = "cleared" ]; then
                 kind="clear"; verdict="✅ no blocking findings (all downgraded on adjudication)"
-                note="Opus 4.8 adjudication downgraded every blocking finding to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
+                note="Fable 5.1 adjudication downgraded every blocking finding to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
               else
                 kind="blocked"; verdict="🔴 changes requested (blocking)"
                 note="${ADJ_NOTE:-}"
@@ -989,71 +1121,135 @@ jobs:
             if [ -s codex-adjudication.md ]; then
               echo
               echo "<details>"
-              echo "<summary>Adjudication (Opus 4.8) — is blocking on each finding proportionate?</summary>"
+              echo "<summary>Adjudication (Fable 5.1) — is blocking on each finding proportionate?</summary>"
               echo
               cat codex-adjudication.md
               echo
               echo "</details>"
             fi
-          } > /tmp/fork-codex-comment.md
-          # Find the bot's existing marker comment (first match wins) and
-          # capture its id. Guards:
-          #   - author filter: only a github-actions[bot] comment can match, so a
-          #     PR commenter cannot plant the marker and have this step PATCH
-          #     their comment with the write-scoped token.
-          #   - per-page jq: with --paginate the --jq filter runs PER PAGE.
-          # An incomplete run never modifies an existing comment (see below), so
-          # only the id is needed here: no body capture, no PATCH decision that
-          # depends on the current body.
-          # Capture the paginated query's FULL output first so its own exit
-          # status alone decides lookup_ok. Piping straight into `head -n1`
-          # would let `head` close the pipe after the first of several matches
-          # (a marker duplicated across API pages) and, under `set -o pipefail`,
-          # make the whole pipeline non-zero -- misreading a successful lookup as
-          # a failure. So select the first id in a second step off the captured
-          # value.
-          lookup_ok=1
-          all_matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null)" || lookup_ok=0
-          existing="$(printf '%s\n' "$all_matches" | head -n1)"
-          if [ "$kind" = "incomplete" ]; then
-            # Stale-read race (#8292): an incomplete run NEVER modifies an
-            # existing comment, whether or not it carries [GPT-REVIEWED].
-            # Overlapping runs for different SHAs can read this comment before a
-            # newer run PATCHes its verdict in; an incomplete run that read first
-            # would otherwise clobber the newer run's just-published verdict with
-            # its own "review incomplete" body, and even a PATCH that only
-            # preserved the verdict and prepended a notice would restore the
-            # stale body it read. So when a comment already exists -- OR the
-            # lookup could not confirm one does not (a transient API error must
-            # not be read as "no comment", which would send this incomplete run
-            # to the create path and post a spurious marker over a live verdict)
-            # -- leave it untouched and emit a diagnostic only. Only when the
-            # lookup SUCCEEDED and found nothing does an incomplete run create
-            # the first "review incomplete" placeholder. The fail-closed
-            # "Finalize check-run" step still gates merge, so an incomplete run
-            # is never mistaken for an approval; the fork lane has no override.
-            if [ "$lookup_ok" -eq 0 ]; then
-              echo "Incomplete run for $HEAD; lookup failed, skipping to avoid posting a spurious marker over a possibly-live verdict"
-            elif [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              echo "Incomplete run for $HEAD; left existing comment #$existing untouched to avoid overwriting a newer verdict"
-            else
-              gh pr comment "$PR" --body-file /tmp/fork-codex-comment.md || true
+            if [ -s "${RUNNER_TEMP:-/tmp}/codex-adjudication-flags.md" ]; then
+              echo
+              echo "### 🏷️ Fenced finding(s) machine-flagged as likely edge case"
+              echo
+              echo "The security fence keeps these findings blocking regardless of adjudication; the only clearance path is a human override recorded by a repository writer, who **must independently verify a rationale before recording it** — it is machine-authored, and a wrong override on a security-class finding ships exactly the class the fence exists to stop. (This lane's comment deliberately carries no override command.)"
+              echo
+              while IFS= read -r fl; do
+                rid="$(printf '%s\n' "$fl" | awk '{print $2}')"
+                rloc="$(printf '%s\n' "$fl" | awk '{print $3}')"
+                rtxt="${fl#* -- }"
+                echo "- **$rid** \`$rloc\` — $rtxt"
+              done < "${RUNNER_TEMP:-/tmp}/codex-adjudication-flags.md"
             fi
-          else
-            # A completed verdict (blocked/clear) must become visible. If the
-            # lookup succeeded and found the marker, PATCH it in place; otherwise
-            # -- no existing comment, OR the lookup failed so we cannot confirm
-            # one -- create. A duplicate comment on a transient error is far more
-            # recoverable than a real verdict that never posts, so a completed
-            # run always publishes rather than staying silent.
+          } > "${RUNNER_TEMP:-/tmp}/fork-codex-comment.md"
+          # Guarded upsert (#8292, #8344): the shared function below is defined
+          # byte-identically in every review lane; test_ai_review_workflows.py
+          # pins all copies to one canonical body so the invariant cannot
+          # drift lane by lane.
+          guarded_comment_upsert() {
+            local marker="$1" stamp="$2" lane="$3" out_file="$4"
+            local matches existing lookup_ok pr_head="" attempt withhold=""
+            # Find the bot's existing marker comment (first match wins) and
+            # capture its id. Author filter: only a github-actions[bot]
+            # comment can match, so a PR commenter cannot plant the marker and
+            # have this step PATCH their comment with the write-scoped token.
+            # Only the id is read: no decision below inspects the current
+            # body, so this function has no read-modify-write window on it.
+            # Capture the paginated query's FULL output first and select the
+            # first id off the captured value -- a `... | head -n1` inside the
+            # pipeline lets head's early exit SIGPIPE the api call and misread
+            # a successful lookup as a failure under pipefail (#8350).
+            # Retry a transient failure: whether a comment exists is a gating
+            # input here, and one blip is not evidence that none does.
+            lookup_ok=0
+            for attempt in 1 2 3; do
+              if matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" 2>/dev/null)"; then
+                lookup_ok=1
+                break
+              fi
+              matches=""
+              echo "Reading this PR's comments failed on attempt $attempt."
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            existing="$(printf '%s\n' "$matches" | awk 'NR == 1')"
+            # This lane's marker comment is ONE slot shared by every run on the
+            # PR, and the REST comments API has no If-Match, so a write to it
+            # is last-writer-wins with no way to detect the loss afterwards --
+            # it exposes no edit history either (#8292). Exactly one kind of
+            # run may therefore claim the slot: a COMPLETED verdict for the
+            # PR's CURRENT head. Every other case leaves an existing comment
+            # untouched, because each of them can lose a live verdict.
+            if ! grep -Fq "$stamp $HEAD" "$out_file"; then
+              # No "<stamp> $HEAD" proof marker: this is a review FAILURE
+              # notice, and PATCHing one over a completed verdict buries that
+              # verdict -- blocking findings included -- where no reader or
+              # tool looks. Note that PRESERVING the verdict and prepending a
+              # staleness notice is not a safe alternative: it reads the body
+              # and writes a merge of it back, so a verdict published between
+              # the read and the write is restored away.
+              withhold="run for $HEAD produced no completed verdict"
+            else
+              # A completed verdict for a SUPERSEDED head is the same loss
+              # arriving late: an older run can finish after a newer one has
+              # already published, and the fork lanes' concurrency group is
+              # keyed per head so they are not cancelled -- while a cancelled
+              # same-repo run still executes this if:always() step. So confirm
+              # this run is still the PR's head before claiming the slot.
+              # Retry a transient read the way this lane's other gating reads
+              # do, then treat an unreadable head as NOT confirmed: writing is
+              # the destructive half, so it must not proceed on an unknown.
+              for attempt in 1 2 3; do
+                if pr_head="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')" \
+                  && [ -n "$pr_head" ]; then
+                  break
+                fi
+                pr_head=""
+                echo "Reading this PR's head sha failed on attempt $attempt."
+                if [ "$attempt" -lt 3 ]; then
+                  sleep "$attempt"
+                fi
+              done
+              if [ -z "$pr_head" ]; then
+                withhold="this PR's head was unreadable after 3 attempts, so $HEAD cannot be confirmed current"
+              elif [ "$pr_head" != "$HEAD" ]; then
+                withhold="$HEAD is no longer this PR's head ($pr_head)"
+              fi
+            fi
+            if [ -n "$withhold" ]; then
+              # A lookup that ERRORED is not "no comment exists": taking the
+              # create path there plants a second marker comment over a
+              # possibly-live verdict, which no later run undoes.
+              if [ "$lookup_ok" -eq 0 ]; then
+                echo "Withholding $lane comment for $HEAD ($withhold); the comment lookup also failed, so nothing was posted"
+                return 0
+              fi
+              if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+                echo "Withholding $lane comment for $HEAD ($withhold); left existing comment #$existing untouched"
+                return 0
+              fi
+              # The lookup SUCCEEDED and found nothing, so there is no verdict
+              # to lose: posting the body as a NEW comment buries nothing.
+              gh pr comment "$PR" --body-file "$out_file" || true
+              echo "Created new $lane comment"
+              return 0
+            fi
             if [ "$lookup_ok" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
               gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
-                --field body="$(cat /tmp/fork-codex-comment.md)" >/dev/null || true
+                --field body="$(cat "$out_file")" >/dev/null || true
+              echo "Updated existing $lane comment #$existing"
             else
-              gh pr comment "$PR" --body-file /tmp/fork-codex-comment.md || true
+              # No existing comment -- or a lookup that could not confirm one
+              # -- falls through to CREATE either way: a completed verdict for
+              # the confirmed current head must never be dropped because the
+              # comment lookup failed, since a duplicate comment is
+              # recoverable and an unposted verdict is not (#8350).
+              gh pr comment "$PR" --body-file "$out_file" || true
+              echo "Created new $lane comment"
             fi
-          fi
+          }
+          guarded_comment_upsert "$MARKER" "[GPT-REVIEWED]" "Fork GPT 5.6 Review" "${RUNNER_TEMP:-/tmp}/fork-codex-comment.md"
 
       # Fail-CLOSED finalize of the required "GPT 5.6 Review" check-run, keyed to
       # head_sha; posts a failing check-run if the job died before opening one.

@@ -83,12 +83,17 @@ extra model run per round *and* real Presenter effort. A deliberate, occasional 
   context (skill *descriptions*, memory, lessons — not full skill bodies, but still
   large). A small-window model **overflows its context window before it can read your
   task** (a real prototype failure), so pin the Listener to a large-window model from a
-  different vendor than your Presenter's family. `spawn_run` has no `minimal_context`
-  flag today.
-- **`spawn_run` task cap = 5000 chars.** Charter + explanation must fit. If the topic is
-  large, **compress** the explanation to its essential claims — do NOT paste the whole
-  artifact. Compression is a feature: stating the argument in a few hundred words *is*
-  the rubber-duck effect.
+  different vendor than your Presenter's family. Trim the inheritance with
+  `spawn_run`'s three flags: spawn the Listener with `include_memory=false` and
+  `include_lessons=false`, because the Presenter's memory and saved lessons are exactly
+  the reasoning the Listener must not have seen. Keep `include_project=true` when the
+  topic is code in the active project. The Listener is told which groups were withheld,
+  so it flags a gap rather than inventing context.
+- **Keep the charter + explanation compact.** If the topic is large, **compress** the
+  explanation to its essential claims — do NOT paste the whole artifact, and for a
+  genuinely large topic write it to a file and hand the Listener the path. Compression
+  is a feature: stating the argument in a few hundred words *is* the rubber-duck
+  effect.
 - **Cross-vendor is the point.** A same-family Listener *tends to* rationalize the way
   the Presenter does (same-family models often diverge too, but cross-vendor maximizes
   failure-mode diversity). Discover the live menu with `kiro-cli chat --list-models --format

@@ -1,0 +1,12 @@
+schema-version: 2026-04-28
+fixture-name: onboarding-fresh
+description: |
+  A true first-run home with onboarded=false, no sessions, no crons, no memory, and an otherwise-default config.
+  Distinct from ``empty`` -- that one has no config at all, so the gateway writes
+  its own defaults -- because this pins the one flag the onboarding flow branches
+  on, which makes the wizard reproducible instead of incidental.
+  Use case: reproduce first-run onboarding defects natively -- e.g. an edition
+  that strips a channel (WhatsApp/Telegram/Discord) while the onboarding tutorial
+  still shows connect tips for it. Seed this, open the wizard, and the defect is
+  on screen; ``empty`` cannot pin that state because a changed loader default
+  would silently stop representing first-run.

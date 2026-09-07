@@ -148,5 +148,21 @@ describe('sendTurn receipt contract', () => {
     const wire = JSON.parse((init as RequestInit).body as string)
     expect(wire.slot).toBe('chat-9')
     expect(wire.meta).toEqual({ sendId: 's-1' })
+    // Flags a surface did not set do not appear on the wire at all.
+    expect(wire).not.toHaveProperty('steer')
+    expect(wire).not.toHaveProperty('color_theme')
+  })
+
+  it('carries the steer flag and the colour theme onto the same endpoint (ChatPage\'s send and steer paths)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { ok: true, steered: true }))
+    const receipt = await sendTurn({ message: 'now', slot: 'chat-9', steer: true, colorTheme: 'dusk' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toContain('/api/chat?ws=1')
+    const wire = JSON.parse((init as RequestInit).body as string)
+    expect(wire.steer).toBe(true)
+    expect(wire.color_theme).toBe('dusk')
+    // A steer is classified like any send; `steered` rides the body.
+    expect(receipt.status).toBe('dispatched')
+    expect(receipt.body.steered).toBe(true)
   })
 })

@@ -97,6 +97,28 @@ def allocate_probe_tmp() -> Path:
     return allocate_backend_tmp("probe")
 
 
+#: Child-facing scratch subdirectory of a probe allocation (see
+#: :func:`probe_child_scratch`).
+PROBE_SCRATCH_SUBDIR = "tmp"
+
+
+def probe_child_scratch(root: Path) -> Path:
+    """Create and return the child-facing scratch subdir of a probe allocation.
+
+    The allocation ROOT holds the ``.owner`` reclamation record. The probe's
+    sandbox write carve-out and the ``TMPDIR`` triple point at this SUBDIR so
+    that record stays OUTSIDE the child's writable window (#8653): a child
+    that could garble ``.owner`` (or write a live pid into it) would make the
+    directory permanently unreclaimable by the daemon sweep after a gateway
+    crash, since the sweep deletes only owned-and-dead directories. Same
+    permission treatment as the parent allocation.
+    """
+    scratch = root / PROBE_SCRATCH_SUBDIR
+    scratch.mkdir(mode=0o700)
+    platform_compat.restrict_dir_to_owner(scratch)
+    return scratch
+
+
 def tmp_env(path: Path) -> dict[str, str]:
     """The ``TMPDIR``/``TMP``/``TEMP`` triple pointing a child at *path*.
 

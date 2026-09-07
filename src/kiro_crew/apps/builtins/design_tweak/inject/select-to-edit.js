@@ -51,7 +51,7 @@
   var THEME = {
     accent: "#8b5cf6", accentFg: "#ffffff", panel: "#141220", card: "#1b1830",
     bgElevated: "#221f38", text: "#e9e7ff", textStrong: "#ffffff", muted: "#9d99b7",
-    border: "#2a2740", info: "#3b82f6", ok: "#22c55e", warn: "#f59e0b",
+    border: "#2a2740", info: "#3b82f6", ok: "#22c55e", warn: "#f59e0b", danger: "#ef4444",
   };
 
   // ---- overlay highlight boxes ----
@@ -98,6 +98,10 @@
     // Pins + thread popovers are an Edit-mode affordance only.
     pinLayer.style.display = on ? "block" : "none";
     if (!on) { clearSelection(); closeThread(); }
+    // A failed draft parked while edit mode was off comes back with it: the
+    // restore path refuses to open a composer while inactive, so this is the
+    // only way the draft ever surfaces again.
+    else if (_parkedFailures && _parkedFailures.length) setTimeout(restoreParkedFailure, 0);
   }
 
   document.addEventListener("keydown", function (e) {
@@ -131,7 +135,7 @@
   //   2. TYPE ALLOWLIST — an unknown `type` is dropped rather than falling
   //      through to the `type === undefined` legacy branch, which would let a
   //      stray object repaint the theme and flip edit mode.
-  var HOST_TYPES = { state: 1, created: 1, requests: 1, focus: 1, toggle: 1 };
+  var HOST_TYPES = { state: 1, created: 1, create_failed: 1, dispatch_failed: 1, requests: 1, focus: 1, toggle: 1 };
 
   // Learned from the first message that passes both gates, so EVERY outbound post
   // names a real origin — the overlay never uses a '*' wildcard. Kept null until
@@ -160,15 +164,20 @@
    * produced before that is queued and flushed on the handshake, so the payload
    * is never broadcast to whatever document happens to be the embedder.
    */
+  // Returns whether the message was posted or queued. `false` means it was
+  // DROPPED — the queue is full, or the embedder is gone — so a caller carrying
+  // user input (a comment) can say so instead of pretending it went through.
   function postToHost(msg) {
-    if (!EMBEDDED) return;
+    if (!EMBEDDED) return false;
     if (!HOST_ORIGIN) {
-      if (PENDING_OUT.length < PENDING_MAX) PENDING_OUT.push(msg);
-      return;
+      if (PENDING_OUT.length >= PENDING_MAX) return false;
+      PENDING_OUT.push(msg);
+      return true;
     }
     try {
       window.parent.postMessage(msg, HOST_ORIGIN);
-    } catch (_) { /* embedder gone */ }
+      return true;
+    } catch (_) { return false; /* embedder gone */ }
   }
 
   function flushPendingOut() {
@@ -176,7 +185,13 @@
     var queued = PENDING_OUT;
     PENDING_OUT = [];
     for (var i = 0; i < queued.length; i++) {
-      try { window.parent.postMessage(queued[i], HOST_ORIGIN); } catch (_) { return; }
+      try { window.parent.postMessage(queued[i], HOST_ORIGIN); }
+      catch (_) {
+        // Keep the rest for the next handshake rather than discarding it: the
+        // queue holds user-authored comments, not just chrome state.
+        PENDING_OUT = queued.slice(i).concat(PENDING_OUT);
+        return;
+      }
     }
   }
 
@@ -196,6 +211,10 @@
       if (typeof d.editMode === "boolean") setActive(d.editMode);
     } else if (d.type === "created") {
       onCreated(d);
+    } else if (d.type === "create_failed") {
+      onCreateFailed(d.clientRef, d.error);
+    } else if (d.type === "dispatch_failed") {
+      onDispatchFailed(d.id, d.text, d.error);
     } else if (d.type === "requests") {
       reconcile(Array.isArray(d.items) ? d.items : []);
     } else if (d.type === "focus") {
@@ -258,14 +277,22 @@
     selBox.style.display = "none";
     stopLiveTracking();
     if (input) { input.remove(); input = null; }
+    // Deferred so the caller's own flow (opening a thread, acking a create)
+    // finishes before a parked failed draft takes the composer back.
+    if (_parkedFailures && _parkedFailures.length) setTimeout(restoreParkedFailure, 0);
   }
 
-  function openComposer(el) {
+  // `opts.text` refills the textarea and `opts.error` states why the previous
+  // attempt did not land — the composer comes back editable after a failed
+  // delivery instead of the comment being discarded.
+  function openComposer(el, opts) {
     if (input) input.remove();
     input = mkPanel(320);
+    opts = opts || {};
 
     var summary = mkMeta(describe(el));
     var ta = mkTextarea("Describe the change… (Enter to send, Shift+Enter for newline)");
+    if (opts.text) ta.value = opts.text;
 
     var row = document.createElement("div");
     css(row, { display: "flex", gap: "6px", justifyContent: "flex-end", marginTop: "8px" });
@@ -280,6 +307,7 @@
     });
 
     input.appendChild(summary);
+    if (opts.error) input.appendChild(mkErrorLine(opts.error));
     input.appendChild(ta);
     input.appendChild(row);
     document.body.appendChild(input);
@@ -305,22 +333,44 @@
     _pendingCreate[clientRef] = { el: el, comment: comment };
 
     if (EMBEDDED) {
-      postToHost({ source: "kiro-select-to-edit", type: "capture", clientRef: clientRef, payload: payload });
+      if (!postToHost({ source: "kiro-select-to-edit", type: "capture", clientRef: clientRef, payload: payload })) {
+        onCreateFailed(clientRef, NOT_CONNECTED);
+        return;
+      }
       // Show a provisional composer state while the panel creates the request.
+      // The only exit used to be the panel's `created` ack, so a panel that
+      // failed (or was gone) left "Adding to request…" up for ever with the
+      // comment stranded: the panel now posts `create_failed`, and this timer
+      // covers a panel that never answers at all.
       showComposerSending();
+      _pendingCreate[clientRef].timer = setTimeout(function () {
+        onCreateFailed(clientRef, NO_REPLY, /* unanswered */ true);
+      }, CREATE_TIMEOUT_MS);
     } else if (CFG.backend) {
+      showComposerSending();
       fetch(CFG.backend.replace(/\/$/, "") + "/submit", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      }).catch(function (e) { console.warn("[select-to-edit] deliver failed", e); });
-      clearSelection();
+      }).then(function (res) {
+        // A 4xx/5xx resolves the promise, so it has to be checked here or a
+        // rejected payload looks exactly like a delivered one.
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        delete _pendingCreate[clientRef];
+        clearSelection();
+      }).catch(function (e) {
+        console.warn("[select-to-edit] deliver failed", e);
+        onCreateFailed(clientRef, "Delivery failed (" + (e && e.message ? e.message : String(e)) + ") — comment not sent.");
+      });
     } else {
       console.warn("[select-to-edit] no parent frame / no backend configured", payload);
-      clearSelection();
+      onCreateFailed(clientRef, NOT_CONNECTED);
     }
   }
 
   var _pendingCreate = Object.create(null);
+  var CREATE_TIMEOUT_MS = 20000;
+  var NOT_CONNECTED = "Not connected to the Design Tweak panel — comment not sent.";
+  var NO_REPLY = "No reply from the Design Tweak panel yet — it may still land. Your comment is kept here; sending again could add it twice.";
 
   function showComposerSending() {
     if (!input) return;
@@ -330,12 +380,104 @@
     input.appendChild(m);
   }
 
+  // What the open composer currently holds, or null when there is no editable
+  // composer (none open, or it is in the "Adding to request…" state).
+  function composerText() {
+    var ta = input && input.querySelector("textarea");
+    return ta ? ta.value : null;
+  }
+
+  // A capture that did not land (or has not been answered). The comment goes
+  // back into an editable composer on its element with the reason above it, so
+  // nothing typed is lost and the send can be retried.
+  //
+  // `unanswered` is the timeout: the panel may still ack, so the entry is KEPT —
+  // a late `created` then finalises it (see onCreated) instead of colliding with
+  // a retry. A definitive failure (`create_failed`, a dropped post, a rejected
+  // fetch) removes the entry, because the retry is a fresh request. A ref the
+  // panel already acked is ignored: the ack and the timeout can race, and the
+  // ack wins.
+  function onCreateFailed(clientRef, error, unanswered) {
+    var pend = _pendingCreate[clientRef];
+    if (!pend) return;
+    if (pend.timer) { clearTimeout(pend.timer); pend.timer = null; }
+    if (unanswered) pend.unanswered = true;
+    else delete _pendingCreate[clientRef];
+    if (!pend.el) return;
+    // A delayed failure must not replace a draft the user has since started.
+    // Another element's draft: park it; clearSelection() restores parked
+    // drafts once the live composer is submitted or cancelled. The SAME
+    // element's draft (the user kept editing after the timeout reopened it):
+    // merge the failed text in, never overwrite what is there now.
+    var live = composerText();
+    if (live !== null && live !== "" && state.selected) {
+      if (state.selected !== pend.el) {
+        _parkedFailures.push({ el: pend.el, comment: pend.comment, error: error || "Comment not sent." });
+        return;
+      }
+      if (live !== pend.comment) mergeIntoComposer(pend.comment, error || "Comment not sent.");
+      else showComposerError(error || "Comment not sent.");
+      return;
+    }
+    restoreFailedDraft(pend.el, pend.comment, error);
+  }
+
+  // Failed captures waiting for the live composer to close (see onCreateFailed).
+  var _parkedFailures = [];
+
+  // Put `text` ahead of what the open composer already holds, unless it is
+  // already in there, and state the reason above the textarea.
+  function mergeIntoComposer(text, error) {
+    var ta = input && input.querySelector("textarea");
+    if (!ta) return;
+    ta.value = prependUnlessLine(text, ta.value);
+    showComposerError(error);
+  }
+
+  function showComposerError(error) {
+    if (!input) return;
+    var line = input.querySelector("[data-ste-error]");
+    if (!line) {
+      line = mkErrorLine("");
+      var ta = input.querySelector("textarea");
+      if (ta) input.insertBefore(line, ta); else input.appendChild(line);
+    }
+    line.textContent = error || "Comment not sent.";
+    line.style.display = "block";
+  }
+
+  function restoreFailedDraft(el, comment, error) {
+    // The element may have left the DOM since (a re-render, a route change in
+    // the preview). The draft is still the user's — anchor to the element if it
+    // is on screen, else fall back to the viewport corner rather than dropping it.
+    var attached = document.contains(el);
+    state.selected = el;
+    if (attached) { selBox.style.display = "block"; positionBox(selBox, el); }
+    else selBox.style.display = "none";
+    openComposer(el, { text: comment, error: error || "Comment not sent." });
+  }
+
+  function restoreParkedFailure() {
+    if (!state.active || input || !_parkedFailures.length) return;
+    var next = _parkedFailures.shift();
+    restoreFailedDraft(next.el, next.comment, next.error);
+  }
+
   // panel acked a created request → drop a real pin and open its thread
   function onCreated(d) {
     var pend = _pendingCreate[d.clientRef];
     var el = pend && pend.el;
+    if (pend && pend.timer) clearTimeout(pend.timer);
     delete _pendingCreate[d.clientRef];
-    clearSelection();
+    // The ack closes the composer only if it is this comment's own: still in the
+    // "Adding to request…" state, or reopened by the timeout and still holding
+    // exactly this text. A composer with anything else in it — the same comment
+    // edited after the timeout, or a new comment on another element — is the
+    // user's live draft and stays put; the thread is not opened over it either,
+    // since openThread would clear it.
+    var live = composerText();
+    var keepComposer = live !== null && !(pend && live === pend.comment);
+    if (!keepComposer) clearSelection();
     if (!d.id) return;
     var item = {
       id: d.id, number: d.number, status: d.status || "sent",
@@ -343,7 +485,7 @@
       element: d.element || "", locator: d.locator || "", thread: d.thread || [],
     };
     upsertPin(item, el);
-    openThread(d.id);
+    if (!keepComposer) openThread(d.id);
   }
 
   // ---- pin anchoring ----
@@ -566,6 +708,13 @@
     var prevText = "";
     var oldTa = popover.querySelector("textarea");
     if (oldTa) prevText = oldTa.value;
+    // A reply that failed while this thread was closed comes back into the
+    // composer here, merged ahead of anything typed since (see onDispatchFailed).
+    var parked = _failedFollowUps[item.id];
+    if (parked) {
+      delete _failedFollowUps[item.id];
+      prevText = prependUnlessLine(parked.text, prevText);
+    }
     popover.innerHTML = "";
 
     // header
@@ -594,11 +743,25 @@
     popover.appendChild(list);
     list.scrollTop = list.scrollHeight;
 
+    // Follow-ups only travel through the panel (there is no standalone route
+    // for them), so outside it the composer says so instead of showing a reply
+    // that goes nowhere.
+    if (!EMBEDDED) {
+      var note = mkMeta("Follow-ups need the Design Tweak panel — open this preview from there to reply.");
+      note.style.marginTop = "8px";
+      popover.appendChild(note);
+      popoverSig = threadSig(item);
+      return;
+    }
+
     // composer (follow-up)
     var ta = mkTextarea("Reply / add a follow-up…");
     ta.style.minHeight = "38px";
     ta.style.marginTop = "8px";
     ta.value = prevText;
+    var errLine = mkErrorLine(parked ? parked.error : "");
+    errLine.style.display = parked ? "block" : "none";
+    errLine.style.marginTop = "6px";
     var row = document.createElement("div");
     css(row, { display: "flex", gap: "6px", justifyContent: "flex-end", marginTop: "6px" });
     // A reply on an existing comment becomes a NEW comment in the CURRENT draft,
@@ -606,19 +769,62 @@
     var send = mkBtn("Follow up →", THEME.accent, THEME.accentFg, function () {
       var t = (ta.value || "").trim();
       if (!t) return;
-      // optimistic bubble
-      list.appendChild(mkBubble({ role: "user", text: t }));
+      errLine.style.display = "none";
+      // Optimistic bubble, marked pending until the panel's `requests` reconcile
+      // redraws the thread with the real one — a `dispatch_failed` removes it
+      // and puts the text back.
+      var bubble = mkBubble({ role: "user", text: t });
+      bubble.setAttribute("data-ste-pending", t);
+      bubble.style.opacity = "0.7";
+      list.appendChild(bubble);
       list.scrollTop = list.scrollHeight;
       ta.value = "";
-      if (EMBEDDED) postToHost({ source: "kiro-select-to-edit", type: "dispatch", id: item.id, text: t });
+      if (!postToHost({ source: "kiro-select-to-edit", type: "dispatch", id: item.id, text: t })) {
+        onDispatchFailed(item.id, t, NOT_CONNECTED);
+      }
     });
     ta.addEventListener("keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send.click(); }
     });
     row.appendChild(send);
     popover.appendChild(ta);
+    popover.appendChild(errLine);
     popover.appendChild(row);
     popoverSig = threadSig(item);
+  }
+
+  // The panel could not turn a follow-up into a comment. Pull the optimistic
+  // bubble back out, put the text back in the composer and say why. Only the
+  // open thread for that comment is touched; a closed thread gets the reply
+  // back the next time it renders.
+  var _failedFollowUps = Object.create(null);
+  function onDispatchFailed(id, text, error) {
+    if (!popover || popoverId !== id) {
+      // The thread is closed (or another one is open): keep the reply for the
+      // next time this thread renders, rather than dropping it. Several failed
+      // replies to one comment accumulate; a later one never displaces an
+      // earlier one.
+      if (text) {
+        var prior = _failedFollowUps[id];
+        var merged = prior ? prependUnlessLine(text, prior.text) : text;
+        _failedFollowUps[id] = { text: merged, error: error || "Follow-up not sent." };
+      }
+      return;
+    }
+    var bubbles = popover.querySelectorAll("[data-ste-pending]");
+    for (var i = bubbles.length - 1; i >= 0; i--) {
+      if (bubbles[i].getAttribute("data-ste-pending") === text) { bubbles[i].remove(); break; }
+    }
+    var ta = popover.querySelector("textarea");
+    // Merge, never overwrite: the user may have typed the next reply already.
+    if (ta && text) {
+      ta.value = prependUnlessLine(text, ta.value);
+    }
+    var line = popover.querySelector("[data-ste-error]");
+    if (line) {
+      line.textContent = error || "Follow-up not sent.";
+      line.style.display = "block";
+    }
   }
 
   function describeStatus(s) {
@@ -785,6 +991,28 @@
     var d = document.createElement("div");
     d.textContent = text;
     css(d, { fontSize: "11px", color: THEME.muted, marginBottom: "6px" });
+    return d;
+  }
+  // The overlay's one failure line. This script runs inside the user's own
+  // preview page, not the dashboard's React tree, so the shared ErrorNotice is
+  // out of reach — this is its vanilla stand-in: role=alert, danger tone, the
+  // reason in plain text. The same failure also reaches the panel's status
+  // line, which does render inside the dashboard.
+  // Put `text` ahead of `existing` unless it is already there as a WHOLE line.
+  // Exact match only — a substring test would treat "foo" as already present
+  // in "foobar" and drop an independent failed reply.
+  function prependUnlessLine(text, existing) {
+    if (!text) return existing;
+    if (!existing) return text;
+    if (existing.split("\n").indexOf(text) !== -1) return existing;
+    return text + "\n" + existing;
+  }
+  function mkErrorLine(text) {
+    var d = document.createElement("div");
+    d.setAttribute("role", "alert");
+    d.setAttribute("data-ste-error", "1");
+    d.textContent = text;
+    css(d, { fontSize: "11.5px", color: THEME.danger, marginBottom: "6px", lineHeight: "1.5", overflowWrap: "anywhere" });
     return d;
   }
   function mkTextarea(ph) {

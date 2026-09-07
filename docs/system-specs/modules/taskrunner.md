@@ -653,13 +653,11 @@ only job is to produce a better-written spec from the user's input.
 Left/right split layout: 260px sidebar + detail/compose area.
 
 - **Sidebar** (visible when runs exist): compact project cards with status icon, name, progress bar, cancel/delete buttons. "＋ New Project" button at top.
-- **Compose area** (no project selected): ✨ Compose | 📄 From Spec tabs, shared `AgentSelector`, `ProjectAnimation` shown in empty state
+- **Compose area** (no project selected): ✨ Compose | 📄 From Spec tabs, shared `AgentSelector`
 - **Compose mode**: textarea + "✨ Refine into Spec" + "📋 Plan" buttons, `PlanningBanner` with cancel
 - **From Spec mode**: textarea + file upload (`<input type="file">`) + "▶ Run" + "📋 Plan" buttons
-- **Project detail** (`ProjectDetailPage`): Idea/Tasks tab bar with 🎮 button (right-aligned)
+- **Project detail** (`ProjectDetailPage`): Idea/Tasks tab bar
   - **Idea tab**: read-only spec content + "✏️ Edit in Chat" button
   - **Tasks tab**: DAG/Phased view toggle with `DagView` and `PhasedView` components
-  - **🎮 button**: opens modal with pixel-art office animation (`PixelCanvasWidget` + `PixelCanvas`). 7 character sprites animate based on task status (typing/looking/celebrate). Badge shows active agent count.
 - **Action buttons**: Execute/Chat/Discard (planned), ■ Cancel (running), ↻ Restart/⏰ Schedule (completed/failed)
-- **`SubAgentActivity`**: shown below running projects — live subagent table with status pills (Running/Done/Failed)
 - **WS-driven updates**: `push_refresh("taskrunner")` on every notification, 3s auto-refresh polling

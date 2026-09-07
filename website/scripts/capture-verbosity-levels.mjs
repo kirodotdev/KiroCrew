@@ -31,7 +31,7 @@ const EXPECTED_OPTIONS = [
   'Default — normal length',
   'Concise — trim filler and narration',
   'Ultra-concise — answer first, minimal prose',
-  'Answer only — details on request or when critical',
+  'Answer only — plainest words, details on request',
 ]
 
 const { srv, base } = await serveDist()
@@ -116,7 +116,7 @@ await page.screenshot({ path: join(OUT, '02-verbosity-options-open.png') })
 console.log('wrote', join(OUT, '02-verbosity-options-open.png'))
 
 // 3 — the new level selected.
-await page.getByRole('option', { name: 'Answer only — details on request or when critical' }).click()
+await page.getByRole('option', { name: 'Answer only — plainest words, details on request' }).click()
 await page.waitForTimeout(1000)
 if (!(await trigger.textContent()).includes('Answer only')) {
   throw new Error('trigger did not adopt the selected level')

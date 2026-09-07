@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Brain, X, Loader2, Type, Network } from 'lucide-react'
+import ErrorNotice from '../../components/ErrorNotice'
 import type { KnowledgeResult } from './useKnowledgeFetch'
 
 import { i18nT } from '../../i18n/t'
@@ -7,6 +8,10 @@ interface Props {
   results: KnowledgeResult[]
   query: string
   loading: boolean
+  /** The search request's failure, when it failed (the backend's message). */
+  error?: string | null
+  /** Re-runs the failed search for the same query. */
+  onRetry?: () => void
   onInject: (selected: KnowledgeResult[]) => void
   onSkip: () => void
 }
@@ -17,7 +22,7 @@ function MatchIcon({ type }: { type: string }) {
   return <Type size={12} className="text-muted" />
 }
 
-export function KnowledgePicker({ results, query, loading, onInject, onSkip }: Props) {
+export function KnowledgePicker({ results, query, loading, error, onRetry, onInject, onSkip }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
   // Update pre-selection when results change (fixes useState initializer bug)
@@ -39,6 +44,38 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
         <div className="flex items-center gap-2 text-muted text-sm">
           <Loader2 size={14} className="animate-spin" /> {i18nT('pages.chat.knowledgePicker.searching_knowledge_for_query', { query })}
         </div>
+      </div>
+    )
+  }
+
+  // Failure before empty: a refused search is not "no knowledge found". The
+  // picker sits above the composer, but the composer draft is persisted per
+  // slot and an in-chat hand-off opens a fresh slot, so nothing is at risk →
+  // hand-off on. The send path cleared the composer before searching, so the
+  // title names the query and Retry re-runs it — otherwise the user retypes
+  // `@kb …` from memory. Dismiss doubles as the picker's skip. Retry sits on
+  // its own row under the notice: the notice already carries two actions
+  // (Ask Agent, Dismiss), and a third in the same row is over the
+  // `max-two-buttons-per-row` cap.
+  if (error) {
+    return (
+      <div className="mb-3 flex flex-col items-start gap-2">
+        <ErrorNotice
+          className="w-full"
+          title={i18nT('pages.chat.knowledgePicker.search_failed_for_query', { query })}
+          message={error}
+          askAgent
+          onDismiss={onSkip}
+        />
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="px-3 py-1.5 text-[13px] border border-border rounded bg-transparent text-text hover:bg-bg-hover cursor-pointer"
+          >
+            {i18nT('pages.chat.knowledgePicker.retry')}
+          </button>
+        )}
       </div>
     )
   }

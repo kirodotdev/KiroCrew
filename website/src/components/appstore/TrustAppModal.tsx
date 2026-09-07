@@ -23,7 +23,9 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Code2, GitBranch, Loader2, Server, ShieldAlert, Terminal } from 'lucide-react'
 
 import { api } from '../../api/client'
+import { isNotFoundError } from '../../api/apiError'
 import Modal from '../Modal'
+import ErrorNotice from '../ErrorNotice'
 import { Badge, Btn } from '../ui'
 import { i18nT } from '../../i18n/t'
 import { sourceLabel, type RegistryApp } from './types'
@@ -108,16 +110,6 @@ function errorCode(e: unknown): string | null {
  */
 export function isTrustDeniedError(e: unknown): boolean {
   return errorCode(e) === APP_EXECUTION_DENIED
-}
-
-/** Whether a rejection is specifically a 404 — proof the resource is absent.
- *
- *  Structural for the same reason `errorCode` is: page tests stub ApiError-SHAPED
- *  objects, so an `instanceof ApiError` check would read false for them and the
- *  absence proof would be lost exactly where it is asserted.
- */
-function isNotFound(e: unknown): boolean {
-  return !!e && typeof e === 'object' && (e as { status?: unknown }).status === 404
 }
 
 /**
@@ -239,7 +231,7 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
           // exists and works. Status read structurally, matching
           // `isTrustDeniedError` above: page tests stub ApiError-SHAPED objects
           // rather than real instances.
-          if (isNotFound(probe)) {
+          if (isNotFoundError(probe)) {
             try {
               await api.untrustApp(gate.app.name)
               rolledBack = true
@@ -407,16 +399,20 @@ export default function TrustAppModal({ app, pending, failed, granted, onCancel,
           <p className="text-muted leading-relaxed">
             {i18nT('components.appstore.trustAppModal.revocable')}
           </p>
+          {/* Two failure strings, because the two cases need different advice: if
+              the grant landed and only the enable failed, the user has state to
+              clean up; if nothing was written, telling them to go check Settings
+              sends them after something that isn't there. askAgent on: a trust
+              decision dialog holds no draft. */}
           {failed && (
-            /* Two failure strings, because the two cases need different advice: if
-               the grant landed and only the enable failed, the user has state to
-               clean up; if nothing was written, telling them to go check Settings
-               sends them after something that isn't there. */
-            <p role="alert" className="text-danger leading-relaxed">
-              {granted
-                ? i18nT('components.appstore.trustAppModal.failed', { app: name })
-                : i18nT('components.appstore.trustAppModal.failed_generic', { app: name })}
-            </p>
+            <ErrorNotice
+              message={
+                granted
+                  ? i18nT('components.appstore.trustAppModal.failed', { app: name })
+                  : i18nT('components.appstore.trustAppModal.failed_generic', { app: name })
+              }
+              askAgent
+            />
           )}
         </div>
       )}

@@ -69,7 +69,7 @@ def _acp_prompt_ceiling() -> float:
     """The transport's own per-prompt timeout.
 
     Resolves through :func:`~kiro_crew.acp.client.resolve_prompt_timeout`, which
-    follows a configured ceiling ABOVE the 2h default (plus a margin so this
+    follows a configured ceiling ABOVE the 4h default (plus a margin so this
     module's card always fires before the transport cut). The clamp in
     :func:`chat_turn_timeout_secs` therefore no longer fires in normal operation;
     it stays as the fail-safe for a resolver that could not read config.

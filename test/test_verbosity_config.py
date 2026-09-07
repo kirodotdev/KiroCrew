@@ -278,14 +278,17 @@ class TestAnswerOnlyBlock:
         short plain words could still bury the point mid-sentence behind chained
         clauses ("here", "then", "but", "which means") and contrastive framing
         ("this is not X, it's Y"). The reported symptom was having to hunt for
-        what to know. Also fences off the opposite failure: plain is written for
-        a capable reader in a hurry, never dumbed down.
+        what to know. Also fences off the opposite failure: Age 5 names the
+        register, not the reader -- a capable adult in a hurry, never talked
+        down to.
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
         one_line = " ".join(result.split())
         assert "the point at the front of each one" in one_line
-        assert "Plain does not mean childish" in one_line
-        assert "capable reader in a hurry, not for a five-year-old" in one_line
+        assert "never talk down, never pad" in one_line
+        assert "Age 5 is the register, not the reader" in one_line
+        assert "capable adult in a hurry" in one_line
+        assert "never trade a precise fact for a cute one" in one_line
         assert "in the first few words and stop" in one_line
         assert "here, then, but, so that or which means" in one_line
         assert "read twice to find the point, rewrite it" in one_line
@@ -448,25 +451,27 @@ class TestAnswerOnlyBlock:
         # model picks the longer one.
         assert "The moment the user asks why" not in one_line
 
-    def test_the_whole_reply_is_pinned_to_explain_for_age_10(self):
+    def test_the_whole_reply_is_pinned_to_explain_for_age_5(self):
         """The bare plain-words rule left the register to taste, and the same
         block also says answer like an expert -- so replies drifted back into
-        jargon. The `explain-for` skill already carries a calibrated Age 10 row,
+        jargon. The `explain-for` skill already carries a calibrated Age 5 row
+        (Age 10 was tried first and still let jargon through),
         so the block names it as the register for the WHOLE reply rather than
         re-deriving one, and names it as the default so it is not a per-reply
         judgement call the model can decline.
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
         one_line = " ".join(result.split())
-        assert "Write the WHOLE reply at the `explain-for` skill's Age 10" in one_line
-        assert "That Age 10 row is the register for everything this mode emits" in one_line
+        assert "Write the WHOLE reply at the `explain-for` skill's Age 5" in one_line
+        assert "That Age 5 row is the register for everything this mode emits" in one_line
+        assert "Age 10" not in one_line
         assert "not a choice you weigh per reply" in one_line
         # Register and depth are separate axes; conflating the two is how a
         # plain-words rule turns into a licence to write more.
         assert "It sets the REGISTER, never the depth" in one_line
         assert "costs the answer nothing" in one_line
 
-    def test_the_age_10_pin_borrows_calibration_not_length(self):
+    def test_the_age_5_pin_borrows_calibration_not_length(self):
         """Pointing at another document imports whatever else it says, and
         `explain-for` lifts terseness for explanation requests. Unscoped, the
         two documents disagree about length and the model takes the longer
@@ -476,18 +481,19 @@ class TestAnswerOnlyBlock:
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
         one_line = " ".join(result.split())
-        assert "load `explain-for`, follow its Age 10 row" in one_line
+        assert "load `explain-for`, follow its Age 5 row" in one_line
         assert "its terseness clause lifts the ban on explaining, not" in one_line
         assert "every length rule above still holds" in one_line
-        assert "An audience named in the request wins over Age 10" in one_line
+        assert "An audience named in the request wins over Age 5" in one_line
 
-    def test_the_age_10_pin_is_unique_to_answer_only(self):
+    def test_the_age_5_pin_is_unique_to_answer_only(self):
         """The pin is a property of this tier, not house style. `concise` and
         `ultra` have their own registers, and copying the pin upward would erase
         the distinction between the levels.
         """
         for level in ("concise", "ultra"):
             other = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity=level)
+            assert "Age 5" not in other
             assert "Age 10" not in other
             assert "explain-for" not in other
 

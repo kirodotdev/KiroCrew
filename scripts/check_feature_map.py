@@ -70,12 +70,21 @@ WATCHED_DIRS = (
 # and go with refactors that add no destination, and treating their arrival as a
 # feature would train reviewers to touch the map to silence a false positive —
 # which is exactly how a gate stops meaning anything.
+#
+# Art is the same case and arrives the same way. An image is consumed BY a
+# feature rather than being one: it adds no destination, no handler and no
+# endpoint, so there is nothing for a map row to say about it beyond what the
+# row for its consuming page already says. `website/src/pages/connections/logos/`
+# is the live example — a provider gallery whose brand marks live beside the page
+# that renders them, where adding one mark to an existing card is a change of
+# appearance, not of inventory.
 IGNORED_SUFFIXES = (
     ".test.tsx",
     ".test.ts",
     ".spec.tsx",
     ".spec.ts",
     ".snap",
+    ".svg",
 )
 IGNORED_NAMES = (
     "__init__.py",
@@ -397,6 +406,9 @@ PROBES: tuple[tuple[str, list[str], list[str], int, int, bool, bool], ...] = (
     # Non-features under a watched tree.
     ("test-file-added", ["website/src/pages/NewPage.test.tsx"], [], 0, 0, False, True),
     ("snapshot-added", ["website/src/pages/__snapshots__/x.snap"], [], 0, 0, False, True),
+    # Art beside the page that renders it. A brand mark is consumed by a feature
+    # rather than being one, so its arrival owes the map nothing.
+    ("page-asset-added", ["website/src/pages/connections/logos/gitlab.svg"], [], 0, 0, False, True),
     ("handler-init-added", ["src/kiro_crew/dashboard/handlers/__init__.py"], [], 0, 0, False, True),
     ("pages-index-added", ["website/src/pages/overview/index.ts"], [], 0, 0, False, True),
     # Outside the watched trees entirely.

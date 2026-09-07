@@ -12,6 +12,7 @@ import reducer, {
   setSlotRunning,
   setSlotStopping,
   startLocalTurn,
+  endLocalTurn,
   syncSlotRunningFromServer,
   setSlotState,
   setSlotStatusDetail,
@@ -136,6 +137,33 @@ describe('chatSlice reducers', () => {
       let state = active('chat-1')
       state = reducer(state, startLocalTurn('chat-2'))
       expect(state.slotRunning).toBe(false)
+      expect(state.pendingTurnSlot).toBe('chat-2')
+    })
+
+    it('endLocalTurn is the slot-keyed inverse: a failed send for the active slot clears its footer and pending mark', () => {
+      let state = active('chat-1')
+      state = reducer(state, startLocalTurn('chat-1'))
+      state = reducer(state, endLocalTurn('chat-1'))
+      expect(state.slotRunning).toBe(false)
+      expect(state.pendingTurnSlot).toBeNull()
+    })
+
+    it('endLocalTurn for a slot the user has LEFT does not clear the new active session\'s running state', () => {
+      // Send from chat-1, switch to chat-2 (running), then chat-1's send fails.
+      let state = active('chat-1')
+      state = reducer(state, startLocalTurn('chat-1'))
+      state = reducer(state, setActiveSlot('chat-2'))
+      state = reducer(state, setSlotRunning(true))
+      state = reducer(state, endLocalTurn('chat-1'))
+      expect(state.slotRunning).toBe(true)
+      // chat-1's pending mark is gone; nothing else changed.
+      expect(state.pendingTurnSlot).toBeNull()
+    })
+
+    it('endLocalTurn leaves another slot\'s pending mark alone', () => {
+      let state = active('chat-1')
+      state = reducer(state, startLocalTurn('chat-2'))
+      state = reducer(state, endLocalTurn('chat-1'))
       expect(state.pendingTurnSlot).toBe('chat-2')
     })
 

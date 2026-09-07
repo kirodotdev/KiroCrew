@@ -16,6 +16,7 @@ from kiro_crew.connections import get_provider
 from kiro_crew.connections.ownership import remove_provider_entry
 from kiro_crew.connections.registry import Provider
 from kiro_crew.dashboard.handlers.mcp import _is_valid_mcp_name
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -362,14 +363,13 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     if adopted is not None:
         # ONE event, outcome ``ok``: unlike the cold path below, this request both
         # starts and finishes here, so a ``started`` with no completion would leave the
-        # audit trail showing a mint that never ended.
-        await asyncio.to_thread(
-            lambda: sel().log_api_access(
-                caller="dashboard",
-                operation="connections_mint",
-                outcome="ok",
-                resources=f"provider:{slug} reason=adopted_warm_mint",
-            )
+        # audit trail showing a mint that never ended. A bare enqueue — SEL is
+        # warmed at gateway startup (sel.warm_sel_singleton, #8608).
+        sel().log_api_access(
+            caller="dashboard",
+            operation="connections_mint",
+            outcome="ok",
+            resources=f"provider:{slug} reason=adopted_warm_mint",
         )
         # ``waiting`` rather than ``minting``: the URL exists already. The card polls
         # the mint state either way, and that poll now finds it on the first read.
@@ -391,20 +391,15 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     _mint_tasks.add(task)
     task.add_done_callback(_mint_tasks.discard)
 
-    # Off the loop: only the append is queued to SEL's writer thread. The FIRST
-    # sel() of a process CONSTRUCTS the log -- trust-dir creation, key validation,
-    # and on Windows the owner-only DACL on the key file -- and this handler runs
-    # BEFORE the audit
-    # middleware's own call (that one logs the response), so on a fresh gateway
-    # whose first state-changing request is a Connect click it would land here and
-    # stall every other request. Same reasoning as server._audit_denied.
-    await asyncio.to_thread(
-        lambda: sel().log_api_access(
-            caller="dashboard",
-            operation="connections_mint",
-            outcome="started",
-            resources=f"provider:{slug}",
-        )
+    # A bare enqueue (plus the writer thread's one-time start on the process's
+    # first log()): the construction cost this handler used to dodge (the
+    # FIRST sel() of a process) is paid once at gateway startup instead
+    # (sel.warm_sel_singleton, #8608).
+    sel().log_api_access(
+        caller="dashboard",
+        operation="connections_mint",
+        outcome="started",
+        resources=f"provider:{slug}",
     )
     return web.json_response({"ok": True, "slug": slug, "state": "minting", "token": token})
 
@@ -468,6 +463,31 @@ async def api_connections_status(request: web.Request) -> web.Response:
     return web.json_response({"schema_version": _STATUS_SCHEMA_VERSION, "connections": statuses})
 
 
+#: The slug currently running a Connections Test, or ``None`` when the endpoint
+#: is idle. Each click spawns its own promptless kiro-cli ACP session
+#: (``test_connection_tools``, ~10-100s), and two running together both contend
+#: for host resources and -- because the frontend tracked only one global busy
+#: slot -- made a second click's spinner silently replace the first card's,
+#: reading as a cancelled test that had actually completed (its SEL record
+#: still shows the earlier finish). This guard makes running two at once
+#: impossible on the server regardless of what any client renders.
+#:
+#: Guarded by :data:`_TEST_SLUG_GUARD`, a :class:`LoopBoundLock`, rather than a
+#: bare check-then-set: two POSTs handled back-to-back on the loop can each run
+#: up to the read of this variable before either writes it, so an unguarded
+#: "if None: set it" has a window where both readers see ``None`` and both
+#: proceed. The guard's own acquire never blocks a caller's request in a way
+#: that would turn a refusal into a queued wait -- read-and-write below is a
+#: synchronous critical section with no ``await`` inside it, so once acquired
+#: it commits its verdict (proceed or refuse) before yielding the loop at all.
+_testing_slug: str | None = None
+_TEST_SLUG_GUARD = LoopBoundLock()
+
+
+def _conflict(error: str, code: str, *, slug: str) -> web.Response:
+    return web.json_response({"error": error, "code": code, "slug": slug}, status=409)
+
+
 async def api_connections_test(request: web.Request) -> web.Response:
     """POST /api/connections/test — enumerate this provider through kiro-cli.
 
@@ -475,6 +495,12 @@ async def api_connections_test(request: web.Request) -> web.Response:
     server, performs its MCP ``tools/list``, and reports the final agent-exposed
     tools through native structured commands. The endpoint never receives token
     material and never invokes a provider tool.
+
+    Single-flight (:data:`_testing_slug`): a POST arriving while another test is
+    already running -- for the same provider or a different one -- is refused
+    immediately with 409 ``test_in_flight`` naming the slug currently running,
+    rather than starting a second concurrent kiro-cli session or queuing behind
+    the first.
     """
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
@@ -485,13 +511,33 @@ async def api_connections_test(request: web.Request) -> web.Response:
     if isinstance(parsed, web.Response):
         return parsed
     _body, provider = parsed
+    slug = str(provider["slug"])
 
-    # Function-local by design: the handlers package is imported at gateway
-    # boot, while this path imports the ACP client and should be paid only when
-    # the owner explicitly clicks Test.
-    from kiro_crew.connections.tool_test import test_connection_tools
+    global _testing_slug
+    async with _TEST_SLUG_GUARD:
+        # No `await` between the read and the write: on one event loop this is
+        # the whole critical section, so no other coroutine can observe
+        # `_testing_slug` between them regardless of the lock -- the lock
+        # exists for the OTHER event loop a LoopBoundLock covers (a gateway
+        # restart-in-process, or two independent test loops in one process),
+        # never to make this caller wait for one already running.
+        if _testing_slug is not None:
+            return _conflict(
+                f"a connection test for {_testing_slug} is already running",
+                "test_in_flight",
+                slug=_testing_slug,
+            )
+        _testing_slug = slug
 
-    return web.json_response(await test_connection_tools(provider))
+    try:
+        # Function-local by design: the handlers package is imported at
+        # gateway boot, while this path imports the ACP client and should be
+        # paid only when the owner explicitly clicks Test.
+        from kiro_crew.connections.tool_test import test_connection_tools
+
+        return web.json_response(await test_connection_tools(provider))
+    finally:
+        _testing_slug = None
 
 
 async def api_connections_cancel(request: web.Request) -> web.Response:
@@ -529,17 +575,14 @@ async def api_connections_cancel(request: web.Request) -> web.Response:
 
     dropped = await cancel_mint(slug, token)
 
-    # Off the loop: the FIRST sel() of a process constructs the log (trust-dir
-    # creation, key validation, on Windows the owner-only DACL). Same reasoning
-    # as api_connections_mint above.
-    await asyncio.to_thread(
-        lambda: sel().log_api_access(
-            caller="dashboard",
-            operation="connections_cancel",
-            outcome="ok",
-            source="dashboard",
-            resources=f"provider:{slug} dropped={dropped}",
-        )
+    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton,
+    # #8608), so no per-site thread hop is needed.
+    sel().log_api_access(
+        caller="dashboard",
+        operation="connections_cancel",
+        outcome="ok",
+        source="dashboard",
+        resources=f"provider:{slug} dropped={dropped}",
     )
     return web.json_response({"ok": True, "slug": slug, "dropped": dropped})
 
@@ -637,24 +680,22 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
             if label not in surviving:
                 surviving.append(label)
 
-    # Off the loop: the FIRST sel() of a process constructs the log. Same
-    # reasoning as api_connections_cancel above.
-    await asyncio.to_thread(
-        lambda: sel().log_api_access(
-            caller="dashboard",
-            operation="connections_disconnect",
-            # No `or grant_shared_with` escape any more: only ATTEMPTED pairs are
-            # re-stat'd, so a survivor is always a failed unlink rather than a
-            # deliberate keep that had to be excused.
-            outcome="partial" if surviving else "ok",
-            source="dashboard",
-            resources=(
-                f"provider:{slug} artifacts_removed={len(removed)} "
-                f"surviving={len(surviving)} entry_removed={scope.entry_removed} "
-                f"grant_shared={len(scope.grant_shared_with)} "
-                f"census_incomplete={scope.census_incomplete}"
-            ),
-        )
+    # A bare enqueue: SEL is warmed at gateway startup (sel.warm_sel_singleton,
+    # #8608).
+    sel().log_api_access(
+        caller="dashboard",
+        operation="connections_disconnect",
+        # No `or grant_shared_with` escape any more: only ATTEMPTED pairs are
+        # re-stat'd, so a survivor is always a failed unlink rather than a
+        # deliberate keep that had to be excused.
+        outcome="partial" if surviving else "ok",
+        source="dashboard",
+        resources=(
+            f"provider:{slug} artifacts_removed={len(removed)} "
+            f"surviving={len(surviving)} entry_removed={scope.entry_removed} "
+            f"grant_shared={len(scope.grant_shared_with)} "
+            f"census_incomplete={scope.census_incomplete}"
+        ),
     )
     return web.json_response(
         {
@@ -741,15 +782,13 @@ async def api_connections_premint(request: web.Request) -> web.Response:
     _premint_tasks.add(task)
     task.add_done_callback(_premint_tasks.discard)
 
-    # Off the loop for the same reason as api_connections_mint: this handler can be
-    # the first state-changing request a fresh gateway serves, and the FIRST sel()
-    # of a process constructs the log.
-    await asyncio.to_thread(
-        lambda: sel().log_api_access(
-            caller="dashboard",
-            operation="connections_premint",
-            outcome="started",
-            resources=f"providers:{len(slugs)}",
-        )
+    # A bare enqueue, same as api_connections_mint: the first-touch construction
+    # this used to dodge is paid once at gateway startup (sel.warm_sel_singleton,
+    # #8608).
+    sel().log_api_access(
+        caller="dashboard",
+        operation="connections_premint",
+        outcome="started",
+        resources=f"providers:{len(slugs)}",
     )
     return web.json_response({"ok": True, "preminting": slugs})

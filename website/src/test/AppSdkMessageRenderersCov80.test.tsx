@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import type { ChatMessage } from '../types'
@@ -57,6 +57,14 @@ vi.mock('../pages/chat/McpOAuthBanner', () => ({
   renderMcpOAuthMessage: (m: ChatMessage, hide: boolean) =>
     hide && m.meta?.card_owned ? null : <div data-testid="oauth" />,
 }))
+// The real helper resolves FALSE on a refused write and rejects only on a genuine
+// throw, so the mock is driven both ways below — a resolved false read as success
+// is how a copy button claims to have filled an empty clipboard.
+vi.mock('../utils/clipboard', () => ({
+  copyToClipboard: vi.fn(async () => true),
+}))
+import { copyToClipboard } from '../utils/clipboard'
+const mockedCopy = vi.mocked(copyToClipboard)
 
 const {
   ToolCallPill, defaultMessageRenderers, resolveRenderer, mergeRenderers, GROUPED_ROLES,
@@ -489,5 +497,210 @@ describe('ToolCallPill', () => {
       onFileOpen={onFileOpen}
     />)
     expect(screen.getAllByRole('button')).toHaveLength(1)
+  })
+})
+
+/**
+ * The expanded tool panel's own affordances (#5984). The panel is `border-box`,
+ * so `max-h-40` (160px) less `p-2` and its borders leaves 142px at `leading-4`
+ * -- EIGHT visible lines, measured in the built app. These pin the cue, the
+ * raised cap, and -- the load-bearing one -- that copy takes the WHOLE panel
+ * text rather than whatever the box scrolled into view.
+ */
+describe('ToolCallPill expanded output panel', () => {
+  const LONG = Array.from({ length: 40 }, (_, i) => `zzq-line-${i}`).join('\n')
+
+  /** Open the panel. The pill's own toggle is the first button in the row. */
+  async function expandPanel() {
+    await userEvent.click(screen.getAllByRole('button')[0])
+  }
+
+  it('offers the cue at NINE lines, which the panel cannot show', async () => {
+    // The boundary a ten-line threshold missed: nine lines overflow (scrollHeight
+    // 192 against clientHeight 158) yet sat below the old budget, so the output
+    // was clipped in silence -- exactly the reported defect, one line down.
+    const nine = Array.from({ length: 9 }, (_, i) => `zzq-n${i}`).join('\n')
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: nine })} running={false} />)
+    await expandPanel()
+    expect(nine.split('\n')).toHaveLength(9)
+    expect(nine.length).toBeLessThan(200) // so the char budget cannot be what fires
+    expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument()
+  })
+
+  it('offers the expand control only when the panel actually clips', async () => {
+    const clipped = render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} />)
+    await expandPanel()
+    expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument()
+    clipped.unmount()
+
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: 'zzq-one\nzzq-two' })} running={false} />)
+    await expandPanel()
+    // Control on the same axis: prove the panel really OPENED, so an absent cue
+    // cannot be read off a panel that never rendered.
+    expect(document.querySelector('pre')?.textContent).toContain('zzq-two')
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull()
+  })
+
+  it('offers the cue for ONE line long enough to wrap past the box', async () => {
+    // The line count alone cannot see this case, and it is the common one: a
+    // single-line JSON blob wraps well past 160px. Exercises the char budget
+    // specifically -- 1200 chars on one line, so the line test cannot fire.
+    const oneLongLine = 'zzq-'.repeat(300)
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: oneLongLine })} running={false} />)
+    await expandPanel()
+    expect(oneLongLine.split('\n')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument()
+  })
+
+  it('prefixes the panel with the raw label the purpose replaced', async () => {
+    render(<ToolCallPill
+      message={msg({ role: 'tool_result', content: '🔧 zzq-raw\nzzq-detail', meta: { purpose: 'zzq-purpose' } })}
+      running={false}
+    />)
+    await expandPanel()
+    const shown = (document.querySelector('pre') as HTMLElement).textContent as string
+    // starts-with, NOT contains: the content already holds 'zzq-raw' on its own
+    // line, so a `toContain` assertion is satisfied with the prefix removed --
+    // which is exactly why dropping it reddened nothing before this test.
+    expect(shown.startsWith('zzq-raw\n\n')).toBe(true)
+  })
+
+  it("raises the cap to the main-chat sibling's height and back", async () => {
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} />)
+    await expandPanel()
+    expect((document.querySelector('pre') as HTMLElement).className).toContain('max-h-40')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show more' }))
+    const grown = (document.querySelector('pre') as HTMLElement).className
+    expect(grown).toContain('max-h-[500px]')
+    expect(grown).not.toContain('max-h-40')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect((document.querySelector('pre') as HTMLElement).className).toContain('max-h-40')
+  })
+
+  it('copies the whole panel text, not the portion scrolled into view', async () => {
+    mockedCopy.mockResolvedValue(true)
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} />)
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+
+    expect(mockedCopy).toHaveBeenCalledTimes(1)
+    // Exact equality, not `toContain`: a slice or a trim must fail this.
+    expect(mockedCopy.mock.calls[0][0]).toBe(LONG)
+    expect((mockedCopy.mock.calls[0][0] as string).split('\n')).toHaveLength(40)
+  })
+
+  it('copies exactly what the panel shows when a purpose replaced the label', async () => {
+    mockedCopy.mockResolvedValue(true)
+    render(<ToolCallPill
+      message={msg({ role: 'tool_result', content: '🔧 zzq-raw\nzzq-detail', meta: { purpose: 'zzq-purpose' } })}
+      running={false}
+    />)
+    await expandPanel()
+    const shown = (document.querySelector('pre') as HTMLElement).textContent as string
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    // Pinned against the panel's OWN text rather than against a restated
+    // formula, so the two cannot drift apart if the prefix rule ever changes.
+    expect(mockedCopy.mock.calls[0][0]).toBe(shown)
+    // Non-vacuity: two equal empty strings would satisfy the line above.
+    expect(shown).toContain('zzq-raw')
+    expect(shown).toContain('zzq-detail')
+  })
+
+  it('confirms a successful copy on the control', async () => {
+    mockedCopy.mockResolvedValue(true)
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} />)
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied!' })).toBeInTheDocument())
+  })
+
+  it('reports a REFUSED clipboard write as a failure, not a success', async () => {
+    mockedCopy.mockResolvedValue(false)
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} />)
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    // The failure must land on the shared error surface, not on an icon of this
+    // file's own: `AUTOSDE.yaml`'s `errors-use-error-notice` is blocking, and a
+    // title-only assertion passed happily while nothing was rendered at all.
+    await waitFor(() => expect(screen.getByTestId('tool-panel-copy-error')).toBeInTheDocument())
+    expect(screen.getByTestId('tool-panel-copy-error')).toHaveTextContent('Copy failed')
+    expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull()
+  })
+
+  it('reports a THROWN clipboard write as a failure', async () => {
+    mockedCopy.mockRejectedValue(new Error('zzq-denied'))
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} />)
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await waitFor(() => expect(screen.getByTestId('tool-panel-copy-error')).toBeInTheDocument())
+  })
+
+  it('offers the agent hand-off on a copy failure, and the notice is dismissible', async () => {
+    mockedCopy.mockResolvedValue(false)
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} />)
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    const notice = await waitFor(() => screen.getByTestId('tool-panel-copy-error'))
+    // `askAgent` is an explicit decision here, so pin it: the panel holds no
+    // unsaved input, and a reviewer cannot tell that from the hunk alone.
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    // Dismissing clears the state rather than leaving a banner welded on.
+    await userEvent.click(within(notice).getByRole('button', { name: /dismiss/i }))
+    await waitFor(() => expect(screen.queryByTestId('tool-panel-copy-error')).toBeNull())
+  })
+
+  it('offers the cue on a NARROW panel the char budget cannot see', async () => {
+    // The char budget is width-blind: 800 chars over 8 lines is ~100 mono
+    // columns, which only holds above roughly 660px. On the companion-chat
+    // sidebar this same pill ships on, a short single-line blob wraps past the
+    // box and BOTH budgets stay quiet. jsdom reports 0 for either height, so the
+    // real browser's measurement is stubbed to stand in for a narrow surface.
+    const short = 'zzq-narrow'
+    const sh = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(192)
+    const ch = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(142)
+    try {
+      render(<ToolCallPill message={msg({ role: 'tool_result', content: short })} running={false} />)
+      await expandPanel()
+      // Both budgets must be out of reach, or this proves nothing.
+      expect(short.length).toBeLessThan(800)
+      expect(short.split('\n')).toHaveLength(1)
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument())
+    } finally {
+      sh.mockRestore(); ch.mockRestore()
+    }
+  })
+
+  it('keeps the toggle once expanded, instead of measuring it away mid-read', async () => {
+    // Measuring the EXPANDED box would report "fits" at 500px and remove the
+    // control, stranding the reader with no way back to the collapsed view.
+    const short = 'zzq-narrow'
+    const sh = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(192)
+    const ch = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        // The expanded box is tall enough to hold it; the collapsed one is not.
+        return this.className?.includes('max-h-[500px]') ? 500 : 142
+      })
+    try {
+      render(<ToolCallPill message={msg({ role: 'tool_result', content: short })} running={false} />)
+      await expandPanel()
+      await userEvent.click(await waitFor(() => screen.getByRole('button', { name: 'Show more' })))
+      expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'Show less' }))
+      expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument()
+    } finally {
+      sh.mockRestore(); ch.mockRestore()
+    }
+  })
+
+  it('does not report a copy failure until one happens', async () => {
+    mockedCopy.mockResolvedValue(true)
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} />)
+    await expandPanel()
+    expect(screen.queryByTestId('tool-panel-copy-error')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied!' })).toBeInTheDocument())
+    expect(screen.queryByTestId('tool-panel-copy-error')).toBeNull()
   })
 })

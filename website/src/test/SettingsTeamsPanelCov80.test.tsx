@@ -308,14 +308,20 @@ describe('TeamsPanel save', () => {
     expect(screen.queryByText('Saved.')).not.toBeInTheDocument()
   })
 
-  it('clears the transient error on its timer', async () => {
+  it('keeps the save error up until the next attempt instead of clearing it on a timer', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     saveTeamsConfig.mockRejectedValue(new Error('zz-plain-reason'))
     renderPanel()
     await heading()
     await act(async () => { fireEvent.click(saveBtn()) })
     await waitFor(() => expect(screen.getByText('zz-plain-reason')).toBeInTheDocument())
+    // The rejected draft is still in the form; a notice that erased itself
+    // after a few seconds left a quiet form that read as saved.
     await act(async () => { vi.advanceTimersByTime(8500) })
+    expect(screen.getByText('zz-plain-reason')).toBeInTheDocument()
+    // The next attempt clears it before dispatching.
+    saveTeamsConfig.mockReturnValue(new Promise(() => {}))
+    await act(async () => { fireEvent.click(saveBtn()) })
     expect(screen.queryByText('zz-plain-reason')).not.toBeInTheDocument()
   })
 })

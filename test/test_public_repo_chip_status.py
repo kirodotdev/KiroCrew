@@ -34,6 +34,23 @@ def _clear_caches():
     source._visibility_inflight.clear()
     source._visibility_force_gen.clear()
     source._check_cache.clear()
+    # A task a test spawned via schedule_visibility_refresh but never awaited
+    # (e.g. the test raised before its own gather, or simply forgot to drain
+    # it) is bound to THIS test's event loop, which pytest-asyncio strict mode
+    # tears down at teardown. The task then lingers in the module-global set
+    # forever — its done-callback never fires because the loop that would run
+    # it is gone — and a LATER test on a fresh loop that gathers the set
+    # crashes with "Future belongs to a different loop" (no-test-side-effects).
+    # Cancel each leftover so its coroutine is properly closed rather than
+    # silently dropped, then clear the set so the next test starts empty. A
+    # sync fixture's teardown can run after pytest-asyncio has already closed
+    # the loop; ``Task.cancel`` schedules through ``call_soon`` and raises on a
+    # closed loop, so a task whose loop is gone is only dropped (production
+    # prunes dead-loop tasks on the next schedule anyway).
+    for task in list(source._VISIBILITY_TASKS):
+        if not task.get_loop().is_closed():
+            task.cancel()
+    source._VISIBILITY_TASKS.clear()
     # A test that armed the debounced update (force visibility refresh /
     # status-change path) can leave a pending global TimerHandle bound to this
     # test's now-closing event loop; if it survives, a later test's callback

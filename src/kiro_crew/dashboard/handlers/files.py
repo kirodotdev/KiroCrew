@@ -28,7 +28,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.multipart import BodyPartReader
 
-from kiro_crew import pinned_fs, platform_compat
+from kiro_crew import file_delivery_consent, pinned_fs, platform_compat
 from kiro_crew.atomic_write import (
     atomic_write,
     open_access_control_source,
@@ -286,7 +286,14 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     # and validate MIME against the shared BINARY_MIME_ALLOWLIST.
     try:
         text = raw.decode("utf-8")
-        if redact(text) != text:
+        # The owner's grant covers this leg: the card renders in the owner's own
+        # authenticated dashboard. No audit event here -- the delivery decision is
+        # already recorded by the tool leg, and the byte handover is recorded by
+        # the download route; a third entry for rendering a card would only bury
+        # the two that answer a real question.
+        if redact(text) != text and not file_delivery_consent.is_granted(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD
+        ):
             _sel().log_tool_invocation(
                 session_key="api",
                 source="api",
@@ -406,16 +413,52 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     if is_text:
         redacted = redact(text)
         if redacted != text:
+            # This is where the flagged bytes actually leave for the owner's
+            # browser, so a grant is honoured here AND the handover is audited --
+            # the refusal it replaces was self-evident in the 400, whereas a
+            # successful consented download would otherwise leave no trace.
+            #
+            # TWO conjuncts, and the second is not redundant. This route is absent
+            # from every ``token_auth`` bypass list, which establishes that it needs
+            # AUTHENTICATION -- not that it needs OWNER IDENTITY. A Slack
+            # allow-listed non-owner running ``!dashboard`` authenticates with
+            # ``app == ""`` and ``sub != owner_id``, so ordinary token auth admits
+            # them while ``is_owner_dashboard_request`` does not. Without the owner
+            # conjunct the grant would convert a clean 400-for-everyone into raw
+            # bytes for every authenticated caller -- widening the audience as a
+            # side effect of a control meant to narrow it, and contradicting the
+            # "owner's own authenticated browser" audience this class is scoped to.
+            from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
+                is_owner_dashboard_request,
+            )
+
+            if not (
+                file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+                and is_owner_dashboard_request(request)
+            ):
+                _sel().log_tool_invocation(
+                    session_key="api",
+                    source="api",
+                    tool_name="file_send",
+                    tool_kind="download",
+                    outcome="denied",
+                    error="content_redacted",
+                )
+                return web.json_response(
+                    {"error": "file content was redacted; download aborted"}, status=400
+                )
             _sel().log_tool_invocation(
                 session_key="api",
                 source="api",
                 tool_name="file_send",
                 tool_kind="download",
-                outcome="denied",
-                error="content_redacted",
+                outcome="completed",
+                error="sensitive_content_delivered_with_consent",
             )
-            return web.json_response(
-                {"error": "file content was redacted; download aborted"}, status=400
+            file_delivery_consent.audit_decision(
+                file_delivery_consent.CLASS_OWNER_DASHBOARD,
+                outcome="delivered",
+                detail=f"download: {path.name}",
             )
     safe_name = urllib.parse.quote(path.name, safe="")
     content_type, _ = mimetypes.guess_type(path.name)

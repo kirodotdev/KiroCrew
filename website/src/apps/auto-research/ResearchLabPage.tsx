@@ -7,12 +7,18 @@ import Modal from '../../components/Modal'
 import { Btn } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
 import GrillTree from './GrillTree'
 import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles, GrillNode } from './grillTreeModel'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+
+/** The thrown value's own sentence — the api client rejects with an `ApiError`,
+ *  so this is the backend's message; anything else is stringified rather than
+ *  swallowed. */
+const errMsg = (e: unknown): string => (e instanceof Error && e.message ? e.message : String(e))
 const ACTIVE_STATUSES = ['running', 'paused', 'stagnant', 'needs_input']
 
 interface Campaign { id: string; name: string; question: string; sub_questions: string; sources: string; max_cycles: number; idle_secs: number; status: string; total_cycles: number; findings?: Finding[]; error_message?: string; pending_question?: string; parent_id?: string; parallel_workers?: number }
@@ -320,7 +326,9 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
             {successCriteria && <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.done_when')} {successCriteria}</div>}
           </div>
         </> : <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.validating')}</div>}
-        {error && <div className="text-sm text-danger flex items-center gap-1"><XCircle size={14} /> {error}</div>}
+        {/* No hand-off: the campaign wizard's question, success criteria and cycle
+            settings above are unsaved until Start campaign succeeds. */}
+        <ErrorNotice message={error} />
       </div>}
 
       <div className="flex justify-between mt-6">
@@ -434,7 +442,9 @@ function ForkFlow({ parentId, onCancel, onDone }: { parentId: string; onCancel: 
 
   return <div className="max-w-2xl mx-auto space-y-4">
     <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.challenge_the_findings_from_question', { question: question?.slice(0, 60) })}</div>
-    {error && <div className="text-xs text-danger">{error}</div>}
+    {/* No hand-off: the challenge answers typed into the tree below and the
+        manual sub-questions are unsaved until the fork is created. */}
+    <ErrorNotice message={error} />
     {tree.length === 0 ? (
       <button className="text-sm px-3 py-1.5 rounded-md bg-accent text-accent-fg disabled:opacity-50" disabled={grilling || !question} onClick={startChallenge}>{grilling ? i18nT('apps.autoResearch.researchLabPage.challenging') : <><Flame size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.challenge_findings')}</>}</button>
     ) : (
@@ -579,6 +589,9 @@ function SubQuestionAdder({ id, campaign }: { id: string; campaign: Campaign }) 
           <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg disabled:opacity-50" disabled={!text.trim() || addMut.isPending} onClick={() => addMut.mutate(text.trim())}>{addMut.isPending ? '…' : i18nT('apps.autoResearch.researchLabPage.add')}</button>
         </div>
         <div className="text-[10px] text-muted mt-1">{i18nT('apps.autoResearch.researchLabPage.free_form_a_sub_question_or_an_instruction_the_a')}</div>
+        {/* No hand-off: the guidance text above stays in the box on failure so it
+            can be re-sent — a navigation would discard it. */}
+        {addMut.isError && <ErrorNotice message={errMsg(addMut.error)} variant="inline" className="mt-1" />}
       </div>}
     </div>}
   </div>
@@ -647,7 +660,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
       </>}
     >
       <p className="text-sm text-muted m-0">{i18nT('apps.autoResearch.researchLabPage.delete_this_campaign_and_its_report_this_cannot')}</p>
-      {deleteMut.isError && <p className="text-danger text-[12px] mt-2 m-0">{deleteMut.error instanceof Error && deleteMut.error.message ? deleteMut.error.message : i18nT('apps.autoResearch.researchLabPage.delete_failed')}</p>}
+      {deleteMut.isError && <ErrorNotice message={deleteMut.error instanceof Error && deleteMut.error.message ? deleteMut.error.message : i18nT('apps.autoResearch.researchLabPage.delete_failed')} askAgent className="mt-2" />}
     </Modal>
     {campaign.question && (() => {
       const isLong = campaign.question.length > 280
@@ -667,6 +680,9 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
         <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => setShowNudge(true)}><MessageCircle size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.nudge')}</button>
       </div>}
     </div>
+    {/* Pause / resume / stop act on the persisted campaign — nothing on screen is
+        a draft, so a refused action offers the hand-off. */}
+    {actionMut.isError && <ErrorNotice message={errMsg(actionMut.error)} askAgent className="mb-4" />}
     {campaign.status === 'stagnant' && <div className="p-3 rounded-md mb-4 border border-warn bg-warn/10">
       <div className="text-sm font-medium text-warn flex items-center gap-1"><AlertTriangle size={14} /> {i18nT('apps.autoResearch.researchLabPage.research_stalled')}</div>
       <div className="text-xs mt-1">{i18nT('apps.autoResearch.researchLabPage.no_new_findings_in_the_last_5_cycles')}</div>
@@ -683,11 +699,19 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
       <div className="flex gap-2 mt-2 justify-end">
         <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg disabled:opacity-50" onClick={() => nudgeMut.mutate(answerText)} disabled={!answerText || nudgeMut.isPending}>{nudgeMut.isPending ? i18nT('apps.autoResearch.researchLabPage.sending') : i18nT('apps.autoResearch.researchLabPage.answer_resume')}</button>
       </div>
+      {/* No hand-off: the answer textarea above is unsaved. */}
+      {nudgeMut.isError && <ErrorNotice message={errMsg(nudgeMut.error)} className="mt-2" />}
     </div>}
-    {campaign.status === 'failed' && <div className="p-3 rounded-md mb-4 border border-danger bg-danger/10">
-      <div className="text-sm font-medium text-danger flex items-center gap-1"><AlertTriangle size={14} /> {i18nT('apps.autoResearch.researchLabPage.research_stopped')}</div>
-      <div className="text-xs mt-1">{campaign.error_message || i18nT('apps.autoResearch.researchLabPage.the_campaign_stopped_unexpectedly')} {i18nT('apps.autoResearch.researchLabPage.findings_so_far_are_preserved_below')}</div>
-      <button className="text-xs px-2 py-1 mt-2 rounded bg-accent text-accent-fg" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.resume')}</button>
+    {/* The campaign's persisted last error. Findings and the campaign record are
+        on disk, so the hand-off loses nothing; Resume stays a sibling control. */}
+    {campaign.status === 'failed' && <div className="mb-4 flex flex-col items-start gap-2">
+      <ErrorNotice
+        title={i18nT('apps.autoResearch.researchLabPage.research_stopped')}
+        message={`${campaign.error_message || i18nT('apps.autoResearch.researchLabPage.the_campaign_stopped_unexpectedly')} ${i18nT('apps.autoResearch.researchLabPage.findings_so_far_are_preserved_below')}`}
+        askAgent
+        className="w-full"
+      />
+      <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.resume')}</button>
     </div>}
     {(campaign.status === 'complete' || campaign.status === 'stopped') && !isActive && (
       <div className="p-3 rounded-md mb-4 border border-accent bg-accent/5">
@@ -709,6 +733,8 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
         <button className="text-xs text-muted" onClick={() => setShowNudge(false)}>{i18nT('apps.autoResearch.researchLabPage.cancel')}</button>
         <button className="text-xs px-2 py-1 rounded bg-accent text-accent-fg disabled:opacity-50" onClick={() => nudgeMut.mutate(nudgeText)} disabled={!nudgeText || nudgeMut.isPending}>{nudgeMut.isPending ? i18nT('apps.autoResearch.researchLabPage.sending') : i18nT('apps.autoResearch.researchLabPage.send')}</button>
       </div>
+      {/* No hand-off: the nudge textarea above is unsaved. */}
+      {nudgeMut.isError && <ErrorNotice message={errMsg(nudgeMut.error)} className="mt-2" />}
     </div>}
     <div className="mt-4">
       <div className="flex items-center justify-between mb-2">

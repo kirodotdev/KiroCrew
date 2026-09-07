@@ -88,7 +88,7 @@ export default function FeedbackPill({
   return (
     <div
       data-testid="feedback-pill"
-      className="flex items-center h-7 rounded-xl bg-card shrink-0 overflow-hidden"
+      className="feedback-pill flex items-center h-7 rounded-xl bg-card shrink-0 overflow-hidden"
     >
       <button
         type="button"

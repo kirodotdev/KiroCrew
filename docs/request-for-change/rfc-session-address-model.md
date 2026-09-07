@@ -13,6 +13,12 @@ superseded-by: []
 ---
 # RFC: Session Address Model — one authoritative session per conversation, surfaces attach to it
 
+> **Current behaviour: see [`../system-specs/modules/session.md`](../system-specs/modules/session.md)**
+> for the mirror-resolver and key-addressing behaviour that ships. This
+> document owns the §9 address rule inherited from
+> [`rfc-channel-plugin-architecture.md`](rfc-channel-plugin-architecture.md);
+> its four phases are still a live proposal.
+
 - Status: partial — the dashboard half of the address rule is shipped and load-bearing. A conversation that starts in a chat app is no longer copied when its dashboard tab opens: the tab resolves and holds the conversation's real key, and one function replaced the ~two dozen name-prefix tests that decided what a conversation was allowed to do. What is **not** done: a conversation's identity still encodes its origin surface in the key string, that encoding is destroyed by the filename fold and has to be recovered by a linear scan, surface capability is still a single boolean, and the failure path when the scan misses silently starts a second session against the same transcript file.
 - Author: nrb
 - Created: 2026-08-17

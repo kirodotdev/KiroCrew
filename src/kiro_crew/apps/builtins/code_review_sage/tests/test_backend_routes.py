@@ -1529,7 +1529,7 @@ class TestRedactionReachesNestedValues:
     # Assembled at runtime, never written as one literal: the redactor only fires
     # on credential-SHAPED input (a plain sentinel passes through untouched, so the
     # test would prove nothing), but a real key shape sitting in the source trips
-    # `scripts/scrub-lint.sh`'s credential scan. Splitting it satisfies both — the
+    # the internal-content-scan credential rules. Splitting it satisfies both — the
     # value is key-shaped when the redactor sees it, and no line here matches.
     SECRET = "AKIA" + "1234567890EXAMPLE"
 
@@ -2270,7 +2270,7 @@ class TestPersistedReportIsRedactedOnRead(unittest.TestCase):
     Redacting on read is idempotent, so a report this module built is unchanged.
     """
 
-    # Assembled at runtime: scrub-lint scans source text, while the redactor only
+    # Assembled at runtime: the scan reads source text, while the redactor only
     # fires on credential-shaped input.
     _SENTINEL = "AKIA" + "IOSFODNN7EXAMPLE"
 
@@ -2357,7 +2357,7 @@ class TestPlantedReportMetadataCannotBreakTheEndpoint(unittest.TestCase):
     a value that is not a slug cannot reference a real artifact.
     """
 
-    # Assembled at runtime so scrub-lint sees no credential-shaped literal.
+    # Assembled at runtime so the scan sees no credential-shaped literal.
     _SENTINEL = "AKIA" + "IOSFODNN7EXAMPLE"
 
     def setUp(self):
@@ -2457,7 +2457,7 @@ class TestNoRowFieldIsExemptFromRedaction(unittest.TestCase):
     row whose band is not one of the three cannot be grouped, so it is dropped.
     """
 
-    # Assembled at runtime: scrub-lint scans source text, the redactor only fires
+    # Assembled at runtime: the scan reads source text, the redactor only fires
     # on credential-shaped input.
     _SENTINEL = "AKIA" + "IOSFODNN7EXAMPLE"
 

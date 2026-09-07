@@ -458,9 +458,19 @@ flags exist to prevent. Descriptor-returned links are re-validated
 built-in-only. A provider id the frontend has no descriptor for renders through
 fail-closed fallback meta (`utils/sourceProviderMeta.ts`): neutral labels, no
 logo, no write affordances. The backend plugin contract — payload schema
-(`SourceChangePayload`), shared caches, redaction, byte caps, and the optional
-mutation hooks — is documented on `SourceProviderPlugin` in
-`source_providers.py`; this seam's suite is `src/test/sourceProviderSeam.test.ts`
+(`SourceChangePayload`), shared caches, redaction, byte caps, the optional
+mutation hooks, and the optional DISCOVERY hooks `path_markers()` and
+`search_ref()` — is documented on `SourceProviderPlugin` in
+`source_providers.py`. The discovery hooks exist because a built-in-only
+recogniser is blind to an edition's own id and URL shapes: `path_markers()`
+contributes the URL substrings worth parsing, so an edition's chips appear at
+all, and `search_ref()` contributes the spellings of one item, so a transcript
+citing an edition's review by URL is found by its id. Both are optional, both are
+bounded per plugin in core, and a plugin that raises is isolated per provider so
+it cannot suppress another's — for `search_ref()` the search module's own guard
+around the resolver contains it a second time, degrading the query to a literal
+needle. This seam's suite
+is `src/test/sourceProviderSeam.test.ts`
 plus `test/test_source_provider_plugin.py` on the backend.
 
 **Phone-connection method renderers.**

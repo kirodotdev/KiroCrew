@@ -226,8 +226,24 @@ class TestLoopStallBudgetConfig:
 
 
 class TestChatTurnCeilingConfig:
-    def test_default_preserves_existing_behaviour(self) -> None:
-        assert KiroCrewConfig().agent.chat_turn_timeout_secs == 7200
+    def test_default_preserves_existing_behaviour(self, tmp_path, monkeypatch) -> None:
+        """A config that omits the key must load the dataclass default.
+
+        The loader carries its own fallback literal for the key; a drift between
+        it and ``AgentConfig`` makes an on-disk config with the key omitted
+        behave differently from ``KiroCrewConfig()``.
+        """
+        from kiro_crew.config.loader import AgentConfig, _invalidate_config_cache
+
+        (tmp_path / "config.json").write_text(json.dumps({"agent": {}}), encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+        _invalidate_config_cache()
+        try:
+            loaded = KiroCrewConfig.load().agent.chat_turn_timeout_secs
+        finally:
+            _invalidate_config_cache()
+        assert loaded == AgentConfig().chat_turn_timeout_secs
+        assert KiroCrewConfig().agent.chat_turn_timeout_secs == AgentConfig().chat_turn_timeout_secs
 
     def test_out_of_range_values_are_clamped(self) -> None:
         from kiro_crew.config.loader import CHAT_TURN_TIMEOUT_MAX, CHAT_TURN_TIMEOUT_MIN

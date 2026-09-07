@@ -22,6 +22,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.dashboard.handlers import worktree as wt_mod
 from kiro_crew.dashboard.handlers.worktree import (
     _FILTER_PROBE_FAILED,
@@ -156,7 +157,20 @@ def _sandbox_exec_reason() -> str:
     rather than fail. A backend-availability probe is not enough: GitHub Actions
     runners pass the user-namespace probe but deny `unshare(NEWNS)` at exec time
     (errno 1), which the launcher can only report from the child.
+
+    Resets ``sandbox._backend`` immediately before probing. Without this, the
+    ONE-TIME probe below reads whatever backend verdict another test file
+    already cached in this xdist worker's shared process — `_backend` has a
+    permanent fast path once set to "namespace" or "none", and no fixture in
+    THIS file clears it, so this file's own (also one-time, ``lru_cache``d)
+    verdict silently inherited a coin flip decided by test-collection order:
+    which file's tests happened to run first in this worker on a given
+    invocation. That is the flip this module's own caching cannot fix on its
+    own — the cache was deterministic, but keyed on stale ambient state rather
+    than a probe of THIS host. Forcing a fresh probe here makes the verdict
+    depend only on the host's actual sandbox availability.
     """
+    sandbox_mod.reset_backend()
     # Never let a verdict be produced ON the event loop. `wrap_argv`'s loop guard
     # would be cached here as "sandbox unavailable" and silently skip every
     # git-touching test in this worker for the wrong reason — the exact failure
@@ -196,6 +210,22 @@ def _passthrough_spawn(argv, mode="standard", **kw):
     running (GPT review round 12 / round-11 CI).
     """
     return list(argv), {}, None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sandbox_backend_session_boundary():
+    """Reset ``sandbox._backend`` at session END, mirroring the reset this file's
+    own :func:`_sandbox_exec_reason` already does at session START.
+
+    ``_sandbox_exec_reason()`` is ``lru_cache``d and forces a fresh probe on its
+    one call, but its result (a real "namespace" or "none" verdict for THIS
+    host) then sits in the shared ``sandbox`` module global for the rest of the
+    xdist worker's process. Clearing it here keeps this file from becoming the
+    same kind of ambient-state donor to whichever test module runs next in this
+    worker that this fix exists to stop this file from being a VICTIM of.
+    """
+    yield
+    sandbox_mod.reset_backend()
 
 
 @pytest.fixture(scope="session")

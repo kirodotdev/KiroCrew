@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
+import { Fragment, useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { Star, Brain, Plug, Pin, Package, Lock, Hourglass, Bot, ChevronDown, LayoutTemplate, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
@@ -14,6 +14,7 @@ import CrewAvatar from '../components/CrewAvatar'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import InfoTip from '../components/InfoTip'
 import ListDetailBack from '../components/ListDetailBack'
+import ErrorNotice from '../components/ErrorNotice'
 import { useProvider } from '../providers'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
@@ -23,6 +24,13 @@ import { fmtPercent } from '../i18n/format'
 import { formatCost } from '../utils/formatCost'
 
 import { i18nT } from '../i18n/t'
+import { errMessage } from '../utils/thunkError'
+/** Human text for a rejected request or caught exception — the one string every
+ *  ErrorNotice on this page keys on. */
+/** `null` for "no failure" (so `<ErrorNotice message>` renders nothing), else
+ *  the shared reader's text with a fallback for a message-less rejection. */
+const failText = (e: unknown): string | null => (e == null ? null : errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))
+
 function fmtTokens(n: number): string {
   return n >= 1_000_000 ? (n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1) + 'M' : (n / 1_000).toFixed(0) + 'K'
 }
@@ -181,12 +189,18 @@ function GlanceChip({ label, count, tone, onClick }: { label: string; count: num
 }
 
 /** Live context-window utilisation per active session. */
-function ContextUsageCard({ ctx, installed }: { ctx: CtxSession[]; installed: InstalledAgent[] }) {
+function ContextUsageCard({ ctx, installed, error, quiet }: { ctx: CtxSession[]; installed: InstalledAgent[]; error?: string | null; quiet?: boolean }) {
   const provider = useProvider()
   return (
     <Card>
       <CardTitle className="gap-1.5">{i18nT('pages.agentsPage.context_window_usage')} <InfoTip text={i18nT('pages.agentsPage.context_window_usage_tip', { label: provider.labels.sessionProcess })} /></CardTitle>
-      {ctx.length === 0 ? <p className="text-muted italic text-sm">{i18nT('pages.agentsPage.no_active_sessions')}</p> : (
+      {/* A failed poll must not read as "no active sessions": the list below is
+          empty in both cases. Read-only card, so the hand-off loses nothing. */}
+      {/* `quiet`: the same failure is already named by the page-level notice
+          above, so the sentence is not repeated — but an empty list under a
+          failed read is still unknown, never "no active sessions". */}
+      {!quiet && <ErrorNotice message={error} askAgent className="mb-3" />}
+      {ctx.length === 0 ? (error ? null : <p className="text-muted italic text-sm">{i18nT('pages.agentsPage.no_active_sessions')}</p>) : (
         <div className="space-y-4">
           {ctx.map(s => {
             // Prefer the real served window the backend reports (the one
@@ -398,39 +412,54 @@ function ProviderUsageCard({ usage }: { usage: SessionsUsage }) {
 }
 
 /** Spawned subagent runs and their state. */
-function SubagentsCard({ agents, onClear, onDelete }: { agents: SubagentInfo[]; onClear: () => void; onDelete: (id: string) => void }) {
+function SubagentsCard({ agents, error, quiet, onDismissError, onClear, onDelete }: { agents: SubagentInfo[]; error?: string | null; quiet?: boolean; onDismissError?: () => void; onClear: () => void; onDelete: (id: string) => void }) {
   return (
     <Card>
       <CardTitle>{i18nT('pages.agentsPage.subagents')} {agents.some(a => a.done) && <Btn danger type="button" className="px-2 py-0.5" onClick={onClear}>{i18nT('pages.agentsPage.clear_completed')}</Btn>}</CardTitle>
+      {/* Status panel with nothing unsaved, so the hand-off is safe. A failed
+          list fetch would otherwise render as an empty table, and a failed
+          clear/delete would leave the row in place with no explanation. */}
+      {/* `quiet`: see ContextUsageCard — the page-level notice already names
+          this failure; the empty state below still stays off while it stands. */}
+      {!quiet && <ErrorNotice message={error} askAgent onDismiss={onDismissError} className="mb-3" />}
       <table className="w-full border-collapse table-striped"><thead><tr>{[i18nT('pages.agentsPage.id'), i18nT('pages.agentsPage.task'), i18nT('pages.agentsPage.status'), ''].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium">{h}</th>)}</tr></thead>
-        <tbody>{agents.length === 0 ? <tr><td colSpan={4}><EmptyState icon={<Bot className="lucide-inline" />} title={i18nT('pages.agentsPage.no_subagents')} subtitle={i18nT('pages.agentsPage.spawn_tasks_from_chat_or_cli')} /></td></tr> : agents.map(a => (
-          <tr key={a.id} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm"><code>{a.id}</code></td><td className="px-2.5 py-2 border-b border-border text-sm">{a.task}</td>
-            <td className="px-2.5 py-2 border-b border-border text-sm">{a.done ? (a.error ? <Badge variant="err">{i18nT('pages.agentsPage.failed')}</Badge> : <Badge variant="ok">{i18nT('pages.agentsPage.done')}</Badge>) : <Badge variant="warn">{i18nT('pages.agentsPage.running')}</Badge>}</td>
-            <td className="px-2.5 py-2 border-b border-border text-sm text-right"><Btn danger type="button" className="px-1.5 py-0.5" aria-label={i18nT('pages.agentsPage.delete_subagent', { id: a.id })} onClick={() => onDelete(a.id)}><X className="lucide-inline" /></Btn></td></tr>
+        <tbody>{agents.length === 0 ? (error ? null : <tr><td colSpan={4}><EmptyState icon={<Bot className="lucide-inline" />} title={i18nT('pages.agentsPage.no_subagents')} subtitle={i18nT('pages.agentsPage.spawn_tasks_from_chat_or_cli')} /></td></tr>) : agents.map(a => (
+          <Fragment key={a.id}>
+            <tr className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm"><code>{a.id}</code></td><td className="px-2.5 py-2 border-b border-border text-sm">{a.task}</td>
+              <td className="px-2.5 py-2 border-b border-border text-sm">{a.done ? (a.error ? <Badge variant="err">{i18nT('pages.agentsPage.failed')}</Badge> : <Badge variant="ok">{i18nT('pages.agentsPage.done')}</Badge>) : <Badge variant="warn">{i18nT('pages.agentsPage.running')}</Badge>}</td>
+              <td className="px-2.5 py-2 border-b border-border text-sm text-right"><Btn danger type="button" className="px-1.5 py-0.5" aria-label={i18nT('pages.agentsPage.delete_subagent', { id: a.id })} onClick={() => onDelete(a.id)}><X className="lucide-inline" /></Btn></td></tr>
+            {/* The badge alone said "failed" and hid WHY. The run is over and the
+                text is already persisted server-side, so handing it off loses nothing. */}
+            {a.done && a.error && (
+              <tr><td colSpan={4} className="px-2.5 pb-2 border-b border-border"><ErrorNotice message={a.error} variant="inline" askAgent /></td></tr>
+            )}
+          </Fragment>
         ))}</tbody></table>
     </Card>
   )
 }
 
 export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
-  const { data: spawnData, refetch: refetchSpawn } = useQuery({
+  const { data: spawnData, error: spawnListError, refetch: refetchSpawn } = useQuery({
     queryKey: ['spawn-list'],
     queryFn: () => api.spawnList(),
   })
   const agents: SubagentInfo[] = spawnData?.agents || []
 
-  const { data: ctx = [] } = useQuery<CtxSession[]>({
+  const { data: ctx = [], error: ctxError } = useQuery<CtxSession[]>({
     queryKey: ['sessions-context'],
     queryFn: () => api.sessionsContext().then(d => d.sessions || []),
     refetchInterval: 15000,
   })
 
-  const { data: usage = null } = useQuery({
+  // A rejection is left to react-query here (no `.catch(() => null)`), so a
+  // failed fetch renders as a failure below rather than as "no plan".
+  const { data: usage = null, error: usageError } = useQuery({
     queryKey: ['sessions-usage'],
-    queryFn: () => api.sessionsUsage().then(d => (d.usage && Number.isFinite(d.usage.credits_plan)) ? d.usage : null).catch(() => null),
+    queryFn: () => api.sessionsUsage().then(d => (d.usage && Number.isFinite(d.usage.credits_plan)) ? d.usage : null),
   })
 
-  const { data: installed = [], isPending: installedLoading, refetch: refetchInstalled } = useQuery({
+  const { data: installed = [], isPending: installedLoading, error: installedError, refetch: refetchInstalled } = useQuery({
     queryKey: ['agents-installed'],
     queryFn: async () => {
       const a = await api.agentsInstalled()
@@ -444,7 +473,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
     },
   })
 
-  const { data: mcpTools = {} } = useQuery({
+  const { data: mcpTools = {}, error: mcpToolsError } = useQuery({
     queryKey: ['mcp-tools'],
     queryFn: async () => {
       const probed = await api.mcpProbeCache()
@@ -480,6 +509,10 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   const [filter, setFilter] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  /** A failed model pin. Without it the dropdown silently kept the old value. */
+  const [modelError, setModelError] = useState<string | null>(null)
+  /** A failed fallback-template change (the picker snaps back on refetch, or not at all). */
+  const [defaultError, setDefaultError] = useState<string | null>(null)
   const modelOptions = useAvailableModels()
   const { open: modelDropOpen, setOpen: setModelDropOpen, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelOptions)
   // Roving-focus keyboard nav for the model dropdown (shared with StyledSelect/AgentSelector).
@@ -501,7 +534,8 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   const modelBtnRef = useRef<HTMLButtonElement>(null)
   const patchModelMut = useMutation({
     mutationFn: ({ name, model }: { name: string; model: string }) => api.agentPatch(name, { model }),
-    onSuccess: (_r, { model }) => { setSelectedAgent(prev => (prev ? { ...prev, model } : prev)); refetchInstalled() },
+    onSuccess: (_r, { model }) => { setSelectedAgent(prev => (prev ? { ...prev, model } : prev)); setModelError(null); refetchInstalled() },
+    onError: (err: unknown) => setModelError(errMessage(err) || i18nT('components.errorBoundary.something_went_wrong')),
   })
   const deleteAgentMut = useMutation({
     mutationFn: (name: string) => api.agentDelete(name),
@@ -531,10 +565,21 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   })
   const spawnClearMut = useMutation({ mutationFn: () => api.spawnClear(), onSuccess: () => refetchSpawn() })
   const spawnDeleteMut = useMutation({ mutationFn: (id: string) => api.spawnDelete(id), onSuccess: () => refetchSpawn() })
+  // One surface for the card: the list fetch, or whichever action last failed.
+  const spawnActionError = failText(spawnClearMut.error) ?? failText(spawnDeleteMut.error)
+  const spawnError = failText(spawnListError) ?? spawnActionError
+  // One transport failure takes every read on this page down at once. The
+  // roster notice (with its Retry) is the page-level report of that; a card
+  // whose own failure reads identically is then left to its content, so the
+  // same sentence is not stacked four times. A card failing for a DIFFERENT
+  // reason still names it.
+  const rosterFailure = failText(installedError)
+  const isRosterFailure = (msg: string | null) => !!msg && msg === rosterFailure
 
   const setDefaultMut = useMutation({
     mutationFn: (next: string) => api.setDefaultAgent(next),
-    onSuccess: () => refetchDefault(),
+    onSuccess: () => { setDefaultError(null); refetchDefault() },
+    onError: (err: unknown) => setDefaultError(errMessage(err) || i18nT('components.errorBoundary.something_went_wrong')),
   })
 
   /** Monotonic id for the in-flight detail fetch. Without it the LAST response
@@ -569,7 +614,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   }
 
   // Auto-open detail for first installed agent
-  const { data: initialAgentDetail } = useQuery({
+  const { data: initialAgentDetail, error: initialDetailError, refetch: refetchInitialDetail } = useQuery({
     queryKey: ['agent-detail', installed[0]?.name],
     queryFn: () => api.agentDetail(installed[0]!.name),
     enabled: !selectedAgent && installed.length > 0,
@@ -586,7 +631,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   // before its newly rendered tabs can be activated; `select()` disarms
   // synchronously before awaiting detail.
   const selectedName = selectedAgent?.name
-  useLayoutEffect(() => { setTab('overview'); setConfirmDelete(false); setDeleteError(null) }, [selectedName])
+  useLayoutEffect(() => { setTab('overview'); setConfirmDelete(false); setDeleteError(null); setModelError(null) }, [selectedName])
 
   /** Arming the delete unmounts the button that was focused, which would drop
    *  focus to <body> and leave a keyboard user nowhere. Focus moves onto
@@ -723,12 +768,21 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
               style={{ width: 210 }}
             />
             <span className="w-full text-[12px] text-muted">{i18nT('pages.agentsPage.cli_chat_chat_channel_threads_and_warm_pool_sessio')}</span>
+            {/* The picker commits on change, so nothing here is unsaved; hand-off is safe. */}
+            <ErrorNotice message={defaultError} askAgent onDismiss={() => setDefaultError(null)} className="w-full" />
           </div>
         )}
 
         {installedLoading ? (
           <div className="card-glow border border-border bg-card rounded-lg mb-4 shadow-sm flex items-center justify-center py-10 gap-2 text-muted text-sm">
             <Hourglass className="lucide-inline animate-pulse" /> {i18nT('pages.agentsPage.loading_agents')}
+          </div>
+        ) : installedError ? (
+          /* Before the empty state: a failed roster fetch leaves `installed`
+             at its [] default and would otherwise read as "no templates yet". */
+          <div className="card-glow border border-border bg-card rounded-lg mb-4 shadow-sm p-4 flex flex-col items-start gap-3">
+            <ErrorNotice title={i18nT('pages.agentsPage.failed_to_load_agents')} message={failText(installedError)} askAgent className="w-full" />
+            <Btn onClick={() => { void refetchInstalled() }}>{i18nT('pages.agentsPage.retry')}</Btn>
           </div>
         ) : installed.length === 0 ? (
           <div className="card-glow border border-border bg-card rounded-lg mb-4 shadow-sm py-6">
@@ -823,6 +877,12 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                         {i18nT('pages.agentsPage.used_by_crews_repoint_them_on_the_crews_tab_firs', { crews: usedBy.map(c => c.name).join(', ') })}
                       </span>
                     )}
+                    {/* `unloaded` from a FAILED reference query (not one still in
+                        flight) hid the delete control with no visible reason. */}
+                    {blockedBy === 'unloaded' && (crewsFailed || defaultFailed) && (<>
+                      <ErrorNotice message={i18nT('pages.agentsPage.delete_unavailable_references_failed')} variant="inline" askAgent />
+                      <Btn onClick={() => { void refetchCrews(); void refetchDefault() }}>{i18nT('pages.agentsPage.retry')}</Btn>
+                    </>)}
                     {deletable && !confirmDelete && (
                       <Btn danger onClick={() => setConfirmDelete(true)} disabled={deleteAgentMut.isPending} data-testid="delete-template">
                         {i18nT('pages.agentsPage.delete_template')}
@@ -838,10 +898,15 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       previous row control deleted the config file behind a
                       native confirm(), which is unthemed and easy to dismiss
                       without reading. */}
-                  {deleteError && (
-                    <div role="alert" className="mt-2.5 rounded-md border border-danger/35 bg-danger-subtle px-3 py-2.5">
-                      <p className="m-0 text-[12px] leading-relaxed text-muted">{deleteError}</p>
-                    </div>
+                  {/* The detail pane holds no draft (tabs are display-only, the
+                      model picker commits immediately), so hand-off is safe. */}
+                  <ErrorNotice message={deleteError} askAgent onDismiss={() => setDeleteError(null)} className="mt-2.5" />
+                  {/* The agent-detail fetch failed (`select()` fell back to the
+                      list row). Said here, above every other tab, because the user
+                      may never open Skills — the only place it used to show. The
+                      Skills tab renders its own copy in place of the editor. */}
+                  {selectedAgent.skills === undefined && tab !== 'skills' && (
+                    <ErrorNotice message={i18nT('pages.agentsPage.could_not_load_this_agent_s_configuration_skills')} askAgent className="mt-2.5" />
                   )}
                   {deletable && confirmDelete && (
                     <div role="alert" className="mt-2.5 flex flex-wrap items-center gap-2 rounded-md border border-danger/35 bg-danger-subtle px-3 py-2.5">
@@ -902,6 +967,8 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                           ? i18nT('pages.agentsPage.pinned_here_a_crew_set_to_inherit_uses_this_model')
                           : i18nT('pages.agentsPage.no_model_pinned_here_a_crew_set_to_inherit_falls_')}
                       </p>
+                      {/* The picker commits on select — nothing unsaved, so hand-off is safe. */}
+                      <ErrorNotice message={modelError} askAgent onDismiss={() => setModelError(null)} />
                     </Section>
 
                     <Section title={i18nT('pages.agentsPage.where_it_comes_from')}>
@@ -949,9 +1016,7 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                        * "Add skill" click over unknown state would silently delete
                        * every real mapping from the agent's spec on disk. Show why
                        * it is unavailable instead of offering a write. */
-                      <div className="text-[12px] text-warn">
-                        {i18nT('pages.agentsPage.could_not_load_this_agent_s_configuration_skills')}
-                      </div>
+                      <ErrorNotice message={i18nT('pages.agentsPage.could_not_load_this_agent_s_configuration_skills')} askAgent />
                     ) : (
                       <AgentSkillsEditor
                         key={selectedAgent.name}
@@ -971,6 +1036,9 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                   )}
 
                   {tab === 'tools' && (<>
+                    {/* Without it a failed probe-cache read just dropped the per-server
+                        tool counts with no sign anything was missing. Read-only tab. */}
+                    <ErrorNotice message={failText(mcpToolsError)} askAgent />
                     {selectedAgent.tools && (
                       <Section title={i18nT('pages.agentsPage.tools')}>
                         <div className="flex flex-wrap gap-1.5">{selectedAgent.tools.map(t => <span key={t} className="px-2 py-1 rounded-full text-[12px] font-mono bg-bg-elevated border border-border text-text">{t}</span>)}</div>
@@ -1025,16 +1093,32 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                     )
                   )}
                 </div>
-              </>) : (
+              </>) : initialDetailError ? (
+                /* The auto-open detail fetch failed, so the pane would sit on the
+                   placeholder forever with no hint that anything went wrong. */
+                <div className="flex flex-col items-center justify-center h-full gap-3 p-4">
+                  <ErrorNotice message={failText(initialDetailError)} askAgent />
+                  <Btn onClick={() => { void refetchInitialDetail() }}>{i18nT('pages.agentsPage.retry')}</Btn>
+                </div>
+              ) : (
                 <div className="flex items-center justify-center h-full text-muted text-[13px]">{i18nT('pages.agentsPage.select_an_agent_to_view_details')}</div>
               )}
             </div>}
           </div>
         )}
 
-        <ContextUsageCard ctx={ctx} installed={installed} />
+        <ContextUsageCard ctx={ctx} installed={installed} error={failText(ctxError)} quiet={isRosterFailure(failText(ctxError))} />
+        {/* Read-only usage card: a failed read is stated rather than shown as "no plan". */}
+        <ErrorNotice message={isRosterFailure(failText(usageError)) ? null : failText(usageError)} askAgent className="mb-4" />
         {usage && <ProviderUsageCard usage={usage} />}
-        <SubagentsCard agents={agents} onClear={() => spawnClearMut.mutate()} onDelete={id => spawnDeleteMut.mutate(id)} />
+        <SubagentsCard
+          agents={agents}
+          error={spawnError}
+          quiet={isRosterFailure(spawnError)}
+          onDismissError={spawnActionError ? () => { spawnClearMut.reset(); spawnDeleteMut.reset() } : undefined}
+          onClear={() => spawnClearMut.mutate()}
+          onDelete={id => spawnDeleteMut.mutate(id)}
+        />
       </div>
     </>
   )

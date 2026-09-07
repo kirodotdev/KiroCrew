@@ -1155,11 +1155,11 @@ class TestResourceManagement:
     """Verify sessions are released for all task lifecycle paths."""
 
     @pytest.mark.asyncio
-    async def test_single_task_session_reset_after_success(self) -> None:
+    async def test_single_task_session_reset_after_success(self, tmp_path: Path) -> None:
         """After a single task succeeds, its session must be reset."""
         sessions = _make_mock_sessions()
         sessions.reset = AsyncMock()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         async def mock_execute(run, task, hk="", session_key=""):
             task.status = StepStatus.PASSED
@@ -1179,11 +1179,11 @@ class TestResourceManagement:
         assert "taskrunner:r1:task1" in reset_keys
 
     @pytest.mark.asyncio
-    async def test_parallel_tasks_all_sessions_reset(self) -> None:
+    async def test_parallel_tasks_all_sessions_reset(self, tmp_path: Path) -> None:
         """After a parallel group completes, ALL task sessions must be reset."""
         sessions = _make_mock_sessions()
         sessions.reset = AsyncMock()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         async def mock_execute(run, task, hk="", session_key=""):
             task.status = StepStatus.PASSED
@@ -1204,11 +1204,11 @@ class TestResourceManagement:
             assert f"taskrunner:r2:task{i}" in reset_keys
 
     @pytest.mark.asyncio
-    async def test_parallel_failure_still_resets_all_sessions(self) -> None:
+    async def test_parallel_failure_still_resets_all_sessions(self, tmp_path: Path) -> None:
         """If one task in a parallel group fails, ALL sessions in the group must still be reset."""
         sessions = _make_mock_sessions()
         sessions.reset = AsyncMock()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         call_count = 0
 
@@ -1270,10 +1270,10 @@ class TestResourceManagement:
             assert ri < si, f"release must precede reset for {key}: {call_order}"
 
     @pytest.mark.asyncio
-    async def test_pending_tasks_hold_no_sessions(self) -> None:
+    async def test_pending_tasks_hold_no_sessions(self, tmp_path: Path) -> None:
         """Tasks that never execute (PENDING) should not create any sessions."""
         sessions = _make_mock_sessions()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         async def mock_execute(run, task, hk="", session_key=""):
             task.status = StepStatus.FAILED
@@ -1303,11 +1303,11 @@ class TestResourceManagement:
         assert "taskrunner:r4:task3" not in reset_keys
 
     @pytest.mark.asyncio
-    async def test_cancel_running_project_cleans_up_sessions(self) -> None:
+    async def test_cancel_running_project_cleans_up_sessions(self, tmp_path: Path) -> None:
         """cancel() on a running project must trigger _cleanup_run_sessions."""
         sessions = _make_mock_sessions()
         sessions.cancel_current = AsyncMock()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         # Simulate a long-running task that blocks until cancelled
         blocked = asyncio.Event()
@@ -1362,11 +1362,11 @@ class TestResourceManagement:
         assert sessions.reset.call_count >= 1
 
     @pytest.mark.asyncio
-    async def test_cancel_mid_parallel_group_resets_all(self) -> None:
+    async def test_cancel_mid_parallel_group_resets_all(self, tmp_path: Path) -> None:
         """Cancelling during a parallel group must clean up all sessions in the group."""
         sessions = _make_mock_sessions()
         sessions.cancel_current = AsyncMock()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         started = asyncio.Event()
 
@@ -1421,7 +1421,7 @@ class TestResourceManagement:
                 assert key in cleaned_keys, f"Session {key} not cleaned up"
 
     @pytest.mark.asyncio
-    async def test_cancel_mid_parallel_group_reset_completes(self) -> None:
+    async def test_cancel_mid_parallel_group_reset_completes(self, tmp_path: Path) -> None:
         """reset() must run to completion under CancelledError (shield fix)."""
         sessions = _make_mock_sessions()
         sessions.cancel_current = AsyncMock()
@@ -1432,7 +1432,7 @@ class TestResourceManagement:
             reset_completed.append(key)
 
         sessions.reset = slow_reset
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         started = asyncio.Event()
 

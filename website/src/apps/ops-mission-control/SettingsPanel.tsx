@@ -60,6 +60,7 @@ import { Badge, Btn, Card, CardTitle, Input, SendBtn, Toggle } from '../../compo
 import { i18nT } from '../../i18n/t'
 import { fmtUnit } from '../../i18n/format'
 import SegmentedControl from '../../components/SegmentedControl'
+import ErrorNotice from '../../components/ErrorNotice'
 import SimpleSelect from '../../components/SimpleSelect'
 import {
   opsApi,
@@ -168,7 +169,9 @@ function ProviderRow({
   // deliberately ignores.
   const hasEnableFlag = provider.config_fields.includes('enabled')
   const fieldsVisible = enabled || !hasEnableFlag
-  const writeError = configMutation.isError || secretMutation.isError
+  // A failed credential revoke used to leave the button re-enabled with no message at
+  // all; it is a write like the other two and reports beside them.
+  const indent = hasEnableFlag ? 'ml-11' : ''
 
   return (
     <div className="border-t border-border py-3">
@@ -324,10 +327,17 @@ function ProviderRow({
           one write most likely to be rejected — the toggle itself, on an adapter with no
           `enabled` field — failed with no visible message at all. A rejected write must
           always be able to say so. */}
-      {writeError ? (
-        <p className={`text-[12px] text-danger ${hasEnableFlag ? 'pl-11' : ''}`}>
-          {((configMutation.error ?? secretMutation.error) as Error)?.message}
-        </p>
+      {/* No hand-off: the provider config fields and the typed-but-unsaved secret
+          drafts in this row live in component state until Save. One notice per write,
+          not a coalesced chain, so a persistent earlier failure cannot mask a later one. */}
+      {configMutation.isError ? (
+        <ErrorNotice className={indent} message={(configMutation.error as Error).message} />
+      ) : null}
+      {secretMutation.isError ? (
+        <ErrorNotice className={indent} message={(secretMutation.error as Error).message} />
+      ) : null}
+      {revokeMutation.isError ? (
+        <ErrorNotice className={indent} message={(revokeMutation.error as Error).message} />
       ) : null}
     </div>
   )
@@ -978,10 +988,9 @@ shifts:
               ghCli: 'gh',
             })}
           </p>
+          {/* No hand-off: the GitHub login typed into `omc-schedule-login` is unsaved. */}
           {loginMutation.isError ? (
-            <p className="text-[12px] text-danger">
-              {(loginMutation.error as Error).message}
-            </p>
+            <ErrorNotice message={(loginMutation.error as Error).message} />
           ) : null}
         </div>
       ) : null}
@@ -1025,12 +1034,8 @@ shifts:
               </span>
             </p>
           ) : null}
-          {roster.error ? (
-            <p className="text-[13px] text-danger flex items-start gap-1.5">
-              <AlertTriangle className="lucide-inline" />
-              <span>{roster.error}</span>
-            </p>
-          ) : null}
+          {/* No hand-off: shares the card with the unsaved `omc-schedule-login` input. */}
+          {roster.error ? <ErrorNotice message={roster.error} /> : null}
 
           {/* Strict gating moved onto the keystone floor alongside the login, for the same
               reason: turning it off restores fail-open gating, so an unreadable schedule
@@ -1369,7 +1374,9 @@ function ActRulesCard({
         </div>
       )}
 
-      {error ? <p className="text-[12px] text-danger mt-2">{error}</p> : null}
+      {/* No hand-off: the new rule's signal source and resource pattern (`omc-rule-glob`)
+          are unsaved until Grant. */}
+      <ErrorNotice className="mt-2" message={error} />
     </Card>
   )
 }
@@ -1456,10 +1463,10 @@ export default function SettingsPanel() {
         {/* An un-actionable empty-state line lived here and was a dead end: it named the gap
             without offering any way to close it. The rules card below IS the way, so the
             statement moved there, next to the form that answers it. */}
+        {/* No hand-off: this page also holds the provider rows' identity, login and
+            secret drafts, which the navigation would discard. */}
         {settingsMutation.isError ? (
-          <p className="text-[12px] text-danger mt-2">
-            {(settingsMutation.error as Error).message}
-          </p>
+          <ErrorNotice className="mt-2" message={(settingsMutation.error as Error).message} />
         ) : null}
       </Card>
 

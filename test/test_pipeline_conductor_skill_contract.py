@@ -27,12 +27,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from skill_script_helpers import load_skill_script
+
 from kiro_crew import agent
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor"
 SKILL_MD = SKILL_DIR / "SKILL.md"
-DESIGN_DOC = REPO_ROOT / "docs" / "design" / "pipeline-conductor.md"
+DESIGN_DOC = REPO_ROOT / "docs" / "request-for-change" / "rfc-pipeline-conductor.md"
 
 #: The three scripts the procedure delegates its deterministic half to. Named
 #: here rather than globbed from the directory on purpose: the point is that the
@@ -94,7 +96,7 @@ class TestAgentPromptNamesEveryScript:
 
     def test_prompt_states_the_verdicts_the_conductor_branches_on(self):
         prompt = agent._PIPELINE_CONDUCTOR_SYSTEM_PROMPT
-        for verdict in ("CLAIM", "SKIP", "CLOSE", "UNKNOWN"):
+        for verdict in ("CLAIM", "SKIP", "CLOSE", "REVIEW", "UNKNOWN"):
             assert verdict in prompt, verdict
 
     def test_prompt_carries_the_absent_script_rule(self):
@@ -145,12 +147,12 @@ class TestClaimPreflightIsDocumented:
             for row in _skill_section(self.HEADING).splitlines()
             if row.startswith("|") and row.count("|") >= 3
         }
-        for code in ("0", "10", "11", "2", "3"):
+        for code in ("0", "10", "11", "13", "2", "3"):
             assert code in rows, f"exit code {code} has no row in the branch table"
 
-    def test_all_four_verdicts_are_named(self):
+    def test_all_five_verdicts_are_named(self):
         preflight = _skill_section(self.HEADING)
-        for verdict in ("CLAIM", "SKIP", "CLOSE", "UNKNOWN"):
+        for verdict in ("CLAIM", "SKIP", "CLOSE", "REVIEW", "UNKNOWN"):
             assert verdict in preflight, verdict
 
     def test_unknown_is_never_permission(self):
@@ -160,14 +162,25 @@ class TestClaimPreflightIsDocumented:
         assert "never treat this as permission" in preflight
 
     def test_a_prose_closure_request_requires_author_authorization(self):
-        """CLOSE is a WRITE driven by ingested text on an unattended cycle, and
-        anyone can comment on a public item. Without an authorization condition
-        this verdict lets an untrusted commenter close a live issue."""
+        """Anyone can comment on a public item. The verdict no longer writes --
+        it is REVIEW, not CLOSE -- but it still withholds the item from dispatch,
+        so without an authorization condition an untrusted commenter could park
+        live work by typing one sentence."""
         preflight = _flat(_skill_section(self.HEADING))
         assert "reporter or a repository insider" in preflight
         # An unauthorized phrase must not silently become a weaker verdict
         # either: it is simply not a closure request.
         assert "falls through to the remaining checks" in preflight
+
+    def test_prose_never_closes_an_item(self):
+        """The structural answer to nine false-CLOSE paths in one change: a
+        ratchet stops a new unguarded PATTERN, and cannot stop the next unguarded
+        PHRASING of one already guarded. So the skill has to say that a prose
+        reading is never the authority to close -- otherwise the next reader
+        reinstates the terminal verdict as an obvious simplification."""
+        preflight = _flat(_skill_section(self.HEADING))
+        assert "prose never closes anything" in preflight
+        assert "do not dispatch and do not close" in preflight
 
     def test_a_prose_self_claim_from_anyone_else_is_not_a_veto(self):
         """A veto anyone can cast is a denial-of-work channel: one comment would
@@ -245,6 +258,58 @@ class TestProbeSignalsAreDocumented:
         assert "close" in action
         # A terminal report must not be nudged: there is nothing to re-arm.
         assert "not nudge" in action or "never nudge" in action
+
+    def test_every_firing_tag_has_a_row_in_the_action_table(self):
+        """The general rule: whoever authorizes a signal owns its spec row.
+
+        The tag set is read from the SCRIPT rather than restated here. A list in
+        the test would be one more place a new signal has to be registered, and
+        this check exists precisely because that registration is what gets
+        forgotten -- ``NOPROGRESS`` shipped into the probe against a table that
+        answered every tag except the new one, so the conductor received a line
+        with no defined action.
+        """
+        probe = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        cells = [
+            row.split("|")[1]
+            for row in _skill_section(self.HEADING).splitlines()
+            if row.startswith("|") and row.count("|") >= 3
+        ]
+        missing = sorted(tag for tag in probe._FIRING if not any(f"`{tag}`" in c for c in cells))
+        assert not missing, f"probe tags with no row in the action table: {missing}"
+
+    def test_the_noprogress_row_routes_to_effect_and_not_to_a_nudge(self):
+        """A row that exists but restates `IDLE`'s ladder rebuilds the defect one
+        level down. The tag's own case -- a session held WARM by inbound traffic
+        it never answers -- has an action `IDLE` does not: another nudge is more
+        of the input that produced the reading."""
+        rows = [
+            row
+            for row in _skill_section(self.HEADING).splitlines()
+            if row.startswith("|") and "`NOPROGRESS`" in row.split("|")[1]
+        ]
+        assert rows, "the action table has no NOPROGRESS row"
+        action = rows[0].split("|")[2].lower()
+        assert "effect" in action
+        assert "never liveness" in action
+        assert "not a nudge" in action
+        # But the tag is not warm-only, and a row that says it is sends a cold
+        # session past the nudge it does need. The classifier ranks the tag below
+        # the clock, so ITS path is warm by construction -- while the suppression
+        # fallback substitutes the tag for an already-dispositioned report with no
+        # age test at all, so a cold line can carry it too. The printed age is
+        # what separates them, so the row has to route on it.
+        assert "route on the line's own age" in action
+        assert "idle_alert_secs" in action
+
+    def test_the_probe_makes_the_no_progress_comparison_itself(self):
+        """The procedure documented a manual two-cycle diff of ``i=``, which the
+        tag replaced. A comparison that lives in prose is enforced by nothing, so
+        leaving it written beside the tag gives the conductor two answers to one
+        question -- and the prose answer is the one that may never happen."""
+        probe = _flat(_skill_section(self.HEADING))
+        assert "the probe makes that comparison itself" in probe
+        assert "never diff two cycles by eye" in probe
 
     def test_tail_index_is_the_no_progress_discriminator(self):
         probe = _skill_section(self.HEADING)
@@ -328,6 +393,22 @@ class TestProbeSignalsAreDocumented:
         assert "hold admission below `max_in_flight`" in probe
         assert "no `i=` leaves you no progress test" in probe
         assert "ages into `idle`" in probe
+
+
+class TestPatrolLoopEnumeratesTheTags:
+    """The armed `monitor_start` message is the per-cycle action list that
+    actually runs. A tag missing from the ACTION TABLE is a lookup that fails; a
+    tag missing from here is an instruction the conductor never receives."""
+
+    HEADING = "## Startup (once per run)"
+
+    def test_the_loop_message_names_noprogress_instead_of_a_manual_diff(self):
+        loop = _flat(_skill_section(self.HEADING))
+        assert "noprogress → check the effect" in loop
+        assert "never liveness" in loop
+        # The instruction the tag replaced. Left standing it is a second, weaker
+        # answer to the question the probe already answers.
+        assert "diff each fired line's `i=`" not in loop
 
 
 class TestConductorOwnedState:

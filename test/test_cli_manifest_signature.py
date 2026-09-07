@@ -49,18 +49,30 @@ def _find_openssl() -> str | None:
     return next((str(path) for path in candidates if path.is_file()), None)
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _openssl_on_path():
-    """Expose Git for Windows' OpenSSL to Python helpers and installer shells."""
+@pytest.fixture(scope="module")
+def _openssl_bin() -> str:
+    """Resolve the OpenSSL executable path once per module (no PATH mutation)."""
     openssl = _find_openssl()
     if openssl is None:
         pytest.skip("OpenSSL is not available")
-    old_path = os.environ.get("PATH", "")
-    os.environ["PATH"] = str(Path(openssl).parent) + os.pathsep + old_path
-    try:
-        yield
-    finally:
-        os.environ["PATH"] = old_path
+    return openssl
+
+
+@pytest.fixture(autouse=True)
+def _openssl_on_path(_openssl_bin: str, monkeypatch):
+    """Expose Git for Windows' OpenSSL to Python helpers and installer shells.
+
+    Function-scoped (not module-scoped): a module-scoped mutation is applied
+    once at the first test's setup and reverted once at the last test's
+    teardown, so every test in between runs correctly but the first/last
+    test's own per-test env snapshot shows PATH changing across the test
+    boundary. monkeypatch.setenv is function-scoped and reverts after EACH
+    test, so no single test's boundary ever sees the mutation persist. The
+    binary lookup itself stays module-scoped (``_openssl_bin``) since it does
+    no PATH mutation and is safe to cache.
+    """
+    openssl_dir = str(Path(_openssl_bin).parent)
+    monkeypatch.setenv("PATH", openssl_dir + os.pathsep + os.environ.get("PATH", ""))
 
 
 @dataclass(frozen=True)
@@ -72,13 +84,13 @@ class SigningKey:
 
 
 @pytest.fixture(scope="module")
-def test_key(tmp_path_factory: pytest.TempPathFactory) -> SigningKey:
+def test_key(tmp_path_factory: pytest.TempPathFactory, _openssl_bin: str) -> SigningKey:
     root = tmp_path_factory.mktemp("cli-manifest-key")
     private = root / "private.pem"
     public = root / "public.pem"
     subprocess.run(
         [
-            "openssl",
+            _openssl_bin,
             "genpkey",
             "-algorithm",
             "RSA",
@@ -92,13 +104,13 @@ def test_key(tmp_path_factory: pytest.TempPathFactory) -> SigningKey:
         stderr=subprocess.DEVNULL,
     )
     subprocess.run(
-        ["openssl", "pkey", "-in", str(private), "-pubout", "-out", str(public)],
+        [_openssl_bin, "pkey", "-in", str(private), "-pubout", "-out", str(public)],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     der = subprocess.run(
-        ["openssl", "pkey", "-pubin", "-in", str(public), "-outform", "DER"],
+        [_openssl_bin, "pkey", "-pubin", "-in", str(public), "-outform", "DER"],
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

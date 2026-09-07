@@ -62,6 +62,14 @@ const ENGINE_LABEL_KEY: Record<string, string> = {
 }
 
 /**
+ * Human text for a rejected call. The `ApiError` message is preferred because
+ * it is the string the error journal is keyed on, so `ErrorNotice` recovers the
+ * endpoint / status from it; `fallback` covers a non-Error rejection.
+ */
+const failText = (e: unknown, fallback: string): string =>
+  e instanceof Error && e.message ? e.message : fallback
+
+/**
  * Browsing settings.
  *
  * Availability is not a setting: the agent browses by running `playwright-cli`,
@@ -102,6 +110,9 @@ export function BrowserPanel() {
   // Latched, not timed out: the label is a confirmation that the paste is
   // ready, and this panel is not somewhere the user returns to repeatedly.
   const [installCmdCopied, setInstallCmdCopied] = useState(false)
+  // Separate from `!installCmdCopied`: idle and failed both read as not-copied,
+  // but only the failure needs a notice (same split as MobileLoginCard).
+  const [installCmdCopyFailed, setInstallCmdCopyFailed] = useState(false)
 
   const tokenMut = useMutation({
     mutationFn: (value: string) => api.setBrowserToken(value),
@@ -134,7 +145,9 @@ export function BrowserPanel() {
   if (isError || !data) {
     return (
       <SettingsSection title={i18nT('pages.settings.browserPanel.browsing')}>
-        <ErrorNotice message={i18nT('pages.settings.browserPanel.cannot_load')} />
+        {/* Nothing to lose: this branch replaces the whole panel, so the token
+            field is not mounted and no draft exists. */}
+        <ErrorNotice message={i18nT('pages.settings.browserPanel.cannot_load')} askAgent />
       </SettingsSection>
     )
   }
@@ -201,6 +214,26 @@ export function BrowserPanel() {
               onChange={setUseBuiltin}
               disabled={!isElectron || !dashQ.isSuccess || dashMut.isPending}
             />
+            {/* Desktop only, like the switch itself: off the desktop the toggle
+                is force-disabled regardless of what the config says, so a
+                failed read would report a problem the user cannot act on here.
+                No hand-off: the extension `token` field further down this panel
+                is unsaved local state, and the navigation unmounts the panel. */}
+            {isElectron && dashQ.isError && (
+              <ErrorNotice
+                variant="inline"
+                className="mt-2"
+                message={failText(dashQ.error, i18nT('pages.settings.browserPanel.builtin_status_unavailable'))}
+              />
+            )}
+            {/* No hand-off: same `token` draft shares this panel. */}
+            {dashMut.isError && (
+              <ErrorNotice
+                variant="inline"
+                className="mt-2"
+                message={failText(dashMut.error, i18nT('pages.settings.browserPanel.builtin_save_failed'))}
+              />
+            )}
           </SettingsCard>
 
           {/*
@@ -253,45 +286,60 @@ export function BrowserPanel() {
                 <div className="flex flex-col gap-2">
                   {BROWSER_ENGINES.map((engine) => {
                     const present = data.browsers?.[engine]
+                    // The rejection of the POST itself (409 slot busy, 500), as
+                    // opposed to a download that started and then failed — that
+                    // one arrives through the polled `last_error` below. Pinned to
+                    // the row that was pressed, like its spinner.
+                    const requestFailed = engineMut.isError && engineMut.variables === engine
                     return (
-                      <div
-                        key={engine}
-                        className="flex items-center gap-2 justify-between border border-border rounded-md px-3 py-2"
-                        data-testid={`browser-engine-${engine}`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-[13px] font-medium">
-                            {i18nT(ENGINE_LABEL_KEY[engine])}
-                          </span>
-                          {engine === 'chromium' && (
-                            <Badge variant="muted">
-                              {i18nT('pages.settings.browserPanel.engine_needed_for_attach')}
-                            </Badge>
+                      <div key={engine} className="flex flex-col gap-1">
+                        <div
+                          className="flex items-center gap-2 justify-between border border-border rounded-md px-3 py-2"
+                          data-testid={`browser-engine-${engine}`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-[13px] font-medium">
+                              {i18nT(ENGINE_LABEL_KEY[engine])}
+                            </span>
+                            {engine === 'chromium' && (
+                              <Badge variant="muted">
+                                {i18nT('pages.settings.browserPanel.engine_needed_for_attach')}
+                              </Badge>
+                            )}
+                          </div>
+                          {present ? (
+                            <span className="inline-flex items-center gap-1.5 text-[13px] text-ok shrink-0">
+                              <CheckCircle2 size={14} />
+                              {i18nT('pages.settings.browserPanel.engine_downloaded')}
+                            </span>
+                          ) : (
+                            <Btn
+                              onClick={() => engineMut.mutate(engine)}
+                              disabled={installing}
+                              aria-busy={installing && engineMut.variables === engine}
+                            >
+                              {installing && engineMut.variables === engine ? (
+                                <>
+                                  <Loader2 size={13} className="lucide-inline animate-spin" />
+                                  {i18nT('pages.settings.browserPanel.installing')}
+                                </>
+                              ) : (
+                                <>
+                                  <Download size={13} className="lucide-inline" />
+                                  {i18nT('pages.settings.browserPanel.engine_download')}
+                                </>
+                              )}
+                            </Btn>
                           )}
                         </div>
-                        {present ? (
-                          <span className="inline-flex items-center gap-1.5 text-[13px] text-ok shrink-0">
-                            <CheckCircle2 size={14} />
-                            {i18nT('pages.settings.browserPanel.engine_downloaded')}
-                          </span>
-                        ) : (
-                          <Btn
-                            onClick={() => engineMut.mutate(engine)}
-                            disabled={installing}
-                            aria-busy={installing && engineMut.variables === engine}
-                          >
-                            {installing && engineMut.variables === engine ? (
-                              <>
-                                <Loader2 size={13} className="lucide-inline animate-spin" />
-                                {i18nT('pages.settings.browserPanel.installing')}
-                              </>
-                            ) : (
-                              <>
-                                <Download size={13} className="lucide-inline" />
-                                {i18nT('pages.settings.browserPanel.engine_download')}
-                              </>
-                            )}
-                          </Btn>
+                        {/* No hand-off: the extension `token` field on this same
+                            panel is unsaved local state, and the navigation
+                            unmounts the whole panel. */}
+                        {requestFailed && (
+                          <ErrorNotice
+                            variant="inline"
+                            message={failText(engineMut.error, i18nT('pages.settings.browserPanel.engine_download_failed'))}
+                          />
                         )}
                       </div>
                     )
@@ -358,6 +406,17 @@ export function BrowserPanel() {
                     </Btn>
                   )}
                 </div>
+                {/* No hand-off: `token` is the pasted extension token, held only
+                    in this field until the save succeeds — a rejected save is
+                    exactly when it is still unsaved, and the hand-off would
+                    unmount the field and lose it. */}
+                {tokenMut.isError && (
+                  <ErrorNotice
+                    variant="inline"
+                    className="mt-2"
+                    message={failText(tokenMut.error, i18nT('pages.settings.browserPanel.token_save_failed'))}
+                  />
+                )}
               </div>
             </div>
           </SettingsCard>
@@ -456,8 +515,17 @@ export function BrowserPanel() {
                       */}
                       <Btn
                         onClick={async () => {
-                          await copyToClipboard(installCommand)
-                          setInstallCmdCopied(true)
+                          // False = the fallback reported failure; a throw = both
+                          // paths dead. Either way the user needs to know the
+                          // paste is NOT there, not a "Copied" that lies.
+                          let ok = false
+                          try {
+                            ok = await copyToClipboard(installCommand)
+                          } catch {
+                            ok = false
+                          }
+                          setInstallCmdCopied(ok)
+                          setInstallCmdCopyFailed(!ok)
                         }}
                       >
                         <Copy size={13} className="lucide-inline" />{' '}
@@ -465,6 +533,19 @@ export function BrowserPanel() {
                           ? i18nT('pages.settings.browserPanel.copied')
                           : i18nT('pages.settings.browserPanel.copy_command')}
                       </Btn>
+                      {/* No draft in the not-installed branch (the token field is
+                          not mounted), so the hand-off loses nothing. */}
+                      {/* askAgent on: this is the not-installed branch — the
+                          extension token field is not mounted, and the command
+                          is still on screen above to select by hand. */}
+                      {installCmdCopyFailed && (
+                        <ErrorNotice
+                          variant="inline"
+                          className="mt-1.5"
+                          message={i18nT('pages.settings.browserPanel.copy_failed')}
+                          askAgent
+                        />
+                      )}
                     </div>
                   )}
                 </div>
@@ -490,6 +571,18 @@ export function BrowserPanel() {
               )
             }
           />
+
+          {/* The install POST itself was refused (409 slot busy, 500) — distinct
+              from a run that started and then failed, which the polled
+              `last_error` banner below carries. No draft in this branch, so the
+              hand-off loses nothing. */}
+          {installMut.isError && (
+            <ErrorNotice
+              className="mt-3"
+              message={failText(installMut.error, i18nT('pages.settings.browserPanel.install_request_failed'))}
+              askAgent
+            />
+          )}
 
           {/*
             The steps are listed for BOTH the idle and running cases: before, they

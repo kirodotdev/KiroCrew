@@ -148,7 +148,6 @@ beforeEach(() => {
   sendChat.mockReset()
   sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) })
   steerChat.mockReset()
-  steerChat.mockResolvedValue({ ok: true, steered: true })
 })
 
 describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
@@ -169,9 +168,9 @@ describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
 
     await waitFor(() => expect(sendChat).toHaveBeenCalled())
     expect(steerArgOf(sendChat.mock.calls[0])).toBe(true)
-    // No live turn exists, so the mid-turn injection endpoint must NOT be used:
-    // it posts without `ws=1` and the fresh turn's output would go unread.
-    expect(steerChat).not.toHaveBeenCalled()
+    // No live turn exists: this is the composer's own send (theme attached),
+    // flagged steer -- not the mid-turn steer path, which sends no theme.
+    expect(sendChat.mock.calls[0][2]).toBeDefined()
   })
 
   it('honours an explicit Queue choice and leaves the flag off', async () => {
@@ -187,8 +186,14 @@ describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
     const { input } = await renderChat({ subagentsRunning: true, turnRunning: true })
     await typeAndSubmit(input, 'change course')
 
-    await waitFor(() => expect(steerChat).toHaveBeenCalled())
-    expect(sendChat).not.toHaveBeenCalled()
+    // The mid-turn steer is the same endpoint through the same transport,
+    // flagged steer, carrying only the reconciliation sendId (no theme).
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    expect(steerArgOf(sendChat.mock.calls[0])).toBe(true)
+    expect(sendChat.mock.calls[0][2]).toBeUndefined()
+    expect((sendChat.mock.calls[0][4] as { sendId?: string }).sendId).toBeTruthy()
+    // The bespoke mid-turn helper is no longer a send path on this surface.
+    expect(steerChat).not.toHaveBeenCalled()
   })
 
   it('leaves an ordinary idle send unflagged', async () => {

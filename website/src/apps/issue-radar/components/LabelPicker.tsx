@@ -4,6 +4,7 @@ import { readableText, hexToRgba } from '../lib/format'
 import type { RepoLabel } from '../api'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 /** A wrap-grid label multi-select: tap a label chip to add/remove it from a
  * role set (triage, good-first-issue, …). Selected chips fill to the label's
  * real GitHub colour; unselected show a light tint. When a `suggestPattern` is
@@ -49,7 +50,9 @@ export default function LabelPicker({
   )
 
   if (loading) return <div className="text-[12px] text-muted py-2">{i18nT('apps.issueRadar.components.labelPicker.loading_labels')}</div>
-  if (error) return <div className="text-[12px] text-danger py-2">{error.message}</div>
+  // No hand-off: this picker is mounted inside the repo settings form
+  // (RepoSettings), whose label selections are unsaved until Save.
+  if (error) return <div className="py-2"><ErrorNotice message={error.message} variant="inline" /></div>
   if (labels.length === 0) return <div className="text-[12px] text-muted py-2">{emptyText ?? i18nT('apps.issueRadar.components.labelPicker.this_repo_has_no_labels')}</div>
 
   return (

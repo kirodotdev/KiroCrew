@@ -82,6 +82,7 @@ Exit codes: 0 eligible / run green, 1 tests failed, 2 usage or environment error
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import re
 import subprocess
@@ -167,6 +168,17 @@ def _iter_python(root: Path) -> list[Path]:
     return out
 
 
+# `importers_of` and `mentions_of` each call `_iter_python` + `_read` on every
+# candidate file, and both are called repeatedly for different name sets in one
+# `classify()` (once per changed-file batch) and dozens of times in `_self_test`
+# (once per stem in its dependency-check loop, and again once per `test/test_*.py`
+# candidate while it hunts for a clean leaf). None of that changes which files
+# exist or what they contain within a single process, so caching by root/path is
+# exact, not an approximation -- the walk and the read are each paid once no
+# matter how many times a caller re-asks the same question.
+_iter_python_cached = functools.lru_cache(maxsize=None)(_iter_python)
+
+
 def _read(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace")
@@ -174,6 +186,9 @@ def _read(path: Path) -> str:
         # Unreadable input cannot be cleared, and a reduction that silently
         # skipped a file it could not read would be exactly the wrong failure.
         raise SelectionUntrustworthy(f"cannot read {path} while classifying the diff") from None
+
+
+_read_cached = functools.lru_cache(maxsize=None)(_read)
 
 
 def _run_git(argv: list[str]) -> str:
@@ -234,8 +249,8 @@ def importers_of(stems: set[str], root: Path) -> dict[str, str]:
     if not stems:
         return {}
     found: dict[str, str] = {}
-    for path in _iter_python(root):
-        text = _read(path)
+    for path in _iter_python_cached(root):
+        text = _read_cached(path)
         for match in _IMPORT.finditer(text):
             module = (match.group(1) or match.group(2) or "").split(".")[0]
             if module in stems and module != path.stem:
@@ -260,8 +275,8 @@ def mentions_of(stems: set[str], root: Path) -> dict[str, str]:
         return {}
     found: dict[str, str] = {}
     quoted = {stem: (f'"{stem}"', f"'{stem}'") for stem in stems}
-    for path in _iter_python(root):
-        text = _read(path)
+    for path in _iter_python_cached(root):
+        text = _read_cached(path)
         for stem, forms in quoted.items():
             if stem in found or path.stem == stem:
                 continue
@@ -284,7 +299,7 @@ def corpus_gates(root: Path) -> list[str]:
     if not test_dir.is_dir():
         return gates
     for path in sorted(test_dir.glob("test_*.py")):
-        text = _read(path)
+        text = _read_cached(path)
         scans_tree = _SCANS_A_DIR.search(text) and _REACHES_TEST_TREE.search(text)
         if scans_tree or _JOINS_TEST_DIR.search(text):
             gates.append(_rel_posix(path, root))

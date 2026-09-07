@@ -29,6 +29,7 @@ vi.mock('../api/client', () => ({
     artifacts: vi.fn().mockResolvedValue({ artifacts: [] }),
     createArtifact: vi.fn().mockResolvedValue({ slug: 'new-slug', version: 1 }),
     setArtifactPinned: vi.fn().mockResolvedValue({}),
+    workflowRuns: vi.fn().mockResolvedValue({ runs: [] }),
   },
 }))
 
@@ -123,9 +124,12 @@ function storeTracking(agent: SubagentActivity) {
   })
 }
 
-/** A fetch stub that answers the two endpoints this component reaches for. */
+/** A fetch stub that answers the two endpoints this component reaches for.
+ *  The workflow-runs list goes through the api client now (so a non-OK
+ *  response rejects), so the stub feeds `api.workflowRuns` the same `runs`. */
 function stubFetch(opts: { runs?: unknown[]; fileText?: string; fileOk?: boolean } = {}) {
   const { runs = [], fileText = 'file body', fileOk = true } = opts
+  vi.mocked(api.workflowRuns).mockResolvedValue({ runs } as Awaited<ReturnType<typeof api.workflowRuns>>)
   const impl = vi.fn().mockImplementation((input: RequestInfo | URL) => {
     const url = String(input)
     if (url.includes('/api/workflows/runs')) {
@@ -206,7 +210,10 @@ describe('ActivityViewer — subagent transcript loading', () => {
     fireEvent.click(cardHeader(container))
     fireEvent.click(screen.getByRole('button', { name: 'Load output from disk' }))
 
-    const retry = await screen.findByRole('button', { name: 'Failed — click to retry' })
+    // The failure is a notice with the agent hand-off; the retry is its own
+    // button beside it, no longer folded into the error text.
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the output")
+    const retry = screen.getByRole('button', { name: 'Retry' })
     vi.mocked(api.spawnStatus).mockResolvedValue({ result: 'second time lucky' })
     fireEvent.click(retry)
 

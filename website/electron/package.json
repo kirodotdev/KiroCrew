@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-desktop",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "desktopName": "kirocrew-desktop.desktop",
@@ -172,8 +172,10 @@
       "renderer-recovery.js",
       "hang-recovery.js",
       "native-logging.js",
+      "crash-collector.js",
       "disable-gpu.js",
       "memory-watch-log.js",
+      "frame-load-log.js",
       "cage-trace.js",
       "pyspy-dump.js",
       "perf-metrics.js",

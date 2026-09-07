@@ -37,6 +37,9 @@ export default [
       // Test files assert on visible English by design.
       'src/**/*.test.{ts,tsx}',
       'src/test/**',
+      // Storybook fixtures are development-only renders of a primitive with
+      // sample copy; nothing in them reaches a user. Same category as tests.
+      'src/**/*.stories.{ts,tsx}',
       // MODEL-FACING PROMPTS, by naming convention. A `*.prompt.ts` module may
       // contain ONLY the text of a message sent to an agent — no UI copy — so the
       // suffix IS the boundary and its sibling module stays fully covered. Same
@@ -368,6 +371,29 @@ export default [
               // `&resolve=1`. The value class is a single digit or lowercase word
               // (`=1`, `=true`) — never a sentence — so prose still cannot match.
               String.raw`^[?&][a-z_]+=[a-z0-9]+$`,
+
+              // An angle-bracketed SENTINEL written into a diagnostic log line, e.g.
+              // `<redacted>`, `<empty>`, `<unserializable>` in lib/paneLog.ts. These are
+              // not copy in either direction: nobody reads them in the UI, and the reader
+              // is whoever greps gateway-launch.log — translating one would make the
+              // journal unsearchable in exactly the incident it exists for, and
+              // `<redacted>` in particular is the marker that a credential was WITHHELD,
+              // so a locale that renamed it would read as if the token had been printed.
+              // Shape: the whole string is one angle-bracketed lowercase word. Prose
+              // never takes that form — copy that mentions a placeholder carries the
+              // surrounding sentence (`Enter <name> here`), which the anchors reject.
+              String.raw`^<[a-z]+>$`,
+
+              // The same sentinel standing in for a URL QUERY, e.g. `?token=<redacted>`
+              // and `?<query>` — the two values `safePaneUrl` substitutes for a query it
+              // will not journal. Deliberately a separate entry from the bare sentinel
+              // above and from the `^[?&][a-z_]+=…$` server-contract shapes: neither of
+              // those admits an angle bracket, and widening either to reach these would
+              // also let a bracket into a shape whose whole tightness argument is that it
+              // carries only `[a-z0-9_=]`. The leading `?` is required, so this cannot
+              // match a bare word, and the key is optional because one of the two forms
+              // replaces the entire query rather than one parameter's value.
+              String.raw`^\?(?:[a-z_]+=)?<[a-z]+>$`,
 
               // A catalog KEY assembled at runtime, e.g.
               // `apps.crewCompanion.state.${slot}`. Translating a key would break the
@@ -724,7 +750,17 @@ export default [
               // Key CAP names and modifier glyphs. These name physical keys, which the
               // catalog's own translator context says are left as printed on the keyboard
               // (see `components.shortcutsModal.k`, `components.commandPalette.tab`).
-              '[⌘⇧⌥⌃]+[A-Za-z0-9]?$', '(?:Ctrl|Cmd|Alt|Win|Opt|Shift|Esc|Tab|Enter|Del)$',
+              //
+              // `Meta` and `Control` are the WAI-ARIA modifier vocabulary, which is what
+              // an `aria-keyshortcuts` value is spelled in — the same kind of machine
+              // grammar as the OS accelerator entry directly above, just parsed by
+              // assistive tech instead of by the OS. They are needed BARE, unlike the
+              // accelerator pattern, because that one requires a `+<key>` suffix and the
+              // ARIA value is assembled a modifier at a time (see
+              // `hooks/useNavShortcutHint.ts`). Anchored to the whole value like every
+              // sibling here, so a sentence merely containing the word "Control" is still
+              // reported — only the bare token is exempt.
+              '[⌘⇧⌥⌃]+[A-Za-z0-9]?$', '(?:Ctrl|Cmd|Alt|Win|Opt|Shift|Esc|Tab|Enter|Del|Meta|Control)$',
               // A TEMPLATE LITERAL is validated one QUASI at a time (the rule reports
               // the whole template if ANY quasi fails), so the fragments BETWEEN
               // interpolations need shapes of their own. `data:${mime};base64,${b64}`
@@ -869,6 +905,18 @@ export default [
               // inherit this by accident. One definition exists today, in
               // `src/apps/command-bar/contributedCommands.ts`, which renders nothing.
               '^warnContributionSkipped$',
+              // `scrollInspector.ts`'s diagnostic sink. `devLog(tag, detail)` writes a
+              // fixed-format line into a developer overlay -- `STORE.save 9020
+              // a-…794bcf@-471`, `WRITE reprice2 965->20211` -- read by comparing it
+              // against the same line in an earlier frame. Same class as
+              // `^console\\.\\w+$` above; translating it would destroy the only property
+              // that makes it useful, since the format IS the interface.
+              //
+              // A CALLEE exemption rather than a whole-file one, for the reason the
+              // ones above give. One definition exists, in `src/dev/scrollInspector.ts`,
+              // which renders no product copy: everything it draws is this diagnostic
+              // and it is inert unless a developer turns the overlay on.
+              '^devLog$',
               // Validator diagnostics, for parity with `Error` above. A rejected input's
               // reason names the FIELD that failed (`Missing or invalid "meta" field`,
               // `Invalid meta.format: "…" (expected "svg", "lottie", or "sprite")`) and
@@ -1106,6 +1154,26 @@ export default [
       // whole template sits under an ALL-CAPS declarator.
       'src/apps/crew-companion/styles.ts',
     ],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // The chat scroll inspector: a DEVELOPER OVERLAY, and every string it draws is a
+  // diagnostic whose FORMAT is the interface. Its readout is compared against the
+  // same readout in an earlier frame -- `to-end 24600px  rows=39  msgs=200/7417`,
+  // `WRITE reprice2 965->20211` -- so a localised copy would destroy the only
+  // property that makes it useful, the way a localised `console.log` would.
+  //
+  // Whole-file rather than callee-scoped, unlike `devLog` in `callees` above: the
+  // module also assigns its own `textContent` and `cssText` directly, and it meets
+  // the "verified copy-free" standard the exact-path precedents above are held to
+  // -- it renders NOTHING but this diagnostic, and it is inert unless a developer
+  // turns the overlay on (a module-level flag is read first by every entry point,
+  // so disabled means no element at all). Product copy added here later belongs in
+  // the catalog, not under this exemption; keep this module diagnostics-only.
+  {
+    files: ['src/dev/scrollInspector.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

@@ -29,6 +29,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../api/client'
 import Modal from '../../components/Modal'
+import ErrorNotice from '../../components/ErrorNotice'
 import { Badge, Btn, Input } from '../../components/ui'
 // Import shared view-model helpers from runModel directly (NOT from WorkflowsPage)
 // so this module and WorkflowsPage do not form an import cycle.
@@ -322,7 +323,7 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
                 className={`flex items-center gap-2 px-3 py-2 rounded border text-[12px] cursor-pointer ${
                   row.run_id === selectedId
                     ? 'border-accent bg-card'
-                    : 'border-border hover:bg-card'
+                    : 'border-border hover:bg-bg-hover'
                 }`}
                 onClick={() => select(row.run_id)}
                 role="button"
@@ -518,10 +519,13 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
               />
             </div>
           ) : null}
+          {/* The hand-off is offered only while the save form above is empty: the
+              name and description typed into it are unsaved until Save succeeds. */}
           {saveMutation.error ? (
-            <p className="text-[12px] text-danger">
-              {i18nT('pages.overview.workflowLibrary.request_failed')}
-            </p>
+            <ErrorNotice
+              message={i18nT('pages.overview.workflowLibrary.request_failed')}
+              askAgent={!saveName && !saveDescription}
+            />
           ) : null}
         </div>
       </Modal>

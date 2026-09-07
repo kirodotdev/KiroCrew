@@ -30,10 +30,6 @@ from kiro_crew.metrics.sessions import (
 if TYPE_CHECKING:
     from kiro_crew.acp.types import AcpEvent
     from kiro_crew.providers.base import LLMProvider
-else:
-    # Runtime-importing providers.base from this leaf enters the
-    # providers -> acp -> runtime -> session_pid -> providers cycle.
-    LLMProvider = Any
 
 
 class _BackgroundSessionEntry(Protocol):

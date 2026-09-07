@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { SettingsSection, SettingsCard } from '../../components/settings'
 import { Badge, Btn } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { api, type WebhooksView } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 
@@ -83,10 +84,13 @@ export function WebhooksPanel() {
               // Say the read failed rather than rendering a stateless card. Without
               // this the badge and count both vanish and the panel looks the same
               // as a healthy endpoint with nothing configured — indistinguishable
-              // from a gateway that is simply unreachable.
-              <p className="text-[12px] text-warn">
-                {i18nT('pages.settings.webhooksPanel.could_not_read_webhook_status')}
-              </p>
+              // from a gateway that is simply unreachable. Read failure on a
+              // summary card with no inputs, so the hand-off is on.
+              <ErrorNotice
+                variant="inline"
+                askAgent
+                message={i18nT('pages.settings.webhooksPanel.could_not_read_webhook_status')}
+              />
             )}
           </div>
           <Btn onClick={() => navigate('/webhooks')} className="shrink-0">

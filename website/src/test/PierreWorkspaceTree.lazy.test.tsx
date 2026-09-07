@@ -71,7 +71,10 @@ describe('PierreWorkspaceTree', () => {
     expect(screen.getByRole('status', { name: 'Loading workspace…' })).toBeInTheDocument()
     expect(treeMock.models).toHaveLength(0)
 
-    await waitFor(() => expect(screen.getByTestId('file-tree')).toBeInTheDocument())
+    // `PierreWorkspaceTree` is a `React.lazy` boundary over the `@pierre/trees`
+    // chunk (src/pierre/tree.tsx); the default waitFor timeout (1000ms) races
+    // that dynamic import under a loaded, concurrent run.
+    await waitFor(() => expect(screen.getByTestId('file-tree')).toBeInTheDocument(), { timeout: 5000 })
     expect(screen.queryByRole('status', { name: 'Loading workspace…' })).not.toBeInTheDocument()
   })
 
@@ -85,7 +88,7 @@ describe('PierreWorkspaceTree', () => {
         selectedPath={`${ROOT}/README.md`}
       />,
     ))
-    await waitFor(() => expect(screen.getByTestId('file-tree')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('file-tree')).toBeInTheDocument(), { timeout: 5000 })
 
     expect(api.projectTree).toHaveBeenCalledWith(ROOT)
     const model = treeMock.last()

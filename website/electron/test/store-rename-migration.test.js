@@ -25,7 +25,7 @@
 //   file absent    -> there is nothing to overwrite, by definition
 //   seeding throws -> file stays absent -> the next launch retries identically
 //   seeding works  -> file exists       -> never eligible again
-const { test } = require("node:test");
+const { test, after } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -54,9 +54,20 @@ const DEFAULTS = {
   linuxFrameless: null,
 };
 
+// Every dir this file mkdtemp's is tracked here and swept in the after() hook
+// below, so a run never leaves cc-pet-test-/kc-store- style dirs behind in
+// $TEMP regardless of which test created them or whether it threw first.
+const tmpDirs = [];
+
 function tmpUserData() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "kc-store-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-store-"));
+  tmpDirs.push(dir);
+  return dir;
 }
+
+after(() => {
+  for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 // Open a REAL electron-store the way main.js does, so assertions run against the
 // library's own merge of file + defaults rather than a hand-rolled fake. An earlier
@@ -302,21 +313,25 @@ test("a CORRUPTED legacy store is final and loud, never retried", () => {
   fs.mkdirSync(legacyDir, { recursive: true });
   fs.writeFileSync(path.join(legacyDir, "config.json"), "{ not json");
 
-  const notes = [];
-  const sleeps = [];
-  const migrated = seedRenamedStore(userData, {
-    log: (m) => notes.push(m),
-    sleep: (ms) => sleeps.push(ms),
-  });
-  assert.strictEqual(migrated, false);
-  assert.deepStrictEqual(sleeps, [], "corruption is not transient, so retrying is pointless");
-  assert.strictEqual(notes.length, 1, "the loss must be visible in the boot log");
-  assert.ok(notes[0].includes("not valid JSON"), notes[0]);
-  assert.strictEqual(
-    fs.existsSync(path.join(userData, "config.json")),
-    false,
-    "a corrupted legacy store must seed nothing"
-  );
+  try {
+    const notes = [];
+    const sleeps = [];
+    const migrated = seedRenamedStore(userData, {
+      log: (m) => notes.push(m),
+      sleep: (ms) => sleeps.push(ms),
+    });
+    assert.strictEqual(migrated, false);
+    assert.deepStrictEqual(sleeps, [], "corruption is not transient, so retrying is pointless");
+    assert.strictEqual(notes.length, 1, "the loss must be visible in the boot log");
+    assert.ok(notes[0].includes("not valid JSON"), notes[0]);
+    assert.strictEqual(
+      fs.existsSync(path.join(userData, "config.json")),
+      false,
+      "a corrupted legacy store must seed nothing"
+    );
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
 });
 
 test("an ABSENT legacy store is final and silent, never retried", () => {

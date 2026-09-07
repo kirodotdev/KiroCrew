@@ -165,20 +165,27 @@ def test_side_chat_parent_snapshot_keeps_user_text() -> None:
 
 
 def test_stage_result_capture_redacts_before_writing_to_disk(tmp_path, monkeypatch) -> None:
-    """_capture_stage_result writes assistant text to a NEW file on disk.
+    """The stage-result capture writes assistant text to a NEW file on disk.
 
     A gateway restart mid-orchestration leaves restored (now unredacted) turns in
     the window, so without redaction here those bytes would be written out.
+
+    Composed from the two halves the stage loop itself calls: the message walk
+    runs on the caller (it reads live slot state) and the redact-plus-write half
+    takes only strings, which is what makes it safe to hand to a worker thread.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
-    from kiro_crew.dashboard.chat_orchestrator import _capture_stage_result
+    from kiro_crew.dashboard.chat_orchestrator import (
+        _collect_stage_result_parts,
+        _write_stage_result,
+    )
     from kiro_crew.dashboard.state import _ChatSlot
 
     slot = _ChatSlot("chat-1-stage")
     slot.append("assistant", f"result with {SECRET}", "msg msg-a", broadcast=False)
 
-    path = _capture_stage_result(slot, 1)
+    path = _write_stage_result(slot.key, 1, _collect_stage_result_parts(slot))
     written = pathlib.Path(path).read_text()
     assert SECRET not in written, "stage result persisted an unredacted credential"
 

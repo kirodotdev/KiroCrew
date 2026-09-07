@@ -20,7 +20,7 @@ from aiohttp import BodyPartReader, web
 
 from kiro_crew import agent_state, model_registry
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
-from kiro_crew.acp_backends import selectable_backend_values
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, selectable_backend_values
 from kiro_crew.agent import (
     AGENT_FILENAME,
     _spec_path_is_safe,
@@ -38,6 +38,7 @@ from kiro_crew.agent_discovery import (
     spec_model,
     spec_str,
 )
+from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.apps.bridges import _mcp_lock as _agent_file_lock
 from kiro_crew.apps.bridges import _registration_source
@@ -1773,11 +1774,9 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
     """Map the first active CC provider's advertised models to the API shape.
 
     claude-agent-acp captures its real versioned list at session init (see
-    AcpClient._capture_available_models). Backend provider ids are mapped back to
-    canonical registry keys (``from_provider_id``) so they dedup cleanly against
-    the registry rows in :func:`_cc_models` and the wire value stays canonical.
-    A provider id with no registry entry passes through unchanged (forward-compat
-    for models the registry doesn't list yet). Returns ``[]`` when no session has
+    AcpClient._capture_available_models). ``model_name`` is the advertised id
+    verbatim: it is the wire value sent back on selection, and the adapter
+    only accepts ids it advertised. Returns ``[]`` when no session has
     initialized or the backend advertised nothing.
     """
     try:
@@ -1786,25 +1785,24 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
     except (KeyError, AttributeError):
         return []
     for provider in providers:
-        getter = getattr(provider, "available_models", None)
-        if not callable(getter):
-            continue
-        try:
-            advertised = getter()
-        except Exception:
-            continue
-        if advertised:
-            return [
-                {
-                    "model_name": model_registry.from_provider_id(
-                        m.get("modelId", ""), "claude_code"
-                    ),
-                    "display_name": m.get("name", "") or m.get("modelId", ""),
-                    "description": m.get("description", ""),
-                }
-                for m in advertised
-                if m.get("modelId")
-            ]
+        if provider.is_claude_backend:
+            getter = getattr(provider, "available_models", None)
+            if not callable(getter):
+                continue
+            try:
+                advertised = getter()
+            except Exception:
+                continue
+            if advertised:
+                return [
+                    {
+                        "model_name": m.get("modelId", ""),
+                        "display_name": m.get("name", "") or m.get("modelId", ""),
+                        "description": m.get("description", ""),
+                    }
+                    for m in advertised
+                    if m.get("modelId")
+                ]
     return []
 
 
@@ -1825,7 +1823,14 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     "this account can run" means. A local comparison would be a second spelling
     of that question — the exact drift that predicate exists to prevent — and any
     difference in how the two fold spelling variants shows up as a row the picker
-    offers and the wire then withholds.
+    offers and the wire then withholds. A literal miss is retried through
+    ``resolve_pin_spelling``, the same namespace fold the wire sites apply
+    before withholding — but the row is REWRITTEN to the advertised spelling
+    the fold answers with (and dropped when another row already offers that
+    spelling): the selection sinks (the agent/crew pin validator and
+    ``set_model``'s pre-flight) compare the picked value literally, so a row
+    must carry an id they accept verbatim, not the catalog's stale
+    ``<namespace>::<bare-id>`` qualifier it resolved from.
 
     The ``auto`` sentinel is never filtered: it means "inherit whatever the
     session already resolved", so it stays selectable even on a backend that does
@@ -1863,19 +1868,39 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     if not advertised:
         return models
     advertises_auto = any(_normalize_model_key(i) == "auto" for i in advertised)
-    kept = [
-        m
+    offered: set[str] = {
+        _normalize_model_key(m.get("model_name", ""))
         for m in models
         if _normalize_model_key(m.get("model_name", "")) == "auto"
         or not model_is_unusable(m.get("model_name", ""), advertised)
-    ]
+    }
+    kept: list[dict] = []
+    for m in models:
+        name = m.get("model_name", "")
+        if _normalize_model_key(name) == "auto" or not model_is_unusable(name, advertised):
+            kept.append(m)
+            continue
+        resolved = resolve_pin_spelling(name, advertised)
+        if not resolved:
+            continue
+        key = _normalize_model_key(resolved)
+        # Another row (literal or already-rewritten) offers this advertised
+        # spelling: emitting a second one would show duplicate rows for one
+        # model, so the qualified duplicate drops.
+        if key in offered:
+            continue
+        offered.add(key)
+        kept.append({**m, "model_name": resolved})
     # Tell "not comparable" apart from "entitled to almost nothing". A backend
     # that advertises `auto` shares a namespace with the catalog by definition, so
     # `auto` alone is a real answer — the most restricted tier there is — and must
     # narrow the picker to it. Only when nothing at all lines up, `auto` included,
     # is this a namespace mismatch (bare vs prefixed provider ids) where showing
     # the whole catalog beats emptying the picker. `auto` is always kept, so it can
-    # never serve as the evidence that the two sides are comparable.
+    # never serve as the evidence that the two sides are comparable. A row
+    # rewritten through the ``resolve_pin_spelling`` retry IS such evidence: a
+    # peeled match proves the two vocabularies line up once the qualifier is
+    # removed.
     if not advertises_auto and not any(
         _normalize_model_key(m.get("model_name", "")) != "auto" for m in kept
     ):
@@ -1928,13 +1953,18 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
         ]
 
     merged: list[dict] = []
-    seen: set[str] = set()
+    seen: dict[str, int] = {}
     for entry in (*registry_rows, *advertised):
         name = entry.get("model_name", "")
         key = _normalize_model_key(name)
-        if not key or key in seen:
+        if not key:
             continue
-        seen.add(key)
+        if key in seen:
+            # Collision: registry keeps display, advertised id keeps the wire value.
+            if key != "auto":
+                merged[seen[key]] = {**merged[seen[key]], "model_name": name}
+            continue
+        seen[key] = len(merged)
         merged.append(entry)
     # "auto" leads. It may be absent entirely if a future registry drops the row,
     # so synthesize it rather than assuming the filter above preserved one.
@@ -1943,7 +1973,7 @@ def _cc_models(request: web.Request, configured_default: str = "") -> list[dict]
     ]
     if not any(_normalize_model_key(e.get("model_name", "")) == "auto" for e in merged):
         merged.insert(0, {"model_name": "auto", "display_name": "Auto", "description": ""})
-        seen.add("auto")
+        seen = {_normalize_model_key(e.get("model_name", "")): i for i, e in enumerate(merged)}
     # Guarantee the configured default is present (e.g. a custom cc_model the
     # backend doesn't advertise) so the selected model never vanishes. Resolve it
     # to its canonical key first (it may be stored as a provider id or alias) so a
@@ -2014,7 +2044,10 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
 
 
 async def api_models(request: web.Request) -> web.Response:
-    """GET /api/models — list available models from the live kiro-cli ACP session."""
+    """GET /api/models — list available models from the live kiro-cli ACP session or the claude-code ACP adapter."""
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    if getattr(cfg.agent, "acp_backend", "") == ACP_BACKEND_CLAUDE:
+        return web.json_response(_cc_models(request, configured_default=cfg.agent.model))
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
@@ -2575,6 +2608,283 @@ async def api_capability_mcp_registry(request: web.Request) -> web.Response:
 # ── KiroCrew Agent CRUD API ──
 
 
+def _roster_mask(value: object) -> str:
+    """Render ONE agent-record value for a roster row, masking what cannot be shown.
+
+    Every record value is agent- or package-writable: an agent can edit
+    ``config.json`` directly, and ``_do_agents_sync`` copies ``description``
+    straight off a discovered agent spec, so a third-party package controls that
+    string. A value the redactors would alter -- credential- or
+    exfiltration-URL-shaped text -- is therefore replaced WHOLESALE by
+    ``_SENSITIVE_MASK``, the sentinel ``_masked_config_dict`` already uses for
+    the same job on ``GET /api/config/kirocrew``. A non-string (the loader lets
+    an object through five declared-``str`` fields) is masked too: it is not
+    renderable, so there is nothing to show. Benign content is byte-identical.
+
+    **A fixed sentinel rather than redacting in place, and that is the whole
+    design.** An in-place scrub makes the browser's view a FUNCTION of the
+    stored value, so the write-side rule that keeps a read-modify-write from
+    persisting that view (``_carries_mask``) has to recognise it by
+    recomputing the transform -- which breaks in two ways a sentinel does not:
+
+    * **Redaction-chain drift.** #8465 wraps this same response in
+      ``redact_record_strings``, whose order differs from ``_redact_external``'s.
+      A recomputed-equality rule would stop matching and silently persist the
+      redacted text; an exact sentinel survives, because scrubbing
+      ``_SENSITIVE_MASK`` leaves it unchanged.
+    * **Stale-view skew.** If the stored value changes between the GET and the
+      PUT (an agent editing ``config.json``, a second dashboard tab), a
+      recomputed rule compares the old view against the NEW value, fails to
+      match, and writes ``[REDACTED ...]`` text into the config as though the
+      operator had typed it. The sentinel does not depend on the stored value at
+      all, so this cannot happen.
+
+    Named cost: a value containing one credential-shaped token is masked
+    entirely, so the owner loses the benign remainder of that string rather than
+    seeing it partially redacted. That is the same trade ``_masked_config_dict``
+    already makes, and it is the price of a view that cannot be mistaken for
+    content.
+    """
+    # Function-local for the reason recorded at the ``_validate_role_model``
+    # import below: ``handlers.core`` resolves ``_get_config_lock`` from THIS
+    # module, so a module-level import here would close the cycle.
+    from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
+
+    if not isinstance(value, str):
+        return _SENSITIVE_MASK
+    return value if _redact_external(value) == value else _SENSITIVE_MASK
+
+
+def _carries_mask(incoming: object) -> bool:
+    """True when *incoming* still CARRIES the mask, so it is not real content.
+
+    The write-side half of ``_roster_mask``. A client that read a roster row and
+    echoed it back sends the mask; persisting it would destroy the operator's
+    stored value. Such a field is treated as UNCHANGED instead.
+
+    **Containment, not equality.** An exact-match rule closes only the
+    echo-it-back case. The editor renders the mask into a text input, so an
+    operator who APPENDS to it submits ``"<mask> and also X"`` -- not equal to the
+    sentinel, so an equality rule would persist the redaction glyphs plus the
+    addition, replacing the stored original. Any string still containing the
+    sentinel is therefore refused as content.
+
+    Consequence, stated because it is a real limitation and not a free win: a
+    genuine replacement must OMIT the sentinel entirely -- clear the field, then
+    type the new value. An edit that keeps the mask and adds to it is dropped
+    rather than half-applied. That is lossy in the operator's INTENT, but it never
+    destroys what is stored, and the alternative writes redaction glyphs into
+    ``config.json`` over the real value.
+
+    This is the remedy ``_masked_config_dict``'s docstring prescribes -- "MUST
+    treat ``_SENSITIVE_MASK`` as 'unchanged' and keep the stored value" -- read
+    the strict way. Because the comparison is against a FIXED sentinel and never
+    against a recomputation of the stored value, it is immune to which redaction
+    chain produced the view and to the stored value having changed since the read.
+
+    Accepted residual, identical in kind to the config endpoint's: an operator
+    cannot store a value containing the mask string. It is eight U+2022 bullets.
+
+    **Recursive, because one shipped field is STRUCTURED.** ``avatar`` is a dict
+    whose ``traits`` values are masked (``_roster_avatar``), so an echoed avatar
+    carries the sentinel one level DOWN. A top-level-only check sees a ``dict``,
+    answers "not a mask", and lets ``_safe_avatar`` persist the sentinel over the
+    stored trait -- the exact corruption this predicate exists to prevent, one
+    level deeper than the flat fields. Any string anywhere inside the value
+    therefore counts.
+
+    Cost of the recursive form, stated because it is sharper than the flat one: if
+    an avatar carries ANY masked trait, the whole avatar field is treated as
+    unchanged, so an edit to a DIFFERENT trait in the same avatar is dropped too.
+    A partial merge would be the alternative, and it is worse: it would have to
+    decide field-by-field which half of a structured value is authoritative, and
+    getting that wrong writes glyphs into stored config. Refusing the whole field
+    never destroys what is stored.
+    """
+    from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
+
+    if isinstance(incoming, str):
+        return _SENSITIVE_MASK in incoming
+    if isinstance(incoming, dict):
+        return any(_carries_mask(val) for val in incoming.values())
+    if isinstance(incoming, (list, tuple)):
+        return any(_carries_mask(val) for val in incoming)
+    return False
+
+
+def _roster_avatar(value: object) -> dict:
+    """The one STRUCTURED field a roster row ships: shape-allowlisted, not masked.
+
+    ``avatar`` is a ``dict``, so ``_roster_mask``'s non-string rule would blank it
+    wholesale -- and the dashboard needs it: ``AgentSelector.tsx`` declares
+    ``avatar?: unknown`` commented "verbatim from the backend", and ``main``'s
+    roster still ships it via the ``asdict`` spread this PR replaces. Withholding
+    it would REGRESS a live feature rather than narrow a disclosure, so it is
+    named in the allowlist like every other shipped field.
+
+    **A shape allowlist, with masking confined to the leaves that can carry user
+    text.** ``_safe_avatar`` is the config's own validator, so only
+    ``{"kind": "ghost", "traits": {...}}`` and ``{"kind": "image", "v": ...,
+    "file": "<digest>.<ext>"}`` survive and junk collapses to ``{}``. Within that,
+    ONLY ``traits`` values are masked:
+
+    - ``kind`` and ``v`` are structural. Mask ``kind`` and the dashboard can no
+      longer tell a ghost from an uploaded picture.
+    - ``file`` is PINNED by ``_AVATAR_FILE_PIN_RE`` to ``<16-hex>.<ext>``, so it is
+      not arbitrary text. A value constrained by a regex is safer than a masked
+      one: the pin REFUSES a bad value where masking would destroy a good one, and
+      a masked ``file`` makes the per-crew avatar endpoint resolve nothing --
+      silently breaking the image.
+    - ``traits`` values, and the ``eyes``/``mouth`` values of each
+      ``expressions`` state, are the only user-authored strings here, so they go
+      through ``_roster_mask`` like any other roster string. The renderer resolves
+      an unrecognized trait to absent (``EYES[k] ?? ''``), so a masked trait
+      degrades that axis rather than breaking the face.
+    - ``sounds`` values are constrained by ``_safe_sounds`` to a shipped preset
+      name, so they are pinned rather than masked -- the same reason ``file`` is.
+
+    Honest limit on how far the two rules can be told apart: because
+    ``_safe_avatar`` already pins every non-``traits`` leaf to a shape the redactors
+    do not alter (a literal ``kind``, a digest ``file``, a hex ``tile``), a blanket
+    mask over the validated dict would behave the SAME as this targeted one today.
+    The targeted rule is chosen for intent and for the day that pin loosens, not
+    because a live defect separates them -- and no test can pin the difference
+    while the shape validator holds.
+
+    No host path is disclosed by any of this. The picture's bytes live under the
+    data home's agent-fenced ``run/avatars/`` dir and are served by the per-crew
+    avatar endpoint; the config field only marks the choice.
+    """
+    safe = _safe_avatar(value)
+    traits = safe.get("traits")
+    if isinstance(traits, dict):
+        safe = dict(safe)
+        safe["traits"] = {
+            axis: (_roster_mask(val) if isinstance(val, str) else val)
+            for axis, val in traits.items()
+        }
+    expressions = safe.get("expressions")
+    if isinstance(expressions, dict):
+        safe = dict(safe)
+        safe["expressions"] = {
+            state: {
+                axis: (_roster_mask(val) if isinstance(val, str) else val)
+                for axis, val in axes.items()
+            }
+            for state, axes in expressions.items()
+            if isinstance(axes, dict)
+        }
+    return safe
+
+
+def _name_would_be_masked(name: str) -> bool:
+    """True when *name* is credential-shaped, so a roster row would mask it.
+
+    Keyed on ``_roster_mask`` itself rather than on a second detector, so the
+    create-time rule and the read-time rule cannot drift apart: a name that would
+    arrive masked is a name that can never be stored in the first place.
+    """
+    return _roster_mask(name) != name
+
+
+def _agent_roster_row(
+    name: str, scope: str, agent_cfg: KiroCrewAgentConfig, *, redact: bool
+) -> dict[str, object]:
+    """Serialize ONE ``GET /api/agents`` roster row.
+
+    **Key half.** Explicit allowlist -- never a ``dataclasses.asdict`` spread,
+    mirroring the rule ``handlers/members.py`` already documents for
+    ``GET /api/members``. The response is a network-boundary contract, and a
+    spread makes that contract "every field ``KiroCrewAgentConfig`` has now, plus
+    every field anyone adds later", automatically -- so a field added by someone
+    who never looked at this endpoint (internal bookkeeping, a filesystem path, a
+    capability hint, a credential-shaped one) ships to the browser by omission.
+    Naming each field inverts the default: nothing leaves unless it is added here
+    deliberately (#8454). Both row sources go through this one function, so the
+    ``cfg.agents`` rows and the project-scope rows cannot drift into different
+    key sets.
+
+    **Value half.** Every record value goes through ``_roster_mask``, for every
+    caller, uniformly -- see there for why they are all untrusted and why the
+    mask is a fixed sentinel. ``_carries_mask`` is its write-side half in
+    ``api_kirocrew_agent_update``; neither is correct alone, and an end-to-end
+    test does the GET then the PUT to prove the pair.
+
+    Uniform rather than per-field on purpose: an earlier revision exempted the
+    fields the agents page happens to write back today, which encoded a claim
+    about the CLIENT that this side could not enforce -- and it was already
+    wrong, because ``api_kirocrew_agent_update`` accepts ``description`` and
+    ``source`` too.
+
+    ``name`` is the single exception, and only for the owner: it is the row's
+    IDENTITY, addressing ``/api/agents/{name}`` for edit and delete and keying
+    the usage sort, and it travels in the URL rather than the body so the
+    write-side rule cannot protect it. Masking it would make the row
+    unaddressable. An ``app`` token cannot reach those owner-gated routes, so the
+    exemption buys it nothing and ``name`` is masked there. A credential-shaped
+    name is now refused at CREATION (``_name_would_be_masked``), closing the hazard
+    at its source rather than at this one read site -- but only for names arriving
+    through that route, so an already-stored one still reaches here and is still
+    masked for every caller but the owner. Named cost: an app that feeds a roster name to another route sees the
+    mask, which happens only for a name containing credential- or URL-shaped
+    text.
+
+    ``scope`` is never masked: it is a literal written here, not record content.
+    The annotation is ``dict[str, object]`` rather than ``dict[str, str]`` because
+    of ONE field: ``avatar`` is a structured ``dict`` the dashboard needs verbatim
+    (see ``_roster_avatar``). Every other value is a ``str`` -- ``_roster_mask``
+    returns one for every input, including the non-strings the loader lets
+    through.
+
+    Excluded on purpose, each verified to have NO consumer in ``website/src``:
+    ``watchdog_tool_stall_suspect_secs`` and ``watchdog_tool_stall_hard_cap_secs``
+    (per-agent watchdog windows -- backend scheduling knobs the roster does not
+    render) and ``telegram_account`` (deprecated and inert, and the one record
+    field naming an external messaging binding). Adding any of them back is a
+    one-line change plus the pinned key set.
+    """
+    return {
+        # ``name`` is masked for an app token (which can address nothing) and for
+        # every PROJECT row (which nothing can address either: both
+        # ``api_kirocrew_agent_update`` and ``api_kirocrew_agent_delete`` 404 on a
+        # name absent from ``cfg.agents``, and a scanned project agent never is).
+        # A GLOBAL row's name survives for a non-app caller because it is that
+        # row's only handle -- it addresses ``/api/agents/{name}`` for edit and
+        # delete and keys the usage sort -- and masking it there would buy
+        # nothing: the same names are readable unmasked from
+        # ``GET /api/config/kirocrew``, where they are the ``agents`` map's KEYS
+        # and ``_masked_config_dict`` masks only schema-``sensitive`` VALUES.
+        # That last argument does NOT extend to project rows, whose names come
+        # from a filesystem scan and appear in no config, which is why they are
+        # masked here rather than reasoned away.
+        #
+        # Named cost: a project agent whose FILENAME is credential- or
+        # URL-shaped is no longer selectable, because the picker dispatches by
+        # this value (``AgentSelector.tsx:127`` ``onChange(a.name)``). That is
+        # confined to names the redactors would alter; an ordinary project agent
+        # name is byte-identical.
+        "name": _roster_mask(name) if (redact or scope == "project") else name,
+        # The #1684 project-scope tag: "project" rows dispatch only from the
+        # slot whose project they were scanned from. Handler-added, not a
+        # record field.
+        "scope": scope,
+        "kiro_agent": _roster_mask(agent_cfg.kiro_agent),
+        "workspace": _roster_mask(agent_cfg.workspace),
+        "memory_store": _roster_mask(agent_cfg.memory_store),
+        "model": _roster_mask(agent_cfg.model),
+        "reasoning_effort": _roster_mask(agent_cfg.reasoning_effort),
+        "description": _roster_mask(agent_cfg.description),
+        "triggers": _roster_mask(agent_cfg.triggers),
+        "source": _roster_mask(agent_cfg.source),
+        "session_color": _roster_mask(agent_cfg.session_color),
+        # The one STRUCTURED value a row carries -- shape-allowlisted by
+        # ``_safe_avatar`` with masking confined to user-authored ``traits``
+        # values, so ``kind``/``v``/``file`` survive as the pinned shapes the
+        # dashboard and the per-crew avatar endpoint need. See ``_roster_avatar``.
+        "avatar": _roster_avatar(getattr(agent_cfg, "avatar", {})),
+    }
+
+
 async def api_kirocrew_agents(request: web.Request) -> web.Response:
     """GET /api/agents — list all Kiro Crew agent definitions, most-used first.
 
@@ -2586,8 +2896,28 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     dispatch resolves aliases first, so the alias is what would answer.
     """
     cfg = KiroCrewConfig.load()
+    # Caller class, resolved once for the whole response. It decides only VALUE
+    # treatment, never the key set -- see ``_roster_mask``.
+    #
+    # The OWNER predicate, not an app-token check. `request.get("app", "")` alone
+    # asks "is this an app?", and a non-owner DASHBOARD session answers no: an
+    # allow-listed messaging user running `!dashboard` holds a dashboard token
+    # with `app == ""` and would have sailed through, which is the same
+    # caller-class hole that keeps reappearing when this question is hand-rolled
+    # per class instead of delegated to the one predicate that already answers
+    # it. `is_owner_dashboard_request` is what `_require_owner` resolves to for
+    # the mutating routes in this module, so the read and write sides now agree
+    # on who the owner is.
+    #
+    # Fails CLOSED -- treated as NOT the owner, so masked -- when the app carries
+    # no state to resolve an owner against. The predicate subscripts
+    # `app["state"]`, and for a disclosure control "unknown caller" must mean
+    # "mask", not "show".
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    redact = request.app.get("state") is None or not is_owner_dashboard_request(request)
     agents = [
-        {"name": name, "scope": "global", **dataclasses.asdict(agent_cfg)}
+        _agent_roster_row(name, "global", agent_cfg, redact=redact)
         for name, agent_cfg in cfg.agents.items()
     ]
 
@@ -2611,9 +2941,12 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("Failed to list project agents for %s", project_dir, exc_info=True)
             project_names = frozenset()
-        base = dataclasses.asdict(KiroCrewAgentConfig())
+        # One shared default record for every project row — they carry no
+        # per-agent config of their own (nothing on disk to read without a
+        # second scan), so the row is the default record under a project tag.
+        project_default = KiroCrewAgentConfig()
         agents.extend(
-            {"name": name, "scope": "project", **base}
+            _agent_roster_row(name, "project", project_default, redact=redact)
             for name in sorted(project_names - set(cfg.agents.keys()))
         )
 
@@ -2629,9 +2962,12 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
             # their config-insertion index and form a stable bottom block.
             sorted_agents = sorted(
                 enumerate(agents),
+                # ``str(...)`` because the row's value type widened to ``object``
+                # for ``avatar`` (the one structured field); ``name`` is always a
+                # ``str`` -- masked or verbatim, ``_roster_mask`` returns one.
                 key=lambda item: (
-                    -usage.get(item[1]["name"], (0, 0.0))[0],
-                    -usage.get(item[1]["name"], (0, 0.0))[1],
+                    -usage.get(str(item[1]["name"]), (0, 0.0))[0],
+                    -usage.get(str(item[1]["name"]), (0, 0.0))[1],
                     item[0],
                 ),
             )
@@ -2700,6 +3036,27 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 # filesystem, and on a populated agents directory this per-agent
                 # check (in a loop) would stall the gateway loop and heartbeat.
                 _dn = disc.name
+                # The OTHER way a name reaches `cfg.agents`, and the one the
+                # create-route check cannot see. A discovered spec's name is
+                # package-controlled rather than typed by the owner, so "the owner
+                # is reading a string the owner wrote" does not hold for it: a
+                # package could land a credential-shaped name that then reaches
+                # the roster. Refused here, at the second source, for the same
+                # reason it is refused at the first.
+                #
+                # Skipped rather than masked: masking would leave an
+                # unselectable, unrenameable row, and this row has no owner to
+                # rename it -- it comes back on every sync until the PACKAGE is
+                # fixed. The name is deliberately absent from the log line, since
+                # writing it into the log is the disclosure being avoided.
+                if _name_would_be_masked(_dn):
+                    logger.warning(
+                        "refusing to sync a discovered agent whose name is "
+                        "credential- or URL-shaped (source=%s); name withheld "
+                        "from this log deliberately -- fix the providing package",
+                        getattr(disc, "source", "?"),
+                    )
+                    continue
                 _has_on_disk = await asyncio.to_thread(
                     lambda: (kiro_agents_dir_path() / f"{_dn}.json").exists()
                     or _namespaced_agent_file_exists(_dn)
@@ -2726,6 +3083,12 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
         # Skip pruning if scan returned nothing -- likely a transient issue.
         # Invariant: for package-sourced entries, kiro_agent == dict key == agent name.
         # ("aim" is also accepted for backward-compat with older configs.)
+        # A STARRED package crew is pruned like any other -- a registry row with
+        # no spec on disk is not spawnable. The star goes with the row: a
+        # reinstalled crew comes back un-starred and one click restores it
+        # (deliberately no parking list -- a permanent config key is not worth
+        # a re-click, and a name-keyed list would pre-star an unrelated future
+        # package that reused the name).
         if discovered_names:
             for name, agent_cfg in list(cfg.agents.items()):
                 if agent_cfg.source in ("package", "aim") and (
@@ -2974,6 +3337,34 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     name = body.get("name", "").strip()
     if not name:
         return web.json_response({"error": "Agent name is required"}, status=400)
+    # Refused at the SOURCE, not masked at one read site. Once such a name is
+    # stored it reaches logs, error messages, telemetry and every other surface
+    # that prints a crew name -- none of which this module controls -- so closing
+    # it here closes it once, where masking a read closes one of N. Keyed on
+    # ``_roster_mask`` via ``_name_would_be_masked``, so this rule and the
+    # roster's cannot drift apart.
+    #
+    # BOUNDARY, stated because it is real and narrower than "the hazard is
+    # closed": this covers only names created THROUGH this route, from now on. A
+    # crew already present in `config.json`, one written there by hand, and one
+    # added by ``_do_agents_sync`` from a discovered spec are NOT retroactively
+    # renamed. That is the reason the owner keeps reading a stored name verbatim:
+    # renaming is the remediation, and a name must be legible to be renamed.
+    #
+    # The name is deliberately NOT echoed back. Reflecting a credential-shaped
+    # string into a response body -- and from there into the request log -- is the
+    # disclosure this rule exists to prevent.
+    if _name_would_be_masked(name):
+        return web.json_response(
+            {
+                "error": (
+                    "Agent name looks like a credential or a URL carrying one. "
+                    "Pick a name that identifies the crew instead."
+                ),
+                "code": "credential_shaped_name",
+            },
+            status=400,
+        )
     # The template pointer must be EXPLICIT. It used to default to "kirocrew",
     # which made every crew created without naming a template an alias for the
     # DEFAULT agent: dispatch flattens an alias to its `kiro_agent`
@@ -3123,6 +3514,26 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
         )
+    # WRITE-SIDE HALF of the roster mask, and it runs FIRST -- immediately after
+    # the body-object check, before any validation. `GET /api/agents` replaces a
+    # value it cannot show verbatim with `_SENSITIVE_MASK` (`_roster_mask`), and
+    # a client that echoes the record back -- the agents page sends every field
+    # on every save, so that `""` can clear a pin -- would otherwise persist the
+    # mask over the stored original. A field carrying the mask therefore means
+    # "unchanged" and is dropped here, which is the remedy
+    # `_masked_config_dict`'s docstring prescribes verbatim: "MUST treat
+    # `_SENSITIVE_MASK` as 'unchanged' and keep the stored value".
+    #
+    # Ordering is load-bearing, not cosmetic: `model` and `reasoning_effort` are
+    # validated below and would REJECT an echoed mask with a 400, failing an edit
+    # to some unrelated field. Dropping the masked entries before those checks
+    # means a mask can never be validated as if it were content.
+    #
+    # It can run this early only because the predicate matches a FIXED sentinel
+    # and needs no access to the stored record -- a rule that recognised the view
+    # by recomputing the redaction of `agent` would have to wait for the config
+    # load inside the lock, and would therefore sit after these validations.
+    body = {key: val for key, val in body.items() if not _carries_mask(val)}
     if "model" in body:
         pending_model = normalize_agent_model(body["model"])
     # Rejected before the config is even loaded: the check is pure, and every
@@ -3134,6 +3545,15 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": effort_reason, "code": "invalid_reasoning_effort"}, status=400
             )
+    # Same placement rule as reasoning_effort: validated up here, before the
+    # lock and before any field or avatar-file mutation. A body that pairs a
+    # bad `starred` with an avatar promotion would otherwise move the staged
+    # picture and then 400 without rolling it back. Strictly a bool: a string
+    # "false" from a hand-typed request must not read as truthy and star the crew.
+    if "starred" in body and not isinstance(body["starred"], bool):
+        return web.json_response(
+            {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
+        )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:
@@ -3269,7 +3689,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                         },
                         status=400,
                     )
-                _av = {"kind": "image", "v": stamp, "file": _avatar_pin}
+                # Rebuilt, not mutated, so the record carries exactly the
+                # committed stamp and pin. The per-state keys are validated
+                # input rather than commit output, so they have to be carried
+                # across explicitly -- otherwise saving a sound on a crew that
+                # wears a picture reports success and stores nothing.
+                _av = {
+                    "kind": "image",
+                    "v": stamp,
+                    "file": _avatar_pin,
+                    **{k: v for k, v in _av.items() if k in ("expressions", "sounds")},
+                }
             elif agent.avatar.get("kind") == "image":
                 # Leaving the picture tier: the stored file must not linger
                 # as a silently-retrievable orphan — but only once the config
@@ -3280,6 +3710,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "source" in body:
             agent.source = body["source"]
             changed.append("source")
+        if "starred" in body:
+            # Already validated above, before any mutation.
+            agent.starred = body["starred"]
+            changed.append("starred")
         effort_inputs_after = _effort_inputs(agent)
         # The config write is the transaction's point of no return: on
         # failure the orphaned install is removed; on success the commit

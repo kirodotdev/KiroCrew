@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 #: again) rather than silently authorizing the wrong service.
 SERVICE_POLLY = "polly"
 SERVICE_TRANSCRIBE = "transcribe"
-#: AWS Control's paid services (spec: docs/system-specs/features/aws-control.md).
+#: AWS Control's paid services (spec: docs/system-specs/modules/aws-control.md).
 #: Declared ahead of the first billable call — S3 backs the cloud drive (P1),
 #: Cost Explorer backs the bill page (~$0.01 per query) — so the consent cards
 #: can be confirmed per account before either capability ships.
@@ -355,6 +355,45 @@ def revoke(service: str) -> bool:
         _write_all(data)
     audit_decision(service, outcome="revoked")
     return True
+
+
+def revoke_for_profile(profile: str) -> list[str]:
+    """Drop every grant whose recorded profile is ``profile``; returns the services.
+
+    Grants are keyed by service, not by profile, so removing a profile from
+    the portal's registry has to scan the gated services for records naming
+    it. Leaving such a record behind would let a later re-registration of the
+    same name inherit an authorization the operator gave to a different key.
+
+    The match and the delete happen under ONE lock: a grant re-recorded for a
+    different profile between a read and an unconditional ``revoke`` would be
+    the fresh grant, not the stale one, and deleting it is the silent
+    confirmed-but-refuses state the lock exists to prevent.
+
+    Unlike every other reader here this one does NOT fail soft: an unreadable
+    store would read as "no grant names this profile", the sweep would write
+    nothing, and the caller would go on to forget the profile while its grant
+    stays on disk for the next registration under that name to inherit. A
+    missing store is the ordinary no-grants case; anything else raises so the
+    caller refuses before it mutates.
+    """
+    revoked: list[str] = []
+    with _ConsentLock():
+        try:
+            raw = json.loads(aws_consent_path().read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        data: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        for service in sorted(GATED_SERVICES):
+            row = data.get(service)
+            if isinstance(row, dict) and str(row.get("profile", "")) == profile:
+                del data[service]
+                revoked.append(service)
+        if revoked:
+            _write_all(data)
+    for service in revoked:
+        audit_decision(service, outcome="revoked")
+    return revoked
 
 
 def is_granted(service: str, *, profile: str, region: str) -> tuple[bool, str]:

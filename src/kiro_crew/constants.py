@@ -46,12 +46,16 @@ DATA_WARNING = (
 
 # Outer wall-clock cap on a single ``_run_chat`` invocation (any dispatch site:
 # primary user turn, queue-drain, cron injection, subagent injection, Slack first
-# turn). Sized to match the inner ACP ``_DEFAULT_PROMPT_TIMEOUT`` (7200s) in
+# turn). Sized to match the inner ACP ``_DEFAULT_PROMPT_TIMEOUT`` (14400s) in
 # ``acp/client.py`` so the dashboard layer doesn't bound below the transport.
+# Four hours is the longest single turn the shipped budgets can legitimately
+# produce (the task runner's 90-minute test command plus a fix and a re-run, or a
+# blocking subagent wave at its 2h wait cap plus synthesis); work that outlives
+# it belongs to the loop mechanisms, which end the turn between cycles.
 # Wedged-session detection is handled by ``_STALE_TURN_TIMEOUT`` (90s, also in
 # ``acp/client.py``); this cap is the upper safety ceiling for genuinely runaway
 # work, not a "this turn took too long" guard.
-CHAT_TURN_TIMEOUT = 7200.0
+CHAT_TURN_TIMEOUT = 14400.0
 
 # How long the dashboard chat path parks a turn waiting for a human to answer a
 # tool-approval prompt, when config is unavailable (tests, early bootstrap).
@@ -70,6 +74,29 @@ TOOL_APPROVAL_TIMEOUT = 600.0
 # the operation is identical, so a shorter manual budget only reports
 # "timed out" on work that is still running and subsequently succeeds.
 COMPACT_WAIT_TIMEOUT_SECS = 300.0
+
+# Wall-clock ceiling on one subagent execution: the default of
+# ``agent.subagent_timeout_secs`` and the fallback every consumer falls back to
+# when config is unavailable or the key is 0. Owned here rather than in
+# ``config/sections.py`` because three unrelated layers need the same number
+# without importing the config tree: the manager's ``asyncio.wait_for``, the
+# reaper's force-kill deadline, and the MCP gateway's hard-wedge ceiling, which
+# has to sit ABOVE it or a blocking ``spawn_sub_agents`` awaiting a legitimately
+# long subagent is recycled out from under its caller. Sized for work a
+# subagent is actually given (a full test suite, a large refactor, a wide
+# investigation); the reaper still force-kills at the deadline.
+SUBAGENT_TIMEOUT_SECS = 10800
+
+# Load-time clamp for ``agent.subagent_timeout_secs``. Same reason as the other
+# resource knobs in ``_SECURITY_BOUNDED_FIELDS``: the value governs how long one
+# subagent may hold a concurrency slot, so an inflated on-disk value (a direct
+# ``config.json`` edit by any same-uid process, including a prompt-injected
+# agent) is a denial-of-service vector rather than a preference. The max matches
+# ``CHAT_TURN_TIMEOUT_MAX``, since a subagent outliving the longest legal chat
+# turn cannot be awaited by anything; the min keeps the backstop from being set
+# so low it cuts ordinary work.
+SUBAGENT_TIMEOUT_MIN = 60
+SUBAGENT_TIMEOUT_MAX = 86400
 
 
 # ── Canonical "[OPTIONS: a | b | c]" trailer parsers ────────────────────────
@@ -278,6 +305,66 @@ def strip_control_comments(text: str) -> str:
     return text[: m.start()]
 
 
+#: Prefix closures of the marker grammars, for
+#: :func:`split_trailing_protocol_suffix`'s unfinished-marker probe: a tail is
+#: a STILL-STREAMING marker only when every byte it holds so far could extend
+#: into a complete marker. ``[OPTIONS`` must be followed by ``:`` and then
+#: :data:`OPTIONS_RE_TRAILER`'s body (DOTALL; ``[`` admitted only when not
+#: opening a nested ``[OPTIONS:``). ``[STEERING`` follows the steer-ack
+#: grammar (``messaging/driver.py``): whitespace gap, literal ``steer-``, a
+#: nonempty hex/dash id, then an optional ``:`` summary -- spelled as nested
+#: optionals so every cut point of the literal run is admitted, while a tail
+#: that diverges from the grammar (``[OPTIONSDOC``, ``[STEERING
+#: acknowledgment``, ``steer-:``) is prose and stays visible. Case-sensitive
+#: on purpose: these probe the exact sentinels the detach walk locates.
+_OPTIONS_TAIL_PREFIX_RE = re.compile(
+    r"\[OPTIONS(?::(?:[^[]|\[(?!OPTIONS:))*)?\Z",
+    re.DOTALL,
+)
+_STEERING_TAIL_PREFIX_RE = re.compile(
+    r"\[STEERING(?:\s+(?:s(?:t(?:e(?:e(?:r(?:-(?:[0-9a-f-]+(?:\s*(?::\s*.*)?)?)?)?)?)?)?)?)?)?\Z",
+    re.DOTALL,
+)
+_MARKER_SENTINELS = (
+    ("[STEERING", _STEERING_TAIL_PREFIX_RE),
+    ("[OPTIONS", _OPTIONS_TAIL_PREFIX_RE),
+)
+
+
+def _rightmost_unfinished_marker(text: str) -> int:
+    """Start of the rightmost tail that is a strict prefix of a marker grammar.
+
+    Occurrences are probed RIGHTMOST-FIRST so label bytes that merely contain
+    a sentinel (a bare ``[OPTIONS`` without its colon is legal label content)
+    cannot shadow the genuine fragment start to their left. Each probe is
+    cheap: the ASCII ``]`` gate is one precomputed ``rfind`` comparison, and
+    the prefix regexes are anchored at the occurrence and die on the first
+    diverging byte, so an adversarial buffer repeating failing sentinels
+    walks linearly. Returns ``-1`` when no admissible occurrence exists.
+    """
+    last_close = text.rfind("]")
+    cursors = []
+    for sentinel, prefix_re in _MARKER_SENTINELS:
+        pos = text.rfind(sentinel)
+        if pos != -1:
+            cursors.append((pos, sentinel, prefix_re))
+    while cursors:
+        cursors.sort()
+        pos, sentinel, prefix_re = cursors.pop()  # rightmost overall
+        if pos <= last_close:
+            # ASCII-only unfinished gate (see the closer comment in
+            # ``split_trailing_protocol_suffix``): a ``]`` at/after this
+            # occurrence means the tail is not still-streaming -- and every
+            # remaining occurrence sits further left of that closer too.
+            break
+        if prefix_re.match(text, pos) is not None:
+            return pos
+        nxt = text.rfind(sentinel, 0, pos)
+        if nxt != -1:
+            cursors.append((nxt, sentinel, prefix_re))
+    return -1
+
+
 def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     """Detach protocol trailers before a renderer length-splits ``text``.
 
@@ -287,20 +374,26 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     marker leaves the complete block eligible for a mid-token chunk split.
     Return the visible prefix plus the entire protocol suffix so renderers can
     keep both markers together on the surviving tail.
+
+    An occurrence is judged against the marker GRAMMAR, never by bare
+    substring location: a mid-prose mention of ``[OPTIONS`` or ``[STEERING``
+    whose tail cannot extend into a complete marker stays visible, instead of
+    being detached and silently dropped from the rendered cut.
     """
     suffix_start = len(text)
-    idx = max(text.rfind("[STEERING"), text.rfind("[OPTIONS"))
-    # DELIBERATELY ASCII-ONLY -- do not widen this to ``MARKER_CLOSERS``.
-    # This asks "is the tail an UNFINISHED marker?", and mere PRESENCE of a
-    # closer is not completeness: a closer sitting inside a still-streaming
-    # label (``[OPTIONS: Use 】 the bracket``) would read as finished, the
-    # fragment would not be detached, and a length rotation could split the
-    # marker so raw fragments render and the pills are lost. Completeness is
-    # decided by ``OPTIONS_RE_TRAILER`` on the next line, which DOES accept the
-    # lookalikes -- so a complete lookalike-closed block is still pulled into
-    # the suffix. Widening here buys nothing (both paths already yield the same
-    # split for a complete tail) and reintroduces that bug.
-    if idx != -1 and "]" not in text[idx:]:
+    idx = _rightmost_unfinished_marker(text)
+    # DELIBERATELY ASCII-ONLY -- do not widen the helper's gate to
+    # ``MARKER_CLOSERS``. It asks "is the tail an UNFINISHED marker?", and
+    # mere PRESENCE of a closer is not completeness: a closer sitting inside
+    # a still-streaming label (``[OPTIONS: Use 】 the bracket``) would read as
+    # finished, the fragment would not be detached, and a length rotation
+    # could split the marker so raw fragments render and the pills are lost.
+    # Completeness is decided by ``OPTIONS_RE_TRAILER`` on the next line,
+    # which DOES accept the lookalikes -- so a complete lookalike-closed block
+    # is still pulled into the suffix. Widening there buys nothing (both paths
+    # already yield the same split for a complete tail) and reintroduces that
+    # bug.
+    if idx != -1:
         suffix_start = idx
 
     options = OPTIONS_RE_TRAILER.search(text[:suffix_start])

@@ -7,13 +7,9 @@ import { earlierAffordanceInView, EARLIER_ADMISSION_LEAD_PX } from '../pages/cha
  * THE admission rule for automatic older-history fetches: the control that offers
  * history must be on the reader's screen.
  *
- * Adopted after four separate automatic triggers were each found to page history
- * on something that was not the reader asking, all reproduced on a real phone:
+ * Adopted after several automatic triggers were each found to page history on
+ * something that was not the reader asking, all reproduced on a real phone:
  *
- *   - the idle prefetch, whose quiet timer was refreshed by a landing's OWN
- *     compensation write, so it ran land → quiet → land at a steady beat;
- *   - the same prefetch's authorization, a one-way latch that one touch of the
- *     transcript opened for the rest of the session;
  *   - the top sentinel's geometry branch, firing on a transient produced by the
  *     per-keystroke re-render the composer's ChatPage-state text causes;
  *   - the window-start crossing, walked down across its lead by the soft keyboard
@@ -91,15 +87,18 @@ describe('every automatic older trigger is gated on it', () => {
     const i = SRC.indexOf('const handleTopReached = useCallback(')
     const body = SRC.slice(i, SRC.indexOf('}, [dispatch, earlierBarInView])', i))
     expect(body).toMatch(/if \(!earlierBarInView\(\)\) return/)
-    // Before the geometry test, so a transient cannot reach it at all.
-    expect(body.indexOf('earlierBarInView()')).toBeLessThan(body.indexOf('shouldAutoFillOlder'))
+    // Before the geometry test, so a transient cannot reach it at all. Anchored on
+    // the CALL, not the bare name: the handler's comments discuss the predicate by
+    // name, and a bare-name indexOf compares prose order instead of code order.
+    expect(body.indexOf('earlierBarInView()')).toBeLessThan(body.indexOf('!shouldAutoFillOlder({'))
   })
 
-  it('the walk poll and the idle prefetch both check it', () => {
-    // Two separate interval bodies; both read the mirrored ref so the interval is
-    // not re-armed per render (which would reset their own quiet clocks).
+  it('the walk poll checks it too', () => {
+    // The poll is an interval body and reads the mirrored ref rather than the
+    // callback, so the interval is not re-armed per render (which would reset its
+    // own quiet clock).
     const gated = SRC.split('if (!earlierBarInViewRef.current()) return').length - 1
-    expect(gated).toBe(2)
+    expect(gated).toBe(1)
   })
 
   it('the manual click path is NOT gated', () => {

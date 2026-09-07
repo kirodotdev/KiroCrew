@@ -95,6 +95,10 @@ class TestCollectSystemMetricsCpuFallback:
             patch.object(hs, "_system_cpu_pct_from_proc_stat", return_value=None),
             patch.object(hs.subprocess, "check_output", return_value=b"%CPU\n10.0\n5.0\n"),
             patch.object(hs.os, "cpu_count", return_value=1),
+            # The local-IP block opens a real UDP socket to 8.8.8.8:80; refusing
+            # the connect exercises the existing except-degrades-to-127.0.0.1
+            # path instead of reaching out over the network.
+            patch.object(hs, "_local_ip", return_value="127.0.0.1"),
         ):
             data = hs._collect_system_metrics()
         assert data["cpu_pct"] == 15.0
@@ -107,6 +111,7 @@ class TestCollectSystemMetricsCpuFallback:
         with (
             patch.object(hs.sys, "platform", "win32"),
             patch.object(hs.platform_compat, "system_cpu_percent", return_value=42.0),
+            patch.object(hs, "_local_ip", return_value="127.0.0.1"),
         ):
             data = hs._collect_system_metrics()
         assert data["cpu_pct"] == 42.0
@@ -119,6 +124,7 @@ class TestCollectSystemMetricsCpuFallback:
         with (
             patch.object(hs.sys, "platform", "win32"),
             patch.object(hs.platform_compat, "system_cpu_percent", return_value=None),
+            patch.object(hs, "_local_ip", return_value="127.0.0.1"),
         ):
             data = hs._collect_system_metrics()
         assert data["cpu_pct"] == 17.0

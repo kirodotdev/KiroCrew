@@ -108,9 +108,16 @@ def list_open_prs(owner: str, repo: str, *, host: str = "github.com",
     the same parsed-hostname allowlist; a non-github.com (GitHub Enterprise)
     host is routed to ITS instance's API via ``--hostname`` (``gh`` must be
     authenticated for it: ``gh auth login --hostname <host>``). Returns
-    ``[{url, number, head_sha, title, author, updated_at, draft}]`` in GitHub's
-    order. Raises ``RuntimeError`` (with the stderr tail) if `gh` is missing,
-    unauthenticated, times out, or the repo can't be read.
+    ``[{url, number, head_sha, title, author, updated_at, draft, labels}]`` in
+    GitHub's order. Raises ``RuntimeError`` (with the stderr tail) if `gh` is
+    missing, unauthenticated, times out, or the repo can't be read.
+
+    ``labels`` is the PR's label NAMES. It costs no extra request: the REST list
+    payload this already asks for carries ``.labels`` inline, so the names are
+    projected out of the response in hand rather than fetched per PR or read from
+    a separate repo-labels endpoint. Order is GitHub's; a PR with none yields
+    ``[]``, never a missing key, so a caller can narrow on it without a
+    presence check.
 
     The ``gh`` binary is resolved through ``discovery.gh_bin()`` — the same
     validated resolution the dashboard's PR panel uses — rather than trusting a
@@ -122,9 +129,14 @@ def list_open_prs(owner: str, repo: str, *, host: str = "github.com",
         raise RuntimeError(str(e)) from e
     argv = [
         gh, "api", path, "--paginate",
+        # `.labels` rides along in the list payload, so pulling the names here is
+        # free. `// []` keeps the projection total: a PR with no labels must emit
+        # an empty list rather than `null`, or the JSONL row below would carry a
+        # non-list and every consumer would need its own guard.
         "--jq", ".[] | {url: .html_url, number: .number, "
                 "head_sha: .head.sha, title: .title, author: .user.login, "
-                "updated_at: .updated_at, draft: .draft}",
+                "updated_at: .updated_at, draft: .draft, "
+                "labels: [(.labels // [])[] | .name]}",
     ]
     h = adapters.canonical_host(host)
     # ALWAYS pin the hostname — including github.com. Omitting the flag lets
@@ -163,6 +175,15 @@ def list_open_prs(owner: str, repo: str, *, host: str = "github.com",
             "author": obj.get("author") or "",
             "updated_at": obj.get("updated_at") or "",
             "draft": bool(obj.get("draft")),
+            # Coerced like every field above rather than trusted: a name is only
+            # useful as a non-empty string, and a non-list here (an older `gh`
+            # whose jq dropped the projection, a hand-edited response) would
+            # otherwise reach the client as the wrong type. A bad value narrows
+            # to `[]`, which filters nothing — never to a truthy value that would
+            # silently hide this PR from a labelled view.
+            "labels": [s for s in (
+                obj.get("labels") if isinstance(obj.get("labels"), list) else []
+            ) if isinstance(s, str) and s],
         })
     # Non-silent: gh returned 0 but produced non-empty, unparseable output (e.g. a
     # gh build that pretty-prints jq). Don't masquerade that as "no open PRs".

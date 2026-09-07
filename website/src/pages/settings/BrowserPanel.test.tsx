@@ -198,11 +198,48 @@ describe('BrowserPanel', () => {
 
   it('confirms the copy only after the clipboard write resolves', async () => {
     // The label is a promise that the paste is ready, so it flips AFTER the await
-    // rather than optimistically -- the Clipboard API is unavailable on a
-    // plain-HTTP remote gateway, which is a plausible way to be reading this panel.
-    await renderPanel(state({ node_ok: false, node_version: null }))
-    fireEvent.click(screen.getByRole('button', { name: /Copy command/i }))
-    await waitFor(() => expect(screen.getByRole('button', { name: /Copied/i })).toBeTruthy())
+    // rather than optimistically -- and only when the write actually SUCCEEDED.
+    // jsdom's execCommand fallback reports nothing, so a success has to be
+    // supplied here; without it the panel must not claim "Copied".
+    const orig = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    })
+    try {
+      await renderPanel(state({ node_ok: false, node_version: null }))
+      fireEvent.click(screen.getByRole('button', { name: /Copy command/i }))
+      await waitFor(() => expect(screen.getByRole('button', { name: /Copied/i })).toBeTruthy())
+      expect(screen.queryByRole('alert')).toBeNull()
+    } finally {
+      if (orig) Object.defineProperty(navigator, 'clipboard', orig)
+      else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
+  })
+
+  it('reports a failed copy instead of painting "Copied"', async () => {
+    // Force BOTH copy paths to fail: the async Clipboard API rejects (denied
+    // permission, or a plain-HTTP remote gateway where it is unavailable) and the
+    // legacy execCommand fallback reports false. Neither is left to the test
+    // environment's defaults, which paint a success here.
+    const origClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const origExec = document.execCommand
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      configurable: true,
+    })
+    document.execCommand = vi.fn().mockReturnValue(false)
+    try {
+      await renderPanel(state({ node_ok: false, node_version: null }))
+      fireEvent.click(screen.getByRole('button', { name: /Copy command/i }))
+      await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
+      expect(screen.queryByRole('button', { name: /Copied/i })).toBeNull()
+      expect(screen.getByRole('button', { name: /Copy command/i })).toBeTruthy()
+    } finally {
+      document.execCommand = origExec
+      if (origClipboard) Object.defineProperty(navigator, 'clipboard', origClipboard)
+      else delete (navigator as unknown as { clipboard?: unknown }).clipboard
+    }
   })
 
   it('does not push the installer at someone whose Node is fine', async () => {

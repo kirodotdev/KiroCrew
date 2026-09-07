@@ -25,7 +25,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _STATE = _ROOT / "src/kiro_crew/dashboard/state.py"
 _CARD = _ROOT / "website/src/pages/chat/RecoveryCard.tsx"
 _EN = _ROOT / "website/src/i18n/locales/en.json"
-_SECURITY = _ROOT / "src/kiro_crew/security.py"
+_DENIED_RULES = _ROOT / "src/kiro_crew/security/denied_rules.py"
 _DENY_UTIL = _ROOT / "website/src/utils/denyReason.ts"
 
 #: ``NAME = "[Something — automatic recovery]"`` at module level in state.py.
@@ -152,9 +152,9 @@ def test_deny_marker_has_exactly_one_frontend_copy_and_it_matches_python() -> No
     matching, so the failure would surface as a card that still renders beside a
     suppression that silently stopped working.
     """
-    py = _SECURITY.read_text(encoding="utf-8")
+    py = _DENIED_RULES.read_text(encoding="utf-8")
     decl = re.search(r'^DENY_REASON_PREFIX = "(?P<value>[^"]+)"', py, re.MULTILINE)
-    assert decl, "security.py no longer declares DENY_REASON_PREFIX -- regex drift"
+    assert decl, "denied_rules.py no longer declares DENY_REASON_PREFIX -- regex drift"
     # The trailing space is a joiner, not part of the marker the frontend matches.
     marker = decl.group("value").rstrip()
 

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
+import os
 import textwrap
 import time
 from pathlib import Path
@@ -263,11 +265,25 @@ def test_no_coroutine_in_the_warm_module_touches_the_filesystem_directly():
         "mintable_providers",
         "_audited_mintable_providers",
         "_warm_spec_plan",
+        "_private_warm_spec_work_dir",
+        "_read_warm_spec_body",
         "_warm_spec_is_foreign",
+        "_warm_work_dir",
+        "_warm_generations_dir",
+        "_write_warm_generation_owner",
+        "_read_warm_generation_owner",
+        "_is_plain_warm_generation_dir",
+        "_remove_warm_generation_dir",
+        "_create_warm_generation_dir",
+        "_bind_warm_generation",
+        "_recorded_runtime_is_dead",
+        "_spawn_left_no_process",
+        "_release_runtime_generation",
+        "_scavenge_warm_generation_dirs",
         "_unowned_plan_specs",
         "_write_warm_mint_specs",
         "_remove_warm_mint_specs",
-        "_warm_work_dir",
+        "scavenge_warm_mint_artifacts",
         "_credential_bearing_slugs",
     }
 
@@ -398,6 +414,435 @@ def _agents_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return agents
 
 
+@pytest.fixture
+def _private_warm_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Keep generation roots out of both the checkout and the operator's data home."""
+    home = tmp_path / "crew-home"
+    monkeypatch.setattr(warm, "data_home", lambda: home)
+    return home
+
+
+def test_generation_specs_live_only_in_the_private_project_scope(
+    _agents_dir: Path, _private_warm_home: Path
+):
+    """The warm helper must never publish its internal modes into the user's agent list."""
+    work_dir = warm._create_warm_generation_dir()
+    private_agents = warm._warm_generation_agents_dir(work_dir)
+
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), private_agents)
+
+    assert not list(_agents_dir.glob(f"{warm._WARM_AGENT_PREFIX}*.json"))
+    assert (private_agents / f"{warm._WARM_BASE_AGENT}.json").is_file()
+    assert work_dir.parent == warm._warm_generations_dir()
+
+
+def test_private_generation_specs_are_not_offered_by_agent_discovery(
+    _agents_dir: Path,
+    _private_warm_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The picker refuses the sensitive run tree even when it is passed as a project."""
+    from kiro_crew import agent_discovery
+
+    work_dir = warm._create_warm_generation_dir()
+    private_agents = warm._warm_generation_agents_dir(work_dir)
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), private_agents)
+    monkeypatch.setattr(
+        agent_discovery,
+        "is_sensitive_path",
+        lambda value: str(value).startswith(str(_private_warm_home / "run")),
+    )
+    agent_discovery.clear_list_agents_cache()
+
+    names = {
+        item.name
+        for item in agent_discovery.list_agents(
+            agents_dir=_agents_dir,
+            project_dir=work_dir,
+        )
+    }
+
+    assert not names & {warm._WARM_BASE_AGENT, warm._WARM_ALL_AGENT}
+
+
+@pytest.mark.asyncio
+async def test_spawn_and_session_mode_both_resolve_from_one_private_generation(
+    _agents_dir: Path,
+    _private_warm_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The process starts on the private base mode and session/new switches to its all mode."""
+    built: list[dict[str, Any]] = []
+    activated: list[str] = []
+
+    class _Handle:
+        def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
+            return []
+
+        async def drain_init(self, **kwargs: Any) -> None:
+            return None
+
+        async def destroy(self) -> None:
+            return None
+
+    class _Spawnable:
+        pid = 4242
+
+        def __init__(self, **kwargs: Any) -> None:
+            built.append(kwargs)
+
+        async def spawn(self) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return True
+
+        async def create_session(self, **kwargs: Any) -> _Handle:
+            activated.append(str(kwargs.get("agent")))
+            return _Handle()
+
+    monkeypatch.setattr(warm, "_acp_runtime_factory", lambda: _Spawnable)
+    monkeypatch.setattr(warm.platform_compat, "process_start_time", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(warm, "_MINT_GRANT_POLL_SECONDS", 3600)
+
+    plan = await warm._warm_mint._ensure_locked([_provider("linear")])
+    assert plan is not None
+    activation, _requests = await warm._warm_mint._activate_locked(
+        plan.all_agent,
+        frozenset(),
+    )
+
+    work_dir = Path(built[0]["work_dir"])
+    assert built[0]["agent"] == warm._WARM_BASE_AGENT
+    assert (work_dir / ".kiro" / "agents" / f"{warm._WARM_BASE_AGENT}.json").is_file()
+    assert (work_dir / ".kiro" / "agents" / f"{warm._WARM_ALL_AGENT}.json").is_file()
+    assert activated == [warm._WARM_ALL_AGENT]
+    assert activation > 0
+
+
+@pytest.mark.asyncio
+async def test_generation_directory_is_removed_only_after_a_confirmed_kill(
+    _private_warm_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _Process:
+        pid = 5151
+
+        def __init__(self, failures: int) -> None:
+            self.failures = failures
+            self.kill_attempts = 0
+
+        async def kill(self) -> None:
+            self.kill_attempts += 1
+            if self.failures:
+                self.failures -= 1
+                raise TimeoutError("still alive")
+
+    monkeypatch.setattr(warm.platform_compat, "process_start_time", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(warm, "_WARM_KILL_TIMEOUT_SECONDS", 1)
+    work_dir = warm._create_warm_generation_dir()
+    runtime = _Process(failures=1)
+
+    def _liveness(pid: int) -> str:
+        """Report the runtime dead only once its kill has actually taken.
+
+        Stated rather than left to the host: releasing the tree requires positive proof the
+        runtime is gone, and an arbitrary fake PID can collide with a real process on the
+        machine running the suite -- which would otherwise make this test's outcome depend
+        on who happens to own PID 5151.
+        """
+        if pid != runtime.pid:
+            return warm.platform_compat.PID_ALIVE
+        return (
+            warm.platform_compat.PID_DEAD
+            if runtime.kill_attempts > 1
+            else warm.platform_compat.PID_ALIVE
+        )
+
+    monkeypatch.setattr(warm.platform_compat, "pid_liveness", _liveness)
+    warm._bind_warm_generation(runtime, work_dir)
+
+    assert await warm._warm_mint._kill_generation(3, runtime) is False
+    assert work_dir.is_dir(), "a process that may still live still owns its specs"
+
+    assert await warm._warm_mint._kill_generation(3, runtime) is True
+    assert not work_dir.exists(), "a confirmed kill releases the generation tree"
+
+
+def test_generation_creation_refuses_a_dir_whose_acl_tighten_failed(
+    _private_warm_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A silently loose generation dir must be refused, not handed agent specs.
+
+    ``make_owner_only_dir`` documents its tighten step as best-effort, so on a filesystem
+    where the ACL write fails the directory exists but is not provably owner-only --
+    contradicting the private-scope guarantee this module exists to provide. Creation must
+    fail loud (and clean up) rather than return a loose directory that will be handed
+    injectable agent specs.
+    """
+
+    def _failing_restrict(path):  # noqa: ANN001 — mirrors platform_compat's signature
+        raise PermissionError(f"ACL write refused for {path}")
+
+    monkeypatch.setattr(warm.platform_compat, "restrict_dir_to_owner", _failing_restrict)
+
+    with pytest.raises(PermissionError):
+        warm._create_warm_generation_dir()
+
+    generations = warm._warm_generations_dir()
+    leftovers = [p for p in generations.iterdir()] if generations.is_dir() else []
+    assert leftovers == [], "a refused generation dir must not survive on disk"
+
+
+def test_a_provisional_marker_does_not_prove_the_runtime_dead(
+    _private_warm_home: Path,
+):
+    """A marker still carrying pid 0 keeps the tree: the bind rewrite may have failed.
+
+    ``_create_warm_generation_dir`` writes a provisional owner marker with no runtime
+    identity, and ``_bind_warm_generation`` rewrites it after spawn. If that rewrite fails,
+    the marker says ``runtime_pid: 0`` while the spawned process lives -- so reading pid 0
+    as proof of death would delete a surviving runtime's cwd and private specs. Unproved
+    must keep, exactly as the scavenger's tri-state treats the same marker.
+    """
+
+    class _Process:
+        pid = 7373
+
+    work_dir = warm._create_warm_generation_dir()
+    runtime = _Process()
+    # Attach the directory WITHOUT _bind_warm_generation: this is the failed-rewrite
+    # state, where the provisional pid-0 marker from _create_warm_generation_dir is
+    # all that exists on disk.
+    setattr(runtime, warm._WARM_RUNTIME_DIR_ATTR, str(work_dir))
+
+    assert warm._release_runtime_generation(runtime) is False
+    assert work_dir.is_dir(), "a provisional marker (pid 0) must keep the tree"
+
+
+def test_a_never_bound_provisional_generation_is_released(_private_warm_home: Path):
+    """A spawn that never produced a process leaves nothing that could read its tree.
+
+    ``_bind_warm_generation`` publishes the runtime identity only after ``spawn()`` returns,
+    so a spawn refused outright leaves the provisional ``runtime_pid: 0`` marker on a runtime
+    that never reached a PID. Both the abandon path's ``_recorded_runtime_is_dead`` and the
+    scavenger's ``_process_identity_live`` read that marker as UNPROVED and keep the tree, so
+    nothing ever released it and every failed spawn added another directory.
+
+    The sibling test above pins the case this must NOT widen into: the same provisional marker
+    on a runtime that DOES carry a PID still keeps its tree, because that child may be alive.
+    """
+
+    class _NeverSpawned:
+        pid = 0
+
+    work_dir = warm._create_warm_generation_dir()
+    runtime = _NeverSpawned()
+    setattr(runtime, warm._WARM_RUNTIME_DIR_ATTR, str(work_dir))
+
+    assert warm._release_runtime_generation(runtime) is True
+    assert not work_dir.exists(), "a spawn that never ran must not leave its tree behind"
+    assert not hasattr(runtime, warm._WARM_RUNTIME_DIR_ATTR)
+
+
+def test_a_bound_generation_is_untouched_until_its_identity_proves_dead(
+    _private_warm_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A BOUND marker keeps the identity proof: pid 0 is the only accepted stand-in."""
+
+    class _Process:
+        pid = 4242
+
+    monkeypatch.setattr(warm.platform_compat, "process_start_time", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(warm, "_process_identity_live", lambda pid, started: True)
+    work_dir = warm._create_warm_generation_dir()
+    runtime = _Process()
+    warm._bind_warm_generation(runtime, work_dir)
+
+    assert warm._spawn_left_no_process(runtime, work_dir) is False
+    assert warm._release_runtime_generation(runtime) is False
+    assert work_dir.is_dir(), "a live bound runtime's tree must survive"
+
+
+def test_startup_scavenging_deletes_only_proven_dead_owned_generations(
+    _private_warm_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    dead = warm._create_warm_generation_dir()
+    live = warm._create_warm_generation_dir()
+    unproved = warm._warm_generations_dir() / "generation-unproved"
+    unproved.mkdir()
+
+    class _Process:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+    monkeypatch.setattr(warm.platform_compat, "process_start_time", lambda pid: f"start-{pid}")
+    warm._bind_warm_generation(_Process(101), dead)
+    warm._bind_warm_generation(_Process(202), live)
+    monkeypatch.setattr(
+        warm,
+        "_process_identity_live",
+        lambda pid, started: {101: False, 202: True}.get(pid, False),
+    )
+
+    assert warm._scavenge_warm_generation_dirs() == 1
+    assert not dead.exists()
+    assert live.is_dir()
+    assert unproved.is_dir(), "absence of an ownership marker must fail closed"
+
+
+def test_recorded_gateway_identity_reads_back_as_live(_private_warm_home: Path):
+    """The gateway token the writer stores must round-trip through the reader.
+
+    Writer and reader have to agree on ONE token format, and two different
+    ``platform_compat`` helpers do not: ``own_process_start_time()`` answers
+    ``"{ticks}:{boot_uuid}"`` on Linux and a ``proc_pidinfo`` microtime on macOS,
+    while ``process_start_time(pid)`` -- what the reader compares against --
+    answers bare ticks and a 1s ``ps`` string respectively. Storing one and
+    comparing the other classifies this very much alive gateway as dead on both
+    platforms, and only coincidentally agrees on Windows, where both helpers
+    return the same creation ``FILETIME``.
+    """
+    owner = warm._warm_generation_owner()
+
+    assert owner["gateway_pid"] == os.getpid()
+    assert owner["gateway_started"], "a readable host must record a gateway token"
+    assert warm._process_identity_live(owner["gateway_pid"], owner["gateway_started"]) is True
+
+
+def test_scavenging_keeps_a_generation_whose_gateway_is_still_alive(
+    _private_warm_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A live gateway must veto scavenging even once its runtime has exited.
+
+    This is the consequence of the format mismatch rather than a restatement of
+    it: removal needs BOTH identities proven dead, so a gateway that cannot
+    prove its own liveness silently forfeits its half of that guard, and the
+    directory it is still using is deleted underneath it as soon as its
+    short-lived runtime goes away. Neither identity is stubbed here -- the
+    existing scavenging test replaces ``_process_identity_live`` outright, which
+    is why it cannot observe a wrong token reaching that function.
+    """
+    real_start_time = warm.platform_compat.process_start_time
+    dead_pid = 424242
+
+    monkeypatch.setattr(
+        warm.platform_compat,
+        "process_start_time",
+        lambda pid: "runtime-token" if pid == dead_pid else real_start_time(pid),
+    )
+    monkeypatch.setattr(
+        warm.platform_compat,
+        "pid_liveness",
+        lambda pid: (
+            warm.platform_compat.PID_DEAD if pid == dead_pid else warm.platform_compat.PID_ALIVE
+        ),
+    )
+
+    class _Process:
+        pid = dead_pid
+
+    work_dir = warm._create_warm_generation_dir()
+    warm._bind_warm_generation(_Process(), work_dir)
+
+    assert warm._scavenge_warm_generation_dirs() == 0
+    assert work_dir.is_dir(), "the generation its live gateway still owns must survive"
+
+
+def test_release_keeps_the_tree_when_the_killed_runtime_survived(
+    _private_warm_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A kill that REPORTED success but left the PID alive must not delete the specs.
+
+    ``AcpRuntime._kill_inner`` handles its own survivor by logging and returning: both
+    ``kill_process_tree`` calls swallow ``OSError`` by design, so a signal-delivery failure
+    (EPERM through a launcher wrapper, pgid drift) is indistinguishable from success at that
+    layer, and it deliberately leaves the PID tracked for a sweep instead of raising.
+    ``_kill_quietly`` therefore answers True while the child is still running, and releasing
+    on that word alone rmtree's the cwd and the private agent scope out from under a process
+    still reading them. The recorded runtime identity is the proof that exists; consult it.
+    """
+    survivor_pid = 525252
+    real_start_time = warm.platform_compat.process_start_time
+
+    monkeypatch.setattr(
+        warm.platform_compat,
+        "process_start_time",
+        lambda pid: "runtime-token" if pid == survivor_pid else real_start_time(pid),
+    )
+    monkeypatch.setattr(
+        warm.platform_compat, "pid_liveness", lambda pid: warm.platform_compat.PID_ALIVE
+    )
+
+    class _Process:
+        pid = survivor_pid
+
+    runtime = _Process()
+    work_dir = warm._create_warm_generation_dir()
+    warm._bind_warm_generation(runtime, work_dir)
+
+    assert warm._release_runtime_generation(runtime) is False
+    assert work_dir.is_dir(), "a runtime that outlived its kill still owns its specs"
+
+
+def test_release_removes_the_tree_once_the_runtime_is_provably_dead(
+    _private_warm_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ordinary confirmed kill must still reclaim the tree.
+
+    Paired with the survivor case on purpose: a gate that refused whenever liveness was
+    merely unproven would trade a deletion bug for a directory that accumulates on every
+    activation, so this pins that a dead runtime is still released promptly rather than
+    waiting for the next gateway start to scavenge it.
+    """
+    gone_pid = 636363
+    real_start_time = warm.platform_compat.process_start_time
+
+    monkeypatch.setattr(
+        warm.platform_compat,
+        "process_start_time",
+        lambda pid: "runtime-token" if pid == gone_pid else real_start_time(pid),
+    )
+    monkeypatch.setattr(
+        warm.platform_compat,
+        "pid_liveness",
+        lambda pid: (
+            warm.platform_compat.PID_DEAD if pid == gone_pid else warm.platform_compat.PID_ALIVE
+        ),
+    )
+
+    class _Process:
+        pid = gone_pid
+
+    runtime = _Process()
+    work_dir = warm._create_warm_generation_dir()
+    warm._bind_warm_generation(runtime, work_dir)
+
+    assert warm._release_runtime_generation(runtime) is True
+    assert not work_dir.exists()
+
+
+def test_startup_removes_owned_global_legacy_specs_but_keeps_unsentinelled_files(
+    _agents_dir: Path,
+    _private_warm_home: Path,
+):
+    ours = _agents_dir / f"{warm._WARM_BASE_AGENT}.json"
+    ours.write_text(
+        json.dumps(warm._warm_spec_body(warm._WARM_BASE_AGENT, {}, "legacy")),
+        encoding="utf-8",
+    )
+    foreign, body = _mimic_spec(_agents_dir, f"{warm._WARM_AGENT_PREFIX}manual")
+
+    assert warm.scavenge_warm_mint_artifacts() == 1
+    assert not ours.exists()
+    assert foreign.read_text(encoding="utf-8") == body
+
+
 def _foreign_spec(agents: Path, stem: str) -> tuple[Path, str]:
     """A user's OWN agent spec, planted at a path a warm plan would claim."""
     path = agents / f"{stem}.json"
@@ -420,7 +865,7 @@ def test_the_sweep_refuses_to_unlink_a_foreign_file_at_a_warm_spec_path(_agents_
     write-time sweep unlinked a user's own agent spec that happened to sit there."""
     planted, body = _foreign_spec(_agents_dir, "kirocrew-mint-warm-notion")
 
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), _agents_dir)
 
     assert planted.is_file(), "the sweep deleted a file no warm plan ever wrote"
     assert planted.read_text(encoding="utf-8") == body
@@ -463,7 +908,7 @@ def test_a_mimic_carrying_only_our_generic_defaults_survives_the_write(_agents_d
     clobbered a spec whose description, mcpServers and tools were entirely the user's."""
     planted, body = _mimic_spec(_agents_dir, warm._WARM_BASE_AGENT)
 
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), _agents_dir)
 
     assert planted.read_text(encoding="utf-8") == body, "the write clobbered a mimic"
 
@@ -475,10 +920,10 @@ def test_a_mimic_carrying_only_our_generic_defaults_survives_sweep_and_teardown(
     the write-time sweep and teardown."""
     planted, body = _mimic_spec(_agents_dir, "kirocrew-mint-warm-notion")
 
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), _agents_dir)
     assert planted.is_file(), "the sweep deleted a mimic"
 
-    warm._remove_warm_mint_specs()
+    warm._remove_warm_mint_specs(_agents_dir)
 
     assert planted.is_file(), "teardown deleted a mimic"
     assert planted.read_text(encoding="utf-8") == body
@@ -513,7 +958,7 @@ def test_a_dangling_symlink_at_the_spec_path_reads_as_foreign(_agents_dir: Path)
 
 def test_every_spec_a_warm_plan_writes_carries_the_ownership_sentinel(_agents_dir: Path):
     """Whole-plan coverage: the base spec and the all-providers spec alike."""
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), _agents_dir)
 
     written = list(_agents_dir.glob(f"{warm._WARM_AGENT_PREFIX}*.json"))
     assert written
@@ -528,7 +973,7 @@ def test_the_write_refuses_to_clobber_a_foreign_file_at_a_planned_spec_path(_age
     path the CURRENT plan wants was overwritten rather than skipped."""
     planted, body = _foreign_spec(_agents_dir, warm._WARM_BASE_AGENT)
 
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), _agents_dir)
 
     assert planted.read_text(encoding="utf-8") == body, "the write clobbered a foreign file"
 
@@ -537,7 +982,7 @@ def test_the_teardown_refuses_to_unlink_a_foreign_file_at_a_warm_spec_path(_agen
     """RED before the ownership check: teardown swept the whole warm glob by name."""
     planted, body = _foreign_spec(_agents_dir, "kirocrew-mint-warm-notion")
 
-    warm._remove_warm_mint_specs()
+    warm._remove_warm_mint_specs(_agents_dir)
 
     assert planted.is_file(), "teardown deleted a file no warm plan ever wrote"
     assert planted.read_text(encoding="utf-8") == body
@@ -551,17 +996,17 @@ def test_the_sweep_still_unlinks_a_stale_spec_a_warm_plan_did_write(_agents_dir:
         encoding="utf-8",
     )
 
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), _agents_dir)
 
     assert not stale.exists(), "a spec this module wrote survived the sweep"
     assert (_agents_dir / f"{warm._WARM_BASE_AGENT}.json").is_file()
 
 
 def test_teardown_unlinks_every_spec_a_warm_plan_did_write(_agents_dir: Path):
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), _agents_dir)
     assert (_agents_dir / f"{warm._WARM_BASE_AGENT}.json").is_file()
 
-    warm._remove_warm_mint_specs()
+    warm._remove_warm_mint_specs(_agents_dir)
 
     assert not list(_agents_dir.glob(f"{warm._WARM_AGENT_PREFIX}*.json"))
 
@@ -574,7 +1019,7 @@ def test_a_spec_this_module_wrote_is_rewritten_in_place(_agents_dir: Path):
         encoding="utf-8",
     )
 
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), _agents_dir)
 
     description = json.loads(path.read_text(encoding="utf-8"))["description"]
     assert description.startswith(warm._WARM_SPEC_SENTINEL)
@@ -586,8 +1031,8 @@ def test_an_unreadable_file_at_a_warm_spec_path_is_left_alone(_agents_dir: Path)
     path = _agents_dir / "kirocrew-mint-warm-notion.json"
     path.write_text("{ this is not json", encoding="utf-8")
 
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
-    warm._remove_warm_mint_specs()
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), _agents_dir)
+    warm._remove_warm_mint_specs(_agents_dir)
 
     assert path.read_text(encoding="utf-8") == "{ this is not json"
 
@@ -605,7 +1050,7 @@ def test_a_refusal_is_audited_rather_than_raised(monkeypatch: pytest.MonkeyPatch
     )
     _foreign_spec(agents, warm._WARM_BASE_AGENT)
 
-    warm._write_warm_mint_specs(warm._warm_spec_plan([]))
+    warm._write_warm_mint_specs(warm._warm_spec_plan([]), agents)
 
     assert events, "a refusal to touch a user's file was silent"
     assert all(outcome == "refused" for _, _, outcome in events)
@@ -705,7 +1150,7 @@ def test_a_sensitive_symlink_at_a_warm_spec_path_is_never_judged_ours(
     assert warm._warm_spec_is_foreign(link) is True
 
     # The verdict's whole purpose: the sweep must leave both the link and its target alone.
-    warm._remove_warm_mint_specs()
+    warm._remove_warm_mint_specs(_agents_dir)
 
     assert link.is_symlink(), "the sweep unlinked a symlink it was refused"
     assert target.is_file(), "the sweep reached a file outside the agents dir"
@@ -724,7 +1169,7 @@ def test_an_oversized_spec_at_a_warm_spec_path_is_never_judged_ours(
 
     assert warm._warm_spec_is_foreign(planted) is True
 
-    warm._remove_warm_mint_specs()
+    warm._remove_warm_mint_specs(_agents_dir)
 
     assert planted.is_file(), "the sweep unlinked a file it could not read"
 
@@ -1484,6 +1929,302 @@ async def test_shutdown_cancels_an_inflight_rearm_and_disarms_recovery(
     assert warm._warm_mint.start_rearm(8) is None
 
 
+# ── an invalidated grant re-arms that provider's premint ──
+
+
+@contextlib.asynccontextmanager
+async def _rearm_registry():
+    """The in-flight re-arm registry, cleared on entry and SETTLED on exit.
+
+    An ``async with`` helper rather than an ``@pytest_asyncio.fixture``, by this repo's
+    convention: the pinned pytest-asyncio does not collect async generator fixtures, and the
+    teardown here has to await.
+
+    Awaiting is the point. Cancelling each task and then clearing the registry synchronously
+    drops the only reference to a task that has not yet observed its own cancellation, so the
+    loop closes on it, its ``finally`` never runs, and the leak is the exact one
+    :func:`~kiro_crew.connections.warm._settle_invalidation_rearms` exists to close -- a test
+    harness must not reproduce the defect its subject fixes.
+
+    Delegated to that production function rather than re-implementing cancel-then-gather here,
+    so the idiom lives in exactly one place. It is not circular: the function's own behaviour
+    is pinned independently by ``test_shutdown_settles_an_inflight_invalidation_rearm``, so the
+    fixture is not the only thing claiming it works. ``finally``, so a failing test still
+    settles.
+    """
+    warm._invalidation_rearms.clear()
+    try:
+        yield warm._invalidation_rearms
+    finally:
+        await warm._settle_invalidation_rearms()
+
+
+def _recording_warm(warmed: list[tuple[list[str], bool]]):
+    async def _warm_mint_all(
+        providers: list[Provider] | None = None, *, arm_supervision: bool = True
+    ) -> list[str]:
+        slugs = [str(item["slug"]) for item in providers or []]
+        warmed.append((slugs, arm_supervision))
+        return slugs
+
+    return _warm_mint_all
+
+
+@pytest.mark.asyncio
+async def test_invalidation_rearms_only_the_invalidated_provider(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Provider-scoped, not a whole-pool warm: the other candidates are left alone."""
+    warmed: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(
+        warm, "mintable_providers", lambda: [_provider("linear"), _provider("vercel")]
+    )
+    monkeypatch.setattr(warm, "warm_mint_all", _recording_warm(warmed))
+
+    assert await warm._rearm_invalidated_provider("vercel") == ["vercel"]
+
+    assert warmed == [(["vercel"], False)]
+
+
+@pytest.mark.asyncio
+async def test_the_invalidation_call_does_not_block_on_minting(monkeypatch: pytest.MonkeyPatch):
+    """The scheduler hands back before the activation it scheduled has even begun.
+
+    A Disconnect calls this inside its own request, and an activation spawns a helper process
+    and negotiates OAuth. Pinned on the task's own state rather than on wall-clock timing:
+    ``create_task`` cannot run its coroutine until the caller yields, so an unstarted task at
+    the moment the call returns is the property itself.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocked_rearm(slug: str) -> list[str]:
+        started.set()
+        await release.wait()
+        return [slug]
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _blocked_rearm)
+
+    async with _rearm_registry() as registry:
+        warm.rearm_invalidated_provider("linear")
+
+        assert not started.is_set(), "the caller returned before the re-arm ran at all"
+        task = registry["linear"]
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert not task.done()
+        release.set()
+
+        assert await asyncio.wait_for(task, timeout=5) == ["linear"]
+        assert "linear" not in registry
+
+
+@pytest.mark.asyncio
+async def test_repeated_invalidation_does_not_stack_duplicate_premints(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two more Disconnects while one re-arm is in flight add no second activation."""
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def _blocked_rearm(slug: str) -> list[str]:
+        calls.append(slug)
+        await release.wait()
+        return []
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _blocked_rearm)
+
+    async with _rearm_registry() as registry:
+        warm.rearm_invalidated_provider("linear")
+        first = registry["linear"]
+        warm.rearm_invalidated_provider("linear")
+        warm.rearm_invalidated_provider("linear")
+
+        assert registry["linear"] is first
+        release.set()
+        await asyncio.wait_for(first, timeout=5)
+
+        assert calls == ["linear"]
+        assert "linear" not in registry
+
+
+@pytest.mark.asyncio
+async def test_a_provider_without_arming_preconditions_is_not_rearmed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ordinary candidate scan is the authority, so its vetoes all apply here.
+
+    Every reason not to warm reaches this function as the same fact -- the scan did not return
+    the provider -- whether it is a disabled entry, no usable auth configuration (no DCR and no
+    pre-registered client id), a configured entry asking for something other than the registry,
+    a grant still PRESENT because the revoke was refused, or a grant cache that could not be
+    read at all. Re-arming any of them would only queue a mint that fails cold.
+    """
+    warmed: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(warm, "mintable_providers", lambda: [_provider("linear")])
+    monkeypatch.setattr(warm, "warm_mint_all", _recording_warm(warmed))
+
+    assert await warm._rearm_invalidated_provider("github") == []
+
+    assert warmed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["minting", "waiting"])
+async def test_a_live_row_is_not_displaced_by_an_invalidation_rearm(
+    monkeypatch: pytest.MonkeyPatch, state: str
+):
+    """A card mid-consent keeps its URL: re-arming would replace one it may be redeeming."""
+    warmed: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(warm, "mintable_providers", lambda: [_provider("linear")])
+    monkeypatch.setattr(warm, "warm_mint_all", _recording_warm(warmed))
+    _mints["linear"] = {"state": state, "shared": True, "token": "tok"}
+
+    assert await warm._rearm_invalidated_provider("linear") == []
+
+    assert warmed == []
+    assert _mints["linear"]["token"] == "tok"
+
+
+@pytest.mark.asyncio
+async def test_the_invalidation_rearm_audits_the_grant_scan_it_acts_on(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """It acts on a credential-store observation, so it owes the same SEL record as premint."""
+    from kiro_crew import hooks
+
+    assert warm._GRANT_PRESENCE_READ_ID in hooks._AUDIT_ONLY_READ_IDS
+    events: list[tuple[Any, ...]] = []
+
+    def _audit(read_id: str, outcome: str) -> bool:
+        events.append(("audit", read_id, outcome))
+        return True
+
+    async def _record_warm(
+        providers: list[Provider] | None = None, *, arm_supervision: bool = True
+    ) -> list[str]:
+        events.append(("warm", [str(item["slug"]) for item in providers or []], arm_supervision))
+        return ["linear"]
+
+    monkeypatch.setattr(hooks, "emit_internal_read_audit", _audit)
+    monkeypatch.setattr(warm, "mintable_providers", lambda: [_provider("linear")])
+    monkeypatch.setattr(warm, "warm_mint_all", _record_warm)
+
+    assert await warm._rearm_invalidated_provider("linear") == ["linear"]
+
+    assert events == [
+        ("audit", "connections_premint.oauth_grant_presence", "success"),
+        ("warm", ["linear"], False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_invalidation_rearm_reaches_a_real_activation(
+    monkeypatch: pytest.MonkeyPatch, _stub_activation: None
+):
+    """End to end through the real ``warm_mint_all``: the card ends up holding a URL."""
+    provider = _provider("linear")
+    monkeypatch.setattr(warm, "warm_spec_providers", lambda: [provider])
+    monkeypatch.setattr(warm, "grant_present", lambda url: False)
+    monkeypatch.setattr(
+        warm,
+        "_warm_activate",
+        _returns(
+            _result(
+                [provider],
+                [{"serverName": "linear", "oauthUrl": "https://linear.example/consent"}],
+                generation=9,
+                activation=4,
+            )
+        ),
+    )
+
+    assert await warm._rearm_invalidated_provider("linear") == ["linear"]
+
+    assert _mints["linear"]["state"] == "waiting"
+    assert _mints["linear"]["generation"] == 9
+    assert warm._warm_mint._supervision_armed is False
+
+
+def test_the_scheduler_is_a_noop_without_a_running_loop():
+    """A synchronous caller off the loop has nothing to schedule onto; the next scan covers it.
+
+    Deliberately not wrapped in ``_rearm_registry``: that helper is async and this test must
+    run with NO event loop, which is the property under test. Nothing needs settling either --
+    the assertion is that no task was ever created.
+    """
+    warm._invalidation_rearms.clear()
+
+    warm.rearm_invalidated_provider("linear")
+
+    assert warm._invalidation_rearms == {}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_settles_an_inflight_invalidation_rearm(monkeypatch: pytest.MonkeyPatch):
+    """A Disconnect moments before teardown must not leave its re-arm unsettled at loop close.
+
+    Nothing awaits these tasks in the ordinary course, so teardown is the only place that can
+    settle them. An unsettled one is reported as ``Task was destroyed but it is pending`` and
+    its activation is abandoned part-way through minting.
+    """
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _blocked_rearm(slug: str) -> list[str]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return []
+
+    async def _kill(runtime: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _blocked_rearm)
+    monkeypatch.setattr(warm, "_kill_quietly", _kill)
+    monkeypatch.setattr(warm, "_remove_warm_mint_specs", lambda: None)
+    monkeypatch.setattr(warm._warm_mint, "_runtime", _Runtime(False))
+    async with _rearm_registry() as registry:
+        warm.rearm_invalidated_provider("linear")
+        task = registry["linear"]
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        await asyncio.wait_for(warm.shutdown_warm_mint(), timeout=5)
+
+        assert cancelled.is_set(), "teardown did not cancel the in-flight re-arm"
+        assert task.cancelled()
+        assert registry == {}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_leaves_a_completed_rearms_bookkeeping_alone(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Settlement only touches tasks still in flight; a finished re-arm keeps its result."""
+
+    async def _quick_rearm(slug: str) -> list[str]:
+        return [slug]
+
+    async def _kill(runtime: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _quick_rearm)
+    monkeypatch.setattr(warm, "_kill_quietly", _kill)
+    monkeypatch.setattr(warm, "_remove_warm_mint_specs", lambda: None)
+    monkeypatch.setattr(warm._warm_mint, "_runtime", _Runtime(False))
+    async with _rearm_registry() as registry:
+        warm.rearm_invalidated_provider("linear")
+        task = registry["linear"]
+        assert await asyncio.wait_for(task, timeout=5) == ["linear"]
+
+        await asyncio.wait_for(warm.shutdown_warm_mint(), timeout=5)
+
+        assert not task.cancelled()
+        assert task.result() == ["linear"]
+
+
 @pytest.mark.asyncio
 async def test_a_failed_respawn_still_drains_the_generation_it_parked(
     monkeypatch: pytest.MonkeyPatch,
@@ -1502,7 +2243,7 @@ async def test_a_failed_respawn_still_drains_the_generation_it_parked(
 
     monkeypatch.setattr(warm, "_kill_quietly", _record_kill)
     monkeypatch.setattr(warm, "_remove_warm_mint_specs", lambda: None)
-    monkeypatch.setattr(warm, "_write_warm_mint_specs", lambda plan: None)
+    monkeypatch.setattr(warm, "_write_warm_mint_specs", lambda plan, agents_dir: None)
     monkeypatch.setattr(warm, "_acp_runtime_factory", lambda: _explode)
     monkeypatch.setattr(warm, "_MINT_GRANT_POLL_SECONDS", 0)
     monkeypatch.setattr(warm._warm_mint, "_runtime", None)
@@ -1528,24 +2269,34 @@ async def test_a_failed_respawn_still_drains_the_generation_it_parked(
 
 
 @pytest.mark.asyncio
-async def test_a_foreign_spec_at_a_planned_path_aborts_warming_instead_of_being_activated(
-    monkeypatch: pytest.MonkeyPatch, _agents_dir: Path
+async def test_a_global_same_name_agent_never_blocks_the_private_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    _agents_dir: Path,
 ):
-    """The refusal has to reach the SPAWN, not just the write."""
-    _foreign_spec(_agents_dir, warm._WARM_BASE_AGENT)
-    constructed: list[str] = []
+    """A user-owned global file survives while the helper activates its private twin."""
+    planted, body = _foreign_spec(_agents_dir, warm._WARM_BASE_AGENT)
+    constructed: list[dict[str, Any]] = []
 
-    def _factory():
-        def _build(**kwargs):
-            constructed.append(str(kwargs.get("agent")))
-            raise AssertionError("a refused spec must never be activated")
+    class _Spawnable:
+        def __init__(self, **kwargs: Any) -> None:
+            constructed.append(kwargs)
 
-        return _build
+        async def spawn(self) -> None:
+            return None
 
-    monkeypatch.setattr(warm, "_acp_runtime_factory", _factory)
+        def is_alive(self) -> bool:
+            return True
 
-    assert await warm._warm_mint._ensure_locked([_provider("linear")]) is None
-    assert constructed == [], "the runtime was constructed on a spec we refused to own"
+    monkeypatch.setattr(warm, "_acp_runtime_factory", lambda: _Spawnable)
+    monkeypatch.setattr(warm, "_MINT_GRANT_POLL_SECONDS", 3600)
+
+    served = await warm._warm_mint._ensure_locked([_provider("linear")])
+
+    assert served is not None
+    assert constructed and constructed[0]["agent"] == warm._WARM_BASE_AGENT
+    assert planted.read_text(encoding="utf-8") == body
+    private = warm._warm_generation_agents_dir(Path(constructed[0]["work_dir"]))
+    assert (private / f"{warm._WARM_BASE_AGENT}.json").is_file()
 
 
 @pytest.mark.asyncio
@@ -1555,7 +2306,9 @@ async def test_a_missing_planned_spec_also_aborts_warming(
     """Absence and foreignness are the same answer here: an unreadable spec path is not a
     spec of ours, and `_warm_spec_is_foreign` answers False for an absent file, so the
     verification has to test existence as well as ownership."""
-    monkeypatch.setattr(warm, "_write_warm_mint_specs", lambda plan: None)  # writes nothing
+    monkeypatch.setattr(
+        warm, "_write_warm_mint_specs", lambda plan, agents_dir: None
+    )  # writes nothing
     constructed: list[str] = []
 
     def _factory():
@@ -1615,7 +2368,7 @@ async def test_a_cancel_during_the_spec_write_still_arms_the_drain(
     monkeypatch.setattr(warm._warm_mint, "_generation", 5)
     monkeypatch.setattr(warm._warm_mint, "_retiring", [(5, parked_runtime)])
 
-    def _cancel(plan):
+    def _cancel(plan, agents_dir):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(warm, "_write_warm_mint_specs", _cancel)
@@ -1871,21 +2624,42 @@ async def test_an_abandoned_spawn_whose_kill_times_out_is_tracked_not_dropped(
 
 
 @pytest.mark.asyncio
-async def test_a_spec_sweep_is_withheld_while_an_unkilled_child_still_needs_its_spec():
-    """A spec removed under a process that is still running strands it -- the same rule the
-    parked path follows, and the reason the sweep is gated on the kill having taken."""
-    removed: list[bool] = []
+async def test_a_spec_scope_is_retained_while_an_unkilled_child_still_needs_it(
+    _private_warm_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A spec tree removed under a process that still runs strands that process."""
     doomed = _UnkillableRuntime(failures=1)
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(warm, "_remove_warm_mint_specs", lambda: removed.append(True))
-        patch.setattr(warm._warm_mint, "_runtime", None)
-        patch.setattr(warm._warm_mint, "_retiring", [])
+    doomed.pid = 6060
+    monkeypatch.setattr(warm.platform_compat, "process_start_time", lambda pid: f"start-{pid}")
 
-        assert await warm._warm_mint._kill_generation(3, doomed) is False
-        assert not removed, "the surviving child's spec was unlinked underneath it"
+    def _liveness(pid: int) -> str:
+        """Report the doomed child dead only once its kill has actually taken.
 
-        assert await warm._warm_mint._kill_generation(3, doomed) is True
-        assert removed == [True]
+        Stated rather than left to the host: releasing the tree now requires positive proof
+        the runtime is gone, and an arbitrary fake PID can collide with a real process on
+        the machine running the suite -- which would otherwise make this test's outcome
+        depend on who happens to own PID 6060.
+        """
+        if pid != doomed.pid:
+            return warm.platform_compat.PID_ALIVE
+        return (
+            warm.platform_compat.PID_DEAD
+            if doomed.kill_attempts > 1
+            else warm.platform_compat.PID_ALIVE
+        )
+
+    monkeypatch.setattr(warm.platform_compat, "pid_liveness", _liveness)
+    work_dir = warm._create_warm_generation_dir()
+    warm._bind_warm_generation(doomed, work_dir)
+    monkeypatch.setattr(warm._warm_mint, "_runtime", None)
+    monkeypatch.setattr(warm._warm_mint, "_retiring", [])
+
+    assert await warm._warm_mint._kill_generation(3, doomed) is False
+    assert work_dir.is_dir(), "the surviving child's private specs were removed"
+
+    assert await warm._warm_mint._kill_generation(3, doomed) is True
+    assert not work_dir.exists(), "a confirmed kill must release its private specs"
 
 
 # ── the invariant itself, pinned where it is mechanically checkable ──
@@ -2295,8 +3069,8 @@ async def test_an_unaddressable_abandoned_session_quarantines_its_generation(
     monkeypatch.setattr(warm, "_WARM_SESSION_REAP_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(warm, "_MINT_GRANT_POLL_SECONDS", 3600)
     monkeypatch.setattr(warm, "_remove_warm_mint_specs", lambda: None)
-    monkeypatch.setattr(warm, "_write_warm_mint_specs", lambda plan: None)
-    monkeypatch.setattr(warm, "_unowned_plan_specs", lambda plan: [])
+    monkeypatch.setattr(warm, "_write_warm_mint_specs", lambda plan, agents_dir: None)
+    monkeypatch.setattr(warm, "_unowned_plan_specs", lambda plan, agents_dir: [])
 
     class _NeverReturnsAHandle:
         def is_alive(self) -> bool:
@@ -2609,20 +3383,24 @@ def _mount_spy(monkeypatch: pytest.MonkeyPatch, _agents_dir: Path):
 
     def _factory():
         def _build(**kwargs: Any) -> _SpecEnumeratingRuntime:
-            return _SpecEnumeratingRuntime(_agents_dir, mounted, **kwargs)
+            work_dir = Path(kwargs["work_dir"])
+            return _SpecEnumeratingRuntime(
+                warm._warm_generation_agents_dir(work_dir),
+                mounted,
+                **kwargs,
+            )
 
         return _build
 
     monkeypatch.setattr(warm, "_acp_runtime_factory", _factory)
     monkeypatch.setattr(warm, "_MINT_GRANT_POLL_SECONDS", 3600)
     monkeypatch.setattr(warm, "_WARM_OAUTH_SETTLE_ROUNDS", 1)
-    monkeypatch.setattr(warm, "_remove_warm_mint_specs", lambda: None)
     return mounted
 
 
 async def _spawned_on(agents_dir: Path, plan: warm._WarmSpecPlan, mounted: list[Any]) -> Any:
     """A live process that enumerated ``plan``'s specs, the way a resident one did."""
-    warm._write_warm_mint_specs(plan)
+    warm._write_warm_mint_specs(plan, agents_dir)
     runtime = _SpecEnumeratingRuntime(agents_dir, mounted)
     await runtime.spawn()
     return runtime

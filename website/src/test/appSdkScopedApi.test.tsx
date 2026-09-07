@@ -15,7 +15,7 @@ import React from 'react'
 import { AppApiProvider, useAppApi, type AppApi } from '../app-sdk/index'
 
 // Render the provider and hand back the scoped API client it builds.
-function getScopedApi(allowedApiPaths: string[]): AppApi {
+function getScopedApi(allowedApiPaths: string[], sessionKey?: string): AppApi {
   let captured: AppApi | null = null
 
   function Probe() {
@@ -35,6 +35,7 @@ function getScopedApi(allowedApiPaths: string[]): AppApi {
           subscribeFn: () => () => {},
           navigateFn: () => {},
           notifyFn: () => {},
+          sessionKey,
         },
         React.createElement(Probe),
       ),
@@ -44,6 +45,63 @@ function getScopedApi(allowedApiPaths: string[]): AppApi {
   if (!captured) throw new Error('failed to capture scoped api')
   return captured
 }
+
+describe('createScopedApi (via AppApiProvider) — session identity', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async () => new Response('{}', {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const headerOf = (call: unknown[]) =>
+    new Headers((call[1] as RequestInit).headers).get('X-Session-Key')
+
+  it('sends X-Session-Key on a scoped request when the host knows the session', async () => {
+    // This is a security boundary, not a convenience. The backend's
+    // restricted-session guard reads this header and FAILS OPEN without it, so an
+    // incognito or guest chat would be granted the persistent writes it is meant
+    // to be denied. Asserted on GET and POST because the guard applies to reads
+    // and writes alike.
+    const api = getScopedApi(['/api/apps/test-app'], 'dashboard:chat-2')
+    await api.get('/api/apps/test-app/thing')
+    await api.post('/api/apps/test-app/thing', { a: 1 })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(headerOf(fetchMock.mock.calls[0])).toBe('dashboard:chat-2')
+    expect(headerOf(fetchMock.mock.calls[1])).toBe('dashboard:chat-2')
+  })
+
+  it('omits the header when the host has no session to declare', async () => {
+    // A full-page app surface is not session-scoped. Sending an empty or invented
+    // key would be worse than sending none: the guard matches on the value.
+    const api = getScopedApi(['/api/apps/test-app'])
+    await api.get('/api/apps/test-app/thing')
+    expect(headerOf(fetchMock.mock.calls[0])).toBeNull()
+  })
+
+  it('does not clobber a session key the caller set explicitly', async () => {
+    const api = getScopedApi(['/api/apps/test-app'], 'dashboard:chat-2')
+    await api.get('/api/apps/test-app/thing', {
+      headers: { 'X-Session-Key': 'dashboard:explicit' },
+    })
+    expect(headerOf(fetchMock.mock.calls[0])).toBe('dashboard:explicit')
+  })
+
+  it('keeps the JSON content type the write verbs set', async () => {
+    // The header merge must not drop what the verb helpers already send.
+    const api = getScopedApi(['/api/apps/test-app'], 'dashboard:chat-2')
+    await api.post('/api/apps/test-app/thing', { a: 1 })
+    const sent = new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers)
+    expect(sent.get('Content-Type')).toBe('application/json')
+    expect(sent.get('X-Session-Key')).toBe('dashboard:chat-2')
+  })
+})
 
 describe('createScopedApi (via AppApiProvider) — SSRF / permission guard', () => {
   let fetchMock: ReturnType<typeof vi.fn>

@@ -72,7 +72,10 @@ Running the retrieval ruler over LoCoMo surfaced two compounding defects in
 episodic ranking. Both are in the production read path, not in the harness.
 
 **1. The recency decay has a 23-day half-life.** `search_episodic` scores
-`cosine * (0.7 + 0.3 * importance) * exp(-0.03 * days_old)`. A decay rate of
+`cosine * (0.7 + 0.3 * importance) * exp(-rate * days_old)`, where `rate` is
+`vector_memory._DEFAULT_DECAY_RATE` (0.03/day) unless `memory.decay_rates` overrides
+it for a tag; overrides are clamped to `_DECAY_RATE_MIN`..`_DECAY_RATE_MAX`. A decay
+rate of
 0.03/day means `ln2 / 0.03 ≈ 23` days: a memory three weeks old is scored half as
 relevant as an identical one from today. Across three months the factor is
 `exp(-0.03 * 90) ≈ 0.067`, a 15× penalty — far outside the realistic dynamic range
@@ -168,8 +171,8 @@ as the row's denominator, and a cut-off that survives for nobody is omitted with
 reason stated rather than shown as a low score.
 
 **2. `round(score, 4)` destroys ordering past ~306 days.** The score is rounded to
-four decimals before sorting (`vector_memory.py:1448` on the FAISS path, `:1547` on
-the sqlite path). Solving `cosine * 0.85 * exp(-0.03d) < 0.00005` gives d ≈ 306
+four decimals before sorting (`vector_memory.search_episodic` on the FAISS path,
+`vector_memory._episodic_candidate` on the sqlite path). Solving `cosine * 0.85 * exp(-0.03d) < 0.00005` gives d ≈ 306
 days, after which every candidate ties at `0.0` and the "ranking" is whatever order
 sqlite returned. Measured directly:
 
@@ -184,12 +187,11 @@ This also explains an initially confusing result: `--timeline literal` scored
 rounds to `0.0`, all candidates tie, and the sort becomes a no-op — the number is an
 artifact of ties, not ranking.
 
-**Also found while building this:** on this Linux host `libllama.so` is absent from
-the vendored `llama_cpp_libs/linux_x86_64/` payload (only `libggml*.so` are
-present), so `get_shared_embedder().wait_ready()` returns False and
-`make_sync_embed_fn()` returns `None` for every input. Semantic memory silently
-degrades to FTS5 keyword `LIKE` matching. The harness refuses to run in that state
-rather than reporting a substring-overlap score as a retrieval number.
+**Degraded embedders are refused, not scored.** When the vendored `llama_cpp_libs`
+payload for the host platform is incomplete, `get_shared_embedder().wait_ready()`
+returns False and `make_sync_embed_fn()` returns `None` for every input, so semantic
+memory degrades to FTS5 keyword `LIKE` matching. The harness refuses to run in that
+state rather than reporting a substring-overlap score as a retrieval number.
 
 ## Running it on a schedule
 
@@ -347,11 +349,11 @@ names `longmemeval_s` as the fix.
 
 **Dedup can eat gold, and does not work the way its config suggests.**
 `write_episodic` rejects any text whose lowercased first 80 characters already
-exist (`LOWER(SUBSTR(text, 1, 80))`, `vector_memory.py:1126` and `:1184`)
+exist (`LOWER(SUBSTR(text, 1, 80))` in `vector_memory.write_episodic`)
 **unconditionally** — `dedup_threshold` is never consulted for that path. The
 cosine near-duplicate check that *does* use the threshold is gated on a live FAISS
-index (`:1200-1210`), so **on a host without faiss, near-duplicate dedup never runs
-at all and `dedup_threshold` is dead config in both directions**. Semantic
+index in the same function, so **on a host without faiss, near-duplicate dedup never
+runs at all and `dedup_threshold` is dead config in both directions**. Semantic
 near-duplicates accumulate unbounded there; byte-identical text is always dropped
 everywhere. `--no-dedup` therefore relaxes near-duplicate rejection only, and only
 where FAISS is present. Refused fragments are counted either way, and gold ones
@@ -406,7 +408,7 @@ stdlib cosine, or FTS5 keyword), so two hosts can rank the same corpus different
 
 ## The statistics layer
 
-`bench/stats.py` carries the paired-interleaved-median protocol for the noisy
+`eval/bench/stats.py` carries the paired-interleaved-median protocol for the noisy
 end-to-end half: warmups discarded, ≥2 reps, **median never mean**, arms measured
 alternating so host drift cancels in the paired delta, and a noise band from 2σ of
 the untouched baseline. The protocol is lifted from

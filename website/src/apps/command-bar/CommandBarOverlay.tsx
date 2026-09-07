@@ -25,6 +25,7 @@ import { api } from '../../api/client'
 import { appNavTargets } from '../../appNav'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { createSlot, setPendingInput, switchSlot } from '../../store/chatSlice'
+import ErrorNotice from '../../components/ErrorNotice'
 import { Highlighted } from '../../components/commandPalette/Highlighted'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
 import { localizedSettingLabel } from '../../components/commandPalette/settingsSearchCore'
@@ -1429,12 +1430,11 @@ export default function CommandBarOverlay({
           />
         </div>
 
+        {/* No hand-off: the query typed into the bar above is unsaved — the
+            navigation would close the bar and take it along. */}
         {actionError && (
-          <div
-            role="alert"
-            className="px-3 py-2 text-[12px] text-danger border-t border-border"
-          >
-            {actionError}
+          <div className="px-3 py-2 border-t border-border">
+            <ErrorNotice message={actionError} variant="inline" />
           </div>
         )}
 

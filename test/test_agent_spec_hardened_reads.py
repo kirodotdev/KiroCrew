@@ -27,6 +27,7 @@ the ``oversized`` and symlink cases are differential against the old path
 from __future__ import annotations
 
 import ast
+import functools
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -955,6 +956,7 @@ _EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+@functools.lru_cache(maxsize=None)
 def _labelled_call_sites(target: str) -> dict[str, list[tuple[str | None, str | None]]]:
     """Return every *target* call site and its label pair.
 
@@ -968,6 +970,10 @@ def _labelled_call_sites(target: str) -> dict[str, list[tuple[str | None, str | 
     well, and its labels are read from the handing-off call, which is where the
     forwarded kwargs are written. This applies to every entry in
     ``_RATCHET_INVENTORY``, not to any one callee.
+
+    Cached per *target*: the source tree cannot change mid-run, both tests in
+    ``TestCallSiteLabelRatchet`` ask the same three targets, and the scan itself
+    (rglob + ast.parse of the whole ``src/`` tree) is the expensive part.
     """
     src = Path(__file__).resolve().parent.parent / "src"
     sites: dict[str, list[tuple[str | None, str | None]]] = {}

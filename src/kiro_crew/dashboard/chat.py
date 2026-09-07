@@ -30,6 +30,10 @@ from kiro_crew.config.loader import (  # noqa: F401
     config_dir,
     resolve_agent_bindings,
 )
+from kiro_crew.dashboard.chat_folder_scaffold import (  # noqa: F401
+    api_chat_folders_scaffold,
+    api_chat_folders_scan,
+)
 from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     api_chat_folder_create,
     api_chat_folder_delete,
@@ -87,7 +91,6 @@ from kiro_crew.dashboard.chat_nav import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_orchestrator import (  # noqa: F401
     _build_stage_context,
-    _capture_stage_result,
     _previous_result_paths,
     _stage_loop,
     api_chat_plan_action,

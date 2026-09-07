@@ -14,6 +14,7 @@ import { Folder, FolderPlus, Pencil, Plus, Tag, Trash2, X } from 'lucide-react'
 import * as shopApi from './api'
 import { Btn, EmptyState, Input } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
+import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 // ── Types ──
@@ -172,6 +173,21 @@ export function PreferencesTab() {
         </Btn>
       </form>
 
+      {/* These mutations used to reject unobservably: the input only clears on
+          success, so a failure looked like a hang. One notice per mutation, not a
+          chain, so a persistent earlier failure cannot mask a later one. No hand-off:
+          the new-preference text above is unsaved (a failed add is exactly when it
+          is still typed). */}
+      {addPrefMutation.isError ? (
+        <ErrorNotice message={(addPrefMutation.error as Error).message} />
+      ) : null}
+      {deletePrefMutation.isError ? (
+        <ErrorNotice message={(deletePrefMutation.error as Error).message} />
+      ) : null}
+      {deleteGroupMutation.isError ? (
+        <ErrorNotice message={(deleteGroupMutation.error as Error).message} />
+      ) : null}
+
       {/* Stated at the point of interaction, not only on the App Store card:
           the advisor cannot read this store, so a preference typed here does
           not reach it until the user says it in the conversation. Given the
@@ -260,6 +276,10 @@ export function PreferencesTab() {
 
       {/* Add group */}
       <div className="pt-2 border-t border-[var(--border)]">
+        {/* No hand-off: the group name typed below is unsaved until Create. */}
+        {addGroupMutation.isError ? (
+          <ErrorNotice className="mb-2" message={(addGroupMutation.error as Error).message} />
+        ) : null}
         {showGroupForm ? (
           <form
             className="flex gap-2"
@@ -410,6 +430,7 @@ function PreferenceRow({
     const groupChanged = canReassign && editGroup !== openedWith
     const changed = textChanged || groupChanged
     return (
+      <div className="space-y-1">
       <form
         className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--card)] border border-[var(--accent)]"
         onSubmit={(e) => {
@@ -460,6 +481,11 @@ function PreferenceRow({
           <X size={14} />
         </button>
       </form>
+      {/* No hand-off: the edited preference text above is unsaved until Save. */}
+      {updateMutation.isError ? (
+        <ErrorNotice message={(updateMutation.error as Error).message} />
+      ) : null}
+      </div>
     )
   }
 

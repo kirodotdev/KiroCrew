@@ -247,6 +247,11 @@ export interface RepoPr {
   reviewed: boolean
   reviewed_stale: boolean
   reviewed_at?: string
+  /** GitHub label names, in GitHub's order. Optional here and not on the wire:
+   *  the backend always sends a list, but a response cached by an older build
+   *  (`lib/persist.ts` keeps a 24h snapshot) predates the field, so a reader
+   *  must tolerate its absence. */
+  labels?: string[]
 }
 
 /** The minimum needed to open a PR in the detail pane.

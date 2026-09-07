@@ -255,3 +255,75 @@ describe('chat sidebar — interrupted goal loop', () => {
     expect(container.querySelector('.lucide-goal.animate-pulse')).toBeTruthy()
   })
 })
+
+describe('chat sidebar — interrupted ordinary session', () => {
+  it('flags an idle interrupted turn as needing manual attention', () => {
+    const slots = [{
+      key: 'k', title: 'deployment follow-up', running: false, messages: 5,
+      interrupted: true, last_message: 'Checking the deployment',
+    }]
+    const { getByTitle, queryByTitle, container } = renderSidebar(
+      slots,
+      {},
+      { unreadSlots: ['k'] },
+    )
+
+    const row = container.querySelector('[data-session-row="k"]')
+    expect(row?.textContent).toContain('Turn interrupted · Resume')
+    expect(getByTitle('Turn interrupted · Resume')).toBeTruthy()
+    expect(container.querySelector('.lucide-triangle-alert.text-danger')).toBeTruthy()
+    // The specific attention state replaces the generic unread marker.
+    expect(queryByTitle(UNREAD_DOT_TITLE)).toBeNull()
+  })
+
+  it('keeps live subagent activity above stale parent-turn interruption', () => {
+    const slots = [{ key: 'k', title: 'delegated work', running: false, messages: 5, interrupted: true }]
+    const { getByText, queryByText } = renderSidebar(slots, {
+      slotActivity: { k: { toolLog: [], subagents: { a: sa('running') } } },
+    })
+
+    expect(getByText(/1 agent running/)).toBeTruthy()
+    expect(queryByText('Turn interrupted')).toBeNull()
+  })
+
+  it('trusts snapshot child activity before reconnect details hydrate', () => {
+    const slots = [
+      {
+        key: 'plain', title: 'delegated work', running: false, messages: 5,
+        interrupted: true, subagents_running: true, last_message: 'Delegating',
+      },
+      {
+        key: 'loop', title: 'loop work', running: false, messages: 5,
+        interrupted: true, subagents_running: true, last_message: 'Delegating',
+      },
+      {
+        key: 'orchestrating', title: 'planning', running: false, messages: 5,
+        interrupted: true, orchestrating: true, last_message: 'Planning',
+      },
+      {
+        key: 'queued', title: 'queued turn', running: false, messages: 5,
+        interrupted: true, queue_depth: 1, last_message: 'Queued',
+      },
+    ]
+    const { container } = renderSidebar(slots, {
+      goalLoops: { loop: { cycle_count: 9, max_cycles: 24 } },
+    })
+
+    expect(container.querySelector('[data-session-row="plain"]')?.textContent).not.toContain('Turn interrupted')
+    expect(container.querySelector('[data-session-row="plain"]')?.textContent).toContain('In progress')
+    expect(container.querySelector('[data-session-row="loop"]')?.textContent).not.toContain('interrupted')
+    expect(container.querySelector('[data-session-row="loop"]')?.textContent).toContain('In progress')
+    expect(container.querySelector('[data-session-row="orchestrating"]')?.textContent).not.toContain('Turn interrupted')
+    expect(container.querySelector('[data-session-row="orchestrating"]')?.textContent).toContain('In progress')
+    expect(container.querySelector('[data-session-row="queued"]')?.textContent).not.toContain('Turn interrupted')
+    expect(container.querySelector('[data-session-row="queued"]')?.textContent).toContain('In progress')
+  })
+
+  it('leaves completed ordinary sessions unflagged', () => {
+    const slots = [{ key: 'k', title: 'complete', running: false, messages: 5, interrupted: false, last_message: 'Done' }]
+    const { getByText, queryByText } = renderSidebar(slots, {})
+
+    expect(getByText('Done')).toBeTruthy()
+    expect(queryByText('Turn interrupted')).toBeNull()
+  })
+})

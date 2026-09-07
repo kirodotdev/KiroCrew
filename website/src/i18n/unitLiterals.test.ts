@@ -60,8 +60,25 @@ describe('a number is never glued to a unit literal', () => {
       'const c = { transition: `height ${MS}ms ${EASE}` }',
       'const d = { gridTemplateColumns: `${railWidth}px minmax(0,1fr) auto` }',
       'const e = useMotionTemplate`calc(${f} * (100% - ${KNOB}px))`',
+      // A CSS CUSTOM PROPERTY, written as a computed key because that is the only
+      // way to put one in a React style object. `CSS_PROPERTY` can only list names
+      // someone thought of; `--*` is closed, so the prefix decides.
+      "const f = { ['--sk-delay']: `${seq * STAGGER}ms` }",
+      "const g = { '--rail-w': `${w}px` }",
     ].join('\n')
     expect(unitLiteralHits('css.tsx', css)).toEqual([])
+  })
+
+  it('does not flag a diagnostic sink, whose format is the interface', () => {
+    // `devLog(tag, detail)` writes a line into a developer overlay that is read by
+    // comparing it against the same line in an earlier frame. The `ms` in it is no
+    // more copy than a `console.log`'s -- the same class, and the same exemption
+    // eslint.i18n.config.js gives it under `callees.exclude`.
+    const diag = [
+      "devLog('SETTLE.end', `${n} frames ${Math.round(elapsed)}ms`)",
+      "devLog('DEB.noIntent', `sinceHard=${Math.round(since)}ms`)",
+    ].join('\n')
+    expect(unitLiteralHits('diag.ts', diag)).toEqual([])
   })
 
   it('does not flag a value already routed through the seam', () => {

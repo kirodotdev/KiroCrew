@@ -67,6 +67,17 @@ class Capability(str, Enum):
     MULTI_AGENT = "multi_agent"
 
 
+#: Artifact kinds the publish SEAM cannot carry, whatever a provider could host.
+#: The render-and-tempfile path in ``publish_sync`` is ``str``-typed end to end and
+#: reads the body out of ``content``; a ``kind="image"`` artifact keeps its raster at
+#: ``source_path`` and has no text body, so the seam refuses it rather than shipping a
+#: zero-byte object. It lives HERE, on the module both the engine and every provider
+#: already import, so a provider's ``kind_support`` declaration and the seam's refusal
+#: cannot drift apart -- declaring a kind hostable that the seam then rejects offers the
+#: user a publish that fails at the end, which is what this set exists to prevent.
+NON_TEXT_KINDS: frozenset[str] = frozenset({"image"})
+
+
 class KindSupport(str, Enum):
     """Second capability axis (design §1.3b): how well a provider hosts a given
     artifact ``kind``, independent of *which operations* it supports.
@@ -184,6 +195,38 @@ class NotPublishedError(PublishError):
     """Precondition failure — the artifact is not published (→ 409)."""
 
 
+class DriveNotFound(PublishError):
+    """The destination this publication is bound to could not be resolved.
+
+    A TYPE rather than a message, because callers must decide on it. Whether a
+    published copy can still be withdrawn is the difference between deleting the
+    local record safely and stranding a world-readable object with no handle, so
+    the answer has to survive refactors, localisation and provider-specific
+    wording. Matching substrings like "NoSuchBucket" or "404" in stderr cannot:
+    it silently answers "gone" for a throttled or unauthorized reply, which is
+    exactly the reading that turns a temporary failure into a permanent orphan.
+
+    Raised ONLY where absence is PROVEN. Every other failure keeps its own type,
+    so a caller that cannot withdraw is never told the destination is gone.
+    Subclasses ``PublishError`` so existing handlers keep their 502 behaviour and
+    only callers that need the distinction have to look for it.
+
+    NO SITE RAISES THIS TODAY, deliberately, and the two branches that read it are
+    therefore unreachable. The personal drive resolves its destination by TAG, so a
+    lookup miss says the lookup failed -- the bucket and distribution may still be
+    serving -- and treating that as proof would strand a copy on evidence no stronger
+    than the substring match this type exists to replace. Proving absence needs a
+    POSITIVE probe: ask the destination directly about the resource named in the
+    publication (the bucket name is derived deterministically, so a direct 404 is
+    proof where a tag miss is not) rather than asking a directory whether it can
+    still find it. Until such a probe exists, nothing releases a handle except a
+    confirmed withdrawal -- which is the safe side of the trade, because a record
+    that will not clear is recoverable and a public copy with no handle is not.
+    Keep the type: the distinction is real, the callers are already correct, and the
+    missing piece is an oracle rather than a contract.
+    """
+
+
 class CapabilityNotSupportedError(PublishError):
     """Raised when a provider is asked for a facet it doesn't implement."""
 
@@ -243,6 +286,25 @@ class PublishResult:
     version_number: int  # destination version number (usually 1)
     concurrency_token: str  # opaque token to pass to the next push (sha256)
     owner: str = ""  # destination-side owner alias ("shared by")
+    # Non-empty when the publish SUCCEEDED but the link is not usable yet -- the content
+    # is stored at the destination and this result's handle is valid, so the publication
+    # must be recorded, but something the user needs to know stands between them and a
+    # working link (e.g. a CDN rollout that has not finished). Raising instead would be
+    # lossy: the caller stores the publication only on success, so an abort after the
+    # content is already uploaded strands it with no withdrawal handle. Recorded as the
+    # publication's ``notice`` -- NOT ``last_error``, because ``last_error`` is read as
+    # failure by every consumer, so a success reported there renders the publish red and
+    # withholds the URL.
+    notice: str = ""
+    # Machine-readable discriminator for ``notice``, so the frontend can pick per-case
+    # copy instead of printing one fixed "still rolling out" string for every notice.
+    # Exactly one of the allowed values -- ``"rolling_out"`` (a fresh CDN deploy that will
+    # resolve shortly), ``"distribution_disabled"`` (the delivery network is off, whose
+    # remedy is to re-enable it in the provider console, NOT to wait), ``"unknown"`` (a
+    # notice with no recognised discriminator) -- or ``""`` when there is no notice. It
+    # always moves with ``notice``: a result carrying ``notice`` text carries a code, and
+    # an empty ``notice`` carries an empty code.
+    notice_code: str = ""
 
 
 @dataclass
@@ -289,6 +351,26 @@ class PublishProvider(ABC):
         :meth:`available`. Providers with an automated install override this to
         self-install silently so a first publish completes with no manual setup.
         Returns ``True`` when ready.
+        """
+        return self.available()
+
+    def reachable_for(self, *, external_id: str) -> bool:
+        """Whether the account THIS publication is bound to can still be reached.
+
+        :meth:`available` answers a destination-WIDE question -- is this kind of
+        destination configured at all -- which is the right question when deciding
+        whether to offer it for a new publish. Paths acting on an EXISTING
+        publication need the narrower one, because a publication is bound to one
+        specific account: a registry that still holds *an* account can be missing
+        the one this artifact was published to, and asking the wide question there
+        reports a destination as reachable when this artifact's own is gone. The
+        withdrawal paths then attempt a call that cannot succeed and report its
+        failure as retryable, so an artifact bound to a removed account can neither
+        be withdrawn nor deleted -- it just keeps advising a retry that will never
+        work.
+
+        Default: the destination-wide answer, which is correct for any provider
+        that binds nothing per publication.
         """
         return self.available()
 
@@ -347,6 +429,35 @@ class PublishProvider(ABC):
         default returns ``None`` (no reconcile) so providers that can't read
         state back don't have to implement it. Best-effort: implementations
         must not raise.
+        """
+        return None
+
+    async def serving_notice(self, *, external_id: str) -> tuple[str, str] | None:
+        """Re-derive the CURRENT serving notice for an already-published id, as
+        ``(notice_text, notice_code)`` -- or ``None`` when the provider cannot
+        re-check.
+
+        This is the read-back half of the publish-time notice: a publish records
+        a ``notice`` (e.g. a CDN still rolling out) that later resolves on its
+        own, but nothing on the happy path ever revisits it, so the stale banner
+        would otherwise persist forever. The dashboard calls this to bring the
+        record up to date; ``publish_sync.reprobe_notice`` clears the stored
+        ``notice`` / ``notice_code`` only when this returns an EMPTY pair
+        ``("", "")`` -- i.e. the provider re-checked and the condition has
+        actually cleared. Never on a timer, never without checking.
+
+        The two non-clearing outcomes are kept distinct so the re-probe never
+        clears a notice it could not verify:
+
+        - ``None`` -- the provider cannot re-check serving state (the default,
+          and what an unavailable / unregistered provider yields). The re-probe
+          leaves any stored notice exactly as it was.
+        - ``(text, code)`` with a non-empty ``code`` -- the condition is still
+          live (possibly a DIFFERENT one, e.g. rolling-out has finished but the
+          distribution is now disabled); the re-probe refreshes the stored
+          notice to match rather than clearing it.
+
+        Best-effort: implementations must not raise.
         """
         return None
 

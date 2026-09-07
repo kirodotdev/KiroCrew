@@ -438,7 +438,12 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
       status frame). The text is still arriving, so a partial marker really may be
       a marker mid-flight, and showing reserved protocol as raw text is the cost
       being avoided. Safe there precisely because the frame is transient: the next
-      frame, or the sealed answer, re-renders from the full buffer.
+      frame, or the sealed answer, re-renders from the full buffer. Held back is
+      only a tail that can still BECOME the trailer -- ``[OPTIONS`` as the final
+      bytes, or ``[OPTIONS:`` with its content still open. A tail where any other
+      byte follows ``[OPTIONS`` is grammar-dead (the trailer opens ``[OPTIONS:``),
+      so it is quoted prose and is kept even here: cutting it would be the
+      permanent loss described below, wearing a streaming excuse.
     * ``False`` -- a BUFFERED surface that sends once (Slack's extraction, Webex's
       final answer, and this module's own zero-widget path). Such a caller cannot
       tell a live fragment from the assistant's prose, and cutting prose is
@@ -461,7 +466,24 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
     if hide_partial:
         idx = text.rfind("[OPTIONS")
         if idx != -1 and "]" not in text[idx:]:
-            return text[:idx].rstrip(), []
+            # Judge the fragment against the grammar it would have to satisfy,
+            # not by substring presence alone. :data:`OPTIONS_RE_TRAILER` opens
+            # ``[OPTIONS:`` -- once any byte other than ``:`` follows the
+            # substring, no later bytes can complete a marker there, so the
+            # fragment is the assistant's PROSE and holding it back protects
+            # nothing. It costs plenty: the trim point is wherever the quoted
+            # token sits, everything after it to buffer end goes with it, and
+            # when no ``]`` ever arrives the sealed frame re-trims too, so the
+            # transient-frame consolation above does not apply. Locating a
+            # marker by substring without asking whether it READS as one is
+            # the class #8983 fixed at the directive seam; this is the same
+            # rule at the trailer seam. Only the tail-most occurrence can be
+            # mid-flight -- a stream appends, so text after an opener means
+            # that opener was never in flight -- which is why one viability
+            # check here beats walking earlier occurrences.
+            tail = text[idx + len("[OPTIONS") :]
+            if not tail or tail.startswith(":"):
+                return text[:idx].rstrip(), []
     return text, []
 
 

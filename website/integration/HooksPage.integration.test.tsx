@@ -350,10 +350,15 @@ describe('HooksPage Integration Tests', () => {
 
     renderWithRouter(<HooksPage />)
 
-    // Component should display an error message with text matching the error
+    // The read failure renders through the shared ErrorNotice (role="alert",
+    // agent hand-off) with a Retry beside it -- not a hand-written "Error" banner.
     await waitFor(() => {
-      expect(screen.getByText('Error')).toBeInTheDocument()
-      expect(screen.getByText(/failed to load hooks/i)).toBeInTheDocument()
+      const notice = screen.getByTestId('hooks-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent(/failed to load hooks/i)
+      expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+      // Each failed read (hooks list, provider hooks) carries its own Retry.
+      expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0)
     }, { timeout: 2000 })
   })
 

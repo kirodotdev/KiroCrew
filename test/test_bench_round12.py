@@ -39,7 +39,7 @@ from kiro_crew.eval.bench.retrieval import RetrievalConfig, retrieve_for_instanc
 def _cached_corpus() -> Path:
     """Where the harness itself would put the cached corpus.
 
-    Derived rather than hardcoded: a literal home path fails the repo's scrub-lint and
+    Derived rather than hardcoded: a literal home path fails the repo's internal-content scan and
     would be wrong on every other machine, and `datasets` already owns this answer.
     """
     from kiro_crew.eval.bench import datasets

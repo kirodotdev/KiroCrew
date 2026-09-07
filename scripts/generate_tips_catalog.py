@@ -25,7 +25,11 @@ _DOCS_DIR = _REPO_ROOT / "src" / "kiro_crew" / "docs"
 # tips_allowlist is dependency-free, so importing it never pulls the runtime.
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST  # noqa: E402
-from kiro_crew.tips_text import truncate_summary  # noqa: E402
+from kiro_crew.tips_text import (  # noqa: E402
+    first_prose_paragraph,
+    strip_decoration,
+    truncate_summary,
+)
 
 
 def _get_git_mtime(filepath: Path) -> float:
@@ -70,25 +74,20 @@ def _scan_docs_catalog() -> list[dict]:
         m = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
         if not m:
             continue
-        title = m.group(1).strip()
-        # First non-empty paragraph after H1
-        rest = text[m.end():].lstrip("\n")
-        para = ""
-        for block in rest.split("\n\n"):
-            stripped = block.strip()
-            if stripped and not stripped.startswith("#"):
-                para = " ".join(stripped.split())
-                break
-        if not para:
+        title = strip_decoration(m.group(1))
+        para = first_prose_paragraph(text[m.end() :])
+        if not title or not para:
             continue
         mtime = _get_git_mtime(md)
-        entries.append({
-            "feature": title,
-            "title": title,
-            "summary": truncate_summary(para),
-            "doc": md.name,
-            "mtime": mtime,
-        })
+        entries.append(
+            {
+                "feature": title,
+                "title": title,
+                "summary": truncate_summary(para),
+                "doc": md.name,
+                "mtime": mtime,
+            }
+        )
     return entries
 
 

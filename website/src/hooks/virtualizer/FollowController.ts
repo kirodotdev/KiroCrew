@@ -349,17 +349,44 @@ export function evaluateAutoPin(args: {
    *  caller that has no run signal to give (the app-SDK chat surface). The chat
    *  transcript passes the real thing. */
   runActive?: boolean
+  /** Is an anchor restore currently OWNING the scroll position?
+   *
+   *  A restore places the reader at an absolute offset and then re-lands it as
+   *  measurements arrive. An automatic pin during that window is a second owner
+   *  writing the same scroller, and the two fight: captured on a phone as
+   *  `WRITE autopin 3091->4245` answered by `WRITE settle 4245->3091`, twice in
+   *  120ms, 1,154px each way. The settle won those rounds, but only because its
+   *  budget had not expired yet -- which is why the same switch sometimes landed
+   *  at the bottom and sometimes did not.
+   *
+   *  Released rather than merely skipped, for the reason the idle branch below
+   *  gives: skipping leaves follow armed, so the next growth yanks the reader
+   *  from wherever the restore just put them. */
+  restoreGate?: boolean
 }): AutoPinResult {
   const { stick, geom, lastWriteTop } = args
   const epsilon = args.epsilon ?? SELF_SCROLL_EPSILON
   const viewportShrink = Math.max(0, args.viewportShrink ?? 0)
   const runActive = args.runActive ?? true
   const target = bottomTarget(geom)
+  if (args.restoreGate) return { pin: false, stick: false, target }
   if (!stick) return { pin: false, stick: false, target }
   // Idle: release rather than merely skip the pin. Skipping would leave follow
   // armed, so the next turn to start would yank this reader to the bottom from
   // wherever they had settled — the same defect one event later.
+  //
+  // But distance alone cannot say WHO opened that gap, and the two causes want
+  // opposite answers: a reader who scrolled up should be released, while a
+  // reader the CONTENT moved away from should be carried back.
   if (!runActive && distanceFromBottom(geom) > atBottomEpsilon()) {
+    // Released, and deliberately WITHOUT an exception for "the reader is resting on
+    // our own last write". Reading our own write as consent is an automatic action
+    // authorizing itself: the tempting case -- a late tail image or a spacer reprice
+    // pushing the bottom away from a reader who never moved -- is indistinguishable
+    // from the case this rule exists for, and treating it as follow is what sprang a
+    // parked reader down to content they had not asked to see. With nothing running
+    // there is no output to follow, so the honest outcome is to leave them where they
+    // are and let a real downward gesture, or the next turn, re-arm this.
     return { pin: false, stick: false, target }
   }
   // Release only on a genuine user scroll-UP: scrollTop dropped below our last
@@ -377,4 +404,96 @@ export function evaluateAutoPin(args: {
     return { pin: false, stick: false, target }
   }
   return { pin: Math.abs(geom.scrollTop - target) > atBottomEpsilon(), stick: true, target }
+}
+
+
+/**
+ * Does ONE row answer to this anchor, in either identity?
+ *
+ * Neither end of a row is stable: appends rename the tail, and a landing page that
+ * regroups messages into the head renames the lead. So an anchor carries both, and
+ * anything that asks "is this the anchored row" has to accept either -- otherwise a
+ * row found through `alt` fails the next check by construction, because `alt` only
+ * matched at all when the tail did not.
+ *
+ * The two prefixes make cross-matching impossible, so accepting both cannot widen a
+ * match; it only stops a resolved row from being disowned one step later.
+ */
+export function anchorMatchesRow(input: {
+  anchor: { key: string; alt?: string }
+  tailId: string | null
+  altId: string | null
+}): boolean {
+  const { anchor, tailId, altId } = input
+  if (tailId !== null && tailId === anchor.key) return true
+  return !!anchor.alt && altId !== null && altId === anchor.alt
+}
+
+/**
+ * Resolve a persisted anchor to a row index, matching EITHER identity.
+ *
+ * A row is named by one of its member messages, and a turn's membership changes
+ * at both ends: streaming appends rename its tail, an older page landing
+ * regroups messages into its head and renames its lead. So a single identity is
+ * reliable only against the growth direction it was chosen for -- and a switch
+ * into a live turn does both at once, which is how a restore came to miss and
+ * fall back to the bottom every time.
+ *
+ * TAIL FIRST, as a whole pass. The tail id is the stronger signal (it is the one
+ * a page landing cannot rename), so an alt match must never win over a tail
+ * match on a different row -- which interleaving the two comparisons per row
+ * would allow. The two vocabularies carry different prefixes, so a cross-match
+ * is impossible by construction rather than by ordering alone.
+ */
+export function resolveAnchorRow(input: {
+  count: number
+  anchor: { key: string; alt?: string }
+  tailIdAt: (i: number) => string | null
+  altIdAt: (i: number) => string | null
+}): number {
+  const { count, anchor, tailIdAt, altIdAt } = input
+  for (let i = 0; i < count; i++) {
+    if (tailIdAt(i) === anchor.key) return i
+  }
+  if (!anchor.alt) return -1
+  for (let i = 0; i < count; i++) {
+    if (altIdAt(i) === anchor.alt) return i
+  }
+  return -1
+}
+
+
+/**
+ * Has an anchor restore finished landing?
+ *
+ * Two conditions, and the second one is the subtle half. The row must sit where
+ * the anchor says (`delta`), AND the thing CAUSING the corrections must have
+ * stopped -- otherwise "in tolerance right now" declares victory mid-measurement,
+ * observed as ok at frame 1 (d=0.5) followed by a further +49px at frame 3: 49px
+ * of visible hop just after the cover lifted.
+ *
+ * The cause is height arriving ABOVE the anchor (rows above it repricing from
+ * their estimates), which is NOT the same as the transcript growing. Testing the
+ * whole `scrollHeight` conflates the two, and during a live turn the difference
+ * is total: appends land BELOW the anchor and do not move it at all, yet they
+ * change the total height on every frame -- so convergence became unreachable and
+ * every restore into a streaming session burned the entire budget with the
+ * skeleton up, however early it had actually landed.
+ *
+ * `aboveDelta` is the change in the anchor's own content offset since the last
+ * frame. It has the property this needs: OUR corrective write moves `scrollTop`
+ * by exactly the delta it corrects, so it leaves that offset unchanged -- the loop
+ * cannot mistake its own action for instability -- while measurement arriving
+ * above moves it without us touching `scrollTop`.
+ */
+export function anchorSettleConverged(input: {
+  delta: number
+  aboveDelta: number
+  tolerance: number
+  /** False on the first frame, where there is no previous offset to compare. */
+  hasPrevious: boolean
+}): boolean {
+  if (!input.hasPrevious) return false
+  if (Math.abs(input.delta) > input.tolerance) return false
+  return Math.abs(input.aboveDelta) <= input.tolerance
 }

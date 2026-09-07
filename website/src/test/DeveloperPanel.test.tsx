@@ -6,6 +6,8 @@
  * - The Updates section is GONE (Beta Channel moved to Settings > About)
  * - "Open Developer page" link renders only while Developer Mode is on and
  *   navigates to /developer
+ * - The Feature Previews section (moved here from the Developer page) is
+ *   mounted, unconditionally, between Developer Tools and Gateway
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
@@ -53,6 +55,41 @@ describe('DeveloperPanel', () => {
     renderPanel()
     fireEvent.click(screen.getByText('Open Developer page'))
     expect(screen.getByTestId('loc').textContent).toBe('/developer')
+  })
+
+  describe('Feature Previews section', () => {
+    // The cards moved here from the standalone Developer page's own tab. The
+    // per-card behaviour (fail-closed reads, ingress links, one key per flag) is
+    // pinned in previewSurfaces.test.tsx against the section in isolation; this
+    // pins that DeveloperPanel actually MOUNTS it, sits it between the two
+    // consent gates, and does not gate it behind Developer Mode — a reader who
+    // has not unlocked the Developer page must still find the opt-ins.
+    beforeEach(() => { localStorage.removeItem('mc-preview-webhooks') })
+
+    it('renders the three preview toggles with Developer Mode off', () => {
+      renderPanel()
+      expect(screen.getByRole('heading', { name: 'Feature Previews' })).toBeInTheDocument()
+      expect(screen.getByRole('switch', { name: 'Webhooks' })).toHaveAttribute('aria-checked', 'false')
+      expect(screen.getByRole('switch', { name: 'Crew Members and Crew Mode' })).toHaveAttribute('aria-checked', 'false')
+      expect(screen.getByRole('switch', { name: 'Chat on a crew' })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('orders the section after Developer Tools', () => {
+      // Intent-frequency order: the two consent gates first, the desktop-only
+      // Gateway switch (when present) last.
+      renderPanel()
+      const headings = screen.getAllByRole('heading').map(h => h.textContent)
+      expect(headings.indexOf('Developer Tools')).toBeLessThan(headings.indexOf('Feature Previews'))
+    })
+
+    it('flipping a preview writes its own flag and offers the hidden page', () => {
+      renderPanel()
+      fireEvent.click(screen.getByRole('switch', { name: 'Webhooks' }))
+      expect(localStorage.getItem('mc-preview-webhooks')).toBe('1')
+      expect(localStorage.getItem('mc-dev-mode')).toBeNull()
+      fireEvent.click(screen.getByText('Open Webhooks'))
+      expect(screen.getByTestId('loc').textContent).toBe('/webhooks')
+    })
   })
 
   describe('Gateway section', () => {

@@ -39,7 +39,11 @@ const loadSource = async () => {
 describe('HooksPage table sticky Actions column', () => {
   it('measures the real scroller', async () => {
     const src = await loadSource()
-    expect(src).toMatch(/<div ref=\{attachHooksScroller\} className="overflow-x-auto">/)
+    // The scroller ref is a wrapper that delegates to the hook's attach and
+    // additionally measures the scroller's visible width for the expanded
+    // last_error row; both must land on the same element.
+    expect(src).toMatch(/<div ref=\{attachHooksScrollerMeasured\} className="overflow-x-auto">/)
+    expect(src).toMatch(/const attachHooksScrollerMeasured = useCallback\(\(node: HTMLDivElement \| null\) => \{\s*attachHooksScroller\(node\)/)
   })
 
   it('pins the Actions header cell with an overflow-gated seam', async () => {
@@ -64,7 +68,9 @@ describe('HooksPage table sticky Actions column', () => {
     expect(cls).toContain('right-0')
     expect(cls).toContain('bg-card')
     // The row names the group the overlay listens to…
-    expect(src).toMatch(/<tr key=\{h\.id\} className=\{`group\/hookrow /)
+    // The row is wrapped in a keyed Fragment so its expandable last_error row
+    // can follow it as a sibling; the key moved to the Fragment.
+    expect(src).toMatch(/<Fragment key=\{h\.id\}>\s*<tr className=\{`group\/hookrow /)
     // …and the overlay mirrors zebra on even rows, hover on odd rows.
     const overlay = src.match(/<div aria-hidden className=\{`absolute inset-0 -z-10 ([^`]*)`\} \/>/)
     expect(overlay, 'the row-state overlay is gone from the Actions cell').toBeTruthy()

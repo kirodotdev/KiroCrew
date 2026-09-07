@@ -26,6 +26,8 @@ from pathlib import Path
 import pytest
 from skill_script_helpers import no_bytecode
 
+from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
+
 # Resolve the push_guard.py script path relative to the repo root.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PUSH_GUARD = str(
@@ -54,43 +56,104 @@ def _run_push_guard(cwd: str, extra_args: list[str] | None = None) -> tuple[int,
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def _fixture_git_env() -> dict[str, str]:
+    """Env for a fixture git call: no host config, templates, hooks, or identity bleed.
+
+    The session/module-scoped template builders below run BEFORE the function-scoped
+    ``_git_identity`` autouse fixture in ``test/conftest.py`` has pinned anything, so
+    they would otherwise read the developer's real ``~/.gitconfig`` -- a
+    ``commit.gpgSign`` aborts the whole template, and a ``core.hooksPath`` or
+    ``init.templateDir`` would EXECUTE host hooks from inside the test run. The
+    ``GIT_DIR`` location family is dropped (the production list, so an exported
+    ``GIT_DIR`` from a hook or ``rebase --exec`` cannot retarget the fixture), both
+    template channels are emptied, and identity is supplied. Deliberately NOT
+    ``git_command_env()``: that pins ``diff.external`` empty for commands that never
+    diff, and these fixtures run ``git diff``.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
+    env.update(
+        {
+            "GIT_TEMPLATE_DIR": "",
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "init.templateDir",
+            "GIT_CONFIG_VALUE_0": "",
+        }
+    )
+    return env
+
+
 def _git(cwd: str, *args: str) -> str:
-    """Run a git command in cwd; raise on failure."""
+    """Run a git command in cwd with the scrubbed fixture env; raise on failure."""
     proc = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
         check=True,
+        env=_fixture_git_env(),
     )
     return proc.stdout.strip()
 
 
-@pytest.fixture
-def repo_pair(tmp_path):
-    """Create a local 'origin' bare repo and a working clone.
+@pytest.fixture(scope="session")
+def _repo_pair_template(tmp_path_factory) -> tuple[str, str]:
+    """Build the bare origin + initial clone once per session; ``repo_pair`` copies it.
 
-    Returns (clone_dir, origin_dir) where origin_dir is a bare repo and
-    clone_dir has 'origin' pointing at origin_dir.
+    Six git subprocesses (~1-1.6s) were previously paid on every one of the ~40
+    tests below. Session scope is safe because the template directories are
+    never handed to a test, only copied from via ``shutil.copytree`` -- so a
+    test that pushes, branches, or clones ``work2`` off its own copy of
+    ``origin_dir`` cannot reach another test's copy.
     """
-    origin_dir = str(tmp_path / "origin.git")
-    clone_dir = str(tmp_path / "work")
+    root = tmp_path_factory.mktemp("push-guard-seed")
+    origin_dir = str(root / "origin.git")
+    clone_dir = str(root / "work")
 
-    # Create a bare origin with one commit on main.
     os.makedirs(origin_dir)
     _git(origin_dir, "init", "--bare")
     _git(origin_dir, "symbolic-ref", "HEAD", "refs/heads/main")
 
-    # Clone it.
-    _git(str(tmp_path), "clone", origin_dir, "work")
+    _git(str(root), "clone", origin_dir, "work")
     _git(clone_dir, "checkout", "-b", "main")
 
-    # Create an initial commit on main.
     Path(clone_dir, "README.md").write_text("initial\n")
     _git(clone_dir, "add", "README.md")
     _git(clone_dir, "commit", "-m", "initial commit")
     _git(clone_dir, "push", "-u", "origin", "main")
 
+    return clone_dir, origin_dir
+
+
+@pytest.fixture
+def repo_pair(tmp_path, _repo_pair_template):
+    """A local 'origin' bare repo and a working clone, copied from the template.
+
+    Returns (clone_dir, origin_dir) where origin_dir is a bare repo and
+    clone_dir has 'origin' pointing at origin_dir. Each test gets its own copy,
+    so pushes, branches, and `work2` clones (which several tests create
+    alongside this pair) never touch another test's copy.
+    """
+    template_clone, template_origin = _repo_pair_template
+    origin_dir = str(tmp_path / "origin.git")
+    clone_dir = str(tmp_path / "work")
+    shutil.copytree(template_origin, origin_dir)
+    shutil.copytree(template_clone, clone_dir)
+    # The copied clone's remote still points at the TEMPLATE's origin path;
+    # repoint it at this test's own copy so pushes/fetches never reach (or
+    # mutate) the session template or another test's copy.
+    _git(clone_dir, "remote", "set-url", "origin", origin_dir)
+    # copytree resets every file's mtime, which invalidates git's cached
+    # index stat info and makes git see a false "unstaged changes" diff (e.g.
+    # git rebase refuses with "You have unstaged changes"). Nothing in the
+    # template is ever uncommitted, so resetting hard to HEAD is a no-op on
+    # content and forces git to re-stat every file against the real index.
+    _git(clone_dir, "reset", "--hard", "HEAD")
     return clone_dir, origin_dir
 
 

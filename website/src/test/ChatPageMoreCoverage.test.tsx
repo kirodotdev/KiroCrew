@@ -14,9 +14,9 @@
  *     rendering is covered by AssistantMessage.test.tsx.
  *
  *  2. The window-event listeners: `mc-config-changed` (chat-settings reload),
- *     `toggle-pin-chat-sidebar`, and `mc:run-in-terminal` (both the non-string
- *     guard and the PTY-never-connects timeout that reports failure back to the
- *     code block).
+ *     `toggle-pin-chat-sidebar`, `kirocrew-tool-call` (foreground browser
+ *     auto-open), and `mc:run-in-terminal` (both the non-string guard and the
+ *     PTY-never-connects timeout that reports failure back to the code block).
  *
  *  3. The welcome-state "Continue a previous chat?" suggestion list and
  *     `handleResumeSession`, reached by pre-filling the composer through the
@@ -55,7 +55,7 @@ interface AssistantProps {
 }
 let assistantProps: AssistantProps | null = null
 
-interface InputProps { value: string; onChange: (v: string) => void }
+interface InputProps { value: string; onChange: (v: string) => void; onScreenshot?: () => void }
 let inputProps: InputProps | null = null
 
 vi.mock('../pages/chat', async () => {
@@ -340,29 +340,34 @@ describe('ChatPage row callbacks — fork', () => {
     expect(apiMocks.forkChatSlot).toHaveBeenCalledWith('chat-1', 3, undefined, undefined, 'tail')
   })
 
-  it('reports a refused fork through an alert instead of switching sessions', async () => {
+  it('reports a refused fork through the in-page ErrorNotice instead of switching sessions', async () => {
     apiSpy('forkChatSlot').mockResolvedValue({ ok: false, error: 'slot is busy' })
     await renderTurn()
     await act(async () => { await assistantProps!.onFork!(1) })
-    await waitFor(() => expect(alertSpy).toHaveBeenCalled())
-    expect(String(alertSpy.mock.calls[0][0])).toContain('slot is busy')
+    // The surface is the shared ErrorNotice (role="alert" + agent hand-off),
+    // never a native alert(): the rule `errors-use-error-notice` forbids the
+    // browser dialog, which also carried no structured context to the agent.
+    const notice = await screen.findByTestId('action-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice.textContent).toContain('slot is busy')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
-  it('still alerts when the fork request throws, naming the real reason', async () => {
+  it('still reports when the fork request throws, naming the real reason', async () => {
     apiSpy('forkChatSlot').mockRejectedValue(new Error('network down'))
     await renderTurn()
     await act(async () => { await assistantProps!.onFork!(1) })
-    await waitFor(() => expect(alertSpy).toHaveBeenCalled())
-    const said = String(alertSpy.mock.calls[0][0])
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
     expect(said).toContain('Fork failed')
     // Flipped, as this assertion's previous form asked to be: it pinned the
     // reason being LOST — `unwrap()` rejects with a redux-toolkit
     // SerializedError (a PLAIN OBJECT), so the handler's `e instanceof Error`
     // test was false and the `String(e)` fallback rendered '[object Object]'.
     // The handler now reads the message through `utils/thunkError.errMessage`,
-    // which knows that shape, so the alert carries the real text.
+    // which knows that shape, so the notice carries the real text.
     expect(said).toContain('network down')
     expect(said).not.toContain('[object Object]')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 })
 
@@ -380,10 +385,10 @@ describe('ChatPage row callbacks — plan from here', () => {
     apiSpy('forkChatSlot').mockResolvedValue({ ok: false, error: 'no orchestrator agent' })
     await renderTurn()
     await act(async () => { await assistantProps!.onPlanFromHere!(2) })
-    await waitFor(() => expect(alertSpy).toHaveBeenCalled())
-    const said = String(alertSpy.mock.calls[0][0])
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
     expect(said).toContain('no orchestrator agent')
     expect(said).not.toContain('Fork failed')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
   it('surfaces a failed plan apply and resolves false', async () => {
@@ -392,7 +397,9 @@ describe('ChatPage row callbacks — plan from here', () => {
     let applied: boolean | undefined
     await act(async () => { applied = await assistantProps!.onApplyPlan!([]) })
     expect(applied).toBe(false)
-    expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to apply plan'))
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
+    expect(said).toContain('Failed to apply plan')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
   it('resolves true and leaves the page quiet when the plan is accepted', async () => {
@@ -411,7 +418,9 @@ describe('ChatPage row callbacks — plan from here', () => {
     let applied: boolean | undefined
     await act(async () => { applied = await assistantProps!.onApplyPlan!([]) })
     expect(applied).toBe(false)
-    expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to apply plan'))
+    const said = (await screen.findByTestId('action-error')).textContent ?? ''
+    expect(said).toContain('Failed to apply plan')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 })
 
@@ -521,6 +530,23 @@ describe('ChatPage window-event listeners', () => {
     const first = localStorage.getItem('mc-sidebar-pinned')
     act(() => { window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) })
     await waitFor(() => expect(localStorage.getItem('mc-sidebar-pinned')).not.toBe(first))
+  })
+
+  it('opens the Browser panel when the foreground session starts a playwright-cli command', async () => {
+    const { store } = await renderTurn()
+    expect(store.getState().chat.activityOpen).toBe(false)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('kirocrew-tool-call', {
+        detail: {
+          slot: 'chat-1',
+          is_shell: true,
+          input_preview: 'playwright-cli open https://example.test',
+        },
+      }))
+    })
+
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
   })
 
   it('ignores a run-in-terminal request that carries no command', async () => {
@@ -669,5 +695,33 @@ describe('ChatPage widget composer bridge', () => {
       window.dispatchEvent(new CustomEvent('mc-widget-send', { detail: {} }))
     })
     expect(inputProps!.value).toBe('')
+  })
+})
+
+// A failed screen capture used to be discarded by a bare `catch {}` commented
+// "user cancelled" -- but cancellation is NOT an error path: the route answers a
+// cancelled capture with 200 `{"path": ""}`, which the caller's `if (path)`
+// guard absorbs. So the only things that reached that catch were real failures
+// (the 400 off macOS, the 120s capture timeout, the request never reaching the
+// gateway), and the user saw nothing at all.
+describe('ChatPage screen capture failures', () => {
+  it('reports a failed capture instead of swallowing it', async () => {
+    apiSpy('screenshot').mockRejectedValue(new Error('screenshot timed out'))
+    await renderTurn()
+    await waitFor(() => expect(inputProps?.onScreenshot).toBeTypeOf('function'))
+    await act(async () => { inputProps!.onScreenshot!() })
+    // The notice names the action, not just the transport text: a bare
+    // "screenshot timed out" above the composer tells the user nothing about
+    // which click failed.
+    expect(await screen.findByText('Screenshot failed: screenshot timed out')).toBeInTheDocument()
+  })
+
+  it('stays silent when the user cancels, which is not a failure', async () => {
+    // The cancelled shape: HTTP 200, empty path. No notice, no attachment.
+    apiSpy('screenshot').mockResolvedValue({ path: '' })
+    await renderTurn()
+    await waitFor(() => expect(inputProps?.onScreenshot).toBeTypeOf('function'))
+    await act(async () => { inputProps!.onScreenshot!() })
+    expect(screen.queryByText(/unknown error/i)).not.toBeInTheDocument()
   })
 })

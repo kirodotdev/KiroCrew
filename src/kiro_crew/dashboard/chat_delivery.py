@@ -456,15 +456,14 @@ async def steer_into_running_turn(
     # RPC: delivered and live, with no consumption echo yet, so `written`.
     #
     # Gone means SOME remover took it during the await, and absence alone does not
-    # say which -- that is the whole difficulty. AT LEAST TWO can: the settle path
-    # promoting an entry a non-empty echo accounted for, and the
-    # `settle_all_on_empty` sweep clearing the pending list on an EMPTY echo, which
-    # is no evidence of consumption at all. After the fact the two removals are
-    # indistinguishable here, so inferring `consumed` from absence persisted a
-    # success badge on a frame that proved nothing -- terminal and never corrected,
-    # which is the exact claim this change exists to stop. An earlier version of
-    # this comment asserted that every other remover had returned above; it had not,
-    # and that sentence is why the bug read as correct.
+    # say which -- that is the whole difficulty. The settle path promotes an entry
+    # a non-empty echo accounted for, and a remover that takes entries WITHOUT
+    # such evidence (an empty-echo sweep, should any caller ever select one) looks
+    # identical here after the fact. So inferring `consumed` from absence persisted
+    # a success badge on a frame that proved nothing -- terminal and never
+    # corrected, which is the exact claim this change exists to stop. An earlier
+    # version of this comment asserted that every other remover had returned
+    # above; it had not, and that sentence is why the bug read as correct.
     #
     # So the state comes from POSITIVE evidence: the settle path records the delivery
     # ids a non-empty echo accounted for, and only a recorded id yields `consumed`.
@@ -534,18 +533,33 @@ def queue_for_next_turn(
     message: str,
     *,
     directive_user_origin: bool = False,
+    send_id: str | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
+
+    *send_id* is the client-minted ``meta.sendId`` the plain send path persists
+    on its user row, already passed through ``normalize_send_id`` by the caller.
+    When present it is stamped onto the queue entry's meta: the drain unions
+    every consumed entry's meta onto the row it writes, so this is what gives a
+    QUEUED send's row the same ``meta.sendId`` a dispatched send's row gets --
+    without it the drained row is id-less and a client that sent into a busy
+    slot has no identity to prove its own delivery by (it would have to fall
+    back to text, which a same-text resend or an injection can share). Additive:
+    a send whose POST carried no usable id stores nothing here and the entry
+    meta keeps the exact prior shape.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import containment_meta
 
+    meta: dict[str, Any] = containment_meta(state, slot)
+    if send_id:
+        meta["sendId"] = send_id
     qid = slot.queue_append(
         message,
-        meta=containment_meta(state, slot),
+        meta=meta,
         directive_user_origin=directive_user_origin,
     )
     state.broadcast_ws(

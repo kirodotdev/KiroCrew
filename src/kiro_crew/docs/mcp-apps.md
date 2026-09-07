@@ -233,7 +233,7 @@ these being absent, per the spec's own graceful-degradation rule:
 | app-initiated `resources/read`, `ping` | not answered |
 | `pip` display mode | not offered (`availableDisplayModes` is `inline`, `fullscreen`) |
 
-`HostContext` carries `theme`, `displayMode`, `availableDisplayModes` and
+The `hostContext` reply carries `theme`, `displayMode`, `availableDisplayModes` and
 `containerDimensions`. The spec's `styles.variables` theming channel is not sent,
 so an app should declare its own fallbacks for every CSS variable it consumes and
 key off `theme` for light/dark.
@@ -297,4 +297,5 @@ app HTML is **server-controlled code running in your dashboard**.
 
 For **which** iframe host a new dashboard feature should use, and why an iframe
 can never be moved in the DOM without reloading it, see
-[Dashboard iframe hosts](dashboard-iframe-hosts.md).
+[Dashboard iframe hosts](https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/dashboard-iframe-hosts.md)
+in the contributor documentation.

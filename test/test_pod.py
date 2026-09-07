@@ -1249,6 +1249,24 @@ class TestPodEnvCredentialScrub:
         survivors = set(_CREDENTIAL_KEYS) & set(env)
         assert survivors == {CRED_KIRO_API_KEY, CRED_OWNER_ID}
 
+    @pytest.mark.parametrize("inherited", ["::1", "0.0.0.0", "192.168.1.5"])
+    def test_bind_is_pinned_to_the_loopback_every_pod_client_dials(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inherited: str
+    ) -> None:
+        """An inherited KIROCREW_BIND must never reach the pod gateway.
+
+        `health()`, `mint_token()` and `pod_api()` all dial `127.0.0.1:<port>`,
+        and the ownership attestation vouches for the recorded PROCESS, not for
+        the ADDRESS it bound. A gateway inheriting `::1` would serve the IPv6
+        loopback while a foreign local process binds `127.0.0.1:<port>` — the
+        address the mint's own HTTP request then lands on. `0.0.0.0` (the
+        official image's export) would additionally expose the pod beyond the
+        host. The pin is what keeps listener and attestation on one address.
+        """
+        monkeypatch.setenv("KIROCREW_BIND", inherited)
+        env = rt.build_pod_env(cfg, tmp_path / "home", 7999, tmp_path / "co")
+        assert env["KIROCREW_BIND"] == "127.0.0.1"
+
 
 class TestWaitHealthyFailsFast:
     def test_bails_on_failed_unit(self, cfg: PodConfig) -> None:
@@ -1339,6 +1357,12 @@ class TestPortOwner:
         False itself, which still wins: this fixture runs first.
         """
         monkeypatch.setattr(rt, "IS_POSIX", True)
+        # Every positive ownership verdict requires the gateway's pid sidecar to
+        # agree with the service manager's MainPID. Patching the reader stands in
+        # for a record that PROVED fresh (it answers ``None`` otherwise), which is
+        # what lets these cases vary listener evidence independently; the
+        # freshness proof itself is covered in ``test_pod_api.py``.
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: 4242)
 
     @staticmethod
     def _listener(pid: int, address: str = "127.0.0.1", family: str = "4"):
@@ -1410,9 +1434,10 @@ class TestPortOwner:
         monkeypatch.setattr(rt, "main_pid", lambda c, n: None)
         assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_FOREIGN
 
-    def test_no_listener_lookup_tool_is_unproven(
+    def test_missing_main_pid_is_unproven_without_listener_tool(
         self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(rt, "main_pid", lambda c, n: None)
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: False)
         monkeypatch.setattr(
             rt, "find_port_listeners", lambda port: pytest.fail("must not be reached")
@@ -1439,24 +1464,70 @@ class TestPortOwner:
         monkeypatch.setattr(rt, "main_pid", _boom)
         assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_UNPROVEN
 
-    def test_a_throwing_listener_lookup_is_unproven(
+    def test_a_throwing_listener_lookup_keeps_a_fresh_pid_attestation(
         self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A broken lookup says nothing about who holds the port.
+
+        The autouse fixture supplies a record that PROVED fresh, so downgrading
+        it here would punish the pod for the tool's failure. What is refused is
+        an UNPROVABLE record -- see ``TestPodRecordFreshness`` in
+        ``test_pod_api.py`` for that leg.
+        """
+
         def _boom(port: int) -> list:
             raise OSError("lsof exploded")
 
+        monkeypatch.setattr(rt, "main_pid", lambda c, n: 4242)
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: True)
         monkeypatch.setattr(rt, "find_port_listeners", _boom)
-        assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_UNPROVEN
+        assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_POD
 
-    def test_no_visible_listener_is_unproven(
+    def test_an_unattributable_listener_keeps_a_fresh_pid_attestation(
         self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """HTTP answered but no LISTEN socket covering loopback is visible."""
+        """An installed tool can still fail to attribute the reached socket.
+
+        Exactly what an unprivileged caller sees when the socket belongs to a
+        gateway its own process cannot inspect, which is how every pod runs.
+        """
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: True)
         monkeypatch.setattr(rt, "find_port_listeners", lambda port: [])
         monkeypatch.setattr(rt, "main_pid", lambda c, n: 4242)
+        assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_POD
+
+    @pytest.mark.parametrize("tool_available, listeners", [(False, None), (True, [])])
+    def test_an_unprovable_record_withholds_the_pod_secret(
+        self,
+        cfg: PodConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tool_available: bool,
+        listeners: list[platform_compat.PortListener] | None,
+    ) -> None:
+        """No listener evidence AND no provable record: the secret stays put.
+
+        ``_pod_recorded_pid`` answering ``None`` is what a crash leftover, a
+        pre-binding record, and a host that will not report a start time all
+        collapse to, so this covers the residual refusal on every one of them.
+        """
+        home = cfg.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / ".local_secret").write_text("must-not-leave-this-process")
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cfg, name, port: None)
+        monkeypatch.setattr(rt, "main_pid", lambda c, n: 4242)
+        monkeypatch.setattr(rt, "derive_port", lambda c, n: 7999)
+        monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: tool_available)
+        if listeners is not None:
+            monkeypatch.setattr(rt, "find_port_listeners", lambda port: listeners)
+        monkeypatch.setattr(
+            rt,
+            "loopback_urlopen",
+            lambda *a, **k: pytest.fail("the secret must not be sent"),
+        )
+
         assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_UNPROVEN
+        with pytest.raises(rt.PodOwnershipUnproven):
+            rt.mint_token(cfg, "demo", "1h")
 
 
 class TestMainPid:

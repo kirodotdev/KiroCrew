@@ -492,7 +492,7 @@ describe('WebexPanel save failure', () => {
     expect(await screen.findByText(body, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
-  it('shows a non-JSON error message verbatim and retires it after eight seconds', async () => {
+  it('shows a non-JSON error message verbatim and keeps it up until the next attempt', async () => {
     seed({}, { save: { reject: new Error('502 Bad Gateway') } })
     await hydrated()
 
@@ -501,8 +501,10 @@ describe('WebexPanel save failure', () => {
       await screen.findByText('502 Bad Gateway', undefined, { timeout: 5_000 }),
     ).toBeInTheDocument()
 
+    // No timer retires it: the rejected token draft is still in the field, and a
+    // notice that erased itself left a quiet form that read as saved.
     await act(async () => { vi.advanceTimersByTime(8_100) })
-    expect(screen.queryByText('502 Bad Gateway')).not.toBeInTheDocument()
+    expect(screen.getByText('502 Bad Gateway')).toBeInTheDocument()
   })
 
   it('falls back to the gateway hint when the rejection is not an Error', async () => {

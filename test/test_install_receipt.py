@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
+import threading
 import urllib.error
 import urllib.parse
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,6 +27,23 @@ _real_receipt_secret = install_receipt.receipt_secret
 
 
 @pytest.fixture(autouse=True)
+def _clean_pending_receipt_threads():
+    """Drop any leftover dispatch()-tracked thread entries between tests.
+
+    Tests that stub ``threading.Thread`` (e.g. to assert on constructor
+    kwargs) hand ``dispatch()`` a fake object that is added to
+    ``install_receipt._pending_threads`` but never runs, so it never removes
+    itself the way a real worker's ``finally`` block does. Left alone these
+    fakes just accumulate harmlessly (wait_for_pending_receipt_writes ignores
+    anything that is not a real Thread), but clearing them keeps each test's
+    view of pending work honest.
+    """
+    yield
+    with install_receipt._pending_lock:
+        install_receipt._pending_threads.clear()
+
+
+@pytest.fixture(autouse=True)
 def _eligible_telemetry_host(monkeypatch):
     """Neutralize ambient CI/dev-home suppression for explicit gate tests."""
     monkeypatch.delenv(beacon.DISABLE_ENV, raising=False)
@@ -37,7 +57,7 @@ def _eligible_telemetry_host(monkeypatch):
     monkeypatch.setattr(
         install_receipt,
         "receipt_secret",
-        lambda *, create=True: _SECRET,
+        lambda *, create=True, config_dir=None: _SECRET,
     )
 
 
@@ -161,9 +181,7 @@ class TestReceiptTransport:
         assert calls == []
 
     @pytest.mark.parametrize("suppression", ["env", "ci"])
-    def test_env_kill_switch_and_test_mode_dispatch_no_http(
-        self, monkeypatch, suppression
-    ):
+    def test_env_kill_switch_and_test_mode_dispatch_no_http(self, monkeypatch, suppression):
         calls: list[tuple[str, float]] = []
         monkeypatch.setattr(install_receipt.urllib.request, "urlopen", _fake_urlopen(calls))
         if suppression == "env":
@@ -195,7 +213,9 @@ class TestReceiptTransport:
             acked=True,
             kind=install_receipt.KIND_FRESH,
         )
-        monkeypatch.setattr(install_receipt, "receipt_secret", lambda *, create=True: "")
+        monkeypatch.setattr(
+            install_receipt, "receipt_secret", lambda *, create=True, config_dir=None: ""
+        )
         assert not install_receipt.send(
             "https://telemetry.example",
             "issue-radar",
@@ -222,9 +242,7 @@ class TestReceiptTransport:
         )
         assert len(calls) == 1
         assert calls[0][1] == beacon.HTTP_TIMEOUT_SECS == 5.0
-        assert urllib.parse.parse_qs(urllib.parse.urlsplit(calls[0][0]).query)["k"] == [
-            "update"
-        ]
+        assert urllib.parse.parse_qs(urllib.parse.urlsplit(calls[0][0]).query)["k"] == ["update"]
 
     def test_transport_failures_are_silent(self, monkeypatch):
         monkeypatch.setattr(
@@ -252,6 +270,12 @@ class TestReceiptTransport:
             def start(self):
                 threads[-1]["started"] = True
 
+            def is_alive(self):
+                # This fake never runs its target, so nothing is ever in flight;
+                # the rootdir conftest's per-test join asks every registered
+                # worker this question before the test's env pins are undone.
+                return False
+
         monkeypatch.setattr(install_receipt.threading, "Thread", Thread)
 
         install_receipt.dispatch(
@@ -268,6 +292,114 @@ class TestReceiptTransport:
         )
         assert threads[0]["daemon"] is True
         assert threads[0]["started"] is True
+
+    def test_dispatch_resolves_config_dir_before_home_is_unpatched(self, monkeypatch, tmp_path):
+        """dispatch()'s worker must write under the KIROCREW_HOME pinned AT
+
+        DISPATCH TIME, even if that env var is unset again before the
+        background thread finishes. Regression test for a real-home leak: the
+        worker used to call beacon.config_dir() itself, lazily, on the
+        background thread — a race against the caller's teardown unpatching
+        KIROCREW_HOME meant the secret file could land in the operator's real
+        data home instead of the pinned test one.
+        """
+        pinned_home = tmp_path / "pinned-home"
+        real_home_config_dir = tmp_path / "real-home" / ".kiro" / "crew"
+        monkeypatch.setattr(beacon, "is_default_home", lambda: True)
+
+        def fake_config_dir():
+            # Mirrors production: honors KIROCREW_HOME at call time.
+            override = os.environ.get("KIROCREW_HOME")
+            if override:
+                return Path(override) / ".kiro" / "crew"
+            return real_home_config_dir
+
+        monkeypatch.setattr(beacon, "config_dir", fake_config_dir)
+        # Real receipt_secret (not the autouse stub) so it actually touches disk.
+        monkeypatch.setattr(install_receipt, "receipt_secret", _real_receipt_secret)
+        monkeypatch.setattr(
+            install_receipt,
+            "KiroCrewConfig",
+            MagicMock(
+                load=lambda: MagicMock(
+                    telemetry=MagicMock(
+                        beacon_endpoint="https://telemetry.example",
+                        beacon_enabled=True,
+                    ),
+                    dashboard=MagicMock(privacy_acked=True),
+                )
+            ),
+        )
+        monkeypatch.setattr(install_receipt.urllib.request, "urlopen", _fake_urlopen([]))
+
+        monkeypatch.setenv("KIROCREW_HOME", str(pinned_home))
+        install_receipt.dispatch("issue-radar", official=True, kind=install_receipt.KIND_FRESH)
+        # Simulate the test's own teardown unpatching KIROCREW_HOME while the
+        # background thread may still be about to run.
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+
+        install_receipt.wait_for_pending_receipt_writes(timeout=5.0)
+
+        assert not any(
+            t.is_alive() for t in threading.enumerate() if t.name == "kirocrew-install-receipt"
+        )
+        assert (pinned_home / ".kiro" / "crew" / "app_receipt_secret").exists()
+        assert not real_home_config_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_async_reads_config_off_the_loop_and_hands_it_over(self, monkeypatch):
+        """The coroutine form must not do the config read on the loop thread.
+
+        ``KiroCrewConfig.load()`` is file I/O plus schema validation, and the
+        registry awaits this at the end of every official install. The read
+        has to run in a worker thread, and the config it returns has to be the
+        one ``dispatch`` receives — a second load there would put the I/O
+        straight back on the loop.
+        """
+        loop_thread = threading.get_ident()
+        load_threads: list[int] = []
+        loaded = MagicMock(
+            telemetry=MagicMock(beacon_endpoint="https://telemetry.example", beacon_enabled=True),
+            dashboard=MagicMock(privacy_acked=True),
+        )
+
+        def fake_load():
+            load_threads.append(threading.get_ident())
+            return loaded
+
+        monkeypatch.setattr(install_receipt, "KiroCrewConfig", MagicMock(load=fake_load))
+        handed: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            install_receipt, "dispatch", lambda slug, **kwargs: handed.append(kwargs)
+        )
+
+        await install_receipt.dispatch_async(
+            "issue-radar", official=True, kind=install_receipt.KIND_FRESH
+        )
+
+        assert load_threads and all(t != loop_thread for t in load_threads)
+        assert handed == [{"official": True, "kind": install_receipt.KIND_FRESH, "config": loaded}]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_async_is_origin_gated_and_swallows_a_failed_load(self, monkeypatch):
+        calls: list[object] = []
+        monkeypatch.setattr(install_receipt, "dispatch", lambda slug, **kwargs: calls.append(slug))
+
+        # Not official: nothing is read and nothing is dispatched.
+        await install_receipt.dispatch_async(
+            "private-app", official=False, kind=install_receipt.KIND_FRESH
+        )
+        assert calls == []
+
+        # A failing config read is best-effort telemetry's problem, not the install's.
+        def boom():
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(install_receipt, "KiroCrewConfig", MagicMock(load=boom))
+        await install_receipt.dispatch_async(
+            "issue-radar", official=True, kind=install_receipt.KIND_FRESH
+        )
+        assert calls == []
 
 
 async def _run_registry_install(
@@ -332,11 +464,13 @@ async def _run_registry_install(
     monkeypatch.setattr(registry, "set_app_provenance", lambda *_a, **_k: True)
 
     dispatched: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        registry.install_receipt,
-        "dispatch",
-        lambda slug, **kwargs: dispatched.append((slug, kwargs)),
-    )
+
+    async def record(slug, **kwargs):
+        dispatched.append((slug, kwargs))
+
+    # The registry awaits the async seam (the config read must stay off the
+    # loop), so that is the attribute to stub.
+    monkeypatch.setattr(registry.install_receipt, "dispatch_async", record)
     return await registry.install_from_registry("issue-radar"), dispatched
 
 
@@ -355,12 +489,8 @@ class TestRegistryEmitPoint:
         ]
 
     @pytest.mark.asyncio
-    async def test_successful_official_update_uses_update_kind(
-        self, monkeypatch, tmp_path
-    ):
-        result, dispatched = await _run_registry_install(
-            monkeypatch, tmp_path, existing=True
-        )
+    async def test_successful_official_update_uses_update_kind(self, monkeypatch, tmp_path):
+        result, dispatched = await _run_registry_install(monkeypatch, tmp_path, existing=True)
         assert result["ok"] is True
         assert dispatched[0][1]["kind"] == install_receipt.KIND_UPDATE
 
@@ -372,27 +502,19 @@ class TestRegistryEmitPoint:
         external repos as a CREDENTIAL decision; that must not promote the
         entry to official-catalog status — no receipt, ever."""
         monkeypatch.setattr(registry, "_is_owner_designated_repo", lambda entry: True)
-        result, dispatched = await _run_registry_install(
-            monkeypatch, tmp_path, external=True
-        )
+        result, dispatched = await _run_registry_install(monkeypatch, tmp_path, external=True)
         assert result["ok"] is True
         assert dispatched == []
 
     @pytest.mark.asyncio
-    async def test_external_registry_success_never_dispatches(
-        self, monkeypatch, tmp_path
-    ):
-        result, dispatched = await _run_registry_install(
-            monkeypatch, tmp_path, external=True
-        )
+    async def test_external_registry_success_never_dispatches(self, monkeypatch, tmp_path):
+        result, dispatched = await _run_registry_install(monkeypatch, tmp_path, external=True)
         assert result["ok"] is True
         assert dispatched == []
 
     @pytest.mark.asyncio
     async def test_failed_install_never_dispatches(self, monkeypatch, tmp_path):
-        result, dispatched = await _run_registry_install(
-            monkeypatch, tmp_path, install_ok=False
-        )
+        result, dispatched = await _run_registry_install(monkeypatch, tmp_path, install_ok=False)
         assert result["ok"] is False
         assert dispatched == []
 
@@ -425,9 +547,7 @@ class TestNonRegistryPaths:
         )
         return source
 
-    def test_local_directory_install_emits_nothing(
-        self, tmp_path, app_home, monkeypatch
-    ):
+    def test_local_directory_install_emits_nothing(self, tmp_path, app_home, monkeypatch):
         monkeypatch.setattr(
             install_receipt,
             "dispatch",
@@ -435,9 +555,7 @@ class TestNonRegistryPaths:
         )
         assert manager.install_app(self._source(tmp_path, "local-app")).ok
 
-    def test_self_registration_emits_nothing(
-        self, app_home, monkeypatch
-    ):
+    def test_self_registration_emits_nothing(self, app_home, monkeypatch):
         monkeypatch.setattr(
             install_receipt,
             "dispatch",

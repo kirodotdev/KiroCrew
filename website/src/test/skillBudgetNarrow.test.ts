@@ -14,7 +14,7 @@ describe('SkillContextBudget narrow viewport', () => {
   it('does not add a third horizontal inset inside the card', async () => {
     const s = await src()
     // Measured at 390px: 16 (page) + 20 (card) + 16 (row) = 52px before the text,
-    // against 32px for the same text in chat. See docs/page-layout.md ->
+    // against 32px for the same text in chat. See docs/narrow-viewport.md ->
     // "Horizontal insets below the breakpoint".
     expect(s).toMatch(/gap-y-1 py-2 md:px-4/)
     expect(s, 'an ungated px-4 on the row is the third inset')

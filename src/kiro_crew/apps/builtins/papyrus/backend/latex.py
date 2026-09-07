@@ -573,7 +573,10 @@ def _symlinked_artifacts(project: Path) -> tuple[list[str], bool]:
     than quietly following what the editor refuses to show.
 
     Bounded by ``store.MAX_PROJECT_FILES`` and does not descend INTO links, so a
-    ``a -> ..`` cycle cannot spin it — same walk shape as ``list_files``.
+    ``a -> ..`` cycle cannot spin it — same walk shape as ``list_files``. "Link" here
+    means what ``store.is_reparse_link`` means, symlink OR Windows directory junction:
+    a junction is the one link type a Windows user can create without elevation, so a
+    symlink-only test leaves the cheapest bypass on that platform open.
 
     Returns ``(links, complete)``. **``complete`` is load-bearing and the caller MUST
     refuse when it is False.** The bound makes the walk terminate, but an exhausted
@@ -601,7 +604,17 @@ def _symlinked_artifacts(project: Path) -> tuple[list[str], bool]:
                 # the answer is partial; never let this look like "no links".
                 return found, False
             try:
-                if entry.is_symlink():
+                # `store.is_reparse_link`, not `is_symlink()`: a Windows directory
+                # junction is a reparse point `is_symlink()` does NOT report, and a
+                # junction is precisely a DIRECTORY link — so it fell through to the
+                # `is_dir()` arm below and the walk DESCENDED it, out of the project.
+                # That breaks this guard in both directions at once: the link is
+                # missing from `found`, so Compile proceeds and lets the compiler
+                # write through it, and the walk spends its budget on a tree outside
+                # the project. `store.list_files` already refuses junctions here, so
+                # asking `is_symlink()` also put Compile back into disagreement with
+                # the file list this docstring cites as the stance it matches.
+                if store.is_reparse_link(entry):
                     found.append(entry.relative_to(project).as_posix())
                     continue
                 # `.git` holds the checkout's own machinery, not document sources, and a

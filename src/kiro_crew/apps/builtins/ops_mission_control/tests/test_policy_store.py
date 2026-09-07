@@ -154,9 +154,8 @@ class TestOutboundDestinationsAreOperatorOnly(_HomeIsolated):
       `POST /ledger/hygiene` (which the agent's own hygiene cron calls) performs the push.
     - `slack_channel` — where every incident title, diagnosis and resource name is mirrored.
 
-    Verified before fixing: writing `config.json` moved both, and `config.json` is neither
-    path-fenced (`is_sensitive_path`) nor shell-write-blocked
-    (`is_sensitive_bash_command("echo x > …")`).
+    Verified before fixing: writing `config.json` moved both, and `config.json` is not
+    path-fenced (`is_sensitive_path`).
     """
 
     def test_an_agent_write_cannot_move_the_ledger_remote(self):

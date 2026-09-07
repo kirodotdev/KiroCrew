@@ -10,6 +10,7 @@ the response is size-capped rather than streaming an unbounded file.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from pathlib import Path
@@ -103,6 +104,25 @@ class TestApiCronScriptSource:
         assert data["file"] == "monitor.py"
         assert data["function"] == "run"
         assert data["truncated"] is False
+        # The digest the approval flow echoes back: over the raw bytes read,
+        # so an approver's view and the promotion's pin snapshot compare equal.
+        assert data["sha256"] == hashlib.sha256(SCRIPT_BODY.encode()).hexdigest()
+        # Verbatim display: what the operator reads IS the code, so approvable.
+        assert data["reviewable"] is True
+
+    @posix_only
+    @pytest.mark.asyncio
+    async def test_undecodable_bytes_are_not_reviewable(self, crons_home: Path) -> None:
+        # Invalid UTF-8 is rendered with replacement characters, so the display
+        # cannot equal the raw body: unreviewable, even though it is served.
+        script = crons_home / "crons" / "binary.py"
+        script.write_bytes(b'def run(ctx): return b"\xff\xfe"\n')
+        state = _make_state(_make_job(script=f"{script}:run"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/crons/j1/script")
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["reviewable"] is False
 
     @pytest.mark.asyncio
     async def test_unknown_job_404(self, crons_home: Path) -> None:
@@ -223,6 +243,9 @@ class TestApiCronScriptSource:
             assert resp.status == 200
             data = await resp.json()
         assert "AKIAIOSFODNN7EXAMPLE" not in data["source"]
+        # The display no longer equals the raw body, so the approval flow must
+        # treat this script as unreviewable (the operator cannot read the span).
+        assert data["reviewable"] is False
 
     @posix_only
     @pytest.mark.asyncio

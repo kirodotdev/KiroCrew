@@ -99,7 +99,9 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
         </div>
       )}
       {failure !== null && (
-        <ErrorNotice variant="inline" className="mt-1.5" message={failure.terminal
+        // The card holds no draft: the pending buttons are not user input and the
+        // failed decision is retryable, so the hand-off loses nothing.
+        <ErrorNotice variant="inline" className="mt-1.5" askAgent testId="approval-card-failure" message={failure.terminal
           ? i18nT('components.approvalCard.approval_no_longer_pending')
           : failure.message
             ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })

@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
+import AppIcon from './AppIcon'
 import CopyBranchButton from './CopyBranchButton'
 import RejectDropdown from './RejectDropdown'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -27,14 +28,16 @@ import { sanitizeLlmOutput } from '../utils/sanitize'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../i18n/LanguageProvider'
 import { pickToolLabel } from '../utils/toolLabel'
+import { toApiDecision } from '../utils/approvalDecision'
 import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { Btn, Slider } from './ui'
+import ErrorNotice from './ErrorNotice'
 import { useTouchPushToTalk } from '../hooks/useTouchPushToTalk'
-import { consumeComposerRelease } from '../pages/chat/composerFocus'
+import { consumeComposerRelease, COMPOSER_EXPAND_EVENT } from '../pages/chat/composerFocus'
 import BusySendButton, { useBusySendMode } from './BusySendButton'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -136,6 +139,7 @@ import { matchFileToken, matchSkillToken, replaceTokenAtCaret } from './composer
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './ui/dropdown-menu'
 import { i18nT } from '../i18n/t'
 import { fmtDateFields, fmtPercent } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
@@ -153,6 +157,18 @@ const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
  * day, and resetting to the keyboard on every mount taxes exactly them.
  */
 const VOICE_MODE_LS_KEY = 'mc-voice-mode'
+/**
+ * Whether the composer is collapsed for reading (`'1'`). Persisted for the same
+ * reason the drag height is: someone reading long output wants the room to stay
+ * reclaimed across a reload, not to re-collapse every mount.
+ *
+ * Persisting a composer view preference is only safe when the way back is
+ * obvious, which is the trap `manualHeight` records ("one stray tap and the box
+ * was that size for good, across reloads"). The way back here is a full-width
+ * labelled bar standing exactly where the composer was, so it cannot be missed
+ * and it is reachable by keyboard.
+ */
+const COMPOSER_COLLAPSED_LS_KEY = 'mc-composer-collapsed'
 
 // Prompt undo/redo tuning. The chat textarea is a controlled component, so any
 // programmatic value reset (send-clear, ↑/↓ history recall, prompt optimize)
@@ -179,22 +195,13 @@ function sameBlocks(a: PasteBlock[], b: PasteBlock[]): boolean {
   return b.every(x => ids.has(x.id))
 }
 
-// Decisions mapped here resolve via the ONE-SHOT `api.resolveApproval`
-// endpoint, which has no trust verb: POST /api/approvals/{id}/{action} honors
-// exactly `approve`, `reject` and `reject_once` (dashboard/handlers/sessions.py),
-// and the next identical call prompts again. Any UI feeding this path must offer
-// only those decisions — mapping a trust verb to `approve` here runs the tool
-// once while the composer reports a standing grant the backend never recorded
-// (#5400 on the spawn-approval card, #5434 on the collapsed tool row, #5486
-// here). The Trust affordances are withheld from this path at their render
-// sites (`approvalTrustGrantable`); this arm stays fail-closed so a trust verb
-// that reaches it anyway is rejected rather than silently upgraded — the same
-// rule ChatPage's `toApiDecision` carries verbatim.
-function toApiDecision(d: string): 'approve' | 'reject' | 'reject_once' {
-  if (d === 'approved') return 'approve'
-  if (d === 'rejected_once') return 'reject_once'
-  return 'reject'
-}
+// Decisions resolved through the ONE-SHOT `api.resolveApproval` endpoint are
+// mapped by the shared `toApiDecision` (utils/approvalDecision.ts), which is
+// fail-closed and is the only place that mapping is spelled — see that module
+// for why a local ternary here cannot be caught by any downstream guard (#5400,
+// #5434, #5486). The Trust affordances are withheld from this path at their
+// render sites (`approvalTrustGrantable`); a trust verb that reaches the mapping
+// anyway is rejected rather than silently upgraded.
 
 /** Approval sources that run unattended, with no human bound to the chat the
  *  card renders in. Session-scoped Trust is meaningless for these (see
@@ -516,6 +523,23 @@ interface ChatInputProps {
   onAgentClick?: (rect: DOMRect) => void
   onModelClick?: (rect: DOMRect) => void
   onProjectClick?: (rect: DOMRect) => void
+  /** App-contributed session controls (contributes.sessionControls in app.json). */
+  sessionControls?: {
+    key: string
+    label: string
+    icon?: string
+    /** True while this control's popover is open. */
+    active?: boolean
+    /**
+     * App-reported per-session state. `ok` tints the chip with --ok so a
+     * configured control is visible without opening it; `warn` uses --warn.
+     * Absent for apps that declare no status route — the original appearance.
+     */
+    state?: 'ok' | 'warn' | 'none'
+    /** Replaces the tooltip when the app explains its state. */
+    statusTooltip?: string
+  }[]
+  onSessionControlClick?: (key: string, rect: DOMRect) => void
   contextPct?: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -638,6 +662,29 @@ interface ChatInputProps {
    * switch silently discards the draft it produced.
    */
   promptOptimizer?: boolean
+  /**
+   * The user-driven collapse: the "put the message box away while I read" entry
+   * point, the bar that replaces it, and the persisted preference.
+   *
+   * Defaults OFF, which is the opposite of its siblings above, and the default
+   * is the feature's central invariant rather than caution. The preference is
+   * one `localStorage` key and the expand request is one window-level event, so
+   * both address "the composer" in the singular -- correct only while exactly
+   * one composer can be collapsed. `composerFocus.ts`'s own header records that
+   * the split view breaks the one-composer assumption (each `ChatPane` mounts
+   * its own), so a default-on flag would mean: collapse the main composer, and
+   * every pane and side-chat composer mounted afterwards reads the same key and
+   * comes up collapsed; then one typing intent anywhere broadcasts the expand
+   * and every listener answers it, silently undoing a preference the user set
+   * per pane. Review found that chain. Opting IN keeps the singular true by
+   * construction -- ChatPage's single main composer is the only caller -- so the
+   * shared key and the broadcast are correct rather than lucky.
+   *
+   * Making the split view collapsible therefore is NOT a matter of passing this
+   * flag: it needs the key scoped per surface and the event targeted at the
+   * pane the intent resolved to. Left as a follow-up, deliberately.
+   */
+  collapsible?: boolean
   /** Gateway WebSocket connection state. When false, send is blocked and a
    *  warning banner appears above the input. Defaults to true so callers that
    *  don't track connectivity (e.g. tests, embedded previews) keep working. */
@@ -877,6 +924,8 @@ function ChatInput({
   onAgentClick,
   onModelClick,
   onProjectClick,
+  sessionControls,
+  onSessionControlClick,
   contextPct,
   contextUsedTokens,
   contextWindowTokens,
@@ -925,6 +974,7 @@ function ChatInput({
   typedCommandMenus = true,
   slotApprovalChrome = true,
   promptOptimizer = true,
+  collapsible = false,
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
@@ -968,6 +1018,10 @@ function ChatInput({
   // Non-null while the last approval decision failed. Rendered as a one-line
   // strip under the composer; auto-clears so it cannot become permanent chrome.
   const [approvalNotice, setApprovalNotice] = useState<string | null>(null)
+  // The same notice slot carries two different things: STATUS about an
+  // approval that expired (nothing failed on our side) and a FAILED decision
+  // submit (a rejected request). Only the latter is an error surface.
+  const [approvalNoticeKind, setApprovalNoticeKind] = useState<'status' | 'error'>('status')
 
   const activeSlot = slotId
   const approvalMeta = pendingApproval?.meta as Record<string, unknown> | undefined
@@ -1094,6 +1148,7 @@ function ChatInput({
         // window (minutes), so by the time a human reads the card the job has
         // usually already been denied and moved on — "expired" alone reads as
         // a dashboard bug rather than the job's documented timeout.
+        setApprovalNoticeKind('status')
         setApprovalNotice(
           approvalIsUnattended
             ? i18nT('components.chatInput.that_request_already_timed_out_and_was_denied', { source: approvalSource })
@@ -1103,6 +1158,7 @@ function ChatInput({
       }
       // eslint-disable-next-line no-console -- surface real approval-resolution failures to the dev console
       console.error('Approval failed:', err)
+      setApprovalNoticeKind('error')
       setApprovalNotice(i18nT('components.chatInput.could_not_submit_that_decision_see_the_console_f'))
     }
     if (['trust_command', 'trust_base', 'trust', 'trust_reads'].includes(decision) && activeSlot) {
@@ -1488,6 +1544,8 @@ function ChatInput({
     staleTime: 30_000,
   })
   const autoCompact = autoCompactQuery.data ?? null
+  // In-popover report of an auto-compact threshold write that did not persist.
+  const [autoCompactError, setAutoCompactError] = useState('')
   // INVARIANT: every threshold POST is chained onto the previous
   // write for that slot, so writes commit in issue order — a delayed earlier
   // POST can never land after (and overwrite) a newer value on the server.
@@ -1509,6 +1567,7 @@ function ChatInput({
   const autoCompactMutation = useMutation({
     mutationFn: ({ slot, pct }: { slot: string; pct: number | null }) => enqueueAutoCompactWrite(slot, pct),
     onSuccess: (r, vars) => {
+      setAutoCompactError('')
       queryClient.setQueryData(
         ['slot-autocompact', vars.slot],
         (prev: { pct: number | null; global_pct: number; min: number; max: number } | undefined) =>
@@ -1522,8 +1581,11 @@ function ChatInput({
       // Surface the failure the way the sibling per-slot settings do (model,
       // reasoning effort): a silent snap-back leaves the user's compaction
       // intent unapplied with no explanation — and with the popover closed,
-      // no visible change at all.
-      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(err)))
+      // no visible change at all. The toast is transient feedback only; the
+      // in-popover ErrorNotice (autoCompactError) is the error surface.
+      const msg = agentSwitchFailureMessage(err)
+      dispatch(setAgentSwitchNotice(msg))
+      setAutoCompactError(msg)
     },
   })
   const pushAutoCompact = useCallback((pct: number | null) => {
@@ -1601,6 +1663,164 @@ function ChatInput({
     const n = saved ? parseInt(saved, 10) : NaN
     return !isNaN(n) && n >= INPUT_MIN_H ? n : null
   })
+  /**
+   * Reading-space collapse. The composer is UNMOUNTED, not hidden, and a bar in
+   * this component's own wrapper stands in its place.
+   *
+   * Both of those are inherited rather than invented: the collapse reuses the
+   * `AnimatePresence` gate the approval ghost bar already drives (see the
+   * "Unified input container" comment below), so the shown state stays
+   * `initial === animate` — re-entry needs no animation and cannot be stranded
+   * invisible — and unmounting is what keeps a collapsed composer from being a
+   * persistently focusable invisible element.
+   *
+   * Collapsing cannot lose a half-typed message, and not because this component
+   * is careful: the text is not ours to lose. `value` is a prop, and the host
+   * owns it (ChatPage keeps it in `input`, seeded from and written back to its
+   * per-slot `drafts` through `saveDrafts`), as it does the paste blocks, staged
+   * files and session refs. The bar below still SAYS a draft is waiting rather
+   * than leaving the user to trust that.
+   *
+   * Spelled like `voiceModePref`: a lazy localStorage read, a `safeSetItem`
+   * write.
+   */
+  const [composerCollapsed, setComposerCollapsed] = useState(
+    // Gated on the opt-in, not just read: without this a surface that has no
+    // collapse entry point (the side chat, a split pane) still reads the key the
+    // MAIN composer wrote and comes up collapsed, which is how "hiding is not
+    // collapsing" gets shipped by accident. `collapsible` is host-supplied and
+    // constant for a mount, so a lazy initializer is the whole story.
+    () => collapsible && localStorage.getItem(COMPOSER_COLLAPSED_LS_KEY) === '1',
+  )
+  const collapsedBarRef = useRef<HTMLButtonElement | null>(null)
+  /** Latest-value mirror for the window listener below, which is bound once. */
+  const composerCollapsedRef = useRef(composerCollapsed)
+  composerCollapsedRef.current = composerCollapsed
+  /**
+   * Two directions rather than one toggle, because each has a different place to
+   * put the caret.
+   *
+   * Both controls unmount THEMSELVES on click: the menu row goes with the
+   * composer, and the bar goes when the composer comes back. So neither can rely
+   * on focus staying where it was -- with nothing done, focus falls to `body` and
+   * a keyboard user re-Tabs from the top of the page on every collapse and every
+   * restore. Focus therefore follows the gesture to whichever control now stands
+   * in the same place: the bar on collapse, the textarea on restore.
+   *
+   * Next frame, not synchronously: the target does not exist until React has
+   * committed the new state. Same reason `focusComposer` defers.
+   */
+  const collapseComposer = useCallback(() => {
+    setComposerCollapsed(true)
+    safeSetItem(COMPOSER_COLLAPSED_LS_KEY, '1')
+    requestAnimationFrame(() => collapsedBarRef.current?.focus())
+  }, [])
+  const expandComposer = useCallback(() => {
+    setComposerCollapsed(false)
+    safeSetItem(COMPOSER_COLLAPSED_LS_KEY, '0')
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }, [])
+  /**
+   * Typing intent is an implicit expand.
+   *
+   * Every programmatic route to the composer resolves through the textarea
+   * (`queryComposer` finds `textarea[data-composer-input]`; the `/` shortcut and
+   * the autoFocusKey effect call `inputRef.current?.focus()`), and a collapsed
+   * composer has no textarea -- so without this, `/`, quote-to-compose, a widget
+   * send and post-create focus all silently do nothing, and a pre-fill lands in a
+   * draft the user cannot see. Review named this correctly against the ghost
+   * precedent this collapse otherwise inherits: the ghost is transient and the app
+   * decides it, so a seconds-long no-op window is tolerable; this state is
+   * indefinite and survives a reload, which would turn the same window into a
+   * standing dead end for every "I want to type" gesture.
+   *
+   * Expanding on the intent is safe in a way hiding it would not be: the bar
+   * already proves re-entry restores the draft intact, so the user loses nothing
+   * by the box coming back uninvited -- they asked for it.
+   */
+  useEffect(() => {
+    // Only the collapsible composer listens. A non-opted composer can never BE
+    // collapsed, so its listener could only ever decline -- but declining is not
+    // free: `preventDefault` on this event is what tells the caller a retry is
+    // worth scheduling, and the event is a window broadcast every listener sees.
+    // Not registering keeps the answer unambiguous with N composers on screen.
+    //
+    // Honest limit: this guard is currently REDUNDANT and a mutation removing it
+    // survives the suite. With the state initializer above also gated, a non-opted
+    // composer's `composerCollapsedRef` is always false, so the listener would
+    // decline anyway and the two paths are indistinguishable from outside -- there
+    // is no test that can tell them apart, so none is claimed. It is kept because
+    // the two guards protect different things: that one stops a non-opted composer
+    // from INHERITING the shared preference, this one stops it from answering for
+    // the whole window if some future path sets the state another way. Deleting it
+    // would make that future change silently wrong instead of merely wrong.
+    if (!collapsible) return
+    const onExpandRequest = (e: Event) => {
+      // Read through a ref, and decide OUTSIDE the state updater: `preventDefault`
+      // is a side effect, and a reducer that fires it would run it twice under
+      // StrictMode's double-invoke and once for a no-op update.
+      if (!composerCollapsedRef.current) return
+      // Answering is what licenses the caller's one retry -- see
+      // requestComposerExpand. Only a composer that was really collapsed answers,
+      // so a lookup that missed for any other reason schedules nothing.
+      e.preventDefault()
+      setComposerCollapsed(false)
+      safeSetItem(COMPOSER_COLLAPSED_LS_KEY, '0')
+      // Deliberately no focus here: the caller does that, and only it knows
+      // whether to focus or merely scroll into view -- `revealComposer` scrolls on
+      // touch precisely to keep the soft keyboard off the content being read.
+    }
+    window.addEventListener(COMPOSER_EXPAND_EVENT, onExpandRequest)
+    return () => window.removeEventListener(COMPOSER_EXPAND_EVENT, onExpandRequest)
+  }, [collapsible])
+  /**
+   * One line of the waiting draft, shown on the collapsed bar.
+   *
+   * It is the user's OWN text rather than a status phrase, which is why the bar
+   * can report a kept draft without adding a translated string: the sentence
+   * they typed is already in their language. It also says more than a label
+   * would — "Draft kept" tells you something is there, the first line tells you
+   * WHICH message, which is the question someone returning to a collapsed
+   * composer actually has.
+   */
+  const collapsedDraftLine = useMemo(() => {
+    const line = value.split('\n').find(l => l.trim().length > 0)?.trim() ?? ''
+    return line.length > 120 ? `${line.slice(0, 120)}…` : line
+  }, [value])
+  /**
+   * The collapse entry point, defined once and rendered by whichever menu the
+   * layout has.
+   *
+   * There are two hosts because there are two layouts, and the split is forced:
+   * on a pointer device the "+" opens a drop-up and this is a row in it, but on
+   * touch `directFilePicker` turns that "+" into a bare file-input `<label>` and
+   * no menu mounts at all -- so the same row hangs off the touch overflow
+   * instead. Review found this the hard way: moving the control off the capped
+   * action row into the "+" menu fixed a blocking rule and simultaneously made
+   * the action unreachable at 390px, which `narrow-viewport-required` names in
+   * as many words ("if a control is the only host of an action, removing it on a
+   * phone removes the action").
+   *
+   * ONE definition rather than a copy per host, so the label, the description,
+   * the icon and the close-then-collapse ordering cannot drift between layouts.
+   * Closing both menus is unconditional and harmless: only one of them is ever
+   * open, and each host unmounts with the composer anyway.
+   */
+  const collapseMenuRow = collapsible ? (
+    <button
+      type="button"
+      data-testid="composer-collapse-row"
+      onClick={() => { setPlusOpen(false); collapseComposer() }}
+      title={i18nT('components.chatInput.collapse_composer')}
+      className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
+    >
+      <ChevronsDownUp size={14} className="w-4 shrink-0 text-muted lucide-inline" />
+      <div className="min-w-0">
+        <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.collapse_composer')}</div>
+        <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.collapse_composer_desc')}</div>
+      </div>
+    </button>
+  ) : null
   /**
    * Drag-to-resize is pointer-only, so on a touch device the composer always
    * auto-sizes and the persisted preference is ignored outright.
@@ -1680,6 +1900,9 @@ function ChatInput({
   // dismisses the overlay here and only reveals it again when we return to the
   // originating session. Null when no optimize is in flight.
   const optimizeSlotRef = useRef<string | null>(null)
+  // In-composer report of a rejected optimize request (the restored prompt
+  // alone says nothing about why the optimizer did not run).
+  const [optimizeError, setOptimizeError] = useState('')
   const slashMenuOpenRef = useRef(false)
   slashMenuOpenRef.current = slashMenuOpen
   const filePickerOpenRef = useRef(false)
@@ -1744,11 +1967,21 @@ function ChatInput({
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
       e.preventDefault()
+      // `/` is an explicit "I want to type" gesture, so it outranks the collapse
+      // and brings the box back (expandComposer focuses it on the next frame).
+      //
+      // The autoFocusKey effect just above deliberately does NOT do this. It
+      // fires on every session SWITCH, which is navigation rather than typing
+      // intent, so expanding there would make a deliberate, persisted preference
+      // appear to undo itself while the user browses. Genuine post-create intent
+      // is still covered: it arrives through `focusComposer`, which asks a
+      // collapsed composer to return before giving up.
+      if (composerCollapsed) { expandComposer(); return }
       inputRef.current?.focus()
     }
     document.addEventListener('keydown', onSlashFocus)
     return () => document.removeEventListener('keydown', onSlashFocus)
-  }, [typedCommandMenus])
+  }, [typedCommandMenus, composerCollapsed, expandComposer])
 
   const inputResize = usePointerDrag({
     threshold: 0,
@@ -1977,6 +2210,7 @@ function ChatInput({
   }, [onChange])
 
   const optimizeMutation = useMutation({
+    onMutate: () => { setOptimizeError('') },
     mutationFn: async (
       { prompt, context, pastes }: {
         prompt: string
@@ -2014,6 +2248,16 @@ function ChatInput({
     onError: (err, variables) => {
       // eslint-disable-next-line no-console -- surface prompt-optimizer failures to the dev console
       console.warn('optimizer failed', err)
+      // The user must learn the optimizer failed: restoring the prompt alone is
+      // indistinguishable from "the optimizer changed nothing". Shown on
+      // whichever session is on screen — this composer instance is the
+      // always-mounted surface; a notice gated on the originating slot would
+      // stay hidden for a user who navigated away mid-optimize. The copy names
+      // where the restore happened, so it never claims a change to a composer
+      // the user is looking at that did not visibly change.
+      setOptimizeError(variables.slotId === slotId
+        ? i18nT('components.chatInput.optimize_failed')
+        : i18nT('components.chatInput.optimize_failed_elsewhere'))
       // Same slot-routing split as onSuccess. On the originating session,
       // restore the original prompt in place; otherwise hand it back to that
       // session's draft so a failed optimize on a backgrounded session doesn't
@@ -3017,8 +3261,14 @@ function ChatInput({
           flush against the input. Touch therefore keeps the box and drops only
           the affordance, which puts the composer at the same offset under both
           pointer types instead of leaving the gap a side effect of a
-          pointer-only control. */}
-      {!showGhost && (isTouch
+          pointer-only control.
+
+          A COLLAPSED composer takes the same branch, for the same reason stated
+          the other way round: there is no box left to resize, so the affordance
+          would pin a height nobody can see being pinned — while the 6px box is
+          still the only thing separating the strip above from the bar that
+          replaces the composer. Keep the box, drop the affordance. */}
+      {!showGhost && (isTouch || composerCollapsed
         ? <div aria-hidden="true" data-testid="composer-top-gap" className="h-[6px] shrink-0" />
         : <div
         aria-hidden="true"
@@ -3253,7 +3503,28 @@ function ChatInput({
         )}
       </AnimatePresence>
 
-      {approvalNotice && (
+      {optimizeError && (
+        <div className="px-4 mb-1">
+          {/* No hand-off: the composer draft below (the prompt that was restored) is unsaved. */}
+          <ErrorNotice
+            variant="inline"
+            testId="optimize-error"
+            message={optimizeError}
+            onDismiss={() => setOptimizeError('')}
+          />
+        </div>
+      )}
+      {approvalNotice && approvalNoticeKind === 'error' && (
+        <div className="px-4 mb-1">
+          {/* No hand-off: the composer draft below is unsaved. */}
+          <ErrorNotice
+            testId="approval-decision-error"
+            message={approvalNotice}
+            onDismiss={() => setApprovalNotice(null)}
+          />
+        </div>
+      )}
+      {approvalNotice && approvalNoticeKind === 'status' && (
         <div
           role="status"
           className="flex items-center gap-2 px-4 py-2 mb-1 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] rounded-lg"
@@ -3367,9 +3638,16 @@ function ChatInput({
           throttled and the completion that restores height:auto never runs),
           stranding the motion.div at height:0/opacity:0 and hiding the input until
           a remount. Keeping the unmount-while-ghost behavior also means the
-          collapsed composer is never a persistently focusable invisible element. */}
+          collapsed composer is never a persistently focusable invisible element.
+
+          `composerCollapsed` joins this gate rather than bringing its own
+          mechanism, so a user-initiated collapse inherits both properties
+          verbatim. The difference is only who asked and how long it lasts: the
+          ghost is transient and the app decides it, so it needs no way back,
+          while a deliberate collapse persists and therefore does — the bar
+          rendered after this block is that way back. */}
       <AnimatePresence initial={false}>
-      {!showGhost && (<motion.div
+      {!showGhost && !composerCollapsed && (<motion.div
         key="input-container"
         initial={{ opacity: 1, height: 'auto' }}
         animate={{ opacity: 1, height: 'auto' }}
@@ -3594,6 +3872,25 @@ function ChatInput({
                           <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.sketch_desc')}</div>
                         </div>
                       </button>
+                      {/* Collapse for reading, a menu ROW for the same reason Sketch
+                          is one: the tile group above and the bottom action row are
+                          both capped at two peer actions, and this is a third
+                          action either way. A stacked row is its own row by
+                          construction.
+
+                          It also has to NOT be an icon-only control down in that
+                          action row. It was, and review caught what the frames
+                          show plainly: an unaccompanied chevron immediately after
+                          ApprovalModePicker — which renders "Normal" with no caret
+                          of its own (it imports no chevron icon) — reads as that
+                          picker's dropdown arrow, so the entry point for this
+                          whole feature parsed as a mode menu. Here it carries its
+                          own name and a description instead.
+
+                          One definition, shared with the touch overflow — see
+                          `collapseMenuRow`, which also explains why touch needs a
+                          second host at all. */}
+                      {collapseMenuRow}
                     </div>
                     {/* In-input trigger shortcuts: clicking inserts the sigil
                      *  and opens the matching picker (same as typing /, @, $). */}
@@ -3644,11 +3941,21 @@ function ChatInput({
             )}
             {/* Touch path: directFilePicker replaces the "+" drop-up with a
                 bare file-input label, so the menu's Sketch row never mounts
-                there. A pencil button restores the entry on exactly the
-                devices where finger/stylus drawing works best. Two peer
-                actions (label + pencil) — at the max-two-buttons-per-row cap,
-                not over it; the non-touch branch keeps Sketch in the menu. */}
-            {onUploadFiles && directFilePicker && (
+                there and neither does the collapse row. Both need a host on
+                touch, and the row cannot simply grow to fit them: with the
+                attach label it would be three peer actions, and
+                max-two-buttons-per-row is explicit that the third "goes into an
+                overflow DropdownMenu (kebab / More), or leaves the row", with a
+                trigger counting as ONE "regardless of how many items it holds".
+                So the pencil becomes that trigger when there is a second action
+                to host, and Sketch moves one tap deeper rather than losing its
+                place. The row stays at two (label + trigger), and the non-touch
+                branch keeps both actions in the "+" menu.
+
+                Sketch alone keeps its dedicated pencil, so a surface that never
+                opted into the collapse (a split pane, the side chat) is
+                untouched by this. */}
+            {onUploadFiles && directFilePicker && !collapsible && (
               <button
                 className="w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all disabled:opacity-30 bg-transparent border-none text-muted hover:text-text hover:bg-bg-hover shrink-0"
                 onClick={() => setSketchOpen(true)}
@@ -3659,6 +3966,78 @@ function ChatInput({
               >
                 <PenLine size={17} />
               </button>
+            )}
+            {directFilePicker && collapsible && (
+              /* The repo's own overflow mechanism, not a second spelling of it.
+                 `max-two-buttons-per-row` names the two files to copy for exactly
+                 this shape, and `DetailOverflowMenu.tsx` already answers the same
+                 rule the same way -- a labelled MoreHorizontal trigger holding
+                 "everything past the second control", whose own comment says
+                 "rather than inventing a second overflow shape". The hand-rolled
+                 portal that stood here re-implemented top-side anchoring, viewport
+                 collision and outside-click that this wrapper does natively, and
+                 review was right that the symmetry argument for it (matching the
+                 "+" drop-up) was a preference rather than a constraint.
+
+                 The TRIGGER is deliberately NOT disabled while an upload is in
+                 flight, though the pencil it replaces was. The pencil hosted one
+                 action, so disabling it disabled exactly that action; this hosts
+                 the collapse too, and taking the collapse away mid-upload would
+                 reintroduce the unreachability this control exists to fix. The
+                 guard belongs on the item that needs it, just below. */
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    data-testid="composer-more-trigger"
+                    className="w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover data-[state=open]:text-text data-[state=open]:bg-bg-hover"
+                    aria-label={i18nT('components.chatInput.more_actions')}
+                    title={i18nT('components.chatInput.more_actions')}
+                  >
+                    <MoreHorizontal size={17} />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="top" align="start" className="w-[260px] p-2">
+                  {onUploadFiles && (
+                    /* `disabled={uploading}` restores a guard the pencil carried and
+                       this row lost when Sketch moved in here. Sketch attaches
+                       through the same `onUploadFiles` handler, and the in-flight
+                       flag is a single shared boolean rather than a counter -- so a
+                       sketch attached while another upload is still running lets
+                       whichever request finishes first clear the in-flight state for
+                       both. Self-correcting and lossless, but the pencil guarded
+                       against it and a moved control must not quietly drop a guard.
+                       Review caught the omission. */
+                    <DropdownMenuItem
+                      disabled={uploading}
+                      /* Deferred one macrotask, which is this repo's established
+                         remedy for opening a dialog from a menu item (see
+                         `DrivePage.tsx`'s `openShare`/`openMove`): Radix dispatches
+                         item select with `flushSync`, so a dialog opened inline
+                         mounts in a commit where the menu is STILL trapping focus.
+                         The dialog focuses itself, the menu's trap yanks focus back,
+                         and the menu then unmounts -- stranding focus on `body`. In
+                         happy-dom the same fight shows up as an unbounded
+                         blur/focus recursion, which is how the test suite surfaced
+                         it here. Past the close commit there is only one trap. */
+                      onSelect={() => { setTimeout(() => setSketchOpen(true), 0) }}
+                      title={i18nT('components.chatInput.sketch')}
+                      className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer text-left"
+                    >
+                      <PenLine size={14} className="w-4 shrink-0 text-muted lucide-inline" />
+                      <div className="min-w-0">
+                        <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.sketch')}</div>
+                        <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.sketch_desc')}</div>
+                      </div>
+                    </DropdownMenuItem>
+                  )}
+                  {collapseMenuRow && (
+                    <DropdownMenuItem asChild>
+                      {collapseMenuRow}
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
             {/* The wrapper exists for the edge cues: absolutely-positioned
                 children of the scroller itself would travel with the scrolled
@@ -3901,9 +4280,141 @@ function ChatInput({
       </div></motion.div>)}
       </AnimatePresence>
 
-      {/* Context shelf — plain full-width row below input */}
-      {!showGhost && (onProjectClick || (onModelClick && modelName)) && (
+      {/* The way back. It stands exactly where the composer was and is the only
+          thing this feature adds to the collapsed layout, because a collapse with
+          no discoverable restore is a trap rather than a preference — and this
+          preference persists across reloads, so the trap would too.
+
+          A full-width button rather than a small icon: the whole bar is the
+          target, so the gesture back is as cheap as the gesture in, and it cannot
+          be missed by someone who does not remember collapsing anything.
+
+          The button's accessible name must stay the ACTION, never the user's own
+          draft text. Two independent things hold that and either alone is
+          sufficient, which is measured rather than assumed: an explicit name
+          (`aria-label`, with `title` as an equivalent fallback) wins over element
+          contents, and `aria-hidden` on the draft line empties the contents so
+          the fallback has nothing to pick up. Dropping one keeps the name
+          correct; dropping BOTH makes the draft the label. Keep both — sighted
+          users get the draft, screen-reader users get the button's job, and
+          neither gets a sentence that is both. */}
+      {!showGhost && composerCollapsed && (
+        <button
+          type="button"
+          ref={collapsedBarRef}
+          data-testid="composer-collapsed-bar"
+          onClick={expandComposer}
+          aria-expanded={false}
+          aria-label={i18nT('components.chatInput.expand_composer')}
+          title={i18nT('components.chatInput.expand_composer')}
+          className="w-full flex items-center gap-2 px-3.5 py-2 rounded-2xl border border-border bg-bg-elevated text-muted hover:text-text transition-colors cursor-pointer text-left"
+        >
+          <ChevronsUpDown size={16} className="shrink-0" />
+          {/* The verb is ALWAYS visible, and the draft joins it when there is one.
+              Review's blind reader named this control correctly but rated it "a
+              guess, but a confident one" when the bar carried the draft alone: the
+              action then lived only in `title`/`aria-label`, so a sighted reader
+              had chevrons and grey text to infer from. Naming the action outright
+              costs nothing and removes the inference.
+
+              The draft still earns its place next to it -- it answers WHICH
+              message is waiting, which is the question someone returning to a
+              collapsed composer actually has, and it is the user's own words so it
+              needs no translation.
+
+              Both spans are aria-hidden: the button's explicit aria-label already
+              names it, and exposing this as content would only duplicate it. */}
+          <span aria-hidden="true" className="shrink-0 text-[13px] font-body">
+            {i18nT('components.chatInput.expand_composer')}
+          </span>
+          {collapsedDraftLine && (
+            <span aria-hidden="true" className="min-w-0 flex-1 truncate text-[13px] font-body text-muted">
+              {collapsedDraftLine}
+            </span>
+          )}
+        </button>
+      )}
+
+      {/* Context shelf — plain full-width row below input.
+          Stands down with the composer for the same reason it stands down for the
+          ghost bar: agent, project, branch and model are context for WRITING, and
+          the assembly is not being written in. Leaving it up was measured to cost
+          most of the collapse — the assembly gave back 57px with the shelf still
+          mounted against 89px without it, at a 1500x950 viewport — so keeping it
+          would have shipped a "reclaim the space" control that reclaimed little. */}
+      {!showGhost &&
+        !composerCollapsed &&
+        (onProjectClick ||
+          (onModelClick && modelName) ||
+          // An app-contributed chip is reason enough to draw the shelf. Without
+          // this the chip is silently invisible whenever no other pill happens
+          // to be present — the control is declared, mounted and unreachable.
+          !!sessionControls?.length) && (
         <div ref={shelfRef} className="pt-1 flex items-center gap-2 min-w-0">
+          {/* App-contributed session controls live in their OWN group, not
+              beside the agent/project chips. `max-two-buttons-per-row`
+              (AUTOSDE.yaml, blocking) caps a horizontal group at 2 action
+              controls and forbids an already-exempt 3+ group from growing —
+              and the chip group next door already carries 5 on main. Its own
+              separated region is the rule's stated exemption ("the cap is
+              per visual group, not per component"), and keeps the per-app
+              status tint that one collapsed kebab would hide. Bounded at 2
+              by MAX_INLINE_SESSION_CONTROLS so this group sits AT the cap. */}
+          {!!sessionControls?.length && (
+            <div className="flex items-center gap-2 min-w-0 shrink-0 pr-2 border-r border-border">
+          {(sessionControls || []).map(sc => {
+            /* State must not be carried by colour alone: `ok` and `warn` differ
+               only by tint, which a colourblind user cannot separate and a
+               screen reader never sees at all. Fold it into the accessible name,
+               and APPEND the app's own tooltip rather than replacing the label —
+               the label is what identifies the control, so it has to survive
+               whatever the app reports about it. */
+            const stateWord =
+              sc.state === 'warn'
+                ? i18nT('components.chatInput.session_control_needs_attention')
+                : sc.state === 'ok'
+                  ? i18nT('components.chatInput.session_control_ready')
+                  : ''
+            const detail = sc.statusTooltip || stateWord
+            const chipName = detail
+              ? i18nT('components.chatInput.session_control_chip_label', {
+                  label: sc.label,
+                  detail,
+                })
+              : sc.label
+            return (
+            <button
+              key={sc.key}
+              /* No `font-mono`: same reasoning as the agent chip below — a
+                 control label is a label, not code, and pinning `var(--mono)`
+                 would make the shelf ignore the user's Font Family setting. */
+              className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer ${
+                /* Open wins, so the chip you are pointing at always reads as
+                   the active one; otherwise the app's own state colours it. */
+                sc.active
+                  ? 'text-accent'
+                  : sc.state === 'ok'
+                    ? 'text-ok'
+                    : sc.state === 'warn'
+                      ? 'text-warn'
+                      : 'text-muted hover:text-text'
+              }`}
+              onClick={e => onSessionControlClick?.(sc.key, e.currentTarget.getBoundingClientRect())}
+              // Marks the chip as part of its own popover for dismissal
+              // purposes: mousedown fires before click, so without this the
+              // host's outside-click closes the popover and the chip's toggle
+              // then re-opens it — a flicker instead of a dismissal.
+              data-session-control-chip=""
+              title={chipName}
+              aria-label={chipName}
+            >
+              <AppIcon icon={sc.icon} size={13} />
+              {!shelfCompact && <span className="truncate max-w-[140px]">{sc.label}</span>}
+            </button>
+            )
+          })}
+            </div>
+          )}
           <div className="flex items-center gap-2 min-w-0 flex-1">
           {onAgentClick && agentName && (
             /* Chrome type: an agent name is a label, not code. `font-mono` would
@@ -4043,8 +4554,26 @@ function ChatInput({
                             </div>
                           )}
                           {autoCompactQuery.isError && !autoCompact && (
-                            <div className="mt-2 pt-2 border-t border-border text-[10px] text-muted">
-                              {i18nT('components.chatInput.auto_compact_load_failed')}
+                            <div className="mt-2 pt-2 border-t border-border">
+                              {/* No hand-off: the composer draft below is unsaved. */}
+                              <ErrorNotice
+                                variant="inline"
+                                testId="auto-compact-load-error"
+                                message={i18nT('components.chatInput.auto_compact_load_failed')}
+                              />
+                            </div>
+                          )}
+                          {autoCompactError && (
+                            <div className="mt-2 pt-2 border-t border-border">
+                              {/* No hand-off: same composer draft. The shared notice toast is
+                                  transient; the write that did not persist is reported HERE,
+                                  next to the slider whose value snapped back. */}
+                              <ErrorNotice
+                                variant="inline"
+                                testId="auto-compact-write-error"
+                                message={autoCompactError}
+                                onDismiss={() => setAutoCompactError('')}
+                              />
                             </div>
                           )}
                           {autoCompact && (

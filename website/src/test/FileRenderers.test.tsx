@@ -329,8 +329,14 @@ describe('OfficeViewer', () => {
       revealPath.mockRejectedValue(new ApiError(403, 'access denied to /home/user/private'))
       renderWithQuery(<OfficeViewer filePath="/home/user/private/notes.doc" />)
       fireEvent.click(await screen.findByRole('button', { name: /open with default app/i }))
-      await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
-      expect(alertSpy.mock.calls[0][0]).not.toContain('access denied')
+      // Rendered in place on the card through the shared ErrorNotice (the
+      // card has a render context, so no blocking alert()); the raw server
+      // prose never reaches it.
+      const notice = await screen.findByTestId('office-card-open-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent(/protected/i)
+      expect(notice).not.toHaveTextContent('access denied')
+      expect(alertSpy).not.toHaveBeenCalled()
     })
 
     it('hides Open on a remote session and promotes Download instead', async () => {

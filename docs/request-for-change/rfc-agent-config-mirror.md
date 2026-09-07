@@ -1,11 +1,11 @@
 ---
 title: Agent Config Mirror — one declared contract for projecting the agent spec onto every backend
-status: draft
+status: partial
 revision: v1
 author: zejiangg, with Kiro
 created: 2026-09-02
-last-audited: 2026-09-02
-audited-at: f51e65947
+last-audited: 2026-09-05
+audited-at: 424efa423
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -22,9 +22,9 @@ superseded-by: []
 - Author: zejiangg, with Kiro
 - Created: 2026-09-02
 - Audited against: `f51e65947`
-- Related: `../system-specs/features/agent-host-contract.md` (the host contract
+- Related: `../system-specs/modules/agent-host-contract.md` (the host contract
   this RFC adds a bucket to),
-  `../system-specs/features/claude-code-provider.md`,
+  `../system-specs/modules/claude-code-provider.md`,
   `../system-specs/modules/acp-client.md`,
   `../system-specs/modules/harness-parity.md`,
   `../system-specs/modules/providers.md`,
@@ -337,14 +337,14 @@ not the interface itself.
 
 ## 7. Documentation changes this requires
 
-- `../system-specs/features/agent-host-contract.md` — a new "must declare" bucket
+- `../system-specs/modules/agent-host-contract.md` — a new "must declare" bucket
   for config mirroring, a row in the seam-status table, and a question in the
   new-provider checklist. Its §1 "definition target" declaration becomes a
   *write* target and must name format and timing.
 - `../system-specs/modules/providers.md` — correct the single-backend and
   dormant-seam claims, and describe `_write_cli_overlay` /
   `_write_tool_search_overlay` as the kiro-cli mirror.
-- `../system-specs/features/claude-code-provider.md` — re-scope the "Known gap"
+- `../system-specs/modules/claude-code-provider.md` — re-scope the "Known gap"
   section to name the mirror's file face as the destination.
 - `../system-specs/modules/platform-context.md` — the `providers` field
   description ("Kiro-CLI-ACP only") is already stale and becomes wrong once a

@@ -1,7 +1,7 @@
 # Claim-push: event-driven caller identity for pooled MCP stubs
 
-Status: implemented. Supersedes the recaller poll as the primary
-identity-repair path; the poll remains as a fallback.
+The claim push is the primary identity-repair path; the recaller poll remains as a
+fallback, so both designs below are live behaviour.
 
 ## Problem
 
@@ -111,7 +111,7 @@ claim-path involvement.
 - `src/kiro_crew/mcp_gateway/claim.py` — frame builder + sender (stdlib-only)
 - `src/kiro_crew/mcp_gateway/gatewayd.py` — `_StubConn`, `_CONN_INDEX`,
   `_apply_claim`, claim first-frame dispatch, per-frame caller pickup
-- `src/kiro_crew/mcp_gateway/stub.py` — `parent_pid` on register; unbounded
+- `src/kiro_crew/mcp_gateway/stub.py` — `ancestor_pids` on register; unbounded
   backoff recaller
 - `src/kiro_crew/acp/client.py`, `src/kiro_crew/acp/session_provider.py` —
   `rekey()` claim hooks

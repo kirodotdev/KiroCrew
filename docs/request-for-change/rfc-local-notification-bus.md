@@ -13,6 +13,12 @@ superseded-by: []
 ---
 # RFC: Local Notification Bus
 
+> **Current behaviour: see `docs/system-specs/modules/app-notifications.md`.**
+> That spec owns the shipped bus — `NotificationBus.push`, the
+> token/rate-limit/lifecycle-lock ordering, lazy channel registration,
+> `RESERVED_APP_NAMES` and the `system.agent` agent-push path. Read the phase
+> plan below only for Phase 2's missing producer and Phase 5's third item.
+
 - Status: partial — Phases 1, 3 and 4 are fully on main (bus core + schema v2, per-channel settings + priority UX, inline actions + `group_key` stacking + dock badge). Phase 2's mechanism is complete and wired (`POST /api/notifications/push`, manifest `notifications.channels`, rate limiter) but has **no producer**: zero shipped `app.json` declares a channel, so its exit criterion is unproven end-to-end. Phase 5 shipped 2 of 3 (the `send_notification` MCP tool and the TTL sweeper); removing the kind-based routing fallbacks is unstarted — `NotificationDetailPanel.tsx` still branches on `n.kind`. Slack escalation was **withdrawn**, not shipped, and is superseded by `rfc-notification-bridge.md`.
 - Author: KiroCrew contributors
 - Created: 2026-07-10

@@ -390,7 +390,10 @@ async def test_empty_llm_output_produces_visible_fallback(tmp_path, monkeypatch)
     assistant_broadcasts = [(t, d) for t, d in events if d.get("role") == "assistant"]
     assert assistant_broadcasts, "expected at least one assistant broadcast"
     last_content = assistant_broadcasts[-1][1]["content"]
-    assert last_content and "tool" in last_content.lower()
+    assert "intentionally unavailable" in last_content
+    assert "main chat" in last_content
+    assert "enable" not in last_content.lower()
+    assert "rephrase" not in last_content.lower()
     stored = [m for m in parent._side.messages if m["role"] == "assistant"]
     assert stored and stored[-1]["content"] == last_content
 

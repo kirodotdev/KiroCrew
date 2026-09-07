@@ -4,11 +4,13 @@ Research Lab (the `auto-research` builtin app) runs autonomous, multi-cycle camp
 
 `auto-research` is disabled by default. App enablement is the activation gate: a disabled app contributes no agents, skills, crons, or routes.
 
-> **Research Lab is research-only by design.** It gathers, analyzes, and reports — it does
-> **not** take actions on your systems (no writes, deployments, mutations, or code changes).
-> Its sub-agents run with read/research tools only, and any follow-up action is handed off
-> to the main agent for you to review and drive. This keeps campaigns safe to run
-> unattended and their results reproducible. See [Scope](#scope-research-only-by-design).
+> **Research Lab is not a permission boundary.** Its `kirocrew-research` worker is
+> generated from your main agent's configuration and therefore inherits the same MCP
+> servers and the same tool set — it can write files, run commands, and mutate systems
+> exactly as your main agent can. Research-only is the *intent* of the prompt it is
+> given, not a restriction the code enforces. Review the tools your main agent has
+> before leaving a campaign to run unattended. See
+> [Scope and permissions](#scope-and-permissions).
 
 ## Execution modes
 
@@ -24,14 +26,14 @@ A campaign can instead use **workflow** mode, which runs the Dynamic Workflow te
 ## Shared domain layer
 
 - **Grill tree** — interactive clarification that scopes the question into sub-questions
-  (a well-formed starting point). See `GrillTree.tsx`.
+  (a well-formed starting point).
 - **Success criteria** — optional natural-language done-condition, verified each cycle
   (`verification: {passed, detail}` on the finding).
 - **Limits** — max cycles (safety cap), idle interval, max sub-questions per round, budget.
 - **In-progress guidance** — user steering injected between cycles: the agent reads
   `guidance.txt` each cycle and incorporates it.
 - **Emergent sub-questions** — findings-driven follow-ups, ranked, depth-decayed, deduped,
-  activated into the checklist (`subquestion_queue.py`).
+  activated into the checklist, ranked with decay and de-duplicated.
 - **Findings + report** — per-cycle `cycle_NNN.json` cards + consolidated `FINDINGS.md`,
   exportable to the Knowledge Library or as an HTML artifact.
 
@@ -66,15 +68,6 @@ The agent writes each `cycle_NNN.json` finding card as it completes a cycle.
 | `stopped` | User-stopped (terminal) |
 
 Pause/resume pauses/resumes the autonudge loop.
-
-## Key files
-
-| File | Role |
-|------|------|
-| `src/kiro_crew/apps/builtins/auto_research/handlers.py` | Campaign CRUD, watchdog, grill tree, agent launch, emergent-exploration, findings, reports, SSE |
-| `src/kiro_crew/apps/builtins/auto_research/subquestion_queue.py` | Emergent sub-question queue (ranking, decay, dedup) |
-| `website/src/apps/auto-research/ResearchLabPage.tsx` | Setup wizard, campaign list/detail, finding cards |
-| `website/src/apps/auto-research/GrillTree.tsx` | Grill-tree clarification UI |
 
 ## Scope and permissions
 

@@ -13,9 +13,16 @@ export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 
  *  reload the app's iframe and destroy whatever the user has drawn. */
 export type TabKind = ViewKind | 'file' | 'diff' | 'artifact' | 'terminal' | 'folder' | 'app'
 
-/** Views that are AUTO-managed by content (see `syncPinned`): they appear —
- *  pinned to the front, non-closable, and absent from the + menu — only while
- *  they have content, and are removed when empty. Order here = strip order.
+/** The PERMANENT pinned block: these views are ALWAYS present — pinned to the
+ *  front, non-closable, and absent from the + menu — regardless of whether they
+ *  currently have content. Order here = strip order.
+ *
+ *  `syncPinned` below is PARAMETERISED and would drop a view left out of the set
+ *  it is handed, so the FUNCTION reads as content-gated on its own. It is not:
+ *  the one production caller — `SidePanel`'s `syncPinned(PINNED_VIEWS)`,
+ *  unconditional in an effect keyed only on the callback — always passes this
+ *  whole list, so no pinned view is ever removed. Pinned at the render level by
+ *  `sidePanelPinnedAlwaysPresent.test.tsx`.
  *
  *  `issues` is deliberately NOT pinned: most sessions never mention an issue,
  *  so a permanent Issues tab would be an always-empty tab for the majority.
@@ -497,12 +504,16 @@ export function usePanelTabs(slotKey: string | null = null) {
     upsert({ id: kind, kind, title: viewTitle(kind) })
   }, [upsert])
 
-  /** Reconcile the AUTO-managed pinned views (Changes / Files / Artifacts) to
-   *  exactly the ``available`` set: present-with-content ones are kept (or
-   *  created), pinned to the FRONT in PINNED_VIEWS order; empty ones are
-   *  removed. Dynamic tabs (documents / terminal / other views) keep their
-   *  order after the pinned block. No-ops when already in the target shape so
-   *  it's safe to call from a content-driven effect every render. */
+  /** Reconcile the pinned views (Changes / Artifacts / Files) to exactly the
+   *  ``available`` set: its members are kept (or created), pinned to the FRONT in
+   *  PINNED_VIEWS order; a pinned view left OUT of it is removed. Dynamic tabs
+   *  (documents / terminal / other views) keep their order after the pinned
+   *  block. No-ops when already in the target shape so it's safe to call from an
+   *  effect that runs on every render.
+   *
+   *  The removal arm is reachable through the ARGUMENT, not through content: the
+   *  one production caller passes PINNED_VIEWS whole, so it does not fire in the
+   *  shipped app. See PINNED_VIEWS above. */
   const syncPinned = useCallback((available: ViewKind[]) => {
     update(b => {
       const desired = PINNED_VIEWS.filter(k => available.includes(k))

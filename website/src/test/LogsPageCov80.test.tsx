@@ -3,10 +3,18 @@
 // match highlighter, and the follow behaviour that pins to whichever end is
 // "latest" for the current direction.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { render as rtlRender, screen, fireEvent, act } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactElement, ReactNode } from 'react'
 
 type Line = { level: string; msg: string }
+
+/** The viewer reads and writes the log level through react-query now, so every
+ *  mount needs a client. Fresh per render so no test inherits another's cache. */
+function render(ui: ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+}
 
 const { logLevel, setLogLevel, sub, virtuoso } = vi.hoisted(() => ({
   logLevel: vi.fn(),

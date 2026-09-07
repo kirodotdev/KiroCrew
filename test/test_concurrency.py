@@ -85,7 +85,7 @@ class TestParallelBatching:
         assert _MAX_PARALLEL_TASKS == 3
 
     @pytest.mark.asyncio
-    async def test_large_group_batched(self):
+    async def test_large_group_batched(self, tmp_path):
         """A group of 6 tasks should be split into batches of 4 + 2."""
         from kiro_crew.task_models import Project, Task, TaskStatus
 
@@ -95,7 +95,7 @@ class TestParallelBatching:
         sessions.release = MagicMock()
         sessions.reset = AsyncMock()
 
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         # Track execution order
         executed: list[int] = []
@@ -122,7 +122,7 @@ class TestParallelBatching:
         assert set(executed) == {1, 2, 3, 4, 5, 6}
 
     @pytest.mark.asyncio
-    async def test_small_group_not_batched(self):
+    async def test_small_group_not_batched(self, tmp_path):
         """A group of 3 tasks should run in a single gather (no batching needed)."""
         from kiro_crew.task_models import Project, Task, TaskStatus
 
@@ -132,7 +132,7 @@ class TestParallelBatching:
         sessions.release = MagicMock()
         sessions.reset = AsyncMock()
 
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
         executed: list[int] = []
 

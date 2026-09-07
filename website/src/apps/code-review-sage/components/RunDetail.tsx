@@ -17,6 +17,7 @@ import RunStatusPill from './RunStatusPill'
 import ShimmerLine from './ShimmerLine'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 /** The report area's loading state: placeholder rows in the report's own shape. */
 function ReportSkeleton() {
   return (
@@ -126,7 +127,7 @@ export default function RunDetail({ run }: { run: Run }) {
         />
 
         {reportError ? (
-          <div className="text-[12.5px] text-danger">{reportError.message}</div>
+          <ErrorNotice message={reportError.message} askAgent />
         ) : reportLoading ? (
           <ReportSkeleton />
         ) : report?.ready ? (

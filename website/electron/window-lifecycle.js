@@ -44,6 +44,7 @@ const {
   SYMBOL_LIGHT: WINDOWS_TITLEBAR_SYMBOL_LIGHT,
   OVERLAY_BACKGROUND: WINDOWS_TITLEBAR_BACKGROUND,
 } = require("./windows-titlebar");
+const { attachFrameLoadLogging } = require("./frame-load-log");
 const { createMemoryWatchLog } = require("./memory-watch-log");
 const { createCageTrace } = require("./cage-trace");
 const { profilingEnabled } = require("./perf-metrics");
@@ -943,6 +944,19 @@ function createWindowLifecycle(options) {
         console.error("Token retry failed:", error);
       });
     });
+
+    // Journal frame-level load outcomes into gateway-launch.log. The remote-crew
+    // panes are iframes of THIS webContents, and until this existed a pane that
+    // never became a live document left no evidence anywhere: the remote gateway
+    // keeps no HTTP access log and a packaged app has no devtools console. The
+    // navigation lines are what separate "never requested" from "requested and
+    // refused" — the two failures that look identical on screen.
+    //
+    // `backendUrl` is passed as the trusted origin: it is the ONE document whose
+    // `[pane]` journal lines are the dashboard's own. Being the top frame is not
+    // enough on its own, because a pane can navigate the top-level window to a
+    // remote document and inherit that position.
+    attachFrameLoadLogging(mainWindow.webContents, glog, backendUrl);
 
     const rendererRecovery = createRendererRecovery({
       isQuitting,

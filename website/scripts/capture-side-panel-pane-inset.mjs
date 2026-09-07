@@ -232,7 +232,7 @@ const PAGES = [
   {
     route: 'developer',
     tabs: ['logs', 'system', 'telemetry', 'storage', 'mcp-pool', 'memory', 'config',
-      'feature-previews', 'archive'],
+      'agent-backend', 'debug-tools', 'archive'],
   },
   {
     route: 'settings',

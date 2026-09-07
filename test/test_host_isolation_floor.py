@@ -6,6 +6,9 @@ operator's machine from a test that forgot to isolate itself:
 
 * the **data home** -- ``KIROCREW_HOME`` pinned per test, plus the ``~/.kiro`` paths
   production binds at IMPORT time, which the env var cannot reach;
+* the **workspace root** -- ``KIROCREW_WORKSPACE`` pinned per test, a SEPARATE
+  default from the data home that otherwise resolves to the operator's real
+  ``~/workplace``;
 * the **system temp directory** -- ``tempfile``'s base redirected per run, with residue
   reported rather than silently accumulated;
 * the **worker budget** -- how many xdist workers the host can actually back.
@@ -74,6 +77,7 @@ _GUARDED_ROOTS: tuple[pathlib.Path, ...] = (
     pathlib.Path.home() / ".kiro",
     pathlib.Path.home() / ".kirocrew",
     pathlib.Path.home() / ".claude.json",
+    pathlib.Path.home() / "workplace",
 )
 
 
@@ -130,6 +134,49 @@ class TestTheDataHomeIsPinnedForEveryTestpath:
         monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
 
         assert config_dir().resolve() == mine.resolve()
+
+
+class TestTheWorkspaceRootIsPinnedForEveryTestpath:
+    """``KIROCREW_WORKSPACE`` must be a tmp dir here, independent of the data home.
+
+    ``config.loader.workspace_root()`` does not derive from ``config_dir()`` -- with
+    no override and no saved ``<config_dir>/workspace_dir`` file it falls back to the
+    platform's ``_default_workspace_base()`` plus ``kirocrew-workspace``, which on
+    Linux/macOS is the operator's real ``~/workplace``. Pinning ``KIROCREW_HOME``
+    alone therefore leaves this resolver unpinned, and any test that reaches an agent
+    working directory ``mkdir``s and writes into that real tree.
+    """
+
+    def test_kirocrew_workspace_is_not_the_operators_real_workplace(self) -> None:
+        workspace = pathlib.Path(os.environ["KIROCREW_WORKSPACE"]).resolve()
+
+        assert not _inside_a_guarded_root(
+            workspace
+        ), f"KIROCREW_WORKSPACE is a real home path: {workspace}"
+
+    def test_workspace_root_resolves_to_that_same_pinned_dir(self) -> None:
+        """The env var is only worth pinning if the package actually follows it.
+
+        Unlike ``config_dir()``, ``workspace_root()`` caches nothing across calls, so
+        this only needs to prove the env var reaches the resolver -- there is no
+        module-global memo to reset alongside it.
+        """
+        from kiro_crew.config.loader import workspace_root
+
+        assert workspace_root().resolve() == pathlib.Path(
+            os.environ["KIROCREW_WORKSPACE"]
+        ).resolve()
+
+    def test_a_test_can_still_override_the_workspace_itself(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor is a safety net, not a cage: a test that isolates itself wins."""
+        from kiro_crew.config.loader import workspace_root
+
+        mine = tmp_path / "my-own-workspace"
+        monkeypatch.setenv("KIROCREW_WORKSPACE", str(mine))
+
+        assert workspace_root().resolve() == mine.resolve()
 
 
 class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
@@ -362,6 +409,120 @@ class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
         assert agent.kiro_agents_dir_path() == mine
 
 
+class TestTheKiroSessionsDirIsPinnedForEveryTestpath:
+    """kiro-cli's replay store: ``<kiro home>/sessions/cli``, machine-wide.
+
+    A fourth ``~/.kiro`` axis, alongside the data home, ``_SHARED_KIRO_PATHS`` and the
+    agent-spec home: ``kiro_sessions_dir()`` is a LAZY resolver (same shape as
+    ``kiro_agents_dir()``), so none of the other three reach it. Before this floor part
+    existed, session-teardown tests (``AcpSessionHandle.destroy()`` -> a bare
+    ``kiro_sessions_dir()`` call with no override) deleted ``<sid>.json``/``.jsonl`` out
+    of the operator's REAL kiro-cli session store.
+    """
+
+    def test_the_resolved_dir_is_not_the_operators_real_home(self) -> None:
+        from kiro_crew.config import paths
+
+        assert not _inside_a_guarded_root(paths.kiro_sessions_dir().resolve())
+
+    def test_the_resolver_itself_is_pinned_so_no_consumer_needs_registering(self) -> None:
+        """Same proof as the agent-spec resolver: a bound-by-name copy still follows.
+
+        ``session_map`` binds ``kiro_sessions_dir`` by name, so this is what proves the
+        override reaches a copied function object rather than only the definition site.
+        """
+        from kiro_crew import session_map
+        from kiro_crew.config import paths
+
+        assert paths._sessions_dir_override is not None, "the floor installed no override"
+        assert session_map.kiro_sessions_dir is paths.kiro_sessions_dir, (
+            "session_map no longer binds the resolver by name, so this test has "
+            "stopped proving that a bound copy honours the override"
+        )
+        assert not _inside_a_guarded_root(session_map.kiro_sessions_dir().resolve())
+
+    def test_the_pin_is_installed_even_when_paths_was_not_imported_before_setup(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The floor imports the leaf itself; it does not wait for a test to.
+
+        A test that imports its subject inside its own body is a normal shape here, and
+        this floor guards a DELETE path. A patch-if-imported fixture would find no module
+        at setup and leave the override ``None`` for exactly that test. In a real session
+        a sibling fixture usually imports ``paths`` first, which is why this drives the
+        fixture BODY directly with the module evicted from ``sys.modules``: the only
+        way the override can be present afterwards is if the fixture imported it.
+        """
+        import kiro_crew.config as config_pkg
+
+        original = sys.modules["kiro_crew.config.paths"]
+        # Restore the package attribute the re-import will overwrite, and the
+        # sys.modules entry, when monkeypatch unwinds.
+        monkeypatch.setattr(config_pkg, "paths", original)
+        monkeypatch.delitem(sys.modules, "kiro_crew.config.paths")
+        monkeypatch.delitem(sys.modules, "kiro_crew.session_map", raising=False)
+
+        body = _root._isolate_kiro_sessions_dir
+        body = getattr(body, "__wrapped__", body)
+        body(lambda name: tmp_path / name, monkeypatch)
+
+        reimported = importlib.import_module("kiro_crew.config.paths")
+        assert reimported is not original, "sys.modules eviction did not take"
+        assert reimported._sessions_dir_override is not None, (
+            "the floor left kiro_sessions_dir() unpinned for a test whose first import "
+            "of config.paths happens in its own body"
+        )
+        assert reimported.kiro_sessions_dir() == tmp_path / "kiro-sessions-cli"
+
+    def test_a_relocated_kiro_home_is_followed_not_pinned(self, tmp_path, monkeypatch) -> None:
+        """The pin is a fence around the REAL store, not a redirect of every resolution.
+
+        ~35 tests relocate kiro-cli's home themselves (``KIRO_HOME``, or a patched
+        ``Path.home``) and then read the tree they built there; a pin that answered the
+        isolation dir regardless would send every one of them to an empty directory.
+        """
+        from kiro_crew.config import paths
+
+        monkeypatch.setenv("KIRO_HOME", str(tmp_path / "relocated"))
+        assert paths.kiro_sessions_dir() == tmp_path / "relocated" / "sessions" / "cli"
+
+    def test_the_real_store_is_fenced_even_through_kiro_home(self, monkeypatch) -> None:
+        """Pointing ``KIRO_HOME`` back at the operator's real ``~/.kiro`` is still fenced.
+
+        The guard keys on WHERE the unpinned resolution lands, not on which lever set
+        it, so a test cannot reach the real transcript store by spelling the real path
+        explicitly.
+        """
+        from kiro_crew.config import paths
+
+        monkeypatch.setenv("KIRO_HOME", str(_root._REAL_KIRO_HOME_AT_START))
+        assert not _inside_a_guarded_root(paths.kiro_sessions_dir().resolve())
+
+    def test_the_session_map_own_hook_is_pinned_too(self) -> None:
+        """``session_map._KIRO_SESSIONS_DIR`` is a second, opt-in lever on the same seam.
+
+        Pinned to the SAME directory as the resolver override, not merely a private one,
+        so a test that writes through one seam and reads through the other still sees
+        one tree.
+        """
+        from kiro_crew import session_map
+        from kiro_crew.config import paths
+
+        assert session_map._KIRO_SESSIONS_DIR is not None
+        assert session_map._KIRO_SESSIONS_DIR == paths.kiro_sessions_dir()
+
+    def test_a_test_that_redirects_the_override_itself_is_followed(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor is a safety net, not a cage."""
+        from kiro_crew.config import paths
+
+        mine = tmp_path / "my-own-sessions"
+        monkeypatch.setattr(paths, "_sessions_dir_override", lambda: mine)
+
+        assert paths.kiro_sessions_dir() == mine
+
+
 class TestTheSharedKiroPathsArePinned:
     """``~/.kiro`` is kiro-cli's own home -- machine-wide, shared with the real agent.
 
@@ -432,13 +593,6 @@ class TestTheSharedKiroPathRatchet:
         # consumers import them by value.
         ("kiro_crew/service/macos.py", "PLIST_DIR"): "covered by _isolate_launchd_paths",
         ("kiro_crew/service/macos.py", "LOG_DIR"): "covered by _isolate_launchd_paths",
-        # NOT a data path -- a security MATCHER compiled from the real home. It exists
-        # to refuse `tar -C ~/.kiro/crew`, which can drop a `security_policy.json` or a
-        # `profiles/` entry into the governance trust root. Pointing it at a tmp dir
-        # would make every test that exercises it assert against a pattern that no
-        # longer matches the thing it protects -- weakening the guard to satisfy an
-        # isolation ratchet, which is backwards.
-        ("kiro_crew/security.py", "_EXTRACT_INTO_TRUST_ROOT_RE"): "security anchor: must name the REAL home",
         # The kiro-cli/amazon-q sqlite tuples that used to sit here as direct
         # ``Path.home()`` bindings are now PROJECTIONS over the canonical table in
         # ``kiro_crew/identity_stores.py`` (``sqlite_dbs(...)`` resolves the home
@@ -1314,6 +1468,9 @@ class TestTheWorkerBudgetIsMemoryBounded:
         monkeypatch.setattr(budget, "_cgroup_limit_mib", lambda: 0)
         monkeypatch.setattr(budget, "_host_available_mib", lambda: 0)
         monkeypatch.delenv(budget._MAX_WORKERS_ENV, raising=False)
+        # Kiro Crew seeds this cap at every agent spawn boundary; a run started
+        # from an agent shell would otherwise read the spawner's cap here.
+        monkeypatch.delenv(budget._XDIST_ENV_CAP, raising=False)
 
         first = budget.resolve_workers()
         # A second run in this same process cannot re-lock what it already holds, so the

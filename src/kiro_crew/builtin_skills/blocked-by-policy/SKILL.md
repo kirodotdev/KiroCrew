@@ -197,9 +197,14 @@ The reason has two possible forms:
 - `kirocrew doctor` — reports the credential posture: which AWS profiles are
   configured, whether a `credential_process` is in play, and whether this host
   mounts an MCP server that vends credentials.
-- `kirocrew policy show` / `explain <scope> <item>` — the governance ceiling, on
-  a host that has one. CLI only, deliberately: there is no tool for enumerating
-  your own ceiling.
+- `kirocrew policy show [--ids]` / `policy explain <scope> <item>` /
+  `policy profile <name>` / `policy source` / `policy validate` — the governance
+  ceiling, where it comes from, and whether it loads. `policy show --ids` lists
+  each denied-command category's rule ids instead of just counts, which is what
+  you want when a refusal names a pattern you cannot place. `policy explain`
+  takes optional `--session-key`, `--agent` and `--app` so you can ask about a
+  surface other than your own. CLI only, deliberately: there is no tool for
+  enumerating your own ceiling.
 
 ## What not to do
 

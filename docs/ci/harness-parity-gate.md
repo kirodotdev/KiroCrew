@@ -12,7 +12,7 @@ judgment-only ones it cannot, are catalogued in
 | Where | Command | Fails the build |
 |---|---|---|
 | Job `harness-parity` in `fast-gate.yml` | `check_harness_parity.py --test` then the diff-scoped run | yes — `Fast Gate` is a required check of its own, so every job in it is blocking |
-| CI job `test` (ordinary pytest) | `test/test_harness_parity.py` | yes — 22 structural pins, groups A and C |
+| CI job `backend-test` (ordinary pytest) | `test/test_harness_parity.py` | yes — the structural pins in groups A (Kiro is the default and the floor), B (identity is tested positively) and C (the Kiro path keeps its own machinery) |
 | The four AI review lanes | the `harness-parity` rule in `AUTOSDE.yaml`, `blocking: true` | yes — a violation of a blocking rule blocks |
 | Locally | `HARNESS_BASE_REF=origin/main python3 scripts/check_harness_parity.py` | exit 1 on any violation |
 

@@ -152,6 +152,11 @@ export function ChannelsPanel({ basePath }: { basePath?: string } = {}) {
           {i18nT('pages.settings.channelsPanel.off_by_admin')}
         </span>
       ) : (
+        // errors-use-error-notice: status chip only — an ErrorNotice would not
+        // fit this 280px rail row. The failure itself renders through
+        // ErrorNotice in the selected channel's detail panel (the "Cannot load …
+        // config" notice in BotChannelPanel / IMessagePanel / SlackPanel), which
+        // reads the SAME query-key cache entry, so the chip never stands alone.
         <span className="flex items-center gap-1.5 text-[11.5px]" style={{ color: st.color }}>
           {st.dot && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: st.color }} />}
           {st.text}

@@ -102,6 +102,7 @@ doc stored as `widget` renders as raw inner HTML).
 | `artifact_update` | Modify content/name/description/tags; bumps version on content change |
 | `artifact_list` | List artifacts (filter by `tag`, `kind`, name `q`) |
 | `artifact_versions` | List version numbers for a slug |
+| `artifact_revert` | Revert the live state to a prior version; writes that version's content as a fresh snapshot tagged `reverted`, so the activity timeline shows the rollback |
 | `artifact_delete` | Permanent delete (artifact + all versions) |
 | `artifact_folder_list` | List the folder tree (id, name, parent_id, path, item_count) |
 | `artifact_folder_create` | Create a folder; `parent` = id or path (mkdir -p) |
@@ -112,6 +113,7 @@ doc stored as `widget` renders as raw inner HTML).
 | `artifact_get_comments` | Read all comments on an artifact (local + provider-synced) |
 | `artifact_post_comment` | Post a comment; agent comments carry the structured `is_agent` flag (no emoji stamped into the body — dashboard renders a lucide `Bot` icon, CLI prefixes a plain-text `[agent]` marker) + SEL-audited; `scope='shared'` syncs to the provider |
 | `artifact_mark_review` | Advance a comment thread to REVIEW status (agent can mark_review but NEVER resolve) |
+| `artifact_reply_comment` | Reply to an existing comment thread; a reply to a provider-origin parent posts back to the provider |
 | `artifact_delete_comment` | Delete a fully-applied comment thread (root cascades to replies); provider-synced comments refused; SEL-audited with a `reason` |
 
 Schemas live in `validation.py` (`ARTIFACT_*_SCHEMA`) and are registered in
@@ -151,6 +153,7 @@ The CLI proxies through the gateway HTTP API (matches `kirocrew learn`).
 | `PATCH` | `/api/artifact-folders/{id}` | Rename / reparent / reorder / icon / color |
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
+| `POST` | `/api/artifacts/{slug}/publish/reprobe-notice` | Re-ask the destination whether a delivery notice still applies (`publish_sync.reprobe_notice`) and clear it once the copy is genuinely being served. READ-ONLY at the destination: it resolves through the drive's read path, never the create-capable one, so a re-check cannot provision infrastructure or rewrite a bucket policy |
 | `POST` | `/api/artifacts/{slug}/pull-latest` | Pull the tracked upstream (`?source=publication\|origin\|auto`) into a NEW local snapshot via `publish_sync.pull_upstream`; ungated ingress |
 | `GET` | `/api/artifacts/{slug}/upstream-status` | Cheap metadata-only drift check (`publish_sync.upstream_status`); best-effort, never blocks on the network |
 | `POST` | `/api/artifacts/{slug}/overwrite-remote` | Force-push local content over an upstream-ahead remote (`publish_sync.overwrite_upstream`); **egress — gated by `_publish_governance_denied` on the resolved `publication.provider`** |
@@ -203,12 +206,61 @@ at parity with the dashboard — guarded in `test_remote_artifacts.py`.
 (`pull-latest` / `upstream-status` / `overwrite-remote`) wire `publish_sync`'s
 provider-agnostic orchestration (`pull_upstream` / `clone_from_remote` /
 `fork_from_remote` / `upstream_status` / `overwrite_upstream`) to HTTP. The
-surface is **inert in the public edition**: the provider registry is empty, so
-`get_provider()` raises `PublishUnavailableError` → browse / clone / fork all
-503, and the frontend gates the entire remote section + `UpstreamSyncBanner` on
-a non-empty `GET /api/artifacts/publish-providers` result (zero remote pixels /
-requests with no provider). A companion registers providers via the CPP publish
-seam. The picker includes a provider whenever `available() or installable()`
+surface's reach depends on what the registered destination declares. The public
+edition registers the personal cloud drive, which serves published bytes but
+declares no `CONTENT_PULL` and an all-off `DiscoveryModel`, so browse / clone /
+fork stay unavailable while publish works. It registers under its OWN key rather
+than `DEFAULT_PROVIDER`, so it is **opt-in**: the picker lists it and a caller can
+name it, but a publish that names no destination resolves the default key, which
+stays unregistered, and gets the same 503 as an edition with no provider at all.
+What holds the default back is not the transfer but a cross-store contract for
+whether a publication exists — see the withdrawal rules below and
+`personal_drive.PERSONAL_DRIVE_PROVIDER`; until that lands, the windows those rules
+guard are reachable only by someone who chose this destination deliberately.
+
+Because the drive pools **one** bucket and **one** distribution across every artifact,
+those artifacts share a serving domain, and what keeps them from sharing a browser origin
+is a response-headers policy carrying
+`Content-Security-Policy: sandbox allow-scripts allow-popups; frame-ancestors 'none'`.
+That policy is verified in two places, not one. At CREATE, a same-named policy is reused
+only when its CSP matches exactly with `Override` true — anything else fails closed, so a
+policy pre-created without the sandbox cannot be attached. At REUSE of an existing drive,
+**every transition that starts serving bytes publicly** verifies the distribution still has
+that policy attached to its default behaviour — a first publish and a private→public flip
+alike, because those reach the drive through two different resolvers and gating the
+guarantee on which one an artifact happened to travel through is not a guarantee. A
+confirmed mismatch refuses and names the policy to re-attach; an unreadable distribution
+config does **not** refuse, since an install whose IAM policy was narrowed would otherwise
+have a permissions gap reported to it as tampering.
+
+Three paths are deliberately **not** gated on it. Withdrawal and public→private are
+removals: refusing them because a header is missing would strand the copy that header was
+containing. Pushing a new version replaces bytes in place and hands out no new link, so if
+the header were already gone that artifact was already served without isolation before the
+push — refusing would un-expose nothing and would only strand its owner on the old bytes.
+
+A publication's handle is `<key>~<account id>~<profile name>`, and the **account** is what
+the withdrawal paths verify. An earlier shape pinned only the profile name, which was a real
+exposure rather than a nicety: a profile name is a local alias, so repointing it at another
+account and then deleting resolved the name to the new account, removed nothing, reported
+success, and cleared the record — leaving the original copy public with the only handle able
+to take it down erased. That needed no concurrency and no failure, just a config edit and an
+ordinary delete. Every mutation path resolves its credentials through one function, which
+compares the pinned account against what `sts:GetCallerIdentity` reports now and refuses on a
+mismatch — and refuses too when the live account cannot be read at all, because that call is
+gated by no IAM policy, so a failure means credentials did not resolve rather than a tier
+being narrow, and acting on an account that cannot be identified risks removing nothing while
+discarding the record. The account is read *before* the handle is minted, so a publish that
+cannot confirm it fails before uploading. A handle carrying no account field predates the
+binding and keeps the older behaviour rather than being refused; the middle field counts as
+an account only if it is twelve digits, so a pre-binding handle whose profile name contains
+the separator cannot have that name misread as an account.
+ The
+frontend gates the entire remote section + `UpstreamSyncBanner` on a non-empty
+`GET /api/artifacts/publish-providers` result (zero remote pixels / requests
+when no provider is registered at all). A companion registers its own provider
+via the CPP publish seam. The picker includes a provider whenever
+`available() or installable()`
 (`PublishProvider.installable()` defaults `False`; a companion provider whose
 `ensure_ready()` self-installs on first publish overrides it to `True`), and
 each row carries an `available` flag so the FE can hint install-on-first-use for
@@ -275,7 +327,118 @@ treats the version push as best-effort: its re-publish branch runs
 and returns normally — so the route answers 200 with a publication whose remote
 content is stale. A non-empty (non-whitespace) `last_error` is therefore an error
 outcome carrying the provider's own already-redacted message; whitespace-only
-stays success, because the core writes `""` to clear the field.
+stays success, because the core writes `""` to clear the field. A publish that
+SUCCEEDED but whose link is not usable yet (e.g. CloudFront still rolling out)
+records that status on the separate `publication.notice` field, never
+`last_error` — so it does not render the publish as failed or withhold the URL.
+
+### Withdrawal is NOT best-effort
+
+`publish_sync.unpublish` deletes at the destination and only then clears the local
+`publication` block. A failure keeps the block and raises, because that block is the
+only handle to content that may still be served: clearing it strands the remote copy
+with nothing recording where it lives and no retry able to reach it. Both mouths fail
+the same way -- a provider that raises, and a destination reporting
+`reachable_for() == False`, which cannot attempt the withdrawal at all. Neither is
+allowed to drop the handle: both refuse the delete instead.
+
+Reachability is asked about the PUBLICATION, not the destination. `available()` answers
+whether a destination is configured at all, which is the right question for offering a
+new publish; a publication is bound to one specific account, recorded in its
+`external_id`. Asking the wide question on a withdrawal path reports a destination as
+reachable when this artifact's own account is gone, so the call is attempted, fails, and
+is classified as a rejection a retry could fix -- leaving an artifact that can be neither
+withdrawn nor deleted, only told to retry forever. Providers binding nothing per
+publication inherit the wide answer.
+
+Deleting the artifact notifies the destination, but it is NOT a way out of a kept
+publication: it refuses unless the withdrawal is confirmed, exactly as described below.
+`delete_for_artifact` runs from the delete handler BEFORE the local delete,
+using the publication the handler already read for its version capture. The ordering is
+chosen for its crash residue: die between the two steps in this order and the copy is
+withdrawn while the artifact remains, which the user simply deletes again; die between
+them in the reverse order and the local record is already gone while the content is still
+public, with nothing left to withdraw it by. Since `delete()` removes the artifact
+directory by slug under the store lock rather than writing back a value read earlier,
+placing a network round trip ahead of it does not widen any compare-and-swap window -- a
+save landing in that window is included in the delete the user asked for.
+
+The local delete proceeds on ONE rule: only when there is nothing left to withdraw, or
+the destination confirmed the withdrawal. Anything else refuses, loudly. A destination
+that answers and then rejects the removal blocks the delete with `502`, keeping the
+publication because that record is the only handle able to reach a copy that may still be
+served. A destination that cannot be reached at all -- a publication naming a destination
+this edition does not register, or one whose `reachable_for()` is False -- blocks it too:
+unreachable describes THIS PROCESS's access, not the object, so the copy may still be
+served to the whole internet, and deleting the record would erase the only thing that
+could ever take it down. The one case that would proceed is a CONFIRMED absent destination, signalled by a typed
+`DriveNotFound` -- never a substring match on an error message, because a throttled or
+unauthorized reply carries the same words while the object is still live. **No site
+raises that type today.** The personal drive resolves its destination by TAG, so a lookup
+miss says only that the lookup failed: a tag removed by hand or a transient answer from
+the tagging API both leave the bucket and distribution serving, and calling that proof
+would strand a copy on evidence no stronger than the substring match the type replaced.
+Proving absence needs a positive probe that asks the destination about the resource named
+in the publication, rather than asking a directory whether it can still find it. Until
+that exists nothing releases a handle except a confirmed withdrawal, so the branch is
+unreachable and the refusal set is correspondingly wider. That is the safe side of the
+trade: a record that will not clear is recoverable, and a public copy whose handle was
+erased is not. `delete_for_artifact` never raises either way -- it
+reports which of those happened and the handler decides, so provider resolution and the
+availability probe failing on an unregistered destination cost a log line rather than an
+exception.
+
+The folder cascade obeys the same rule rather than routing around it. `delete_contents`
+destroys artifacts through `ArtifactStore.delete`, which knows nothing about
+publications, so the cascade withdraws every published copy in the subtree FIRST and
+destroys nothing until they are all withdrawn; the first copy that will not come down
+refuses the whole cascade, leaving the artifacts, their handles and the folder in place.
+
+That preflight cannot be trusted on its own, because nothing holds a lock across it and
+the destruction that follows: the folder tree and the artifact store have independent
+locks, and taking both would invite an ordering deadlock. An artifact filed into the
+subtree after the preflight enumerated it therefore reaches the destruction still
+holding a publication nobody withdrew. So the refusal is asked of the delete itself
+rather than checked in the cascade loop: `ArtifactStore.delete` takes an opt-in
+`refuse_if_published` flag and re-reads the record inside the same lock as the removal,
+which is what makes it hold. A check in the loop would be a check-then-act over a
+snapshot, so a publish landing between the scan and that artifact's own delete would
+still be destroyed. The flag defaults to False, so the single-artifact path is
+unchanged: it is answered at the handler, which attempts the withdrawal and refuses on
+its outcome. The folder tree change is already committed by the time the cascade
+refuses and cannot be rolled back, so a kept artifact survives with a dangling folder
+id and degrades to Unfiled, which readers already tolerate; the response names it so a
+partly-refused cascade does not read as a completed one.
+
+`unpublish` is **not** a way out of a kept publication either, though it was designed as
+one. It obeys the same absence rule as the delete path: a destination that refuses the
+removal keeps the record and stays retryable; a destination that is merely unreachable is
+refused before the attempt, and its message must not offer deleting the artifact as the
+alternative, because that path refuses on the same destination. Only a confirmed-gone
+destination --
+typed `DriveNotFound` again, never message text -- releases the record, because there is
+nothing left to withdraw. That branch is currently unreachable for the reason given
+above: no site can prove absence yet. Its cost while unreachable is real and worth
+naming, because `reachable_for` resolves the PROFILE, not the drive: a drive deleted
+under a still-registered profile passes the reachability guard, fails inside the
+provider, and is now refused rather than released -- so that artifact's record cannot be
+cleared until a positive absence probe exists. Refusing is the deliberate choice over
+releasing on a tag miss, which could erase the handle to a copy that is still served.
+
+The cost is worth stating plainly: a published artifact whose destination refuses the
+withdrawal, or which this process can no longer reach, cannot be deleted until that is
+resolved -- and the unreachable half makes that population larger than a narrower reading
+would. A profile holding the publish permissions but not `s3:DeleteObject` is exactly that
+shape, and no shipped IAM tier grants it yet (see the publish-tier follow-up). The way out
+is deliberate rather than accidental: `unpublish` lets the owner state in the open that
+they accept the published copy may remain, and then the artifact deletes. The alternative
+was dropping the record and stranding a world-readable copy with nothing able to withdraw
+it -- failing loudly is recoverable, that is not.
+
+This asymmetry with the publish path above is deliberate. A stale publish leaves the
+wrong bytes at a URL the user already knows about; a stale withdrawal leaves content
+served that the user believes they took down, which is the worse failure and the one
+worth surfacing as an error the user can act on.
 
 The public-exposure warning and the blocking `PublicPublishAckModal` are
 unchanged and unconditional — every destination gets both, on the clean path and

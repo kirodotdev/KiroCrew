@@ -9,6 +9,7 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from ..subagent import (
         KiroCrewConfig,
+        SpawnApprovalUnreachable,
         Stats,
         SubagentInfo,
         _context_groups_field,
@@ -64,9 +65,14 @@ class SpawnAdmissionCoordinator(ManagerComponent):
 
         1. YOLO mode → immediate execution
         2. ``approval_mode="auto"`` from caller → immediate execution
-        3. ``auto_approve_subagent_spawn`` config → auto-approved execution
-        4. ``on_spawn_approval`` callback → interactive approval
-        5. Otherwise → rejected
+        3. parent session trust (``approval_policy == "auto"``, the dashboard
+           Trust toggle) → auto-approved execution
+        4. ``auto_approve_subagent_spawn`` config → auto-approved execution
+        5. ``on_spawn_approval`` callback → interactive approval, unless the
+           callback reports it has no surface to raise the prompt on, in which
+           case the spawn is refused immediately (see
+           ``_spawn_with_approval_impl``)
+        6. Otherwise → rejected
 
         When ``approval_mode="auto"`` is set, it has two effects:
         - Skips the spawn approval gate (this method)
@@ -707,11 +713,22 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         If approval is denied the subagent is marked as done with an
         error and the running count is decremented without executing.
 
+        A callback that has nowhere to raise the prompt reports it by raising
+        ``SpawnApprovalUnreachable``, and the spawn is refused right here rather
+        than left registered until the reaper's deadline. Waiting is only correct
+        when a prompt actually reached a surface and went unanswered; when it
+        reached none, the wait can only end one way and costs the caller the full
+        deadline to learn it (issue #2381).
+
         Args:
             info (SubagentInfo): The subagent metadata.
         """
         assert self._manager._on_spawn_approval is not None
         request_id: str = f"spawn:{info.id}"
+        # Set only on the unreachable path, where it carries the refusal prose.
+        # Also the flag that picks the audit reason below, so the two cannot
+        # drift apart.
+        no_surface_error: str = ""
         try:
             from kiro_crew.security import (
                 redact_credentials,
@@ -750,13 +767,62 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 )
             finally:
                 info._awaiting_approval = False
+        except SpawnApprovalUnreachable as unreachable:
+            # Not a refusal: nobody was there to refuse. Ordered ABOVE the
+            # generic handler below, which would otherwise flatten this into the
+            # same "spawn rejected" a human decline produces — and it is the
+            # generic prose that made #2381 cost 30 minutes to read.
+            #
+            # The raiser names the missing SURFACE; the rungs are this gate's own
+            # cascade. Keeping the split means the sentence does not go stale
+            # when a channel learns to deliver the prompt itself.
+            detail = str(unreachable).strip() or "no interactive surface is attached"
+            # TWO AUDIENCES, and which text each gets is a security decision, not
+            # a formatting one. The rung list is the OPERATOR's: it names two
+            # `config.json` keys, and `security.py` records that `config.json` is
+            # writable by any auto-approved agent shell. `info.error` travels to
+            # the calling agent as a completion event — automation input — so
+            # putting the how-to there hands the party this gate CONSTRAINS the
+            # recipe for removing it, which an unattended or prompt-injected
+            # agent can simply follow. The log is where an operator looks (it is
+            # what #6484 asked for), so the how-to lives here and nowhere the
+            # agent can read it.
+            logger.warning(
+                "Subagent %s refused: the spawn approval prompt reached no "
+                "surface that could answer it (%s, parent=%s). To let spawns run "
+                "without a prompt, use any one of: spawn with "
+                'approval_mode="auto"; turn on Trust for the parent session in '
+                "the dashboard; set hooks.auto_approve_subagent_spawn to true in "
+                'config.json; or add "subagent" to hooks.auto_approve_sources.',
+                info.id,
+                detail,
+                info.parent_session_key or "<unowned>",
+            )
+            approved = False
+            # Terse, and names no file and no key — so it is actionable for the
+            # agent (tell the human, or stop delegating) without being followable
+            # into a self-granted bypass.
+            no_surface_error = (
+                "spawn rejected: no surface could show the approval prompt, so "
+                f"nobody could answer it ({detail}). The spawn was refused now "
+                "rather than held until the reaper's deadline. Ask the operator "
+                "to open the dashboard and spawn again, or to enable spawn "
+                "auto-approval."
+            )
         except Exception:
             logger.exception("Spawn approval failed for %s", info.id)
             approved = False
 
         if not approved:
             info.done = True
-            info.error = "spawn rejected"
+            # Prose only, deliberately no ``error_code``. The one reader of
+            # that field (``POST /api/spawn``) runs BEFORE this task does, so a
+            # code minted here would reach no caller — and an unread code is
+            # contract surface bought for nothing (see ``error_code``'s own
+            # note in ``subagent.py``). The audit ``reason`` below is what
+            # separates this from a decline for a machine; the prose is what
+            # separates it for the agent that receives the completion event.
+            info.error = no_surface_error or "spawn rejected"
             # Slot accounting through the one-shot token, NOT a bare decrement.
             # A user Stop funnels into `_force_reap` and can land while this
             # approval is still pending (a human prompt has no deadline), and
@@ -767,12 +833,19 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 self._manager._running_count -= 1
                 self._manager._drain_queue()
             self._manager._tasks.pop(info.id, None)
+            # ``outcome`` keeps its existing vocabulary — the refusal is still a
+            # rejection — and the reason rides in metadata, so an auditor can
+            # tell a declined spawn from an undeliverable one without a new
+            # outcome value to teach every reader.
+            _reject_meta: dict[str, str] = {"subagent_id": info.id}
+            if no_surface_error:
+                _reject_meta["reason"] = "no_approval_surface"
             sel().log_tool_invocation(
                 session_key=info.parent_session_key,
                 source="subagent",
                 tool_name="spawn_run",
                 outcome="rejected",
-                metadata={"subagent_id": info.id},
+                metadata=_reject_meta,
             )
             logger.info("Subagent %s spawn rejected", info.id)
             # Report ownership through the same claim every other terminal path

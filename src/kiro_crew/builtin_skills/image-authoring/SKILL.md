@@ -50,7 +50,9 @@ Check tool availability before relying on it (`python3 -c "import PIL"`,
 
 ### 3. Author — structured for later tuning
 
-- Save under `~/.kiro/crew/workspace/images/` as `<subject>-<style>.<ext>`.
+- Save under `<workspace>/images/` (`~/.kiro/crew/workspace/images/` by default,
+  or `$KIROCREW_HOME`-relative) as `<subject>-<style>.<ext>` — this is a
+  convention of this skill, so create the directory if it does not exist.
 - Put the brief at the top of the source: `<!-- BRIEF: ... -->` (SVG/HTML) or
   a docstring (script). Future iterations read intent from the file itself.
 - **Give every major element a stable id** so feedback can target regions:
@@ -95,7 +97,14 @@ real HTML. Unlike mermaid, this fence is specific to this dashboard — emit it
 deliberately, it is not a convention a reader will know from elsewhere.
 
 Emit scene JSON: `{"type":"excalidraw","version":2,"elements":[…],"appState":{…}}`.
-The renderer is a **viewer, not the editor**, so author around these differences:
+The inline fence is a **viewer, not the editor**, so author around these
+differences. The composer's pencil button opens a real Excalidraw editor (Sketch
+pad): when a user sketches there, the attachment arrives as a PNG plus a
+`.excalidraw` JSON sidecar — read the JSON, not the pixels, since element
+geometry and labels are what you can reason about. You can hand a scene back the
+same way by emitting the fence. A rendered fence is click-to-enlarge in a
+lightbox, so a dense diagram stays readable — do not shrink content to fit the
+chat column.
 
 - **Fonts are not bundled.** `fontFamily` 1/5/8 (the hand-drawn ids) resolve to
   whatever the *viewer's* machine aliases to CSS `cursive`, which varies per box

@@ -18,13 +18,11 @@ New here? Start with [guides/install.md](guides/install.md), then
 | [build/](build/README.md) | Packaging, signing, and releasing. |
 | [ci/](ci/README.md) | Everything that gates a pull request. |
 | [app-kit/](app-kit/README.md) | Building apps that run inside Kiro Crew (third-party developer docs). |
-| [design/](design/README.md) | Proposals for changes agreed before they are built. |
 | [system-specs/](system-specs/README.md) | Change-control contracts. The doc a code change MUST update in the same commit. |
-| [request-for-change/](request-for-change/README.md) | Proposals and decision records for large or contested changes. |
+| [request-for-change/](request-for-change/README.md) | Proposals and decision records for large or contested changes, plus the dated implementation plans that execute them under [plans/](request-for-change/plans/README.md). |
 | [blog/](blog/README.md) | Essays on direction and design philosophy. Arguments, not contracts. |
-| [reference/](reference/README.md) | Upstream documentation we mirror but do not author. |
+| [reference/](reference/README.md) | A mirror of upstream kiro-cli documentation, with named local exceptions. |
 | [task-specs/](task-specs/README.md) | Archived per-task specs. Not current context. |
-| [superpowers/](superpowers/README.md) | Dated agentic implementation plans derived from accepted designs. |
 
 ## The rule for changing docs
 
@@ -45,7 +43,13 @@ commit**. Concretely:
 5. **Run the gate:** `./scripts/docs-lint.sh`. It fails on a broken internal link, a
    doc no index reaches, a directory with no index, a code comment citing a doc that
    does not exist, a renamed doc whose filename is hardcoded in code, and a git
-   conflict marker left at the start of a line.
+   conflict marker left at the start of a line. It walks four trees: this one,
+   the packaged [`../src/kiro_crew/docs/`](../src/kiro_crew/docs/README.md),
+   [`../website/docs/`](../website/docs/README.md), and the markdown a builtin app
+   ships under `src/kiro_crew/apps/builtins/`. That fourth tree is link-checked and
+   fact-checked but exempt from the index rules, because an app's README, agent
+   briefs and `SKILL.md` files are curated by its `app.json` rather than by a
+   documentation index.
 
 Two constraints that are easy to miss:
 

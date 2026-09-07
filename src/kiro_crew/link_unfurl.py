@@ -86,6 +86,24 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 _META_CHARSET = re.compile(rb"""charset\s*=\s*["']?\s*([\w.:+-]{1,40})""", re.IGNORECASE)
 _COLOR_SCHEME_MEDIA = re.compile(r"prefers-color-scheme\s*:\s*(dark|light)", re.IGNORECASE)
 _MEDIA_NEGATION = re.compile(r"\bnot\b", re.IGNORECASE)
+#: Title shapes an auth wall serves in place of the page a link names. Every
+#: alternative is anchored at BOTH ends: the leading gate phrase must be
+#: followed by the end of the title, an explicit separator, or a gate
+#: continuation ("to …", "with your …") — a bare prefix match would also blank
+#: real titles that merely start with the phrase ("Login security best
+#: practices", "Sign in with Apple: a guide"). English-only on purpose: each
+#: added language multiplies the false-positive surface, and a missed gate
+#: degrades to today's behavior.
+_LOGIN_PAGE_TITLE = re.compile(
+    r"""(?x)
+      ^\s* (?:please\s+)? (?:sign|log) [\s-]? (?:in|on)
+          \s* (?: $ | [|\-–—·:•] | to\b | with\s+your\b )   # "Sign In", "Sign in to X | Slack"
+    | [|\-–—·:•] \s* (?:sign|log) [\s-]? in \s*$            # "Acme Corp - Sign In"
+    | ^\s* single\s+sign [\s-]? on \s* (?: $ | [|\-–—·:•] ) # "Single Sign-On", "SSO - Okta"
+    | ^\s* authentication\s+required \s*$
+    """,
+    re.IGNORECASE,
+)
 
 
 class UnfurlRejected(Exception):
@@ -565,6 +583,23 @@ class _HeadParser(HTMLParser):
         return [h for h, s, apple in self._icon_links if not apple and keep(s)] + [
             h for h, s, apple in self._icon_links if apple and keep(s)
         ]
+
+
+def is_login_page_title(title: str) -> bool:
+    """Whether *title* names an auth gate rather than the page the URL names.
+
+    An unauthenticated fetch of an auth-gated link is answered with the site's
+    sign-in page — a 200, so it parses like any other document — and its title
+    ("Sign in to Amazon | Slack") describes the gate, not the linked content.
+    Rendering it verbatim mislabels the chip; the caller blanks the text fields
+    instead so the client falls back to the domain.
+
+    The pattern is deliberately conservative (see :data:`_LOGIN_PAGE_TITLE`).
+    The asymmetry justifies the remaining false positives: matching a real
+    article title costs a domain-labelled chip that is still true, while missing
+    a gate title shows a claim about the page that is false.
+    """
+    return bool(_LOGIN_PAGE_TITLE.search(title))
 
 
 def extract_meta(html: str, *, base_url: str) -> ExtractedMeta:

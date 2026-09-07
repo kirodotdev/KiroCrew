@@ -132,6 +132,12 @@ def _public_view(run: JobRun, cancelling: frozenset[str], live: frozenset[str]) 
     them: whether the run may have committed side effects, and whether retrying
     it is even possible now. Withholding them would leave the record honest and
     the API not.
+
+    ``work_observed`` is served for the same reason: a client deciding whether a
+    ``done`` run actually did its work, or whether a ``failed`` one may have
+    committed a side effect before it stopped, reads the observed fact rather than
+    re-deriving it. It is an SDK-minted boolean, not a runner payload, so serving
+    it carries none of the sanitizing cost the P2 result channel does.
     """
     return {
         "run_id": run.run_id,
@@ -146,6 +152,7 @@ def _public_view(run: JobRun, cancelling: frozenset[str], live: frozenset[str]) 
         "error": run.error,
         "interrupted_from": run.interrupted_from,
         "interrupt_cause": run.interrupt_cause,
+        "work_observed": run.work_observed,
     }
 
 

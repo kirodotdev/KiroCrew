@@ -236,6 +236,9 @@ class TestCronListFields:
         mock_job.skip_dates = []
         mock_job.script = ""
         mock_job.command = ""
+        mock_job.secret_env = {}
+        mock_job.secret_env_pending = {}
+        mock_job.secret_env_pending_ts = 0.0
         mock_job.last_error = ""
         mock_job.model = ""
         mock_job.folder_id = ""

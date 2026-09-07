@@ -32,7 +32,7 @@ The `spawn_run` tool accepts:
 - `tasks` — array of tasks for parallel execution
 - `agent` / `agents` — optional agent name(s) for each task
 - `include_memory` / `include_lessons` / `include_project` — booleans (default `true`) switching off a context group the sub-agent would otherwise inherit
-- `max_turns` — per-spawn tool-call budget override (0 = unset, max 200)
+- `max_turns` — per-spawn tool-call budget override (0 = unset, max 1000)
 - `model` — model override for this spawn (e.g. `deepseek-3.2`)
 - `reasoning_effort` — `low` / `medium` / `high` / `xhigh` / `max`, batch-wide
 - `keep` — make the run a continuable conversation with guaranteed resumability and longer retention
@@ -60,8 +60,8 @@ The other spawn tools:
 ## Limits
 
 - **Max concurrent**: auto-sized at startup by default (`agent.max_subagents = 0`; floor 3, ceiling `agent.subagent_auto_max` = 32); set a positive integer to pin a fixed cap
-- **Timeout**: 30 minutes per subagent task (`agent.subagent_timeout_secs`), 20 minutes delivery (semaphore wait + injection), 15 minutes per injection attempt (`KIROCREW_INJECTION_TIMEOUT`, clamped to the delivery cap)
-- **Turn limit**: 100 turns per subagent (configurable via `agent.subagent_max_turns`, UI max 200)
+- **Timeout**: 3 hours per subagent task (`agent.subagent_timeout_secs`, clamped to 60s..86400s at load; 0 means "use the default"), 20 minutes delivery (semaphore wait + injection), 15 minutes per injection attempt (`KIROCREW_INJECTION_TIMEOUT`, clamped to the delivery cap). A **blocking** `spawn_sub_agents` call collects for at most 2 hours regardless of that setting (`KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT`, itself capped at 7200s), so use `spawn_run` for work longer than 2 hours and read the results from its completion events
+- **Turn limit**: 100 turns per subagent (configurable via `agent.subagent_max_turns`, UI max 1000)
 - **Memory guard**: spawns are refused when available memory drops below 4 GB (configurable via `agent.spawn_min_memory_gb`, set to 0 to disable)
 - **No nesting**: subagents cannot spawn their own subagents
 - **Redaction**: task strings in SubagentInfo are redacted (credentials + exfiltration URLs) before surfacing to Slack/dashboard

@@ -37,7 +37,7 @@ def decide_monitor(
     """
     if state.version != MONITOR_STATE_VERSION:
         return MonitorDecision.STOP_BLOCKED
-    terminal = _terminal_decision(state.outcome)
+    terminal = terminal_decision_for_outcome(state.outcome)
     if terminal is not None:
         return terminal
     if monitor_budget_reason(state, now=now):
@@ -63,7 +63,16 @@ def decide_monitor(
     return MonitorDecision.STOP_BLOCKED
 
 
-def _terminal_decision(outcome: MonitorOutcome | None) -> MonitorDecision | None:
+def terminal_decision_for_outcome(outcome: MonitorOutcome | None) -> MonitorDecision | None:
+    """Return the decision a recorded terminal outcome forces, or None if live.
+
+    Both :func:`decide_monitor` and the persistence-only shadow path
+    short-circuit here so a stopped monitor is never re-probed. This is NOT the
+    verdict the delivery controller reports: ``autonudge``'s
+    ``apply_monitor_probe`` refuses a monitor with a recorded outcome before
+    :func:`decide_monitor` runs, flattening every terminal outcome to
+    ``STOP_BLOCKED``.
+    """
     if outcome is MonitorOutcome.SUCCESS:
         return MonitorDecision.STOP_SUCCESS
     if outcome is MonitorOutcome.BUDGET:

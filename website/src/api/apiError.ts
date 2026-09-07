@@ -40,6 +40,16 @@ export class ApiError extends Error {
 }
 
 /**
+ * True for a rejection that means "the resource is absent" (HTTP 404), as
+ * opposed to a request that FAILED. Duck-typed on `status` rather than
+ * `instanceof ApiError` so a page that reads it keeps working under a mocked
+ * `api/client` (the suites reject with `Object.assign(new Error(), { status })`),
+ * and so any future ApiError-shaped rejection from a different transport counts.
+ */
+export const isNotFoundError = (e: unknown): boolean =>
+  typeof e === 'object' && e !== null && (e as { status?: unknown }).status === 404
+
+/**
  * Map raw edge/proxy error bodies to a human-readable message. A dashboard
  * served through Builder Tunnels sits behind API Gateway, whose throttle
  * response is the opaque `{"message":"Rate exceeded","throttlingReasons":null}`

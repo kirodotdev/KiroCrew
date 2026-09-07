@@ -17,6 +17,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, {
@@ -55,8 +56,11 @@ function chip({ parked = 0, running = 0, seed }: {
     store.dispatch(sseSubagentSpawn({ slot: SLOT, id: `r${i}`, task: `running ${i}`, agent: 'kirocrew' }))
   }
   seed?.(store.dispatch as unknown as (a: unknown) => void)
+  const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
   const { container } = render(
-    <Provider store={store}><SubagentProgressBar slot={SLOT} /></Provider>,
+    <QueryClientProvider client={queryClient}>
+      <Provider store={store}><SubagentProgressBar slot={SLOT} /></Provider>
+    </QueryClientProvider>,
   )
   return { container, store }
 }

@@ -25,10 +25,45 @@ Works from:
 | Discord DM | `discord:{agent}:direct:{user}` | fixed interval after each unattended turn |
 
 `autonudge_stop(reason?)` stops the loop bound to the current session from
-any of those surfaces. `monitor_update(message?, interval_secs?, max_cycles?)`
+any of those surfaces.
+`monitor_update(message?, interval_secs?, max_cycles?, max_runtime_secs?, banner?)`
 revises the loop already bound to this session in place, keeping its cycle
 count — use it when the instruction you armed has gone stale, or to raise the
-cap on a loop that is still doing useful work.
+cap on a loop that is still doing useful work. For a structured monitor it also
+takes `target?`, `objective?`, `max_agent_turns?`, `max_tokens?`,
+`max_provider_errors?` and `wake_instructions?`; every field is
+omit-to-leave-unchanged.
+
+Two `monitor_start` parameters are worth naming because their defaults are easy
+to inherit by accident:
+
+- `gate` (default true) holds a cycle back until the thing you are watching has
+  actually changed. Pass `gate=false` when the loop's duty is to act **while** the
+  subject is quiet — refresh a heartbeat file, chase a reviewer who has not
+  replied, keep a branch rebased on a moving base — because continued silence is
+  invisible to the observation. A gated loop is never starved: it is delivered
+  anyway after enough quiet intervals.
+- `banner` — a short line such as `watching PR #123 for CI` — changes only what is
+  stored and broadcast as a transcript row; the model still receives `message`
+  whole every cycle. Pass one whenever `message` is long, or a multi-KB
+  instruction is re-stored on every cycle. It is refused with a 400 on a
+  channel-bound loop (`slack:` / `discord:` / `webex:`); `monitor_update(banner="")`
+  clears one.
+
+### For a public GitHub pull request, prefer the structured monitor
+
+`monitor_watch(kind="github_pull_request", target=<PR URL>,
+objective="review_ready", interval_secs?, max_runtime_secs?, max_agent_turns?,
+max_tokens?, max_provider_errors?, wake_instructions?)` probes the pull request
+cheaply and wakes the owning session only when a new revision needs action —
+unchanged, pending, retry and terminal probes spend no agent turn, unlike a
+`monitor_start` cycle which spends a full turn every interval. Put the compact
+act-on-wake instruction in `wake_instructions`. Inspect it with `monitor_inspect`
+(no arguments — it resolves your own session) and end it with
+`monitor_stop(reason?)`, which retains the terminal outcome for inspection. One
+structured monitor per session, occupying the same slot as a `monitor_start`
+loop. Use `monitor_start` instead when you need to ACT most cycles, or when what
+you are watching is not a public GitHub PR.
 
 ### `interval_secs` counts between the loop's own cycles
 
@@ -678,7 +713,10 @@ own "green is weaker than it looks" caveat.
 
 ## Rules & gotchas
 
-- **One loop per session** — a new `monitor_start` replaces the existing loop.
+- **One automation per session** — `monitor_start` is **create-only**: it refuses
+  while a loop (or a structured monitor) already occupies this session. To change
+  a running loop use `monitor_update`; to replace it, `autonudge_stop` first, then
+  arm again.
 - **Busy sessions skip a cycle** (never queue) — a long-running turn delays
   the next check to the following interval; skipped cycles don't count
   toward `max_cycles`.
@@ -690,6 +728,9 @@ own "green is weaker than it looks" caveat.
   dashboard/Slack for tool-heavy babysitting or run the gateway with
   `--approval yolo`/`auto`).
 - **Kill switches:** `autonudge_stop` (preferred), the dashboard 🎯 popover
-  (dashboard loops), `max_cycles`, or the per-loop STOP sentinel file.
+  (dashboard loops), `max_cycles`, or `max_runtime_secs`. A STOP sentinel file
+  only exists for a loop armed with an explicit `stop_sentinel_path` (the HTTP
+  `POST /api/autonudge` path accepts one); a loop armed through `monitor_start`
+  has none.
 - Loops fire `[auto-nudge cycle N]`-tagged messages — treat them as your own
   scheduled wake-ups, not user input.

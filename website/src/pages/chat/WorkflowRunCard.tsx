@@ -26,6 +26,7 @@ import {
 import { PanelRightSolid } from '../../components/icons/panels'
 import { api } from '../../api/client'
 import Modal from '../../components/Modal'
+import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Input } from '../../components/ui'
 import { useRunSnapshot } from '../../apps/workflows/useRunSnapshot'
 import WorkflowSourceCode from '../../apps/workflows/WorkflowSourceCode'
@@ -217,11 +218,6 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
                 {lastLog}
               </div>
             )}
-            {(status === 'failed' || status === 'cancelled') && errMsg && (
-              <div className="text-[12px] leading-5 text-danger truncate mt-1">
-                {errMsg}
-              </div>
-            )}
             <div className="text-[10px] leading-4 text-muted font-mono truncate mt-1">
               {runId} {i18nT('pages.chat.workflowRunCard.open_workflows_panel')}
             </div>
@@ -231,6 +227,15 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
             className="text-muted shrink-0 mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity"
           />
         </Btn>
+        {/* Outside the open-panel button, not inside it as the plain red line
+            was: the notice carries its own hand-off button, and a button inside
+            a button is invalid markup. askAgent on: the collapsed card holds no
+            draft — the save form below lives only inside the Modal — the host
+            composer draft is persisted per slot, and an in-chat hand-off opens
+            a fresh slot rather than navigating away. */}
+        {(status === 'failed' || status === 'cancelled') && errMsg && (
+          <ErrorNotice variant="inline" message={errMsg} askAgent className="mt-1" testId="workflow-run-card-error" />
+        )}
         {status === 'finished' && (
           <div className="mt-2 pt-2 border-t border-accent/15 flex justify-end">
             {savedSlug ? (
@@ -339,16 +344,17 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
               />
             </div>
           ) : null}
-          {sourceError ? (
-            <p className="text-[12px] text-danger">
-              {i18nT('pages.chat.workflowRunCard.source_unavailable')}
-            </p>
-          ) : null}
-          {saveDefinition.error ? (
-            <p className="text-[12px] text-danger">
-              {i18nT('pages.overview.workflowLibrary.request_failed')}
-            </p>
-          ) : null}
+          {/* No hand-off: the save-definition form (name, slug, description)
+              is unsaved local state inside this Modal — a navigation would
+              discard it. Both notices below share that reason. */}
+          <ErrorNotice
+            variant="inline"
+            message={sourceError ? i18nT('pages.chat.workflowRunCard.source_unavailable') : null}
+          />
+          <ErrorNotice
+            variant="inline"
+            message={saveDefinition.error ? i18nT('pages.overview.workflowLibrary.request_failed') : null}
+          />
         </div>
       </Modal>
     </>

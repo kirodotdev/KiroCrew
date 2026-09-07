@@ -80,21 +80,21 @@ describe('Hooks page — inline test-failure state', () => {
     await act(async () => { fireEvent.click(testBtn) })
 
     await waitFor(() => {
-      // Inline failure panel, scoped to the hook that was tested.
-      const alert = screen.getByRole('alert')
-      const label = within(alert).getByText(/test failed: fmt/i)
-      const message = within(alert).getByText('hook test endpoint unreachable')
-      const dismiss = within(alert).getByRole('button', { name: /dismiss/i })
-      expect(label).toHaveClass('min-w-0', 'break-words')
-      expect(message).toHaveClass('break-words')
-      expect(dismiss).toHaveClass('shrink-0')
-      expect(alert).toHaveTextContent(/test failed: fmt/i)
+      // Inline failure panel, scoped to the hook that was tested — the shared
+      // ErrorNotice (role="alert"), titled with the hook's name.
+      const alert = screen.getByTestId('hook-test-error')
+      expect(alert).toHaveAttribute('role', 'alert')
+      expect(alert).toHaveTextContent(/test failed for fmt/i)
       expect(alert).toHaveTextContent('hook test endpoint unreachable')
+      expect(within(alert).getByRole('button', { name: /dismiss/i })).toBeInTheDocument()
+      // No form is open, so the hand-off is offered.
+      expect(within(alert).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
     })
 
-    // The global error path is preserved: mutError still reports the same message.
-    const banners = screen.getAllByText('hook test endpoint unreachable')
-    expect(banners.length).toBeGreaterThanOrEqual(2)
+    // The failed test is reported ONCE, by the titled notice beside the row: a
+    // second bare copy at the top of the page read as a page-wide outage.
+    expect(screen.queryByTestId('hooks-error')).toBeNull()
+    expect(screen.getAllByText('hook test endpoint unreachable')).toHaveLength(1)
   })
 
   it('clears a prior failure panel when a new test starts', async () => {
@@ -105,11 +105,12 @@ describe('Hooks page — inline test-failure state', () => {
 
     const testBtn = await screen.findByRole('button', { name: /^test$/i })
     await act(async () => { fireEvent.click(testBtn) })
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('first failure'))
+    await waitFor(() => expect(screen.getByTestId('hook-test-error')).toHaveTextContent('first failure'))
 
     await act(async () => { fireEvent.click(testBtn) })
     await waitFor(() => {
-      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.queryByTestId('hook-test-error')).toBeNull()
+      expect(screen.queryAllByRole('alert')).toHaveLength(0)
       expect(screen.getByText(/test result/i)).toBeInTheDocument()
     })
   })

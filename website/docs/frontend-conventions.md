@@ -6,6 +6,23 @@ Page structure is in [page-layout](page-layout.md); color and CSS-var rules are
 in [theming-contract](theming-contract.md); user-facing strings are in
 [i18n-catalog](i18n-catalog.md).
 
+## The stack
+
+React 18, Redux Toolkit, React Query (`@tanstack/react-query`), React Router v7,
+Framer Motion, Tailwind CSS 3, Lucide React, DOMPurify, highlight.js, Monaco,
+TypeScript, Vite 8. Read the pins from `website/package.json` rather than this list.
+
+Prefer the library already here over a new dependency. Every addition is bytes in a
+bundle a user downloads and a supply-chain surface someone has to review, and two
+libraries doing one job is how a codebase ends up with two animation systems whose
+transitions do not compose.
+
+## Browser support
+
+Chrome, Firefox, Safari and Edge. Use standard Web APIs only, and guard the
+browser-specific ones (`typeof Notification !== 'undefined'`): an unguarded API
+throws at module scope, so the page renders blank rather than degrading.
+
 ## Shared components
 
 `src/components/ui.tsx` is the primitive set. Compose from it rather than
@@ -15,7 +32,10 @@ hand-rolling:
 `SearchInput`, `Badge`, `SourceBadge`, `StatCard`, `Skeleton`,
 `ContentSkeleton`, `SkeletonToggleRow`, `SkeletonField`, `SkeletonInfoRow`,
 `FormSkeleton`, `EmptyState`, `PanelSectionHeader`, `PageHeader`, `Toggle`,
-`Slider`, `Checkbox`, `Select`.
+`Slider`, `Checkbox`, `FilteredEmpty`.
+
+There is deliberately no `Select` primitive: use `SimpleSelect`,
+`SettingsSelect`, or `SearchableSelect`.
 
 The provenance pill is **`SourceBadge`**, not a badge named after any one source.
 Two implementations exist on purpose:
@@ -48,6 +68,13 @@ Other shared modules:
 `src/kirocrew-ui/index.ts` re-exports the subset that apps may import as
 `@kirocrew/ui`. Adding a primitive there makes it app-facing API, so add
 deliberately.
+
+Stories for these primitives live in `src/stories/` and render them in isolation
+under every theme (`npm run storybook`); see
+[testing § Component stories](testing.md#choosing-a-layer). Seven primitives have
+one today. A story is the cheapest place to look at a new variant or prop, so add
+or update one when you touch a primitive that has one; a per-primitive
+requirement is not in force until the change that makes CI render stories.
 
 ### Which switcher
 
@@ -343,6 +370,21 @@ instances. Each theme has a dark and a light block, and the default theme's
 Shared CSS utilities in `index.css`: `.top-bar-pill`, `.topbar-glass`,
 `.scroll-shadow`, `.table-striped`, `.skeleton`, `.focus-ring`. A theme change
 crossfades through a `transition` on `body`.
+
+## Large file-pair diffs
+
+All old/new source pairs render through `PierreFilePair` in `src/pierre/index.tsx`.
+That wrapper owns a layout-independent renderer-thread budget before the lazy
+Pierre chunk loads, because Pierre constructs the raw diff synchronously before
+its worker pool or row virtualizer participates. Inputs outside the budget keep
+both complete files, header controls, native selection, wrapping, and theme
+styling in a bounded plain side-by-side or sequential surface. A translated
+status identifies the simplified view; it omits syntax colour, hunk interleaving,
+and line-level diff controls. The content limit is measured in JavaScript UTF-16
+code units rather than encoded bytes so the guard stays allocation-free while an
+editor changes. Editable live diffs use the same
+predicate and degrade to the ordinary editable file surface rather than becoming
+read-only. Do not duplicate or weaken the limits at call sites.
 
 ## Typography scale
 

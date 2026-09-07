@@ -127,6 +127,7 @@ def test_labels_are_bound_to_the_right_files(tmp_path: pathlib.Path) -> None:
 # boot-path convention), so patching them on their SOURCE modules is what takes
 # effect at call time.
 
+import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import json  # noqa: E402
 import types  # noqa: E402
@@ -141,6 +142,7 @@ from kiro_crew.config import paths as connections_paths  # noqa: E402
 from kiro_crew.connections import get_provider  # noqa: E402
 from kiro_crew.connections import mint  # noqa: E402
 from kiro_crew.connections import ownership  # noqa: E402
+from kiro_crew.connections import warm  # noqa: E402
 from kiro_crew.dashboard.handlers import connections  # noqa: E402
 from kiro_crew.dashboard.handlers import mcp as mcp_handlers  # noqa: E402
 
@@ -177,6 +179,8 @@ def _wire(
     unreadable: tuple[str, ...] = (),
     scopes: list[tuple[str, ...]] | None = None,
     real_census: bool = False,
+    rearms: list[str] | None = None,
+    real_rearm: bool = False,
 ) -> None:
     """Neutralize every side effect except the decisions under test.
 
@@ -187,6 +191,11 @@ def _wire(
     to mirroring the probe inventory so single-view tests stay unchanged.
     ``unreadable`` is the census's second answer, and ``scopes`` records the scope
     list each purge was restricted to.
+
+    The warm-pool re-arm the transaction schedules is recorded into ``rearms`` rather
+    than run: the real scheduler starts an activation that spawns kiro-cli, so leaving
+    it live would make every test here launch a helper process. ``real_rearm`` opts
+    back in for the tests that are ABOUT the scheduling.
     """
     seen_revokes = revoked if revoked is not None else []
 
@@ -225,6 +234,9 @@ def _wire(
     monkeypatch.setattr(mcp_handlers, "_purge_server_config", _purge)
     monkeypatch.setattr(agent_mod, "rebuild_agent_config", lambda: None)
     monkeypatch.setattr(connections, "sel", lambda: types.SimpleNamespace(log_api_access=_audit))
+    if not real_rearm:
+        seen_rearms = rearms if rearms is not None else []
+        monkeypatch.setattr(warm, "rearm_invalidated_provider", seen_rearms.append)
 
 
 async def _client(
@@ -717,6 +729,169 @@ async def test_an_unreadable_census_source_keeps_the_grant(
     # The purge acts on POSITIVE evidence only, so an unreadable sibling scope does
     # not block the entry removal the user asked for.
     assert body["entryRemoved"] is True
+
+
+# ── the warm pool is re-armed for the provider this Disconnect just invalidated ──
+
+
+@contextlib.asynccontextmanager
+async def _rearm_registry():
+    """The engine's in-flight re-arm registry, cleared on entry and SETTLED on exit.
+
+    An ``async with`` helper rather than an ``@pytest_asyncio.fixture``, by this repo's
+    convention (the pinned pytest-asyncio does not collect async generator fixtures), and the
+    teardown has to await: cancelling a task and then clearing the registry synchronously drops
+    the last reference before the task has observed its cancellation, so the loop closes on it
+    and its cleanup never runs -- the exact leak this PR's own production fix closes.
+
+    Delegated to ``warm._settle_invalidation_rearms`` so the cancel-then-gather idiom exists in
+    one place; ``finally``, so a failing test still settles.
+    """
+    warm._invalidation_rearms.clear()
+    try:
+        yield warm._invalidation_rearms
+    finally:
+        await warm._settle_invalidation_rearms()
+
+
+def _connected_notion(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    rearms: list[str] | None = None,
+    real_rearm: bool = False,
+) -> None:
+    """A Disconnect that actually removes a grant nobody else shares."""
+    _wire(
+        monkeypatch,
+        removed=["token", "registration"],
+        surviving=[],
+        inventory=[_entry(_SLUG, _provider_url())],
+        purged=[],
+        rearms=rearms,
+        real_rearm=real_rearm,
+    )
+
+
+@pytest.mark.asyncio
+async def test_disconnect_rearms_the_premint_for_that_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The invalidation chokepoint asks the pool to re-arm, scoped to this provider.
+
+    ``remove_provider_entry`` is the only production caller of ``revoke_local_grant``, so it
+    is where the pool learns a grant went away. Without this the provider stays skipped -- it
+    held a grant when the pool last scanned -- and the user's next Authorize pays a full cold
+    mint instead of adopting a ready premint.
+    """
+    scheduled: list[str] = []
+    _connected_notion(monkeypatch, rearms=scheduled)
+
+    body = await _disconnect()
+
+    assert body["grantRemoved"] is True
+    assert scheduled == [_SLUG]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_does_not_wait_for_the_rearm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through the REAL scheduler: the response lands while the re-arm is still in flight.
+
+    An activation spawns a helper process and negotiates OAuth, which is seconds the user
+    must not spend waiting for a connection they just asked to remove.
+    """
+    release = asyncio.Event()
+
+    async def _blocked_rearm(slug: str) -> list[str]:
+        await release.wait()
+        return []
+
+    monkeypatch.setattr(warm, "_rearm_invalidated_provider", _blocked_rearm)
+    _connected_notion(monkeypatch, real_rearm=True)
+
+    async with _rearm_registry() as registry:
+        body = await _disconnect()
+
+        assert body["ok"] is True
+        task = registry[_SLUG]
+        assert not task.done(), "the Disconnect awaited the re-arm it only had to schedule"
+        release.set()
+        assert await asyncio.wait_for(task, timeout=5) == []
+
+
+@pytest.mark.asyncio
+async def test_a_partial_revoke_does_not_rearm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A half-removed pair must not start an authorization over its own residue.
+
+    ``grant_presence`` answers False when EITHER artifact is definitively absent, so one
+    surviving artifact reads to the warm scan as a confirmed absence -- the one verdict that
+    initiates consent. Warming there would negotiate OAuth for a provider whose registration
+    or token is still on disk. A later full revoke, or the next activation's own re-stat,
+    picks it up once the pair is actually clean.
+    """
+    scheduled: list[str] = []
+    _wire(
+        monkeypatch,
+        removed=["token"],
+        surviving=["registration"],
+        inventory=[_entry(_SLUG, _provider_url())],
+        purged=[],
+        rearms=scheduled,
+    )
+
+    body = await _disconnect()
+
+    assert body["grantSurviving"] == ["registration"], "harness did not produce a partial revoke"
+    assert scheduled == [], "re-armed over a grant artifact that is still on disk"
+
+
+@pytest.mark.asyncio
+async def test_a_grant_kept_for_a_sharer_does_not_rearm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deliberately kept grant is not an invalidation, so there is nothing to re-arm."""
+    scheduled: list[str] = []
+    _wire(
+        monkeypatch,
+        removed=["token", "registration"],
+        surviving=["token", "registration"],
+        inventory=[
+            _entry(_SLUG, _provider_url()),
+            _entry("notion-work", _provider_url()),
+        ],
+        purged=[],
+        rearms=scheduled,
+    )
+
+    body = await _disconnect()
+
+    assert body["grantSharedWith"] == ["notion-work"], "harness did not produce a shared grant"
+    assert scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_census_does_not_rearm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The census gap keeps every owned pair, so no artifact went anywhere to re-arm for."""
+    scheduled: list[str] = []
+    _wire(
+        monkeypatch,
+        removed=[],
+        surviving=[],
+        inventory=[_entry(_SLUG, _provider_url())],
+        purged=[],
+        rearms=scheduled,
+        unreadable=("kiroGlobal",),
+    )
+
+    body = await _disconnect()
+
+    assert body["grantCensusIncomplete"] is True
+    assert scheduled == []
 
 
 # ── The census reader itself ──

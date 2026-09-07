@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
-import DevFleetPage from '../pages/DevFleetPage'
+import DevFleetPage, { __resetDevFleetNoticesForTests } from '../pages/DevFleetPage'
 
 type Body = Record<string, unknown> | unknown[] | null
 type RouteHandler = (u: string, opts?: RequestInit) => Response | Promise<Response> | null
@@ -66,6 +66,9 @@ function renderPage() {
 // its own so waitFor and the polling effects behave as they do with real timers.
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  // The latest action failure is module state (survives unmount by design);
+  // do not let one test's failure seed the next test's page.
+  __resetDevFleetNoticesForTests()
 })
 afterEach(() => {
   vi.clearAllTimers()
@@ -470,7 +473,9 @@ describe('DevFleetPage rebase', () => {
     await confirmRebase()
     await waitFor(() => expect(screen.getByText('Conflicts \u2014 aborted')).toBeInTheDocument())
     expect(screen.getByText('Rebase conflicts')).toBeInTheDocument()
-    fireEvent.click(screen.getByLabelText('Dismiss'))
+    // The row's own notice (the page-level action error carries a Dismiss too).
+    fireEvent.click(within(screen.getByTestId('rebase-error-wt-a')).getByLabelText('Dismiss'))
+    await waitFor(() => expect(screen.queryByTestId('rebase-error-wt-a')).toBeNull())
   })
 
   it('surfaces the server error text for a failed rebase', async () => {
@@ -482,7 +487,8 @@ describe('DevFleetPage rebase', () => {
     await waitForRow('wt-a')
     await confirmRebase()
     await waitFor(() => expect(screen.getAllByText('dirty working tree').length).toBeGreaterThan(0))
-    fireEvent.click(screen.getByLabelText('Dismiss'))
+    fireEvent.click(within(screen.getByTestId('rebase-error-wt-a')).getByLabelText('Dismiss'))
+    await waitFor(() => expect(screen.queryByTestId('rebase-error-wt-a')).toBeNull())
   })
 
   it('reports a transport failure without leaving an inline marker behind', async () => {
@@ -494,8 +500,10 @@ describe('DevFleetPage rebase', () => {
     await waitForRow('wt-a')
     await confirmRebase()
     await waitFor(() => expect(screen.getByText('rebase endpoint down')).toBeInTheDocument())
-    // A throw produces no verdict, so there is nothing to dismiss on the row.
-    expect(screen.queryByLabelText('Dismiss')).toBeNull()
+    // A throw produces no verdict, so the row carries no rebase marker; the
+    // failure is reported by the page-level action notice instead.
+    expect(screen.queryByTestId('rebase-error-wt-a')).toBeNull()
+    expect(screen.getByTestId('devfleet-action-error')).toHaveTextContent('rebase endpoint down')
   })
 
   it('does not touch the branch when the rebase confirm is cancelled', async () => {
@@ -753,7 +761,7 @@ describe('DevFleetPage provision failures', () => {
     await waitFor(() => expect(screen.getByText('Provision failed')).toBeInTheDocument())
     // Both the toast and the stepper's last-output line carry the reason.
     expect(screen.getAllByText('Provision failed to start').length).toBeGreaterThan(0)
-    fireEvent.click(screen.getByLabelText('Dismiss provision status'))
+    fireEvent.click(within(screen.getByTestId('provision-error-wt-new')).getByLabelText('Dismiss'))
     await waitFor(() => expect(screen.queryByText('Provision failed')).toBeNull())
   })
 
@@ -767,7 +775,7 @@ describe('DevFleetPage provision failures', () => {
     fireEvent.click(screen.getByText('Provision'))
     await waitFor(() => expect(screen.getByText('Provision failed')).toBeInTheDocument())
     expect(screen.getAllByText('provision endpoint down').length).toBeGreaterThan(0)
-    fireEvent.click(screen.getByLabelText('Dismiss provision status'))
+    fireEvent.click(within(screen.getByTestId('provision-error-wt-new')).getByLabelText('Dismiss'))
   })
 
   it('rides out unreadable polls and treats a non-running status as terminal', async () => {
@@ -1224,7 +1232,7 @@ describe('DevFleetPage gateway restart handshake', () => {
     const banner = await waitFor(() => screen.getByTestId('gateway-restart-error'))
     expect(banner).toHaveTextContent('systemctl: unit not loaded')
     // Dismissing the banner is the user's job, so it must survive until then.
-    fireEvent.click(within(banner).getByRole('button'))
+    fireEvent.click(within(banner).getByRole('button', { name: 'Dismiss' }))
     await waitFor(() => expect(screen.queryByTestId('gateway-restart-error')).toBeNull())
   }, 15000)
 

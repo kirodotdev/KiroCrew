@@ -154,7 +154,29 @@ def _rel(path: Path) -> str:
     return str(path.relative_to(_SRC_ROOT.parent))
 
 
-def _find_seam_reads(field_names: Set[str]) -> Dict[str, List[str]]:
+def _parsed_core_source_files() -> List[Tuple[Path, ast.AST]]:
+    """Parse every core source file once: ``[(path, tree), ...]``.
+
+    Both ``_find_seam_reads`` and ``_find_method_reads`` walk the identical file
+    set with an identical parse step and differ only in what they look for in the
+    resulting tree. Factored out so the (immutable, run-invariant) parse pass is
+    paid once per test session — via ``parsed_core_files`` below — instead of once
+    per scanner. A file that fails to parse is skipped here, matching the
+    defensive behavior both callers previously implemented individually.
+    """
+    parsed: List[Tuple[Path, ast.AST]] = []
+    for path in _core_source_files():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
+            continue
+        parsed.append((path, tree))
+    return parsed
+
+
+def _find_seam_reads(
+    field_names: Set[str], parsed_files: List[Tuple[Path, ast.AST]]
+) -> Dict[str, List[str]]:
     """Map each context field name → ``["module.py:LINE", ...]`` read sites.
 
     Recognizes both documented CPP read shapes:
@@ -169,11 +191,7 @@ def _find_seam_reads(field_names: Set[str]) -> Dict[str, List[str]]:
     this test's job is to make inertness impossible to miss.
     """
     reads: Dict[str, List[str]] = {name: [] for name in field_names}
-    for path in _core_source_files():
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
-            continue
+    for path, tree in parsed_files:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Attribute):
                 continue
@@ -182,7 +200,9 @@ def _find_seam_reads(field_names: Set[str]) -> Dict[str, List[str]]:
     return reads
 
 
-def _find_method_reads(field_names: Set[str]) -> Dict[str, List[str]]:
+def _find_method_reads(
+    field_names: Set[str], parsed_files: List[Tuple[Path, ast.AST]]
+) -> Dict[str, List[str]]:
     """Map ``"field.method"`` → read sites, for methods reached via the seam.
 
     Shape: ``<ctx-expr>.<field>.<method>``. Only direct attribute access counts;
@@ -190,11 +210,7 @@ def _find_method_reads(field_names: Set[str]) -> Dict[str, List[str]]:
     a documented read shape).
     """
     method_reads: Dict[str, List[str]] = {}
-    for path in _core_source_files():
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
-            continue
+    for path, tree in parsed_files:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Attribute):
                 continue
@@ -309,13 +325,28 @@ def context_field_names() -> Set[str]:
 
 
 @pytest.fixture(scope="module")
-def field_reads(context_field_names: Set[str]) -> Dict[str, List[str]]:
-    return _find_seam_reads(context_field_names)
+def parsed_core_files() -> List[Tuple[Path, ast.AST]]:
+    """Parse the core source tree once; ``field_reads``/``method_reads`` both
+    consume this instead of each re-parsing every file themselves.
+
+    Read-only consumers (``ast.walk`` never mutates the tree it walks), so
+    sharing the same parsed objects across both fixtures is safe.
+    """
+    return _parsed_core_source_files()
 
 
 @pytest.fixture(scope="module")
-def method_reads(context_field_names: Set[str]) -> Dict[str, List[str]]:
-    return _find_method_reads(context_field_names)
+def field_reads(
+    context_field_names: Set[str], parsed_core_files: List[Tuple[Path, ast.AST]]
+) -> Dict[str, List[str]]:
+    return _find_seam_reads(context_field_names, parsed_core_files)
+
+
+@pytest.fixture(scope="module")
+def method_reads(
+    context_field_names: Set[str], parsed_core_files: List[Tuple[Path, ast.AST]]
+) -> Dict[str, List[str]]:
+    return _find_method_reads(context_field_names, parsed_core_files)
 
 
 # ── The scanner must actually work (guards against a vacuous gate) ──
@@ -552,7 +583,7 @@ class TestInstalledContextPeeks:
     def test_scanner_finds_the_real_call_sites(self, peek_sites) -> None:
         """The scan must see the live tree, not an empty one."""
         assert peek_sites, "peek scanner found no installed_context() call site at all"
-        assert "security.py::_exempt_exact_hosts" in peek_sites, sorted(peek_sites)
+        assert "security/exfil.py::_exempt_exact_hosts" in peek_sites, sorted(peek_sites)
 
     def test_scanner_does_not_count_the_definition(self, peek_sites) -> None:
         """``def installed_context()`` is not a call — the accessor is not its own

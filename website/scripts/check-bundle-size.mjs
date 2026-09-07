@@ -49,7 +49,14 @@ export const CHUNK_BUDGETS = {
   // catalogs on top of that baseline. The Drive gallery's keys across 13
   // catalogs ride inside the headroom that measurement already left, so this
   // branch does not move the ceiling.
-  all: 10490 * KB, // measured 9985 KB before the pod-system catalog keys (~5% headroom)
+  // Re-measured 2026-09-06: main @ 3a6478967 alone builds the chunk at
+  // 10,700,930 B (10450 KB) against the 10490 KB ceiling -- 0.4% headroom, so
+  // any feature PR shipping a normal set of keys across the 13 catalogs fails
+  // the gate on its merge ref (first seen on the Create Folders From Project
+  // takeover, 13 catalogs x 52 lines, ~55 KB). Same recurrence as the `t` and
+  // `App` entries below: a ceiling that drifted to <1% headroom fails on
+  // routine string growth rather than on the new library it exists to catch.
+  all: 10975 * KB, // measured 10450 KB on main 2026-09-06 (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because

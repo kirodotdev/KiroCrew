@@ -5,10 +5,20 @@ import type { AppDispatch } from '../../store'
 /** `failed` marks a command that was recognized but could not run (no slot,
  *  side-open rejected, side-turn rejected — e.g. 409 while a side turn is in
  *  flight). Callers use it to keep or restore the composer text so the
- *  question is recoverable instead of silently lost. */
+ *  question is recoverable instead of silently lost, and render `error` (the
+ *  backend's own message, when it gave one) so the refusal is not silent.
+ *  `stage` says WHAT failed: `open` (no panel) vs `turn` (the panel opened,
+ *  only the message was refused) — the caller's title must match the state
+ *  the user can see. */
 export type SlashInterceptResult =
-  | { intercepted: true; failed?: boolean }
+  | { intercepted: true; failed?: boolean; error?: string; stage?: 'open' | 'turn' }
   | { intercepted: false }
+
+/** The message of a rejected side-chat request, for the caller's notice. The
+ *  api client's ApiError carries the backend `error` body verbatim. */
+function failureMessage(e: unknown): string {
+  return e instanceof Error && e.message ? e.message : ''
+}
 
 const SIDE_RE = /^\/side(?:\s+([\s\S]+))?$/
 
@@ -44,30 +54,33 @@ export async function interceptSlashCommand(
     // without an active slot, which is otherwise silent to the user.
     // eslint-disable-next-line no-console
     console.warn('[/side] no active slot — intercepted but not dispatched')
-    return { intercepted: true, failed: true }
+    return { intercepted: true, failed: true, stage: 'open' }
   }
   const message = match[1]?.trim() ?? ''
   try {
     await api.sideOpen(slot)
   } catch (e: unknown) {
-    // Intentional diagnostic breadcrumb for a silent side-open failure.
+    // Diagnostic breadcrumb; the user-facing report is the caller's notice,
+    // fed by `error`.
     // eslint-disable-next-line no-console
     console.warn('[/side] sideOpen failed:', e)
-    return { intercepted: true, failed: true }
+    return { intercepted: true, failed: true, error: failureMessage(e), stage: 'open' }
   }
   dispatch(openActivityToTab('side'))
   if (message) {
     let failed = false
+    let error = ''
     await api.sideTurn(slot, message).catch((e: unknown) => {
       // Failure surfaces through `failed` so the caller can restore the
       // composer (e.g. 409: a side turn is already in flight, or 400: the
-      // expanded question exceeds the byte limit). The warn stays as the
-      // diagnostic detail channel.
+      // expanded question exceeds the byte limit), and through `error` so it
+      // can say why. The warn stays as the diagnostic detail channel.
       // eslint-disable-next-line no-console
       console.warn('[/side] sideTurn failed:', e)
       failed = true
+      error = failureMessage(e)
     })
-    if (failed) return { intercepted: true, failed: true }
+    if (failed) return { intercepted: true, failed: true, error, stage: 'turn' }
   }
   return { intercepted: true }
 }

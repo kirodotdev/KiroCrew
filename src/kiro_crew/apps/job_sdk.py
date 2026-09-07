@@ -5,20 +5,23 @@ watching NOW. The gap it closes is that the product had no server-side
 representation of "a task of mine is running": the fact lived only in the React
 component that started it, so navigating away destroyed the fact while the work
 kept going, and the UI then reported the task as stopped. See
-``docs/system-specs/features/app-sdk-durable-jobs-and-view-state.md``.
+``docs/request-for-change/rfc-app-sdk-durable-jobs-and-view-state.md``.
 
 Five design points are load-bearing rather than incidental.
 
-**P1 records that a run EXISTS and how it ended — nothing it produced.** There
-is no ``params`` a caller passes in, and no ``progress`` or ``result`` a runner
-reports out. A run's record holds its identity, its lifecycle and, if it failed,
-one error string. That is deliberate and is the whole of what the originating
-problem needs: the UI's question is "is my task still running", not "how far
-along is it". The payload channels are structured data that must be sanitized
-before it can be written or served, and P1 has NO consumer that reads them, so
-they were carrying that cost for capability nobody calls. They return in P2,
-designed against a real consumer, as types that are sanitized by construction
-rather than by a rule each writer has to remember.
+**P1 records that a run EXISTS, how it ended, and whether work was OBSERVED --
+nothing it produced.** There is no ``params`` a caller passes in, and no
+``result`` payload a runner reports out. A run's record holds its identity, its
+lifecycle, whether the runner reached a checkpoint, and, if it failed, one error
+string. The checkpoint is a progress OBSERVATION, not a progress PAYLOAD: it
+records the boolean fact "this runner reached a point of work" (see
+``JobHandle.checkpoint``), which is SDK-minted and needs no sanitizing, and it is
+what lets a ``done`` record state something watched rather than inferred. The
+free-form ``result`` and a rich per-checkpoint payload are structured data that
+must be sanitized before it can be written or served, and P1 has NO consumer that
+reads them, so they stay out until P2, designed against a real consumer as types
+that are sanitized by construction rather than by a rule each writer has to
+remember.
 
 **A runner is REGISTERED, not passed per call.** ``register(kind, fn)`` binds a
 kind to the callable that services it, once, at app init. ``start(kind, ...)``
@@ -31,7 +34,13 @@ out whether it ever checks, so cancellability is the app's assertion at
 ``register(..., cancellable=True)`` and defaults to False. A run recorded
 ``cancellable: false`` answers ``cancel()`` with ``False`` rather than
 pretending, and the UI hides the control instead of offering a button that does
-nothing.
+nothing. A runner cooperates in one of two ways: it may poll ``handle.cancelled``
+directly, or it may call ``handle.checkpoint``, which RAISES at a pending cancel
+so the runner unwinds AT that point. The second is the stronger form -- the
+``cancelled`` record then names an observed stop rather than a set flag -- but
+neither can stop work the runner spawned onto a thread the SDK does not own; that
+remaining gap is #7814's execution-ownership half, out of scope here and disclosed
+on the unsettled-future reason string.
 
 **One writer per run file.** There is no lock helper beside ``atomic_write`` and
 concurrent read-modify-write of one document is last-writer-wins, so each run is
@@ -98,6 +107,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -206,6 +216,14 @@ _RUN_ID_LEN = 32
 #: disable indefinitely, so it is reported instead.
 _CLEANUP_JOIN_SECS = 5.0
 
+#: Upper bound on a record file the disable scan will open. A ``JobRun`` is a
+#: small flat JSON document (its one free-text field is clipped at ingest), so
+#: a megabyte is generous headroom; anything larger in the runs directory is
+#: not a record this SDK wrote and is refused unopened -- the scan's reads walk
+#: agent-writable filenames, and the bound is what keeps a planted giant file
+#: (or a device node reached some other way) from stalling disable.
+_MAX_RECORD_BYTES = 1 << 20
+
 _RUNS_DIRNAME = "jobs"
 
 
@@ -215,6 +233,30 @@ class JobError(RuntimeError):
 
 class UnknownJobKind(JobError):
     """Raised when starting a kind that has no registered runner."""
+
+
+class JobCancelled(Exception):
+    """Raised inside a runner by :meth:`JobHandle.checkpoint` when a cancel was
+    requested, so the runner unwinds AT the checkpoint rather than running on.
+
+    This is the fact that makes ``CANCELLED`` an observed outcome rather than an
+    inference. The old ``CANCELLED`` verdict was chosen from the cancel flag being
+    SET (see the terminal write in ``_execute``): that proves a cancel was
+    REQUESTED, not that the work stopped, so a runner that polled the flag, saw it,
+    and finished anyway was still recorded ``cancelled``. When a runner instead
+    calls ``checkpoint`` and lets this propagate, its stack has unwound to the
+    checkpoint before ``_execute`` records the run -- the record then states a stop
+    the SDK watched happen at a named point in the runner's own body.
+
+    A plain ``Exception`` and NOT a ``JobError``: it is not a refusal by the SDK
+    but the runner's own cooperative exit, and ``_execute`` catches it BEFORE its
+    generic ``except Exception`` so an acknowledged cancel is never miscounted as a
+    failure. It is deliberately NOT a ``BaseException`` subclass like
+    ``asyncio.CancelledError``: a runner is a plain function on a worker thread, so
+    there is no cancellation machinery to cooperate with, and a ``BaseException``
+    would sail through the ``except Exception`` guards a runner's own body may hold
+    around its cleanup.
+    """
 
 
 def _now() -> str:
@@ -520,6 +562,18 @@ class JobRun:
     #: deciding "offer a retry" reads this one and a consumer deciding "warn about
     #: partial work" reads the other.
     interrupt_cause: str = ""
+    #: Whether the runner reached at least one ``handle.checkpoint`` -- an OBSERVED
+    #: fact, not the return-value classifier's inference. This is the record
+    #: STATING that work happened rather than the SDK guessing it from what came
+    #: back: a ``done`` run with this True was watched reaching a point of progress
+    #: in the runner's own body. SDK-minted, never runner-supplied: the runner
+    #: calls ``checkpoint`` (a method) and the SDK sets this bool from the handle
+    #: at the terminal write, so it is not a payload channel the sanitize rule has
+    #: to cover -- the same reason ``interrupted_from`` and ``interrupt_cause`` are
+    #: on the record. Absence does NOT mean no work: a runner may do real work
+    #: without checkpointing, so a False here with ``done`` means "not observed",
+    #: which is why the classifier stays a backstop rather than being deleted.
+    work_observed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -578,15 +632,30 @@ class JobRun:
 
 
 class JobHandle:
-    """What a runner is handed: the cancel signal it must poll.
+    """What a runner is handed: the cancel signal, and the checkpoint call that
+    reports progress and observes that signal in one act.
 
-    ``cancelled`` is a ``threading.Event`` and checking it is the runner's own
-    responsibility — the SDK has no way to interrupt a thread that never looks.
+    ``cancelled`` is a ``threading.Event`` the runner MAY still poll directly --
+    that door stays open for a loop that wants to test-and-continue rather than
+    unwind. The SDK cannot interrupt a thread that never looks, so cancellation
+    remains cooperative either way.
 
-    There is deliberately no ``progress()`` in P1. With no progress channel the
-    worker writes its record exactly ONCE, terminally, so the record has a
-    single writer over its whole life instead of a stream of mid-run mutations
-    each needing the discard check to be right.
+    ``checkpoint`` is the P1 progress channel, and it is deliberately the SAME
+    call that carries cancellation -- the pairing #7804 and #7814 asked to be
+    designed together. A runner that reports it reached a checkpoint necessarily
+    observes the cancel signal AT that checkpoint, because ``checkpoint`` raises
+    ``JobCancelled`` before it returns when a cancel is pending. There is no way
+    to spell "report progress but ignore cancellation": the channel that answers
+    "did work happen" is the channel that answers "should it stop", so a progress
+    report that left cancellation unobservable -- the half-capability the issues
+    warned about -- is not a state this API can represent.
+
+    It writes NOTHING to disk. The observed fact lives on the handle and is read
+    ONCE by ``_execute`` at the terminal write, so the record keeps its single
+    writer over its whole life -- P1's reason for having no mid-run mutation
+    stream, preserved. What changes is that the terminal ``done`` is now backed by
+    an observation (a checkpoint was reached) with the return-value classifier
+    kept as a backstop, rather than resting on the classifier alone.
     """
 
     def __init__(self, run: JobRun) -> None:
@@ -599,10 +668,75 @@ class JobHandle:
         #: unconditionally and cannot tell a first write from a resurrection.
         self.discarded = threading.Event()
         self._run = run
+        #: Whether the runner reached a checkpoint. A plain bool, not a guarded
+        #: field: the ONLY writer is the runner thread (in ``checkpoint``) and the
+        #: ONLY reader is ``_execute`` on that SAME thread after the runner
+        #: returns, so there is no cross-thread read to make consistent and no
+        #: lock to justify. A count and a note rode here in an earlier revision
+        #: "for a future progress surface"; they had no reader, so by P1's own
+        #: doctrine -- a payload stays out until the consumer that reads it exists
+        #: -- they are gone and return in P2 with that consumer.
+        self._reached_checkpoint = False
 
     @property
     def run_id(self) -> str:
         return self._run.run_id
+
+    @property
+    def kind(self) -> str:
+        return self._run.kind
+
+    @property
+    def status(self) -> str:
+        return self._run.status
+
+    def checkpoint(self) -> None:
+        """Report that the runner reached a point of real progress, and stop here
+        if a cancel is pending.
+
+        Call this at each unit of work a runner completes. Two things happen, and
+        they are one act on purpose -- the pairing #7804 and #7814 asked to be
+        designed together:
+
+        * The handle records that a checkpoint was reached -- an OBSERVED fact the
+          terminal write reads, so ``done`` rests on "this runner did work" rather
+          than on the return-value classifier's inference about what it handed
+          back.
+
+        * If a cancel has been requested, this RAISES :class:`JobCancelled`,
+          unwinding the runner at the checkpoint. ``_execute`` catches it and
+          records ``cancelled`` -- an outcome it WATCHED, because the stack is
+          already unwound to this call before the record is written. A runner that
+          reaches its next checkpoint after a cancel therefore cannot run to a
+          false ``done``; the stop is where the runner acknowledged it.
+
+        The cancel check comes FIRST: a checkpoint reached in an already-cancelled
+        run is not progress the record should credit, and testing progress before
+        the signal would let one more unit be counted after the stop was asked
+        for.
+
+        It takes no argument. A progress NOTE (a stage name, a count) is a payload
+        with no P1 consumer -- nothing reads it -- and the same module's doctrine
+        keeps a rich per-checkpoint payload out until P2, where the surface that
+        serves it is designed against a real reader. So P1 reports the one fact it
+        can serve: that a checkpoint happened.
+        """
+        if self.cancelled.is_set():
+            raise JobCancelled(
+                f"job {self._run.kind!r} run {self._run.run_id} was cancelled at a checkpoint"
+            )
+        self._reached_checkpoint = True
+
+    @property
+    def work_observed(self) -> bool:
+        """Whether any checkpoint was reached -- the fact the terminal write reads.
+
+        Absence is NOT evidence of no work: a runner that does real work without
+        calling ``checkpoint`` is legitimate, which is why the return-value
+        classifier stays as a backstop rather than being replaced, and why the
+        served value means "not observed", never "did no work".
+        """
+        return self._reached_checkpoint
 
 
 #: A runner receives its handle and nothing else. P1 has no parameter channel:
@@ -811,9 +945,10 @@ class JobSDK:
         """Write a run's record. The ONLY path that writes one.
 
         Three callers used to write directly -- start, the worker's terminal
-        write, and reconcile (a fourth, progress, is gone with the progress
-        channel) -- and each had to remember the same three rules. Two review
-        rounds found a different one missed each time, so the rules live here
+        write, and reconcile (a fourth, a persisting progress write, never
+        existed; ``handle.checkpoint`` reports progress WITHOUT touching disk, so
+        it adds no writer) -- and each had to remember the same three rules. Two
+        review rounds found a different one missed each time, so the rules live here
         instead:
 
         * the discard check and the write happen under ONE lock acquisition, the
@@ -872,9 +1007,11 @@ class JobSDK:
         """Bind ``kind`` to the callable that services it.
 
         Call from the app's ``on_startup`` hook. ``cancellable=True`` is the
-        app's assertion that ``fn`` polls ``handle.cancelled`` at checkpoints;
-        the SDK cannot verify it, so the consumer's migration checklist has to
-        name those checkpoints.
+        app's assertion that ``fn`` observes cancellation at checkpoints -- by
+        calling ``handle.checkpoint`` (which raises at a pending cancel, the
+        stronger form that makes the ``cancelled`` record an observed stop) or by
+        polling ``handle.cancelled`` directly. The SDK cannot verify it, so the
+        consumer's migration checklist has to name those checkpoints.
 
         A CALLABLE WHOSE INVOCATION DOES NOT RUN ITS BODY IS REFUSED HERE, at
         registration, rather than failing at run time. ``_execute`` calls
@@ -1161,7 +1298,30 @@ class JobSDK:
                         undriven,
                     )
                 else:
+                    # CANCELLED two ways, and both are true here. A runner that
+                    # called ``checkpoint`` after a cancel has already unwound
+                    # through the ``JobCancelled`` handler below, so this branch is
+                    # reached only when the runner RETURNED normally: either it
+                    # never saw a cancel, or it polled ``cancelled`` directly and
+                    # chose to finish its cleanup and return. The flag being set
+                    # here still means a cancel was honoured cooperatively, so
+                    # ``cancelled`` remains the honest label -- the checkpoint path
+                    # is the STRONGER form (an observed stop), not the only one.
                     run.status = CANCELLED if handle.cancelled.is_set() else DONE
+        except JobCancelled:
+            # An OBSERVED stop: the runner called ``checkpoint``, it raised, and
+            # the stack unwound to here -- so the SDK watched the work stop at a
+            # named point in the runner's own body, rather than inferring it from
+            # the flag alone. Caught BEFORE the generic handler so an acknowledged
+            # cancel is never miscounted as a failure. No ``error`` is set: a
+            # cancel is an outcome, not a fault.
+            run.status = CANCELLED
+            logger.info(
+                "App %s job %s (%s) stopped at a checkpoint after a cancel request",
+                self._app_name,
+                run.run_id,
+                run.kind,
+            )
         except Exception as exc:  # noqa: BLE001 - a runner's failure is data, not a crash
             run.status = FAILED
             run.error = _redact(str(exc))[:2000]
@@ -1174,6 +1334,13 @@ class JobSDK:
             )
         finally:
             run.finished_at = _now()
+            # Record the OBSERVED fact, whatever the verdict: a done/failed/
+            # cancelled run all state whether a checkpoint was reached, so a
+            # consumer can tell a run that demonstrably did work from one that may
+            # have done none. Read once, here, from the handle -- the record stays
+            # a single-writer document. Set before ``_write_terminal`` so the one
+            # terminal write carries it.
+            run.work_observed = handle.work_observed
             # The guarded writer owns the discard check, so a cleanup landing
             # mid-write cannot have this record recreated, and a failure comes
             # back as False rather than as an exception that would skip the
@@ -1415,6 +1582,14 @@ class JobSDK:
         killed, and abandoning it is the defect rather than the fix.
 
         A worker that outlives the deadline is reported, not waited on forever.
+        Every run this call kills leaves one SEL line (``job_killed_on_disable``)
+        carrying its id and kind before the record is deleted, so "which runs
+        did the disable kill" stays answerable after the records are gone. The
+        trace is fail-closed: if it cannot be written durably, the deletion is
+        refused and reported as a failed cleanup; the surviving records are
+        retried by the next cleanup on a fresh instance (disable also forgets
+        the SDK, so that means after a re-enable, or by ``reconcile`` at the
+        next start).
         Gateway shutdown is a separate case left as accepted residue: these are
         daemon threads, so the interpreter reaps them at exit without a chance
         to finish, and draining every app's runs there would delay shutdown for
@@ -1450,12 +1625,164 @@ class JobSDK:
         if stubborn:
             logger.warning(
                 "App %s: %d job worker(s) did not stop within %.0fs and are still "
-                "running with their records removed: %s",
+                "running with their records removed; run id(s): %s",
                 self._app_name,
                 len(stubborn),
                 _CLEANUP_JOIN_SECS,
                 ", ".join(stubborn),
             )
+
+        # One durable SEL line per run this disable kills, BEFORE the records
+        # are deleted -- deletion is the last moment the identities exist, and
+        # the count-only summary below cannot answer "which runs were killed".
+        # Mirrors the per-run precedent ``reconcile`` set with
+        # ``job_interrupted``. The marker comes from the SAME observation that
+        # feeds the summary's stubborn count -- ``_join_workers`` captures the
+        # run ids alive at their join deadline -- so the summary can never say
+        # "one was stubborn" while no line names it. Stale records are read
+        # once, off the loop; a live entry is skipped only on its IN-MEMORY
+        # terminal status (its worker finished on its own before the discard
+        # landed, so nothing was killed) -- never on its disk record, which an
+        # agent can write.
+        stubborn_ids = set(stubborn)
+        live_ids = {entry.handle.run_id for entry in live}
+
+        def _safe_read(run_id: str) -> JobRun | None:
+            # The scan walks *.json names in an app-writable directory, so a
+            # path here is agent-influenced input: a planted symlink
+            # ``<id>.json -> /dev/zero`` would hang an unbounded follow and
+            # make disable unreachable, and one pointed at a sensitive file
+            # would pull its bytes into a parse attempt. The read goes through
+            # the repository's centralized funnel rather than a hand-rolled
+            # check: ``safe_read_file_bytes_nolink`` opens with ``O_NOFOLLOW``,
+            # validates the OPENED descriptor (regular, non-hardlinked, real
+            # path contained in ``within_root`` -- which also refuses a PARENT
+            # directory swapped for a symlink, the case a final-component
+            # check alone misses), and bounds the read. Every refusal --
+            # permission denied, a Windows sharing violation, a refused link,
+            # an oversized record -- classifies the record unreadable rather
+            # than propagating: an unreadable record must not abort the
+            # disable, and its identity still leaves an ``unreadable`` line.
+            path = self._store.dir / f"{run_id}.json"
+            try:
+                raw = safe_read_file_bytes_nolink(
+                    str(path),
+                    within_root=str(self._store.dir),
+                    max_bytes=_MAX_RECORD_BYTES,
+                )
+            except FileTooLargeError:
+                return None
+            if raw is None:
+                return None
+            try:
+                return JobRun.from_dict(json.loads(raw.decode("utf-8")))
+            except (TypeError, ValueError):
+                return None
+
+        def _scan() -> tuple[list[tuple[str, JobRun]], list[str]]:
+            # Every record is read by CANONICAL FILENAME -- never from an
+            # id-keyed index over parsed bodies: a record file whose BODY
+            # claims another run's id would shadow the real record in such an
+            # index and suppress that run's kill line. A file the guarded
+            # read refuses (symlink, non-file, oversized, unparseable, or a
+            # name that is not a valid run id) still gets deleted by
+            # ``remove_all`` below, so its FILENAME is returned for an
+            # ``unreadable`` line -- an identity must not vanish just because
+            # its record went hostile or corrupt. Live runs' records are
+            # deliberately NOT read at all: the record files sit in an
+            # app-writable directory, so a planted ``status=done`` body would
+            # be an agent-writable veto over its own run's kill line. Whether
+            # a live run was killed is decided purely from in-process state
+            # below.
+            stale: list[tuple[str, JobRun]] = []
+            unreadable: list[str] = []
+            if self._store.dir.is_dir():
+                for path in sorted(self._store.dir.glob("*.json")):
+                    stem = path.stem
+                    if stem in live_ids:
+                        continue
+                    record = _safe_read(stem)
+                    if record is None:
+                        unreadable.append(stem)
+                    elif not record.is_terminal:
+                        stale.append((stem, record))
+            return stale, unreadable
+
+        stale_runs, unreadable_stems = await asyncio.to_thread(_scan)
+        killed: list[str] = []
+        for entry in live:
+            # Whether this run finished on its own is read ONLY from the
+            # in-memory handle -- never from its disk record, which lives in
+            # an app-writable directory where a planted terminal status would
+            # silently suppress the run's kill line. The in-memory status is
+            # set by the worker wrapper itself, post-join, so it is the one
+            # observation an agent cannot forge. A worker
+            # that computed DONE/FAILED before the cancel landed, but whose
+            # terminal write the discard guard then refused, has already
+            # audited its own completion (``job_done``/``job_failed``) while
+            # its record stays non-terminal on disk. Reading the in-memory
+            # status closes that window -- the SEL trail must not carry both a
+            # completion and a kill for one run. Two deliberate exceptions:
+            # CANCELLED means the disable's own signal stopped the worker,
+            # which is exactly a killed run; and a run observed STUBBORN at its
+            # join deadline keeps its line no matter what its status became
+            # afterwards (a post-deadline raise flips it to FAILED), because
+            # the summary already counted it from that same observation and
+            # the count must never name a stubborn run no line identifies.
+            if entry.handle.run_id not in stubborn_ids and entry.handle.status in (DONE, FAILED):
+                continue
+            # An entry whose thread never started is NOT skipped -- its record
+            # is deleted by the same call and skipping would lose the identity
+            # with no line at all (the stale scan excludes live ids). But no
+            # worker existed, so "killed" must not imply one: the line carries
+            # ``never_started`` instead of a kill-shaped claim.
+            if not entry.started:
+                marker = " never_started"
+            elif entry.handle.run_id in stubborn_ids:
+                marker = " still_running"
+            else:
+                marker = ""
+            # The kind is clipped BEFORE the marker is appended: ``_audit``
+            # truncates long lines from the right, and an oversized kind
+            # would push ``still_running``/``never_started`` off the end --
+            # the summary would then count a stubborn run no line marks.
+            killed.append(f"{entry.handle.run_id} kind={entry.handle.kind[:32]}{marker}")
+        # A non-terminal record with no live worker (a foreign process's run
+        # that never got reconciled) vanishes in the same delete, so it gets
+        # the same line, marked ``stale`` because nothing was killed: there was
+        # no worker to kill. Identity comes from the FILENAME stem (the
+        # canonical id), and ``kind`` comes off disk -- the one input here not
+        # minted by this process -- so both are redacted, bounded, or
+        # repr-quoted rather than interpolated raw into a durable SEL field.
+        for stem, record in stale_runs:
+            killed.append(f"{stem[:_RUN_ID_LEN]} kind={_redact(record.kind)[:32]!r} stale")
+        # A file the store cannot parse is deleted by the same ``remove_all``,
+        # and "which file was that" must survive the delete too.
+        for stem in unreadable_stems:
+            killed.append(f"{_redact(stem)[:_RUN_ID_LEN]!r} unreadable stale")
+        if killed:
+            # The kill trace is the ONLY durable answer to "which runs did this
+            # disable kill", so it is fail-closed: each line is written
+            # synchronously (``critical=True``) and a write failure REFUSES the
+            # record deletion below. The records stay on disk -- still
+            # non-terminal, since their handles are discarded -- so a later
+            # cleanup on a fresh instance (after a re-enable, or ``reconcile``
+            # at the next start) resolves them instead of deleting identities
+            # nothing recorded. Reported through the existing partial-cleanup
+            # contract instead of raising into the disable route.
+            def _emit() -> None:
+                for line in killed:
+                    self._audit("job_killed_on_disable", line, "ok", critical=True)
+
+            try:
+                await asyncio.to_thread(_emit)
+            except Exception:  # noqa: BLE001 - refusing the delete IS the handling
+                logger.exception(
+                    "App %s: could not durably audit killed job run(s); record "
+                    "deletion refused so their identities are not lost",
+                    self._app_name,
+                )
+                return CleanupResult(removed=0, failed=len(killed), still_running=len(stubborn))
 
         removed, failed = await asyncio.to_thread(self._store.remove_all)
         if removed or failed:
@@ -1471,7 +1798,11 @@ class JobSDK:
 
     def _join_workers(self, live: list[_Live]) -> list[str]:
         """Wait for each STARTED worker, bounded. Runs on a worker thread, never
-        the loop.
+        the loop. Returns the RUN IDS of workers still alive at their deadline:
+        run ids are unique where thread names are minted per kind, and this one
+        observation feeds the count, the log line, and the per-run SEL marker --
+        two observations taken at different times could disagree, reporting a
+        stubborn count with no line saying which run it was.
 
         An entry whose thread never started is skipped rather than joined, and it
         cannot be stubborn: no code of the app is executing, so there is nothing
@@ -1487,12 +1818,20 @@ class JobSDK:
                 continue
             entry.thread.join(timeout=_CLEANUP_JOIN_SECS)
             if entry.thread.is_alive():
-                stubborn.append(entry.thread.name)
+                stubborn.append(entry.handle.run_id)
         return stubborn
 
     # ── Audit ──
 
-    def _audit(self, operation: str, resources: str, outcome: str, *, error: str = "") -> None:
+    def _audit(
+        self,
+        operation: str,
+        resources: str,
+        outcome: str,
+        *,
+        error: str = "",
+        critical: bool = False,
+    ) -> None:
         try:
             sel().log_api_access(
                 caller=f"app:{self._app_name}",
@@ -1501,8 +1840,13 @@ class JobSDK:
                 source=self._app_name,
                 resources=resources[:200],
                 error=error[:200],
+                critical=critical,
             )
         except Exception:  # noqa: BLE001 - an audit failure must not fail the job
+            # ... unless the caller said it must: ``critical`` re-raises so a
+            # fail-closed audit can refuse the action it was auditing.
+            if critical:
+                raise
             logger.debug("job SEL audit failed", exc_info=True)
 
 

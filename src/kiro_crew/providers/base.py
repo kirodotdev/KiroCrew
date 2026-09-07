@@ -120,6 +120,11 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def is_claude_backend(self) -> bool:
+        """True when this provider drives claude-agent-acp."""
+        return False
+
+    @property
     def child_fidelity_aware(self) -> bool:
         """Consumer opt-in for the low-fidelity CHILD permission downgrade.
 

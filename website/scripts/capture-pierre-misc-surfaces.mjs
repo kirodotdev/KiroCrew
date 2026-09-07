@@ -97,7 +97,7 @@ const AGENT_LINKS = [
   '- [Shiki bundled language list](https://shiki.style/languages)',
   '- [@pierre/diffs option reference](https://docs.pierre.co/diffs/options)',
   '- [Architecture overview](https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/overview.md)',
-  '- [dashboard-iframe-hosts.md](https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/dashboard-iframe-hosts.md)',
+  '- [dashboard-iframe-hosts.md](https://github.com/kirodotdev/KiroCrew/blob/main/docs/architecture/dashboard-iframe-hosts.md)',
 ].join('\n')
 
 /* Frame 23's source. An ASSISTANT mention makes this a Changes source (and, being

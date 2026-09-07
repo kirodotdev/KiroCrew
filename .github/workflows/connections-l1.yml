@@ -3,7 +3,7 @@ name: Connections L1 Authorized-Grant Smoke
 # Scheduled smoke over the Connections providers that ALREADY hold a persisted
 # OAuth grant on the runner: where L0 (connections-l0.yml) checks account-free
 # static metadata, this rung checks a once-consented grant still works live.
-# READ FIRST -- docs/architecture/design-notes/connections-l1-smoke.md: verdict
+# READ FIRST -- docs/system-specs/modules/connections.md: verdict
 # table, runbook, and what a green run does NOT prove (a runtime-custody
 # provider greens as GRANT_HELD, not a proven tool call).
 #

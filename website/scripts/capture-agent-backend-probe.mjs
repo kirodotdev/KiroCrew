@@ -109,6 +109,44 @@ const SCENE_RESTART = {
   ],
 }
 
+/**
+ * Scene 5 — Codex installed, and the one thing that verdict does not answer. The
+ * adapter ships its own Codex binary, so `installed` really is the whole install
+ * fact; a session can still die on its first turn for want of a credential. The
+ * caveat names both branches of the remedy and says outright that neither is
+ * checked here, because the panel does not read those files — a `missing` verdict
+ * would disable the switch for an operator who is authenticated by a path the
+ * check cannot see.
+ */
+const SCENE_CODEX = {
+  schemaEnum: ['', 'kas', 'claude', 'codex'],
+  backends: [
+    row('claude', 'claude'),
+    row('codex', 'codex'),
+    row('kas', 'kas'),
+    row('', 'kiro'),
+  ],
+}
+
+/**
+ * Scene 6 — the two lines together on one row: the install line (what to run) above
+ * the standing caveat (what running it still will not do). Only the first is a
+ * measurement, and only the first disables the chip.
+ */
+const SCENE_CODEX_MISSING = {
+  schemaEnum: ['', 'kas', 'claude', 'codex'],
+  backends: [
+    row('claude', 'claude'),
+    row('codex', 'codex', {
+      installed: 'missing',
+      missing_components: ['codex-acp'],
+      install_command: 'npm i -g @agentclientprotocol/codex-acp',
+    }),
+    row('kas', 'kas'),
+    row('', 'kiro'),
+  ],
+}
+
 let scene = SCENE_LOCAL
 
 const { srv, base } = await serveDist()
@@ -182,6 +220,14 @@ await reloadScene(SCENE_RESTART)
 await page.getByText('must restart', { exact: false }).waitFor({ timeout: 20000 })
 await shoot('agent-backend-restart.png')
 
+await reloadScene(SCENE_CODEX)
+await page.getByText('Codex signs in on its own', { exact: false }).waitFor({ timeout: 20000 })
+await shoot('agent-backend-codex-signin.png')
+
+await reloadScene(SCENE_CODEX_MISSING)
+await page.getByText('codex-acp', { exact: false }).waitFor({ timeout: 20000 })
+await shoot('agent-backend-codex-missing.png')
+
 await browser.close()
 srv.close()
 
@@ -189,4 +235,4 @@ if (errors.length) {
   console.error('console/page errors:\n' + errors.join('\n'))
   process.exit(1)
 }
-console.log(`wrote 4 frames to ${OUT}`)
+console.log(`wrote 6 frames to ${OUT}`)

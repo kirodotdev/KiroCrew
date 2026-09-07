@@ -11,7 +11,7 @@
  * quietly emit a screenshot of a resting header or an error boundary.
  *
  * The narrow scene is the one the two earlier in-row attempts failed: 320px is the
- * floor `website/docs/page-layout.md` requires, and it is where a wrapping sibling
+ * floor `website/docs/narrow-viewport.md` requires, and it is where a wrapping sibling
  * in the header's `flex-shrink-0` action group pushed the row apart. The notice is
  * portalled out of that row, so this frame is the evidence that it no longer can.
  *

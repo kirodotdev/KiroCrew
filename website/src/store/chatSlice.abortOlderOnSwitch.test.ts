@@ -233,9 +233,11 @@ describe('an abort is distinguishable from a real failure', () => {
     const path = await import('node:path')
     const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
 
-    // The catch must return on an abort BEFORE reaching the notice.
+    // The catch must return on an abort BEFORE reaching the notice. A failed
+    // page load is an ERROR (it renders through ErrorNotice via
+    // `setPinLoadError`), distinct from the `setPinNotice` answers.
     const guard = src.indexOf('if (isSupersededPagingRejection(err)) return')
-    const notice = src.indexOf('setPinNotice(loadFailedNotice)', guard)
+    const notice = src.indexOf('setPinLoadError(loadFailedNotice)', guard)
     expect(guard).toBeGreaterThan(-1)
     expect(notice).toBeGreaterThan(guard)
   })
@@ -260,7 +262,7 @@ describe('an abort is distinguishable from a real failure', () => {
     // A fetch error is transient. Only the two genuinely-gone branches may claim
     // the history no longer holds the row; the catch gets its own copy.
     expect(body.match(/setPinNotice\(notFoundNotice\)/g)).toHaveLength(2)
-    expect(body.match(/setPinNotice\(loadFailedNotice\)/g)).toHaveLength(1)
+    expect(body.match(/setPinLoadError\(loadFailedNotice\)/g)).toHaveLength(1)
     const catchGuard = body.indexOf('if (isSupersededPagingRejection(err)) return')
     expect(body.indexOf('setPinNotice(notFoundNotice)', catchGuard)).toBe(-1)
   })
@@ -426,7 +428,20 @@ describe('a background refresh must not re-validate a cursor a pending switch in
   it('a superseded settle does not release the claim a newer switch holds', async () => {
     holdSwitchDetail = true
     const store = makeStore()
-    resumed(store)
+    // Seeded with an OLD page rather than the newest one, so the switch's window
+    // genuinely sits clear of the cache and the coverage check OBSERVES a hole. With
+    // the newest page cached, every bounded window covers it and no retry is issued
+    // -- correctly, but then this test has only two legs and cannot exercise a claim
+    // outliving one. The shape here is the real case the retry exists for: a tab
+    // holding history from before the conversation moved on.
+    store.dispatch(setActiveSlot('A'))
+    store.dispatch(
+      resumeFromHistory.fulfilled(
+        { ok: true, key: 'A', nextBefore: 0, messages: HISTORY.slice(0, PAGE), hasMore: false, total: TOTAL },
+        'req-resume',
+        { key: 'A', title: 'A' },
+      ),
+    )
 
     store.dispatch(switchSlot('A'))
     await flush()

@@ -12,6 +12,8 @@ import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { useTerminalTouchSelection, type TouchSelectStatus } from '../hooks/useTerminalTouchSelection'
 import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
+import ErrorNotice from './ErrorNotice'
+import { setTerminalCloseFailed } from '../hooks/useBottomTerminal'
 
 import { i18nT } from '../i18n/t'
 /* ── Per-session xterm instance cache ──
@@ -189,13 +191,23 @@ export function disposeTerminalSession(sessionId: string): void {
  * backstopped by the server-side orphan reaper — but routing it through a
  * mutation gives it the standard write lifecycle instead of a bare fetch.
  * Local teardown stays synchronous in disposeTerminalSession().
+ *
+ * `keepalive` lets the request outlive the document that issued it: the
+ * terminal popout returns itself to the main window the moment its last tab
+ * closes, and without it that final DELETE would be aborted with the window.
+ * A rejection is recorded in the shared close-failed flag (every consumer
+ * reports it the same way), which the always-mounted panel root renders.
  */
 export function useDeleteTerminalSession() {
   return useMutation({
     mutationFn: async (sessionId: string) => {
-      const res = await fetch(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE' })
+      const res = await fetch(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
       if (!res.ok) throw new Error(`Failed to delete terminal session (${res.status})`)
     },
+    // Mutation-level (not per-`mutate`) so it still fires after the caller has
+    // unmounted — closing the LAST tab hides the strip that would otherwise
+    // render the failure.
+    onError: () => setTerminalCloseFailed(true),
   })
 }
 
@@ -558,7 +570,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
         // eslint-disable-next-line jsx-a11y/no-static-element-interactions
         <div
           ref={toolbarRef}
-          className="absolute z-20 flex items-center gap-0.5 rounded-lg border border-border bg-bg-elevated p-0.5 shadow-lg transition-opacity"
+          className="absolute z-20 flex flex-wrap items-center gap-0.5 rounded-lg border border-border bg-bg-elevated p-0.5 shadow-lg transition-opacity"
           style={{
             left: pos?.left ?? 0,
             top: pos?.top ?? 0,
@@ -580,7 +592,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
               className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-text hover:bg-bg-hover transition-colors ${sending === 'busy' ? 'opacity-60' : ''}`}
               title={sending === 'failed' ? i18nT('components.cliPanel.redaction_failed_retry') : i18nT('components.cliPanel.send_selection_to_chat')}
             >
-              <MessageSquarePlus className={`h-3.5 w-3.5 ${sending === 'failed' ? 'text-red-500' : ''}`} />
+              <MessageSquarePlus className={`h-3.5 w-3.5 ${sending === 'failed' ? 'text-danger' : ''}`} />
               {sending === 'busy' ? i18nT('components.cliPanel.sending') : sending === 'failed' ? i18nT('components.cliPanel.failed_retry') : i18nT('components.cliPanel.send_to_chat')}
             </button>
           )}
@@ -590,9 +602,31 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-text hover:bg-bg-hover transition-colors"
             title={i18nT('components.cliPanel.copy_selection')}
           >
-            {copied === 'done' ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className={`h-3.5 w-3.5 ${copied === 'failed' ? 'text-red-500' : ''}`} />}
+            {copied === 'done' ? <Check className="h-3.5 w-3.5 text-ok" /> : <Copy className={`h-3.5 w-3.5 ${copied === 'failed' ? 'text-danger' : ''}`} />}
             {copied === 'done' ? i18nT('components.cliPanel.copied') : copied === 'failed' ? i18nT('components.cliPanel.copy_failed') : i18nT('components.cliPanel.copy')}
           </button>
+          {/* Failures take their own flex line (`basis-full`) beneath the two
+              actions, so the notice's hand-off link never joins them in one
+              button row. Neither holds a draft — the selection stays put for the
+              retry — so the hand-off is on. */}
+          {sending === 'failed' && (
+            <ErrorNotice
+              variant="inline"
+              askAgent
+              testId="cli-panel-send-error"
+              className="basis-full px-2 pb-1"
+              message={i18nT('components.cliPanel.redaction_failed_retry')}
+            />
+          )}
+          {copied === 'failed' && (
+            <ErrorNotice
+              variant="inline"
+              askAgent
+              testId="cli-panel-copy-error"
+              className="basis-full px-2 pb-1"
+              message={i18nT('components.cliPanel.copy_failed')}
+            />
+          )}
         </div>
       )}
     </div>

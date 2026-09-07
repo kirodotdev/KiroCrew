@@ -391,7 +391,12 @@ export function EditInstanceForm({
           })}
         </p>
       ) : null}
-      <ErrorNotice message={err} className="mt-3" />
+      {/* `askAgent` is safe here for the same reason as AddInstanceForm: the typed
+          values live above the route. `onDraftChange` reports them (with their
+          baseline) on every keystroke while the form is dirty, and the one mount
+          (RemoteCrewPanel) writes that report to redux via setCrewEditForm — the
+          hand-off unmounts this form, and coming back re-seeds it from `draft`. */}
+      <ErrorNotice message={err} className="mt-3" askAgent />
       <div className="mt-3 flex items-center gap-2">
         {/* Save is withheld while the record is stale, rather than the edit being
             discarded: throwing the typing away would punish the far more common

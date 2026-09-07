@@ -78,7 +78,17 @@ def _fake_provider():
 
     fake_client.stream = _stream
     fake_client.stream_command = _stream
+    # These provider-client accessors are sync on the real client; leaving
+    # them as AsyncMock attrs creates coroutines _run_chat calls but never
+    # awaits (it reads them synchronously by design).
     fake_client.context_usage_pct = MagicMock(return_value=0.0)
+    fake_client.context_window_tokens = MagicMock(return_value=0)
+    fake_client.context_used_tokens = MagicMock(return_value=0)
+    fake_client.mcp_session_report = MagicMock(return_value=None)
+    # getattr(client, "client", None) is used to reach a nested ACP client for
+    # pop_pending_oauth_requests(); a bare AsyncMock().client would make that
+    # lookup return another AsyncMock whose call also goes unawaited.
+    fake_client.client = None
     return fake_client
 
 

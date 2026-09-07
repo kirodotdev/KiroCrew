@@ -1268,6 +1268,43 @@ class TestLegacyResidueSweep:
         self._fence(monkeypatch, tmp_path, complete=True)
         assert _cleanup_legacy_mount_source_residue() == 1
 
+    def test_an_absent_root_skips_the_pin_scan_without_a_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """No root present means nowhere for an entry of this class to be, so
+        the pass must not pay for a ``/proc`` scan it cannot use.
+
+        Off Linux ``/run/user/$UID`` never exists and ``/proc`` cannot be read,
+        so the coverage claim was unprovable on every tick and the pass reported
+        a held-back walk at WARNING every few minutes for a root it was never
+        going to touch. It must still not retire itself: the branch found
+        nowhere to look, which is not the same as finding nothing left.
+        """
+        scanned = []
+
+        monkeypatch.setattr(
+            "kiro_crew.sandbox._launcher_tmpfs_roots", lambda: [str(tmp_path / "absent")]
+        )
+
+        def _fake(proc_root="/proc", *, coverage=None, **_kw):
+            scanned.append(proc_root)
+            if coverage is not None:
+                coverage.covered = False
+            return (set(), False)
+
+        monkeypatch.setattr("kiro_crew.sandbox._bound_source_basenames", _fake)
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.sandbox"):
+            assert _cleanup_legacy_mount_source_residue() == 0
+        assert scanned == []  # the pin scan never ran
+        assert not [r for r in caplog.records if "legacy pass retained" in r.getMessage()]
+
+        # Not retired: a root that does appear is still swept.
+        self._fence(monkeypatch, tmp_path)
+        held = self._legacy_dir(tmp_path)
+        assert _cleanup_legacy_mount_source_residue() == 1
+        assert not held.exists()
+
     def test_bound_entry_is_preserved(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Removing a live mount's source dir S_DEADs it — the bind scan decides."""
         name = "tmpbound123"

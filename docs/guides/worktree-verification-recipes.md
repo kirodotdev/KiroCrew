@@ -30,13 +30,18 @@ kirocrew pod --help | grep -qw api || {
 and `DELETE` require `--allow-write`. It mints the selected pod's dashboard token
 internally, so do not add a `token` query parameter.
 
-Only three packaged scenarios exist: `empty`, `minimal`, and `rich`.
-`kirocrew pod scenarios` prints each name plus its description. Use the smallest
-one that establishes the state under test. The fixture job names asserted below
-are owned by [`minimal/crons.json`](../../src/kiro_crew/tests_fixtures/minimal/crons.json).
-Ten specialized payloads remain deferred until a verification recipe
-demonstrates that one is needed; do not invent a fourth scenario in a feature
-branch.
+The packaged scenarios are the agent's **native seeding vocabulary**:
+`kirocrew pod scenarios` prints each name plus its description, and that listing
+— not this guide — is the authoritative inventory. Use the smallest scenario
+that establishes the state under test. The fixture job names asserted below are
+owned by [`minimal/crons.json`](../../src/kiro_crew/tests_fixtures/minimal/crons.json).
+
+A new scenario earns its place with two things in one PR: a **named debugging or
+verification use case** in its `fixture.yaml` description (the state it pins and
+why an agent would seed it), and a **proving test** that pins the fixture's
+design point so drift turns a build red. A checked-in recipe is not a
+precondition: scenarios exist precisely so agents can seed known states natively
+at debug time instead of designing fixtures on the spot.
 
 ## Find the verification surface without searching the repository
 

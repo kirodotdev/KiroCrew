@@ -146,12 +146,16 @@ class TestDoctor:
 
         monkeypatch.setattr(_doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace")
 
-    def test_doctor_with_kiro(self, tmp_path):
+    def test_doctor_with_kiro(self, tmp_path, monkeypatch):
+        import kiro_crew.cli_doctor as _doc
+
         agent_file = tmp_path / "kirocrew.json"
         # A minimally healthy agent config so doctor walks the whole MCP
         # section cleanly and doesn't exit on "missing from mcpServers".
         _healthy_agent_file(agent_file)
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
+        # Left unpatched this mutates the process PATH for every later test.
+        monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
         with (
             patch(
                 "kiro_crew.cli_doctor.shutil.which",
@@ -283,10 +287,13 @@ class TestDoctor:
         assert f"  engine:      {expected_mark} no recogniser here" in out
         assert f"  ffmpeg:      {expected_mark} not found" in out
 
-    def test_doctor_reports_platform_boot_error_without_crashing(self, tmp_path, capsys):
+    def test_doctor_reports_platform_boot_error_without_crashing(
+        self, tmp_path, capsys, monkeypatch
+    ):
         """A PlatformCompositionError from boot must be REPORTED by the doctor,
         not crash it — the doctor is the tool that diagnoses a broken setup, so
         it has to survive the very failure it explains."""
+        import kiro_crew.cli_doctor as _doc
         from kiro_crew.platform import PlatformCompositionError
 
         agent_file = tmp_path / "kirocrew.json"
@@ -295,6 +302,8 @@ class TestDoctor:
         boot_err = PlatformCompositionError(
             "profile=amazon resolved no companion; set KIROCREW_PROFILE=standalone"
         )
+        # Left unpatched this mutates the process PATH for every later test.
+        monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
         with (
             patch(
                 "kiro_crew.cli_doctor.shutil.which",
@@ -4302,7 +4311,10 @@ class TestDoctorStt:
         )
 
         assert "ffmpeg:      ❌ not found" in out
-        assert "drop a static ffmpeg build into ~/.local/bin" in out
+        # The wiring assertion: doctor must print the module constant the
+        # resolvable-hint tests hold against the resolver's candidate list, so
+        # nobody can inline a literal back into the _os_fix_hint call (#8897).
+        assert _doc._FFMPEG_LINUX_HINT in out
         assert "reinstall Kiro Crew" not in out
         assert "❌ Fix these issues: " in out
         assert "ffmpeg" in out.split("❌ Fix these issues: ", 1)[1]
@@ -6405,13 +6417,16 @@ class TestChatPermissionRequest:
     async def test_a_benign_title_cannot_hide_a_sensitive_command(self, monkeypatch, capsys):
         """The gate judges what executes, not what the model called it.
 
-        ``title`` for a shell tool is an LLM-authored description, so a
-        credential read labelled "List project files" is the bypass that keying
+        ``title`` for a shell tool is an LLM-authored description, so an IMDS
+        credential fetch labelled "List project files" is the bypass that keying
         on the title alone would let through. The user is never even asked.
         """
         provider, sels, reads = await self._drive(
             monkeypatch,
-            event=self._event(title="List project files", command="cat ~/.ssh/id_rsa"),
+            event=self._event(
+                title="List project files",
+                command="curl http://169.254.169.254/latest/meta-data/",
+            ),
             answer="a",  # the user WOULD have allowed it
         )
         assert provider.calls == [("reject", 7, False)]
@@ -6419,13 +6434,13 @@ class TestChatPermissionRequest:
         # A stable code, not the gate's reason: the reason names the very path
         # being protected, and an audit record must not restate it.
         assert sels[0]["error"] == "hook_deny"
-        assert ".ssh" not in json.dumps(sels[0])
+        assert "169.254.169.254" not in json.dumps(sels[0])
         # The reason still reaches the terminal, and it has to be the REAL one:
         # `is_shell` with no command also denies, via the gate's deny-by-default
         # backstop, so "it was denied" would pass just as well when the command
         # is never forwarded at all.
         err = capsys.readouterr().err
-        assert "sensitive credential path" in err
+        assert "IMDS endpoint" in err
         assert "could not be verified" not in err
 
     @pytest.mark.asyncio

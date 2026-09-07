@@ -226,11 +226,24 @@ describe('ChatPanel lazy history', () => {
     // transcript and no way to notice there is more.
     history = Array.from({ length: 25 }, (_, i) => turn('user', `turn ${i}`, 1700000000000 + i))
     await renderPanel()
-    expect(await screen.findByText('turn 24')).toBeInTheDocument()
+    // `renderPanel` only awaits the mount-time config read, so this is the
+    // panel's very first commit — the auto-load effect (a 150ms `setTimeout`
+    // chain that keeps pulling older turns in while the scroller reports no
+    // overflow) has not had a tick to run yet. That makes this the one point
+    // where "turn 0 is absent" is a fact about the render instead of a race
+    // against the loader: checked after `findByText('turn 24')` below, the
+    // loader chain (10 -> 20 -> 25 turns, two 150ms steps) can already have
+    // finished under load, and the assertion flips from "not yet" to "again
+    // not because it's gone" for the wrong reason.
     expect(screen.queryByText('turn 0')).not.toBeInTheDocument()
-    expect(await screen.findByText('turn 0', {}, { timeout: 5000 })).toBeInTheDocument()
-    // Everything is loaded, so the load-earlier affordance is gone.
-    expect(screen.queryByText(/Load earlier messages/)).not.toBeInTheDocument()
+    expect(await screen.findByText('turn 24')).toBeInTheDocument()
+    // The loader keeps firing on its own timers until every turn is mounted;
+    // wait on that actual condition rather than a fixed timeout guess.
+    await waitFor(() => {
+      expect(screen.getByText('turn 0')).toBeInTheDocument()
+      // Everything is loaded, so the load-earlier affordance is gone.
+      expect(screen.queryByText(/Load earlier messages/)).not.toBeInTheDocument()
+    }, { timeout: 5000 })
   })
 
   it('keeps the reading position steady when the sentinel pulls older turns in', async () => {

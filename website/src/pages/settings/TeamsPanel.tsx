@@ -167,16 +167,29 @@ function StatusBadge({ config }: { config: TeamsConfigData }) {
   )
 }
 
+/**
+ * The credential check's failure (`connect_error`), kept apart from
+ * {@link connectionHint}: it is the outcome of something that FAILED, so it
+ * renders through `ErrorNotice`, while the hint describes a state that has not
+ * gone wrong yet.
+ */
+function connectError(config: TeamsConfigData): string {
+  // Same PyJWT precedence as the hint: the dependency notice already owns
+  // that failure, and repeating it here would blame the credentials.
+  if (config.jwt_available === false) return ''
+  if (config.connected || !config.configured || !config.connect_error) return ''
+  return i18nT('pages.settings.teamsPanel.teams_credential_check_failed', { error: config.connect_error })
+}
+
 /** One-line explanation of WHY Teams is not active, with the fix. */
 function connectionHint(config: TeamsConfigData): string {
   // A missing PyJWT is the one reason the channel cannot start at all, and the
   // notice below already carries it plus the install command. Blaming a restart
   // on top of that would send the operator to fix the wrong thing.
   if (config.jwt_available === false) return ''
-  if (config.connected || !config.configured) return ''
-  if (config.connect_error) {
-    return i18nT('pages.settings.teamsPanel.teams_credential_check_failed', { error: config.connect_error })
-  }
+  // A failed credential check is shown by `connectError`; "saved but not
+  // running" would only repeat it underneath.
+  if (config.connected || !config.configured || config.connect_error) return ''
   return i18nT('pages.settings.teamsPanel.settings_are_saved_but_the_channel_is_not_runnin')
 }
 
@@ -227,8 +240,10 @@ export function TeamsPanel() {
           msg = e.message
         }
       }
+      // Persist until the next save attempt clears it: the rejected draft is
+      // still in the form, and a notice that erases itself after a few seconds
+      // leaves a quiet form that reads as saved.
       setError(msg)
-      setTimeout(() => setError(''), 8000)
     },
     onSuccess: res => {
       setSaved(true)
@@ -271,12 +286,15 @@ export function TeamsPanel() {
   }, [draft, appPassword, pwClear, saveMut])
 
   if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.teamsPanel.loading_teams_config')}</p>
+  // Nothing to lose here: the form is not mounted in this branch.
   if (isError || !data || !draft)
-    return <p className="text-[13px] text-danger p-4">{i18nT('pages.settings.teamsPanel.cannot_load_teams_config_is_the_gateway_running')}</p>
+    return <ErrorNotice className="m-4" message={i18nT('pages.settings.teamsPanel.cannot_load_teams_config_is_the_gateway_running')} askAgent />
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
   const pctErr = thresholdError(draft, data)
+  const startupError = connectError(data)
+  const hint = connectionHint(data)
 
   return (
     <>
@@ -293,10 +311,15 @@ export function TeamsPanel() {
           <p className="text-[12px] text-muted mt-1">
             {i18nT('pages.settings.teamsPanel.talk_to_your_agents_from_a_teams_1_1_chat_self_h')}
           </p>
-          {connectionHint(data) && (
+          {/* No hand-off: `appPassword` (SecretField draft, never persisted) and
+              the unsaved `draft` (tenant id, allowed emails, thresholds, session
+              folder) live in this panel's local state — navigating to the chat
+              would discard them. */}
+          <ErrorNotice message={startupError} className="mt-2" />
+          {hint && (
             <p className="text-[12px] text-warn mt-1 flex items-center gap-1.5">
               <AlertTriangle size={12} className="flex-none" />
-              {connectionHint(data)}
+              {hint}
             </p>
           )}
         </div>
@@ -530,11 +553,11 @@ export function TeamsPanel() {
             <Check size={14} /> {restartHint ? i18nT('pages.settings.teamsPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.teamsPanel.saved')}
           </span>
         )}
-        {error && (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-danger">
-            <AlertTriangle size={14} /> {error}
-          </span>
-        )}
+        {/* No hand-off: `appPassword` (SecretField draft, never persisted) and the
+            unsaved `draft` are exactly what a failed save did not store — the
+            hand-off unmounts this panel and would lose them. Same shape as
+            SlackPanel's save row. */}
+        <ErrorNotice message={error} variant="inline" />
       </div>}
     </>
   )

@@ -128,22 +128,25 @@ async def _audit_monitor_access(
     *,
     error: str = "",
 ) -> None:
-    """Record a monitor authorization decision off the event-loop thread."""
+    """Record a monitor authorization decision (best-effort).
+
+    A bare enqueue: the SEL singleton is warmed at gateway startup
+    (``sel.warm_sel_singleton``), so no per-site thread hop is needed (#8608).
+    Guarded because a FAILED warm leaves construction to retry here.
+    """
     try:
-        await asyncio.to_thread(
-            lambda: sel().log_api_access(
-                caller=str(
-                    request.get("user")
-                    or request.headers.get("X-Session-Key")
-                    or request.remote
-                    or "unknown"
-                ),
-                operation=operation,
-                outcome=outcome,
-                source="dashboard",
-                resources=request.path,
-                error=error,
-            )
+        sel().log_api_access(
+            caller=str(
+                request.get("user")
+                or request.headers.get("X-Session-Key")
+                or request.remote
+                or "unknown"
+            ),
+            operation=operation,
+            outcome=outcome,
+            source="dashboard",
+            resources=request.path,
+            error=error,
         )
     except Exception:
         logger.debug("Could not audit %s monitor access", operation, exc_info=True)

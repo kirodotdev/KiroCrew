@@ -39,7 +39,7 @@ import socket
 import urllib.error
 import urllib.request
 
-__all__ = ["build_loopback_opener", "loopback_urlopen"]
+__all__ = ["build_loopback_opener", "loopback_urlopen", "unix_socket_urlopen"]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -118,6 +118,40 @@ def _build_unix_opener(socket_path: str) -> urllib.request.OpenerDirector:
     )
 
 
+def unix_socket_urlopen(
+    req: urllib.request.Request | str,
+    timeout: float,
+    *,
+    socket_path: "str | os.PathLike[str]",
+):
+    """Open ``req`` over *socket_path* and **only** over *socket_path*.
+
+    The transport twin of :func:`loopback_urlopen` for callers whose request
+    carries a credential that a different process must never receive. There is
+    no TCP handler in this opener at all, so "no fallback" is structural rather
+    than a flag someone can invert: a socket that is missing, stale, or refusing
+    raises ``URLError`` and the request is not sent anywhere else.
+
+    That distinction is the whole point. ``loopback_urlopen`` retries over TCP
+    when nobody answers the socket, which is right for its callers -- they are
+    reaching a gateway whose port they already trust, and a socket file left by a
+    dead gateway should not break them. It is wrong for ``pod api``: a pod's port
+    is ordinary loopback that any local user can bind the moment the pod
+    releases it, so a TCP retry can hand the pod's minted token to whatever
+    answered. A unix socket cannot be answered by another user, because it lives
+    inside the pod's owner-only home.
+
+    *socket_path* is trusted (derived, never caller-supplied); the URL's host is
+    preserved, so the gateway's Host validation sees exactly what it would on
+    TCP.
+    """
+    if not hasattr(socket, "AF_UNIX"):
+        # Windows. Raised as OSError so callers' existing transport handling
+        # catches it instead of an AttributeError escaping from connect().
+        raise OSError("AF_UNIX sockets are not available on this platform")
+    return _build_unix_opener(os.fspath(socket_path)).open(req, timeout=timeout)
+
+
 def loopback_urlopen(
     req: urllib.request.Request | str,
     timeout: float,
@@ -143,6 +177,12 @@ def loopback_urlopen(
     an HTTP error status, a read timeout, a reset mid-response -- propagates
     exactly as it would on TCP, keeping every caller's error shape unchanged.
 
+    A caller that must NOT fall back -- because its request carries a credential
+    another process could capture on the port -- wants
+    :func:`unix_socket_urlopen` instead. Do not add a "require unix" flag here:
+    the guarantee then depends on a conditional every future edit can invert,
+    and the callers below all want the fallback.
+
     The opener is rebuilt per call rather than cached at module scope. Both
     handlers are stateless, so a cache would be safe for the FIXED code -- but
     it would capture ``getproxies()`` at import time, making the module's
@@ -160,7 +200,7 @@ def loopback_urlopen(
         sock_path = os.fspath(unix_socket_path)
         if os.path.exists(sock_path):
             try:
-                return _build_unix_opener(sock_path).open(req, timeout=timeout)
+                return unix_socket_urlopen(req, timeout, socket_path=sock_path)
             except urllib.error.HTTPError:
                 # The gateway answered (4xx/5xx) -- a real response, never a
                 # transport failure. HTTPError subclasses URLError, so this

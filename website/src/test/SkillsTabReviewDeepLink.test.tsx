@@ -49,6 +49,20 @@ function UrlProbe() {
   return <div data-testid="url">{loc.pathname + loc.search}</div>
 }
 
+/**
+ * The body sits behind TWO chained queries: `skills-pending` lists the row, the
+ * `?review=` latch auto-expands it, and only then does `skills-pending-detail`
+ * fetch the content. `waitFor`'s 1000ms default polls that whole chain and
+ * loses under load (seen in five full runs), so every wait for the body names
+ * the boundary here and gives it room. Nothing in this file is faster for it;
+ * the timeout is a ceiling, not a sleep.
+ */
+function bodyOfBetaSkillShown() {
+  return waitFor(
+    () => expect(screen.getByText('BODY OF beta-skill')).toBeInTheDocument(),
+    { timeout: 5000 },
+  )
+}
 function renderAt(route: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -87,7 +101,7 @@ beforeEach(() => {
 describe('?review=<slug> deep link', () => {
   it('expands the linked candidate and only that one', async () => {
     renderAt('/capabilities?tab=skills&review=beta-skill')
-    await waitFor(() => expect(screen.getByText('BODY OF beta-skill')).toBeInTheDocument())
+    await bodyOfBetaSkillShown()
     expect(screen.queryByText('BODY OF alpha-skill')).not.toBeInTheDocument()
     // Detail is fetched for the linked slug only -- an expand-everything
     // implementation would fan out a request per row.
@@ -97,7 +111,7 @@ describe('?review=<slug> deep link', () => {
 
   it('strips the param so the highlight does not outlive the visit', async () => {
     renderAt('/capabilities?tab=skills&review=beta-skill')
-    await waitFor(() => expect(screen.getByText('BODY OF beta-skill')).toBeInTheDocument())
+    await bodyOfBetaSkillShown()
     await waitFor(() =>
       expect(screen.getByTestId('url').textContent).toBe('/capabilities?tab=skills'),
     )
@@ -105,7 +119,7 @@ describe('?review=<slug> deep link', () => {
 
   it('keeps the row collapsible after the deep link opened it', async () => {
     renderAt('/capabilities?tab=skills&review=beta-skill')
-    await waitFor(() => expect(screen.getByText('BODY OF beta-skill')).toBeInTheDocument())
+    await bodyOfBetaSkillShown()
     // The auto-open effect must not fight a user who closes the row.
     fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
     await waitFor(() =>
@@ -130,7 +144,7 @@ describe('?review=<slug> deep link', () => {
     // In flight: `pending` is [] but nothing is known yet.
     expect(screen.queryByText(/no longer awaiting review/i)).not.toBeInTheDocument()
     resolve({ pending: [ROW_B] })
-    await waitFor(() => expect(screen.getByText('BODY OF beta-skill')).toBeInTheDocument())
+    await bodyOfBetaSkillShown()
     expect(screen.queryByText(/no longer awaiting review/i)).not.toBeInTheDocument()
   })
 
@@ -143,7 +157,7 @@ describe('?review=<slug> deep link', () => {
     mockApi.approvePendingSkill.mockResolvedValue({ ok: true })
     mockApi.skillsPending.mockResolvedValue({ pending: [] })
     renderAt('/capabilities?tab=skills&review=beta-skill')
-    await waitFor(() => expect(screen.getByText('BODY OF beta-skill')).toBeInTheDocument())
+    await bodyOfBetaSkillShown()
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(mockApi.approvePendingSkill).toHaveBeenCalledWith('beta-skill'))
@@ -161,7 +175,7 @@ describe('?review=<slug> deep link', () => {
     mockApi.skillsPending.mockResolvedValue({ pending: [] })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderAt('/capabilities?tab=skills&review=beta-skill')
-    await waitFor(() => expect(screen.getByText('BODY OF beta-skill')).toBeInTheDocument())
+    await bodyOfBetaSkillShown()
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     await waitFor(() => expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('beta-skill'))
@@ -198,7 +212,7 @@ describe('?review=<slug> deep link', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    await waitFor(() => expect(screen.getByText('BODY OF beta-skill')).toBeInTheDocument())
+    await bodyOfBetaSkillShown()
     expect(screen.queryByText('STALE BODY FROM A PRIOR CANDIDATE')).not.toBeInTheDocument()
   })
 

@@ -11,7 +11,7 @@ import { performAgentSlotSwitch } from './lib/agentSwitch'
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
 import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
-import { queryComposer } from './pages/chat/composerFocus'
+import { queryComposerOrExpand } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
@@ -33,8 +33,10 @@ import { usePreviewFlagRevision } from './hooks/usePreviewFlag'
 import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
 import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, FOCUS_INSET } from './hooks/useFocusMode'
 import { APP_NAV_ORDER_KEY, buildReorderBaseline, mergeVisibleReorder, readAppNavOrder, useAppNavHidden } from './lib/appNavHidden'
+import { useNavPinned } from './lib/navPinned'
 import { computeHeaderDragGaps, type DragGap } from './lib/dragGaps'
 import { isEmbeddedPane } from './lib/embedded'
+import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, registerThemeDecorSlot } from './lib/themeDecorLayer'
 import { useHoverIntent } from './hooks/useHoverIntent'
 import { useNativeNotification } from './hooks/useNativeNotification'
 import { useNotificationSound } from './hooks/useNotificationSound'
@@ -127,6 +129,7 @@ import AppPage from './pages/AppPage'
 import AppDetailPage from './pages/AppDetailPage'
 import MigrationPage from './pages/MigrationPage'
 import MigrationCheck from './components/MigrationCheck'
+import CrashReportNotice from './components/CrashReportNotice'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
@@ -134,6 +137,7 @@ import { getTopBarWidgets } from './apps/topBarWidgets'
 import { getCapsuleSegments } from './apps/capsuleSegments'
 import { FEATURE_REQUEST_PROMPT_FALLBACK } from './prompts/featureRequest'
 import { useKeyboardShortcuts, IS_MAC } from './hooks/useKeyboardShortcuts'
+import { useNavShortcutHint } from './hooks/useNavShortcutHint'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
 import { useAutoConnectInstances } from './hooks/useAutoConnectInstances'
 import { useCommandPalette } from './hooks/useCommandPalette'
@@ -148,6 +152,7 @@ import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
+import { appNotificationBadges, isAppNavId, mergeAppBadges } from './appNotificationBadges'
 import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
 import { fmtCompact, fmtNumber, fmtPercent, fmtUnit } from './i18n/format'
 // Static on purpose, and the tradeoff is real: the sidebar updates badge
@@ -235,6 +240,9 @@ const NAV_ITEMS = getBuiltinSurfaces().map(s => ({
   // time. It cannot be filtered out here: this constant is evaluated once at
   // module load, so a flag flipped later would not take effect until a reload.
   previewFlag: s.previewFlag,
+  // Same reason, for the same reason: whether a promotable sub-item occupies a
+  // rail row is a localStorage read that changes without a reload.
+  pinnable: s.pinnable,
 }))
 
 /** Re-exported for the topbar readout's existing consumers; defined in
@@ -630,6 +638,11 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
   const isMobileRow = useIsMobile()
   const iconEl = <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 transition-opacity ${active ? 'opacity-100 text-accent is-lit' : 'opacity-70'}`}>{icon}</span>
   const { tip, tipOn, rowRef, showTip, hideTip } = useNavTip<HTMLDivElement>(collapsed)
+  // Derived from the shortcut registry by route, so a row with a bound panel
+  // chord advertises it and a row without one is untouched. Null when the user
+  // has turned shortcuts off. See useNavShortcutHint for why this resolves per
+  // render rather than being written next to each row.
+  const shortcut = useNavShortcutHint(path)
   const mayLeave = useMayLeaveForNavigation()
   const isCurrentUrl = useIsCurrentUrl()
   const activate = () => {
@@ -670,6 +683,12 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       onBlur={hideTip}
       aria-label={collapsed ? label : undefined}
       aria-pressed={pressed}
+      // The chord declared to assistive tech, in the ARIA grammar rather than the
+      // display glyphs — the same split MoveUndoBar's Undo button already ships.
+      // This is what makes the hint reachable without a pointer: the visible
+      // badge below is hover/focus-revealed decoration and is aria-hidden, so the
+      // attribute is the non-visual route rather than a duplicate of one.
+      aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
     >
       {badge}
       {iconEl}
@@ -689,6 +708,30 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
           {label}
         </span>
       )}
+      {/* Expanded rail: the chord rides the row's existing `group/nav` seam, so it
+          appears on hover AND on keyboard focus-visible rather than on hover alone
+          — the row is already `tabIndex={0}`, and a hover-only hint would be
+          unreachable to a keyboard or touch user, which is the defect class #4120
+          was fixed for and #3626 is still open on. `aria-hidden` because the
+          accessible name must stay the label: the chord is declared exactly once,
+          on `aria-keyshortcuts` above, rather than read out as glyphs. */}
+      {!collapsed && shortcut && (
+        <span
+          aria-hidden="true"
+          // Keycap DATA, not prose. `[data-i18n-opaque]` is the render-time i18n
+          // gate's own marker for exactly this (render-scan.mjs OPAQUE_SELECTOR,
+          // whose comment names "a keycap container span"). It costs nothing
+          // visually and is not currently load-bearing -- the badge is opacity-0
+          // until hover, so the scan does not see it -- but without it the class is
+          // declared nowhere, and whoever makes this visible by default would get a
+          // pseudolocale failure with no clue why.
+          data-i18n-opaque=""
+          data-testid={navId ? `nav-shortcut-${navId}` : undefined}
+          className="shrink-0 text-[11px] leading-none text-muted opacity-0 transition-opacity duration-150 group-hover/nav:opacity-100 group-focus-visible/nav:opacity-100"
+        >
+          {shortcut.chord}
+        </span>
+      )}
       {collapsed && tip && createPortal(
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
@@ -696,6 +739,15 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
         >
           <span className={`app-icon-nav w-4 h-4 flex items-center justify-center shrink-0 ${active ? 'text-accent is-lit' : ''}`}>{icon}</span>
           {label}
+          {/* Collapsed rail: the row carries no text label, so this flyout IS its
+              hover affordance — and it already opens on focus as well as hover
+              (see onFocus/onBlur above), which is what carries the hint to a
+              keyboard user on this width. */}
+          {shortcut && (
+            <span aria-hidden="true" data-i18n-opaque="" className="shrink-0 text-[11px] leading-none text-muted">
+              {shortcut.chord}
+            </span>
+          )}
         </div>,
         document.body
       )}
@@ -837,6 +889,10 @@ const NC_CLOSE_BACKSTOP_MS = 1000
  */
 function NotificationsBellButton() {
   const navigate = useNavigate()
+  // The Notifications surface is `hiddenFromNav`, so this bell — not a rail row —
+  // is the control Alt+N operates. Resolved through the same route-keyed helper
+  // the rail uses, so the chord has exactly one derivation in the dashboard.
+  const shortcut = useNavShortcutHint('/notifications')
   // Both jumps out of this popover run inside the gate: the bell is reachable
   // from every page, including one holding an unsaved draft, and each handler
   // also CLOSES the popover — so asking around the `navigate` alone would leave
@@ -1023,8 +1079,19 @@ function NotificationsBellButton() {
         ref={bellRef}
         className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 relative ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
         onClick={() => { if (phaseRef.current === 'closed') openPanel(); else closePanel() }}
+        // Chord declared to assistive tech ONLY, deliberately not in the tooltip.
+        // The render-time i18n gate scans `TEXT_ATTRS` (render-scan.mjs:293 --
+        // title, aria-label, placeholder, alt, aria-placeholder) for Latin runs
+        // under the en-XA pseudolocale, and its attribute branch (:499) has no
+        // opaque escape: the `[data-i18n-opaque]` / `kbd` exemption applies to
+        // ELEMENTS, so a keycap can be exempted in text but never inside an
+        // attribute value. A chord appended here read as 220 untranslated-attribute
+        // findings. `aria-keyshortcuts` is not in that list and is the standards
+        // declaration anyway, so the non-visual route survives; the VISIBLE hint
+        // stays a rail affordance, where it can be marked opaque.
         title={unacked.length > 0 ? i18nT('app.notification_count', { count: unacked.length }) : i18nT('app.notifications')}
         aria-label={i18nT('app.notifications')}
+        aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
         aria-haspopup="dialog"
         aria-expanded={open}
       >
@@ -1769,16 +1836,22 @@ export default function App() {
   const appNavHidden = useAppNavHidden()
   // Preview-gated surfaces (see `utils/previewFlags.ts`) must not be advertised
   // anywhere. `surfacePreviewEnabled` is a synchronous storage read, so the rail
-  // needs this subscription to re-render when Developer > Feature Previews flips a flag —
+  // needs this subscription to re-render when Settings > Developer > Feature Previews flips a flag —
   // otherwise the row would appear only after a reload. The revision also
   // invalidates the memo below, which a bare re-render would not recompute.
   const previewFlagRevision = usePreviewFlagRevision()
+  // Which promotable sub-items the user has pinned to the rail. Live under both
+  // propagation paths (same-tab event + cross-tab `storage`), so toggling the
+  // pin control in a page header repaints the rail without a reload.
+  const pinnedNavIds = useNavPinned()
   // ONE derivation feeding BOTH rail list paths (the Apps group just below and
   // the Main group further down). Filtering per call site is what leaks an
   // unreleased surface: the first preview-gated Apps-group surface would have
-  // shown up while only the Main branch was gated.
+  // shown up while only the Main branch was gated. The pinned test rides here
+  // for the same reason — a `pinnable` sub-item filtered in only one branch
+  // would appear on the rail in the other without the user pinning it.
   const advertisedNavItems = useMemo(
-    () => NAV_ITEMS.filter(surfacePreviewEnabled),
+    () => NAV_ITEMS.filter(n => surfacePreviewEnabled(n) && (!n.pinnable || pinnedNavIds.has(n.id))),
     // The revision is an invalidation token: what `surfacePreviewEnabled` reads
     // lives in localStorage, not in React state, so nothing else here can
     // express the dep. The directive stays on ONE line directly above the deps
@@ -1786,7 +1859,7 @@ export default function App() {
     // rationale wrapped after it aims the directive at its own continuation and
     // suppresses nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [previewFlagRevision],
+    [previewFlagRevision, pinnedNavIds],
   )
   // Apps nav reorder is dnd-kit sortable (mirrors QueueStack): rows reflow to
   // open a gap as you drag, and a DragOverlay renders the floating ghost.
@@ -2065,6 +2138,31 @@ export default function App() {
     [appBadges, appUpdatesCount],
   )
 
+  // Rail badges for INSTALLED apps, derived from notifications the app already
+  // published: the host stamps `source: "app:<name>"` on every pushed record
+  // and owns the `acked` flag, so the count needs no new manifest field and no
+  // new app-implemented route -- see `appNotificationBadges`.
+  //
+  // Merged only into the badge map the rail rows read -- NOT into the
+  // `appBadges` state, for the same reason `discoverBadges` above stays out of
+  // it: that map feeds the tab-title `totalAttention` sum, and the
+  // notifications bell ALREADY badges these same records, so adding them there
+  // would count one notification twice in the tab title.
+  //
+  // An app that pushes its own count through `useNavBadge()` still wins on its
+  // own key, so an app using the SDK hook today sees no change at all; the
+  // derivation only fills rows that had no badge.
+  //
+  // Handed ONLY to rows that pass `isAppNavId` (see the call site). `NavBadge`
+  // keys its fallback on the BARE navId for an unprefixed row, so a host row
+  // such as `schedule` indexes the same map an app name would -- an app could
+  // otherwise put attention on host chrome by choosing its own name.
+  const notificationItems = useAppSelector(s => s.notifications.items)
+  const railAppBadges = useMemo(
+    () => mergeAppBadges(appBadges, appNotificationBadges(notificationItems)),
+    [appBadges, notificationItems],
+  )
+
   const [updating, setUpdating] = useState(false)
   const [showUpdateModal, setShowUpdateModal] = useState(false)
   const [kiroUsageOpen, setKiroUsageOpen] = useState(false)
@@ -2089,7 +2187,12 @@ export default function App() {
       // focusComposer()'s touch-device skip would wrongly suppress focus on a
       // tablet with a physical keyboard. Next frame, so the new slot's
       // composer has been committed to the DOM.
-      requestAnimationFrame(() => queryComposer()?.focus())
+      //
+      // Through the resolver rather than a bare lookup, so a composer the user
+      // left collapsed is asked back instead of swallowing the caret: creating a
+      // session IS a typing intent, and the alternative is a new chat whose
+      // first keystroke goes nowhere.
+      requestAnimationFrame(() => queryComposerOrExpand(ta => ta.focus()))
     },
   })
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
@@ -2312,7 +2415,7 @@ export default function App() {
   // backend cache has not warmed yet" (null) apart from "the request failed"
   // (undefined) — both are falsy. Without it a failing endpoint renders as a
   // spinner that never resolves, since the 30s refetch keeps retrying forever.
-  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | null>({
+  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | 'scrape-disabled' | null>({
     queryKey: ['kiro-usage'],
     queryFn: () => api.sessionsUsage().then(d => {
       const u: KiroUsagePayload = d?.usage || {}
@@ -2384,8 +2487,15 @@ export default function App() {
       // Non-Kiro provider (kiro-cli absent) -> hide. API-key auth -> terminal
       // "not available for this auth type" (the pill and modal explain instead
       // of hiding, because for this account type the state is permanent, not a
-      // warming cache). Empty cache (Kiro warming) -> spinner.
-      if (u.available === false) return u.reason === 'api_key_auth' ? ('api-key' as const) : ('none' as const)
+      // warming cache). Scrape opt-in off with no API plan -> same treatment:
+      // permanent until the user flips dashboard.usage_text_scrape_enabled, so
+      // explain rather than hide (#7623 — hiding left no hint a knob exists).
+      // Empty cache (Kiro warming) -> spinner.
+      if (u.available === false) {
+        if (u.reason === 'api_key_auth') return 'api-key' as const
+        if (u.reason === 'scrape_disabled') return 'scrape-disabled' as const
+        return 'none' as const
+      }
       return null
     }),
     refetchInterval: 30_000,
@@ -2802,6 +2912,43 @@ export default function App() {
   // toggle, and badge wiring are identical across sections.
   // `surfaceLabel` resolves `labelKey` against the active language at render
   // time; a surface with no key (app-contributed) falls back to its literal.
+  // Which rail row is the current one. A promoted sub-item's `path` carries its
+  // host panel's tab param (`/capabilities?tab=steering`), so the pathname-only
+  // comparison every other row uses can never match it and the row would never
+  // paint as active while you were standing on it. Rows WITHOUT a param take
+  // the original test unchanged — including `/apps`, which must not match its
+  // own children the way the general prefix test would.
+  // A promoted sub-item row and its HOST row would otherwise both pass their own
+  // active test on the same URL: the host's is a prefix match on `/capabilities`,
+  // the promoted row's an exact `?tab=` match. The rail then paints two rows as
+  // "where I am", which answers the question with neither. Screenshot evidence
+  // is what caught it, so the host yields to the promoted row that owns the tab.
+  const promotedTabOwner = useMemo(() => {
+    const tab = new URLSearchParams(location.search).get('tab')
+    if (!tab) return null
+    const owner = advertisedNavItems.find(n => {
+      const q = n.path.indexOf('?')
+      return q !== -1
+        && n.path.slice(0, q) === activePath
+        && new URLSearchParams(n.path.slice(q + 1)).get('tab') === tab
+    })
+    return owner ? activePath : null
+  }, [advertisedNavItems, activePath, location.search])
+
+  const navRowActive = (path: string): boolean => {
+    const q = path.indexOf('?')
+    if (q !== -1) {
+      const wanted = new URLSearchParams(path.slice(q + 1)).get('tab')
+      return activePath === path.slice(0, q)
+        && new URLSearchParams(location.search).get('tab') === wanted
+    }
+    if (path === '/apps') return activePath === '/apps'
+    const selfActive = activePath === path || activePath.startsWith(path + '/')
+    // Only the host of a currently-showing promoted row yields, so every other
+    // param-free row keeps its original behaviour byte for byte.
+    return selfActive && promotedTabOwner === path ? false : selfActive
+  }
+
   const renderNavRow = (
     n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode },
   ) => (
@@ -2810,11 +2957,11 @@ export default function App() {
       path={n.path}
       label={surfaceLabel(n)}
       icon={n.icon}
-      active={n.path === '/apps' ? activePath === '/apps' : (activePath === n.path || activePath.startsWith(n.path + '/'))}
+      active={navRowActive(n.path)}
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       onClickOverride={isChat && (activePath === n.path || activePath.startsWith(n.path + '/')) ? () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) : undefined}
-      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={appBadges} />}
+      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} />}
     />
   )
 
@@ -2897,6 +3044,22 @@ export default function App() {
         }),
       }}
     >
+      {/* Theme decoration slot (#7377). ThemeExperienceLayer portals a pack's
+          decorative overlays here so they share the shell's stacking context
+          with the header — rendered as a sibling of <App /> they compete with
+          the shell's z-1 as a whole and paint OVER the top bar whatever their
+          z-index (see lib/themeDecorLayer.ts). Fixed + inset-0 so it takes no
+          grid cell; click-through so it never intercepts (an overlay declaring
+          pointerEvents opts its own iframe back in); its own stacking context
+          at OVERLAY_Z_MAX so nothing inside can outrank the header (TOPBAR_Z /
+          TOPBAR_FOCUS_Z). Must precede the header in DOM order. */}
+      <div
+        id={THEME_DECOR_SLOT_ID}
+        ref={registerThemeDecorSlot}
+        data-testid="theme-decor-slot"
+        className="fixed inset-0 pointer-events-none"
+        style={{ zIndex: OVERLAY_Z_MAX }}
+      />
 
       {/* Full-height activity bar slot: ChatPage portals its
           Activity panel here on desktop so it spans the window top-to-bottom
@@ -2942,27 +3105,31 @@ export default function App() {
       {/* stable theming hook — see website/docs/theming-contract.md */}
       <header
         ref={topPeekSurface}
-        className="topbar topbar-glass relative pl-2 pr-3 z-[45]"
+        className="topbar topbar-glass relative pl-2 pr-3"
+        // Both z-indexes come from lib/themeDecorLayer.ts, which derives the
+        // theme-overlay ceiling from them — the header must outrank pack
+        // decoration in both layouts (#7377), and a literal here could drift.
+        //
         // In focus mode the header leaves the grid and becomes an overlay
         // positioned against the shell (which is already `relative`), NOT the
         // viewport: `position: fixed` would be measured against whichever
         // ancestor happens to establish a containing block, and the shell is the
         // app area either way. It stays MOUNTED and slides — unmounting it would
         // tear down the notification/metrics popovers it owns and lose their
-        // state on every peek. z-[62] clears the whole chat-pane stack (max 61)
-        // and the rail (50) while staying under the update banner (70), side
-        // sheets (89/90) and every modal (100+).
+        // state on every peek. TOPBAR_FOCUS_Z (62) clears the whole chat-pane
+        // stack (max 61) and the rail (50) while staying under the update banner
+        // (70), side sheets (89/90) and every modal (100+).
         style={focusActive
           ? {
             position: 'absolute',
             top: 0, left: 0, right: 0, height: 42,
-            zIndex: 62,
+            zIndex: TOPBAR_FOCUS_Z,
             transform: topChromeShown ? 'translateY(0)' : 'translateY(-100%)',
             transition: 'transform 200ms cubic-bezier(0.2, 0, 0, 1)',
             // Hidden chrome must not eat clicks aimed at the content beneath it.
             pointerEvents: topChromeShown ? 'auto' : 'none',
           }
-          : { gridArea: 'topbar' }}
+          : { gridArea: 'topbar', zIndex: TOPBAR_Z }}
         {...(focusActive ? topPeek.surfaceProps : {})}
       >
         {/* Left: mobile menu toggle + inline instance selector. The brand now
@@ -3341,6 +3508,14 @@ export default function App() {
                 // flight), but the label says why, and clicking through opens
                 // the modal's fuller explanation.
                 segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_api_key')} aria-label={i18nT('app.kiro_credit_usage_api_key')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+              } else if (kiroUsageState === 'scrape-disabled') {
+                // The free usage API returned no plan and the billed /usage
+                // text scrape is opted out (its default). Permanent until the
+                // user flips dashboard.usage_text_scrape_enabled, so render
+                // the same terminal dash as 'api-key' with a label that names
+                // the knob — hiding the segment here left users of v0.1.3-era
+                // dashboards with a pill that silently vanished (#7623).
+                segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_scrape_disabled')} aria-label={i18nT('app.kiro_credit_usage_scrape_disabled')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
               } else if (!kiroUsageState) {
                 segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
               } else {
@@ -4101,6 +4276,10 @@ export default function App() {
         <div className={`flex min-h-0 min-w-0 flex-1 ${terminalPosition === 'right' ? 'flex-row' : 'flex-col'}`}>
         <main id="main-content" tabIndex={-1} className={`flex flex-col min-h-0 min-w-0 flex-1 overflow-x-hidden ${needsFixedHeight ? 'overflow-hidden p-0' : 'overflow-y-auto'}`}>
           <MigrationCheck />
+          {/* Route-independent, unlike MigrationCheck: "you crashed" is true of
+              the app, not of the page, and the launch after a crash rarely lands
+              on the page the user was on when it happened. */}
+          <CrashReportNotice />
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />

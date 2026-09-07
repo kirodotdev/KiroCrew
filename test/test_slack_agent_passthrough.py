@@ -40,13 +40,29 @@ def _make_mocks():
 
     mock_client = AsyncMock()
     mock_client.stream = _empty_stream
+    # context_usage_pct() and context_window_tokens() are sync on the real
+    # provider client.
+    mock_client.context_usage_pct = MagicMock(return_value=0.0)
+    mock_client.context_window_tokens = MagicMock(return_value=0)
 
     sessions = AsyncMock()
     sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
     sessions.set_channel = AsyncMock()
     sessions.set_slack_link = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
-    sessions.release = AsyncMock()
+    # release(), is_cancelled(), check_context_usage(), record_success(),
+    # begin_turn(), and get_session_for_thread() are all sync on the real
+    # SessionManager and are called without `await` in handler.py; an
+    # AsyncMock here creates a coroutine handle_message never awaits.
+    sessions.release = MagicMock()
+    sessions.is_cancelled = MagicMock(return_value=False)
+    sessions.check_context_usage = MagicMock(return_value=0.0)
+    sessions.record_success = MagicMock()
+    sessions.begin_turn = MagicMock()
+    sessions.get_session_for_thread = MagicMock(return_value=None)
+    # _sessions is read via getattr(sessions, "_sessions", {}).get(...); a real
+    # dict avoids an AsyncMock attribute chain that creates an unawaited call.
+    sessions._sessions = {}
 
     context_builder = MagicMock()
     context_builder.build_message = MagicMock(return_value=("hello", MagicMock()))

@@ -329,6 +329,131 @@ class TestBatchIdentity:
         assert asyncio.run(mgr.cancel("never-existed")) is False
 
     @pytest.mark.asyncio
+    async def test_queued_cancel_reports_a_neutral_stopped_terminal(self):
+        events: list[tuple[str, SubagentInfo, dict]] = []
+        announced: list[SubagentInfo] = []
+
+        async def on_event(kind, info, extra):
+            events.append((kind, info, extra))
+
+        async def on_done(info):
+            announced.append(info)
+
+        mgr = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx(),
+            on_event=on_event,
+            on_done=on_done,
+        )
+        mgr._queue = [
+            {
+                "task": "queued task",
+                "_preassigned_id": "q-stop",
+                "parent_session_key": "dashboard:one",
+                "batch_id": "wave",
+                "batch_total": 2,
+            }
+        ]
+        mgr._emit_queue_depth = MagicMock()
+
+        assert await mgr.cancel("q-stop") is True
+        await asyncio.gather(*list(mgr._report_tasks))
+
+        assert announced and announced[0].user_stopped is True
+        assert announced[0].task == "queued task"
+        assert announced[0].error == ""
+        assert events and events[0][0] == "subagent_done"
+        assert events[0][2]["outcome"] == "stopped"
+
+    @pytest.mark.asyncio
+    async def test_stop_parent_removes_its_queued_agents_before_start(self):
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        mgr._queue = [
+            {"task": "q1", "_preassigned_id": "q1", "parent_session_key": "dashboard:one"},
+            {"task": "q2", "_preassigned_id": "q2", "parent_session_key": "dashboard:one"},
+            {"task": "other", "_preassigned_id": "q3", "parent_session_key": "dashboard:two"},
+        ]
+        mgr._emit_queue_depth = MagicMock()
+        mgr._report_queued_stop = MagicMock()
+        mgr.cancel = AsyncMock(return_value=True)
+
+        running, queued = await mgr.cancel_for_parent("dashboard:one")
+
+        assert (running, queued) == (0, 2)
+        assert [item["_preassigned_id"] for item in mgr._queue] == ["q3"]
+        assert mgr._report_queued_stop.call_count == 2
+        mgr.cancel.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_parent_does_not_recancel_pending_queued_records(self):
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        mgr._queue = [
+            {"task": "q1", "_preassigned_id": "q1", "parent_session_key": "dashboard:one"},
+            {"task": "q2", "_preassigned_id": "q2", "parent_session_key": "dashboard:one"},
+        ]
+        mgr._emit_queue_depth = MagicMock()
+        mgr._spawn_terminal_report = MagicMock()
+        mgr.cancel = AsyncMock(return_value=True)
+
+        assert await mgr.cancel_for_parent("dashboard:one") == (0, 2)
+
+        assert all(mgr._agents[agent_id].queued for agent_id in ("q1", "q2"))
+        assert all(not mgr._agents[agent_id].done for agent_id in ("q1", "q2"))
+        mgr.cancel.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_parent_keeps_batch_pending_until_last_queued_report(self):
+        observed: list[tuple[str, bool]] = []
+        mgr: SubagentManager
+
+        async def on_done(info):  # type: ignore[no-untyped-def]
+            observed.append((info.id, mgr.batch_members_pending(info.batch_id)))
+
+        mgr = SubagentManager(
+            sessions=_mock_sessions(), ctx_builder=_mock_ctx(), on_done=on_done
+        )
+        mgr._batch_submitted["wave"] = [2, 2]
+        mgr._queue = [
+            {
+                "task": "q1",
+                "_preassigned_id": "q1",
+                "parent_session_key": "dashboard:one",
+                "batch_id": "wave",
+                "batch_total": 2,
+            },
+            {
+                "task": "q2",
+                "_preassigned_id": "q2",
+                "parent_session_key": "dashboard:one",
+                "batch_id": "wave",
+                "batch_total": 2,
+            },
+        ]
+        mgr._emit_queue_depth = MagicMock()
+
+        assert await mgr.cancel_for_parent("dashboard:one") == (0, 2)
+        await asyncio.gather(*list(mgr._report_tasks))
+
+        assert observed == [("q1", True), ("q2", False)]
+        assert all(mgr._agents[agent_id].done for agent_id in ("q1", "q2"))
+
+    @pytest.mark.asyncio
+    async def test_stop_parent_leaves_spawn_approval_waits_pending(self):
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        running = SubagentInfo(id="run", task="run", parent_session_key="dashboard:one")
+        pending = SubagentInfo(id="approval", task="wait", parent_session_key="dashboard:one")
+        pending._awaiting_approval = True
+        pending._exec_started = None
+        other = SubagentInfo(id="other", task="other", parent_session_key="dashboard:two")
+        mgr._agents = {info.id: info for info in (running, pending, other)}
+        mgr.cancel = AsyncMock(return_value=True)
+
+        stopped, queued = await mgr.cancel_for_parent("dashboard:one")
+
+        assert (stopped, queued) == (1, 0)
+        mgr.cancel.assert_awaited_once_with("run")
+
+    @pytest.mark.asyncio
     async def test_spawn_counts_submissions_once_per_member(self):
         """spawn() increments the submission counter exactly once per member —
         a queued member re-entering via _drain_queue must not double-count,

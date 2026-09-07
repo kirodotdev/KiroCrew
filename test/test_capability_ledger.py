@@ -298,10 +298,10 @@ class TestSessionResumeIsDeclaredOnlyWhereItIsHonoured:
     A dashboard connect on a transport declaring it marks the binding
     ``accepts_inbound``, and the slot row then reports ``direction: both`` — the
     dashboard is telling the user that replies come back here. That is only true
-    where the transport's inbound path resolves the mirror binding. Discord's
-    does (``DiscordSessionResume.resumed_session``); every other transport builds
-    a session key from the route alone and never looks the binding up, so a reply
-    there runs in a SEPARATE session with none of this conversation's history.
+    where the transport's inbound path resolves the mirror binding. Discord and
+    Telegram do; every other transport builds a session key from the route alone
+    and never looks the binding up, so a reply there runs in a SEPARATE session
+    with none of this conversation's history.
 
     This pins the current set. A new transport declaring the flag fails here, and
     that is the point: the author has to come and confirm its inbound path really
@@ -316,12 +316,19 @@ class TestSessionResumeIsDeclaredOnlyWhereItIsHonoured:
             "would silently become outbound-only and replies would stop resuming"
         )
 
+    def test_telegram_declares_it(self) -> None:
+        from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+
+        assert TELEGRAM_CAPABILITIES.supports_session_resume is True, (
+            "Telegram stopped declaring session resume even though its dispatcher "
+            "resolves the durable mirror binding before routing inbound messages"
+        )
+
     def test_no_other_transport_declares_it(self) -> None:
         from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
         from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
         from kiro_crew.slack.transport import SLACK_CAPABILITIES
         from kiro_crew.teams.transport import TEAMS_CAPABILITIES
-        from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
         from kiro_crew.webex.transport import WEBEX_CAPABILITIES
         from kiro_crew.wecom.transport import WECOM_CAPABILITIES
         from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
@@ -330,7 +337,6 @@ class TestSessionResumeIsDeclaredOnlyWhereItIsHonoured:
         others = {
             "slack": SLACK_CAPABILITIES,
             "teams": TEAMS_CAPABILITIES,
-            "telegram": TELEGRAM_CAPABILITIES,
             "webex": WEBEX_CAPABILITIES,
             "wecom": WECOM_CAPABILITIES,
             "weixin": WEIXIN_CAPABILITIES,
@@ -342,9 +348,9 @@ class TestSessionResumeIsDeclaredOnlyWhereItIsHonoured:
         assert claiming == [], (
             f"{claiming} declare session resume, but their inbound paths derive a "
             "session key from the route and never resolve the mirror binding — the "
-            "dashboard would promise a two-way link that drops replies. Slack is "
-            "separate: it routes inbound through its own thread index and never "
-            "sets `accepts_inbound`."
+            "dashboard would promise a two-way link that drops replies. Discord and "
+            "Telegram are tested positively above; Slack is separate because it routes "
+            "inbound through its own thread index and never sets `accepts_inbound`."
         )
 
     def test_the_default_is_off(self) -> None:

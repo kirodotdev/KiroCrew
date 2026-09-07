@@ -1026,6 +1026,67 @@ legitimately rewrite. `encode()` refuses above `MAX_DIRECTIVE_CHARS` (3800), und
 the ACP tool-result truncation bound, so an oversized payload fails loudly
 instead of losing its trailing marker.
 
+A tail-anchored marker must survive delivery, and a rejection must not be able to
+carry one. `validate_tool_args` reports an unknown field by echoing the argument
+NAME, which the model chooses, so that name is the injection point for both
+problems. A name carrying the sentinel plus a JSON payload plus a newline made the
+REJECTION string decode as a genuine directive under the real tool's authenticated
+identity — applying the arguments validation had just refused — so every place
+`mcp_shared` builds an `"Error: …"` result passes the interpolated text through
+`session_directive.neutralize_markers`. That defanging is applied only where the
+caller KNOWS the string is not a directive: doing it centrally over every tool
+result would defang the real marker too. Separately, a 9,000-character name
+produced a result whose refusal tag the transport cut removed, and the decline read
+as a lost marker again — `tag_refusal` elides the middle of an over-long text
+against `MAX_TOOL_RESULT_CHARS`, the single constant `acp/_dispatch.py` slices on.
+That bound alone is necessary but not sufficient, because the cut runs AFTER
+redaction and redaction GROWS text (a credential becomes a longer placeholder,
+measured 7,999 chars in and 8,755 out), so `preserve_tail_marker` re-attaches a
+marker the cut removed — the same re-injection the MCP App render marker already
+gets at that seam, for the same reason: a control token that decides how a frame is
+interpreted must not be a casualty of a length cut applied to the frame's prose.
+
+**A directive tool's result either carries the marker, or it is a tagged
+refusal — nothing in between.** The consumer cannot otherwise tell a decline from
+a marker destroyed in transport: both decode to "no directive", but only the
+second is a bug, and the diagnostic for the second is a WARNING
+(`session-directive decode FAILED … effect dropped`) whose whole purpose is to
+catch a rawOutput-envelope escaping regression. So every marker-less return is
+stamped with `_REFUSAL_SENTINEL` and reported at INFO as
+`session-directive REFUSED`: `encode()` stamps its own oversized-payload refusal,
+and `mcp_core._call_tool` stamps the rest via `refuse_if_markerless()`. That
+second producer sits at the OUTERMOST return because argument validation runs in
+the dispatch wrapper *ahead of* the handler, so a schema rejection never reaches
+code inside the tool that could tag itself. Tagging is diagnostic only and keys on
+the tool name alone: the token carries no payload and grants no effect, so it can
+change how a line is logged and never what is applied. Two consequences for a tool
+author — a directive tool must RETURN its declines rather than raise them (an
+exception escapes this return path and reads as a lost marker), and a caller that
+sees `decode FAILED` is looking at a transport bug or at a handler that crashed --
+the line names both, because a crash also drops the effect and asserting only the
+transport cause sends an operator hunting a regression that is not there.
+That first rule is enforced rather than left to convention: a parametrized test
+drives every name in `DIRECTIVE_TOOLS` with a hostile call and asserts the result
+is a marker or a tagged refusal, and its companion asserts the table covers the
+frozenset, so a new directive tool fails until it is added. The one raising
+dependency these handlers share, `parse_github_pull_request_target`, is reached
+through a single guarded seam (`_parsed_pull_request_target`) for the same reason
+-- guarding its two call sites independently is how the second one came to ship
+unguarded.
+
+`FieldSpec.clamp_to_max` is the other half of that: an over-long argument used to
+be able to defeat the request it was only describing. `autonudge_stop` and
+`monitor_stop` both take a `reason` that selects no behaviour — the applier just
+interpolates it into the outcome text and the persisted stop record — so their
+`reason` is TRUNCATED to the cap instead of rejecting the stop, and the truncated
+value carries a `[... truncated, dropped N chars]` note so the cut is visible
+wherever the value travels. `N` counts what THAT cut dropped, including the note's
+own cost — deliberately not the caller's original length, which the clamp cannot
+know because the field is sanitized before the cap is checked, so one number
+cannot honestly stand for both removals. Opt-in per field, and never for a field
+the handler acts on: a truncated control input is a wrong control input, and
+rejecting is the only safe answer there.
+
 Structured monitoring deliberately splits mutation from inspection.
 `monitor_watch`, `monitor_update`, and `monitor_stop` are directives: the
 consumer applies them to its authoritative session, so their payloads contain

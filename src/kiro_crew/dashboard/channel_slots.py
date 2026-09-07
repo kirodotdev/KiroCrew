@@ -61,11 +61,13 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_folders import lookup_channel_folder
+from kiro_crew.dashboard.chat_title import _persist_title
 from kiro_crew.dashboard.chat_utils import effective_session_key
-from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count
+from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count, row_mid
 from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
+from kiro_crew.messaging.upload_gate import live_dashboard_slot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -132,6 +134,103 @@ def _redact_assistant(content: str) -> str:
     content, _ = redact_exfiltration_urls(content)
     content, _ = redact_credentials(content)
     return content
+
+
+def project_channel_turn_live(
+    dashboard_state: Any,
+    session_key: str,
+    user_text: str,
+    reply_text: str,
+    *,
+    broadcast_user: bool = False,
+) -> tuple[str, str] | None:
+    """Append one resumed turn to its open dashboard slot and return both row ids.
+
+    This is loop-side by contract: user then assistant append without an await between
+    them, so the live window observes one ordered pair. ``broadcast_user`` is explicit
+    because Telegram has no optimistic dashboard copy for its channel-originated row,
+    while Discord's established projection path does not broadcast that row.
+    """
+    slot = live_dashboard_slot(dashboard_state, session_key)
+    if slot is None:
+        return None
+    try:
+        user_mid = (
+            row_mid(
+                slot.append(
+                    "user",
+                    user_text,
+                    "msg msg-u",
+                    broadcast_user=broadcast_user,
+                )
+            )
+            or ""
+        )
+    except Exception:
+        logger.debug(
+            "channel turn projection: user append failed for %s", session_key, exc_info=True
+        )
+        return None
+
+    assistant_mid = ""
+    if reply_text:
+        try:
+            assistant_mid = row_mid(slot.append("assistant", reply_text, "msg msg-a")) or ""
+        except Exception:
+            logger.debug(
+                "channel turn projection: assistant append failed for %s",
+                session_key,
+                exc_info=True,
+            )
+
+    push = getattr(dashboard_state, "push_slots_update", None)
+    if callable(push):
+        try:
+            push()
+        except Exception:
+            logger.debug("channel turn projection: slot push failed", exc_info=True)
+    return user_mid, assistant_mid
+
+
+async def rename_channel_title_live(
+    dashboard_state: Any,
+    session_key: str,
+    title: str,
+) -> bool:
+    """Rename the open dashboard slot for *session_key* and keep every view aligned.
+
+    Returns ``False`` when no live slot owns the session, so the channel can fall
+    back to its conversation-log-only path. A live slot is authoritative once it
+    exists: changing only transcript metadata lets its later save rewrite the old
+    in-memory title over the new one. Match the dashboard's own manual-rename
+    ordering instead — update the slot synchronously, bump its title epoch so a
+    background titler stands down, persist through the epoch-aware helper, then
+    broadcast the exact value every dashboard client must render.
+
+    ``_persist_title`` is best-effort by dashboard contract. A failed immediate
+    metadata write leaves the updated live slot authoritative and a later slot
+    save can recover it; the dashboard's own rename endpoint makes the same trade.
+    """
+    slot = live_dashboard_slot(dashboard_state, session_key)
+    if slot is None:
+        return False
+
+    slot.title = title
+    slot._titled = True
+    slot._title_origin = "user"
+    slot._title_epoch = int(getattr(slot, "_title_epoch", 0)) + 1
+    persisted = await _persist_title(dashboard_state, slot)
+    if not persisted:
+        logger.warning("channel title update is live but not yet durable for %s", session_key)
+
+    push_title = getattr(dashboard_state, "push_slot_title", None)
+    if callable(push_title):
+        push_title(slot.key, title)
+    else:
+        push_slots = getattr(dashboard_state, "push_slots_update", None)
+        if callable(push_slots):
+            push_slots()
+    return True
 
 
 def _close_time(meta: dict[str, Any], file_mtime: float | None) -> float | None:

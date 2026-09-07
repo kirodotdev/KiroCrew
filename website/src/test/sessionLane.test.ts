@@ -62,6 +62,12 @@ describe('inferLane precedence', () => {
     expect(inferLane({ interrupted: true })).toBe('waiting')
   })
 
+  it('ranks live snapshot subagents above stale interruption', () => {
+    // Reconnect can hydrate the slot summary before detailed child activity.
+    // The board must agree with the sidebar that live work supersedes the old turn.
+    expect(inferLane({ interrupted: true, subagents_running: true })).toBe('working')
+  })
+
   it('ranks an approval above a question', () => {
     expect(inferLane({ pending_approval: true, needs_input: true })).toBe('needs_approval')
   })
@@ -87,18 +93,31 @@ describe('inferLane working signals', () => {
   it('counts an armed monitor loop between cycles', () => {
     // The loop wakes the session on its own, so it is working rather than idle
     // even in the gap where no turn is in flight.
-    expect(inferLane({}, { backgroundWork: true })).toBe('working')
+    expect(inferLane({}, { goalLoopActive: true })).toBe('working')
+  })
+
+  it('keeps an interrupted armed loop waiting until live work resumes', () => {
+    expect(inferLane({ interrupted: true }, { goalLoopActive: true })).toBe('waiting')
   })
 
   it('counts a dynamic workflow running against an otherwise-idle slot', () => {
     // A workflow is tracked in the store, not on the slot payload, so `running`
     // is false while it executes. Without it the board files the session as Idle
     // while its own row renders a workflow spinner.
-    expect(inferLane({ running: false }, { backgroundWork: true })).toBe('working')
+    expect(inferLane({ running: false }, { workflowActive: true })).toBe('working')
   })
 
-  it('does not treat absent background work as work', () => {
-    expect(inferLane({}, { backgroundWork: false })).toBe('idle')
+  it.each([
+    ['orchestration', { orchestrating: true }, {}],
+    ['queued work', { queue_depth: 1 }, {}],
+    ['dynamic workflow', {}, { workflowActive: true }],
+    ['detailed subagents', {}, { detailedSubagentsRunning: true }],
+  ])('ranks %s above stale interruption', (_name, slot, extras) => {
+    expect(inferLane({ interrupted: true, ...slot }, extras)).toBe('working')
+  })
+
+  it('does not treat absent live work as work', () => {
+    expect(inferLane({}, { workflowActive: false, goalLoopActive: false })).toBe('idle')
   })
 
   it('does not treat a zero queue depth as work', () => {

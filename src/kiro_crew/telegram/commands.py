@@ -11,7 +11,7 @@ Commands:
   /stop        — stop the current reply and clear the queue (alias: /cancel)
   /status      — runtime stats (uptime, messages, tool decisions, sessions)
   /ping        — liveness check (answers "pong")
-  /sessions    — list recent conversations; add words to search (alias: /session)
+  /session     — find and resume a conversation (alias: /sessions)
   /title       — rename this conversation
   /cron        — list / pause / resume / remove scheduled jobs
   /spawn       — run a task in a background subagent (alias: /bg)
@@ -257,7 +257,7 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("model", "Choose the model from a list"),
     ("agent", "Choose the agent from a list"),
     ("status", "Show runtime stats"),
-    ("sessions", "List recent conversations; add words to search"),
+    ("session", "Find and resume a conversation"),
     ("cron", "Manage scheduled jobs (list / pause / resume / remove)"),
     ("voice", "Speak the answers here too (on / off)"),
     ("temporary", "This conversation reads and saves no memory"),

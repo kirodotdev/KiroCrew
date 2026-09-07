@@ -1,7 +1,9 @@
 /**
- * InstancesPanel — Settings → Instances. Set up and manage remote KiroCrew
- * instances reachable over SSH tunnels (add / edit / connect / disconnect /
- * diagnose). This panel is the *control plane* only — it does not
+ * InstancesPanel — legacy control plane for remote Kiro Crew instances
+ * reachable over SSH tunnels (add / edit / connect / disconnect / diagnose).
+ * No longer routed as a settings tab: Settings → Remote Instances renders
+ * RemoteCrewPanel, which reuses AddInstanceForm and StatusBadge from this
+ * file. This panel is the *control plane* only — it does not
  * embed remote dashboards. Once an instance is connected here, switch into it
  * from the tab strip in the top header (see InstanceTabBar).
  *
@@ -65,7 +67,12 @@ export function StatusBadge({ status }: { status: InstanceTunnelStatus }) {
     <span className="inline-flex items-center gap-1.5 text-[13px] text-muted">
       <span className={`inline-block w-2 h-2 rounded-full ${dot}`} aria-hidden />
       <span className="capitalize">{status.state}</span>
-      {status.error ? <span className="text-danger truncate max-w-[240px]">— {status.error}</span> : null}
+      {/* The tunnel's own error from the backend. `askAgent` is safe: the crew
+          record is already persisted, and every draft either host holds (the
+          add form here, the add/edit forms in RemoteCrewPanel) lives in the
+          store, so the hand-off's navigation loses nothing. Props are unchanged
+          on purpose — RemoteCrewPanel renders this badge on its rows too. */}
+      <ErrorNotice variant="inline" className="max-w-[240px]" message={status.error} askAgent />
     </span>
   )
 }
@@ -168,8 +175,11 @@ function InstanceRow({
           {typeof ttl === 'number' ? ' ' + i18nT('pages.settings.instancesPanel.token_left', { time: humanizeSecs(ttl) }) : ''}
         </div>
         <div className="mt-1"><StatusBadge status={inst.status} /></div>
+        {/* The backend's diagnosis of a failed tunnel — same family as
+            `status.error` above, same reasoning for `askAgent`: nothing on this
+            row is an unsaved draft. */}
         {diag && !diag.ok ? (
-          <div className="mt-1 text-[12px] text-warn"><AlertTriangle size={12} className="lucide-inline" /> {diag.reason}</div>
+          <ErrorNotice variant="inline" className="mt-1" message={diag.reason} askAgent />
         ) : null}
       </div>
       <div className="flex items-center gap-2 shrink-0">
@@ -377,23 +387,25 @@ export function InstancesPanel() {
           <button type="button" aria-label={i18nT('pages.settings.instancesPanel.dismiss')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setConnectedNote(null)}><X size={12} /></button>
         </div>
       )}
-      {actionErr && (
-        <div role="alert" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-danger/10 text-danger border border-danger/30">
-          <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
-          <span className="flex-1 break-words">{actionErr}</span>
-          <button type="button" aria-label={i18nT('pages.settings.instancesPanel.dismiss_error')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setActionErr(null)}><X size={12} /></button>
-        </div>
+      {/* Action failures (connect / disconnect / remove / diagnose / toggle).
+          `askAgent` is safe: every input on this page is either persisted (the
+          crew records) or store-backed (the add form's values). */}
+      <ErrorNotice message={actionErr} onDismiss={() => setActionErr(null)} askAgent />
+      {/* A `warn` diagnosis is a failure report — its text is the backend's
+          `diagnosis.reason` or the tunnel's `error` — so it goes through
+          ErrorNotice. `ok` / `info` describe a state that has not gone wrong
+          (healthy, or simply not connected) and stay a status note. */}
+      {diagNote?.kind === 'warn' && (
+        <ErrorNotice message={diagNote.text} onDismiss={() => setDiagNote(null)} askAgent />
       )}
-      {diagNote && (
+      {diagNote && diagNote.kind !== 'warn' && (
         <div
           role="status"
           className={
             'flex items-start gap-2 px-3 py-2 text-[13px] rounded-md border ' +
             (diagNote.kind === 'ok'
               ? 'bg-ok/10 text-ok border-ok/30'
-              : diagNote.kind === 'info'
-                ? 'bg-accent/10 text-accent border-accent/30'
-                : 'bg-warn/10 text-warn border-warn/30')
+              : 'bg-accent/10 text-accent border-accent/30')
           }
         >
           <Stethoscope size={14} className="lucide-inline mt-0.5 shrink-0" />
@@ -410,7 +422,10 @@ export function InstancesPanel() {
         </Card>
       ) : error ? (
         <Card>
-          <div className="text-danger text-sm">{error}</div>
+          {/* Nothing to lose on a failed list load: the add form below is not
+              mounted in this branch. Retry stays as a sibling — it covers a
+              momentary drop, the hand-off covers everything else. */}
+          <ErrorNotice message={error} askAgent />
           <div className="mt-2">
             <Btn onClick={() => reload()}>
               <RefreshCw className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.retry')}

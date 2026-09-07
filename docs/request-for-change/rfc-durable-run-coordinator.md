@@ -24,7 +24,7 @@ superseded-by: []
   `docs/system-specs/modules/session.md`, and
   `docs/request-for-change/rfc-orchestrator-chat-sessions.md`
 - Detailed implementation plan:
-  `docs/superpowers/plans/2026-08-22-durable-run-coordinator.md`
+  `docs/request-for-change/plans/2026-08-22-durable-run-coordinator.md`
 
 ## 1. Summary
 

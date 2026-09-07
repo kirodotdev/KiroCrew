@@ -8,10 +8,13 @@ Surface (owner-only throughout, see below):
 
 READS
 ``GET /accounts``                              aggregated account list (?refresh=1)
+``GET /profiles/available``                    local profiles, with registered flags
 ``GET /profiles/{name}/reconnect-plan``        what Reconnect can offer, no action
 ``GET /drive/{account}``                       drive presence + cached usage
 ``GET /drive/{account}/list``                  one listing page (?section&path&token)
 ``GET /drive/{account}/download``              short-lived download URL (?section&key)
+``GET /drive/{account}/preview``               first bytes of a text file (?section&key)
+``GET /drive/{account}/search``                filename search in a section (?section&q)
 ``GET /costs/{account}``                       cached bill (?refresh=1 re-queries CE)
 ``GET /library/{account}``                     local artifacts + reconciled push state
 ``GET /backup/{account}``                      backup state + remote archive listing
@@ -19,6 +22,8 @@ READS
 ``GET /iam-policy``                            drive-tier policy JSON (local render)
 
 MUTATIONS (also restricted-session refused + SEL-audited)
+``POST /profiles/register``                    add local profiles to the registry
+``POST /profiles/unregister``                  drop profiles from the registry only
 ``POST /drive/{account}/bootstrap``            create the bucket (two-call confirm)
 ``POST /drive/{account}/upload``               upload one file (?section&key, raw body)
 ``POST /drive/{account}/delete``               delete one object
@@ -89,6 +94,7 @@ from kiro_crew.deploy import profiles as deploy_profiles
 from kiro_crew.deploy.engine import AWSError
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.publish_governance import publish_denied_reason
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -102,6 +108,23 @@ _MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
 #: Download links are redirects in spirit: minted per click, short-lived.
 _DOWNLOAD_URL_SECS = 60
+
+#: The preview window. A preview is not a download: it answers "what is in
+#: this file" for text-shaped objects, so 256 KB of head bytes is plenty and
+#: bounds what one click moves through the gateway. Past it the response says
+#: ``truncated`` and the frontend tells the user only the head is shown.
+_PREVIEW_MAX_BYTES = 256 * 1024
+
+#: Bytes fetched PAST the window so the egress redactor sees a secret that
+#: straddles the window's end whole. Sized well above the longest credential
+#: the patterns match (a session token runs to a couple of KB); anything
+#: longer and whitespace-free is dropped by the boundary back-off instead.
+_PREVIEW_REDACT_LOOKAHEAD = 8 * 1024
+
+#: How far back from the cut the trim looks for whitespace before giving up
+#: and cutting hard. Far enough that any line of ordinary text has one;
+#: bounded so a minified blob still previews rather than trimming to nothing.
+_PREVIEW_TRIM_SEARCH = 4 * 1024
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
@@ -386,6 +409,22 @@ def _safe_error(exc: BaseException) -> str:
 
 def _aws_failed(exc: AWSError) -> web.Response:
     return web.json_response({"error": _safe_error(exc), "code": "aws_call_failed"}, status=502)
+
+
+def _response_code(response: web.Response) -> str:
+    """The machine-readable ``code`` a denial response carries, for the audit trail.
+
+    Never hard-code the reason next to a helper that can answer with more than one.
+    ``_resolve_target`` returns THREE - ``invalid_account``, ``account_unavailable``
+    and ``account_mismatch`` - so auditing a fixed string makes an incident review
+    read "no working connection" for what was in fact a live-identity mismatch, which
+    is the case an operator most needs to see. Falls back to ``unknown`` rather than
+    raising: an audit line is best-effort and must not be able to fail a response.
+    """
+    try:
+        return str(json.loads(response.text or "{}").get("code", "")) or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def _audit_sync(operation: str, resources: str, outcome: str, *, error: str = "") -> None:
@@ -718,6 +757,94 @@ async def _handle_profiles_register(request: web.Request) -> web.Response:
     return web.json_response({"added": len(added), "skipped": len(skipped)})
 
 
+async def _handle_profiles_unregister(request: web.Request) -> web.Response:
+    """Drop selected profiles from the registry the portal reads.
+
+    Registry-only, by construction: nothing on this path reaches
+    ``create_aws_profile`` (the module's one ``aws configure`` writer) or the
+    AWS CLI, so ``~/.aws/config``, ``~/.aws/credentials``, and every AWS
+    resource the account holds are untouched. The drive bucket keeps billing
+    until the operator deletes it in AWS; the share, library, and backup
+    ledgers stay because they describe that bucket, not the key, and must
+    render unchanged when the key is registered again.
+
+    Names are validated against the shared profile pattern but NOT against
+    ``discover_aws_profiles``: a profile already deleted from ``~/.aws`` is
+    exactly the stale entry the operator most wants gone.
+
+    Every consent grant naming a removed profile is withdrawn BEFORE the
+    registry entry goes, so a later re-registration under the same name
+    starts unconsented even when the request dies between the two writes: a
+    withdrawal that fails leaves the profile registered and the operator
+    retries, whereas the reverse order would leave an unregistered profile
+    still holding an authorization. A grant re-recorded for the profile after
+    the withdrawal but before the registry write is inert on its own -- every
+    AWS Control call resolves account-to-profile through the registry, and the
+    deploy engine refuses an unregistered profile -- and the operator can see
+    and withdraw it from the usage receipts.
+    """
+    body = await _body(request)
+    raw = body.get("names")
+    if not isinstance(raw, list) or not raw:
+        return _bad_request("names must be a non-empty list", "invalid_names")
+    requested = [str(n) for n in raw][:_MAX_REGISTERED]
+    if any(not aws_consent._PROFILE_RE.match(n) for n in requested):
+        return _bad_request("a profile name is not in the accepted form", "invalid_names")
+
+    targets = set(requested)
+    removed: list[str] = []
+    skipped: list[str] = []
+
+    def _mutate() -> None:
+        with deploy_profiles.locked_registry() as reg:
+            kept: list[dict[str, str]] = []
+            for entry in reg.get("profiles", []):
+                name = str(entry.get("name", ""))
+                if name in targets:
+                    removed.append(name)
+                else:
+                    kept.append(entry)
+            skipped.extend(sorted(targets - set(removed)))
+            reg["profiles"] = kept
+            # The default must keep naming a registered profile: the nightly
+            # backup and the deploy engine both resolve through it.
+            if reg.get("default") not in {str(p.get("name", "")) for p in kept}:
+                reg["default"] = str(kept[0].get("name", "")) if kept else ""
+
+    registered = {
+        str(p.get("name", ""))
+        for p in (await asyncio.to_thread(deploy_profiles.load_registry)).get("profiles", [])
+    }
+    if not targets & registered:
+        # A registry that never held any of the names has nothing to remove;
+        # the names are caller-supplied and are deliberately not echoed.
+        return _not_found("no such registered profile", "unknown_profile")
+
+    withdrawn: list[str] = []
+    for name in sorted(targets & registered):
+        try:
+            withdrawn.extend(await asyncio.to_thread(aws_consent.revoke_for_profile, name))
+        except (OSError, ValueError):
+            # The consent store could not be read (or parsed) or rewritten, so the
+            # profile is left registered rather than removed while a grant it
+            # names may still be on disk. 500, not 502: no AWS call was made, and
+            # the fix is local (the store's file).
+            logger.warning(
+                "consent withdrawal failed for profile %r; profile left registered", name
+            )
+            return web.json_response(
+                {"error": "consent could not be withdrawn", "code": "consent_unwritable"},
+                status=500,
+            )
+    await asyncio.to_thread(_mutate)
+    # Same TTL cache as registration: the page must not show a removed key for
+    # up to five minutes after the operator removed it.
+    accounts_mod.invalidate_cache()
+    return web.json_response(
+        {"removed": len(removed), "skipped": len(skipped), "consentWithdrawn": sorted(withdrawn)}
+    )
+
+
 # --------------------------------------------------------------------------
 # Drive
 # --------------------------------------------------------------------------
@@ -794,10 +921,17 @@ async def _handle_drive_bootstrap(request: web.Request) -> web.Response:
         # owner never confirmed. `_account_target` re-probes the live identity,
         # so requiring it to still resolve the SAME triple is what closes it;
         # consent is re-read for the same reason it is re-read before an upload.
+        #
+        # Each denial audits at the POINT OF DECISION, like the helper's arms
+        # do: `_mutating` records the outcome of whatever response leaves here,
+        # but only a `denied` record naming the reason tells an incident review
+        # why a bucket the owner confirmed was never created.
         recheck = await _account_target(request)
         if isinstance(recheck, web.Response):
+            await _audit("drive_bootstrap", request.path, "denied", error=_response_code(recheck))
             return recheck
         if recheck != (account, profile, region):
+            await _audit("drive_bootstrap", request.path, "denied", error="account_mismatch")
             return _conflict(
                 "this connection changed while the drive was being created; " "nothing was created",
                 "account_mismatch",
@@ -805,10 +939,42 @@ async def _handle_drive_bootstrap(request: web.Request) -> web.Response:
         denied = await _consent(aws_consent.SERVICE_S3, profile, region)
         if denied:
             return denied
+
+        # The app gate is the LAST thing before the billable call, deliberately.
+        # `_guarded` already refused a disabled app before the lock, so this one
+        # exists only for the app being switched off DURING the critical section --
+        # and every await above it (the unbounded lock wait, the tag-discovery
+        # round trip, the live identity re-probe, the consent read) is a point at
+        # which that can happen. A gate placed at the top of the lock is stale by
+        # the time `create_drive` runs, which is the whole failure it was added to
+        # prevent: a bucket billed for a surface the owner has already switched off.
+        #
+        # Read and create share ONE thread hop, so there is no await BETWEEN them
+        # at which the loop could run anything. `create_drive` returns the bucket
+        # name, so `None` is an unambiguous "refused, nothing created".
+        #
+        # A re-check, NOT a lock. `app_lifecycle_lock` is an in-process asyncio
+        # lock covering only the HTTP disable path, while `kirocrew app disable`
+        # runs in a SEPARATE process calling `disable_app` directly
+        # (`cli_commands.py` imports it), so no in-process lock serializes the
+        # writer this would have to wait on. Closing the cross-process window
+        # needs a cross-process lock this repo does not have; a re-check is the
+        # form the repo already accepts here (see
+        # `pptx_maker/backend/provision.py`, and the 9 `_reauthorize_in_lock` call
+        # sites, which all keep the same window).
+        #
         # `create_drive` re-checks the bucket's owner against this account once
         # it exists: its own CLI child resolves the profile independently, so
         # matching triples here cannot promise where the bucket lands.
-        bucket = await asyncio.to_thread(storage_mod.create_drive, profile, region, account)
+        def _create_drive_if_still_enabled() -> str | None:
+            if not is_app_enabled(APP_NAME):
+                return None
+            return storage_mod.create_drive(profile, region, account)
+
+        bucket = await asyncio.to_thread(_create_drive_if_still_enabled)
+        if bucket is None:
+            await _audit("drive_bootstrap", request.path, "denied", error="app_disabled")
+            return _forbidden("aws-control is disabled", "app_disabled")
     return web.json_response({"created": True, "bucket": bucket})
 
 
@@ -888,9 +1054,12 @@ async def _handle_drive_download(request: web.Request) -> web.Response:
         # Presigning is LOCAL signing - S3 is never consulted - so a stale or
         # typo'd key mints a URL that looks fine and 404s when opened. Share has
         # required this head-object since round 3; download mints the same kind
-        # of bearer URL and needs the same precondition.
-        exists = await asyncio.to_thread(
-            storage_mod.object_exists,
+        # of bearer URL and needs the same precondition. The same HEAD carries
+        # the stored Content-Type, returned so the preview can tell a real PDF
+        # from a `.pdf`-named object served as octet-stream (uploaded before
+        # content types were set), which a sandboxed iframe shows as blank.
+        meta = await asyncio.to_thread(
+            storage_mod.head_object_meta,
             profile,
             region,
             bucket,
@@ -898,7 +1067,7 @@ async def _handle_drive_download(request: web.Request) -> web.Response:
             key,
             account=account,
         )
-        if not exists:
+        if meta is None:
             return _not_found("no such file in this drive", "object_missing")
         url = await asyncio.to_thread(
             storage_mod.presign,
@@ -918,7 +1087,183 @@ async def _handle_drive_download(request: web.Request) -> web.Response:
     # disconnect: shield keeps the audit being written even when the await
     # itself is cancelled.
     await asyncio.shield(_audit("drive_download", f"{section}/{key}", "granted"))
-    return web.json_response({"url": url, "expiresSecs": _DOWNLOAD_URL_SECS})
+    content_type = meta.get("ContentType")
+    return web.json_response(
+        {
+            "url": url,
+            "expiresSecs": _DOWNLOAD_URL_SECS,
+            "contentType": content_type if isinstance(content_type, str) else None,
+        }
+    )
+
+
+async def _handle_drive_preview(request: web.Request) -> web.Response:
+    """Head bytes of a text object, read gateway-side and returned as JSON.
+
+    A browser ``fetch`` against the presigned URL is blocked by CORS (the
+    bucket deliberately carries none), so the gateway proxies the read. A
+    plain read: no bearer URL is minted, so unlike download there is no
+    publish gate and nothing to audit as a grant. Binary content is not
+    detected here — the frontend decides by extension whether to call this
+    endpoint at all.
+    """
+    ctx = await _require_drive(request)
+    if isinstance(ctx, web.Response):
+        return ctx
+    account, profile, region, bucket = ctx
+    section = _valid_section(request)
+    if isinstance(section, web.Response):
+        return section
+    key = request.rel_url.query.get("key", "")
+    err = storage_mod.validate_key(key)
+    if err:
+        return _bad_request(err, "invalid_key")
+    try:
+        # Same precondition as download: a typo'd key must answer 404 rather
+        # than surface as an opaque transfer failure.
+        exists = await asyncio.to_thread(
+            storage_mod.object_exists,
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            account=account,
+        )
+        if not exists:
+            return _not_found("no such file in this drive", "object_missing")
+        data, size = await asyncio.to_thread(
+            storage_mod.get_object_head_bytes,
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            account=account,
+            # The window PLUS the redaction look-ahead: the redactor must see a
+            # secret whole, and a secret that straddles the window's end would
+            # otherwise reach it as a prefix it cannot recognise.
+            max_bytes=_PREVIEW_MAX_BYTES + _PREVIEW_REDACT_LOOKAHEAD,
+        )
+    except AWSError as exc:
+        return _aws_failed(exc)
+    except (ValueError, OSError) as exc:
+        # The staging fence refused (a link squatting the staging root, a
+        # non-directory at the path) or the local filesystem failed around the
+        # transfer. Neither is an AWS failure and neither is the caller's
+        # doing, so it is a coded 500 the dashboard can name -- not an
+        # uncoded crash. The exception text stays out of the body: an OSError
+        # carries the staging path, which is gateway-internal.
+        logger.warning("drive preview staging failed: %s", _safe_error(exc))
+        return web.json_response(
+            {"error": "the preview could not be staged locally", "code": "preview_staging_failed"},
+            status=500,
+        )
+    # Decode, redact and trim OFF the event loop, like the sibling search's
+    # redaction: the redactor's base64 passes are O(k·n) over a buffer sized
+    # by the caller's window, and a base64-dense object would otherwise hold
+    # every other request behind this one.
+    text, truncated, redacted = await asyncio.to_thread(_redact_preview, data, size)
+    return web.json_response(
+        {
+            "content": text,
+            "truncated": truncated,
+            "redacted": redacted,
+        }
+    )
+
+
+def _redact_preview(data: bytes, size: int) -> tuple[str, bool, bool]:
+    """Decode the fetched head, redact it whole, then cut it to the window.
+
+    errors="replace" so a stray non-UTF-8 byte degrades to the replacement
+    character instead of failing the whole preview. The text then passes
+    through the same egress redactor as listing and search names: a file
+    that happens to hold a credential renders masked in the dashboard, the
+    same way it would in a chat surface. Whether a redactor FIRED is reported
+    alongside, for the same reason truncation is: a reader checking a config
+    file must be told the masked values are the preview's, not the file's.
+
+    Redaction runs over the WHOLE buffer (window + look-ahead) and the cut to
+    the window happens after it, so a secret crossing the window's end is
+    masked before anything is trimmed. The cut then backs off to the last
+    whitespace inside the tail, dropping any run the cut would split: a
+    token longer than the look-ahead is the one thing the redactor could
+    still have seen only partially, and a split run is never shown.
+    """
+    text = data.decode("utf-8", errors="replace")
+    text, credential_hits = redact_credentials(text)
+    text, url_hits = redact_exfiltration_urls(text)
+    truncated = size > _PREVIEW_MAX_BYTES
+    if truncated:
+        text = _trim_preview(text, _PREVIEW_MAX_BYTES)
+    return text, truncated, bool(credential_hits or url_hits)
+
+
+def _trim_preview(text: str, limit: int) -> str:
+    """Cut redacted preview text to ``limit`` UTF-8 BYTES at a whitespace boundary.
+
+    Bytes, not characters: the window is a byte budget (it is what the fetch
+    asked for and what the client is sized for), and a character count would
+    let a multibyte file carry up to the whole look-ahead past it. A code point
+    split by the byte cut is dropped rather than shown as a replacement glyph.
+
+    The whitespace back-off is bounded by :data:`_PREVIEW_TRIM_SEARCH`: a
+    whitespace-free blob (minified JSON) would otherwise trim to nothing, so
+    past that distance the cut is a hard one -- the redactor has already seen
+    everything up to the look-ahead, so a hard cut can split a placeholder but
+    not a secret.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    # The text was decoded with errors="replace" and is valid UTF-8, so the only
+    # thing "ignore" can drop here is the code point the byte cut split.
+    shown = encoded[:limit].decode("utf-8", errors="ignore")
+    boundary = max(shown.rfind(" "), shown.rfind("\n"), shown.rfind("\t"))
+    if boundary >= len(shown) - _PREVIEW_TRIM_SEARCH:
+        return shown[: boundary + 1]
+    return shown
+
+
+async def _handle_drive_search(request: web.Request) -> web.Response:
+    """Case-insensitive filename search across the file-drive section.
+
+    Only ``drive`` is searchable: the library and backups have their own
+    listing surfaces, and a search reaching into backup archive keys would
+    surface names the dashboard otherwise never renders. The section is still
+    an explicit query parameter so the route reads like its siblings.
+    """
+    ctx = await _require_drive(request)
+    if isinstance(ctx, web.Response):
+        return ctx
+    account, profile, region, bucket = ctx
+    section = _valid_section(request)
+    if isinstance(section, web.Response):
+        return section
+    if section != "drive":
+        return _bad_request("only the drive section is searchable", "section_not_searchable")
+    query = request.rel_url.query.get("q", "").strip()
+    if not query:
+        return _bad_request("q is required", "empty_query")
+    try:
+        results, capped = await asyncio.to_thread(
+            storage_mod.search_keys,
+            profile,
+            region,
+            bucket,
+            section,
+            query,
+            account=account,
+        )
+    except AWSError as exc:
+        return _aws_failed(exc)
+    # ``limit`` rides along so the capped notice can say the real number: the
+    # cap has one owner (storage.SEARCH_MAX_RESULTS) and the locales never
+    # spell it.
+    return web.json_response(
+        {"results": results, "capped": capped, "limit": storage_mod.SEARCH_MAX_RESULTS}
+    )
 
 
 async def _handle_drive_upload(request: web.Request) -> web.Response:
@@ -2040,6 +2385,8 @@ def register_routes(app: web.Application) -> None:
     r.add_get(f"{_BASE}/drive/{{account}}", _guarded(_handle_drive_status))
     r.add_get(f"{_BASE}/drive/{{account}}/list", _guarded(_handle_drive_list))
     r.add_get(f"{_BASE}/drive/{{account}}/download", _guarded(_handle_drive_download))
+    r.add_get(f"{_BASE}/drive/{{account}}/preview", _guarded(_handle_drive_preview))
+    r.add_get(f"{_BASE}/drive/{{account}}/search", _guarded(_handle_drive_search))
     r.add_get(f"{_BASE}/costs/{{account}}", _guarded(_handle_costs))
     r.add_get(f"{_BASE}/library/{{account}}", _guarded(_handle_library_list))
     r.add_get(f"{_BASE}/backup/{{account}}", _guarded(_handle_backup_status))
@@ -2049,6 +2396,10 @@ def register_routes(app: web.Application) -> None:
     r.add_post(
         f"{_BASE}/profiles/register",
         _guarded(_mutating("profiles_register")(_handle_profiles_register)),
+    )
+    r.add_post(
+        f"{_BASE}/profiles/unregister",
+        _guarded(_mutating("profiles_unregister")(_handle_profiles_unregister)),
     )
     r.add_post(
         f"{_BASE}/drive/{{account}}/bootstrap",

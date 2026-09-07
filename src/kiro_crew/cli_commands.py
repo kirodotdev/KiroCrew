@@ -615,30 +615,36 @@ def _register_app_crons_to_scheduler(app_name: str) -> list[str]:
 
 
 def _warn_hooks_need_restart(app_name: str) -> bool:
-    """Say plainly that a running gateway will not pick up this app's backend hooks.
+    """Tell the operator how a CLI enable's backend-hook change reaches a gateway.
 
     Everything else a CLI enable writes is re-read by a running gateway:
     ``enable_app`` writes ``installed.json``, ``register_app`` writes agent and
     skill files, and ``_register_app_crons_to_scheduler`` writes through the
     shared cron store that the gateway's timer tick re-syncs by content digest.
-    Backend hooks are the exception -- they are Python modules imported INTO the
-    gateway process, and only the gateway can replace them (``on_app_enable`` ->
+    Backend hooks are Python modules imported INTO the gateway process, and only
+    the gateway can replace them (``on_app_enable`` ->
     ``RouteRegistry.register_app_routes`` -> ``load_app_module``, reached by the
-    HTTP enable route and by ``on_gateway_startup``). This process has no handle
-    on that one's ``sys.modules``, so a CLI enable cannot load them.
+    HTTP enable route and by ``on_gateway_startup``). This CLI process has no
+    handle on that one's ``sys.modules``, so it cannot load them directly --
+    but it no longer needs to: the gateway runs a hook reconciler
+    (``apps/hook_reconcile.py``) that notices an on-disk hook change this CLI
+    made and reloads it in-process within a poll interval (issue #7880). A
+    stopped gateway loads the new code on its next start.
 
-    Printing only "enabled <app>" reads as though it had. The operator then
-    verifies a hook change against the code the gateway imported earlier and
-    concludes the change did not work -- or that it did, when it never ran
-    (issue #7880).
+    Printing only "enabled <app>" reads as though the change were already live in
+    a running gateway, when in fact it lands a few seconds later; and pre-#7880
+    it never landed at all until a manual restart. This notice states the actual
+    timing so an operator does not verify a hook change against stale code and
+    draw the wrong conclusion.
 
     Deliberately NOT gated on a live-gateway probe. ``_marker_port`` is the only
     verified one available here, and it writes its own multi-gateway warning to
     stderr, which would surface out of context on an app enable. The notice is
-    phrased conditionally instead, so it stays true when no gateway is up.
+    phrased conditionally instead, so it stays true whether or not a gateway is
+    up.
 
-    Only for apps that declare ``backend.hooks``: there is nothing stale to warn
-    about otherwise. Returns whether the notice was printed.
+    Only for apps that declare ``backend.hooks``: there is nothing to say
+    otherwise. Returns whether the notice was printed.
     """
     info = get_app(app_name)
     manifest = info.get("manifest") if isinstance(info, dict) else None
@@ -649,10 +655,9 @@ def _warn_hooks_need_restart(app_name: str) -> bool:
     declared = ", ".join(sorted(str(k) for k in hooks))
     print(
         f"  note: this app declares backend hooks ({declared}).\n"
-        "  A gateway that is already running keeps executing the hook code it\n"
-        "  imported earlier; this command cannot replace it. Run `kirocrew\n"
-        "  restart`, or disable and re-enable the app from the dashboard, for\n"
-        "  hook changes to take effect."
+        "  A gateway that is already running reloads them automatically within a\n"
+        "  few seconds (the gateway reconciles hook changes it did not perform\n"
+        "  itself); if the gateway is stopped, they load on its next start."
     )
     return True
 
@@ -1993,6 +1998,58 @@ def _learn(args: argparse.Namespace) -> None:
             # only way into that branch.
             result = vs.write_lesson(rule, category, negative)
             neg = f" ({negative})" if negative else ""
+            # What the save COST. The store's dedup rules tombstone a stored lesson
+            # the submitted rule contains or heavily overlaps, and this command
+            # printed "Saved:" and the dedup NOTE below without ever naming the rule
+            # it removed -- so adding a conditional rule retired the general rule
+            # inside it and the only trace was a row with is_deleted=1. Printed in
+            # full for every outcome that can carry it, because the row is a
+            # tombstone: `learn list` cannot show it and this is the last readable
+            # copy.
+            lost = ""
+            if result.superseded:
+                # Strip terminal controls FIRST, then redact. The order is the whole
+                # correctness of this function, and the intuitive order is the wrong
+                # one: redacting first leaves `AKIA<CSI>IOSFODNN7EXAMPLE` untouched,
+                # because the escape breaks the token so the credential regex does not
+                # match it -- and the control-strip then REASSEMBLES the complete
+                # credential and prints it. Measured: redact-then-strip leaks that
+                # input verbatim; strip-then-redact masks it. Stripping can only ever
+                # JOIN characters, never split a token, so running it first can only
+                # help the regex, never hide a credential from it.
+                #
+                # Both treatments are needed, and both were added in response to a
+                # real finding: an OSC payload stored in a rule would otherwise be
+                # interpreted by the terminal, and a credential in a lesson would
+                # otherwise be printed. This block prints a rule the user did NOT ask
+                # to see, on the one path guaranteed to surface it.
+                #
+                # Redacting at all (rather than control-stripping only) reversed an
+                # earlier decision here. `learn list` prints every stored lesson with
+                # control-stripping alone, and that looked like the convention to
+                # match -- but it is an EXPLICIT request to see the store, while this
+                # block surfaces a lesson the user is about to lose. The right
+                # comparison is the route, which delivers the SAME field and does
+                # redact, so controls-only made one feature's two delivery paths
+                # disagree about whether a superseded rule may carry a secret. A lesson
+                # written by history consolidation also holds model output the user
+                # never typed, so "their own store" is not "their own knowledge".
+                def _safe(text: str) -> str:
+                    text = _TERMINAL_CTRL_RE.sub("", text)
+                    text, _ = redact_exfiltration_urls(text)
+                    text, _ = redact_credentials(text)
+                    return text
+
+                lines = "".join(f"\n    - {_safe(s)}" for s in result.superseded)
+                lost = (
+                    f"\n  REMOVED {len(result.superseded)} stored "
+                    f"lesson{'s' if len(result.superseded) != 1 else ''} this rule "
+                    f"contains or overlaps:{lines}\n"
+                    "  Those are no longer in effect. A verbatim re-add is DECLINED "
+                    "while this rule is stored, so to restore one exactly, "
+                    "`learn remove` this rule first; wording that shares few "
+                    "significant words with it can coexist."
+                )
             # The category is echoed ONLY where the store adopted the submitted one.
             # It is write-once (vector_memory.py builds an enrichment with the STORED
             # category, falling back to the submitted one only when the row has none),
@@ -2001,7 +2058,10 @@ def _learn(args: argparse.Namespace) -> None:
             # the same defect this PR fixes on the reporting side. `learn list` is
             # where stored values belong.
             if result.outcome is LessonWriteOutcome.INSERTED:
-                print(f"Saved: {rule}{neg} [{category}]\n{_LEARN_EMBED_NOTE}\n{_LEARN_DEDUP_NOTE}")
+                print(
+                    f"Saved: {rule}{neg} [{category}]\n{_LEARN_EMBED_NOTE}\n"
+                    f"{_LEARN_DEDUP_NOTE}{lost}"
+                )
             elif result.outcome is LessonWriteOutcome.ENRICHED:
                 # No _LEARN_DEDUP_NOTE here: an enrichment matched its existing row in
                 # pass 1, which SKIPS the generic dedup scan. Instead say what the
@@ -2021,14 +2081,18 @@ def _learn(args: argparse.Namespace) -> None:
                     "changing one means `learn remove` then `learn add`."
                 )
             elif result.outcome is LessonWriteOutcome.DEDUPED:
-                print(f"Not saved: an existing lesson already covers this ({result.reason})")
+                covered = f"Not saved: an existing lesson already covers this ({result.reason})"
+                print(f"{covered}{lost}")
             else:
                 # REFUSED -- and any outcome a later change adds, which is deliberate:
                 # every branch above names ONE outcome, so a new one lands here and
                 # exits non-zero rather than being silently reported as a success. A
                 # non-zero exit so a script driving this command sees the failure.
                 reason = f" ({result.reason})" if result.reason else ""
-                print(f"NOT saved: the memory store refused this lesson{reason}", file=sys.stderr)
+                print(
+                    f"NOT saved: the memory store refused this lesson{reason}{lost}",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
         elif action == "list":

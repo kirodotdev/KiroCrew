@@ -9,6 +9,7 @@ registry pointer, Crew's own control plane).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
@@ -625,33 +626,108 @@ class TestLocalSettingsSeed:
 
     The governing rule is ownership, and ownership is NOT the path -- a path under
     a checked-out repository is not Crew's to claim. It is having CREATED the file
-    in this session AND the bytes on disk still being the ones Crew wrote. Both
-    hold: Crew may overwrite (which is what lets a model-substitution re-seed
-    change the resolved model) and reset removes it. Either fails: Crew leaves the
-    path entirely alone, and reset removes nothing. Absent: Crew creates it with
-    ``O_EXCL``.
+    AND the bytes on disk still being the ones Crew wrote. Both hold: Crew may
+    overwrite (which is what lets a model-substitution re-seed change the resolved
+    model) and reset removes it. Either fails: Crew leaves the path entirely alone,
+    and reset removes nothing. Absent: Crew creates it with ``O_EXCL``.
 
     Nothing here reads, merges into, rewrites or deletes a file Crew did not
     author, which is what keeps a seam that writes into a checked-out project from
-    needing a snapshot, a cross-session ownership registry, or a restore write on
-    teardown.
+    needing a snapshot or a restore write on teardown.
+
+    The CROSS-SESSION half of the same rule -- recognizing a seed a killed session
+    left behind, by the digest recorded in
+    :mod:`kiro_crew.acp.seed_provenance` -- lives in
+    ``test_acp_seed_provenance.py``.
     """
 
     def _client(self, tmp_path, **kw):
         return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE, **kw)
 
-    def test_seed_writes_the_model_allowlist(self, tmp_path):
+    @staticmethod
+    def _teardown(client):
+        """Tear a client down the way every real caller does.
+
+        Removing the seed is a DISK operation -- a durable revoke of the provenance
+        grant, then the unlink -- so it lives in the async
+        ``_discard_claude_settings_seed`` and reaches the filesystem through
+        ``asyncio.to_thread``. ``_reset_state`` stays synchronous and keeps only the
+        in-memory claim release, so calling it alone deliberately leaves the file
+        behind.
+        """
+        asyncio.run(client._discard_claude_settings_seed())
+        client._reset_state()
+
+    @staticmethod
+    def _advertised(monkeypatch, ids=("global.anthropic.claude-opus-5[1m]",)):
+        """Warm the advertised-model cache, the ONLY source the seed reads.
+
+        The seed writes ``availableModels``/``model`` only once the backend has
+        actually advertised a list; on a cold cache it deliberately writes neither
+        (see ``test_seed_omits_both_model_keys_on_a_cold_cache``). Tests that assert
+        on those keys therefore have to stand in for a captured ``session/new``.
+        """
         from kiro_crew import model_registry
 
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {"claude_code": list(ids)})
+
+    def test_seed_writes_the_model_allowlist(self, tmp_path, monkeypatch):
+        from kiro_crew import model_registry
+
+        self._advertised(monkeypatch)
         client = self._client(tmp_path)
         client._write_claude_local_settings()
         data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
         # Without the allowlist the adapter can collapse a versioned [1m] id back
         # to the 200K window. The seed writes the window-deduped list (a 200K base
         # id is dropped when its 1M sibling is present), so it can differ from the
-        # raw registry list — compare against seed_available_models, the deduped
+        # raw advertised list — compare against seed_available_models, the deduped
         # source the seed actually uses.
         assert data["availableModels"] == model_registry.seed_available_models("claude_code")
+
+    def test_seed_omits_both_model_keys_on_a_cold_cache(self, tmp_path, monkeypatch):
+        """A cold cache seeds NO model keys — the fix, not a degradation.
+
+        The adapter merges ``availableModels`` union+dedup across settings sources,
+        so seeding a list Crew guessed (the old static-registry fallback) REPLACED
+        the adapter's own provider-derived list with a staler one: a model the
+        registry had not caught up on contributed no ``[1m]`` id, so the pick
+        resolved to 200K. And a ``model`` key naming nothing in the list shipped
+        beside it is the same failure by another route. Writing neither leaves the
+        adapter on its own list, which already carries the versioned ids.
+        """
+        from kiro_crew import model_registry
+
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+        client = self._client(tmp_path, model="claude-opus-5", permission_mode="default")
+        client._write_claude_local_settings()
+        data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+        assert "availableModels" not in data
+        assert "model" not in data
+        # The permission surface is NOT deferred: it has to be on disk before
+        # session/new, which is the whole reason the seed runs at spawn.
+        assert data["permissions"]["defaultMode"] == "default"
+
+    def test_seed_never_writes_a_model_without_the_list_it_must_match(self, tmp_path, monkeypatch):
+        # The exact shape observed in the field: "model": "claude-opus-5" beside an
+        # allowlist that contains no Opus 5 entry, which resolves to 200K. The two
+        # keys are now written together or not at all.
+        from kiro_crew import model_registry
+
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+        client = self._client(tmp_path, model="claude-opus-5")
+        client._write_claude_local_settings()
+        path = tmp_path / ".claude" / "settings.local.json"
+        assert "model" not in json.loads(path.read_text())
+
+        # Same client, cache now warm (its own session/new was captured): the
+        # re-seed writes both, and the model folds onto the advertised spelling.
+        self._advertised(monkeypatch)
+        client._model = model_registry.resolve_wire_model_id("claude-opus-5", "claude_code")
+        client._write_claude_local_settings()
+        data = json.loads(path.read_text())
+        assert data["model"] == "global.anthropic.claude-opus-5[1m]"
+        assert data["model"] in data["availableModels"]
 
     def test_no_permission_mode_leaves_the_adapter_default(self, tmp_path):
         client = self._client(tmp_path)
@@ -665,7 +741,8 @@ class TestLocalSettingsSeed:
         data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
         assert data["permissions"]["defaultMode"] == "default"
 
-    def test_resolved_model_written_but_auto_omitted(self, tmp_path):
+    def test_resolved_model_written_but_auto_omitted(self, tmp_path, monkeypatch):
+        self._advertised(monkeypatch, ["claude-sonnet-4-5"])
         auto = self._client(tmp_path)
         auto._write_claude_local_settings()
         path = tmp_path / ".claude" / "settings.local.json"
@@ -696,7 +773,7 @@ class TestLocalSettingsSeed:
         client._write_claude_local_settings()
         path = tmp_path / ".claude" / "settings.local.json"
         assert path.exists()
-        client._reset_state()
+        self._teardown(client)
         # A permission mode must not outlive its session, and an inherited
         # bypassPermissions must not survive a crash.
         assert not path.exists()
@@ -719,7 +796,7 @@ class TestLocalSettingsSeed:
         assert path.read_text() == original
         assert client._claude_settings_authored is False
 
-        client._reset_state()
+        self._teardown(client)
         assert path.read_text() == original
 
     def test_an_inherited_bypass_mode_is_left_to_its_owner(self, tmp_path):
@@ -815,19 +892,19 @@ class TestLocalSettingsSeed:
         monkeypatch.setattr(client_mod.os, "open", boom)
         with pytest.raises(OSError):
             client._write_claude_local_settings()
-        # Nothing was authored, so reset has nothing to undo.
+        # Nothing was authored, so teardown has nothing to undo.
         assert client._claude_settings_authored is False
-        client._reset_state()
+        self._teardown(client)
 
     def test_reset_without_a_seed_removes_nothing(self, tmp_path):
         path = tmp_path / ".claude" / "settings.local.json"
         path.parent.mkdir(parents=True)
         path.write_text("{}", encoding="utf-8")
         client = self._client(tmp_path)
-        client._reset_state()
+        self._teardown(client)
         assert path.exists()
 
-    def test_a_reseed_overwrites_the_file_this_session_created(self, tmp_path):
+    def test_a_reseed_overwrites_the_file_this_session_created(self, tmp_path, monkeypatch):
         """The model-substitution retry has to be able to change what it wrote.
 
         ``_new_session_following_substitution`` adopts the gateway-served model and
@@ -836,6 +913,7 @@ class TestLocalSettingsSeed:
         send byte-identical ``session/new`` params, take the same substitution
         advisory, and fail the session with "even after adopting substitute model".
         """
+        self._advertised(monkeypatch, ["claude-sonnet-4-5"])
         client = self._client(tmp_path)
         client._write_claude_local_settings()
         path = tmp_path / ".claude" / "settings.local.json"
@@ -847,7 +925,7 @@ class TestLocalSettingsSeed:
         assert json.loads(path.read_text())["model"] == "claude-sonnet-4-5"
         assert client._claude_settings_authored is True
         # And it is still Crew's to remove.
-        client._reset_state()
+        self._teardown(client)
         assert not path.exists()
 
     def test_a_reseed_leaves_a_file_the_user_replaced_after_the_create(self, tmp_path):

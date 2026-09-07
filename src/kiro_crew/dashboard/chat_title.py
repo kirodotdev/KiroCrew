@@ -1207,7 +1207,7 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
     logger.info("Manual title generation requested for slot %s", name)
     fallback_is_placeholder = False
@@ -1249,16 +1249,16 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "body_not_object"}, status=400)
     title = body.get("title", "").strip()[:200]
     if not title:
-        return web.json_response({"error": "title required"}, status=400)
+        return web.json_response({"error": "title required", "code": "title_required"}, status=400)
     slot.title = title
     slot._titled = True
     # A manual rename is final: origin "user" locks the background refresh out

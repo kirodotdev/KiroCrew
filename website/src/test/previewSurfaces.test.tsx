@@ -5,17 +5,17 @@
  * which is a claim about EVERY consumer of the surface registry, not about one
  * component. So this file pins the gate at each door a user could walk through:
  * the storage primitive, the registry predicate, the Search Everywhere Pages
- * provider, and the Developer > Feature Previews toggle that opens them all. A
- * test that only covered the nav rail would have passed while the palette still
- * shipped a one-keystroke path to the same page.
+ * provider, and the Settings > Developer > Feature Previews toggle that opens
+ * them all. A test that only covered the nav rail would have passed while the
+ * palette still shipped a one-keystroke path to the same page.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { render, screen, renderHook, act, cleanup } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation, useNavigationType } from 'react-router-dom'
 
-// DeveloperPage's sibling tabs are heavy and irrelevant here — the last describe
-// only needs the page's tab rail and the Feature Previews pane behind it.
+// DeveloperPage's tabs are heavy and irrelevant here — the last describe only
+// needs the page's tab rail and its legacy-link redirect.
 vi.mock('../pages/LogsPage', () => ({ LogViewer: () => <div /> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => <div /> }))
 vi.mock('../pages/TelemetryPanel', () => ({ default: () => <div /> }))
@@ -54,7 +54,7 @@ import {
 } from '../utils/previewFlags'
 import { usePreviewFlag, usePreviewFlagRevision } from '../hooks/usePreviewFlag'
 import { createPagesProvider } from '../components/commandPalette/providers/pagesProvider'
-import { FeaturePreviewsTab } from '../pages/developer/FeaturePreviewsTab'
+import { FeaturePreviewsSection, FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from '../pages/settings/FeaturePreviewsSection'
 import DeveloperPage from '../pages/DeveloperPage'
 
 const TEST_ICON: ReactElement = <span />
@@ -340,9 +340,9 @@ describe('usePreviewFlagRevision', () => {
   })
 })
 
-describe('Developer > Feature Previews', () => {
+describe('Settings > Developer > Feature Previews', () => {
   const renderTab = () =>
-    render(<MemoryRouter><FeaturePreviewsTab /></MemoryRouter>)
+    render(<MemoryRouter><FeaturePreviewsSection /></MemoryRouter>)
 
   /** `aria-checked` via the ATTRIBUTE: the Toggle is a `div role="switch"`, and
    *  the reflected `ariaChecked` DOM property is not populated for one. */
@@ -372,16 +372,18 @@ describe('Developer > Feature Previews', () => {
 
   it('carries a crew card that starts off', () => {
     // One card per feature: crew's own toggle, not a row folded into the
-    // webhooks card. `{ name: /^crew$/i }` because "Crew Members" appears in
-    // this card's description and a loose /crew/ would match either.
+    // webhooks card. Anchored (`^…$`) because the label's words also appear in
+    // this card's description and in the "Chat on a crew" card next to it. The
+    // label names BOTH doors the flag holds so it stops sharing a bare "Crew"
+    // with that neighbour, which a newcomer could not tell apart.
     renderTab()
-    expect(screen.getByRole('switch', { name: /^crew$/i }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: /^crew members and crew mode$/i }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('persists the crew opt-in under its own key, leaving webhooks alone', async () => {
     renderTab()
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew$/i }).click()
+      screen.getByRole('switch', { name: /^crew members and crew mode$/i }).click()
     })
     expect(localStorage.getItem(PREVIEW_CREW)).toBe('1')
     // Two flags, two keys: a shared write would release both features at once.
@@ -404,7 +406,7 @@ describe('Developer > Feature Previews', () => {
     const realButtons = () => Array.from(container.querySelectorAll('button'))
     expect(realButtons()).toHaveLength(0)
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew$/i }).click()
+      screen.getByRole('switch', { name: /^crew members and crew mode$/i }).click()
     })
     expect(realButtons()).toHaveLength(0)
     // The webhooks card still HAS its link, so this is an asymmetry on purpose
@@ -415,16 +417,89 @@ describe('Developer > Feature Previews', () => {
     expect(realButtons().map(b => b.textContent?.trim())).toEqual(['Open Webhooks'])
   })
 
-  it('is its own tab on the Developer page, not part of Config', async () => {
-    // Pin both halves of the move: Config must not carry the switch, and the
-    // rail must offer the tab that does — otherwise the opt-ins become
-    // unreachable while every unit test above still passes.
+  it('renders the section header and the per-device caveat once, above the cards', () => {
+    // The caveat used to be the Developer-page tab's description, rendered by
+    // SidePanelLayout as the page header. Inside Settings the section has to
+    // carry it itself — once, not per card — or the toggles read as released
+    // features that merely happen to be off.
+    renderTab()
+    expect(screen.getByRole('heading', { name: /feature previews/i })).toBeTruthy()
+    expect(screen.getAllByText(/unpolished on purpose/i)).toHaveLength(1)
+  })
+
+  it('carries the redirect anchor on ONE element that wraps the whole section', () => {
+    // `?highlight=key:<anchor>` rings the element carrying data-setting-key.
+    // The old-bookmark reader asked a section-sized question, so the ring must
+    // enclose the header and every card — an anchor on a single card would
+    // answer "is this row selected?" instead.
+    const { container } = renderTab()
+    const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
+    expect(anchors).toHaveLength(1)
+    const anchor = anchors[0]
+    expect(anchor.contains(screen.getByRole('heading', { name: /feature previews/i }))).toBe(true)
+    for (const s of screen.getAllByRole('switch')) expect(anchor.contains(s)).toBe(true)
+    expect(screen.getAllByRole('switch')).toHaveLength(3)
+  })
+
+  it('is gone from the Developer page rail', () => {
+    // Pin the removal, not just the addition: a tab left behind would offer the
+    // same three switches from two places, and the two would drift.
     render(<MemoryRouter initialEntries={['/developer?tab=config']}><DeveloperPage /></MemoryRouter>)
     expect(screen.getByTestId('kirocrew-cfg')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /feature previews/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /webhooks/i })).toBeNull()
+  })
 
-    const tab = screen.getByRole('button', { name: /feature previews/i })
-    await act(async () => { tab.click() })
-    expect(screen.getByRole('switch', { name: /webhooks/i })).toBeTruthy()
+  it('redirects the old tab link to Settings > Developer with a replace', () => {
+    // `/developer?tab=feature-previews` survives in bookmarks, docs and palette
+    // history. Without the redirect SidePanelLayout would fall back to the
+    // first tab silently — the toggles would look deleted rather than moved.
+    // The probe reads the FINAL location AND the navigation type: a push would
+    // leave the pre-move URL one Back press away.
+    function LocationProbe() {
+      const loc = useLocation()
+      const navType = useNavigationType()
+      return <div data-testid="loc">{`${navType} ${loc.pathname}${loc.search}`}</div>
+    }
+    render(
+      <MemoryRouter initialEntries={['/developer?tab=feature-previews']}>
+        <DeveloperPage />
+        <LocationProbe />
+      </MemoryRouter>,
+    )
+    // The destination is the Settings tab that now hosts the cards, ringing
+    // the whole section (its `data-setting-key` anchor) so the reader lands ON
+    // the moved thing — the section, not one of its rows. Literal on purpose:
+    // this is the URL contract old bookmarks and docs depend on.
+    expect(screen.getByTestId('loc').textContent).toBe(
+      `REPLACE /settings/developer?highlight=key%3A${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}`,
+    )
+  })
+
+  it('signposts the move from the rail footer, to the same ringed section', () => {
+    // The redirect only catches a URL that still names the old tab. Someone
+    // who navigates by memory (rail > Developer) finds the tab gone, so the
+    // footer every tab shares points onward — and to the SAME target as the
+    // redirect, so the two doors cannot drift apart.
+    render(<MemoryRouter initialEntries={['/developer?tab=config']}><DeveloperPage /></MemoryRouter>)
+    const link = screen.getByRole('link', { name: /feature previews moved to settings > developer/i })
+    expect(link.getAttribute('href')).toBe(`/settings/developer?highlight=key%3A${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}`)
+  })
+
+  it('leaves every other Developer tab link alone', () => {
+    // The redirect keys on ONE legacy value. A broader match (any unknown tab)
+    // would hijack the page's own unknown-tab fallback, which SidePanelLayout
+    // owns and the queryParamConsumer tests pin.
+    function LocationProbe() {
+      const loc = useLocation()
+      return <div data-testid="loc">{loc.pathname + loc.search}</div>
+    }
+    render(
+      <MemoryRouter initialEntries={['/developer?tab=config']}>
+        <DeveloperPage />
+        <LocationProbe />
+      </MemoryRouter>,
+    )
+    expect(screen.getByTestId('loc').textContent).toBe('/developer?tab=config')
   })
 })

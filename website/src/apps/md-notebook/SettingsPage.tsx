@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Folder as FolderIcon, GitBranch, Settings, X } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 import {
   ACCENT,
   ACCENT_BG,
@@ -604,10 +605,15 @@ export function SettingsPage({
                   </button>
                   {/* This bar only exists while confirmForget is set, so a failure
                       is reported right here rather than the shared editor banner,
-                      which is unmounted while Settings is open. */}
+                      which is unmounted while Settings is open.
+                      No hand-off: the access-token field on this page holds a
+                      typed token until "Save token" is pressed. */}
                   {forgetError && (
-                    <div role="alert" style={{ flexBasis: '100%', fontSize: '11px' }}>
-                      {i18nT('apps.mdNotebook.settings.removeFailed', { message: forgetError })}
+                    <div style={{ flexBasis: '100%' }}>
+                      <ErrorNotice
+                        message={i18nT('apps.mdNotebook.settings.removeFailed', { message: forgetError })}
+                        variant="inline"
+                      />
                     </div>
                   )}
                 </div>
@@ -781,13 +787,12 @@ export function SettingsPage({
             )}
 
             {/* Outside the interval block on purpose: the switch itself can be
-                refused, and that report must not depend on auto sync being on. */}
+                refused, and that report must not depend on auto sync being on.
+                No hand-off: the access-token field above holds a typed token
+                until "Save token" is pressed. */}
             {syncPrefsError && (
-              <div
-                role="alert"
-                style={{ fontSize: '11px', color: 'var(--danger)', marginTop: '8px' }}
-              >
-                {syncPrefsError}
+              <div style={{ marginTop: '8px' }}>
+                <ErrorNotice message={syncPrefsError} />
               </div>
             )}
 

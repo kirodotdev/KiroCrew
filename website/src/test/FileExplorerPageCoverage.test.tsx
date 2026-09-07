@@ -404,7 +404,13 @@ describe('FileExplorerPage reveal', () => {
     await ready()
     await openFromTree('notes.txt')
     await pickFromOverflow('Show in file manager')
-    await waitFor(() => expect(alerted).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed')))
+    // In place under the viewer bar through the shared ErrorNotice — no
+    // blocking dialog, and the raw server prose never reaches it.
+    const notice = await screen.findByTestId('file-viewer-reveal-error')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent(i18nT('components.filePathMenu.reveal_failed'))
+    expect(notice).not.toHaveTextContent('access denied')
+    expect(alerted).not.toHaveBeenCalled()
   })
 
   /** Publish a gateway platform into the cache the prerequisite gate owns. */

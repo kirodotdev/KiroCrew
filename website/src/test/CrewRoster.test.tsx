@@ -17,7 +17,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Provider } from 'react-redux'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import dashboardReducer from '../store/dashboardSlice'
@@ -80,7 +80,7 @@ const mockApi = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
-import CrewAvatar, { seededTraits } from '../components/CrewAvatar'
+import CrewAvatar, { hasAvatarOverride, seededTraits } from '../components/CrewAvatar'
 import { BRAND_PURPLE } from '../lib/kiroGhostAvatar'
 
 function createTestStore() {
@@ -89,14 +89,22 @@ function createTestStore() {
   })
 }
 
-function renderPage() {
+/** Echoes the router's current search string so a test can assert a deep-link
+ *  param was consumed (stripped) rather than left to re-fire on every render. */
+function LocationProbe() {
+  const loc = useLocation()
+  return <span data-testid="location-search">{loc.search}</span>
+}
+
+function renderPage(route = '/') {
   const store = createTestStore()
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={[route]}>
           <KiroCrewAgentsPage />
+          <LocationProbe />
         </MemoryRouter>
       </Provider>
     </QueryClientProvider>,
@@ -973,6 +981,100 @@ describe('crew avatar builder', () => {
     // Nothing pending: the draft round-tripped back to "no override", so Save
     // stays disabled — the dirty check compares normalized traits, not clicks.
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  })
+})
+
+describe('avatar editor entry — discoverability (issue #9103)', () => {
+  beforeEach(() => { localStorage.clear() })
+
+  it('hasAvatarOverride follows the renderer: {} / junk / absent are the default face', () => {
+    expect(hasAvatarOverride(undefined)).toBe(false)
+    expect(hasAvatarOverride(null)).toBe(false)
+    expect(hasAvatarOverride({})).toBe(false)
+    expect(hasAvatarOverride({ kind: 'nope' })).toBe(false)
+    expect(hasAvatarOverride({ kind: 'ghost' })).toBe(false) // no traits → renderer falls back
+    expect(hasAvatarOverride({ kind: 'ghost', traits: seededTraits('oncall') })).toBe(true)
+    expect(hasAvatarOverride({ kind: 'image', v: 1 })).toBe(true)
+  })
+
+  it('every face in the editor is an "Edit avatar" button with the scrim affordance', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    for (const id of ['header-avatar-button', 'hub-avatar-button']) {
+      const face = within(sheet).getByTestId(id)
+      expect(face.tagName).toBe('BUTTON')
+      expect(face).toHaveAccessibleName('Edit avatar')
+      expect(within(face).getByTestId('avatar-edit-scrim')).toBeInTheDocument()
+      expect(within(face).getByTestId('avatar-edit-badge')).toBeInTheDocument()
+    }
+  })
+
+  it('the header carries an explicit "Edit avatar" text button that opens the builder', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    fireEvent.click(within(sheet).getByTestId('header-edit-avatar'))
+    await screen.findByRole('dialog', { name: 'Customize avatar' })
+  })
+
+  it('the Avatar field face and its button both open the builder, and the button says "Edit avatar"', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    fireEvent.click(within(sheet).getByTestId('crew-rail-routing'))
+    const btn = within(sheet).getByTestId('open-avatar-builder')
+    expect(btn).toHaveTextContent('Edit avatar')
+    fireEvent.click(within(sheet).getByTestId('field-avatar-button'))
+    const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+    fireEvent.click(within(builder).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Customize avatar' })).toBeNull())
+    fireEvent.click(btn)
+    await screen.findByRole('dialog', { name: 'Customize avatar' })
+  })
+
+  it('the header face is the text route made visible, so no hint chip doubles it', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    expect(within(sheet).queryByTestId('avatar-edit-hint')).toBeNull()
+  })
+
+  it('deep link ?crew=<name>&avatar=1 opens that crew with the builder up, then strips the params', async () => {
+    renderPage('/capabilities?tab=crews&crew=oncall&avatar=1')
+    // The builder is the topmost Radix layer, so it marks everything beneath
+    // it — the editor dialog included — aria-hidden, and a hidden element's
+    // accessible NAME computes to "" (dom-accessibility-api follows the spec),
+    // so a role+name query cannot see the editor even with `hidden: true`.
+    // The attribute itself still identifies it; that stacked state is exactly
+    // what the deep link promises.
+    await screen.findByRole('dialog', { name: 'Customize avatar' })
+    expect(document.querySelector('[role="dialog"][aria-label="Edit agent oncall"]')).not.toBeNull()
+    // Consumed: only the tab survives, so closing the editor does not
+    // re-open it on the next render.
+    await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?tab=crews$/))
+  })
+
+  it('the header is two visual groups: identity (face · name · source) and a two-button action row', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    const identity = within(sheet).getByTestId('crew-editor-identity')
+    const actions = within(sheet).getByTestId('crew-editor-actions')
+    expect(within(identity).getByTestId('header-avatar-button')).toBeInTheDocument()
+    expect(identity).toHaveTextContent('oncall')
+    // The action row holds exactly two labelled actions; the face is not its peer.
+    expect(within(actions).getAllByRole('button')).toHaveLength(2)
+    expect(within(actions).getByTestId('header-edit-avatar')).toBeInTheDocument()
+    expect(within(actions).queryByTestId('header-avatar-button')).toBeNull()
+  })
+
+  it('deep link ?crew=<name> alone opens the editor without the builder', async () => {
+    renderPage('/capabilities?tab=crews&crew=oncall')
+    await screen.findByRole('dialog', { name: 'Edit agent oncall' })
+    expect(screen.queryByRole('dialog', { name: 'Customize avatar' })).toBeNull()
+  })
+
+  it('an unknown ?crew= strips silently and leaves the roster', async () => {
+    renderPage('/capabilities?tab=crews&crew=nobody&avatar=1')
+    await waitFor(() => expect(screen.getAllByTestId('crew-card')).toHaveLength(2))
+    await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?tab=crews$/))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
 

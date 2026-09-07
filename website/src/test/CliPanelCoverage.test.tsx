@@ -875,7 +875,8 @@ describe('useDeleteTerminalSession', () => {
     vi.stubGlobal('fetch', f)
     const { result } = renderHookWithProviders(() => useDeleteTerminalSession())
     await act(async () => { await result.current.mutateAsync('pty-42') })
-    expect(f).toHaveBeenCalledWith('/api/terminal/sessions/pty-42', { method: 'DELETE' })
+    // `keepalive` lets the last popout tab's DELETE outlive its window.
+    expect(f).toHaveBeenCalledWith('/api/terminal/sessions/pty-42', { method: 'DELETE', keepalive: true })
   })
 
   it('surfaces a non-ok response as a mutation error carrying the status', async () => {

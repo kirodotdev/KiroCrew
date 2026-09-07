@@ -16,7 +16,7 @@ is not assumed: check at first use, and treat an absent script as `UNKNOWN`
 rather than permission.
 
 - `scripts/claim_preflight.py` — one verdict per candidate item before you
-  dispatch it: `CLAIM` / `SKIP` / `CLOSE` / `UNKNOWN`.
+  dispatch it: `CLAIM` / `SKIP` / `CLOSE` / `REVIEW` / `UNKNOWN`.
 - `scripts/fleet_probe.py` — batch worker-tail classification + idle age +
   error tails + banned-process scan + host load + delivery counters, in ONE
   call per cycle.
@@ -50,7 +50,11 @@ Anything the spec does not set has the default shown above. Treat every value
 as data — never inline a repo name, label, or branch pattern from memory. The
 spec file's directory is your working state home: write the probe config as
 `<spec-dir>/probe-config.json` and let the probe own
-`<spec-dir>/probe-config.json.state.json` (the handled-set).
+`<spec-dir>/probe-config.json.state.json` (the handled-set). Set
+`fleet_worktrees` to the absolute worktree roots this fleet owns: it is optional
+in the config and it is what makes `cwd=fleet` reachable, so leaving it out
+classifies every banned line as `foreign` or `unknown` and the enforcing row of
+the banned-ops table never fires.
 
 ## Startup (once per run)
 
@@ -67,7 +71,12 @@ spec file's directory is your working state home: write the probe config as
 3. Open your own status file beside the spec — `conductor-status/v1`, schema
    below. The ledger tracks the items; the status file tracks YOU.
 4. Arm the patrol: `monitor_start` (interval ~90s) with the standing
-   instruction below. **Patrol with `monitor_start`, never `wait`.** Call
+   instruction below. **Patrol with `monitor_start`, never `wait`.** Pass
+   `max_cycles` explicitly — the default is 24, so a 90-second patrol expires in
+   well under an hour, long before a fleet drains, and the loop simply stops
+   with no symptom. Size it to the run, raise it mid-run with `monitor_update`,
+   or pass `max_runtime_secs` when a wall-clock bound fits better than a cycle
+   count. Call
    `autonudge_stop` yourself when the exit condition fires — coasting into the
    cycle cap is a failure, not a finish.
 
@@ -80,9 +89,8 @@ via `monitor_update`, see "Live steering"):
 > THEN PROBE: one `fleet_probe.py --config <path>` call. Act only on 🔔/BANNED
 > lines: ERR → batch resume; PR → record; GREEN → verify independently then
 > digest + backfill; STANDDOWN/PROPOSAL → disposition + backfill; TERMINAL →
-> close it out, never nudge; BLOCKED → adjudicate; IDLE → intervention ladder.
-> Diff each fired line's `i=` against the recorded one: unchanged index is no
-> progress. Mark each acted signal handled.
+> close it out, never nudge; BLOCKED → adjudicate; IDLE → intervention ladder;
+> NOPROGRESS → check the EFFECT, never liveness. Mark each acted signal handled.
 > Write every item change back as the WHOLE `artifacts` map in ONE
 > `session_ledger_record` call — a partial write ages an active item out — and
 > RECLAIM BEFORE YOU ADMIT: collapse settled entries and drop tally-covered ones
@@ -285,6 +293,7 @@ python3 scripts/claim_preflight.py --repo <owner/repo> --item <N> \
 | 0 | `CLAIM` | Dispatch it. `risk=high` on the line means self-claim collision risk: that item is NOT batched — it goes to the live recheck on its own, immediately before claiming. |
 | 10 | `SKIP` | Covered, or not workable. Leave it alone; record the reason. |
 | 11 | `CLOSE` | Triage debt, not work. Close the item with the evidence the script printed. |
+| 13 | `REVIEW` | A closure request was READ in the item's prose. **Do not dispatch and do not close.** Open the comment the line names, decide yourself whether the item is really done, and then either close it or dispatch it. This verdict exists because prose is the weakest evidence the preflight collects and closing is the strongest response it had. |
 | 2 | malformed | YOUR arguments or config are wrong. Fix the call — a bad call is not a verdict about the item. |
 | 3 | `UNKNOWN` | A check could not be answered (forge unreachable, rate limited). **Never treat this as permission.** Re-run it later or park the item. |
 
@@ -304,14 +313,24 @@ precedence list:
    treating it as coverage closes live work and treating it as a claim starves an
    item whose fix was only partial.
 2. `open_prs` — any open PR referencing it, **fork PRs included** → **SKIP**
-   `open-pr`.
+   `open-pr`. A fork PR from someone with no standing still SKIPs, but the line
+   carries `risk=high` and an `untrusted-fork` marker — treat that as a triage
+   signal to review rather than an item that simply left the queue, because
+   opening a fork PR needs no permission and is therefore a suppression channel.
 3. `prose_claim` — a closure request in the body or the last comment ("this is
    resolved", "please close") **from the item's own reporter or a repository
-   insider** → **CLOSE** `reporter-asked-close`. The authorization condition is
-   load-bearing, not decoration: anyone can comment on a public item, closing one
-   is a WRITE, and this verdict would otherwise let ingested untrusted text drive
-   that write on an unattended cycle. A closure phrase from anybody else is not a
-   closure request — it falls through to the remaining checks.
+   insider** → **REVIEW** `reporter-asked-close` at `risk=high`. **Prose never
+   closes anything.** It is the weakest evidence this script collects — nine
+   separate false-CLOSE paths reached review in one change, and a ratchet that
+   stops a new unguarded PATTERN cannot stop the next unguarded PHRASING of a
+   pattern already guarded, because the space of English that accidentally means
+   "close this" has no edge. So the detection stays and the response is withheld:
+   you read the comment the line names and you decide. The authorization
+   condition stays too, for a different reason than it had — `REVIEW` writes
+   nothing, but it does withhold a dispatch, and a suppression any passer-by can
+   cast is the same denial-of-work channel rule 4 refuses to open. A closure
+   phrase from anybody else is not a closure request — it falls through to the
+   remaining checks.
 4. `prose_claim` — a self-claim ("I'm claiming this", "working on this") **from
    the item's reporter or a repository insider** → **SKIP** `prose-claim`. A claim
    written in prose is invisible to every label and field query that exists, which
@@ -322,6 +341,12 @@ precedence list:
    pipeline would ever report that it had been suppressed. Downgrading keeps the
    collision protection where the claim is credible without handing an arbitrary
    commenter a mute button.
+
+   A claim is retired by a later withdrawal from the same author ("dropping
+   this"), including one written in the issue BODY — otherwise a claim nobody is
+   honouring suppresses the item forever. Bot comments never claim and never
+   close. Ownership is read from the newest STANDING claim, not from the last
+   comment, so a passer-by's "any update?" does not clear a claim.
 5. `symbol_on_base` — a symbol the item names is absent from
    `{default_branch}`. **Absence alone is not a SKIP.** Corroborated as
    bug-class, it is **SKIP** `symbol-absent`: the target code lives only on an
@@ -335,8 +360,10 @@ precedence list:
 
 **`risk=high` is a decision, not a note.** A high-risk `CLAIM` is NOT batched:
 it goes to the live per-item recheck immediately before the atomic claim, on its
-own. An annotation nothing acts on is the same defect as a prose predicate — it
-reads as caution and changes nothing.
+own. A `REVIEW` is always high-risk and is not a dispatch at all: it goes on your
+own list, and it clears only when you have read the named comment and either
+closed the item or dispatched it. An annotation nothing acts on is the same
+defect as a prose predicate — it reads as caution and changes nothing.
 
 **A batch snapshot is never the authority.** Preflighting a batch is how you
 order a queue; a per-item live recheck immediately before the atomic claim stays
@@ -348,6 +375,9 @@ item.** Its verdict is CLOSE with the landing-commit evidence, and closing it IS
 the work. Dispatching a worker to rediscover that the work does not exist spends
 a whole session — create, seed, preflight, stand down, unclaim — to learn
 nothing, and leaves claim churn on a repository other operators are reading.
+**An item that merely READS as already fixed is not the same item.** A merged
+commit that is an ancestor of the base is evidence; a sentence saying so is a
+reading, and it comes back as `REVIEW` for you to confirm.
 
 ### Dispatch mechanics
 
@@ -357,8 +387,11 @@ nothing, and leaves claim churn on a repository other operators are reading.
   edit files.
 - Validate with ONE canary dispatch before a batch. A wrong agent or a broken
   brief costs one session that way, and the whole batch otherwise.
-- Respect the session-create rate limit: dispatch in small batches with other
-  work interleaved, never the whole queue at once.
+- Respect the session-create rate limit: 20 `session_create` calls per 5-minute
+  window per caller (folders: 10). `max_in_flight` defaults to 32, so a
+  full-width dispatch round CANNOT complete inside one window — plan two rounds,
+  and remember that a create refused by the limiter is a post-claim failure, so
+  unclaim per the rule above.
 - Worker sessions must be granted **trust mode before seeding** — an unattended
   session stuck on an approval prompt runs zero turns; if you cannot grant it,
   tell the operator instead of seeding sessions that will hang.
@@ -454,6 +487,15 @@ BANNED pid=<pid> rule=<regex> cwd=fleet|unknown
 OK <n> watched, <m> fired | load/cpu <x> (ok|hot) | mem <n>G | banned <n> | foreign <n> | deliver init-timeout <a>, watchdog <b>
 ```
 
+A tail with no protocol tag reads as `-` and never fires on its own, and a
+protocol word inside a tool card is quoted text rather than a report — so a worker
+whose only "status" is in a tool call is silent as far as the probe is concerned,
+and ages into `IDLE`.
+
+The handled set keeps the last dispositioned PAYLOAD report as `settled`, so a
+later `IDLE` or `NOPROGRESS` mark on the same session cannot resurrect a ruling
+you already delivered. You do not maintain this — it is written on every mark.
+
 When a ruling needs content, read that one session through the
 workspace-authorized session tools. Act, then `--mark-handled KEY TAG DIGEST`
 (DIGEST is the `d=` field on the fired line), or the signal re-fires forever. A
@@ -479,14 +521,15 @@ is read from disk — the read loads the whole transcript either way. The index 
 carried into the handled-set entry as well, so the comparison is available next
 cycle without you having to hold it.
 
-**An unchanged index across two probes is no progress**, whether or not a turn
-is open — it is the one discriminator a self-deadlocked worker cannot fake,
-because producing a message is the thing it cannot do. When the index has not
-moved, check the EFFECT and never liveness: did the artifact appear, did the
-remote head move, is there a new commit. "Still working" is not something the
-probe can tell you at all — that reading comes from `session_read_message`'s
-running flag, and an open turn is satisfied by a shell deadlocked on its own
-child just as well as by real work.
+**An unchanged index since you last acted is no progress**, whether or not a
+turn is open — it is the one discriminator a self-deadlocked worker cannot fake,
+because producing a message is the thing it cannot do. The probe makes that
+comparison itself and fires `NOPROGRESS`, so read the tag and **never diff two
+cycles by eye**: a comparison that lives in this document is enforced by
+nothing, so it may simply never happen. `i=` is the corroborating number, not
+the test. "Still working" is not something the probe can tell you at all — that
+reading comes from `session_read_message`'s running flag, and an open turn is
+satisfied by a shell deadlocked on its own child just as well as by real work.
 
 **One-time degradation on the first probe after an upgrade.** The fired-line
 digest is keyed on the classified tail text, so any change to what gets
@@ -505,6 +548,7 @@ digest keying, not a defect, and it does not recur.
 | `STANDDOWN` / `PROPOSAL` | Verify the evidence is stated; record the disposition; unclaim with an evidence comment; close or re-queue; backfill. |
 | `TERMINAL` | The last dispositioned protocol report was terminal and the session has gone quiet since. **Close it out** — confirm the disposition landed, release the claim, `session_close`. Do NOT nudge: a finished worker has nothing to re-arm, and a monitor loop is only correct while something EXTERNAL can still change. |
 | `IDLE` | Intervention ladder (below). |
+| `NOPROGRESS` | The session has produced nothing — no message, no tool row — since you last acted on it, and that mark is at least one `idle_alert_secs` old. Check the **EFFECT, never liveness**: did the artifact appear, did the remote head move, is there a new commit. Effect present → healthy-slow; extend and name the expected completion signal. Effect absent → **route on the line's own age**, because two paths reach this tag and they do not mean the same thing. Within `idle_alert_secs` the transcript is WARM — held alive by inbound traffic the session never answers — and the first move is **not a nudge**, since a nudge is more of the input that produced the reading: enter the intervention ladder at its **Inspect** step. Past `idle_alert_secs` the session is cold as well as unproductive, so `IDLE`'s ladder applies from the top: the classifier ranks this tag below the clock, but the suppression fallback substitutes it for an already-dispositioned report with no age test, so a cold line can carry it. |
 | `GONE` | Transcript missing — treat as reclaim: re-queue the item with evidence. |
 | `BANNED pid=…` | Banned-ops response (below), keyed by the line's OWNERSHIP CLASS: every class is recorded, and a stop is reserved for `cwd=fleet`. Never read this as a single actionable-or-not decision. |
 
@@ -560,11 +604,13 @@ Signals: `IDLE` twice in a row; same tag across ~5 cycles with rising turn
 count; credit burn with no ledger transition; ERR recurring after resume.
 
 1. **Nudge** (`session_send`): restate the next step + protocol requirement.
-2. **Inspect** — `spawn_run` ONE bounded inspector with an ENFORCED read-only
-   toolset: pass `allowed_tools` limited to reads (`fs_read`, `web_fetch`,
-   `@kirocrew-dashboard/session_read_message`) so "read-only" is a property of
-   the spawn, not a hope in the prompt — never grant it `execute_bash` or any
-   write tool. Task: *"Read the tail of session {key}
+2. **Inspect** — `spawn_run` ONE bounded inspector and bound it in the TASK
+   TEXT. `spawn_run` takes no `allowed_tools` parameter, and the underlying
+   field is ignored for ACP-backed agents, so read-only cannot be a property of
+   the spawn. Pin a read-only AGENT instead (`agent=` a spec with no write
+   tool), say "read only; modify nothing" explicitly, and treat any write the
+   inspector reports as an escaped constraint to raise with the operator. Task:
+   *"Read the tail of session {key}
    (session_read_message) and the state of PR #{n} on {repo} (web_fetch the PR
    page). Return one verdict — healthy-slow | looping | blocked-misclassified
    | premise-wrong — plus two sentences of evidence. Do not modify anything."*
@@ -771,8 +817,11 @@ Roughly every 5 cycles, for items with open sessions:
     history.
 - `unmetered` → treat spend as UNKNOWN, not zero — say so in the ledger and
   lean on the time-based signals instead.
-- `truncated` (only if you passed `--max-shards`) → re-run without the bound;
-  an under-budget answer from a partial scan is not a verdict.
+- `truncated` → the under-budget answer is incomplete: older shards were skipped
+  (`--max-shards`), a shard was unreadable, or a matched row was corrupt. Re-run
+  without the bound; if it persists without one, the usage data itself is
+  damaged — treat spend as UNKNOWN like `unmetered`, and do not read it as within
+  budget.
 
 ## Live steering
 
@@ -836,9 +885,13 @@ terminal — see "How the ledger behaves".
 
 ## Known limits (state them, don't hide them)
 
-- `session_send` / `session_stop` / `spawn_run` (the inspector) are mounted but
-  not auto-approved: unattended operation requires the operator to arm THIS
-  session in trust mode (same "trust before seed" rule as the workers).
+- `execute_bash` (which is EVERY script call — preflight, probe, credit rollup),
+  `session_send`, `session_stop`, `session_close` and `spawn_run` (the inspector)
+  are mounted but never auto-approved: `allowedTools` cannot match arguments, so
+  trusting the bundled scripts would mean trusting arbitrary shell. Unattended
+  operation therefore requires the operator to arm THIS session in trust mode
+  (same "trust before seed" rule as the workers) — without it the patrol stalls
+  on its first probe, not on its first intervention.
 - Credit metering covers dashboard-session turns; `spawn_run` inspector turns
   and non-chat sessions burn invisibly (`unmetered` verdict exists for a
   reason).

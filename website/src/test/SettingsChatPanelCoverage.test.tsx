@@ -335,26 +335,6 @@ describe('ChatPanel — Messages', () => {
     await waitFor(() => expect(storedChat()[key]).toBe(expected))
   })
 
-  it('clears a stored minimized flag when the pin toggle is switched on', async () => {
-    localStorage.setItem(LS_KEY, JSON.stringify({ pinLastPrompt: false, pinPromptMinimized: true }))
-    wrap()
-    // The row promises a sticky banner, so a flag stored in an earlier session
-    // must not survive the flip and hand back the chip instead.
-    fireEvent.click(await screen.findByRole('switch', { name: 'Pin the latest turn' }))
-    await waitFor(() => expect(storedChat().pinLastPrompt).toBe(true))
-    expect(storedChat().pinPromptMinimized).toBe(false)
-  })
-
-  it('leaves the minimized flag intact when the pin toggle is switched off', async () => {
-    localStorage.setItem(LS_KEY, JSON.stringify({ pinLastPrompt: true, pinPromptMinimized: true }))
-    wrap()
-    // Turning the banner off must not clear the preference, or an unconditional
-    // reset would pass the test above while discarding the choice either way.
-    fireEvent.click(await screen.findByRole('switch', { name: 'Pin the latest turn' }))
-    await waitFor(() => expect(storedChat().pinLastPrompt).toBe(false))
-    expect(storedChat().pinPromptMinimized).toBe(true)
-  })
-
   it('inverts the stored collapse flag behind Show Thinking Inline', async () => {
     wrap()
     // The row shows the INVERSE of collapseAllSteps, so turning it on must

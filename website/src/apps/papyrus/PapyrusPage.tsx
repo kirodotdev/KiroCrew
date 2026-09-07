@@ -21,9 +21,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDownToLine, ArrowLeft, ArrowUpFromLine, FileDown, Loader2, MessageSquare, Play, Sparkles, TerminalSquare, X, ChevronDown, ChevronUp } from 'lucide-react'
+import { AlertTriangle, ArrowDownToLine, ArrowLeft, ArrowUpFromLine, FileDown, Loader2, MessageSquare, Play, Sparkles, TerminalSquare, ChevronDown, ChevronUp } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Btn } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import SearchableSelect from '../../components/SearchableSelect'
@@ -700,15 +701,24 @@ export default function PapyrusPage() {
     prevBusyRef.current = coAuthorBusy
     if (!wasBusy || coAuthorBusy || !slotKey) return
     void (async () => {
+      let refreshed = false
       try {
         await invalidateFiles()
         // `false`: do NOT flush. The agent just wrote this file, so the browser
         // buffer is the stale copy — flushing would save it over the agent's edits.
         await reloadOpenFile(false)
-        if (project) applyCompileResult(await papyrusApi.compile(project))
+        refreshed = true
       } catch {
         // A refresh failure is not worth a banner: the user's next Cmd+S recovers,
         // and surfacing it would blame them for the agent's turn.
+      }
+      if (!refreshed || !project) return
+      try {
+        applyCompileResult(await papyrusApi.compile(project))
+      } catch (err) {
+        // The compile REQUEST failing is different: the PDF is now stale against
+        // the agent's edits and nothing else says so until the next Cmd+S.
+        setError(err instanceof Error ? err.message : String(err))
       }
     })()
   }, [coAuthorBusy, slotKey, project, invalidateFiles, reloadOpenFile, applyCompileResult])
@@ -822,20 +832,9 @@ export default function PapyrusPage() {
   if (!project) {
     return (
       <>
-        {error && (
-          <div className="mx-6 mt-2 bg-danger/10 border border-danger/20 rounded-lg p-3 flex items-start gap-3 animate-rise" role="alert">
-            <AlertTriangle className="lucide-inline text-danger shrink-0 mt-0.5" />
-            <div className="flex-1 text-[13px] text-text break-words">{error}</div>
-            <button
-              type="button"
-              onClick={() => setError('')}
-              aria-label={i18nT('apps.papyrus.page.dismiss_error')}
-              className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors"
-            >
-              <X className="lucide-inline" />
-            </button>
-          </div>
-        )}
+        {/* No hand-off: the project list below holds the unsaved new-paper name and
+            clone-URL inputs, which the navigation would discard. */}
+        <ErrorNotice className="mx-6 mt-2 animate-rise" message={error} onDismiss={() => setError('')} />
         <ProjectList onOpenProject={openProject} />
       </>
     )
@@ -961,20 +960,9 @@ export default function PapyrusPage() {
         </Btn>
       </div>
 
-      {error && (
-        <div className="mx-3 mt-2 bg-danger/10 border border-danger/20 rounded-lg p-2.5 flex items-start gap-3 animate-rise" role="alert">
-          <AlertTriangle className="lucide-inline text-danger shrink-0 mt-0.5" />
-          <div className="flex-1 text-[13px] text-text break-words">{error}</div>
-          <button
-            type="button"
-            onClick={() => setError('')}
-            aria-label={i18nT('apps.papyrus.page.dismiss_error')}
-            className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors"
-          >
-            <X className="lucide-inline" />
-          </button>
-        </div>
-      )}
+      {/* No hand-off: the open editor buffer is unsaved (a save banner is showing
+          precisely because it did not persist). */}
+      <ErrorNotice className="mx-3 mt-2 animate-rise" message={error} onDismiss={() => setError('')} />
 
       {/* Workspace */}
       <div className={`flex flex-1 min-h-0 ${isMobile ? 'flex-col' : ''}`}>

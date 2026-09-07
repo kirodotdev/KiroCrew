@@ -268,8 +268,14 @@ export function ComputerUsePanel() {
     return (
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={platformBadge}>
         <SettingsCard>
-          <div className="text-[13px] text-danger">
-            {i18nT('pages.settings.computerUsePanel.could_not_load_computer_use_settings')}{' '}
+          <div className="flex flex-wrap items-center gap-3">
+            <ErrorNotice
+              className="flex-1 min-w-[16rem]"
+              message={i18nT('pages.settings.computerUsePanel.could_not_load_computer_use_settings')}
+              askAgent
+            />
+            {/* Retry stays beside the notice: a refetch is the cheap first move,
+                the hand-off is for when it keeps failing. */}
             <Btn onClick={() => cfgQ.refetch()}>{i18nT('pages.settings.computerUsePanel.retry')}</Btn>
           </div>
         </SettingsCard>
@@ -299,18 +305,23 @@ export function ComputerUsePanel() {
 
   return (
     <>
+      {/* No hand-off: `draftNodes` / `draftWidth` are live numeric drafts. A
+          hand-off click blurs the field, which commits the draft and STARTS the
+          save — if that save then fails after the navigation has unmounted this
+          panel, the typed limit is gone with nothing on screen to say so. */}
       <ErrorNotice message={saveError} className="mb-4 animate-rise" />
 
       {/* A hand-edited keystone whose app lists could not be parsed. The page
           renders anyway — on purpose, because this is the only UI that can repair
           the file — but it must SAY so: the lists below come back empty in this
           state, and an empty allow-list otherwise reads as "no restriction
-          configured", which is the opposite of what the operator wrote. */}
-      {cfg.policy_error && (
-        <div className="mb-4 rounded-lg border border-warn/20 bg-warn/10 p-3 animate-rise">
-          <span className="text-[13px] text-text">{i18nT('pages.settings.computerUsePanel.the_app_lists_in_computer_use_json_could_not_be')}</span>
-        </div>
-      )}
+          configured", which is the opposite of what the operator wrote.
+          No hand-off: the `draftNodes` / `draftWidth` fields below share this
+          panel — the navigation would unmount a half-typed limit. */}
+      <ErrorNotice
+        message={cfg.policy_error ? i18nT('pages.settings.computerUsePanel.the_app_lists_in_computer_use_json_could_not_be') : null}
+        className="mb-4 animate-rise"
+      />
 
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={platformBadge}>
         <SettingsCard>

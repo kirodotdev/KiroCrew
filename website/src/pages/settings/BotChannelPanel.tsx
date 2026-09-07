@@ -5,6 +5,7 @@ import { SettingsSection, SettingsCard, SettingsInput, SettingsSelect, SettingsT
 import { SecretField } from '../../components/SecretField'
 import { CopyCommandButton } from '../../components/settingRef/CopyCommandButton'
 import { Btn } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
@@ -347,12 +348,22 @@ function StatusBadge({ config }: { config: BotChannelConfigData }) {
   )
 }
 
+/**
+ * The backend's startup failure (`connect_error`), kept apart from
+ * {@link connectionHint}: it is the outcome of something that FAILED, so it
+ * renders through `ErrorNotice`, while the hints below describe a state that
+ * has not gone wrong yet.
+ */
+function connectError(spec: BotChannelSpec, config: BotChannelConfigData): string {
+  if (config.connected || !config.connect_error) return ''
+  return i18nT('pages.settings.botChannelPanel.channel_failed_to_start', { channel: spec.name, error: config.connect_error, host: spec.host })
+}
+
 /** One-line explanation of WHY the channel is not running, with the fix. */
 function connectionHint(spec: BotChannelSpec, config: BotChannelConfigData): string {
-  if (config.connected) return ''
-  if (config.connect_error) {
-    return i18nT('pages.settings.botChannelPanel.channel_failed_to_start', { channel: spec.name, error: config.connect_error, host: spec.host })
-  }
+  // A startup failure is shown by `connectError`; the status hints would only
+  // repeat "not running" under it.
+  if (config.connected || config.connect_error) return ''
   if (config.configured) {
     return i18nT('pages.settings.botChannelPanel.configuration_is_saved_but_the_channel_is_not_ru')
   }
@@ -391,7 +402,12 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   const [restartHint, setRestartHint] = useState(false)
   const [verifyWarning, setVerifyWarning] = useState('')
   const [tokenVerified, setTokenVerified] = useState(false)
-  const [error, setError] = useState('')
+  // Two states on purpose: `saveError` is the server's rejection (an error
+  // surface), `thresholdError` is a client-side validation hint that never
+  // reached the server — routing it through ErrorNotice would offer the agent
+  // nothing to diagnose.
+  const [saveError, setSaveError] = useState('')
+  const [thresholdError, setThresholdError] = useState('')
 
   // Sync the local draft when server config arrives. Guarded so only the
   // initial load and post-save invalidation reseed it — a background refetch
@@ -419,8 +435,10 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
           msg = e.message
         }
       }
-      setError(msg)
-      setTimeout(() => setError(''), 8000)
+      // Persist until the next save attempt clears it: the rejected draft is
+      // still in the form, and a notice that erases itself after a few seconds
+      // leaves a quiet form that reads as saved.
+      setSaveError(msg)
     },
     onSuccess: (res, vars) => {
       setSaved(true)
@@ -436,11 +454,12 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
 
   const handleSave = useCallback(() => {
     if (!draft) return
-    setError('')
+    setSaveError('')
+    setThresholdError('')
     const pct = parseInt(draft.soft_threshold_pct, 10)
     if (!Number.isInteger(pct) || pct < 1 || pct > 100) {
-      setError(i18nT('pages.settings.botChannelPanel.soft_context_threshold_must_be_a_number_between'))
-      setTimeout(() => setError(''), 8000)
+      setThresholdError(i18nT('pages.settings.botChannelPanel.soft_context_threshold_must_be_a_number_between'))
+      setTimeout(() => setThresholdError(''), 8000)
       return
     }
     const payload: Partial<BotChannelConfigSave> = {
@@ -485,10 +504,20 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   }, [draft, botToken, botClear, botId, botIdClear, saveMut])
 
   if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.botChannelPanel.loading')} {spec.name} {i18nT('pages.settings.botChannelPanel.config')}</p>
-  if (isError || !data || !draft) return <p className="text-[13px] text-danger p-4">{i18nT('pages.settings.botChannelPanel.cannot_load')} {spec.name} {i18nT('pages.settings.botChannelPanel.config_is_the_gateway_running')}</p>
+  // Nothing to lose here: the form is not mounted in this branch.
+  if (isError || !data || !draft) {
+    return (
+      <ErrorNotice
+        className="m-4"
+        message={`${i18nT('pages.settings.botChannelPanel.cannot_load')} ${spec.name} ${i18nT('pages.settings.botChannelPanel.config_is_the_gateway_running')}`}
+        askAgent
+      />
+    )
+  }
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
+  const startupError = connectError(spec, data)
   const hint = connectionHint(spec, data)
 
   return (
@@ -504,6 +533,11 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <StatusBadge config={data} />
           </div>
           <p className="text-[12px] text-muted mt-1">{spec.description}</p>
+          {/* No hand-off: `botToken` / `botId` (SecretField drafts, never
+              persisted) and the unsaved `draft` (allow-lists, threshold, session
+              folder) live in this panel's local state — navigating to the chat
+              would discard them. */}
+          <ErrorNotice message={startupError} className="mt-2" />
           {hint && (
             <p className="text-[12px] text-warn mt-1 flex items-center gap-1.5">
               <AlertTriangle size={12} className="flex-none" />
@@ -888,11 +922,18 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <AlertTriangle size={14} /> {verifyWarning}
           </span>
         )}
-        {error && (
+        {/* Client-side validation hint (the threshold never left the browser) —
+            not an error surface, so it stays plain text rather than ErrorNotice. */}
+        {thresholdError && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-danger">
-            <AlertTriangle size={14} /> {error}
+            <AlertTriangle size={14} /> {thresholdError}
           </span>
         )}
+        {/* No hand-off: `botToken` / `botId` (SecretField drafts, never persisted)
+            and the unsaved `draft` are exactly what a failed save did not store —
+            the hand-off unmounts this panel and would lose them. Same shape as
+            SlackPanel's save row. */}
+        <ErrorNotice message={saveError} variant="inline" />
       </div>}
     </>
   )

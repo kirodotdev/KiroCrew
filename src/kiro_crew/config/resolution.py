@@ -8,6 +8,7 @@ validation modules.
 from __future__ import annotations
 
 import logging
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 
 logger = logging.getLogger("kiro_crew.config.loader")
@@ -80,6 +81,206 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "connections_ui",
     }
 )
+
+# Section keys that to_dict() emits from somewhere OTHER than the section's own
+# dataclass fields. They are recognized (never captured as unknown) for two
+# distinct reasons, both of which make capture wrong:
+#
+#   * ``channels`` / ``dm_activation`` / ``trusted_bot_ids`` are emitted
+#     CONDITIONALLY and dropped when empty, so their absence from the emitted
+#     document is a deliberate deletion. Restoring them from a load-time capture
+#     would resurrect a channel or an allow-list the caller just cleared.
+#   * ``observe_max_messages`` / ``observe_ttl_hours`` are stored on the
+#     TOP-LEVEL config object, not on SlackConfig, and to_dict() writes them into
+#     the slack section unconditionally. Capturing them would be pure noise.
+#
+# Drift is caught by test_default_emitted_section_keys_are_all_recognized: every
+# key a default config emits per section must be recognized here or be a field.
+_SECTION_KEYS_EMITTED_ELSEWHERE: dict = {
+    "slack": frozenset(
+        {
+            "channels",
+            "dm_activation",
+            "trusted_bot_ids",
+            "observe_max_messages",
+            "observe_ttl_hours",
+        }
+    ),
+}
+
+# Section keys this build deliberately does NOT round-trip. Capture must skip
+# them, because preserving them defeats the decision that removed them.
+#
+# Two reasons land here, and the distinction matters when adding an entry:
+#   * RENAMED — the reader still accepts the old spelling but save() settles on
+#     the canonical one. Pinning the old spelling would make the migration never
+#     finish.
+#   * RETIRED — the feature behind the key is gone. Re-persisting the key would
+#     keep offering a setting with nothing behind it (see
+#     TestSttRemovedFieldsAreInert).
+#
+# The failure direction of THIS map is deliberate: forgetting an entry PRESERVES
+# a key that could have been dropped, which is cosmetic. The reverse — dropping a
+# key that should have been preserved — is the data loss this whole mechanism
+# exists to stop, so preservation is the default and every exception is written
+# down here. (_SECTION_KEYS_EMITTED_ELSEWHERE above does NOT share this safety:
+# forgetting a conditionally-emitted key there resurrects a cleared value, and
+# the default-config drift guard cannot see a key that is empty by default.)
+_SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
+    # RENAMED: agent.dangerously_skip_permissions is also read as the camelCase
+    # `dangerouslySkipPermissions` (the spelling other agent tools use) and the
+    # legacy `yolo`; save() writes only the canonical snake_case. Preserving the
+    # older spellings would leave two of them in the file at once, so a user who
+    # turns the canonical grant OFF could still have an old `yolo: true` sitting
+    # beside it — a contradiction in the one key that controls standing,
+    # unattended auto-approval. See sections._read_dangerously_skip_permissions.
+    "agent": frozenset({"dangerouslySkipPermissions", "yolo"}),
+    # RENAMED: knowledge.auto_add_documents was auto_ingest_doc_links;
+    # sections._read_auto_add_documents still reads the old spelling.
+    "knowledge": frozenset({"auto_ingest_doc_links"}),
+    # RETIRED: the out-of-band installs the removed local STT providers needed.
+    "stt": frozenset({"whisper_path", "mlx_model", "parakeet_model", "device"}),
+}
+
+
+#: Sections that are MAPS OF NAMED RECORDS, each record a dataclass: the user
+#: picks the record names, so the names themselves are never "unknown", but a
+#: key INSIDE a record is parsed field-by-field and re-emitted with ``asdict``
+#: exactly like a section field — so an unmodelled ``agents.<name>.<key>`` was
+#: dropped on save just as ``agent.<key>`` was. Captured one level deeper, as
+#: ``{section: {record_name: {key: value}}}``. ``hooks`` is NOT here: it is
+#: emitted raw (``"hooks": self.hooks``) and round-trips whole.
+_RECORD_MAP_SECTIONS: frozenset = frozenset({"agents", "workspaces", "memory_stores"})
+
+
+def _unknown_keys_of(raw: dict, obj: object, recognized_extra: frozenset) -> dict:
+    recognized = {f.name for f in fields(obj)} | recognized_extra  # type: ignore[arg-type]
+    return {k: v for k, v in raw.items() if k not in recognized and not k.startswith("_")}
+
+
+def capture_extra_section_keys(data: dict, cfg: object) -> dict:
+    """Unknown keys found INSIDE a modelled section, per section.
+
+    The top-level counterpart of this is ``_extra_sections``: a whole section
+    this core does not model survives a load/save round-trip. A key nested one
+    level down had no such protection, so when a build stopped modelling
+    ``<section>.<key>`` — a rename, a removal, or simply an older config written
+    by a newer edition — the load ignored it and the next ``save()`` (triggered
+    by anything at all: a log-level change, adding a workspace, editing an
+    agent) rewrote the file without it. The operator's value was gone, silently,
+    with no backup on that path.
+
+    Two shapes of section are covered. A dataclass-backed section yields
+    ``{key: value}``. A map of named records (``_RECORD_MAP_SECTIONS``) yields
+    ``{record_name: {key: value}}``, because each record is itself parsed
+    field-by-field and would otherwise lose its unmodelled keys the same way.
+    ``hooks`` is neither: it is emitted raw and round-trips whole.
+
+    A key is recognized — and so NOT captured — when it is a field of the
+    section's dataclass (including private carriers, which to_dict() drops on
+    purpose), when it is listed in ``_SECTION_KEYS_EMITTED_ELSEWHERE`` or
+    ``_SECTION_KEYS_DELIBERATELY_DROPPED``, or when it starts with an underscore.
+    Note what this deliberately does NOT cover: a key the schema DOES model but
+    validation rejected (a bad enum value from an older build) stays dropped,
+    because re-emitting it would make the rejection permanent and re-warn on
+    every load.
+
+    Capture is a no-op safety net rather than an override: to_dict() restores a
+    captured key only if the emitted section lacks it, so a stale copy can never
+    clobber a live value.
+    """
+    captured: dict = {}
+    for section, raw in data.items():
+        if section not in _KNOWN_CONFIG_SECTIONS or not isinstance(raw, dict):
+            continue
+        section_obj = getattr(cfg, section, None)
+        extra = _SECTION_KEYS_EMITTED_ELSEWHERE.get(
+            section, frozenset()
+        ) | _SECTION_KEYS_DELIBERATELY_DROPPED.get(section, frozenset())
+
+        if section in _RECORD_MAP_SECTIONS and isinstance(section_obj, dict):
+            per_record: dict = {}
+            for name, entry in raw.items():
+                record = section_obj.get(name)
+                # A flat legacy entry (workspaces used to be plain strings) has
+                # no nested keys to lose; a record the load did not build (it was
+                # not a dict, or was rejected) has nothing to compare against.
+                if not isinstance(entry, dict) or record is None or not is_dataclass(record):
+                    continue
+                unknown = _unknown_keys_of(entry, record, extra)
+                if unknown:
+                    per_record[name] = unknown
+            if per_record:
+                logger.debug(
+                    "config: preserving unmodelled %s record key(s) on round-trip: %s",
+                    section,
+                    ", ".join(f"{n}.{k}" for n, ks in sorted(per_record.items()) for k in ks),
+                )
+                captured[section] = per_record
+            continue
+
+        if section_obj is None or isinstance(section_obj, type) or not is_dataclass(section_obj):
+            continue
+        unknown = _unknown_keys_of(raw, section_obj, extra)
+        if unknown:
+            logger.debug(
+                "config: preserving unmodelled %s key(s) on round-trip: %s",
+                section,
+                ", ".join(sorted(unknown)),
+            )
+            captured[section] = unknown
+    return captured
+
+
+def restore_extra_section_keys(emitted: dict, extra_keys: dict) -> None:
+    """Fill captured unknown keys back into *emitted* (the to_dict() document).
+
+    Fill only — a key already present in the emitted document is never
+    overwritten, so a captured copy can neither clobber a live value nor undo a
+    deliberate deletion. Handles both capture shapes (see
+    :func:`capture_extra_section_keys`). Owned here beside the capture so the
+    two shapes cannot drift apart.
+    """
+    for section, unknown in extra_keys.items():
+        node = emitted.get(section)
+        if not isinstance(node, dict):
+            continue
+        if section in _RECORD_MAP_SECTIONS:
+            for name, record_unknown in unknown.items():
+                record = node.get(name)
+                if not isinstance(record, dict):
+                    continue  # the record was deleted in memory: stay deleted
+                for k, v in record_unknown.items():
+                    if k not in record:
+                        record[k] = v
+            continue
+        for k, v in unknown.items():
+            if k not in node:
+                node[k] = v
+
+
+def drop_extra_section_keys(document: dict, extra_keys: dict) -> None:
+    """Remove captured unknown keys from *document* (a browser-facing view).
+
+    The masked config response masks by SCHEMA path, so an unknown key is
+    invisible to its sensitivity walk — a credential a previous build stored
+    under a since-renamed key would ship verbatim. Preserving such a key for
+    save() is the point of the capture; showing it to the browser is not. Same
+    shape handling as :func:`restore_extra_section_keys`.
+    """
+    for section, unknown in extra_keys.items():
+        node = document.get(section)
+        if not isinstance(node, dict):
+            continue
+        if section in _RECORD_MAP_SECTIONS:
+            for name, record_unknown in unknown.items():
+                record = node.get(name)
+                if isinstance(record, dict):
+                    for k in record_unknown:
+                        record.pop(k, None)
+            continue
+        for k in unknown:
+            node.pop(k, None)
 
 
 def _deep_merge(base: dict, overlay: dict) -> dict:

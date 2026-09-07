@@ -32,7 +32,6 @@ import {
   Check,
   ExternalLink,
   ChevronDown,
-  X,
   Power,
   Loader2,
   MoreHorizontal,
@@ -58,7 +57,6 @@ import {
   DropdownMenuSeparator,
 } from '../../components/ui/dropdown-menu'
 import ErrorNotice from '../../components/ErrorNotice'
-import AskAgentButton from '../../components/AskAgentButton'
 import type { ErrorReport } from '../../utils/errorReport'
 import { parseErrorCode } from '../../utils/errorReport'
 import { reportInstanceFailure } from '../../utils/instanceFailureReport'
@@ -507,6 +505,7 @@ function PrereqRow({
   onRecheck,
   rechecking,
   extraAction,
+  error,
 }: {
   ok: boolean
   title: string
@@ -517,6 +516,9 @@ function PrereqRow({
   onRecheck?: () => void
   rechecking?: boolean
   extraAction?: React.ReactNode
+  /** A failure of one of this row's own actions, rendered beside the buttons
+   *  that caused it rather than in the page-level notices above the fold. */
+  error?: string
 }) {
   return (
     <li className="flex items-start gap-3 py-2.5 border-b border-border last:border-b-0">
@@ -532,7 +534,7 @@ function PrereqRow({
           </code>
         ) : null}
         {(onCopyCommand || onRecheck || extraAction) && (
-          <div className="mt-2 flex gap-2 flex-wrap">
+          <div className="mt-2 flex gap-2 flex-wrap items-center">
             {onCopyCommand && (
               <Btn onClick={onCopyCommand}>
                 {copied ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_command')}
@@ -555,6 +557,11 @@ function PrereqRow({
             )}
           </div>
         )}
+        {/* Its own line under the action row, not inside it: the notice carries
+            the hand-off button, and Copy + Re-check already fill the row's
+            two-action budget. askAgent ON: the launch form on this tab persists
+            its size and account, so the navigation loses nothing. */}
+        <ErrorNotice variant="inline" className="mt-1.5" message={error} askAgent />
       </div>
     </li>
   )
@@ -604,6 +611,11 @@ function LaunchProgressCard({ job, onCancel, onSignin, cancelling }: {
             </span>
             <div className="min-w-0">
               <div className={`text-[13px] ${step.state === 'pending' ? 'text-muted' : 'text-text-strong'}`}>{step.label}</div>
+              {/* Progress detail, not the error surface: `launch_job.py` sets
+                  `job.error` on every path that marks a step failed (the reaper
+                  and the exception handler, which also copies the same text into
+                  `detail`), and `job.error` renders through the ErrorNotice below.
+                  Painting it red here too would show one failure twice. */}
               {step.detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{step.detail}</div> : null}
             </div>
           </li>
@@ -689,6 +701,8 @@ export function RemoteCrewPanel() {
       : 'balanced'
   ) as SizeTier['key']
   const [copied, setCopied] = useState<'command' | 'policy' | null>(null)
+  /** A failed copy, pinned to the checklist row whose button was pressed. */
+  const [copyErr, setCopyErr] = useState<{ target: 'command' | 'policy'; message: string } | null>(null)
   const [activeLaunchId, setActiveLaunchId] = useState<string | null>(null)
   const [confirmDeleteTag, setConfirmDeleteTag] = useState<string | null>(null)
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
@@ -1012,19 +1026,43 @@ export function RemoteCrewPanel() {
     void queryClient.invalidateQueries({ queryKey: ['cloud', 'preflight'] })
   }, [profile, region, queryClient])
 
-  const copyCommand = useCallback((command: string) => {
-    void copyToClipboard(command)
+  // Both copies branch on the boolean `copyToClipboard` returns: a denied
+  // clipboard write used to paint "Copied" regardless, which is a false
+  // confirmation on exactly the command the user is about to need. Each failure
+  // is keyed to its own button so it renders beside it (the checklist sits well
+  // below the page-level notices), and the two messages differ because the
+  // command IS on screen to select by hand while the policy JSON never is.
+  const copyCommand = useCallback(async (command: string) => {
+    setCopyErr(null)
+    // try/catch as well as the boolean: the helper resolves `false` when the
+    // `execCommand` fallback reports failure, but REJECTS when that fallback
+    // throws, and this callback is fire-and-forget at its call site — an
+    // unhandled rejection would be a copy that failed with no notice.
+    let ok = false
+    try {
+      ok = await copyToClipboard(command)
+    } catch {
+      ok = false
+    }
+    if (!ok) {
+      setCopyErr({ target: 'command', message: i18nT('pages.settings.remoteCrewPanel.copy_failed') })
+      return
+    }
     setCopied('command')
     setTimeout(() => setCopied(null), 1500)
   }, [])
   const copyPolicy = useCallback(async () => {
+    setCopyErr(null)
     try {
       const { policy } = await api.cloudIamPolicy()
-      void copyToClipboard(policy)
+      if (!(await copyToClipboard(policy))) {
+        setCopyErr({ target: 'policy', message: i18nT('pages.settings.remoteCrewPanel.copy_policy_failed') })
+        return
+      }
       setCopied('policy')
       setTimeout(() => setCopied(null), 1500)
     } catch (e) {
-      setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')))
+      setCopyErr({ target: 'policy', message: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })
     }
   }, [errMsg])
 
@@ -1129,19 +1167,26 @@ export function RemoteCrewPanel() {
 
   const Notices = (
     <>
-      {actionErr && <ErrorNotice message={actionErr} onDismiss={() => setActionErr(null)} className="mb-3" />}
+      {/* askAgent ON on both notices: every unsaved input this panel holds
+          outlives the navigation — the add-crew and edit-crew forms live in the
+          store (setCrewAddForm / setCrewEditForm), the launch form's size and
+          account in localStorage — so the hand-off destroys nothing, and every
+          message here (a refused connect, a failed diagnose, a rejected launch)
+          is a gateway-side failure the agent can look into. */}
+      {actionErr && <ErrorNotice message={actionErr} onDismiss={() => setActionErr(null)} className="mb-3" askAgent />}
+      {/* A diagnosis names the broken link (`diagnosis.reason`, or the tunnel's
+          own `status.error`), so it is an error surface, not a status line. The
+          structured `report` is passed when the journal produced one, so the
+          hand-off carries the transport and stage rather than a message match. */}
       {diagNote && (
-        <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-accent/10 text-accent border border-accent/30">
-          <Stethoscope size={14} className="lucide-inline mt-0.5 shrink-0" />
-          <span className="flex-1 break-words">{diagNote}</span>
-          {/* The dead end this PR exists to remove: a diagnosis names the broken
-              link and then leaves the user with nothing to do about it. Safe on both
-              tabs because every unsaved input this panel holds outlives the
-              navigation — the two forms in the store, the launch form's size and
-              account in localStorage. */}
-          {diagReport && <AskAgentButton report={diagReport} />}
-          <button type="button" aria-label={i18nT('pages.settings.instancesPanel.dismiss_diagnosis')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => { setDiagNote(null); setDiagReport(null) }}><X size={12} /></button>
-        </div>
+        <ErrorNotice
+          message={diagNote}
+          report={diagReport ?? undefined}
+          askAgent
+          onDismiss={() => { setDiagNote(null); setDiagReport(null) }}
+          className="mb-3"
+          testId="remote-crew-diagnosis"
+        />
       )}
     </>
   )
@@ -1341,6 +1386,20 @@ export function RemoteCrewPanel() {
                 region: checkedRegion,
               })}
             </p>
+            {/* Rendered independently of `preflight`: a failed RE-check keeps the
+                previous result in cache, and the rows below would otherwise paint
+                that stale verdict as if the check had just passed. askAgent ON:
+                the launch form on this tab keeps its size and account in
+                localStorage (see the diagnosis notice above), so the navigation
+                destroys nothing, and a preflight that cannot even run is exactly
+                the credential/CLI problem the agent can look into. */}
+            {preflightQuery.isError && (
+              <ErrorNotice
+                className="mb-2"
+                message={errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
+                askAgent
+              />
+            )}
             {preflightQuery.isLoading ? (
               <div className="flex items-center gap-2 text-muted text-sm py-2">
                 <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.remoteCrewPanel.checking')}
@@ -1357,7 +1416,7 @@ export function RemoteCrewPanel() {
                   rechecking={preflightQuery.isFetching}
                 />
                 <PrereqRow ok={preflight.ec2_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ec2')} detail={preflight.ec2_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
-                <PrereqRow ok={preflight.cloudformation_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>} />
+                <PrereqRow ok={preflight.cloudformation_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
                 <PrereqRow ok={preflight.ssm_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ssm')} detail={preflight.ssm_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
                 <PrereqRow
                   ok={preflight.session_manager_plugin}
@@ -1367,16 +1426,19 @@ export function RemoteCrewPanel() {
                   onCopyCommand={
                     preflight.session_manager_plugin || !preflight.session_manager_plugin_command
                       ? undefined
-                      : () => copyCommand(preflight.session_manager_plugin_command as string)
+                      : () => { void copyCommand(preflight.session_manager_plugin_command as string) }
                   }
                   copied={copied === 'command'}
+                  error={copyErr?.target === 'command' ? copyErr.message : undefined}
                   onRecheck={preflight.session_manager_plugin ? undefined : runCheck}
                   rechecking={preflightQuery.isFetching}
                 />
               </ul>
             ) : (
               <div className="text-[13px] text-muted py-1">
-                {preflightQuery.error ? errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad')) : i18nT('pages.settings.remoteCrewPanel.credentials_bad')}
+                {/* The failure itself renders above, independent of this branch;
+                    this is the no-result state with its Re-check. */}
+                {i18nT('pages.settings.remoteCrewPanel.credentials_bad')}
                 <div className="mt-2"><Btn onClick={runCheck} disabled={preflightQuery.isFetching}><RefreshCw className={`lucide-inline${preflightQuery.isFetching ? ' animate-spin' : ''}`} /> {preflightQuery.isFetching ? i18nT('pages.settings.remoteCrewPanel.checking') : i18nT('pages.settings.remoteCrewPanel.re_check')}</Btn></div>
               </div>
             )}
@@ -1435,6 +1497,21 @@ export function RemoteCrewPanel() {
             </div>
           </Card>
 
+          {/* The progress poll itself failed. Gated on the query having a job to
+              poll (`effectiveLaunchId`), NOT on `activeJob`: when the polled
+              detail never arrived and the list carries no copy either, the card
+              below is absent and this notice is the only thing that says why.
+              When a card IS showing, it shows the last state received, not a
+              live one, and would otherwise just stop moving. askAgent ON: the
+              launch form persists its size and account, so the navigation loses
+              nothing. */}
+          {effectiveLaunchId && launchStatusQuery.isError && (
+            <ErrorNotice
+              className="mt-4"
+              message={errMsg(launchStatusQuery.error, i18nT('pages.settings.remoteCrewPanel.launch_status_unavailable'))}
+              askAgent
+            />
+          )}
           {activeJob && (
             <LaunchProgressCard
               job={activeJob}

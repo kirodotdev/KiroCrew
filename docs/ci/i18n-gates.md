@@ -25,12 +25,13 @@ build over loopback and answers every `/api/**` call from fixtures.
 
 ## `npm run i18n:check` is a RUNNER, not an `&&` chain
 
-`scripts/i18n-check.mjs` spawns eight scripts, keeps every byte of their output,
-then reports the twelve checks they contain in one table.
+`scripts/i18n-check.mjs` spawns the scripts named in
+`scripts/lib/i18n-gate-table.mjs`, keeps every byte of their output, then reports
+every check they contain in one table.
 
-An `&&` chain short-circuits. With twelve checks that means a PR only ever learns
+An `&&` chain short-circuits. With this many checks that means a PR only ever learns
 about its **first** failure, fixes it, pushes, waits for another full frontend-lint
-round, and discovers the next. Up to twelve rounds for one PR, over independent
+round, and discovers the next — one round per check, over independent
 measurements of the same tree. The runner reports all of them once, and folds each
 script's raw output into its own collapsed CI group so nothing is lost.
 
@@ -58,7 +59,10 @@ conversion path.
 
 ## The table
 
-Fourteen checks over eight scripts. The split is by the only question an author
+The rows are the checks declared in `scripts/lib/i18n-gate-table.mjs`, which is the
+one place that decides both the table and the exit code — a number written here
+instead would drift the moment a check is added. The split is by the only question an
+author
 has: **is this mine to fix?** A `diff`-scoped finding is on a line this branch
 wrote or in a file it touched. A `repo`-scoped finding is a whole-repo measurement
 the branch may simply have inherited.
@@ -67,18 +71,23 @@ the branch may simply have inherited.
 |---|---|---|---|
 | `[added-lines]` | diff | zero tolerance | a user-visible literal on a line THIS BRANCH WROTE |
 | `[vs-base]` | diff | zero tolerance | a file you touched holds more untranslated strings than at the base |
+| `[unit-added-lines]` | diff | zero tolerance | a number+unit literal on a line this branch wrote. Runs as a script, not a vitest test: it parses the whole in-scope tree with the TypeScript compiler, so its cost scales with the repo and it outgrew the suite's per-test budget under coverage instrumentation |
+| `[unit-vs-base]` | diff | zero tolerance | a file you touched gained number+unit literals relative to the base |
 | `[source-strings]` | diff | zero tolerance | badly shaped copy among only the English keys your branch adds |
 | `[changed-values]` | diff | zero tolerance | catalog QA over every value the branch added or changed, all languages |
+| `[changed-passthrough]` | diff | zero tolerance | a catalog value the branch added or changed that still reads as English. Separate from `changed-values` although one script hosts both: "you left this in English" and "your quotes do not pair" are different work, and one shared count would mean two things |
 | `[key-refs]` | repo | hard zero | a `t('key')` naming a key that does not exist |
 | `[plurals]` | repo | hard zero | an i18nT-adjacent plural suffix concatenated outside the translation call |
 | `[plurals-hardcoded]` | repo | ceiling — fails on growth | the same plural glue with NO `i18nT` in it — template-literal glue, JSX-text glue, string concatenation, or a whole-word ternary |
 | `[pseudolocale]` | repo | hard zero | `en-XA.json` stale relative to its generator |
 | `[dnt]` | repo | hard zero | a do-not-translate term respelt in a shipped catalog |
 | `[manifest-sync]` | repo | hard zero | a built-in `app.json` string and its `en.json` value stopped matching |
+| `[unit-ceiling]` | repo | report only | the un-migrated number+unit backlog against its stored baseline |
 | `[dynamic-keys]` | repo | report only | a call site whose key cannot be resolved statically |
 | `[extractable]` | repo | report only | a literal in markup the codemod could have extracted |
 | `[untranslated]` | repo | report only | per-file ceilings over the frozen untranslated debt |
 | `[allcaps]` | repo | report only | untranslated strings inside ALL-CAPS module constants |
+| `[untranslated-passthrough]` | repo | report only | the per-locale backfill worklist of catalog values still reading as English. Deliberately carries NO ceiling, unlike every other report-only row: `changed-passthrough` already refuses growth where it is introduced, so a stored total would buy nothing and add a file to update and a way for two branches to conflict over a count |
 
 ### Only three kinds of check can fail the step
 

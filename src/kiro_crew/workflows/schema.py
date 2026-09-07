@@ -22,7 +22,7 @@ separately). Pure functions + one async retry helper, all unit-testable against
 a stub text producer (never a real agent).
 
 Gates: C1 valid object returned · C2 malformed→retry→success, all-malformed→None ·
-C3 schema-violating object rejected. See ``docs/system-specs/modules/workflow-gates.md``.
+C3 schema-violating object rejected. See ``docs/system-specs/modules/workflows.md``.
 """
 
 from __future__ import annotations

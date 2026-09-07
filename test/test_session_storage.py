@@ -1674,19 +1674,27 @@ class TestUntrustedNamesAreLogSafeOutsideListTrash:
         planted = OSError(13, "Permission denied", str(forged / self._FORGED_NAME))
 
         # ``session_storage.os`` is the global module, so this patch is also seen
-        # by ``shutil.rmtree`` during fixture teardown (which passes ``topdown=``
-        # on Windows).  Accept the real signature and divert only the walk of the
-        # forged batch, delegating every other call to the genuine ``os.walk``.
+        # by other walk users during teardown. Accept the real signature and
+        # divert only the walk of the forged batch, delegating every other call
+        # to the genuine function. Both mechanisms are patched because
+        # ``_unlisted_files`` picks fwalk-vs-walk at call time by availability
+        # (fwalk does not exist on Windows).
+        real_fwalk = getattr(os, "fwalk", None)
         real_walk = os.walk
 
-        def _walk(top, *args, onerror=None, **kwargs):  # type: ignore[no-untyped-def]
-            if Path(top) == forged:
-                assert callable(onerror)
-                onerror(planted)
-                return iter(())
-            return real_walk(top, *args, onerror=onerror, **kwargs)
+        def _divert(real):  # type: ignore[no-untyped-def]
+            def inner(top, *args, onerror=None, **kwargs):  # type: ignore[no-untyped-def]
+                if Path(top) == forged:
+                    assert callable(onerror)
+                    onerror(planted)
+                    return iter(())
+                return real(top, *args, onerror=onerror, **kwargs)
 
-        monkeypatch.setattr(session_storage.os, "walk", _walk)
+            return inner
+
+        monkeypatch.setattr(session_storage.os, "walk", _divert(real_walk))
+        if real_fwalk is not None:
+            monkeypatch.setattr(session_storage.os, "fwalk", _divert(real_fwalk))
         monkeypatch.setattr(session_storage, "_manifest_rels", lambda batch: [])
 
         with pytest.raises(SessionStorageError) as raised:
@@ -2307,7 +2315,10 @@ class TestSharedStoreRefusal:
                 onerror(OSError(5, "simulated read failure"))
             return iter(())
 
+        # Both mechanisms: ``_unlisted_files`` picks fwalk-vs-walk at call time
+        # by availability (fwalk does not exist on Windows).
         monkeypatch.setattr(session_storage.os, "walk", failing_walk)
+        monkeypatch.setattr(session_storage.os, "fwalk", failing_walk, raising=False)
 
         assert session_storage.empty_trash([batch.batch_id]) == 0
         # The batch survives, so nothing was destroyed on an unverifiable scan.

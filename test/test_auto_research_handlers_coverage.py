@@ -439,6 +439,11 @@ class TestPollWorkflowCampaign:
         await h._poll_workflow_campaign(cid, _workflow_state(result=MagicMock(return_value=None)), h.get_campaign(cid)["started_at"])
         assert _status(cid) == h.CampaignStatus.FAILED
         assert "snapshot lost" in (h.get_campaign(cid) or {})["error_message"]
+        # The terminal status commit and the SSE emit are two scheduling events:
+        # _sse_from_thread hands _emit_sse to the loop via call_soon_threadsafe
+        # from the worker thread, so a direct await of the poll can return before
+        # that callback has run. Wait on the signal this test asserts on.
+        assert await _await_until(lambda: "failed" in sse.types())
         assert sse.types() == ["failed"]
 
     @pytest.mark.asyncio
@@ -525,6 +530,11 @@ class TestPollWorkflowCampaign:
         await h._poll_workflow_campaign(cid, _workflow_state(result=MagicMock(return_value=snap)), h.get_campaign(cid)["started_at"])
         assert (h._campaign_dir(cid) / "FINDINGS.md").read_text() == "# Report\nAll done."
         assert _status(cid) == h.CampaignStatus.COMPLETE
+        # The terminal status commit and the SSE emit are two scheduling events:
+        # _sse_from_thread hands _emit_sse to the loop via call_soon_threadsafe
+        # from the worker thread, so a direct await of the poll can return before
+        # that callback has run. Wait on the signal this test asserts on.
+        assert await _await_until(lambda: "complete" in sse.types())
         assert sse.types() == ["complete"]
 
     @pytest.mark.asyncio
@@ -556,6 +566,11 @@ class TestPollWorkflowCampaign:
         await h._poll_workflow_campaign(cid, _workflow_state(result=MagicMock(return_value=snap)), h.get_campaign(cid)["started_at"])
         assert _status(cid) == h.CampaignStatus.FAILED
         assert (h.get_campaign(cid) or {})["error_message"] == "engine exploded"
+        # The terminal status commit and the SSE emit are two scheduling events:
+        # _sse_from_thread hands _emit_sse to the loop via call_soon_threadsafe
+        # from the worker thread, so a direct await of the poll can return before
+        # that callback has run. Wait on the signal this test asserts on.
+        assert await _await_until(lambda: "failed" in sse.types())
         assert sse.types() == ["failed"]
 
     @pytest.mark.asyncio

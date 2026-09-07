@@ -21,6 +21,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
+import kiro_crew.config.resolution as _resolution
 from kiro_crew import beacon, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
@@ -67,6 +68,7 @@ from kiro_crew.executors import discovery_executor
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
 from kiro_crew.session_workspace import is_valid_id
+from kiro_crew.stt import decoder as stt_decoder
 from kiro_crew.stt import models as stt_models
 from kiro_crew.stt.limits import (
     MAX_IDLE_EVICT_SECS,
@@ -80,6 +82,7 @@ from kiro_crew.transcribe import (
     _whisper_language,
     availability_detail,
     ensure_ffmpeg_in_path,
+    ffmpeg_source,
     is_available,
 )
 
@@ -105,6 +108,77 @@ _SSE_INTERVAL_SECS = 5
 # distinct from "" so the UI can render a "set (hidden)" placeholder.
 _SENSITIVE_MASK = "••••••••"
 
+# Agent-record fields that carry agent- or package-writable FREE TEXT. An agent
+# can edit ``config.json`` directly, and agent sync copies ``description``
+# straight off a discovered agent spec, so a third-party package controls these
+# strings. They are not schema-``sensitive`` (they are not secrets the OWNER
+# stored), so the schema-driven walk in ``_masked_config_dict`` never touches
+# them — this named list is what closes that gap on the config endpoint (#8717).
+#
+# Scope: every ``str`` field of ``KiroCrewAgentConfig`` whose LOAD path does not
+# pin its shape. ``reasoning_effort`` (``coerce_effort`` collapses anything but
+# a known level to ``""``) and ``session_color`` (``_safe_color`` pins to
+# ``#rrggbb``) are excluded because their guards already refuse redactable
+# content; everything else — including fields with only an isinstance-str
+# guard, which constrains type but not content — is in. A test enumerates the
+# dataclass's ``str`` fields against this tuple plus that exception set, so a
+# newly added free-text field fails loudly instead of shipping unmasked.
+#
+# The record KEY (the agent name) is handled separately in the pass below:
+# a suspicious-keyed record is REMOVED from the browser-facing view (masking a
+# key would collide two suspicious records into one entry), and the
+# name-reference fields that could still spell it are masked. PR #8472 refuses
+# a credential-shaped name at creation, which will close that hazard at its
+# source for names arriving through the create route once it lands.
+_AGENT_UNTRUSTED_TEXT_FIELDS = (
+    "description",
+    "triggers",
+    "kiro_agent",
+    "workspace",
+    "memory_store",
+    "model",
+    "source",
+    "telegram_account",
+)
+
+
+def _mask_agent_free_text(value: object) -> object:
+    """Render ONE agent-record free-text value for the config response.
+
+    Same rule PR #8472 proposes for the roster endpoint's rows: a value the
+    redactors would alter — credential- or exfiltration-URL-shaped text — is
+    replaced WHOLESALE by ``_SENSITIVE_MASK``; a non-string is masked too (it
+    is not renderable content, and ``description`` has no load-time type guard,
+    so one can genuinely arrive here). Benign content passes through
+    byte-identical, so an ordinary stored value renders exactly as written.
+    Until #8472 lands, ``GET /api/agents`` still ships these fields verbatim —
+    that half of the class is tracked there, not here.
+
+    A fixed sentinel rather than an in-place scrub: a scrubbed view is a
+    FUNCTION of the stored value, so any future write-side "treat the mask as
+    unchanged" rule would have to recompute the transform and breaks under
+    redaction-chain drift or a stale view; the sentinel is recognizable
+    regardless of either. Named cost: a value containing one credential-shaped
+    token is masked entirely, the same trade ``_masked_config_dict`` already
+    makes for schema-sensitive values.
+
+    Keyed on ``_redact_external`` itself rather than a second detector so this
+    rule and the roster's cannot drift apart. The import is function-local to
+    match this module's handler-import style, not for boot-path weight —
+    ``handlers.agents`` already imports ``discover`` at module level, so it is
+    loaded at handler setup regardless.
+    """
+    from kiro_crew.dashboard.handlers.discover import _redact_external
+
+    if not isinstance(value, str):
+        return _SENSITIVE_MASK
+    # No falsy pre-check on purpose: ``_redact_external`` returns falsy input
+    # unchanged, so ``""`` compares equal and passes through — a ``value and``
+    # guard here would only look like the fail-open bug class without being it.
+    if _redact_external(value) != value:
+        return _SENSITIVE_MASK
+    return value
+
 
 def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     """Return ``cfg.to_dict()`` with sensitive string values masked.
@@ -116,6 +190,25 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     is ever added it MUST treat ``_SENSITIVE_MASK`` as "unchanged" and keep the
     stored value. Sensitivity is schema-driven (``sensitive=True`` field
     metadata), so newly added sensitive fields are masked automatically.
+
+    Two masking passes. The schema walk covers owner-stored secrets
+    (``sensitive=True``). A second pass covers agent-record free text
+    (``_AGENT_UNTRUSTED_TEXT_FIELDS``): those values are agent- and
+    package-writable, so a credential- or exfiltration-URL-shaped one is
+    masked wholesale (``_mask_agent_free_text``) instead of shipping to the
+    browser verbatim. The write-side note above holds for this pass too:
+    neither branch of this endpoint can echo the mask into storage — the
+    PATCH allowlist (``_EDITABLE_CONFIG``) names no ``agents.*`` path, and
+    the PUT branch reads only the singular ``agent`` section against a
+    hardcoded key list. The agents CRUD route is the write path for these
+    fields; its read pair is ``GET /api/agents``, which today still ships
+    them verbatim — that half of the class is PR #8472's, which proposes the
+    same mask plus the mask-means-unchanged write rule this endpoint does not
+    need. Named cost of the wider field set: the overview's config tab renders
+    ``kiro_agent``/``workspace``/``memory_store`` and cross-references the
+    latter two against the workspace and store lists, so a masked value breaks
+    that "used by" row — but only for a record whose value is already
+    credential-shaped, and therefore already meaningless as a reference.
     """
     from kiro_crew.config.schema import JSON_SCHEMA
     from kiro_crew.config.validation import _is_sensitive_path
@@ -134,6 +227,15 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
     for _extra_key in getattr(cfg, "_extra_sections", {}):
         masked.pop(_extra_key, None)
 
+    # Same reasoning one level down (KiroCrewConfig._extra_keys): an unknown key
+    # captured INSIDE a modelled section — or inside a named agents/workspaces/
+    # memory_stores record — is absent from the schema too, so the sensitivity
+    # walk below cannot recognize it either; a credential a previous build stored
+    # under a since-renamed key (`slack.legacy_bot_token`) would ship verbatim.
+    # Preserving it for save() is the point of the capture; showing it to the
+    # browser is not.
+    _resolution.drop_extra_section_keys(masked, getattr(cfg, "_extra_keys", {}))
+
     def _walk(node: object, prefix: str) -> None:
         if isinstance(node, dict):
             for key, val in list(node.items()):
@@ -148,6 +250,44 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
                     node[key] = _SENSITIVE_MASK
 
     _walk(masked, "")
+
+    # Second pass: agent-record free text. These fields are absent from the
+    # schema's sensitive set by design (they are not owner secrets), so the walk
+    # above cannot cover them; see _AGENT_UNTRUSTED_TEXT_FIELDS. Both response
+    # sites of this endpoint (the GET body and the PATCH echo) funnel through
+    # this one function, so this pass gives the redaction rule surface coverage
+    # here rather than the point coverage #8717 records.
+    #
+    # The record KEY (the agent name) is handled by REMOVAL, not masking: agent
+    # sync stores a discovered agent's name as this dict's key, so a
+    # credential-shaped package name would ship verbatim as a key — and masking
+    # a key would collide two suspicious records into one entry. Dropping the
+    # record from this browser-facing view (save() still carries it) leaks
+    # nothing and collides nothing; the name-reference fields that could still
+    # spell the removed name (``default_agent``, ``session.pool_agent``) are
+    # masked when they match. Named cost: a suspicious-keyed record is invisible
+    # in the config tab — the same trade the roster's project rows make, and the
+    # name was never renderable content.
+    agents = masked.get("agents")
+    if isinstance(agents, dict):
+        removed: set[object] = set()
+        for name in list(agents.keys()):
+            if not isinstance(name, str) or _mask_agent_free_text(name) != name:
+                agents.pop(name)
+                removed.add(name)
+                continue
+            record = agents[name]
+            if not isinstance(record, dict):
+                continue
+            for field_name in _AGENT_UNTRUSTED_TEXT_FIELDS:
+                if field_name in record:
+                    record[field_name] = _mask_agent_free_text(record[field_name])
+        if removed:
+            if masked.get("default_agent") in removed:
+                masked["default_agent"] = _SENSITIVE_MASK
+            session_section = masked.get("session")
+            if isinstance(session_section, dict) and session_section.get("pool_agent") in removed:
+                session_section["pool_agent"] = _SENSITIVE_MASK
     return masked
 
 
@@ -593,6 +733,9 @@ _CODE_STT_UNAVAILABLE = "stt_unavailable"
 _CODE_STT_MISSING_AUDIO = "stt_missing_audio_field"
 _CODE_STT_AUDIO_TOO_LARGE = "stt_audio_too_large"
 _CODE_STT_FAILED = "stt_transcription_failed"
+#: A decoder fetch asked of a desktop release. Its own payload is the only decoder
+#: it will run, so the remedy is reinstalling the app, not a download.
+_CODE_STT_DECODER_BUNDLED = "stt_decoder_bundled"
 
 #: Background model-download and prewarm tasks, held ONLY so the loop keeps a
 #: strong reference: a task nobody references can be collected mid-await. Both
@@ -850,7 +993,7 @@ async def api_stt_status(request: web.Request) -> web.Response:
 
     # availability_detail imports the recogniser (or the AWS client), and each
     # is_present stats a model file: none of it belongs on the loop.
-    def _probe() -> tuple[stt.Availability, list[dict[str, object]], bool]:
+    def _probe() -> tuple[stt.Availability, list[dict[str, object]], bool, str | None]:
         # kiro_crew.stt.engine is imported HERE rather than at module scope: it
         # pulls numpy, and this module is imported on the gateway boot path, where
         # a gateway with speech-to-text switched off would otherwise pay for an
@@ -861,9 +1004,17 @@ async def api_stt_status(request: web.Request) -> web.Response:
             {"name": m.name, "size_bytes": m.size_bytes, "present": stt_models.is_present(m)}
             for m in stt_models.CATALOG
         ]
-        return availability_detail(cfg.stt), catalog, stt_engine.shared_engine().loaded
+        ensure_ffmpeg_in_path()
+        # Resolved on the same thread as the rest: it lists a store directory and,
+        # when a candidate is there, hashes up to 80 MB to authenticate it.
+        return (
+            availability_detail(cfg.stt),
+            catalog,
+            stt_engine.shared_engine().loaded,
+            ffmpeg_source(),
+        )
 
-    detail, catalog, engine_loaded = await asyncio.to_thread(_probe)
+    detail, catalog, engine_loaded, decoder_source = await asyncio.to_thread(_probe)
     present = {str(row["name"]): bool(row["present"]) for row in catalog}
     return web.json_response(
         {
@@ -883,6 +1034,21 @@ async def api_stt_status(request: web.Request) -> web.Response:
             # between a 30 ms transcription and one that pays a load first.
             "engine_loaded": engine_loaded,
             "download": dict(stt_models.store().status),
+            # The decoder every compressed input goes through, and what can be
+            # done about it. `source` names WHICH of the three the transcode path
+            # would run, because each one is repaired differently; `auto_fetch`
+            # says whether this host can be fixed in place at all, so the panel
+            # offers a button instead of a shell command; `os`/`arch` are the
+            # GATEWAY's, not the browser's, and are what a hand-off to an agent
+            # session needs in order to name the right remedy.
+            "ffmpeg": {
+                "present": decoder_source is not None,
+                "source": decoder_source,
+                "auto_fetch": _ffmpeg_auto_fetch(),
+                "os": platform.system(),
+                "arch": platform.machine(),
+                "download": dict(stt_decoder.store().status),
+            },
         }
     )
 
@@ -921,6 +1087,63 @@ async def api_stt_prepare(request: web.Request) -> web.Response:
     return web.json_response(
         {"model": model.name, "download": dict(stt_models.store().status)}, status=202
     )
+
+
+#: Values of the status endpoint's ``ffmpeg.auto_fetch``. ``bundled`` is not
+#: "available on a desktop app": a release carries its own authenticated decoder
+#: and repairs itself by being reinstalled, so downloading one there would install
+#: a second decoder the bundled resolver refuses to look at by design.
+AUTO_FETCH_AVAILABLE = "available"
+AUTO_FETCH_UNSUPPORTED = "unsupported"
+AUTO_FETCH_BUNDLED = "bundled"
+
+
+def _ffmpeg_auto_fetch() -> str:
+    """Whether this host's decoder can be fetched, and if not, why not."""
+    if platform_compat.is_bundled_interpreter():
+        return AUTO_FETCH_BUNDLED
+    if stt_decoder.artifact_for() is None:
+        return AUTO_FETCH_UNSUPPORTED
+    return AUTO_FETCH_AVAILABLE
+
+
+async def api_stt_ffmpeg_download(request: web.Request) -> web.Response:
+    """POST /api/stt/ffmpeg/download — start, or join, the decoder fetch.
+
+    Answers 202 with the current transfer state and lets the caller poll
+    ``GET /api/stt/status``, for the same reason ``POST /api/stt/prepare`` does: a
+    ~30 MB wheel is not something to hold a request open behind. Concurrent
+    callers share one transfer through the store's own lock.
+
+    Refused on a bundled interpreter rather than quietly answering 202: a desktop
+    release already carries an authenticated decoder, its resolver deliberately
+    never looks anywhere else, and so a fetch there would spend the operator's
+    bandwidth on a file nothing can use.
+    """
+    denied = _deny_app_token(request, "stt.ffmpeg_download")
+    if denied is not None:
+        return denied
+    auto_fetch = _ffmpeg_auto_fetch()
+    if auto_fetch != AUTO_FETCH_AVAILABLE:
+        return web.json_response(
+            {
+                "error": "no decoder can be fetched for this install",
+                "code": (
+                    stt_decoder.CODE_UNSUPPORTED
+                    if auto_fetch == AUTO_FETCH_UNSUPPORTED
+                    else _CODE_STT_DECODER_BUNDLED
+                ),
+                "auto_fetch": auto_fetch,
+            },
+            status=409,
+        )
+    store = stt_decoder.store()
+    if store.status.get("stage") != stt_decoder.STAGE_DOWNLOADING:
+        # Skipped while a transfer is already running purely so a polling panel
+        # cannot accumulate tasks; the store's lock, not this check, is what makes
+        # concurrent callers safe.
+        _spawn_stt_background(store.ensure())
+    return web.json_response({"download": dict(store.status)}, status=202)
 
 
 async def api_stt_prewarm(request: web.Request) -> web.Response:
@@ -975,7 +1198,19 @@ def _transcribe_extra_importable() -> bool:
 
 
 def _ffmpeg_install_commands() -> list[str]:
-    """System-decoder fallback for source installs without the ``voice`` extra."""
+    """System-decoder commands a source install can actually run, else ``[]``.
+
+    An empty list means "there is nothing a terminal can usefully be told here",
+    and the Settings page then offers the decoder fetch or a hand-off to an agent
+    session instead. It is not the same as "nothing is wrong": ``ffmpeg.present``
+    on ``GET /api/stt/status`` is what says whether a decoder exists.
+
+    There is deliberately no fallback command. A distribution with no FFmpeg
+    package (Amazon Linux, RHEL without EPEL) and no build script in reach used to
+    be handed ``echo 'Build ffmpeg from source: …'``, which a user pasted into a
+    terminal and got a URL echoed back at them -- a command whose only effect is to
+    print a sentence is a dead end wearing the costume of an instruction.
+    """
     ensure_ffmpeg_in_path()
     if _find_ffmpeg():
         return []
@@ -986,8 +1221,9 @@ def _ffmpeg_install_commands() -> list[str]:
         return ["winget install --id Gyan.FFmpeg"]
     if shutil.which("apt-get"):
         return ["sudo apt-get install -y ffmpeg"]
-    # Amazon Linux: no ffmpeg in the distro repos — build minimal ffmpeg from
-    # source (the official recommendation).
+    # Amazon Linux: no ffmpeg in the distro repos. A source build is the only
+    # honest answer, and only when the script is actually present -- naming a path
+    # that does not exist is worse than saying nothing.
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
     script = os.path.join(proj, "scripts", "build-ffmpeg.sh") if proj else ""
     if script and os.path.isfile(script):
@@ -996,7 +1232,7 @@ def _ffmpeg_install_commands() -> list[str]:
             " || sudo yum install -y gcc make nasm diffutils",
             f"bash {shlex.quote(script)}",
         ]
-    return ["echo 'Build ffmpeg from source: https://ffmpeg.org/releases/'"]
+    return []
 
 
 def _stt_prereq_commands(provider: str = "local") -> list[str]:
@@ -1745,6 +1981,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # empty allowlist stays off; an unrecognised pin_scope falls back to node).
     "dashboard.tailscale.trust_identity": {"type": "bool"},
     "dashboard.tailscale.pin_scope": {"type": "str", "max_len": 8},
+    # Refresh-chain peer binding (issue #2417). Editable here because the only
+    # direction a caller can move it is the one an operator may legitimately
+    # need for roaming, and the loader resolves anything non-boolean back to the
+    # bound default — so a malformed write cannot reopen the replay path.
+    "dashboard.tailscale.bind_refresh_chains": {"type": "bool"},
     # Local OTEL metric collection — the Privacy panel's recording switch. Safe
     # to expose where beacon_endpoint is not: turning this on writes JSONL under
     # ~/.kiro/crew/metrics. It is NOT unconditionally local, though —
@@ -2337,7 +2578,8 @@ def _invalid_session_path_id(session_id: str, agent_id: str | None = None) -> we
     in a real key like ``dashboard:slot-3``) and no narrower (a wider one puts
     the 500 back). Shape follows ``cron.py``'s ``_invalid_path_id_response`` --
     400 with an ``invalid_<name>`` ``code`` -- which is the contract #6301 names
-    and which AGENTS.md's code-field rule requires.
+    and which docs/system-specs/common/code-style.md
+    requires of a backend-owned error body.
 
     ``agent_id`` is checked second because that is the order the sinks validate
     in, so the reported code names the half the caller must actually fix.

@@ -60,14 +60,17 @@ describe('ChannelPage — Clear Context', () => {
     await waitFor(() => expect(vi.mocked(api).channelGet).toHaveBeenCalledWith('ch1'))
   })
 
-  it('shows alert on API failure', async () => {
+  it('reports an API failure through the in-page ErrorNotice, not a native alert', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
-    vi.spyOn(window, 'alert').mockImplementation(() => {})
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
     vi.mocked(api).channelClearContext = vi.fn().mockRejectedValue(new Error('server error'))
     renderWithProviders(<ChannelPage />)
     await waitFor(() => screen.getByTitle('Clear all context'))
     await userEvent.click(screen.getByTitle('Clear all context'))
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('server error')))
+    const notice = await screen.findByTestId('channel-error')
+    expect(notice.textContent).toContain('Failed to clear context')
+    expect(notice.textContent).toContain('server error')
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 
   it('clears a single agent via the agents panel with scope=agent', async () => {

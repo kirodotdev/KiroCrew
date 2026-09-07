@@ -5,6 +5,7 @@ import linearLogoUrl from './logos/linear.svg'
 import atlassianLogoUrl from './logos/atlassian.svg'
 import stripeLogoUrl from './logos/stripe.svg'
 import vercelLogoUrl from './logos/vercel.svg'
+import gitlabLogoUrl from './logos/gitlab.svg'
 
 /** Official provider brand marks for the Connections cards.
  *
@@ -36,6 +37,7 @@ const COLOURED: Record<string, string> = {
   linear: linearLogoUrl,
   atlassian: atlassianLogoUrl,
   stripe: stripeLogoUrl,
+  gitlab: gitlabLogoUrl,
 }
 
 /** The provider's brand mark, or null for a slug we ship no mark for (the card

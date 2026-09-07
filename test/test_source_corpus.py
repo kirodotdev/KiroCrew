@@ -90,7 +90,7 @@ class TestCorpusHealth:
 
     def test_every_file_is_python_under_the_package(self):
         root = src_root()
-        assert (root / "security.py").is_file(), f"{root} is not the kiro_crew package"
+        assert (root / "security" / "__init__.py").is_file(), f"{root} is not the kiro_crew package"
         for path, _text in source_texts():
             assert path.suffix == ".py"
             assert path.is_relative_to(root)
@@ -125,7 +125,8 @@ class TestCorpusHealth:
     def test_sources_are_the_real_file_contents(self):
         """Pins the read, not just the count: a corpus of empty strings is worse."""
         by_name = {path.name: text for path, text in source_texts()}
-        assert "def redact" in by_name["security.py"]
+        by_rel = {path.relative_to(src_root()).as_posix(): text for path, text in source_texts()}
+        assert "def redact" in by_rel["security/__init__.py"]
         assert "def batched_save" in by_name["session_map.py"]
 
     def test_a_filter_returns_a_subset_and_no_filter_returns_everything(self):

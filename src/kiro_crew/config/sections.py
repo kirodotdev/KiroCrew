@@ -34,6 +34,9 @@ from kiro_crew.computer_use.types import (
 from kiro_crew.computer_use.types import DEFAULT_SCREENSHOT_MAX_PX as _CU_DEFAULT_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import DEFAULT_TEXT_LIMIT as _CU_DEFAULT_TEXT_LIMIT
 from kiro_crew.config.resolution import _OBSERVED_DEGRADED_SECTIONS, DEGRADED_TAILSCALE
+from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
+from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
+from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS as _CONNECT_TIMEOUT_CEILING
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
@@ -61,6 +64,9 @@ logger = logging.getLogger("kiro_crew.config.loader")
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
+# Ceiling for a WHOLE orchestrator plan. The per-stage timeout multiplies by
+# stage count, so this is the only bound on total unattended runtime.
+DEFAULT_MAX_PLAN_DURATION = 7200  # 2 h
 # Auto-compaction threshold, as a percentage of the context window. Named
 # because two code paths need it — the dataclass field default (used only when
 # there is no config file) and the dict-load fallback in ``load()`` (used when
@@ -488,6 +494,64 @@ _AVATAR_IMAGE_EXTS = ("png", "jpg", "webp")
 #: currently committed file, so nothing overwrites a committed picture before
 #: the config save that commits its replacement.
 _AVATAR_FILE_PIN_RE = _re.compile(r"^[0-9a-f]{16}\.(?:png|jpg|webp)$")
+#: Agent lifecycle states a crew face may react to. A per-state override keys
+#: on one of these exactly; any other key is dropped, so a version-skewed or
+#: typo'd state name cannot smuggle an unbounded key set into config.json.
+_AVATAR_STATES = ("working", "done", "error")
+#: The only trait axes a per-state expression may move. The identity axes
+#: (brows/accessory/prop/tile/blush/flip) are deliberately excluded: a crew
+#: must stay recognisable as itself while its expression changes.
+_AVATAR_EXPRESSION_AXES = ("eyes", "mouth")
+#: Preset cue names a per-state sound may select. `"none"` is a real value
+#: (explicit silence), distinct from an absent state (the default, also
+#: silent) -- so a crew can opt one state out of a fleet-wide cue.
+_AVATAR_SOUNDS = ("none", "chime", "ding", "blip", "pop", "pulse")
+
+
+def _safe_expressions(value: object) -> dict:
+    """Return validated per-state expression overrides, or ``{}``.
+
+    Same forgiveness as the trait coercer: junk is dropped silently rather
+    than refused, because config.json is hand-editable and a malformed
+    expression must never cost the crew its otherwise-valid avatar. A state
+    whose axes all drop out is omitted, so the record never stores an empty
+    per-state dict.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for state in _AVATAR_STATES:
+        raw = value.get(state)
+        if not isinstance(raw, dict):
+            continue
+        axes = {}
+        for axis in _AVATAR_EXPRESSION_AXES:
+            v = raw.get(axis)
+            # An empty string is "absent", which is what omitting the axis
+            # already means -- storing it would be a second spelling of the
+            # same state.
+            if isinstance(v, str) and v:
+                axes[axis] = v[:_AVATAR_TRAIT_MAX_LEN]
+        if axes:
+            out[state] = axes
+    return out
+
+
+def _safe_sounds(value: object) -> dict:
+    """Return validated per-state sound cues, or ``{}``.
+
+    Unlike a trait value, a cue name IS pinned to a vocabulary: it selects a
+    shipped preset rather than naming an option the renderer can resolve to
+    absent, so an unknown name has no meaning to carry and is dropped.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for state in _AVATAR_STATES:
+        v = value.get(state)
+        if isinstance(v, str) and v in _AVATAR_SOUNDS:
+            out[state] = v
+    return out
 
 
 def _safe_avatar(value: object) -> dict:
@@ -496,7 +560,11 @@ def _safe_avatar(value: object) -> dict:
     Accepted shapes:
 
     - ``{"kind": "ghost", "traits": {...}}`` — pins the ghost face
-      trait-by-trait instead of deriving it from the crew name.
+      trait-by-trait instead of deriving it from the crew name. ``traits`` may
+      be absent (or empty) when the override carries only ``expressions`` /
+      ``sounds``: that spelling means "name-derived face, plus these
+      per-state overrides", and the record omits the key entirely rather than
+      storing ``{}``.
     - ``{"kind": "image"}`` (optional int ``v``, optional ``file``) — the crew
       wears an uploaded picture, served from ``GET /api/agents/{name}/avatar``.
       The file itself lives under the data home's agent-fenced
@@ -513,6 +581,25 @@ def _safe_avatar(value: object) -> dict:
     face. config.json is hand-editable (and agent-writable), so junk collapses
     to ``{}`` rather than crashing the load.
 
+    Both kinds may also carry two optional per-state keys, validated and then
+    round-tripped through the endpoints and config persistence (a string axis is
+    normalized by the same 32-char truncation a trait gets, so a longer value
+    comes back shortened rather than verbatim):
+
+    - ``expressions: {"<state>": {"eyes"?: str, "mouth"?: str}}`` — the face
+      moves those two axes while the agent is in that state. Only ``eyes`` and
+      ``mouth`` are accepted, so the identity axes stay put and the crew
+      remains recognisable as itself. Legal on ``kind: "image"`` too — stored,
+      and ignored by the picture renderer.
+    - ``sounds: {"<state>": "none"|"chime"|"ding"|"blip"|"pop"|"pulse"}`` — a
+      shipped cue preset per state. ``"none"`` is explicit silence, kept
+      distinct from an absent state so one state can opt out of a cue the
+      others use.
+
+    ``<state>`` is one of ``working``, ``done``, ``error``. Either key is
+    omitted from the record when validation leaves it empty, so a stored
+    avatar never carries ``{}`` for one.
+
     Trait *values* are deliberately not checked against the frontend's trait
     vocabulary: the renderer resolves an unknown option to "absent"
     (``EYES[k] ?? ''``), and keeping the vocabulary in one place (the style
@@ -522,6 +609,8 @@ def _safe_avatar(value: object) -> dict:
     """
     if not isinstance(value, dict):
         return {}
+    expressions = _safe_expressions(value.get("expressions"))
+    sounds = _safe_sounds(value.get("sounds"))
     if value.get("kind") == "image":
         out: dict[str, object] = {"kind": "image"}
         v = value.get("v")
@@ -531,30 +620,45 @@ def _safe_avatar(value: object) -> dict:
         f = value.get("file")
         if isinstance(f, str) and _AVATAR_FILE_PIN_RE.fullmatch(f):
             out["file"] = f
+        if expressions:
+            out["expressions"] = expressions
+        if sounds:
+            out["sounds"] = sounds
         return out
     if value.get("kind") != "ghost":
         return {}
     raw = value.get("traits")
-    if not isinstance(raw, dict):
-        return {}
     traits: dict[str, object] = {}
-    for key in _AVATAR_GHOST_STR_TRAITS:
-        v = raw.get(key, "")
-        traits[key] = v[:_AVATAR_TRAIT_MAX_LEN] if isinstance(v, str) else ""
-    for key in _AVATAR_GHOST_BOOL_TRAITS:
-        # `is True`, not bool(): config.json is hand-editable and
-        # bool("false") is True, so a string-typed value would render the
-        # opposite of what its author wrote. Only a real boolean counts.
-        traits[key] = raw.get(key, False) is True
-    traits["tile"] = _safe_color(raw.get("tile", ""))
-    # An all-empty trait set (every axis absent) is indistinguishable in
-    # intent from "no override" but would render a featureless ghost. The
-    # builder cannot produce it (Apply always carries the seeded defaults), so
-    # it only arrives via hand-written config or direct API use — collapse it
-    # to the one canonical "reset" spelling instead of storing a third state.
-    if all(not v for v in traits.values()):
+    if isinstance(raw, dict):
+        for key in _AVATAR_GHOST_STR_TRAITS:
+            v = raw.get(key, "")
+            traits[key] = v[:_AVATAR_TRAIT_MAX_LEN] if isinstance(v, str) else ""
+        for key in _AVATAR_GHOST_BOOL_TRAITS:
+            # `is True`, not bool(): config.json is hand-editable and
+            # bool("false") is True, so a string-typed value would render the
+            # opposite of what its author wrote. Only a real boolean counts.
+            traits[key] = raw.get(key, False) is True
+        traits["tile"] = _safe_color(raw.get("tile", ""))
+        # An all-empty trait set (every axis absent) is indistinguishable in
+        # intent from "no override" but would render a featureless ghost. The
+        # builder cannot produce it (Apply always carries the seeded
+        # defaults), so it only arrives via hand-written config or direct API
+        # use — drop it to the one canonical "no traits" spelling instead of
+        # storing a third state.
+        if all(not v for v in traits.values()):
+            traits = {}
+    ghost: dict[str, object] = {"kind": "ghost"}
+    if traits:
+        ghost["traits"] = traits
+    if expressions:
+        ghost["expressions"] = expressions
+    if sounds:
+        ghost["sounds"] = sounds
+    # `kind` alone carries no override — a bare ghost is the name-derived face,
+    # which is what an absent field already means.
+    if len(ghost) == 1:
         return {}
-    return {"kind": "ghost", "traits": traits}
+    return ghost
 
 
 def _meta(label: str, help: str, **kwargs: object) -> dict:
@@ -1039,16 +1143,18 @@ class AgentConfig:
         ),
     )
     chat_turn_timeout_secs: int = field(
-        default=7200,
+        default=14400,
         metadata=_meta(
             "Chat Turn Timeout (secs)",
             "Wall-clock ceiling for one chat turn. This is a runaway backstop, "
             "so it is clamped to 300s..86400s (24h) and can never be disabled. "
-            "Raise it above the 2h default for long unattended turns (full test "
-            "suites, long builds); the ACP transport's prompt wait follows it. "
-            "Hitting the ceiling is visible: the turn ends with a card naming "
-            "the limit. For work spanning days, prefer monitor/goal loops — "
-            "they end the turn between cycles and survive restarts.",
+            "The 4h default covers the longest single turn the shipped budgets "
+            "produce (a 90-minute test command plus a fix and a re-run, or a "
+            "blocking subagent wave at its 2h wait cap); the ACP transport's "
+            "prompt wait follows it. Hitting the ceiling is visible: the turn ends "
+            "with a card naming the limit. For work spanning many hours or days, "
+            "prefer monitor/goal loops — they end the turn between cycles and "
+            "survive restarts, which a single marathon turn cannot.",
         ),
     )
     session_start_timeout_secs: int = field(
@@ -1135,10 +1241,15 @@ class AgentConfig:
         metadata=_meta("SubAgent Max Turns", "Default tool-call budget per subagent."),
     )
     subagent_timeout_secs: int = field(
-        default=1800,
+        default=_SUBAGENT_TIMEOUT_SECS,
         metadata=_meta(
             "SubAgent Timeout (seconds)",
-            "Wall-clock timeout per subagent execution. 0 uses hardcoded default (1800s).",
+            "Wall-clock timeout per subagent execution. 0 uses the same default. "
+            f"Clamped to {_SUBAGENT_TIMEOUT_MIN}s..{_SUBAGENT_TIMEOUT_MAX}s at load "
+            "(0 is preserved). Raising it past 2 hours only helps the "
+            "fire-and-forget spawn_run path: a BLOCKING spawn_sub_agents call "
+            "collects for at most 2 hours whatever this is set to, so use "
+            "spawn_run for work longer than that.",
         ),
     )
     subagent_stall_idle_secs: int = field(
@@ -1359,6 +1470,16 @@ class OrchestratorConfig:
         default=1800,
         metadata=_meta(
             "Stage Timeout", "Max seconds per stage before auto-run stops. Default 30 min."
+        ),
+    )
+    max_plan_duration_seconds: int = field(
+        default=DEFAULT_MAX_PLAN_DURATION,
+        metadata=_meta(
+            "Max Plan Duration",
+            "Ceiling for a WHOLE auto-run plan in seconds, checked at each stage "
+            "boundary, with one warning at 75% of the budget. The per-stage "
+            "timeout above multiplies by stage count, so without this a long "
+            "plan can run unattended for hours. 0 disables. Default 2 h.",
         ),
     )
 
@@ -2023,6 +2144,21 @@ class TailscaleConfig:
             "effect on the next gateway start.",
         ),
     )
+    bind_refresh_chains: bool = field(
+        default=True,
+        metadata=_meta(
+            "Bind Refresh Chains To The Device",
+            "Bind a session's 30-day refresh chain to the tailnet peer that "
+            "opened it, so a stolen refresh cookie cannot be replayed from a "
+            "different allowed device. On by default. Only turn it off if you "
+            "need one session to roam between your DEVICES while pin_scope is "
+            "'node' — with pin_scope 'login' the pin is your identity, not the "
+            "device, so roaming already works. Turning it off means a stolen "
+            "refresh cookie renews from any allowed node. Existing chains keep "
+            "the binding they were opened with; the change applies to sessions "
+            "started after the next gateway start.",
+        ),
+    )
     keep_awake: bool = field(
         default=True,
         metadata=_meta(
@@ -2198,6 +2334,11 @@ def _tailscale_config_from(
         trust_identity=trust_identity,
         allowed_logins=allowed_logins,
         pin_scope=pin_scope,
+        # Defaults TRUE, and a non-boolean resolves to TRUE as well: this is a
+        # narrowing-only field like the two rules above, so an operator typo may
+        # only ever leave the binding ON, never silently reopen the replay path
+        # the binding closes (issue #2417).
+        bind_refresh_chains=_safe_bool(data.get("bind_refresh_chains"), True),
         keep_awake=_safe_bool(data.get("keep_awake"), True),
     )
 
@@ -2863,6 +3004,17 @@ class KiroCrewAgentConfig:
         default="kirocrew",
         metadata=_meta("Source", "Agent origin: kirocrew or builtin."),
     )
+    starred: bool = field(
+        default=False,
+        metadata=_meta(
+            "Starred",
+            "Marks this crew as a favourite on the Crew Members page. Purely a "
+            "roster preference: the page's star filter shows only starred "
+            "crews, so the dozens of package-installed crews the agent sync "
+            "writes here can be collapsed behind the few you actually drive. "
+            "Never read by routing, spawning, or the orchestrator.",
+        ),
+    )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
     # defaults (1h) are build-scale forbearance; an agent that never runs a long
     # build (a pure-LLM reviewer, read-only git) can declare much lower windows
@@ -3430,19 +3582,24 @@ class TelemetryConfig:
 # GET /api/config/kirocrew response (which serializes a freshly loaded config)
 # reports the clamped value rather than the tampered one.
 SUBAGENT_AUTO_MAX_CEILING = 64  # agent.subagent_auto_max — concurrent subagent ceiling
-SUBAGENT_MAX_TURNS_CEILING = 200  # agent.subagent_max_turns — per-subagent turn budget
+SUBAGENT_MAX_TURNS_CEILING = 1000  # agent.subagent_max_turns — per-subagent turn budget
 POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
 
 # agent.chat_turn_timeout_secs — wall-clock ceiling for one chat turn. The ACP
 # transport's per-prompt wait follows this value (acp/client.py
 # ``resolve_prompt_timeout``, which adds a margin so the dashboard's visible
-# card fires before the transport cut), so the max is no longer pinned to the
-# transport's 2h default. It is bounded at 24h because the ceiling is a runaway
-# backstop, not a scheduler: a single prompt→response turn longer than a day is
-# pathological, and multi-day unattended operation belongs to the loop
-# mechanisms (monitor/goal loops, crons), which end the turn between cycles and
-# survive restarts — a marathon turn does not. The floor keeps the backstop
-# from being set so low it cuts ordinary work.
+# card fires before the transport cut), so the max is not pinned to the
+# transport's default. The default is 4h: the longest single turn the shipped
+# budgets can legitimately produce is a 90-minute test command plus a fix and a
+# re-run, or a blocking subagent wave at its 2h wait cap plus synthesis, and
+# the watchdog's UNKNOWN-verdict windows must sit well inside the ceiling so its
+# non-lethal recovery is reachable before the turn is cut. It is bounded at 24h
+# because the ceiling is a runaway backstop, not a scheduler: a single
+# prompt→response turn longer than a day is pathological, and multi-day
+# unattended operation belongs to the loop mechanisms (monitor/goal loops,
+# crons), which end the turn between cycles and survive restarts — a marathon
+# turn does not. The floor keeps the backstop from being set so low it cuts
+# ordinary work.
 CHAT_TURN_TIMEOUT_MIN = 300
 CHAT_TURN_TIMEOUT_MAX = 86400
 
@@ -4463,11 +4620,12 @@ class InstancesConfig:
             "at once. Least-recently-used instances beyond this are evicted and "
             "reconnected on demand. Bounds memory/socket use (each warm instance is a "
             "full dashboard SPA). 0 (the default) is automatic: the cap follows how "
-            "many crews are currently connected, so a crew you connected is never "
-            "evicted -- eviction cold-boots the pane and reads as a disconnect, so a "
-            "fixed cap below the connected count makes tab switching look like a "
-            "connection flap. Automatic is bounded by an internal ceiling; an explicit "
-            "value is honoured exactly, including one below the connected count.",
+            "many crews are configured, so up to an internal ceiling no crew you added "
+            "is evicted and the cap widens by itself when you add one -- eviction "
+            "cold-boots the pane and reads as a disconnect, so a cap below the number "
+            "of crews in use makes tab switching look like a connection flap. Past that "
+            "ceiling eviction resumes; an explicit value is honoured exactly, including "
+            "one below the number of configured crews.",
         ),
     )
     tunnel_base_port: int = field(
@@ -4671,24 +4829,33 @@ class WatchdogConfig:
         ),
     )
     stale_window_secs: float = field(
-        default=300.0,
+        default=600.0,
         metadata=_meta(
             "Stale probe window (s)",
             "Idle seconds before an UNKNOWN-verdict model-wait turn is safe-probed "
-            "via session/cancel. Probes are non-lethal: a live turn auto-recovers.",
+            "via session/cancel. Probes are non-lethal, but a probe of a LIVE think "
+            "cancels and regenerates it, so the window must clear an ordinary "
+            "silent think. Default 10 min. A think the oracle can attest (an "
+            "established backend socket) gets the longer model-silent window "
+            "instead, so this one governs only thinks with no such evidence: a "
+            "host without procfs, or a backend connection that is momentarily "
+            "down. Its cost is wedge-recovery latency on a runtime that is "
+            "already dead, never lost work.",
         ),
     )
     tool_stall_suspect_secs: float = field(
-        default=3600.0,
+        default=5400.0,
         metadata=_meta(
             "Tool stall suspect (s)",
             "Idle seconds before an UNKNOWN-verdict in-flight tool is cancelled and "
             "the turn routed to tool-stall recovery (continue-nudge, no re-run of "
-            "the original message). WORKING tools (e.g. a matched live build child) "
-            "are never cancelled regardless of duration. Default 1h: generous enough "
-            "for long builds and MCP tools on macOS, where the liveness oracle "
-            "degrades (no /proc) and cannot distinguish a live build from a stall, "
-            "while still landing inside the turn's own ceiling "
+            "the original message). WORKING tools (a matched live build child, an "
+            "MCP subtree with CPU movement) are never cancelled regardless of "
+            "duration, so this window governs only what the liveness oracle cannot "
+            "attest. Default 90 min: it clears every shipped budget a single tool "
+            "call can legitimately spend silent (the task runner's 90-minute test "
+            "command, a full test suite with one retry in one shell call) while "
+            "still landing inside the turn's own ceiling "
             "(agent.chat_turn_timeout_secs) so recovery is reachable. Enforcement is "
             "at handle construction, not config load: a window past the headroom "
             "fraction of the transport's per-prompt timeout is clamped with a "
@@ -4698,25 +4865,27 @@ class WatchdogConfig:
         ),
     )
     tool_stall_hard_cap_secs: float = field(
-        default=3600.0,
+        default=7200.0,
         metadata=_meta(
             "Hard cap (s)",
             "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended "
-            "probably-thinking window). Applies ONLY to UNKNOWN verdicts — never "
-            "to a WORKING session, which is deferred before this cap is consulted "
-            "and is therefore bounded only by the turn's own ceiling. Default 1h, "
-            "clamped against the transport's per-prompt timeout like the suspect "
-            "window.",
+            "probably-thinking window) and for any per-agent "
+            "watchdog_tool_stall_* override. Applies ONLY to UNKNOWN verdicts — "
+            "never to a WORKING session, which is deferred before this cap is "
+            "consulted and is therefore bounded only by the turn's own ceiling. "
+            "Default 2h, clamped against the transport's per-prompt timeout like "
+            "the suspect window.",
         ),
     )
     model_silent_probe_secs: float = field(
-        default=900.0,
+        default=1800.0,
         metadata=_meta(
             "Silent-think probe window (s)",
             "Extended probe window for a model-wait with an established backend "
             "connection but flat counters (non-streamed server-side reasoning, "
             "e.g. long xhigh thinks). Probing a live think cancels and regenerates "
-            "it, so this window is deliberately generous.",
+            "it, so this window is deliberately generous: 30 min clears the long "
+            "end of an extended-effort think.",
         ),
     )
     wellness_sample_secs: float = field(

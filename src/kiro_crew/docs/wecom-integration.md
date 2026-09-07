@@ -57,7 +57,7 @@ today's WeCom channel: it renders no tappable buttons, so a list of choices
 arrives as a numbered list you answer by typing. Tappable cards do exist in the
 AI-bot API; they are not wired up yet.
 
-## Who can reach it
+## Access control
 
 > **Kiro Crew runs on your machine, with your files and credentials.** So it only
 > talks to the owner and the userids you name.
@@ -118,7 +118,7 @@ and stripped before the command is matched, so `@Kiro /new` also works — but s
 "Who can reach it": messages sent in a WeCom group are refused, so commands only
 take effect in a direct chat.
 
-## Settings & reference
+## Settings reference
 
 Everything lives in the `wecom` section of `config.json`:
 
@@ -138,6 +138,12 @@ Credentials go in `~/.kiro/crew/.env`: `WECOM_BOT_ID` and `WECOM_SECRET`.
 
 Dashboard delivery uses `target_id` values `user:<userid>`. Named users are shown as unavailable until they message the bot after the gateway starts; with `allow_all_users`, only those warmed direct-message peers are listed. Each destination is revalidated against the current authorization policy before delivery.
 
+**This channel is not an owner-DM target.** Because the peer list is learned from
+inbound traffic, "the owner" cannot be resolved to a known person here — a
+`send_message` aimed at this channel would risk delivering to whoever last
+messaged the bot, so the channel is excluded from that routing entirely. Named
+dashboard destinations above still work; only the unqualified owner DM does not.
+
 **If something's off:** no reply usually means the sender's userid isn't allowed
 or `enabled` is `false`; a missing `channel started` line means a credential is
 unset; if it connects and then goes quiet, the bot may have been removed from
@@ -145,6 +151,7 @@ the WeCom console — re-add it and restart.
 
 ## Related docs
 
+- [Channel capabilities](channel-capabilities.md): the ten-channel matrix — streaming, buttons, uploads, reply length, approval timeout
 - [Slack Integration](slack-integration.md)
 - [Telegram Integration](telegram-integration.md)
 - [Getting Started](getting-started.md)

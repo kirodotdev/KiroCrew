@@ -14,6 +14,7 @@ import types
 import pytest
 
 import kiro_crew.subagent as subagent
+from conftest import absent_sysconf
 from kiro_crew.subagent import compute_max_subagents, resolve_max_subagents
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -826,7 +827,12 @@ class TestMacosMemoryProbe:
     def test_computes_available_gb_from_pages(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
-        monkeypatch.setattr(sub.os, "sysconf", lambda _n: 16384)  # 16 KiB pages
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            sub.os,
+            "sysconf",
+            lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n),  # 16 KiB pages
+        )
         monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 200000)
         expected = round(200000 * 16384 / (1024 ** 3), 2)
         assert sub._macos_available_memory_gb() == pytest.approx(expected, abs=0.01)
@@ -834,22 +840,32 @@ class TestMacosMemoryProbe:
     def test_none_page_count_fails_open(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
-        monkeypatch.setattr(sub.os, "sysconf", lambda _n: 16384)
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            sub.os, "sysconf", lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+        )
         monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: None)
         assert sub._macos_available_memory_gb() == -1.0
 
     def test_zero_page_count_fails_open(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
-        monkeypatch.setattr(sub.os, "sysconf", lambda _n: 16384)
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            sub.os, "sysconf", lambda n: 16384 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+        )
         monkeypatch.setattr(sub, "_macos_vm_reclaimable_pages", lambda: 0)
         assert sub._macos_available_memory_gb() == -1.0
 
     def test_sysconf_error_fails_open(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
-        def _boom(_n):
-            raise ValueError("SC_PAGE_SIZE unavailable")
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+
+        def _boom(n):
+            if n == "SC_PAGE_SIZE":
+                raise ValueError("SC_PAGE_SIZE unavailable")
+            return real_sysconf(n)
 
         monkeypatch.setattr(sub.os, "sysconf", _boom)
         assert sub._macos_available_memory_gb() == -1.0
@@ -857,7 +873,10 @@ class TestMacosMemoryProbe:
     def test_nonpositive_page_size_fails_open(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
 
-        monkeypatch.setattr(sub.os, "sysconf", lambda _n: 0)
+        real_sysconf = getattr(sub.os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            sub.os, "sysconf", lambda n: 0 if n == "SC_PAGE_SIZE" else real_sysconf(n)
+        )
         # _macos_vm_reclaimable_pages must not even be consulted
         monkeypatch.setattr(
             sub, "_macos_vm_reclaimable_pages", lambda: pytest.fail("should not run")

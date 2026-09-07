@@ -25,7 +25,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Check, CircleSlash, CircleDot, MessageSquarePlus, GitMerge, X, Loader2, AlertTriangle,
+  Check, CircleSlash, CircleDot, MessageSquarePlus, GitMerge, X, Loader2,
 } from 'lucide-react'
 import { Btn } from '../../../components/ui'
 import {
@@ -42,6 +42,7 @@ import { providerTerms, isGitlab, repoScopeKey } from '../lib/links'
 import type { BulkPrAction } from '../api'
 
 import { i18nT } from '../../../i18n/t'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { useImeGuard } from '../../../hooks/useImeGuard'
 
 // The confirmation TOKENS and the merge pseudo-action are protocol values, not copy:
@@ -628,13 +629,10 @@ export default function PrBulkBar() {
         </div>
       )}
 
-      {/* A request that failed OUTRIGHT — nothing was applied. */}
-      {bulk.error && (
-        <div className="mt-2 flex items-start gap-1.5 text-[12px] text-danger">
-          <AlertTriangle className="lucide-inline flex-shrink-0" />
-          <span className="min-w-0 break-words">{bulk.error.message}</span>
-        </div>
-      )}
+      {/* A request that failed OUTRIGHT — nothing was applied. The hand-off is
+          offered only while no composer is open: with `pending` set, the body
+          textarea or the type-to-confirm field above holds unsaved text. */}
+      <ErrorNotice message={bulk.error?.message} askAgent={pending === null} className="mt-2" />
 
       {/* The sequential merge's per-row progress. Named individually and in order,
           because this run STOPS at the first refusal: the user has to be able to see
@@ -711,20 +709,19 @@ export default function PrBulkBar() {
               </div>
             )}
             {bulk.outcome.failed.length > 0 && (
-              <div className="mt-1 text-danger">
-                <div>
-                  {i18nT('apps.issueRadar.components.prBulkBar.failed', {
-                    count: bulk.outcome.failed.length,
-                  })}
-                </div>
-                <ul className="mt-0.5 space-y-0.5">
-                  {bulk.outcome.failed.map((f) => (
-                    <li key={f.number} className="break-words">
-                      {terms.sigil}{f.number} — {f.error}
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              /* One notice, one row per failed PR (the block variant keeps the
+                 newlines), so the user still sees exactly which rows to revisit.
+                 Same composer gate on the hand-off as the outright failure above. */
+              <ErrorNotice
+                title={i18nT('apps.issueRadar.components.prBulkBar.failed', {
+                  count: bulk.outcome.failed.length,
+                })}
+                message={bulk.outcome.failed
+                  .map((f) => `${terms.sigil}${f.number} — ${f.error}`)
+                  .join('\n')}
+                askAgent={pending === null}
+                className="mt-1"
+              />
             )}
           </motion.div>
         )}

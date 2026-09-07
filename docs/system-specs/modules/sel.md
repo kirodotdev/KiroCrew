@@ -67,6 +67,16 @@ computing the HMAC chain in enqueue order and batching up to `_QUEUE_DRAIN_BATCH
 events into one `open()`+write. The writer starts lazily on first `log()` and
 registers an `atexit` flush.
 
+The singleton itself is warmed at gateway startup: both async server start
+paths await `warm_sel_singleton()` (an `asyncio.to_thread(sel)`, best-effort)
+before building the middleware chain, so when the warm succeeds
+`_init_locked` — blocking file I/O — never runs on the event loop as a
+handler's first touch, and non-critical call sites need no per-site thread
+hop (#8608). A failed warm logs a warning and leaves that init retry to the
+first later touch, on its caller's thread. `critical=True` writes are
+synchronous by design and their call sites still offload themselves when
+reached from the loop.
+
 - **Durability**: eventually-durable, not synchronously-durable — a crash/kill
   can lose at most the events still queued. Acceptable for an audit log; the
   hot path (e.g. per-message skill triggering) no longer pays fsync/lock latency.

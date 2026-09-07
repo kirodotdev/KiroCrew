@@ -12,6 +12,7 @@ from unittest.mock import mock_open, patch
 import pytest
 
 import kiro_crew.sandbox as sb
+from conftest import absent_sysconf
 from kiro_crew.sandbox import _probe_sandbox_exec
 
 # The namespace probe internals are Linux-only by construction: they call
@@ -657,8 +658,19 @@ class TestProbeChildFdSweep:
         a wide span is cheap — and silently clamping it would leave an fd at,
         say, 60000 open on a ``LimitNOFILE=65536`` host with no diagnostic.
         ``raising=False`` because ``os.sysconf`` does not exist on Windows.
+
+        The fake answers ``SC_OPEN_MAX`` only and forwards every other name to
+        the real ``os.sysconf``: ``sb.os`` is the process-wide ``os`` module
+        (not a module-local alias), so an unscoped fake would also feed a
+        wrong ``SC_PAGE_SIZE`` to any other thread reading it concurrently
+        (e.g. a memory-usage sampler) for the life of this test.
         """
-        monkeypatch.setattr(sb.os, "sysconf", lambda _name: 65536, raising=False)
+        real_sysconf = getattr(sb.os, "sysconf", absent_sysconf)
+
+        def fake_sysconf(name):
+            return 65536 if name == "SC_OPEN_MAX" else real_sysconf(name)
+
+        monkeypatch.setattr(sb.os, "sysconf", fake_sysconf, raising=False)
 
         assert sb._fd_sweep_ranges(frozenset({0, 1, 2})) == ((3, 65536),)
 
@@ -667,15 +679,25 @@ class TestProbeChildFdSweep:
 
         The absent case is real: ``os.sysconf`` does not exist off-POSIX, and
         the helper's never-raises contract must hold everywhere it can run.
-        """
 
-        def unavailable(_name):
-            raise ValueError("unrecognized configuration name")
+        Only ``SC_OPEN_MAX`` is broken here; every other name still reaches
+        the real ``os.sysconf`` so a concurrent reader on another thread (of
+        ``sb.os``, the shared stdlib module) never sees the fault.
+        """
+        real_sysconf = getattr(sb.os, "sysconf", absent_sysconf)
+
+        def unavailable(name):
+            if name == "SC_OPEN_MAX":
+                raise ValueError("unrecognized configuration name")
+            return real_sysconf(name)
 
         monkeypatch.setattr(sb.os, "sysconf", unavailable, raising=False)
         first = sb._fd_sweep_ranges(frozenset({0, 1, 2}))
 
-        monkeypatch.setattr(sb.os, "sysconf", lambda _name: -1, raising=False)
+        def nonsense(name):
+            return -1 if name == "SC_OPEN_MAX" else real_sysconf(name)
+
+        monkeypatch.setattr(sb.os, "sysconf", nonsense, raising=False)
         second = sb._fd_sweep_ranges(frozenset({0, 1, 2}))
 
         monkeypatch.delattr(sb.os, "sysconf", raising=False)

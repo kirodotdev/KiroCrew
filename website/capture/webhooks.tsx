@@ -21,9 +21,9 @@ import WebhooksPage from '../src/pages/WebhooksPage'
 import '../src/index.css'
 
 // Loopback on purpose: this string is rendered into the captured screenshots,
-// which are committed to the PR branch, and `website/capture/` sits outside
-// scrub-lint's roots — so a real host pasted here would ride into the public
-// tree unchecked, in the fixture AND baked into the PNGs.
+// which are committed to the PR branch. A real host pasted here would ride into
+// the public tree twice over — as this line, and BAKED INTO THE PNG, where no
+// text scanner can see it at all. The image is why this must stay loopback.
 const URL_ = 'http://127.0.0.1:6776/api/hooks/agent'
 const LIMITS = {
   session_key_prefix: 'hook:',

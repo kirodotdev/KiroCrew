@@ -105,30 +105,6 @@ export function findNextPromptIdx(items: DisplayItem[], afterIdx: number): numbe
 }
 
 /**
- * Whether a transcript row must be HIDDEN because the banner stands in for it.
- *
- * Pure and here rather than inline in a style attribute because it is the one rule
- * in the feature whose failure DELETES a message: the row is hidden on the promise
- * that the banner shows the same content in the same place, and any state that
- * breaks that promise while leaving this true makes the message unreachable in
- * both places at once. `minimized` is checked first for exactly that reason — a
- * chip stands in for nothing.
- *
- * Identity beats position: the pin's index is computed in a scroll rAF and a
- * streaming append can shift the list before the row renders, which hid the wrong
- * row. Match on the message timestamp when the pin has one, falling back to the
- * index only for a message carrying none, and pass no timestamp for a grouped row.
- */
-export function pinHidesRow(
-  pin: { ts?: string; idx: number } | null,
-  minimized: boolean,
-  row: { ts?: string; idx: number },
-): boolean {
-  if (minimized || !pin) return false
-  return pin.ts != null ? row.ts === pin.ts : pin.idx === row.idx
-}
-
-/**
  * Display index of the row the pinned-prompt jump should scroll to when the
  * user asks for `target`.
  *

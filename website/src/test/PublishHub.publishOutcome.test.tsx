@@ -133,6 +133,25 @@ describe('readPublishOutcome', () => {
     ).toEqual({ url: 'https://a/d' })
   })
 
+  it('carries a notice ALONGSIDE success, never folded into an error', () => {
+    // notice = published, link not usable yet (CloudFront rolling out). Success.
+    expect(
+      readPublishOutcome({
+        publication: { view_url: 'https://a/d', notice: 'still rolling out' },
+      }),
+    ).toEqual({ url: 'https://a/d', notice: 'still rolling out' })
+    // A real error still wins over a notice — last_error is checked first.
+    expect(
+      readPublishOutcome({
+        publication: { view_url: 'https://a/d', notice: 'still rolling out', last_error: 'push failed' },
+      }),
+    ).toEqual({ error: 'push failed' })
+    // Whitespace-only notice is dropped, leaving a plain success.
+    expect(
+      readPublishOutcome({ publication: { view_url: 'https://a/d', notice: '  ' } }),
+    ).toEqual({ url: 'https://a/d' })
+  })
+
   it('rejects everything that is not an outcome', () => {
     expect(readPublishOutcome(null)).toBeNull()
     expect(readPublishOutcome(undefined)).toBeNull()

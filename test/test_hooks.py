@@ -154,21 +154,28 @@ class TestToolHooks:
 
     def test_sensitive_bash_denied_without_running_prefix(self):
         """A bare bash command (Claude Code provider title — no 'Running: '
-        prefix) that reads a credential path must still be DENIED.
+        prefix) that reaches the instance metadata service must still be DENIED.
 
         The claude-agent-acp adapter sets a Bash tool's title to the raw
-        command (no kiro-cli 'Running: ' display prefix), so the sensitive
-        path check must not be gated on that prefix.
+        command (no kiro-cli 'Running: ' display prefix), so the shell-gate and
+        deny-rule evaluation must not be gated on that prefix. A credential-store
+        PATH is not the probe here: the shell gate matches no paths in command text
+        (the sandbox owns those), so the always-on refusal to exercise is the IMDS
+        tier.
         """
         mgr = HookManager()
-        result = mgr.on_tool_call("cat ~/.aws/credentials")
+        result = mgr.on_tool_call("curl http://169.254.169.254/latest/meta-data/")
         assert result.action == TOOL_DENY
-        assert "sensitive" in result.reason.lower()
+        assert result.security_deny
+        assert "169.254.169.254" in result.reason or "metadata" in result.reason.lower()
 
     def test_sensitive_bash_denied_with_running_prefix(self):
         """The kiro-cli 'Running: ' prefixed form must remain DENIED too."""
         mgr = HookManager()
-        assert mgr.on_tool_call("Running: cat ~/.ssh/id_rsa").action == TOOL_DENY
+        assert (
+            mgr.on_tool_call("Running: curl http://169.254.169.254/latest/meta-data/").action
+            == TOOL_DENY
+        )
 
     def test_benign_bash_without_prefix_not_denied(self):
         """A bare benign bash command must NOT be falsely denied.
@@ -310,9 +317,12 @@ class TestToolCallEvaluatesRawCommand:
 
     def test_credential_read_denied_via_command_not_benign_title(self):
         mgr = HookManager()
-        result = mgr.on_tool_call("check my config", command="cat ~/.aws/credentials")
+        result = mgr.on_tool_call(
+            "check my config", command="curl http://169.254.169.254/latest/meta-data/"
+        )
         assert result.action == TOOL_DENY
-        assert "sensitive" in result.reason.lower()
+        assert result.security_deny
+        assert "169.254.169.254" in result.reason or "metadata" in result.reason.lower()
 
     def test_benign_command_with_benign_title_allowed(self):
         cfg = HooksConfig(auto_deny_tools=["*cr --all*"])
@@ -1235,7 +1245,7 @@ class TestCanonicalMcpIdentityGoverned:
         mgr = HookManager()
         r = mgr.on_tool_call(
             "Tidy up some files",
-            command="cat ~/.ssh/id_rsa",
+            command="curl http://169.254.169.254/latest/meta-data/",
             is_shell=True,
             mcp_server_name="shell:srv",
             mcp_tool_name="nothing_to_see",

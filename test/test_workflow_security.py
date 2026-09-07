@@ -241,7 +241,7 @@ class TestResolveSensitiveBashCommand:
         from kiro_crew.llm_helpers import _resolve_permission
 
         provider = FakeProvider()
-        event = FakeEvent(title="Running: cat ~/.aws/credentials")
+        event = FakeEvent(title="Running: curl http://169.254.169.254/latest/meta-data/")
         result = await _resolve_permission(
             provider, event, ToolApprovalPolicy.AUTO_APPROVE, hooks=None
         )
@@ -255,7 +255,7 @@ class TestResolveSensitiveBashCommand:
         provider = FakeProvider()
         event = FakeEvent(
             title="Bash",
-            tool_input=json.dumps({"command": "cat ~/.ssh/id_rsa"}),
+            tool_input=json.dumps({"command": "env | grep AWS_SECRET"}),
         )
         result = await _resolve_permission(
             provider, event, ToolApprovalPolicy.AUTO_APPROVE, hooks=None
@@ -286,7 +286,9 @@ class TestResolveDenyPatternsToolInput:
         provider = FakeProvider()
         event = FakeEvent(
             title="Bash",
-            tool_input=json.dumps({"command": "get_secret_value --secret-id prod-db"}),
+            tool_input=json.dumps(
+                {"command": "aws secretsmanager delete-secret --secret-id prod-db"}
+            ),
         )
         result = await _resolve_permission(
             provider, event, ToolApprovalPolicy.AUTO_APPROVE, hooks=None
@@ -301,7 +303,9 @@ class TestResolveDenyPatternsToolInput:
         provider = FakeProvider()
         event = FakeEvent(
             title="Execute",
-            tool_input=json.dumps({"args": {"cmd": "get_secret_value my-secret"}}),
+            tool_input=json.dumps(
+                {"args": {"cmd": "aws secretsmanager delete-secret --secret-id my-secret"}}
+            ),
         )
         result = await _resolve_permission(
             provider, event, ToolApprovalPolicy.AUTO_APPROVE, hooks=None
@@ -314,11 +318,11 @@ class TestResolveDenyPatterns:
     """BUILTIN_DENY_PATTERNS enforcement."""
 
     @pytest.mark.asyncio
-    async def test_get_secret_denied(self, mock_sel):
+    async def test_delete_secret_denied(self, mock_sel):
         from kiro_crew.llm_helpers import _resolve_permission
 
         provider = FakeProvider()
-        event = FakeEvent(title="get_secret_value")
+        event = FakeEvent(title="aws secretsmanager delete-secret --secret-id prod-db")
         result = await _resolve_permission(
             provider, event, ToolApprovalPolicy.AUTO_APPROVE, hooks=None
         )
@@ -330,7 +334,7 @@ class TestResolveDenyPatterns:
         from kiro_crew.llm_helpers import _resolve_permission
 
         provider = FakeProvider()
-        event = FakeEvent(title="aws cloudformation delete_stack --stack-name prod")
+        event = FakeEvent(title="aws cloudformation delete-stack --stack-name prod")
         result = await _resolve_permission(
             provider, event, ToolApprovalPolicy.AUTO_APPROVE, hooks=None
         )

@@ -1117,7 +1117,17 @@ class PRWatcherRegistry:
         itself stays best-effort (a lost patch must not fail the watcher), but "the patch
         was lost" and "the directory holding the commits may be deleted" are different
         decisions, and conflating them destroyed verified work.
+
+        No clone configured means no working tree to diff — there is nothing to export
+        and nothing to retain. Without this guard the fallback `git diff`/`git status`
+        calls below still ran with `-C ""`, which git treats as no `-C` at all: it walks
+        up from the process's real CWD and operates on whatever repository (or worktree)
+        happens to contain it, spawning a host-side git call — and `require_pinned`'s
+        attributes pin write — against the operator's real checkout instead of this run's
+        clone.
         """
+        if not clone:
+            return True
         try:
             self._export_fix(st, clone, attempt)
         except (OSError, subprocess.SubprocessError) as exc:

@@ -1,5 +1,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   chooseRecoveryStrategy,
   classifyAdoptedGateway,
@@ -9,6 +11,9 @@ const {
   snapshotPortPids,
   incumbentSnapshotBlocksRespawn,
   unrecoverableGatewayDialog,
+  shouldReresolveBackend,
+  isStaleBundleSignal,
+  STALE_ASSET_EXIT_CODE,
 } = require("../gateway-recovery");
 
 describe("chooseRecoveryStrategy", () => {
@@ -291,5 +296,159 @@ describe("incumbentSnapshotBlocksRespawn", () => {
     for (const isWindows of [true, false]) {
       assert.equal(incumbentSnapshotBlocksRespawn({ pids: [4242], isWindows }), false);
     }
+  });
+});
+
+describe("shouldReresolveBackend", () => {
+  const mac = { isMac: true, bundled: true };
+
+  it("pins the watchdog's exit status so the two sides cannot drift apart", () => {
+    const backend = fs.readFileSync(
+      path.join(__dirname, "..", "..", "..", "src", "kiro_crew", "dashboard", "stale_asset_watchdog.py"),
+      "utf8",
+    );
+    assert.match(backend, new RegExp(`^STALE_ASSET_EXIT_CODE = ${STALE_ASSET_EXIT_CODE}$`, "m"));
+  });
+
+  it("re-resolves once when the bundled gateway exits with the stale-asset status", () => {
+    assert.equal(
+      shouldReresolveBackend({ ...mac, exitCode: STALE_ASSET_EXIT_CODE, attempts: 0 }),
+      "reresolve",
+    );
+  });
+
+  it("re-resolves once when the bundled binary vanished between probe and spawn", () => {
+    assert.equal(
+      shouldReresolveBackend({ ...mac, spawnErrorCode: "ENOENT", attempts: 0 }),
+      "reresolve",
+    );
+  });
+
+  it("relaunches the app when the re-resolved child is stale again and the app can still be re-executed", () => {
+    assert.equal(
+      shouldReresolveBackend({ ...mac, exitCode: STALE_ASSET_EXIT_CODE, attempts: 1, relaunchTargetExists: true }),
+      "relaunch",
+    );
+    assert.equal(
+      shouldReresolveBackend({ ...mac, spawnErrorCode: "ENOENT", attempts: 1, relaunchTargetExists: true }),
+      "relaunch",
+    );
+  });
+
+  // app.relaunch() returns void and only schedules the re-exec for exit time,
+  // so a pruned bundle can only be caught before the call: when the caller's
+  // probe of its own executable came back empty, exiting would strand the
+  // user with no app and no dialog.
+  it("surfaces the failure instead of relaunching when this app's executable is gone", () => {
+    for (const signal of [{ exitCode: STALE_ASSET_EXIT_CODE }, { spawnErrorCode: "ENOENT" }]) {
+      assert.equal(
+        shouldReresolveBackend({ ...mac, ...signal, attempts: 1, relaunchTargetExists: false }),
+        "none",
+      );
+      assert.equal(
+        shouldReresolveBackend({ isMac: true, bundled: false, ...signal, attempts: 1, relaunchTargetExists: false }),
+        "none",
+      );
+    }
+  });
+
+  it("defaults to not relaunching when the caller never probed the relaunch target", () => {
+    assert.equal(
+      shouldReresolveBackend({ ...mac, exitCode: STALE_ASSET_EXIT_CODE, attempts: 1 }),
+      "none",
+    );
+  });
+
+  it("does not need the relaunch target for the first, in-place re-resolve", () => {
+    assert.equal(
+      shouldReresolveBackend({ ...mac, exitCode: STALE_ASSET_EXIT_CODE, attempts: 0, relaunchTargetExists: false }),
+      "reresolve",
+    );
+  });
+
+  // After a prune the re-probe falls through to a PATH lookup, so the child
+  // under judgment on the second signal is no longer the bundled one. That is
+  // still the same incident, and the only move left is a relaunch.
+  it("relaunches on the second signal even when the re-probe found no bundled binary", () => {
+    assert.equal(
+      shouldReresolveBackend({
+        isMac: true, bundled: false, spawnErrorCode: "ENOENT", attempts: 1, relaunchTargetExists: true,
+      }),
+      "relaunch",
+    );
+  });
+
+  it("never spends more than the single re-resolve before relaunching", () => {
+    for (const attempts of [2, 5]) {
+      assert.equal(
+        shouldReresolveBackend({ ...mac, exitCode: STALE_ASSET_EXIT_CODE, attempts, relaunchTargetExists: true }),
+        "relaunch",
+      );
+    }
+  });
+
+  it("leaves Windows and Linux on their own recovery paths", () => {
+    for (const signal of [{ exitCode: STALE_ASSET_EXIT_CODE }, { spawnErrorCode: "ENOENT" }]) {
+      assert.equal(shouldReresolveBackend({ isMac: false, bundled: true, ...signal }), "none");
+      assert.equal(
+        shouldReresolveBackend({
+          isMac: false, bundled: true, attempts: 1, relaunchTargetExists: true, ...signal,
+        }),
+        "none",
+      );
+    }
+  });
+
+  // A dev checkout with no kirocrew anywhere spawns the bare PATH name and gets
+  // ENOENT on every boot; treating that as stale would relaunch the app forever.
+  it("ignores a first signal from a PATH or source-checkout gateway", () => {
+    assert.equal(
+      shouldReresolveBackend({ isMac: true, bundled: false, spawnErrorCode: "ENOENT" }),
+      "none",
+    );
+    assert.equal(
+      shouldReresolveBackend({ isMac: true, bundled: false, exitCode: STALE_ASSET_EXIT_CODE }),
+      "none",
+    );
+  });
+
+  it("ignores every other exit status and spawn error", () => {
+    for (const exitCode of [0, 1, 2, 74, 76, 127, 137, null]) {
+      assert.equal(shouldReresolveBackend({ ...mac, exitCode }), "none", `exit ${exitCode}`);
+    }
+    for (const spawnErrorCode of ["EACCES", "EPERM", "EMFILE", ""]) {
+      assert.equal(shouldReresolveBackend({ ...mac, spawnErrorCode }), "none", spawnErrorCode);
+    }
+  });
+
+  it("stands down while the app quits or the updater owns the bundle", () => {
+    assert.equal(
+      shouldReresolveBackend({ ...mac, exitCode: STALE_ASSET_EXIT_CODE, quitting: true }),
+      "none",
+    );
+    assert.equal(
+      shouldReresolveBackend({ ...mac, exitCode: STALE_ASSET_EXIT_CODE, installingUpdate: true }),
+      "none",
+    );
+    assert.equal(
+      shouldReresolveBackend({
+        ...mac, spawnErrorCode: "ENOENT", attempts: 1, installingUpdate: true, relaunchTargetExists: true,
+      }),
+      "none",
+    );
+  });
+});
+
+describe("isStaleBundleSignal", () => {
+  it("recognises the watchdog status and a vanished binary, nothing else", () => {
+    assert.equal(isStaleBundleSignal({ exitCode: STALE_ASSET_EXIT_CODE }), true);
+    assert.equal(isStaleBundleSignal({ spawnErrorCode: "ENOENT" }), true);
+    for (const exitCode of [0, 1, 74, 76, null]) {
+      assert.equal(isStaleBundleSignal({ exitCode }), false, `exit ${exitCode}`);
+    }
+    for (const spawnErrorCode of ["EACCES", "EPERM", ""]) {
+      assert.equal(isStaleBundleSignal({ spawnErrorCode }), false, spawnErrorCode);
+    }
+    assert.equal(isStaleBundleSignal({}), false);
   });
 });

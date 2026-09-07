@@ -170,6 +170,48 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         "-k", type=_positive_int, default=5, help="Cut-off to report (default: 5)"
     )
 
+    kb = bench_sub.add_parser(
+        "kb-retrieval",
+        help="Measure Knowledge Library recall/MRR/nDCG against a golden set (deterministic)",
+        description=(
+            "Ingests a labeled golden set of documents into a throwaway "
+            "KnowledgeStore, runs each query through the real HybridRetriever, and "
+            "scores whether the gold doc was surfaced -- reported as recall@k, MRR "
+            "and nDCG per query class (clean-fact, multi-hop, time-bound, "
+            "correction, contradiction, retraction, reinforcement, "
+            "hypothetical-exclusion, abstention, citation-fidelity). Distinct from "
+            "'bench retrieval', which measures the conversational memory layer. "
+            "Defaults to the deterministic toy embedder so it runs anywhere; pass "
+            "--real-embedder for a semantic run when the model is resident."
+        ),
+    )
+    kb.add_argument(
+        "golden",
+        nargs="?",
+        default=None,
+        help="Path to a golden-set JSON (default: the packaged kb_golden_v1.json)",
+    )
+    kb.add_argument(
+        "-k",
+        type=_positive_int,
+        default=3,
+        help="Cut-off to headline in the printed summary (default: 3)",
+    )
+    kb.add_argument(
+        "--real-embedder",
+        action="store_true",
+        help=(
+            "Use the in-process Qwen3 embedder instead of the deterministic toy "
+            "stand-in. Refuses if the model is not resident on this host. Required "
+            "for a reportable semantic number."
+        ),
+    )
+    kb.add_argument(
+        "--no-embeddings",
+        action="store_true",
+        help="Skip the vector leg entirely (keyword+graph only), to isolate the FTS contribution",
+    )
+
 
 def bench_cmd(args: argparse.Namespace) -> int:
     """Dispatch, with the ONE catch site for every deliberate refusal.
@@ -206,7 +248,7 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
     """Route to a subcommand. Returns a process exit code."""
     action = getattr(args, "bench_action", None)
     if action is None:
-        print("usage: kirocrew bench {list,fetch,retrieval,compare}")
+        print("usage: kirocrew bench {list,fetch,retrieval,kb-retrieval,compare}")
         return 2
 
     # Deferred deliberately, and measured. `cli.py` imports this module at module
@@ -240,6 +282,9 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
 
     if action == "retrieval":
         return _retrieval(args)
+
+    if action == "kb-retrieval":
+        return _kb_retrieval(args)
 
     print(f"unknown bench action: {action}")
     return 2
@@ -416,4 +461,91 @@ def _retrieval(args: argparse.Namespace) -> int:
         print(f"\nnot saved: {exc}")
         return 1
     print(f"\nwrote {md}\n      {js}")
+    return 0
+
+
+def _kb_retrieval(args: argparse.Namespace) -> int:
+    """Run the Knowledge Library recall harness against a golden set.
+
+    Lazy imports, like ``_retrieval``: this keeps ``knowledge.store`` /
+    ``knowledge.retrieval`` (and their sqlite/embedder pull-ins) out of the boot
+    path of every unrelated ``kirocrew`` subcommand -- the perf regression
+    ``test/test_perf_boot_path.py`` pins.
+    """
+    from kiro_crew.eval.bench.kb_retrieval import (
+        KBGoldenSet,
+        KBGoldenSetError,
+        default_golden_set_path,
+        format_kb_report,
+        run_kb_retrieval,
+    )
+
+    path = args.golden or default_golden_set_path()
+    try:
+        golden = KBGoldenSet.from_json(path)
+    except (KBGoldenSetError, UnicodeError) as exc:
+        # UnicodeError: a golden file with invalid UTF-8 (or a lone surrogate)
+        # raises from the decode inside from_json -- a corrupt input is a
+        # deliberate refusal, not a traceback, same as any other malformed file.
+        print(f"refusing to run: {exc}")
+        return 1
+
+    embed_fn = None
+    embedder_id = "toy-hashed-bow"
+    if args.real_embedder:
+        from kiro_crew.knowledge.embedder import InProcessEmbedder
+
+        embedder = InProcessEmbedder()
+        if not embedder.is_available():
+            print(
+                "refusing to run: --real-embedder requested but the in-process "
+                "embedding model is not resident on this host. Omit the flag to "
+                "use the deterministic toy embedder (plumbing check only)."
+            )
+            return 1
+        embed_fn = embedder.embed
+        # The embedder's own model identity, never a hardcoded literal: a run
+        # with a custom model (InProcessEmbedder(model=...) or a swapped backend)
+        # must be labeled as that model in the report, or `bench compare` diffs
+        # apples against oranges under the same name. Mirrors the fail-closed
+        # embedder-identity invariant run_kb_retrieval enforces.
+        embedder_id = embedder.model
+    elif not args.no_embeddings:
+        print(
+            "WARNING: using the toy hashed-bag-of-words embedder. These numbers "
+            "measure term overlap, not semantic recall, and must not be reported "
+            "as a benchmark result. Use --real-embedder for a real number."
+        )
+
+    # The SAME driver module the KnowledgeStore uses: on Linux x86_64 that is
+    # pysqlite3, whose exception classes are distinct from stdlib sqlite3's --
+    # catching the stdlib class there would miss every real store failure.
+    from kiro_crew._sqlite_compat import sqlite3
+
+    try:
+        report = run_kb_retrieval(
+            golden,
+            embed_fn=embed_fn,
+            embedder_id=embedder_id,
+            use_embeddings=not args.no_embeddings,
+            # Include the headlined cut-off in the computed set. Otherwise a
+            # non-default -k (e.g. -k 2) is absent from every per-query dict and
+            # headline()/by_class() default it to 0.0 -- a false-zero benchmark
+            # result, the exact failure the sibling retrieval harness forbids.
+            k_values=tuple(sorted({1, 3, 5, 10, args.k})),
+        )
+    except KBGoldenSetError as exc:
+        print(f"refusing to run: {exc}")
+        return 1
+    except (sqlite3.Error, UnicodeError) as exc:
+        # The harness builds a throwaway KnowledgeStore in a temp dir; a full
+        # temp volume (or any other database-level failure) surfaces here as a
+        # sqlite3 error, and doc content that defeats UTF-8 encoding (e.g. a
+        # lone surrogate reaching the store/embedding path) as a UnicodeError.
+        # A deliberate refusal, not a traceback -- the same boundary rule every
+        # other refusal in this dispatch follows.
+        print(f"refusing to run: store error while building the eval corpus: {exc}")
+        return 1
+
+    print(format_kb_report(report, k=args.k))
     return 0

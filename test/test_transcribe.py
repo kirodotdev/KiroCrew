@@ -1933,11 +1933,20 @@ class TestBundledFfmpeg:
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
         assert await transcribe._create_ffmpeg_subprocess(opened, "-version") is sentinel
+        # The staged image must remain resolvable AFTER the spawn returns: the
+        # macOS syspolicy assessment resolves the path asynchronously (#8918),
+        # so the caller owns the close once the child has exited.
+        os.fstat(descriptor)
+        await transcribe._close_ffmpeg_for_execution(opened)
         with pytest.raises(OSError):
             os.fstat(descriptor)
 
     @pytest.mark.asyncio
-    async def test_authenticated_handle_closes_off_event_loop(self, monkeypatch, tmp_path):
+    async def test_failed_spawn_closes_handle_off_event_loop(self, monkeypatch, tmp_path):
+        """A spawn that raises never produced a child, so nothing depends on
+        the staged path surviving: the handle is closed immediately (and off
+        the event loop) before the error propagates. A SUCCESSFUL spawn must
+        NOT close here — see ``TestStagedFfmpegOutlivesSpawn`` (#8918)."""
         self._fake_package(monkeypatch, tmp_path)
         opened = transcribe._open_packaged_ffmpeg_resource()
         assert opened is not None
@@ -1951,12 +1960,13 @@ class TestBundledFfmpeg:
             original_close(self)
 
         async def fake_spawn(*_args, **_kwargs):
-            return object()
+            raise OSError("exec failed")
 
         monkeypatch.setattr(transcribe._AuthenticatedFfmpeg, "close", recording_close)
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
 
-        await transcribe._create_ffmpeg_subprocess(opened, "-version")
+        with pytest.raises(OSError, match="exec failed"):
+            await transcribe._create_ffmpeg_subprocess(opened, "-version")
 
         assert len(close_threads) == 1
         assert close_threads[0] != event_loop_thread
@@ -2584,6 +2594,217 @@ class TestTranscribeAwsTempOwnership:
         # await, and wait() must never be touched.
         assert proc.communicate.await_count == 2
         proc.wait.assert_not_awaited()
+        assert not owned.exists()
+        assert src.exists()
+
+
+class TestStagedFfmpegOutlivesSpawn:
+    """Regression guards for #8918: the authenticated handle outlives the spawn.
+
+    On macOS the system policy assessment resolves the staged *path*
+    asynchronously after ``create_subprocess_exec`` returns; closing the handle
+    removes the staged directory, so the kernel denied the exec with SIGKILL
+    and STT was unconditionally broken on desktop installs. The contract
+    pinned here is platform-independent: the handle is never closed before the
+    spawned child has exited, and it is closed exactly once on the success,
+    timeout, and cancellation paths.
+    """
+
+    @staticmethod
+    def _recording_handle(tmp_path, monkeypatch, events):
+        binary = tmp_path / "staged-ffmpeg"
+        binary.write_bytes(b"decoder")
+        descriptor = os.open(str(binary), os.O_RDONLY)
+
+        # A subclass rather than a class-level ``close`` monkeypatch: the
+        # resolver patch below keeps the handle alive until teardown, and an
+        # instance ``__del__`` firing into a half-restored patched class
+        # attribute crashes the interpreter.
+        class _Recording(transcribe._AuthenticatedFfmpeg):
+            def close(self):
+                # Only the first effective close counts: ``close`` is
+                # idempotent and ``__del__`` re-enters it with the descriptor
+                # already surrendered.
+                if self.descriptor >= 0:
+                    events.append("closed")
+                super().close()
+
+        opened = _Recording(str(binary), descriptor, str(binary))
+        monkeypatch.setattr(transcribe, "_open_ffmpeg_for_execution", lambda: opened)
+        return opened
+
+    @pytest.mark.asyncio
+    async def test_success_path_closes_after_child_exit_exactly_once(self, tmp_path, monkeypatch):
+        events: list = []
+        self._recording_handle(tmp_path, monkeypatch, events)
+        owned = tmp_path / "owned.wav"
+        monkeypatch.setattr(transcribe, "_make_temp_wav", lambda: str(owned))
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                assert "closed" not in events, "handle closed before the child exited"
+                events.append("exited")
+                _write_wav(owned, _ramp_int16(80))
+                return b"", b""
+
+        async def fake_exec(*_args, **_kwargs):
+            assert "closed" not in events, "handle closed before the spawn returned"
+            return _Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        result = await transcribe._pcm_via_ffmpeg(str(tmp_path / "memo.webm"), 1)
+        assert result is not None
+        assert result.size == 80
+        assert events == ["exited", "closed"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_timeout_path_closes_after_reap_exactly_once(self, tmp_path, monkeypatch):
+        events: list = []
+        self._recording_handle(tmp_path, monkeypatch, events)
+        owned = tmp_path / "owned.wav"
+        owned.write_bytes(b"")
+        monkeypatch.setattr(transcribe, "_make_temp_wav", lambda: str(owned))
+
+        class _Proc:
+            returncode = -9
+
+            def __init__(self):
+                self._calls = 0
+
+            async def communicate(self):
+                self._calls += 1
+                if self._calls == 1:
+                    raise asyncio.TimeoutError
+                assert "closed" not in events, "handle closed before the child was reaped"
+                events.append("reaped")
+                return b"", b""
+
+            def kill(self):
+                assert "closed" not in events, "handle closed before the child was killed"
+                events.append("killed")
+
+        async def fake_exec(*_args, **_kwargs):
+            return _Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        assert await transcribe._pcm_via_ffmpeg(str(tmp_path / "memo.webm"), 1) is None
+        assert events == ["killed", "reaped", "closed"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_closes_after_reap_exactly_once(self, tmp_path, monkeypatch):
+        events: list = []
+        self._recording_handle(tmp_path, monkeypatch, events)
+        owned = tmp_path / "owned.wav"
+        owned.write_bytes(b"")
+        monkeypatch.setattr(transcribe, "_make_temp_wav", lambda: str(owned))
+        started = asyncio.Event()
+
+        class _Proc:
+            returncode = None
+
+            def __init__(self):
+                self._calls = 0
+
+            async def communicate(self):
+                self._calls += 1
+                if self._calls == 1:
+                    started.set()
+                    await asyncio.sleep(3600)
+                assert "closed" not in events, "handle closed before the child was reaped"
+                events.append("reaped")
+                return b"", b""
+
+            def kill(self):
+                events.append("killed")
+
+        async def fake_exec(*_args, **_kwargs):
+            return _Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        task = asyncio.create_task(transcribe._pcm_via_ffmpeg(str(tmp_path / "memo.webm"), 60))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert events == ["killed", "reaped", "closed"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_remux_path_closes_after_child_exit_exactly_once(self, tmp_path, monkeypatch):
+        """The webm→ogg remux call site owns the same deferred close: the
+        handle survives until the child has exited, then is released exactly
+        once even when the remux itself fails."""
+        events: list = []
+        self._recording_handle(tmp_path, monkeypatch, events)
+        cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
+        TestTranscribeAwsTempOwnership._grant_consent(tmp_path, monkeypatch, cfg)
+        owned = tmp_path / "owned.ogg"
+        owned.write_bytes(b"")
+        monkeypatch.setattr(transcribe, "_make_temp_ogg", lambda: str(owned))
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+
+        class _Proc:
+            # A nonzero exit keeps the test inside the remux block: the child
+            # HAS exited when the error path runs, so the close must follow it.
+            returncode = 1
+
+            async def communicate(self):
+                assert "closed" not in events, "handle closed before the child exited"
+                events.append("exited")
+                return b"", b""
+
+        async def fake_exec(*_args, **_kwargs):
+            assert "closed" not in events, "handle closed before the spawn returned"
+            return _Proc()
+
+        monkeypatch.setattr(transcribe, "boto3", object())
+        monkeypatch.setattr(transcribe, "_load_aws_transcribe_components", lambda: (object, object))
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        assert await transcribe._transcribe_aws(str(src), cfg) is None
+        assert events == ["exited", "closed"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_remux_cancellation_on_the_close_await_still_removes_the_temp(
+        self, tmp_path, monkeypatch
+    ):
+        """A cancellation landing exactly on the deferred close await -- the
+        only suspension point between the remux child exiting and the temp
+        changing owner -- must not propagate with ``tmp_ogg`` still on disk."""
+        events: list = []
+        self._recording_handle(tmp_path, monkeypatch, events)
+        cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
+        TestTranscribeAwsTempOwnership._grant_consent(tmp_path, monkeypatch, cfg)
+        owned = tmp_path / "owned.ogg"
+        owned.write_bytes(b"")
+        monkeypatch.setattr(transcribe, "_make_temp_ogg", lambda: str(owned))
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                events.append("exited")
+                return b"", b""
+
+        async def fake_exec(*_args, **_kwargs):
+            return _Proc()
+
+        async def cancelled_close(_executable, **_kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(transcribe, "boto3", object())
+        monkeypatch.setattr(transcribe, "_load_aws_transcribe_components", lambda: (object, object))
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(transcribe, "_close_ffmpeg_for_execution", cancelled_close)
+        with pytest.raises(asyncio.CancelledError):
+            await transcribe._transcribe_aws(str(src), cfg)
         assert not owned.exists()
         assert src.exists()
 

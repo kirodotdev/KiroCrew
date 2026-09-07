@@ -3,10 +3,9 @@
 The point of this module is that nothing new has to be passed in. A babysit
 instruction already names its subject -- "Babysit PR #7491
 (kirodotdev/KiroCrew, branch ...)" -- so asking the caller to also supply a
-target parameter would add an opt-in, and an opt-in is what the previous
-attempts at this saving died of: the parameter existed, nobody passed it, and
-the measured adoption was zero. Inference has no adoption problem because there
-is nothing to adopt.
+target parameter would add an opt-in, and an opt-in only pays off for the
+callers that remember to pass it. Inference has no adoption problem because
+there is nothing to adopt.
 
 The whole design leans on one asymmetry. Failing to infer costs a loop that
 keeps its existing timer -- today's behaviour, no regression. Inferring the
@@ -43,18 +42,16 @@ _PR_URL = re.compile(
 #: ``owner/name#123``. NOT a gating source -- see :func:`infer` for why a shorthand
 #: cannot decide a subject -- but still needed to notice that the text names ANOTHER
 #: pull request besides the URL, which is what makes the URL ambiguous rather than
-#: authoritative. Round 23 deleted this pattern outright and that went too far: with
-#: only URLs scanned, "drive owner/name#42; blocked on <URL for #7>" silently gated
-#: on the BLOCKER, so #7 merging retired a loop whose own work was #42.
+#: authoritative. Scanning URLs alone is not enough: with no shorthand scan, "drive
+#: owner/name#42; blocked on <URL for #7>" gates on the BLOCKER, so #7 merging
+#: retires a loop whose own work is #42.
 #:
 #: The lookbehind refuses a PATH fragment. A babysit instruction routinely cites
 #: source locations, and ``src/kiro_crew/autonudge.py#1751`` would otherwise read as
 #: owner ``kiro_crew`` / repo ``autonudge.py`` / PR 1751 -- so it would manufacture
 #: an ambiguity out of a line reference and refuse to gate anything.
 #:
-#: Quantifiers bounded for the same reason as the URL pattern's, and this is the one
-#: CodeQL flagged: it scans arbitrary prose looking for a SECOND reference, so it
-#: reads the whole instruction rather than stopping at a match.
+#: Quantifiers bounded for the same reason as the URL pattern's.
 _PR_SHORTHAND = re.compile(
     r"(?<![A-Za-z0-9._/#-])"
     r"(?P<owner>[A-Za-z0-9._-]{1,39})/(?P<repo>[A-Za-z0-9._-]{1,100})#(?P<pr>\d+)\b"
@@ -74,7 +71,7 @@ _PR_SHORTHAND = re.compile(
 #: -- it stops at the first token that is neither -- so a later unrelated ``#7511``
 #: elsewhere in the instruction is not swept in.
 _PR_BARE = re.compile(
-    r"\b(?:PRs?|pull requests?)\s*" r"(?P<chain>#\d{1,12}(?:\s*(?:,|and|&)\s*#\d{1,12})*)",
+    r"\b(?:PRs?|pull requests?)\s*(?P<chain>#\d{1,12}(?:\s*(?:,|and|&)\s*#\d{1,12})*)",
     re.IGNORECASE,
 )
 
@@ -115,16 +112,14 @@ def infer(text: str) -> Target | None:
 
     found: set[tuple[str, str, int]] = set()
     # ONLY an explicit public pull-request URL gates a loop. A bare
-    # ``owner/name#123`` was accepted here for several rounds and it proves
-    # neither of the two things this decision needs:
+    # ``owner/name#123`` proves neither of the two things this decision needs:
     #
     # * not that the subject is a PULL REQUEST -- ``#123`` is equally an issue
     #   reference, and a same-numbered pull request may exist and be merged, which
     #   would retire a loop that was watching the issue;
     # * not WHICH SERVER it lives on -- a shorthand resolves through the operator's
     #   ambient gh configuration, so on an enterprise host the same slug names a
-    #   different repository. That ambiguity produced three separate review
-    #   findings on its own.
+    #   different repository.
     #
     # Requiring the full URL also narrows what an agent-written message can cause:
     # a credentialed (audited, read-only, fixed-argv) gh call now happens only for
@@ -168,25 +163,29 @@ def infer(text: str) -> Target | None:
         if (other.group("owner"), other.group("repo"), other_number) != (owner, repo, number):
             return None
     # The same argument for the BARE form, which is how a person actually writes it:
-    # "Babysit PR #42; blocked on <URL for #7>" gated on #7, so #7 merging retired a
-    # loop whose real work on #42 was unfinished. Only a DIFFERENT number refuses --
-    # "watch PR #42 <URL for #42>" is one subject named twice, which is the ordinary
-    # phrasing and must keep gating. Over-refusing costs tokens; under-refusing stops
-    # work, so this resolves the way the rest of the design does.
+    # "Babysit PR #42; blocked on <URL for #7>" would otherwise gate on #7, so #7
+    # merging retires a loop whose real work on #42 is unfinished. Only a DIFFERENT
+    # number refuses -- "watch PR #42 <URL for #42>" is one subject named twice, which
+    # is the ordinary phrasing and must keep gating. Over-refusing costs tokens;
+    # under-refusing stops work, so this resolves the way the rest of the design does.
     for bare in _PR_BARE.finditer(text):
         for found_number in _PR_BARE_NUMBER.findall(bare.group("chain")):
             try:
-                if int(found_number) != number:
-                    return None
+                bare_number = int(found_number)
             except ValueError:
                 continue
+            if bare_number != number:
+                return None
     slug = f"{owner}/{repo}"
-    config: dict[str, object] = {"repo": slug, "pr": number}
-    # Always pinned, because the only spelling that reaches here NAMED the host.
-    # The pin stops an ambient ``GH_HOST`` from re-pointing the slug at a
-    # different server, where a same-numbered pull request could be merged and
-    # retire a watch on a live one.
-    config["host"] = _PUBLIC_HOST
+    config: dict[str, object] = {
+        "repo": slug,
+        "pr": number,
+        # Always pinned, because the only spelling that reaches here NAMED the
+        # host. The pin stops an ambient ``GH_HOST`` from re-pointing the slug at
+        # a different server, where a same-numbered pull request could be merged
+        # and retire a watch on a live one.
+        "host": _PUBLIC_HOST,
+    }
     return Target(
         kind=GH_PR,
         subject=f"{slug}#{number}",

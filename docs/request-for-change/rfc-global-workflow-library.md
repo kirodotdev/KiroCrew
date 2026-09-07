@@ -1,11 +1,11 @@
 ---
 title: Global Workflow System — reusable definitions and TaskRunner composition
-status: in-progress
+status: partial
 revision: v2
 author: Kyle Seaman, with Codex
 created: 2026-08-25
-last-audited: 2026-08-26
-audited-at: 3407351dd
+last-audited: 2026-09-05
+audited-at: 424efa423
 doc-pr: 5951
 implementation-prs: [5951]
 tracking-issues: []

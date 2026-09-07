@@ -12,6 +12,7 @@ import type {
   AwsAccountsResponse,
   AvailableProfilesResponse,
   RegisterProfilesResult,
+  UnregisterProfilesResult,
   ReconnectPlan,
   DriveSection,
   DriveStatus,
@@ -19,6 +20,8 @@ import type {
   DriveBootstrapResult,
   DriveListing,
   DriveDownload,
+  DrivePreview,
+  DriveSearch,
   DriveUploadResult,
   DriveDeleteResult,
   DriveFolderResult,
@@ -153,6 +156,11 @@ export const awsControlApi = {
     return postJson<RegisterProfilesResult>('/profiles/register', { names })
   },
 
+  /** Forget the named profiles here only; the AWS CLI configuration and every AWS resource stay as they are. */
+  unregisterProfiles(names: string[]): Promise<UnregisterProfilesResult> {
+    return postJson<UnregisterProfilesResult>('/profiles/unregister', { names })
+  },
+
   /** Reconnect guidance for a degraded/unknown profile, by profile name. */
   reconnectPlan(name: string): Promise<ReconnectPlan> {
     return request<ReconnectPlan>(`/profiles/${enc(name)}/reconnect-plan`)
@@ -197,6 +205,22 @@ export const awsControlApi = {
   driveDownload(account: string, section: DriveSection, key: string): Promise<DriveDownload> {
     const q = new URLSearchParams({ section, key })
     return request<DriveDownload>(`/drive/${enc(account)}/download?${q.toString()}`)
+  },
+
+  /** The first bytes of a TEXT file, proxied through the gateway. A browser
+   *  fetch of the presigned URL would be blocked by CORS (the bucket carries
+   *  no CORS config), so text preview reads through this endpoint instead;
+   *  media previews (img/video/iframe) use the presigned URL directly because
+   *  those tags are exempt from CORS. */
+  drivePreview(account: string, section: DriveSection, key: string): Promise<DrivePreview> {
+    const q = new URLSearchParams({ section, key })
+    return request<DrivePreview>(`/drive/${enc(account)}/preview?${q.toString()}`)
+  },
+
+  /** Case-insensitive filename search across one whole section. */
+  driveSearch(account: string, section: DriveSection, query: string): Promise<DriveSearch> {
+    const q = new URLSearchParams({ section, q: query })
+    return request<DriveSearch>(`/drive/${enc(account)}/search?${q.toString()}`)
   },
 
   /** Move one stored object inside the files section (server-side copy, then

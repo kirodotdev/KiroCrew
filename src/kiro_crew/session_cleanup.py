@@ -24,11 +24,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from kiro_crew.watchdog import SessionWatchdog
 
 if TYPE_CHECKING:
-    # Type-only: importing providers.base from this leaf at runtime enters the
-    # providers -> acp package -> runtime -> session_pid -> providers cycle.
     from kiro_crew.providers.base import LLMProvider
-else:
-    LLMProvider = Any
 
 
 class ShutdownSignal(Protocol):

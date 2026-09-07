@@ -71,7 +71,7 @@ jobs:
     # pass timeout, is what kills pass 2, and the job is cancelled with no
     # verdict and no diagnostic. 2 x 55m + ~20m of setup/posting = 130, plus a
     # 30m allowance for the adjudication pass below, which runs ONLY when pass 2
-    # emitted [BLOCK-MERGE] and drives Opus through `claude-code-action` -- that
+    # emitted [BLOCK-MERGE] and drives Fable through `claude-code-action` -- that
     # action cannot be wrapped in `timeout`, so it has no pass wall of its own
     # and this is the only thing bounding it. Still well under GitHub's 360-min
     # job default.
@@ -268,7 +268,7 @@ jobs:
             fi
           done
 
-          # gpt-block-adjudication.md is the contract for the Opus adjudication
+          # gpt-block-adjudication.md is the contract for the Fable adjudication
           # pass at the end of this job, NOT part of GPT's own instruction set,
           # so it is deliberately NOT concatenated here. It is also the ONE block
           # loaded from the base with NO checkout fallback: unlike the review
@@ -481,6 +481,22 @@ jobs:
           # away dies on a named timeout instead of mid-call on an expired
           # token, which reads as a model failure and buries the real cause.
           PASS_WALL: 55m
+          # The provider's own refusal line, verbatim from the CLI's error
+          # output including its line-leading "ERROR: " prefix. A refusal and
+          # a crash both arrive as rc != 0 or an empty pass file, but they
+          # mean opposite things: a crash is fixed by re-running, while a
+          # refusal is caused by what the diff IS and is empirically sticky
+          # across re-runs. This line is the only way to tell them apart. The
+          # classification below matches it ANCHORED at line start and only
+          # in the TAIL of the captured stream, because the stream also
+          # carries PR-controlled text (the prompt embeds the PR title/body,
+          # and the reviewer echoes the diff -- which, for any PR touching
+          # this file, contains this very string): an unanchored whole-stream
+          # match would let an echoed copy of the signature reclassify an
+          # ordinary crash as a refusal. The text must stay free of regex
+          # metacharacters -- it is interpolated into an anchored grep
+          # pattern.
+          REFUSAL_SIGNATURE: "ERROR: This request has been flagged for potentially high-risk cyber activity"
         # Pass 1 generates candidates; its output is never posted or gated
         # directly -- the falsification pass below emits the only verdict the
         # comment and gate consume.
@@ -501,6 +517,7 @@ jobs:
           # already `rm -f`-ed.
           rm -f codex-failed-passes
           : > codex-failed-passes
+          rm -f "$RUNNER_TEMP/codex-refused-passes"
           PROMPT=$(printf '%s\n\n%s\n' "$(cat /tmp/codex-prompt.md)" \
             "DISCOVERY PASS: inspect the full current diff and report every candidate that meets the FINDING BAR. This is candidate generation, not the final verdict.")
 
@@ -512,13 +529,28 @@ jobs:
           # credentials (zizmor github-env). The path is under RUNNER_TEMP
           # because the manifest that produced it was materialized from the
           # BASE commit, not from this checkout -- see "Install review CLI".
+          #
+          # The CLI's combined stream is tee'd into RUNNER_TEMP (never the
+          # checkout, so a PR cannot plant a symlink at its name) because a
+          # failed pass is classified below by the provider's own words --
+          # only the captured output can tell a refusal from a crash.
           timeout "$PASS_WALL" \
             "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
             --sandbox read-only \
             --output-last-message "codex-pass-1.md" \
-            "$PROMPT" || rc=$?
+            "$PROMPT" 2>&1 | tee "$RUNNER_TEMP/codex-pass-1-log.txt" || rc=$?
           if [ "$rc" -ne 0 ] || [ ! -s codex-pass-1.md ]; then
-            echo "::warning::GPT 5.6 review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
+            # Anchored + tail-scoped on purpose: the provider emits the
+            # refusal line at column 0 as the stream's final act, while an
+            # echoed copy of the signature (a diff hunk, quoted prose) is
+            # neither line-leading nor reliably last. The 4000-byte tail fits
+            # a single pipe buffer, so the grep cannot SIGPIPE the tail.
+            if tail -c 4000 "$RUNNER_TEMP/codex-pass-1-log.txt" | grep -q "^$REFUSAL_SIGNATURE"; then
+              echo "::warning::GPT 5.6 review pass 1 was refused by the provider (exit ${rc}); the verdict will name the refusal instead of advising a re-run."
+              printf ' 1' >> "$RUNNER_TEMP/codex-refused-passes"
+            else
+              echo "::warning::GPT 5.6 review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
+            fi
             printf ' 1' >> codex-failed-passes
           fi
 
@@ -551,6 +583,11 @@ jobs:
           DISCOVERY_OUTPUT_MAX_BYTES: "50000"
           PASS_WALL: 55m
           HEAD: ${{ github.event.pull_request.head.sha }}
+          # Same signature and same anchored/tail-scoped matching as the
+          # discovery pass: a failed pass carrying it was REFUSED, not
+          # crashed, and the verdict assembly below reports that as its own
+          # terminal state.
+          REFUSAL_SIGNATURE: "ERROR: This request has been flagged for potentially high-risk cyber activity"
         # Pass 2 tries to KILL pass 1's candidates and emits the verdict. Both
         # calls are required: if either failed, no verdict is published and the
         # gate fails closed.
@@ -601,25 +638,64 @@ jobs:
 
           rm -f codex-pass-2.md
           rc=0
+          # tee'd into RUNNER_TEMP for the same reason as pass 1: the captured
+          # stream is what classifies a failed pass as refused vs crashed.
           timeout "$PASS_WALL" \
             "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
             --sandbox read-only \
             --output-last-message "codex-pass-2.md" \
-            "$PROMPT" || rc=$?
+            "$PROMPT" 2>&1 | tee "$RUNNER_TEMP/codex-pass-2-log.txt" || rc=$?
           if [ "$rc" -ne 0 ] || [ ! -s codex-pass-2.md ]; then
-            echo "::warning::GPT 5.6 review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
+            if tail -c 4000 "$RUNNER_TEMP/codex-pass-2-log.txt" | grep -q "^$REFUSAL_SIGNATURE"; then
+              echo "::warning::GPT 5.6 review pass 2 was refused by the provider (exit ${rc}); the verdict will name the refusal instead of advising a re-run."
+              printf ' 2' >> "$RUNNER_TEMP/codex-refused-passes"
+            else
+              echo "::warning::GPT 5.6 review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
+            fi
             failed_passes="${failed_passes} 2"
           fi
 
+          refused_passes="$(cat "$RUNNER_TEMP/codex-refused-passes" 2>/dev/null || true)"
+          refused="false"
           if [ -n "$failed_passes" ]; then
-            {
-              echo "> **Incomplete review:** pass(es)${failed_passes} did not complete."
-              echo
-              echo "The pass-2 verdict was not published because both calls are required. Re-run the workflow for a complete review."
-            } > codex-review-output.md
+            if [ -n "$refused_passes" ]; then
+              # A refusal is not a crash: the provider declined because of
+              # what the reviewed content IS, and measured refusals of this
+              # class recur identically across re-runs, so advising a re-run
+              # points the operator at a remedy that has never been observed
+              # to work. Publish a distinct terminal state -- it still carries
+              # no [GPT-REVIEWED] marker, so the gate still fails closed and a
+              # declined review can never read as an approval -- that names
+              # the refusal and routes to human adjudication. The refusal
+              # dominates a mixed failure (one pass refused, the other
+              # crashed) because the adjudication route is the reliable exit
+              # either way, while a re-run only helps if the refusal does not
+              # recur.
+              refused="true"
+              {
+                echo "> **Reviewer refused:** the provider declined to review this diff (pass(es)${refused_passes})."
+                echo
+                echo "The refusal is caused by the reviewed content, not by a transient failure, so a re-run is very unlikely to produce a verdict. A declined review is not an approval: a repository writer must adjudicate with \`/ai-review override gpt $HEAD: <one-sentence reason>\`."
+              } > codex-review-output.md
+            else
+              {
+                echo "> **Incomplete review:** pass(es)${failed_passes} did not complete."
+                echo
+                echo "The pass-2 verdict was not published because both calls are required. Re-run the workflow for a complete review."
+              } > codex-review-output.md
+            fi
           else
             cp codex-pass-2.md codex-review-output.md
           fi
+          # The refusal classification travels as a step OUTPUT, never by
+          # re-grepping codex-review-output.md downstream: on the clean path
+          # that file is verbatim model prose, so a review that merely QUOTED
+          # a refusal phrase (say, while reviewing this workflow) would
+          # otherwise reclassify a completed verdict. There is deliberately
+          # no refusal marker in the body itself — the prose names the
+          # refusal for human readers, and a marker nothing may parse would
+          # only invite a future step to start grepping model prose for it.
+          echo "refused=$refused" >> "$GITHUB_OUTPUT"
 
           # Gate the adjudication pass below on the verdict THIS step produced,
           # so a clean PR never pays for it. `[BLOCK-MERGE] $HEAD` -- the same
@@ -653,22 +729,26 @@ jobs:
       # [BLOCK-MERGE]. Every GPT blocking finding here already passed a
       # three-part reachability bar twice (discovery, then falsification), so
       # this stage does NOT re-review the code or re-litigate reachability --
-      # Opus reviews GPT'S JUDGEMENT and asks one question per finding: is
+      # Fable reviews GPT'S JUDGEMENT and asks one question per finding: is
       # blocking the merge on it PROPORTIONATE to what the fix would cost,
       # including the maintenance load the new machinery leaves behind forever.
       # That question was previously asked NOWHERE: the FIX BAR is a shape test
       # (does the fix touch untouched code?), never a cost/harm weighing.
       #
       # Three properties keep this from becoming a bypass surface:
-      #   - it can only ever WIDEN the gate. Opus may UPHOLD or DOWNGRADE; it
+      #   - it can only ever WIDEN the gate. Fable may UPHOLD or DOWNGRADE; it
       #     cannot add a finding, raise an advisory, or alter a claim. A stage
       #     that can only turn red into amber cannot invent a new red.
-      #   - security-class findings never reach it. The fence below is a
-      #     deterministic grep, not a model judgement, precisely because a fence
-      #     that depends on the model classifying correctly is not a fence. The
-      #     prompt ALSO treats unbounded harm as unweighable; these are two
-      #     independent layers on purpose.
-      #   - the gate reads ARITHMETIC over markers, never Opus's prose. Any
+      #   - security-class findings carry no downgrade eligibility. The
+      #     fence below is a deterministic grep, not a model judgement,
+      #     precisely because a fence that depends on the model classifying
+      #     correctly is not a fence. Fenced findings still enter the call, in
+      #     their own marker section, but under an ANNOTATE-ONLY verdict set:
+      #     the arbiter may FLAG one as a likely extreme edge case and
+      #     pre-draft the human override rationale, and nothing it writes can
+      #     change the gate (#8693). The prompt ALSO treats unbounded harm as
+      #     unweighable; these are two independent layers on purpose.
+      #   - the gate reads ARITHMETIC over markers, never Fable's prose. Any
       #     missing marker, malformed footer, or count that fails to reconcile
       #     leaves GPT's verdict exactly as it was. There is no path where a
       #     degraded adjudication turns a red gate green.
@@ -683,19 +763,24 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           BLOCK_DIR: ${{ runner.temp }}/adj-blocks
           # The deterministic unbounded-harm fence. A finding matching ANY of
-          # these never enters Opus's input and keeps blocking, no matter what it
-          # would have been ruled: for this class the harm has no ceiling for a
-          # remedy cost to be weighed against, so there is nothing to adjudicate.
+          # these is withheld from DOWNGRADE adjudication and keeps blocking, no
+          # matter what would have been ruled: for this class the harm has no
+          # ceiling for a remedy cost to be weighed against, so there is nothing
+          # to weigh. It still enters Fable's input, in a separate ANNOTATE-ONLY
+          # section that cannot affect the gate (#8693).
           # It covers BOTH unbounded rungs the contract names -- the security
           # vocabulary AND silent data corruption / irreversible data loss -- so
           # the deterministic layer matches the contract's own unweighable class
           # rather than a subset of it; leaving corruption to prompt-level
           # judgment alone would let a wrong downgrade green the gate on exactly
-          # the class the ladder says is unweighable. Deliberately over-broad --
-          # a false fence costs one upheld finding (today's behaviour), a false
-          # clearance ships an unbounded-harm defect. Bare `token` is excluded ON
-          # PURPOSE: in this repo it overwhelmingly means an LLM token budget, and
-          # fencing on it would fence nearly everything.
+          # the class the ladder says is unweighable. Deliberately over-broad on
+          # vocabulary -- a false fence now costs one machine-annotated override
+          # decision rather than a blind block, a false clearance ships an
+          # unbounded-harm defect. The extraction loop below additionally
+          # requires a fenced finding to STATE its consequence chain, so a bare
+          # keyword hit cannot ride the fence out of adjudication (#8693). Bare
+          # `token` is excluded ON PURPOSE: in this repo it overwhelmingly means
+          # an LLM token budget, and fencing on it would fence nearly everything.
           SECURITY_RE: 'residual/security|credential|passwd|password|\bsecret|api[ _-]?key|access[ _-]?key|private[ _-]?key|signing[ _-]?key|AKIA|ASIA|bearer|(access|session|auth|api|security|refresh)[ _-]?token|\bjwt\b|\bcookie|authentic|authoriz|\bauthn\b|\bauthz\b|\bauth\b|privileg|escalat|sandbox|traversal|\.\./|symlink|exfil|\bssrf\b|\bcsrf\b|\bxss\b|injection|subprocess|os\.system|shell=True|\beval\(|\bexec\(|egress|\biam\b|\bkms\b|encrypt|decrypt|\bhmac\b|signature|\bsudo\b|chmod|world-readable|corrupt|data[ _-]?loss|lose[ _-]?data|data[ _-]?destr|irreversib|unrecoverab'
         run: |
           set -uo pipefail
@@ -711,7 +796,7 @@ jobs:
           # "Write review prompt" step). If it is absent there -- the bootstrap
           # PR that introduces it, or any run where base lacks it -- there is no
           # trusted judge, so nothing is adjudicable and GPT's verdict stands.
-          # Emitting adjudicable=0 skips the Opus call and routes the gate to its
+          # Emitting adjudicable=0 skips the Fable call and routes the gate to its
           # "no blocking finding was adjudicable" branch. Fail closed; never read
           # a PR-supplied contract.
           if [ ! -s .review-prompts-gpt/gpt-block-adjudication.md ]; then
@@ -746,7 +831,7 @@ jobs:
           # F<n> ids are assigned HERE, by script, in emission order. They are
           # what lets the gate pair a per-finding verdict back to the finding it
           # ruled on; a footer that only says "3 of 4" cannot be reconciled.
-          # Fenced findings still consume their id, so the ids Opus sees can have
+          # Fenced findings still consume their id, so the ids Fable sees can have
           # gaps -- it is told to echo them unchanged, and the gate compares the
           # exact set.
           nonce="$(openssl rand -hex 16)"
@@ -754,15 +839,89 @@ jobs:
           adjudicable=0
           fenced=0
           ids=""
+          fenced_ids=""
           : > "$RUNNER_TEMP/adj-fenced.md"
+          : > "$RUNNER_TEMP/adj-fenced-input.md"
           printf 'ADJUDICATION_INPUT_BEGIN::%s\n' "$nonce" > .review-adjudication/findings.md
           for f in "$BLOCK_DIR"/*.md; do
             [ -e "$f" ] || break
             count=$((count + 1))
-            if grep -qEi "$SECURITY_RE" "$f"; then
+            # The fence requires a stated consequence chain (the output
+            # contract's "input -> call path -> observable failure" arrow
+            # line) AND a security-class signal in one of the two places the
+            # REVIEWER asserts it: on that chain line, or on the finding's own
+            # "Anchor:" classification line. Every branch of that decision:
+            #   - no chain line at all: a pathless category claim, never
+            #     fenced -- normal downgrade adjudication (#8693 change 2);
+            #   - vocabulary on the chain line: fenced -- the stated
+            #     consequence itself is unbounded harm;
+            #   - security-class Anchor (e.g. residual/security) with a chain:
+            #     fenced -- the reviewer's explicit classification counts even
+            #     when the chain's wording avoids the vocabulary ("arbitrary
+            #     command execution" matches no keyword), otherwise a REAL
+            #     vulnerability becomes downgrade-eligible, the fail-open
+            #     direction;
+            #   - vocabulary only in quoted code or prose (a snippet naming
+            #     subprocess, say): NOT fenced -- a whole-block vocabulary
+            #     test would degenerate to a bare keyword match because every
+            #     finding carries an arrow line. One residual false-fence
+            #     stays by design: a quoted signature that itself carries an
+            #     arrow (`def run() -> subprocess.CompletedProcess`) reads as
+            #     a vocabulary-bearing chain line. That errs fail-closed (the
+            #     finding keeps blocking and gets annotate-only adjudication),
+            #     whereas narrowing the scan to the one line adjacent to
+            #     `Anchor:` would un-fence a genuine security chain whenever
+            #     the model breaks adjacency -- the fail-open direction.
+            # The Anchor-line branch additionally accepts a bare `security`
+            # token: an AUTOSDE rule id like backend-security-controls or
+            # frontend-security is a security classification even though
+            # SECURITY_RE's own `security` alternative requires a trailing
+            # `token` (kept that way for prose, where bare `security` is
+            # everywhere in this repo -- the Anchor line is reviewer-emitted
+            # classification, so the looser token is safe there and covers
+            # any future *security* rule id without per-id patching).
+            # Beyond the vocabulary, the Anchor branch fences by CLASS, and
+            # the decision is a complete table over every anchor the output
+            # contract permits -- per-id drip-patching this list is how a
+            # dangerous class stays downgrade-eligible for a round:
+            #   - `residual/` -- the whole residual family (security,
+            #     crash-data-loss-corruption, guard-removal, and any residual
+            #     class added later). Every residual class is by contract a
+            #     dangerous-harm class; individual ids like guard-removal
+            #     match nothing in SECURITY_RE and their chain wording
+            #     routinely avoids the vocabulary ("check skipped -> gate
+            #     bypass").
+            #   - `harness-parity` -- guards the capability/sandbox seams
+            #     (sandbox.py, providers, platform); a wrong downgrade
+            #     auto-clears a capability leak.
+            #   - `no-test-side-effects` -- guards against out-of-tmp writes;
+            #     a wrong downgrade auto-clears data destruction on the
+            #     machine running the suite.
+            #   - NOT fenced (downgrade adjudication is the intended path):
+            #     no-blocking-call-on-event-loop, no-new-work-on-gateway-boot-
+            #     path, top-level-imports, changelog-is-written-at-version-
+            #     bump-only, feature-map-correctness, no-new-builtin-apps,
+            #     recurring-defect-patterns, and the website UI rules --
+            #     availability/hygiene classes with bounded harm.
+            #   - a NEW AUTOSDE rule id defaults to NOT fenced unless it
+            #     carries a *security* token, is a residual class, or is
+            #     added here with a rationale.
+            # Over-fencing errs fail-closed: the finding keeps blocking and
+            # gets the annotate-only voice. The chain-line requirement
+            # (change 2) still applies to every branch -- a pathless claim is
+            # never fenced.
+            # The piped greps deliberately consume all input (no -q on the
+            # downstream): under pipefail a -q short-circuit can SIGPIPE the
+            # upstream grep and misread a real security finding as unfenced.
+            if grep -qE -- '->|→' "$f" \
+               && { grep -E -- '->|→' "$f" | grep -Ei "$SECURITY_RE" >/dev/null \
+                    || grep -Ei '^[[:space:]]*[-*]?[[:space:]]*(\*\*)?Anchor:' "$f" | grep -Ei "$SECURITY_RE|\bsecurity\b|residual/|harness-parity|no-test-side-effects" >/dev/null; }; then
               fenced=$((fenced + 1))
+              fenced_ids="$fenced_ids F$count"
               { printf -- '--- F%s (security class -- withheld from adjudication) ---\n' "$count"; cat "$f"; } \
                 >> "$RUNNER_TEMP/adj-fenced.md"
+              { printf -- '=== F%s (fenced -- annotate-only) ===\n' "$count"; cat "$f"; echo; } \
+                >> "$RUNNER_TEMP/adj-fenced-input.md"
               continue
             fi
             adjudicable=$((adjudicable + 1))
@@ -771,7 +930,21 @@ jobs:
           done
           printf 'ADJUDICATION_INPUT_END::%s\n' "$nonce" >> .review-adjudication/findings.md
 
-          # Opus gets the extracted blocks and nothing else -- not GPT's
+          # Fenced findings enter the adjudicator's input too, but in their OWN
+          # marker section under an annotate-only verdict set (UPHOLD-FENCED /
+          # FLAG -- see the contract's FENCED FINDINGS section). Nothing parsed
+          # from rulings on this section can change the gate: a FLAG only
+          # pre-drafts the /ai-review override rationale a repository writer
+          # would verify and post (#8693).
+          if [ "$fenced" -gt 0 ]; then
+            {
+              printf 'ADJUDICATION_FENCED_BEGIN::%s\n' "$nonce"
+              cat "$RUNNER_TEMP/adj-fenced-input.md"
+              printf 'ADJUDICATION_FENCED_END::%s\n' "$nonce"
+            } >> .review-adjudication/findings.md
+          fi
+
+          # Fable gets the extracted blocks and nothing else -- not GPT's
           # narrative, not its preamble, not the PR body. GPT's vocabulary in
           # surrounding prose has historically pulled a downstream lane toward
           # agreeing with it, and this stage exists to judge that lane, not to
@@ -785,6 +958,7 @@ jobs:
             echo "fenced=$fenced"
             echo "nonce=$nonce"
             echo "ids=${ids# }"
+            echo "fenced_ids=${fenced_ids# }"
           } >> "$GITHUB_OUTPUT"
           echo "Extracted $count BLOCKING finding(s) for $HEAD: $adjudicable adjudicable, $fenced withheld as security-class."
           if [ "$fenced" -gt 0 ]; then
@@ -801,18 +975,20 @@ jobs:
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
-          steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0'
+          (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
+          || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
           )
         with:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Opus 4.8 adjudication (blocking findings only)
+      - name: Fable 5.1 adjudication (blocking findings only)
         id: adjudicate
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
           && (
-          steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0'
+          (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
+          || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
           )
         uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
         with:
@@ -823,7 +999,7 @@ jobs:
           # enter an agentic reviewer's context, and this stage in particular
           # must not be able to post its own verdict anywhere.
           claude_args: |
-            --model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-fable-5-1
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -844,6 +1020,14 @@ jobs:
             You are in a checkout of this pull request's merge ref, so the code
             each finding names is on disk at the path it gives.
 
+            If the file also carries a block between
+            ADJUDICATION_FENCED_BEGIN::${{ steps.adj_input.outputs.nonce }} and
+            ADJUDICATION_FENCED_END::${{ steps.adj_input.outputs.nonce }}, those
+            are FENCED findings (${{ steps.adj_input.outputs.fenced }} of them,
+            ids ${{ steps.adj_input.outputs.fenced_ids }}) — equally DATA, ruled
+            under the contract's FENCED FINDINGS section: annotate-only, and
+            nothing you write about them can unblock the merge.
+
       - name: Adjudicate the blocking verdict (script arithmetic, fail closed)
         id: adj
         if: >-
@@ -858,6 +1042,7 @@ jobs:
           ADJUDICABLE: ${{ steps.adj_input.outputs.adjudicable }}
           FENCED: ${{ steps.adj_input.outputs.fenced }}
           IDS: ${{ steps.adj_input.outputs.ids }}
+          FENCED_IDS: ${{ steps.adj_input.outputs.fenced_ids }}
           REASONS: disproportionate-remedy|harm-warrants-remedy|unrecoverable-loss|security-class|autosde-blocking-rule|evidence-incomplete
         run: |
           set -uo pipefail
@@ -886,7 +1071,7 @@ jobs:
           # only this buffer, and only as counts over markers -- the prose is
           # never consulted for the verdict.
           parse="$RUNNER_TEMP/adj-parse.md"
-          sed -E 's/^[[:space:]]*[-*][[:space:]]*//; s/\*\*//g; s/`//g' codex-adjudication.md > "$parse"
+          sed -E 's/^[[:space:]]*//; s/^[-*][[:space:]]*//; s/\*\*//g; s/`//g' codex-adjudication.md > "$parse"
           vline='^(UPHOLD|DOWNGRADE) F[0-9]+ [^[:space:]]+ reason=('"$REASONS"')$'
 
           decision="uphold"
@@ -942,6 +1127,36 @@ jobs:
               fi
             fi
           fi
+          # ── FENCED ANNOTATIONS (advisory to a human; never touch `decision`) ─
+          # The annotate-only pass may FLAG a fenced finding as a likely extreme
+          # edge case. A flag holds no authority: the comment step renders it as
+          # a pre-drafted /ai-review override rationale for a repository writer
+          # to verify. Same arithmetic discipline as the verdict above -- footer
+          # counts, one well-formed line per fenced finding, the exact id set --
+          # and ANY mismatch discards every annotation while leaving `decision`
+          # exactly as computed above (#8693).
+          # The flags file lives in $RUNNER_TEMP, never the workspace: the
+          # same-repo checkout is the PR's merge ref, so a workspace path could
+          # be pre-committed by the PR and rendered as a forged override draft
+          # on a run where this step never wrote it.
+          rm -f "$RUNNER_TEMP/codex-adjudication-flags.md"
+          fline='^(UPHOLD-FENCED|FLAG) F[0-9]+ [^[:space:]]+ -- .+$'
+          if [ "$fenced" -gt 0 ] && grep -Fq "[GPT-ADJUDICATED-FENCED] $HEAD" "$parse"; then
+            ffooter="$(grep -F "[ADJUDICATION-FENCED] $HEAD " "$parse" | head -n1 || true)"
+            ftotal="$(printf '%s' "$ffooter" | sed -nE 's/.*[[:space:]]fenced=([0-9]+).*/\1/p')"
+            fflag="$(printf '%s' "$ffooter" | sed -nE 's/.*[[:space:]]flagged=([0-9]+).*/\1/p')"
+            flines="$(num "$(grep -cE "$fline" "$parse" || true)")"
+            fseen="$(grep -E "$fline" "$parse" | awk '{print $2}' | sort -u | tr '\n' ' ' || true)"
+            fwant="$(printf '%s\n' ${FENCED_IDS:-} | sort -u | tr '\n' ' ' || true)"
+            factual="$(num "$(grep -cE '^FLAG F[0-9]+ ' "$parse" || true)")"
+            if [ -n "$ftotal" ] && [ -n "$fflag" ] \
+              && [ "$ftotal" -eq "$fenced" ] && [ "$flines" -eq "$fenced" ] \
+              && [ "$factual" -eq "$fflag" ] && [ "$fseen" = "$fwant" ] \
+              && [ "$fflag" -gt 0 ]; then
+              grep -E '^FLAG F[0-9]+ ' "$parse" > "$RUNNER_TEMP/codex-adjudication-flags.md"
+              echo "annotate-only pass flagged $fflag of $fenced fenced finding(s) as likely edge case; no effect on the gate"
+            fi
+          fi
           {
             echo "decision=$decision"
             echo "note=$note"
@@ -969,6 +1184,7 @@ jobs:
           HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
           OVERRIDE_SOURCE: ${{ steps.human_override.outputs.source }}
+          REFUSED: ${{ steps.gpt_pass2.outputs.refused }}
           ADJ_DECISION: ${{ steps.adj.outputs.decision }}
           ADJ_NOTE: ${{ steps.adj.outputs.note }}
         run: |
@@ -981,6 +1197,20 @@ jobs:
             verdict="✅ human override accepted"
             source_url="https://github.com/$REPO/pull/$PR#issuecomment-$OVERRIDE_SOURCE"
             sentence="Human judgment by @$OVERRIDE_ACTOR overrides the GPT 5.6 finding for \`$HEAD\`; [the recorded reason]($source_url) is authoritative for this commit."
+          elif [ "$REFUSED" = "true" ]; then
+            # The provider REFUSED this diff -- a terminal state distinct from
+            # "incomplete": the refusal is caused by the reviewed content, so
+            # advising a re-run would prescribe a remedy that has never been
+            # observed to work for this class. The gate stays red either way;
+            # this comment is what lets a maintainer reaching for /ai-review
+            # override see that the reviewer refused rather than failed.
+            # $REFUSED is the verdict assembly's step output, never a grep of
+            # the review body: on the clean path that body is model prose, and
+            # a review merely QUOTING the refusal marker must not reclassify a
+            # completed verdict.
+            kind="refused"
+            verdict="⛔ reviewer refused this diff"
+            sentence="The provider declined to review \`$HEAD\`; the refusal is caused by the diff's own content, so a re-run is very unlikely to produce a verdict. A declined review is not an approval — a repository writer must adjudicate with \`/ai-review override gpt $HEAD: <one-sentence reason>\`."
           elif [ -s codex-review-output.md ] \
             && grep -Fq "[GPT-REVIEWED] $HEAD" codex-review-output.md; then
             # Blocked IFF the contract marker is present. There is deliberately
@@ -994,7 +1224,7 @@ jobs:
               if [ "${ADJ_DECISION:-}" = "cleared" ]; then
                 kind="clear"
                 verdict="✅ no blocking findings (all downgraded on adjudication)"
-                sentence="GPT 5.6 flagged blocking issues on \`$HEAD\`; Opus 4.8 adjudication downgraded every one of them to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
+                sentence="GPT 5.6 flagged blocking issues on \`$HEAD\`; Fable 5.1 adjudication downgraded every one of them to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
               else
                 kind="blocked"
                 verdict="🔴 changes requested (blocking)"
@@ -1031,17 +1261,36 @@ jobs:
               echo "</details>"
             elif [ "$kind" = "incomplete" ]; then
               echo "_See the GPT 5.6 Review job logs; this commit has no completed GPT verdict._"
+            elif [ "$kind" = "refused" ]; then
+              echo "_The refusal text is in the GPT 5.6 Review job logs. It is caused by the diff's content: re-runs have not been observed to clear this class of refusal._"
             else
               echo "_The model was not re-run because an authorized human decision supersedes it._"
             fi
             if [ -s codex-adjudication.md ]; then
               echo
               echo "<details>"
-              echo "<summary>Adjudication (Opus 4.8) — is blocking on each finding proportionate?</summary>"
+              echo "<summary>Adjudication (Fable 5.1) — is blocking on each finding proportionate?</summary>"
               echo
               cat codex-adjudication.md
               echo
               echo "</details>"
+            fi
+            if [ -s "${RUNNER_TEMP:-/tmp}/codex-adjudication-flags.md" ]; then
+              echo
+              echo "### 🏷️ Fenced finding(s) machine-flagged as likely edge case"
+              echo
+              echo "The security fence keeps these findings blocking regardless of adjudication; the only clearance path is a human override. The annotate-only pass judged the condition combination each one requires extreme, and pre-drafted the override rationale below. **A repository writer must independently verify a rationale before posting it** — it is machine-authored, and a wrong override on a security-class finding ships exactly the class the fence exists to stop."
+              echo
+              while IFS= read -r fl; do
+                rid="$(printf '%s\n' "$fl" | awk '{print $2}')"
+                rloc="$(printf '%s\n' "$fl" | awk '{print $3}')"
+                rtxt="${fl#* -- }"
+                echo "- **$rid** \`$rloc\` — $rtxt"
+                echo
+                echo '  ```'
+                echo "  /ai-review override gpt $HEAD: $rtxt"
+                echo '  ```'
+              done < "${RUNNER_TEMP:-/tmp}/codex-adjudication-flags.md"
             fi
             echo
             echo "False positive or not applicable? A repository writer can comment:"
@@ -1069,7 +1318,7 @@ jobs:
             || : > "${RUNNER_TEMP:-/tmp}/codex-existing-comment.md"
 
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-            if [ "$kind" = "incomplete" ] \
+            if { [ "$kind" = "incomplete" ] || [ "$kind" = "refused" ]; } \
               && grep -Fq "[GPT-REVIEWED]" "${RUNNER_TEMP:-/tmp}/codex-existing-comment.md"; then
               # Visibility invariant (#8292): a verdict that exists never
               # becomes invisible. The REST comments API exposes no edit
@@ -1078,13 +1327,20 @@ jobs:
               # GraphQL userContentEdits where no reader or tool looks. Keep
               # the existing verdict and prepend ONE dated notice, replacing
               # any notice a previous incomplete run left so they never stack.
-              # Scope: ONLY marker-absent (incomplete) bodies are caught here;
-              # override/blocked/clear kinds still replace the comment, and
-              # "Gate on findings" below stays fail-closed for $HEAD.
+              # Scope: ONLY verdict-less bodies (incomplete and refused) are
+              # caught here; override/blocked/clear kinds still replace the
+              # comment, and "Gate on findings" below stays fail-closed for
+              # $HEAD. The refused notice differs in exactly the way the
+              # states differ: it says re-running is futile instead of
+              # advising one.
               {
                 echo "$MARKER"
                 echo "<!-- codex-stale-notice-begin -->"
-                echo "> ⚠️ **Stale verdict notice ($(date -u +'%Y-%m-%d %H:%M UTC')):** a later GPT 5.6 run did not produce a completed verdict for \`$HEAD\`; the verdict below is from an earlier completed run. Inspect the GPT 5.6 Review job logs and re-run the workflow, or have a repository writer comment \`/ai-review override gpt $HEAD: <one-sentence reason>\`."
+                if [ "$kind" = "refused" ]; then
+                  echo "> ⚠️ **Stale verdict notice ($(date -u +'%Y-%m-%d %H:%M UTC')):** the provider REFUSED to review \`$HEAD\` — the refusal is caused by the diff's own content, so a re-run is very unlikely to produce a fresh verdict. The verdict below is from an earlier completed run on an OLDER commit. A repository writer must adjudicate: \`/ai-review override gpt $HEAD: <one-sentence reason>\`."
+                else
+                  echo "> ⚠️ **Stale verdict notice ($(date -u +'%Y-%m-%d %H:%M UTC')):** a later GPT 5.6 run did not produce a completed verdict for \`$HEAD\`; the verdict below is from an earlier completed run. Inspect the GPT 5.6 Review job logs and re-run the workflow, or have a repository writer comment \`/ai-review override gpt $HEAD: <one-sentence reason>\`."
+                fi
                 echo "<!-- codex-stale-notice-end -->"
                 echo ""
                 # Strip the leading marker and any previous notice block. Both
@@ -1102,7 +1358,7 @@ jobs:
               } > "${RUNNER_TEMP:-/tmp}/codex-merged-comment.md"
               gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
                 --field body="$(cat "${RUNNER_TEMP:-/tmp}/codex-merged-comment.md")" >/dev/null || true
-              echo "Preserved GPT 5.6 verdict in comment #$existing; prepended incomplete-run notice for $HEAD"
+              echo "Preserved GPT 5.6 verdict in comment #$existing; prepended $kind-run notice for $HEAD"
             else
               gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
                 --field body="$(cat "${RUNNER_TEMP:-/tmp}/codex-comment.md")" >/dev/null || true
@@ -1113,13 +1369,25 @@ jobs:
             echo "Created new GPT 5.6 comment"
           fi
 
-      # Fail-CLOSED gate on two SHA-scoped markers:
+      # Fail-CLOSED gate on SHA-scoped markers:
       #   - [GPT-REVIEWED] <sha> — the review ran and produced a verdict for
       #     THIS commit. Absent => fail rather than silently pass.
       #   - [BLOCK-MERGE] <sha>    — it additionally found a CLOSED-BLOCKING-LIST
       #     issue. This is the ONLY thing that blocks the merge, and the ONLY
       #     thing that can relax it is a fully reconciled clearance from the
       #     adjudication stage above (steps.adj.outputs.decision == 'cleared').
+      #
+      # A provider REFUSAL also fails, but as its own terminal state, read
+      # from the verdict assembly's `refused` step OUTPUT: the refusal is
+      # caused by the diff's content, so its failure message must not advise
+      # the re-run a crash message advises — re-runs have not been observed
+      # to clear this class — and must name human adjudication as the
+      # workable remedy. There is deliberately NO refusal marker in the
+      # verdict body: the body on the clean path is model prose, and a
+      # marker would invite exactly the prose-grepping this output exists to
+      # prevent. The assembly only ever emits refused=true on a run whose
+      # body it wrote itself, with no [GPT-REVIEWED] marker, so a refusal
+      # can never read as a completed review.
       #
       # The old "anchored Severity: HIGH without [BLOCK-MERGE]" fail-closed
       # backstop is GONE. Because the prompt required a severity token on every
@@ -1134,6 +1402,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
+          REFUSED: ${{ steps.gpt_pass2.outputs.refused }}
           ADJ_DECISION: ${{ steps.adj.outputs.decision }}
           ADJ_NOTE: ${{ steps.adj.outputs.note }}
         run: |
@@ -1151,6 +1420,17 @@ jobs:
           fi
           reviewed="[GPT-REVIEWED] $HEAD"
           blocked="[BLOCK-MERGE] $HEAD"
+          # A refusal is its own terminal state, distinct from a crash. Still
+          # fail CLOSED — a declined review is not an approval, and passing
+          # here would turn the provider's content filter into a bypass of the
+          # repo's own review requirement — but name the true cause and the
+          # remedy that can work. $REFUSED is the verdict assembly's step
+          # output for THIS run, so a marker quoted inside an old or completed
+          # verdict body can never trip this branch.
+          if [ "$REFUSED" = "true" ]; then
+            echo "::error::GPT 5.6 REFUSED to review $HEAD: the provider declined the request because of the diff's own content, and re-runs have not been observed to clear this class of refusal. Failing closed — a declined review is not an approval. This needs human adjudication: a repository writer can comment '/ai-review override gpt $HEAD: <one-sentence reason>'."
+            exit 1
+          fi
           # Positive proof the review ran for THIS commit (fail closed).
           if ! grep -Fq "$reviewed" codex-review-output.md; then
             echo "::error::GPT 5.6 review did not complete for $HEAD (no [GPT-REVIEWED] marker). Failing closed — re-run the workflow or inspect the GPT 5.6 review step logs."
@@ -1166,7 +1446,7 @@ jobs:
           # finding, any upheld finding) leaves it at "uphold" and this gate red.
           if grep -Fq "$blocked" codex-review-output.md; then
             if [ "${ADJ_DECISION:-}" = "cleared" ]; then
-              echo "::warning::GPT 5.6 flagged blocking findings on $HEAD; Opus 4.8 adjudication downgraded all of them to advisory. ${ADJ_NOTE:-} They remain in the PR comment as advice."
+              echo "::warning::GPT 5.6 flagged blocking findings on $HEAD; Fable 5.1 adjudication downgraded all of them to advisory. ${ADJ_NOTE:-} They remain in the PR comment as advice."
             else
               echo "::error::GPT 5.6 review flagged a blocking issue on $HEAD — see PR comment. ${ADJ_NOTE:-}"
               exit 1

@@ -2,6 +2,7 @@ import tsParser from '@typescript-eslint/parser'
 import tsPlugin from '@typescript-eslint/eslint-plugin'
 import reactHooksPlugin from 'eslint-plugin-react-hooks'
 import jsxA11y from 'eslint-plugin-jsx-a11y'
+import approvalOneShotDecision from './eslint-rules/approval-one-shot-decision.js'
 
 export default [
   {
@@ -21,9 +22,16 @@ export default [
       '@typescript-eslint': tsPlugin,
       'react-hooks': reactHooksPlugin,
       'jsx-a11y': jsxA11y,
+      'approval-one-shot': approvalOneShotDecision,
     },
     rules: {
       ...tsPlugin.configs.recommended.rules,
+      // The one-shot approval endpoint records no standing grant, so a trust
+      // verb decided inline at the call site is laundered into `approve` before
+      // the request is made — upstream of both the typed client and the
+      // backend's 400. 'error', not 'warn': this is a consent path, and a
+      // warning would ride the --max-warnings ratchet instead of failing.
+      'approval-one-shot/no-inline-one-shot-decision': 'error',
       // Downgrade jsx-a11y's recommended severities to 'warn' so they ride the
       // --max-warnings ratchet instead of failing the build outright — but keep
       // whatever the preset switched OFF off. A blanket rewrite to 'warn' also

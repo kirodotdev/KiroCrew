@@ -403,8 +403,11 @@ describe('ChatInput orphaned approval (404)', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
-      expect(screen.getByRole('status')).toBeInTheDocument()
+      // A rejected decision submit is an error surface (ErrorNotice, role=alert),
+      // distinct from the role=status copy an EXPIRED approval gets above.
+      expect(screen.getByTestId('approval-decision-error')).toBeInTheDocument()
     })
+    expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
     // A transient server error is not evidence the approval is gone — the
     // buttons must remain live rather than dismissing a still-valid request.
     expect(screen.getByText('Allow once')).toBeInTheDocument()

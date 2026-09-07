@@ -16,6 +16,7 @@ Covers spec task 2 of the Crew Members page:
 from __future__ import annotations
 
 import json
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1503,3 +1504,114 @@ class TestMemberActivityRoute:
                 data = await resp.json()
         assert data["capped"] is True
         assert len(data["entries"]) == handler_mod._ACTIVITY_LIMIT
+
+
+class TestDenialAuditOffload:
+    """Deny-path SEL audits are direct enqueues since the startup warm (#8608).
+
+    The per-site ``asyncio.to_thread`` wrappers existed because a fresh
+    gateway's first ``_sel()`` touch performed synchronous filesystem
+    initialization (HMAC key load/create, chain-head read). That first touch
+    now happens once at gateway startup (``sel.warm_sel_singleton``, awaited
+    by both server start paths — pinned in test_sel_startup_warm.py), so a
+    handler-side ``log_api_access`` is a non-blocking enqueue and the thread
+    hop is gone. Each test records the thread the audit ran on and fails if
+    it is NOT the event-loop thread — re-adding a pointless per-site offload
+    turns the recorded ident back into a worker's and fails these.
+    """
+
+    @staticmethod
+    def _recording_sel(record: dict):
+        class _RecordingSel:
+            def log_api_access(self, **kwargs):
+                record["thread_ident"] = threading.get_ident()
+                record["kwargs"] = kwargs
+
+        return _RecordingSel()
+
+    @pytest.mark.asyncio
+    async def test_app_denial_audit_runs_inline(self, tmp_path, monkeypatch):
+        state = _make_state(tmp_path)
+        record: dict = {}
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: self._recording_sel(record))
+
+        @web.middleware
+        async def _as_app(request: web.Request, handler):
+            request["app"] = "some-app"
+            return await handler(request)
+
+        app = _make_members_app(state)
+        app.middlewares.insert(0, _as_app)
+        loop_ident = threading.get_ident()
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(app)) as client:
+                assert (await client.get("/api/members")).status == 404
+        assert record["kwargs"]["outcome"] == "denied"
+        assert record["kwargs"]["source"] == "app_isolation"
+        assert record["kwargs"]["operation"] == "members.list"
+        # The audit is a direct enqueue on the loop thread — no thread hop.
+        assert record["thread_ident"] == loop_ident
+
+    @pytest.mark.asyncio
+    async def test_member_pin_denial_audit_runs_inline(self, tmp_path, monkeypatch):
+        """The pin-mismatch denial (binding names a non-owner) audits inline."""
+        state = _make_state(tmp_path)
+        record: dict = {}
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: self._recording_sel(record))
+        # ``Code_Reviewer`` slugifies to CREW's slug (so the binding reads back
+        # as present) but is NOT a config-registered owner → pin mismatch.
+        write_dm_binding(CREW, member="Code_Reviewer", slot_key=member_slot_key(CREW))
+        loop_ident = threading.get_ident()
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.post(f"/api/members/{CREW}/thread")
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "member_pin_mismatch"
+        assert record["kwargs"]["source"] == "member_pin"
+        assert record["kwargs"]["outcome"] == "denied"
+        assert record["thread_ident"] == loop_ident
+        assert not state._slots
+
+    def test_no_members_sel_audit_is_offloaded(self):
+        """AST guard (inverted from #8523 by #8608): no ``log_api_access``
+        call in members.py hides inside an ``asyncio.to_thread`` lambda.
+
+        The startup warm makes a post-init ``log_api_access`` a non-blocking
+        enqueue, so a per-site thread hop is pure overhead — an extra
+        suspension point and a worker dispatch per denial. A future site that
+        genuinely needs a synchronous write (``critical=True``) must offload
+        AND adjust this guard with that reasoning.
+        """
+        import ast
+        import inspect
+
+        from kiro_crew.dashboard.handlers import members as members_mod_py
+
+        tree = ast.parse(inspect.getsource(members_mod_py))
+        offloaded: set[int] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "to_thread"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "asyncio"
+            ):
+                for arg in node.args:
+                    if isinstance(arg, ast.Lambda):
+                        for inner in ast.walk(arg):
+                            offloaded.add(id(inner))
+        audits = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "log_api_access"
+        ]
+        assert audits, "expected log_api_access audit sites in members.py"
+        wrapped = [node.lineno for node in audits if id(node) in offloaded]
+        assert not wrapped, (
+            f"to_thread-wrapped _sel().log_api_access at lines {wrapped}; SEL is "
+            "warmed at startup (sel.warm_sel_singleton), so a non-critical audit "
+            "is a direct enqueue (#8608)"
+        )

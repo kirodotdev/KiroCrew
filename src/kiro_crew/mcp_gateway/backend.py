@@ -28,7 +28,11 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from kiro_crew import platform_compat
-from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+from kiro_crew.constants import (
+    KIROCREW_SPAWNED_ENV,
+    KIROCREW_SPAWNED_VALUE,
+    SUBAGENT_TIMEOUT_SECS,
+)
 from kiro_crew.executors import image_executor, maintenance_executor
 from kiro_crew.mcp_caller import (
     CALLER_CAPABILITY_KEY,
@@ -177,8 +181,18 @@ PING_STALE_SECS = 150.0
 
 # Absolute ceiling: recycle regardless of ping freshness. Protects against a
 # pathological case where the tool itself is stuck but the MCP server's read
-# loop still services ping requests. Set to wait_max (1800s) + 5-min margin.
-HARD_WEDGE_CEILING_SECS = 2100.0
+# loop still services ping requests.
+#
+# It has to sit ABOVE the longest LEGITIMATE in-flight request, or it stops
+# being a wedge detector and becomes a deadline: a blocking ``spawn_sub_agents``
+# is in flight for as long as its slowest member runs, so a ceiling at or below
+# the subagent deadline recycles the backend under a caller whose work is
+# healthy, reporting ``backend gone`` while the subagent keeps running detached
+# and its result is stranded. The subagent deadline is therefore the binding
+# term (``wait``'s 1800s max is well under it), plus a 5-minute margin. An
+# operator who raises ``agent.subagent_timeout_secs`` past the default re-opens
+# that gap; the load-time clamp bounds how far.
+HARD_WEDGE_CEILING_SECS = float(SUBAGENT_TIMEOUT_SECS + 300)
 
 # Upper bound on a single stub's pending-delivery inbox. Backend->stub frames
 # are enqueued by the stdout pump without awaiting the stub's socket drain, so

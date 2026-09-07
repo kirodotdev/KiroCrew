@@ -51,7 +51,7 @@ from kiro_crew.instances.validation import (
     validate_ssm_run_as,
     validate_ssm_target,
 )
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ def _redacted_tail(text: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     """
     if not text:
         return ""
-    safe = redact_exfiltration_urls(redact_credentials(text)[0])[0]
+    safe = redact(text)
     return safe.strip()[-limit:]
 
 

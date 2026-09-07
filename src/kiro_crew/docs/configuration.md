@@ -174,8 +174,8 @@ Set via `kirocrew config set agent.acp_backend kas`.
   },
   "stt": {
     "enabled": true,
-    "provider": "whisper",
-    "streaming": false,
+    "provider": "local",
+    "streaming": true,
     "transcribe_region": "us-east-1",
     "language_code": "en-US"
   },
@@ -270,8 +270,9 @@ Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
 Multi-user access and open channels are refused regardless of what these lists
 contain, so treat them as bookkeeping rather than an access grant.
 
-Other channels (Discord, Telegram, Teams, Webex, WeCom, WeChat) are configured
-from the dashboard — see each channel's doc for keys and credentials.
+Every other messaging channel is configured from the dashboard — the roster is in
+[the documentation index](index.md#chat-channels), and each channel's own doc
+lists its keys and credentials.
 
 ### Speech-to-text
 
@@ -331,8 +332,14 @@ AWS client are the optional `voice` extra, installed as its own dependencies
 - Compressed audio still passes through ffmpeg internally: a voice note arrives
   as ogg/Opus and a browser recording as webm. Desktop releases bundle and verify
   a pinned decoder, so there is no separate FFmpeg installation step. Source
-  environments use a system FFmpeg from the fixed platform paths instead of an
-  executable inside an agent-writable project venv.
+  environments use a system FFmpeg from the fixed platform paths — never an
+  executable inside an agent-writable project venv — and where the host packages
+  none, **Settings > Voice offers a one-click decoder download** that fetches the
+  same pinned upstream bytes into `<data home>/models/ffmpeg/` and verifies them
+  against a built-in SHA-256 digest before anything is executed. The digest is the
+  trust anchor, so `~/.local/bin` is still not a place a decoder can be installed
+  for Kiro Crew's use. If that download fails, the page offers to hand the failure
+  to a chat session, which is given the host details and the trusted locations.
 
 #### Retired providers
 

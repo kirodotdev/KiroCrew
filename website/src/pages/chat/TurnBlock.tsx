@@ -484,6 +484,16 @@ function CollapseToggle({ expanded, onToggle, label }: { expanded: boolean; onTo
 function CollapsibleSection({ expanded, children }: { expanded: boolean; children: ReactNode }) {
   return (
     <motion.div
+      // Collapse marker for the bubble-vanish probe (useBubbleVanishProbe):
+      // rows inside stay MOUNTED while the height animates to 0, so without
+      // this attribute a collapse is indistinguishable from a windowing bug.
+      // Present exactly while this section hides its mounted children, i.e.
+      // when the interim / collapseAll folds pass expanded={false}. The
+      // default-mode tool fold is different: it hard-codes expanded={true}
+      // and collapses by UNMOUNTING under AnimatePresence, so it never sets
+      // this marker — and moves no probe counter either, because tool items
+      // carry no [data-display-index] of their own.
+      data-collapsed={expanded ? undefined : 'true'}
       initial={{ height: 0, opacity: 0 }}
       animate={expanded ? { height: 'auto', opacity: 1 } : { height: 0, opacity: 0 }}
       exit={{ height: 0, opacity: 0 }}

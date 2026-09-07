@@ -947,6 +947,17 @@ async def _build_fleet() -> dict:
     staged_path = live._staged_target()
     worktrees = await repository._discover_worktrees()
     cfg = runtime._load_cfg()
+    loop = asyncio.get_running_loop()
+    active_pod_names: set[str] = set()
+    if runtime._POD_AVAILABLE and cfg and any(not wt.get("is_main", False) for wt in worktrees):
+        try:
+            # One point-in-time service-manager snapshot keeps every row
+            # consistent and avoids repeating the same subprocess per worktree.
+            active_pod_names = await loop.run_in_executor(
+                subprocess_executor(), runtime.rt.active_names, cfg
+            )
+        except Exception:  # noqa: BLE001
+            pass
     legacy_prefixes = tuple(
         f"{r.split('/')[-1].lower()}-wt-" for r in (repository._FALLBACK_REPOS or [])
     )
@@ -965,7 +976,6 @@ async def _build_fleet() -> dict:
         health = None
         has_venv = False
         has_dist = False
-        loop = asyncio.get_running_loop()
         # Build state is a plain filesystem check (``.venv`` binary present /
         # ``static/dist`` directory present) and is therefore knowable on EVERY
         # platform — report it even where pods cannot run, so the Fleet view
@@ -986,12 +996,9 @@ async def _build_fleet() -> dict:
                 pass
         # Pod state, by contrast, only exists where pods can run.
         if runtime._POD_AVAILABLE and cfg and not is_main:
-            try:
-                active = await loop.run_in_executor(
-                    subprocess_executor(), runtime.rt.active_names, cfg
-                )
-                running = name in active
-                if running:
+            running = name in active_pod_names
+            if running:
+                try:
                     port = await loop.run_in_executor(
                         subprocess_executor(), runtime.rt.derive_port, cfg, name
                     )
@@ -1005,8 +1012,8 @@ async def _build_fleet() -> dict:
                     health = await loop.run_in_executor(
                         subprocess_executor(), runtime.rt.health, cfg, name, port, 2
                     )
-            except Exception:  # noqa: BLE001
-                pass
+                except Exception:  # noqa: BLE001
+                    pass
 
         ahead = await repository._git_ahead(path)
         # "shipped" drives the UI's "safe to remove" affordance — require a
@@ -1313,23 +1320,70 @@ _PROVISION_LOCK = LoopBoundLock()
 
 
 # --- disk aggregation ---
+# One aggregation runs `du -sm` sequentially over every worktree (60s
+# per-worktree timeout), so it is far too expensive to run per poll: the
+# dashboard polls /api/disk every 30 seconds, while worktree sizes change only
+# when a checkout is created, removed, or pruned. A completed result is
+# therefore served from ``_DISK`` until it is older than ``_DISK_TTL``; a
+# stale result is refreshed by exactly ONE coalesced background aggregation
+# while every concurrent poll keeps reading the previous numbers
+# (stale-while-revalidate), so an open dashboard never sustains back-to-back
+# scans.
+_DISK_TTL = 300.0  # seconds a completed aggregation stays fresh
 _DISK: dict = {"status": "idle", "total_mb": None, "per": {}}
 _DISK_COMPUTING = False
+# ``time.monotonic()`` when the last aggregation stored its result. 0.0 means
+# no trustworthy completed result exists -- never measured, or invalidated by
+# a worktree mutation -- so the next read must launch a fresh aggregation.
+_DISK_COMPUTED_AT = 0.0
+# Bumped by ``_disk_invalidate``. An aggregation that started BEFORE an
+# invalidation measured the tree the mutation just changed, so stamping its
+# result fresh would serve pre-mutation numbers for a full TTL; the epoch
+# comparison in ``work`` leaves such a result stale instead.
+_DISK_EPOCH = 0
+
+
+def _disk_invalidate() -> None:
+    """Force the next ``_disk`` read to launch a fresh aggregation.
+
+    Called from the worktree-removal chokepoint (which the single-worktree
+    handler, the parallel prune workers, and the auto-prune reaper all route
+    through), because a removal is the in-app mutation that materially changes
+    worktree disk use. Only the freshness stamp is dropped -- the cached
+    numbers keep serving (stale-while-revalidate) -- so the poll after a
+    removal starts one refresh instead of the UI showing pre-removal totals
+    for the rest of the TTL.
+    """
+    global _DISK_COMPUTED_AT, _DISK_EPOCH
+    _DISK_EPOCH += 1
+    _DISK_COMPUTED_AT = 0.0
 
 
 async def _disk() -> dict:
     global _DISK_COMPUTING
-    if _DISK["status"] == "computing":
+    if _DISK_COMPUTING or _DISK["status"] == "computing":
         return dict(_DISK)
-    if _DISK["status"] == "done":
-        snap = dict(_DISK)
-        _DISK["status"] = "idle"
-        return snap
-    _DISK["status"] = "computing"
+    if (
+        _DISK["status"] == "done"
+        and _DISK_COMPUTED_AT > 0.0
+        and time.monotonic() - _DISK_COMPUTED_AT < _DISK_TTL
+    ):
+        return dict(_DISK)
+    # First read, or the completed result went stale: start exactly one
+    # coalesced background refresh. No await separates the in-flight check
+    # above from the flag set below, so on asyncio's single event loop
+    # concurrent polls cannot both reach this point.
+    started_epoch = _DISK_EPOCH
     _DISK_COMPUTING = True
+    if _DISK["status"] != "done":
+        # Only the very first aggregation surfaces as "computing": once a
+        # completed result exists, refreshes run behind it and pollers keep
+        # seeing the previous numbers.
+        _DISK["status"] = "computing"
 
     async def work() -> None:
-        global _DISK_COMPUTING
+        global _DISK_COMPUTING, _DISK_COMPUTED_AT
+        fresh = False
         try:
             per: dict = {}
             total = 0
@@ -1344,13 +1398,25 @@ async def _disk() -> dict:
                 except (ValueError, IndexError):
                     pass
             _DISK.update({"status": "done", "total_mb": total, "per": per})
+            fresh = True
         except Exception:  # noqa: BLE001
-            _DISK.update({"status": "done", "total_mb": None, "per": {}})
+            # A transient discovery failure (a git timeout while a concurrent
+            # prune holds the repo, for example) must not clobber good numbers
+            # or be cached as a fresh measurement. Discovery raises before any
+            # `du` runs, so the next poll's retry is cheap. Only a first run
+            # with nothing to fall back on reports unknown.
+            if _DISK["status"] != "done":
+                _DISK.update({"status": "done", "total_mb": None, "per": {}})
         finally:
+            # Stamp fresh only for a successful measurement no mutation
+            # overlapped (a mid-flight invalidation makes it pre-mutation);
+            # anything else leaves the stamp at 0.0 so the next read starts a
+            # fresh aggregation while the kept numbers serve in the meantime.
+            _DISK_COMPUTED_AT = time.monotonic() if fresh and _DISK_EPOCH == started_epoch else 0.0
             _DISK_COMPUTING = False
 
     asyncio.create_task(work())
-    return {"status": "computing", "total_mb": None, "per": {}}
+    return dict(_DISK)
 
 
 __all__ = (
@@ -1359,7 +1425,10 @@ __all__ = (
     "_CTX_MAX_TICKETS",
     "_CTX_TTL",
     "_DISK",
+    "_DISK_COMPUTED_AT",
     "_DISK_COMPUTING",
+    "_DISK_EPOCH",
+    "_DISK_TTL",
     "_FLEET_CACHE",
     "_FLEET_EPOCH",
     "_FLEET_INFLIGHT",
@@ -1388,6 +1457,7 @@ __all__ = (
     "_context_cached",
     "_cpu_percent",
     "_disk",
+    "_disk_invalidate",
     "_drop_worktrees",
     "_extract_issue_refs",
     "_extract_ticket_ids",

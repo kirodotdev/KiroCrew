@@ -1079,16 +1079,153 @@ async def test_disk_in_progress_returns_snapshot(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_disk_done_snapshot_resets_to_idle(monkeypatch):
+async def test_disk_fresh_result_served_without_rescan(monkeypatch):
+    """A completed result inside the TTL is a cache, not a one-read handoff."""
     monkeypatch.setattr(fleet_state, "_DISK", {"status": "done", "total_mb": 42, "per": {"a": 42}})
-    snap = await fleet_state._disk()
-    assert snap["total_mb"] == 42
-    assert fleet_state._DISK["status"] == "idle"
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTING", False)
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTED_AT", time.monotonic())
+    monkeypatch.setattr(fleet_state, "_DISK_EPOCH", 0)
+    monkeypatch.setattr(
+        repository, "_discover_worktrees", AsyncMock(side_effect=AssertionError("must not scan"))
+    )
+    for _ in range(2):
+        snap = await fleet_state._disk()
+        assert snap == {"status": "done", "total_mb": 42, "per": {"a": 42}}
+    assert fleet_state._DISK["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_disk_six_sequential_polls_run_one_aggregation(monkeypatch):
+    """Regression for #8787: an open dashboard polling /disk must not re-scan.
+
+    Six sequential endpoint reads on main ran three full aggregations because
+    the done branch reset the state machine to idle on every snapshot. With
+    the TTL cache the same six reads run exactly one.
+    """
+    monkeypatch.setattr(fleet_state, "_DISK", {"status": "idle", "total_mb": None, "per": {}})
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTING", False)
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTED_AT", 0.0)
+    monkeypatch.setattr(fleet_state, "_DISK_EPOCH", 0)
+    discoveries = 0
+    du_calls: list = []
+
+    async def fake_discover():
+        nonlocal discoveries
+        discoveries += 1
+        return [{"path": "/repo/wt-a"}]
+
+    async def fake_run(cmd, **kw):
+        du_calls.append(cmd)
+        return (0, "12\t/repo/wt-a", "")
+
+    monkeypatch.setattr(repository, "_discover_worktrees", fake_discover)
+    monkeypatch.setattr(runtime, "_run_cmd", fake_run)
+
+    assert (await fleet_state._disk())["status"] == "computing"
+    for _ in range(50):
+        if fleet_state._DISK["status"] == "done":
+            break
+        await asyncio.sleep(0.01)
+    for _ in range(5):
+        snap = await fleet_state._disk()
+        assert snap == {"status": "done", "total_mb": 12, "per": {"wt-a": 12}}
+        await asyncio.sleep(0)  # give any wrongly-spawned refresh a chance to run
+    assert discoveries == 1
+    assert len(du_calls) == 1
+    assert fleet_state._DISK["status"] == "done"  # never reset back to idle
+
+
+@pytest.mark.asyncio
+async def test_disk_stale_cache_coalesces_one_refresh(monkeypatch):
+    """Concurrent polls past the TTL start exactly one background refresh."""
+    monkeypatch.setattr(fleet_state, "_DISK", {"status": "done", "total_mb": 42, "per": {"a": 42}})
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTING", False)
+    monkeypatch.setattr(
+        fleet_state, "_DISK_COMPUTED_AT", time.monotonic() - fleet_state._DISK_TTL - 1
+    )
+    monkeypatch.setattr(fleet_state, "_DISK_EPOCH", 0)
+    started = 0
+    release = asyncio.Event()
+
+    async def fake_discover():
+        nonlocal started
+        started += 1
+        await release.wait()
+        return [{"path": "/repo/wt-a"}]
+
+    monkeypatch.setattr(repository, "_discover_worktrees", fake_discover)
+    monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "7\t/repo/wt-a", "")))
+
+    snaps = await asyncio.gather(*(fleet_state._disk() for _ in range(6)))
+    # Every concurrent poll keeps observing the stale numbers, never a reset.
+    assert all(s == {"status": "done", "total_mb": 42, "per": {"a": 42}} for s in snaps)
+    await asyncio.sleep(0)  # let the refresh task reach the discovery await
+    assert started == 1
+    release.set()
+    for _ in range(50):
+        if fleet_state._DISK["total_mb"] == 7:
+            break
+        await asyncio.sleep(0.01)
+    assert fleet_state._DISK == {"status": "done", "total_mb": 7, "per": {"wt-a": 7}}
+    assert started == 1
+
+
+@pytest.mark.asyncio
+async def test_disk_invalidate_forces_refresh_on_next_read(monkeypatch):
+    """A worktree mutation drops the freshness stamp; the next read re-scans."""
+    monkeypatch.setattr(fleet_state, "_DISK", {"status": "done", "total_mb": 42, "per": {"a": 42}})
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTING", False)
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTED_AT", time.monotonic())
+    monkeypatch.setattr(fleet_state, "_DISK_EPOCH", 0)
+    monkeypatch.setattr(
+        repository, "_discover_worktrees", AsyncMock(return_value=[{"path": "/repo/wt-b"}])
+    )
+    monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "9\t/repo/wt-b", "")))
+
+    fleet_state._disk_invalidate()
+    # The stale numbers keep serving while the refresh runs behind them.
+    assert await fleet_state._disk() == {"status": "done", "total_mb": 42, "per": {"a": 42}}
+    for _ in range(50):
+        if fleet_state._DISK["total_mb"] == 9:
+            break
+        await asyncio.sleep(0.01)
+    assert fleet_state._DISK == {"status": "done", "total_mb": 9, "per": {"wt-b": 9}}
+
+
+@pytest.mark.asyncio
+async def test_disk_mid_flight_invalidation_leaves_result_stale(monkeypatch):
+    """An aggregation overlapped by a mutation must not be stamped fresh."""
+    monkeypatch.setattr(fleet_state, "_DISK", {"status": "idle", "total_mb": None, "per": {}})
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTING", False)
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTED_AT", 0.0)
+    monkeypatch.setattr(fleet_state, "_DISK_EPOCH", 0)
+    release = asyncio.Event()
+
+    async def fake_discover():
+        await release.wait()
+        return [{"path": "/repo/wt-a"}]
+
+    monkeypatch.setattr(repository, "_discover_worktrees", fake_discover)
+    monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "5\t/repo/wt-a", "")))
+
+    await fleet_state._disk()  # starts the aggregation
+    fleet_state._disk_invalidate()  # a mutation lands mid-flight
+    release.set()
+    for _ in range(50):
+        if fleet_state._DISK["status"] == "done":
+            break
+        await asyncio.sleep(0.01)
+    # The measurement is kept for display but left stale: the next read starts
+    # a fresh aggregation instead of serving pre-mutation numbers for a TTL.
+    assert fleet_state._DISK_COMPUTED_AT == 0.0
 
 
 @pytest.mark.asyncio
 async def test_disk_idle_starts_background_aggregation(monkeypatch):
     monkeypatch.setattr(fleet_state, "_DISK", {"status": "idle", "total_mb": None, "per": {}})
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTING", False)
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTED_AT", 0.0)
+    monkeypatch.setattr(fleet_state, "_DISK_EPOCH", 0)
     monkeypatch.setattr(
         repository,
         "_discover_worktrees",
@@ -1112,6 +1249,9 @@ async def test_disk_idle_starts_background_aggregation(monkeypatch):
 @pytest.mark.asyncio
 async def test_disk_aggregation_failure_reports_unknown(monkeypatch):
     monkeypatch.setattr(fleet_state, "_DISK", {"status": "idle", "total_mb": None, "per": {}})
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTING", False)
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTED_AT", 0.0)
+    monkeypatch.setattr(fleet_state, "_DISK_EPOCH", 0)
     monkeypatch.setattr(
         repository, "_discover_worktrees", AsyncMock(side_effect=RuntimeError("git"))
     )
@@ -1122,6 +1262,31 @@ async def test_disk_aggregation_failure_reports_unknown(monkeypatch):
             break
         await asyncio.sleep(0.01)
     assert fleet_state._DISK == {"status": "done", "total_mb": None, "per": {}}
+
+
+@pytest.mark.asyncio
+async def test_disk_transient_failure_preserves_numbers_and_retries(monkeypatch):
+    """A failed refresh keeps the previous result and is never cached fresh."""
+    monkeypatch.setattr(fleet_state, "_DISK", {"status": "done", "total_mb": 42, "per": {"a": 42}})
+    monkeypatch.setattr(fleet_state, "_DISK_COMPUTING", False)
+    monkeypatch.setattr(
+        fleet_state, "_DISK_COMPUTED_AT", time.monotonic() - fleet_state._DISK_TTL - 1
+    )
+    monkeypatch.setattr(fleet_state, "_DISK_EPOCH", 0)
+    monkeypatch.setattr(
+        repository, "_discover_worktrees", AsyncMock(side_effect=RuntimeError("git timeout"))
+    )
+
+    # Stale read starts the refresh, which fails behind the scenes.
+    assert await fleet_state._disk() == {"status": "done", "total_mb": 42, "per": {"a": 42}}
+    for _ in range(50):
+        if not fleet_state._DISK_COMPUTING:
+            break
+        await asyncio.sleep(0.01)
+    # Good numbers survive the failure, and the stamp stays 0.0 so the next
+    # read retries instead of serving the failure for a full TTL.
+    assert fleet_state._DISK == {"status": "done", "total_mb": 42, "per": {"a": 42}}
+    assert fleet_state._DISK_COMPUTED_AT == 0.0
 
 
 # --------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import { Link2, BookOpen, Users, MessageSquareText, Webhook, LayoutTemplate, Com
 import SidePanelLayout from '../components/SidePanelLayout'
 import ErrorBoundary from '../components/ErrorBoundary'
 import RestartButton from '../components/RestartButton'
+import { PinSurfaceButton } from '../components/PinSurfaceButton'
 import { useProvider } from '../providers'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import AgentsPage from './AgentsPage'
@@ -74,7 +75,7 @@ export default function CapabilitiesPage() {
   }, [provider, t])
 
   return (
-    <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" headerRight={<RestartButton />}>
+    <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" headerRight={<div className="flex items-center gap-2"><PinSurfaceButton defaultTab={tabs[0]?.key} /><RestartButton /></div>}>
       {tab => <>
         {tab === 'crews' && <KiroCrewAgentsPage embedded />}
         {tab === 'templates' && <AgentsPage embedded />}

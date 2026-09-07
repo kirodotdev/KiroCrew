@@ -283,8 +283,8 @@ class ConfigCache:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        # (fingerprint, deep-copyable validated data dict)
-        self._entry: tuple[tuple, dict] | None = None
+        # (fingerprint, deep-copyable validated data dict, opaque sidecar)
+        self._entry: tuple[tuple, dict, dict] | None = None
 
     def get(self, fingerprint: tuple) -> dict | None:
         """Return a deep copy of the cached dict if *fingerprint* matches, else None.
@@ -299,8 +299,26 @@ class ConfigCache:
                 return copy.deepcopy(self._entry[1])
         return None
 
-    def store(self, data: dict, fingerprint: tuple) -> None:
-        """Cache a deep copy of *data* under *fingerprint*.
+    def get_with_sidecar(self, fingerprint: tuple) -> tuple[dict, dict] | None:
+        """Return deep copies of ``(data, sidecar)`` from ONE lock hold, else None.
+
+        The sidecar carries facts about the SAME read that the merged dict cannot
+        express — today, the pre-overlay base values the loader needs to round-trip
+        unknown keys correctly. The two halves describe one read and must be
+        served together: a ``save()`` on another thread calls ``clear()``, and
+        fetching them in two steps let the dict land before the clear and the
+        sidecar after it — a merged document with an EMPTY base shadow, which the
+        loader would then capture from as if no overlay existed, deleting shadowed
+        base keys on the next save. There is deliberately no separate sidecar
+        accessor: the lock makes the pair all-or-nothing.
+        """
+        with self._lock:
+            if self._entry is not None and self._entry[0] == fingerprint:
+                return copy.deepcopy(self._entry[1]), copy.deepcopy(self._entry[2])
+        return None
+
+    def store(self, data: dict, fingerprint: tuple, sidecar: dict | None = None) -> None:
+        """Cache a deep copy of *data* (and *sidecar*) under *fingerprint*.
 
         *fingerprint* MUST be the one captured BEFORE the files were read (by
         ``load()``), not a fresh stat. If a write lands between the read and this
@@ -311,7 +329,7 @@ class ConfigCache:
         TOCTOU) and serve it as a false hit until the file changed again.
         """
         with self._lock:
-            self._entry = (fingerprint, copy.deepcopy(data))
+            self._entry = (fingerprint, copy.deepcopy(data), copy.deepcopy(sidecar or {}))
 
     def clear(self) -> None:
         """Drop the cached validated config (called after save()/write-back)."""

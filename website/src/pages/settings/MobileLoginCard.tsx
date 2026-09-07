@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Copy, Smartphone } from 'lucide-react'
 import { api } from '../../api/client'
 import { Btn, Card, CardTitle, Input } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useAppSelector } from '../../store'
 import { parseErrorCode } from '../../utils/errorReport'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -104,17 +105,24 @@ export function MobileLoginCard() {
           )}
         </div>
       )}
+      {/* askAgent on: the minted link (if any) is already server-issued and the
+          card holds no draft — and `external_origin_unavailable` is exactly the
+          config gap (dashboard.url) the agent can fix. */}
       {createLink.isError && (
-        <p className="mt-3 text-sm text-danger" role="alert">
-          {mobileLinkErrorCode(createLink.error) === 'external_origin_unavailable'
+        <ErrorNotice
+          className="mt-3"
+          askAgent
+          message={mobileLinkErrorCode(createLink.error) === 'external_origin_unavailable'
             ? t('pages.settings.mobileLoginCard.dashboard_url_required_to_create_a_mobile_sign_in_link')
             : t('pages.settings.mobileLoginCard.could_not_create_a_sign_in_link_try_again')}
-        </p>
+        />
       )}
       {copyFailed && (
-        <p className="mt-3 text-sm text-danger" role="alert">
-          {t('pages.settings.mobileLoginCard.copy_failed_select_the_link_and_copy_it_manually')}
-        </p>
+        <ErrorNotice
+          className="mt-3"
+          askAgent
+          message={t('pages.settings.mobileLoginCard.copy_failed_select_the_link_and_copy_it_manually')}
+        />
       )}
     </Card>
   )

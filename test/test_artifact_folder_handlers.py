@@ -209,6 +209,195 @@ class TestFolderDelete:
             store.get(art.slug)
 
     @pytest.mark.asyncio
+    async def test_cascade_withdraws_the_published_copy_before_destroying_it(
+        self, stores, patch_restricted, monkeypatch
+    ) -> None:
+        """The cascade destroys artifacts through `ArtifactStore.delete`, which knows
+        nothing about publications -- so it used to erase the record while the public copy
+        stayed served, with nothing left able to withdraw it. Same defect as the single
+        delete, reached through the folder door.
+        """
+        import kiro_crew.publish_sync as _ps
+        from kiro_crew.artifacts import ArtifactPublication
+
+        store, fstore = stores
+        f = fstore.create("F")
+        art = store.create(name="a", content="x", folder_id=f["id"])
+        store.set_publication(
+            art.slug,
+            ArtifactPublication(
+                provider="default", artifact_id="uuid-1", view_url="https://d/a", visibility="PUBLIC"
+            ),
+        )
+
+        withdrawn: list[str] = []
+
+        async def _withdraw(a):
+            withdrawn.append(a.slug)
+            return _ps.DeleteWithdrawal.WITHDRAWN
+
+        monkeypatch.setattr("kiro_crew.publish_sync.delete_for_artifact", _withdraw)
+        resp = await api_artifact_folder_delete(
+            _request(match={"id": f["id"]}, query={"delete_contents": "true"})
+        )
+        assert resp.status == 200
+        # The copy was withdrawn, and only then was the artifact destroyed.
+        assert withdrawn == [art.slug]
+        with pytest.raises(ArtifactNotFoundError):
+            store.get(art.slug)
+
+    @pytest.mark.asyncio
+    async def test_cascade_refuses_when_a_published_copy_cannot_be_withdrawn(
+        self, stores, patch_restricted, monkeypatch
+    ) -> None:
+        """One copy that will not come down refuses the WHOLE cascade, and nothing is
+        destroyed -- not the artifact, not the folder.
+
+        A folder that refuses to delete is recoverable: restore access and retry, or
+        unpublish deliberately. A public copy whose only handle was just erased is not.
+        """
+        import kiro_crew.publish_sync as _ps
+        from kiro_crew.artifacts import ArtifactPublication
+
+        store, fstore = stores
+        f = fstore.create("F")
+        art = store.create(name="a", content="x", folder_id=f["id"])
+        store.set_publication(
+            art.slug,
+            ArtifactPublication(
+                provider="default", artifact_id="uuid-1", view_url="https://d/a", visibility="PUBLIC"
+            ),
+        )
+
+        async def _stuck(a):
+            return _ps.DeleteWithdrawal.UNREACHABLE
+
+        monkeypatch.setattr("kiro_crew.publish_sync.delete_for_artifact", _stuck)
+        resp = await api_artifact_folder_delete(
+            _request(match={"id": f["id"]}, query={"delete_contents": "true"})
+        )
+        assert resp.status == 502
+        # Nothing destroyed: the artifact, its handle, and the folder all survive.
+        assert store.get(art.slug).publication is not None
+        assert fstore.exists(f["id"])
+
+    @pytest.mark.asyncio
+    async def test_cascade_keeps_an_artifact_moved_in_after_the_preflight(
+        self, stores, patch_restricted, monkeypatch
+    ) -> None:
+        """An artifact filed into the subtree AFTER the withdrawal preflight has a
+        publication the preflight never withdrew. Destroying it would erase the only
+        handle able to reach a copy that is still served, so the cascade keeps it.
+
+        The preflight and the destruction are two separate steps with no lock spanning
+        them, so the invariant is enforced where the destruction happens -- on the
+        publication itself -- rather than by trusting the earlier enumeration.
+        """
+        import kiro_crew.publish_sync as _ps
+        from kiro_crew.artifacts import ArtifactPublication
+
+        store, fstore = stores
+        f = fstore.create("F")
+        early = store.create(name="early", content="x", folder_id=f["id"])
+        store.set_publication(
+            early.slug,
+            ArtifactPublication(
+                provider="default", artifact_id="uuid-1", view_url="https://d/1", visibility="PUBLIC"
+            ),
+        )
+        late = store.create(name="late", content="x", folder_id="")
+
+        async def _withdraw(a):
+            return _ps.DeleteWithdrawal.WITHDRAWN
+
+        monkeypatch.setattr("kiro_crew.publish_sync.delete_for_artifact", _withdraw)
+
+        real_delete = fstore.delete
+
+        def _move_in_then_delete(fid: str, **kw):
+            # Models the production window precisely: the preflight has finished
+            # (so it never saw this artifact) and Phase 2's scan has not run yet.
+            store.set_folder(late.slug, f["id"])
+            store.set_publication(
+                late.slug,
+                ArtifactPublication(
+                    provider="default",
+                    artifact_id="uuid-2",
+                    view_url="https://d/2",
+                    visibility="PUBLIC",
+                ),
+            )
+            return real_delete(fid, **kw)
+
+        monkeypatch.setattr(fstore, "delete", _move_in_then_delete)
+        resp = await api_artifact_folder_delete(
+            _request(match={"id": f["id"]}, query={"delete_contents": "true"})
+        )
+        assert resp.status == 200
+        body = _body(resp)
+        # The withdrawn one is gone; the late arrival survives WITH its handle.
+        assert body["deleted_artifact_slugs"] == [early.slug]
+        assert body["kept_published_artifact_slugs"] == [late.slug]
+        assert store.get(late.slug).publication is not None
+        assert late.slug in body["notice"]
+
+    @pytest.mark.asyncio
+    async def test_cascade_keeps_a_copy_published_after_the_scan_snapshot(
+        self, stores, patch_restricted, monkeypatch
+    ) -> None:
+        """The narrowest window: the artifact was unpublished when the cascade's scan
+        listed it, and a publish lands before its own delete runs.
+
+        A check in the cascade loop cannot catch this -- it reads the snapshot, and the
+        publish happens after. Only asking `delete` itself, where the check shares the
+        lock with the removal, refuses it.
+        """
+        import kiro_crew.publish_sync as _ps
+        from kiro_crew.artifacts import ArtifactPublication
+
+        store, fstore = stores
+        f = fstore.create("F")
+        art = store.create(name="a", content="x", folder_id=f["id"])
+
+        async def _withdraw(a):  # pragma: no cover -- nothing published at preflight
+            return _ps.DeleteWithdrawal.WITHDRAWN
+
+        monkeypatch.setattr("kiro_crew.publish_sync.delete_for_artifact", _withdraw)
+
+        real_list = store.list
+        calls: list[int] = []
+
+        def _publish_after_the_snapshot(*a, **kw):
+            arts = real_list(*a, **kw)
+            calls.append(1)
+            # Call 1 is the withdrawal preflight, which correctly finds nothing to do.
+            # Call 2 is the cascade's own scan: publish after its snapshot is taken, so
+            # the artifact is published by the time its delete runs.
+            if len(calls) == 2:
+                store.set_publication(
+                    art.slug,
+                    ArtifactPublication(
+                        provider="default",
+                        artifact_id="uuid-9",
+                        view_url="https://d/9",
+                        visibility="PUBLIC",
+                    ),
+                )
+            return arts
+
+        monkeypatch.setattr(store, "list", _publish_after_the_snapshot)
+        resp = await api_artifact_folder_delete(
+            _request(match={"id": f["id"]}, query={"delete_contents": "true"})
+        )
+        assert resp.status == 200
+        body = _body(resp)
+        assert len(calls) >= 2, "the cascade scan never ran, so nothing was raced"
+        # Refused at the store, under the same lock as the removal.
+        assert body["deleted_artifact_slugs"] == []
+        assert body["kept_published_artifact_slugs"] == [art.slug]
+        assert store.get(art.slug).publication is not None
+
+    @pytest.mark.asyncio
     async def test_unknown_404(self, stores, patch_restricted) -> None:
         resp = await api_artifact_folder_delete(_request(match={"id": "nope"}))
         assert resp.status == 404

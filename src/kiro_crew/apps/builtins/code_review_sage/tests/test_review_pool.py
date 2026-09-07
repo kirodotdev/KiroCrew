@@ -125,16 +125,29 @@ def _install_fake_runtime(test, script=None, gate=None):
     test.addCleanup(lambda: setattr(rp, "AcpRuntime", orig))
 
 
+def _work_dir(test) -> str:
+    """A real, test-owned scratch directory for ``ReviewPool(work_dir=...)``.
+
+    Even with ``AcpRuntime`` faked, ``ReviewPool._ensure_runtime_locked`` still calls
+    the real ``_write_effort_overlay``, which does ``mkdir(parents=True)`` and writes
+    ``<work_dir>/.kiro/settings/cli.json`` on disk — a fixed path like ``/tmp/x`` would
+    be a real cross-test/cross-file race under xdist, not a placeholder string.
+    """
+    tmp = tempfile.TemporaryDirectory()
+    test.addCleanup(tmp.cleanup)
+    return tmp.name
+
+
 # ── Batch lifecycle + isolation ─────────────────────────────────────────────
 class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
     async def test_lazy_no_runtime_until_used(self):
         _install_fake_runtime(self)
-        ReviewPool(work_dir="/tmp/x")
+        ReviewPool(work_dir=_work_dir(self))
         self.assertEqual(FakeRuntime.instances, [])   # nothing spawned on construction
 
     async def test_begin_batch_spawns_one_runtime_shared_across_sends(self):
         _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="hi")])
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()
         self.assertEqual(len(FakeRuntime.instances), 1)
         self.assertTrue(FakeRuntime.instances[0].is_alive())
@@ -148,7 +161,7 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
 
     async def test_end_batch_kills_runtime_only_when_drained(self):
         _install_fake_runtime(self)
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()          # batches 0->1 spawns
         await pool.begin_batch()          # batches 1->2 (overlapping run)
         rt = FakeRuntime.instances[0]
@@ -159,7 +172,7 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_batch_after_drain_spawns_fresh_runtime(self):
         _install_fake_runtime(self)
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()
         await pool.end_batch()
         await pool.begin_batch()
@@ -168,7 +181,7 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_created_and_destroyed_per_task(self):
         _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="x")])
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()
         await pool.send("task")
         rt = FakeRuntime.instances[0]
@@ -180,7 +193,7 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
     async def test_standalone_send_lazily_spawns(self):
         # No begin_batch (standalone CLI path) -> acquire() spawns on first send.
         _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="y")])
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         out = await pool.send("z")
         self.assertEqual(out, "y")
         self.assertEqual(len(FakeRuntime.instances), 1)
@@ -192,7 +205,7 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
         # reports ok=False and the driver never marks the PR reviewed), and the
         # session must still be destroyed.
         _install_fake_runtime(self, script=[_ev(rp.EVENT_COMPLETE, stop_reason="timeout")])
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()
         with self.assertRaises(RuntimeError):
             await pool.send("t")
@@ -205,7 +218,7 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
         # and surface as a failure (matched explicitly, not just by prefix).
         _install_fake_runtime(
             self, script=[_ev(rp.EVENT_COMPLETE, stop_reason=rp.STOP_REASON_TOOL_STALL)])
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()
         with self.assertRaises(RuntimeError):
             await pool.send("t")
@@ -228,7 +241,7 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
         rp.AcpRuntime = factory  # type: ignore[assignment]
         self.addCleanup(lambda: setattr(rp, "AcpRuntime", orig))
         FakeRuntime.instances = []
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         with self.assertRaises(RuntimeError):
             await pool.begin_batch()                 # spawn fails
         self.assertEqual(pool._holder._batches, 0)   # counter not leaked
@@ -243,7 +256,7 @@ class TestConcurrency(unittest.IsolatedAsyncioTestCase):
     async def test_semaphore_caps_concurrent_sessions(self):
         gate = asyncio.Event()
         _install_fake_runtime(self, script=[_ev(rp.EVENT_TEXT_CHUNK, text="q")], gate=gate)
-        pool = ReviewPool(max_workers=2, work_dir="/tmp/x")
+        pool = ReviewPool(max_workers=2, work_dir=_work_dir(self))
         await pool.begin_batch()
         tasks = [asyncio.create_task(pool.send(f"t{i}")) for i in range(4)]
         await asyncio.sleep(0.05)
@@ -256,7 +269,7 @@ class TestConcurrency(unittest.IsolatedAsyncioTestCase):
         await pool.end_batch()
 
     async def test_effective_max_concurrent_clamped(self):
-        pool = ReviewPool(max_workers=999, work_dir="/tmp/x")
+        pool = ReviewPool(max_workers=999, work_dir=_work_dir(self))
         self.assertEqual(pool._max, MAX_CONCURRENT_CEIL)
 
 
@@ -268,7 +281,7 @@ class TestApprovalAndAudit(unittest.IsolatedAsyncioTestCase):
             _ev(rp.EVENT_TEXT_CHUNK, text="done"),
         ]
         _install_fake_runtime(self, script=script)
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()
         out = await pool.send("t")
         self.assertEqual(out, "done")
@@ -291,7 +304,7 @@ class TestApprovalAndAudit(unittest.IsolatedAsyncioTestCase):
         orig_sel = rp._sel
         rp._sel = lambda: _FakeSel()          # type: ignore[assignment]
         self.addCleanup(lambda: setattr(rp, "_sel", orig_sel))
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()
         await pool.send("t")
         await pool.end_batch()
@@ -316,7 +329,7 @@ class TestApprovalAndAudit(unittest.IsolatedAsyncioTestCase):
         orig_sel = rp._sel
         rp._sel = lambda: _FakeSel()          # type: ignore[assignment]
         self.addCleanup(lambda: setattr(rp, "_sel", orig_sel))
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()
         await pool.send("t")
         await pool.end_batch()
@@ -345,7 +358,7 @@ class TestStatsAndConfig(unittest.IsolatedAsyncioTestCase):
 
     async def test_stats_reflect_alive_runtime(self):
         _install_fake_runtime(self)
-        pool = ReviewPool(work_dir="/tmp/x")
+        pool = ReviewPool(work_dir=_work_dir(self))
         await pool.begin_batch()
         st = pool.stats()
         self.assertTrue(st["runtime_alive"])
@@ -378,7 +391,7 @@ class TestSyncDispatchBridge(unittest.TestCase):
         orig = rp.AcpRuntime
         rp.AcpRuntime = factory  # type: ignore[assignment]
         try:
-            pool = ReviewPool(work_dir="/tmp/x")
+            pool = ReviewPool(work_dir=_work_dir(self))
             dispatch = make_sync_dispatch(self.loop, pool, default_timeout=5)
             out = dispatch("hi", 5)
             self.assertTrue(out["ok"])
@@ -401,7 +414,7 @@ class TestSyncDispatchBridge(unittest.TestCase):
         orig = rp.AcpRuntime
         rp.AcpRuntime = factory  # type: ignore[assignment]
         try:
-            pool = ReviewPool(work_dir="/tmp/x")
+            pool = ReviewPool(work_dir=_work_dir(self))
             dispatch = make_sync_dispatch(self.loop, pool, default_timeout=5)
             out = dispatch("x", 5)
             self.assertFalse(out["ok"])

@@ -5,8 +5,11 @@ from __future__ import annotations
 SIDE_BOUNDARY_PROMPT = (
     "You are answering an ephemeral side question. Use the conversation "
     "only as background context. Do not continue or complete any "
-    "unfinished tasks from the main conversation. Do not emit tool calls, "
-    "pseudo-tool calls, shell commands, file writes, patches, or code "
+    "unfinished tasks from the main conversation. This side conversation "
+    "is context-only: tool and MCP execution is unavailable here, even when "
+    "the user explicitly requests it. Never claim that a tool is unconfigured "
+    "or suggest enabling it. If tool-backed work is needed, tell the user to "
+    "ask in the main chat. Do not include shell commands, patches, or code "
     "unless the side question explicitly asks for them."
 )
 

@@ -74,6 +74,24 @@ class TestAgentSyncPrune:
         cfg.save.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_prune_removes_a_starred_package_agent_too(self):
+        """A star does not keep a spec-less row alive: the row is pruned like
+        any other and a reinstall comes back un-starred (one click restores it)."""
+        agents = {
+            "omni-reviewer": KiroCrewAgentConfig(
+                kiro_agent="omni-reviewer", source="aim", starred=True
+            ),
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
+        }
+        cfg = _make_config(agents)
+        body = await _run_sync(cfg, [_make_aim_agent("omni-aws")])
+        assert body["pruned"] == ["omni-reviewer"]
+        assert "omni-reviewer" not in cfg.agents
+        body = await _run_sync(cfg, [_make_aim_agent("omni-aws"), _make_aim_agent("omni-reviewer")])
+        assert body["synced"] == ["omni-reviewer"]
+        assert cfg.agents["omni-reviewer"].starred is False
+
+    @pytest.mark.asyncio
     async def test_prune_skips_kirocrew_owned_agents(self):
         """Agents with source='kirocrew' are never pruned."""
         agents = {
@@ -154,6 +172,32 @@ class TestAgentSyncPrune:
         assert body["synced"] == []
         assert body["pruned"] == []
         cfg.save.assert_not_called()
+
+
+class TestSyncRefusesCredentialShapedNames:
+    """The SECOND way a name reaches `cfg.agents`, which the create route cannot see.
+
+    A discovered spec's name is package-controlled, not typed by the owner, so
+    "the owner is reading a string the owner wrote" does not hold for it: a package
+    could land a credential-shaped name that then reaches the roster. Refused at
+    this source too (#8454).
+    """
+
+    PROBE = "AKIAIOSFODNN7EXAMPLE"
+
+    @pytest.mark.asyncio
+    async def test_a_credential_shaped_discovered_name_is_not_synced(self):
+        cfg = _make_config({})
+        body = await _run_sync(cfg, [_make_aim_agent(self.PROBE)])
+        assert self.PROBE not in cfg.agents, "a credential-shaped package name was stored"
+        assert self.PROBE not in json.dumps(body), "the name was echoed into the response"
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_discovered_name_still_syncs(self):
+        """The direction that proves the refusal is narrow, not a blanket."""
+        cfg = _make_config({})
+        await _run_sync(cfg, [_make_aim_agent("oncall-triage")])
+        assert "oncall-triage" in cfg.agents
 
 
 class TestAgentSyncFsCheckIsOffloaded:

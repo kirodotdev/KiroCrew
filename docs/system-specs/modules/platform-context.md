@@ -49,6 +49,7 @@ interface, the public edition is complete standalone.
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
 | `skill_discovery` | adapter | `DefaultSkillDiscoveryProvider` (`skill_providers()` → `[]`) | edition skill discovery providers for the multi-provider search |
+| `tips` | adapter | `DefaultTipsProvider` (`tips_pool()` → `None`) | the edition's feature-tip pool. The one **REPLACE-capable** seam: a supplied `TipsPool` takes over from the public curated file AND the docs-scan catalog instead of being unioned into them, because a public tip advertises a capability an edition build may not have or may not expose. An empty pool means "this build shows no tips" |
 | `denied_rules` | adapter | `DefaultDeniedRuleProvider` (`denied_rules()` → `[]`) | edition denied-command rules that are default-on but USER-DISABLEABLE (distinct from `security`, the un-weakenable overlay floor) |
 | `import_sources` | adapter | `DefaultImportSourceProvider` (`import_sources()` → `[]`) | edition onboarding-import sources |
 | `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package manager: MCP servers, skills, agent packages, and client plugins |
@@ -135,7 +136,11 @@ installs the context. `bootstrap_context`:
 2. If profile != standalone: `discover_companion_context` (fail-closed), then validate `contract_version` and the ADD-only security floor.
 3. `assert_governance_paths_protected`, `assert_policy_signature_satisfied`, and `assert_profiles_within_ceiling` validate the final context before `set_context`; these gates prevent an agent-writable trust root, an absent required signature, or a profile looser than its ceiling from becoming active.
 4. `ctx.providers.register_acp_backends()` once (Default no-op).
-5. `ctx.publish.register_publish_providers()` once (Default no-op → the `publish_provider` registry stays empty and publishing is unavailable).
+5. `ctx.publish.register_publish_providers()` once (Default registers the personal
+   cloud drive under its OWN key, `PERSONAL_DRIVE_PROVIDER`, so the destination is
+   listed and selectable but does NOT capture the unnamed default — a publish that
+   names no destination still resolves `DEFAULT_PROVIDER`, which stays unregistered,
+   and gets a 503; a companion edition registers its own destination instead).
 
 ## Profile resolution
 
@@ -325,7 +330,7 @@ added pre-launch landed under this same `1`, with no bump:
   contributor), and `jail` (process-isolation) extension points;
 - the `agent_identity` slot (`AgentIdentityProvider` — agent workload identity
   and token vending, distinct from operator-SSO `identity`);
-- wiring an *existing* but previously-unconsumed Protocol method into a call site
+- wiring an *existing* but unconsumed Protocol method into a call site
   (e.g. `ProviderRegistry.create_factory` going live, `AppsLoader` bundling
   feature apps) — no shape change, so no bump regardless;
 - adding `TunnelProvider.register_callbacks` / `status_snapshot` when the tunnel
@@ -404,9 +409,9 @@ those to differ must bump its own project version as well.
 
 ## Consumption-site wiring
 
-Core consumption sites read the context rather than the module global they
-previously used. Standalone behavior is preserved because each Default adapter
-delegates to that same global. Wired sites:
+Core consumption sites read the context rather than a module global. Standalone
+behavior is unchanged because each Default adapter delegates to that same global.
+Wired sites:
 
 - `cli.py:main` / `slack/gateway.py:run_gateway` — `boot_platform(cfg)` once at
   startup (gateway raises fail-closed; cli is defensive — standalone never raises).
@@ -833,9 +838,9 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   separator — a split silently misattributes any package whose own name contains
   that separator, which makes the package permanently "drifted" so every
   `sync_plugins` reinstalls a plugin that already exists.
-- `CapabilityManager` (operations-based external package/capability manager) —
-  **replaces the former `external_capability_bin()` binary-name seam.** Rather
-  than naming a binary whose exact CLI grammar the core then hardcodes, the
+- `CapabilityManager` (operations-based external package/capability manager).
+  The seam names OPERATIONS, not a binary whose exact CLI grammar the core would
+  hardcode: the
   edition implements OPERATIONS and OWNS its own invocation grammar, output
   parsing, and error translation; the core (`/api/capability/*` handlers +
   `mcp.py` uninstall) calls an operation and only serializes the result / applies
@@ -1046,25 +1051,22 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   fork. v1 addition; `Default` returns `[]`.
 
 **`McpToolingProvider` is intentionally scoped to MCP tooling only** —
-`extra_mcp_servers()`, `extra_skills()`, and `extra_mcp_scopes()`. The former
-grab-bag members were split into dedicated Protocols this session
+`extra_mcp_servers()`, `extra_skills()`, and `extra_mcp_scopes()`. Agent
+catalogs, prompt sources and capability management each own a dedicated Protocol
 (`AgentCatalogProvider`, `PromptSourceProvider`, `CapabilityManager`) so the CPP
-layer keeps its "one adapter per concern" shape; every future edition hook lands
-on its own interface rather than accreting onto the nearest existing one.
+layer keeps its "one adapter per concern" shape; every edition hook lands on its
+own interface rather than accreting onto the nearest existing one.
 
-**Agent-discovery module rename (this session).** `aim_agents.py` →
-`agent_discovery.py`; the `AimAgent` dataclass → `AgentInfo`. The agent `source`
-classification was generalized: the old `KiroCrewAICapabilities`-specific
-hardcode was removed, so a package-installed agent is now classified
-`source="package"` (alongside `"kirocrew"` for `kirocrew.json`/`kirocrew-lite.json`
-and `"builtin"` for the rest) rather than the former `"aim"` literal. Importers
-(`subagent`, `mcp_core`, `conductor_skill`, dashboard agents) were updated to the
-new module/class names.
-- **`register_browser_auth_provider(provider)` — removed with the playwright-cli
-  migration.** The module that carried this seam is gone, so there is no
-  browser-auth provider hook to register at all: browsing runs through the
-  external `playwright-cli` binary (`kiro_crew/browser_cli/`), and a logged-in
-  session reaches that binary through the CLI's own surfaces (`state-save` /
+**Agent discovery.** `agent_discovery.py` owns it, and `AgentInfo` is the record
+it yields. The `source` classification is generic — no product-specific hardcode:
+`"kirocrew"` for `kirocrew.json` / `kirocrew-lite.json`, `"package"` for a
+package-installed agent, `"builtin"` for the rest. It has many consumers —
+`agent`, `session`, `context`, `subagent`, `mcp_core`, `cron_script`,
+`slack/handler` and several dashboard modules among them — so treat any list here as
+representative rather than exhaustive.
+- **There is no browser-auth provider hook.** Browsing runs through the external
+  `playwright-cli` binary (`kiro_crew/browser_cli/`), and a logged-in session
+  reaches that binary through the CLI's own surfaces (`state-save` /
   `state-load`, `attach --extension`) rather than through an in-process
   provider.
 - `hooks.register_internal_read_path(read_id, rel_path)` — guarded seam adding a
@@ -1072,10 +1074,9 @@ new module/class names.
   non-sensitive/repoint).
 - `security._SENSITIVE_HOME_DIRS` gains `.midway` (live SSO bearer cookie;
   inert on a host without `~/.midway`).
-- `config.dashboard.mwinit_flags` (str) + `_EDITABLE_CONFIG` PATCH entry.
 - `config.knowledge.doc_ingest_hosts` (list) — SSRF-safe allowlist for the
   server-side fetch path only; empty = deny-by-default. The agent-driven
-  `auto_add_documents` path (renamed from `auto_ingest_doc_links`) is NOT gated
+  `auto_add_documents` path is NOT gated
   on it: the agent hands over text it already fetched, Kiro Crew fetches nothing.
 - `KiroCrewConfig._extra_sections` (private) — unknown top-level config.json
   sections captured at `load()`, re-emitted by `to_dict()`, so an edition

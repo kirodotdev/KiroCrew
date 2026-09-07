@@ -40,9 +40,11 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
+import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
-import AskAgentButton from './AskAgentButton'
+import ErrorNotice from './ErrorNotice'
+import { errMessage } from '../utils/thunkError'
 import { reportInstanceFailure } from '../utils/instanceFailureReport'
 import type { ErrorReport } from '../utils/errorReport'
 import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/electron'
@@ -168,6 +170,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // Read-only mirrors for the long-lived message listener, kept current without
   // re-subscribing (mirrors the warmRef / portToIdRef pattern already used here).
   const postModelToRef = useRef<(id: string) => void>(() => {})
+  // Distinct readiness ack, sent ONLY from the mc-embedded-ready handler (never
+  // from the input-driven broadcast). It is the pane's proof that THIS parent
+  // recorded its readiness, so the pane can stop re-announcing without mistaking
+  // an ordinary model broadcast for an ack — see EmbeddedHostBridge.
+  const postAckToRef = useRef<(id: string) => void>(() => {})
   const instancesRef = useRef<Array<{ id: string }>>([])
 
   // Whether `refreshToken` would actually mint for this id right now: no mint
@@ -193,9 +200,15 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         const port = res.local_port || warmRef.current[id]?.port
         if (res.token && port) {
           dispatch(setWarm({ id, conn: { port, token: res.token } }))
+          paneLog('remint', { id, port })
+        } else {
+          // A mint that returns nothing usable leaves the OLD warm entry standing,
+          // so the pane looks unchanged. Journal it: on screen this is
+          // indistinguishable from success, which is how it stayed invisible.
+          paneLog('remint-empty', { id, port, hasToken: !!res.token })
         }
-      } catch {
-        /* transient — the next poll / auth-expired signal retries */
+      } catch (err) {
+        paneLog('remint-failed', { id, error: (err as Error)?.message || 'unknown' })
       } finally {
         refreshingRef.current.delete(id)
         lastRefreshRef.current.set(id, Date.now())
@@ -214,9 +227,23 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         const st = await api.connectInstance(id)
         if (st.state === 'connected' && st.local_port && st.token) {
           dispatch(setWarm({ id, conn: { port: st.local_port, token: st.token } }))
+          paneLog('warm', { id, port: st.local_port, via: 'auto' })
+        } else {
+          // No `else` used to exist here, and that is why a failed auto-warm was
+          // untraceable: it leaves any PREVIOUS warm entry in place, so the tab
+          // still renders a pane and the user sees only "loading" forever.
+          paneLog('warm-declined', {
+            id,
+            via: 'auto',
+            state: st.state,
+            hasPort: !!st.local_port,
+            hasToken: !!st.token,
+            error: st.error || undefined,
+            reason: st.diagnosis?.reason || undefined,
+          })
         }
-      } catch {
-        /* leave it — clicking the tab will surface the error panel */
+      } catch (err) {
+        paneLog('warm-failed', { id, via: 'auto', error: (err as Error)?.message || 'unknown' })
       }
     },
     [dispatch],
@@ -277,6 +304,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // so the error panel carrying Retry surfaces instead.
           dispatch(clearPaneReady(id))
           setTimedOut(prev => (prev[id] ? prev : { ...prev, [id]: true }))
+          paneLog('remint-budget-exhausted', { id, spent })
           return
         }
         // Charge the budget only for asks that are actually answered with a mint.
@@ -288,6 +316,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // instead of MAX_REACTIVE_REMINTS.
         if (!canRefreshNow(id)) return
         reactiveMintsRef.current.set(id, spent + 1)
+        paneLog('auth-expired', { id, spent: spent + 1 })
         void refreshToken(id)
       } else if (data.type === 'mc-switch-instance') {
         // The embedded pane's inline switcher asks the parent to flip
@@ -351,7 +380,12 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // mount, before the pane's first authenticated request, so it is no
         // evidence the token works. See MAX_REACTIVE_REMINTS.
         dispatch(setPaneReady(id))
+        paneLog('ready', { id })
         postModelToRef.current(id)
+        // Distinct ack so the pane can stop re-announcing. Sent only here (after
+        // readiness is recorded), never from the broadcast, so a late announce
+        // can't revive readiness once this pane has been given up on.
+        postAckToRef.current(id)
       } else if (data.type === 'mc-drag-gaps') {
         // The embedded pane relays the control-free spans of its header so the
         // host can re-add `-webkit-app-region: drag` there (the blanket marks
@@ -403,8 +437,25 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     onSuccess: (st, id) => {
       if (st.state === 'connected' && st.local_port && st.token) {
         dispatch(setWarm({ id, conn: { port: st.local_port, token: st.token } }))
+        paneLog('warm', { id, port: st.local_port, via: 'connect' })
+      } else {
+        // Same silent shape as the auto-warm path: Retry can "succeed" as a
+        // request while warming nothing, and the pane then reloads into the same
+        // stuck state with no error anywhere.
+        paneLog('warm-declined', {
+          id,
+          via: 'connect',
+          state: st.state,
+          hasPort: !!st.local_port,
+          hasToken: !!st.token,
+          error: st.error || undefined,
+          reason: st.diagnosis?.reason || undefined,
+        })
       }
       void queryClient.invalidateQueries({ queryKey: ['instances'] })
+    },
+    onError: (err, id) => {
+      paneLog('warm-failed', { id, via: 'connect', error: (err as Error)?.message || 'unknown' })
     },
   })
 
@@ -459,8 +510,19 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   useEffect(() => {
     if (!activeId || activeWarmPort === undefined || activeReady) return
     const id = activeId
+    const port = activeWarmPort
     const t = window.setTimeout(() => {
       setTimedOut(prev => (prev[id] ? prev : { ...prev, [id]: true }))
+      // `frame` is the verdict: `cross-origin` means the pane really loaded the
+      // tunnel URL and then failed to announce readiness, while `about:blank`
+      // means it never navigated at all and no crew bundle could ever have run.
+      paneLog('load-timeout', {
+        id,
+        port,
+        seq: activeSeq,
+        afterMs: PANE_LOAD_TIMEOUT_MS,
+        frame: frameDocumentState(iframeRefs.current.get(id)),
+      })
     }, PANE_LOAD_TIMEOUT_MS)
     return () => window.clearTimeout(t)
   }, [activeId, activeWarmPort, activeSeq, activeReady])
@@ -469,6 +531,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     (id: string) => {
       // Clear the stale verdict and force a reload even if the re-mint returns
       // an identical token (setWarm would be a no-op for the iframe src).
+      paneLog('retry', {
+        id,
+        port: warmRef.current[id]?.port,
+        frame: frameDocumentState(iframeRefs.current.get(id)),
+      })
       setTimedOut(prev => ({ ...prev, [id]: false }))
       setReloadSeq(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
       // An explicit user press is a fresh start: re-open the reactive budget so
@@ -589,15 +656,45 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       const w = warm[id]
       if (!el?.contentWindow || !w) return
       const origin = `${window.location.protocol}//${window.location.hostname}:${w.port}`
+      // A frame still on about:blank inherits THIS origin, so the post below is
+      // rejected with a target-origin mismatch. Chromium reports that as a
+      // console error rather than an exception, so the catch cannot see it —
+      // journal the frame's state here instead. The post is still attempted:
+      // this is instrumentation, and skipping on a mis-read would break a
+      // delivery that would have worked.
+      const frame = frameDocumentState(el)
+      if (frame !== 'cross-origin') paneLog('post-model-undeliverable', { id, origin, frame })
       try {
         el.contentWindow.postMessage(buildModelFor(id), origin)
-      } catch {
+      } catch (err) {
         /* frame mid-navigation — the next broadcast / ready ping retries */
+        paneLog('post-model-threw', { id, origin, frame, error: (err as Error)?.message || 'unknown' })
       }
     },
     [warm, buildModelFor],
   )
   postModelToRef.current = postModelTo
+
+  // Acknowledge a pane's readiness announce, addressed to its exact loopback
+  // origin like the model post. A dedicated message (not a model) so the pane
+  // can distinguish "the parent recorded my readiness" from an ordinary model
+  // broadcast — the pane stops re-announcing only on this. A dropped ack (frame
+  // mid-navigation) is harmless: the pane's next re-announce re-triggers it.
+  const postAckTo = useCallback(
+    (id: string) => {
+      const el = iframeRefs.current.get(id)
+      const w = warm[id]
+      if (!el?.contentWindow || !w) return
+      const origin = `${window.location.protocol}//${window.location.hostname}:${w.port}`
+      try {
+        el.contentWindow.postMessage({ type: 'mc-embedded-ack', v: 1 }, origin)
+      } catch {
+        /* frame mid-navigation — the pane's next re-announce re-triggers this */
+      }
+    },
+    [warm],
+  )
+  postAckToRef.current = postAckTo
   instancesRef.current = instancesQuery.data?.instances ?? []
 
   // Broadcast the model to every warm pane whenever any input changes (active
@@ -674,7 +771,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const panelConnecting =
     (connectMutation.isPending && connectMutation.variables === activeId) ||
     panelState === 'connecting'
-  const panelError = activeInst?.status?.error || activeInst?.status?.diagnosis?.reason || ''
+  // The Retry's own rejection used to reach only `paneLog`: the panel kept
+  // showing the LIST's last status.error (or nothing) while the connect that
+  // just failed said something newer. The mutation's error for THIS crew wins
+  // while it is the latest thing that happened.
+  const connectFailure = connectMutation.isError && connectMutation.variables === activeId
+    ? (errMessage(connectMutation.error) || i18nT('components.instancesViewport.connection_error'))
+    : ''
+  const panelError = connectFailure || activeInst?.status?.error || activeInst?.status?.diagnosis?.reason || ''
 
   return (
     <div
@@ -688,26 +792,59 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // the re-minted src is byte-identical to the dead frame's.
           key={`${id}:${reloadSeq[id] || 0}`}
           ref={el => {
-            if (el) iframeRefs.current.set(id, el)
-            else iframeRefs.current.delete(id)
+            if (el) {
+              iframeRefs.current.set(id, el)
+              // The mount is the moment the src is committed to a live frame.
+              // An empty `src` here means srcFor found no warm entry, which is
+              // the one way the pane can end up parked on about:blank forever.
+              paneLog('iframe-mounted', {
+                id,
+                port: warmRef.current[id]?.port,
+                seq: reloadSeq[id] || 0,
+                src: safePaneUrl(el.getAttribute('src')),
+              })
+            } else {
+              iframeRefs.current.delete(id)
+              paneLog('iframe-unmounted', { id })
+            }
           }}
           title={nameFor(id)}
           src={srcFor(id)}
           // The embedded pane is the SAME SPA on the tunnel's loopback port, so
           // it is a CROSS-ORIGIN iframe (same host, different port). Browsers
-          // deny microphone and fullscreen in cross-origin frames unless the
-          // parent delegates them via Permissions-Policy: without "microphone",
-          // getUserMedia in the remote dashboard rejects with NotAllowedError;
-          // without "fullscreen", document.fullscreenEnabled is false in the
-          // pane and the native <video> controls render a disabled fullscreen
-          // button. Local (top-level) use is unaffected. Loopback-only, and the
-          // pane already runs our own token-authed SPA, so delegating these
-          // grants nothing a same-origin top-level load wouldn't already.
+          // deny microphone, fullscreen and clipboard-write in cross-origin
+          // frames unless the parent delegates them via Permissions-Policy:
+          // without "microphone", getUserMedia in the remote dashboard rejects
+          // with NotAllowedError; without "fullscreen",
+          // document.fullscreenEnabled is false in the pane and the native
+          // <video> controls render a disabled fullscreen button; without
+          // "clipboard-write", navigator.clipboard.writeText() rejects in the
+          // pane, so every copy affordance fails (CliPanel's selection copy
+          // surfaces "Copy failed"; TerminalKeyBar and WebAppArtifactCard hit
+          // the same rejection). Local (top-level) use is unaffected.
+          // Loopback-only, and the pane already runs our own token-authed SPA,
+          // so delegating these grants nothing a same-origin top-level load
+          // wouldn't already. clipboard-read is deliberately NOT delegated:
+          // read is the more sensitive grant class and exceeds this fix's
+          // clipboard-write scope. The pane's Paste key (TerminalKeyBar's
+          // readText) therefore still fails inside embedded panes, visibly,
+          // with its named paste_permission_needed status; delegating read is
+          // left as a maintainer decision.
           // allowFullScreen mirrors the legacy attribute some engines still
           // require alongside the Permissions-Policy delegation.
-          allow="microphone; fullscreen"
+          allow="microphone; fullscreen; clipboard-write"
           allowFullScreen
-          onLoad={() => postModelTo(id)}
+          onLoad={e => {
+            // Fires for the initial about:blank too, which is why a load event is
+            // NOT proof the pane loaded. `frame` says which one this was.
+            paneLog('iframe-load', {
+              id,
+              port: warmRef.current[id]?.port,
+              seq: reloadSeq[id] || 0,
+              frame: frameDocumentState(e.currentTarget),
+            })
+            postModelTo(id)
+          }}
           className="absolute inset-0 w-full h-full border-0"
           style={{ display: id === activeId ? 'block' : 'none' }}
         />
@@ -796,14 +933,31 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                       : i18nT('components.instancesViewport.disconnected')}
               </div>
               {!panelConnecting && activeTimedOut && !panelError && (
-                <div className="text-xs text-muted">
-                  {i18nT('components.instancesViewport.the_tunnel_looks_connected_but_the_remote_dashbo')}
-                </div>
+                // The watchdog case has no backend error string: the tunnel
+                // claims connected while the pane never loaded. Still a
+                // failure, so it carries the same hand-off as the one below.
+                <ErrorNotice
+                  className="w-full text-left text-xs"
+                  message={i18nT('components.instancesViewport.the_tunnel_looks_connected_but_the_remote_dashbo')}
+                  report={panelReport ?? undefined}
+                  askAgent={!!panelReport}
+                  onHandoff={() => dispatch(setActiveId(null))}
+                  testId="instances-viewport-timeout-error"
+                />
               )}
               {!panelConnecting && panelError && (
-                <div className="w-full max-h-32 overflow-auto rounded-md border border-border bg-bg-hover px-3 py-2 text-left text-xs text-muted whitespace-pre-wrap break-words">
-                  {panelError}
-                </div>
+                // askAgent on: the panel holds no input (see the hand-off note
+                // below). `report` binds the prompt to THIS crew's journal entry;
+                // `onHandoff` returns to Local because this overlay sits over the
+                // chat the hand-off navigates to.
+                <ErrorNotice
+                  className="w-full max-h-32 overflow-auto text-left text-xs"
+                  message={panelError}
+                  report={panelReport ?? undefined}
+                  askAgent={!!panelReport}
+                  onHandoff={() => dispatch(setActiveId(null))}
+                  testId="instances-viewport-panel-error"
+                />
               )}
               <button
                 type="button"
@@ -813,13 +967,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               >
                 <RefreshCw size={13} className={panelConnecting ? 'animate-spin' : ''} /> {i18nT('components.instancesViewport.retry')}
               </button>
-              {/* Retry stays primary — a momentary drop is worth one press. This is
-                  the other half: a first connect fails on SSH config, a remote
-                  gateway that is not running, a wrong port or an SSM instance
-                  profile, and none of those change between two presses. Nothing to
-                  stash: the panel holds no input.
+              {/* Retry stays primary — a momentary drop is worth one press. The
+                  agent hand-off (inside the ErrorNotice above) is the other half:
+                  a first connect fails on SSH config, a remote gateway that is
+                  not running, a wrong port or an SSM instance profile, and none
+                  of those change between two presses. Nothing to stash: the
+                  panel holds no input, so askAgent is on.
 
-                  `onHandoff` returns to Local, and without it the hand-off is
+                  Its `onHandoff` returns to Local, and without it the hand-off is
                   INVISIBLE: this panel renders inside the viewport's root overlay
                   (`absolute inset-0 bg-bg`, opaque, over the local pane whenever a
                   remote tab is active), and the hand-off only soft-navigates the
@@ -830,12 +985,6 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                   embedded pane's own switcher, and that iframe is exactly what
                   failed here. Timed AFTER on purpose: leaving the panel on a
                   FAILED staging would clear the error with no chat to show for it. */}
-              {!panelConnecting && panelReport && (
-                <AskAgentButton
-                  report={panelReport}
-                  onHandoff={() => dispatch(setActiveId(null))}
-                />
-              )}
               {/* Same overlay rule as the hand-off above: the link soft-navigates
                   the LOCAL SPA, which is underneath this panel while a remote tab
                   is active, so a click that is going to navigate returns to Local

@@ -24,7 +24,7 @@ from types import SimpleNamespace
 # every green consumer uses, and keeps this file collectable when a
 # pytest-xdist worker imports it before any other dashboard module.
 import kiro_crew.dashboard.handlers  # noqa: F401
-from kiro_crew.dashboard.ws import build_subagent_snapshot
+from kiro_crew.dashboard.ws import _subagent_replay_has_owner, build_subagent_snapshot
 
 
 def _agent(**over):
@@ -135,3 +135,25 @@ def test_snapshot_requested_model_is_empty_string_when_unset():
     a = _agent(requested_model="")
     data = build_subagent_snapshot(a, now=1000.0)
     assert data["requested_model"] == ""
+
+
+def test_replay_accepts_a_frame_with_an_owning_slot():
+    frame = {"type": "subagent_snapshot", "data": {"id": "a1", "slot": "chat-7"}}
+    assert _subagent_replay_has_owner(frame) is True
+
+
+def test_replay_rejects_an_ownerless_snapshot():
+    """An unresolved parent must stay global instead of being adopted by the
+    active chat in an older frontend."""
+    frame = {"type": "subagent_snapshot", "data": {"id": "orphan", "slot": ""}}
+    assert _subagent_replay_has_owner(frame) is False
+
+
+def test_replay_rejects_malformed_frames_without_guessing_an_owner():
+    assert _subagent_replay_has_owner({"type": "subagent_snapshot"}) is False
+    assert _subagent_replay_has_owner({"type": "subagent_snapshot", "data": []}) is False
+    assert (
+        _subagent_replay_has_owner({"type": "subagent_snapshot", "data": {"slot": None}}) is False
+    )
+    assert _subagent_replay_has_owner({"type": "subagent_snapshot", "data": {"slot": 7}}) is False
+    assert _subagent_replay_has_owner(None) is False

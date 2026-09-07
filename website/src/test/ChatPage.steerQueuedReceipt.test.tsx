@@ -21,9 +21,11 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { setActiveSlot } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import { i18nT } from '../i18n/t'
+import { DRAFTS_KEY } from '../utils/chatDrafts'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -79,13 +81,13 @@ import ChatPage from '../pages/ChatPage'
 
 const STEERED_TEXT = 'change course now'
 
-function makeStore() {
+function makeStore(extraSlots: Array<ReturnType<typeof slotRow>> = []) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null, connected: true, slotsLoaded: true,
-        slots: [slotRow()],
+        slots: [slotRow(), ...extraSlots],
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -106,8 +108,14 @@ function makeStore() {
 
 /** Drive the real path: mount, type mid-turn, press Enter (Steer is the default
  *  busy action), and wait for the mocked receipt to have been applied. */
-async function steerWithReceipt(receipt: Record<string, unknown>) {
-  steerChat.mockResolvedValue(receipt)
+async function steerWithReceipt(receipt: Record<string, unknown> | { reject: unknown } | { httpStatus: number; body: Record<string, unknown> }) {
+  // A mid-turn steer is the same `/api/chat` POST as a send, flagged `steer`,
+  // through the same transport -- so it is `sendChat` that answers, with a
+  // Response-shaped value the receipt reader parses (or a rejection, for a
+  // request that never left / the transport's deadline).
+  if ('reject' in receipt) sendChat.mockRejectedValue(receipt.reject)
+  else if ('httpStatus' in receipt) sendChat.mockResolvedValue({ ok: false, status: receipt.httpStatus, json: () => Promise.resolve(receipt.body) })
+  else sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve(receipt) })
   const store = makeStore()
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => {
@@ -127,12 +135,14 @@ async function steerWithReceipt(receipt: Record<string, unknown>) {
     fireEvent.keyDown(input, { key: 'Enter' })
     await Promise.resolve()
   })
-  await waitFor(() => expect(steerChat).toHaveBeenCalled())
-  // The receipt is applied in the mutation's onSuccess, one microtask past the
-  // resolved promise, so settle the queue before reading the store.
-  await act(async () => { await Promise.resolve(); await Promise.resolve() })
+  await waitFor(() => expect(sendChat).toHaveBeenCalled())
+  // The steer flag is the 6th positional argument of api.sendChat.
+  expect(sendChat.mock.calls[0][5]).toBe(true)
+  // The receipt is applied in the mutation's onSuccess, a few microtasks past
+  // the resolved promise, so settle the queue before reading the store.
+  await act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve() })
   const rows = (store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === STEERED_TEXT)
-  return rows
+  return Object.assign(rows, { store, input })
 }
 
 beforeEach(() => {
@@ -162,5 +172,82 @@ describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, ()
     const rows = await steerWithReceipt({ ok: true, steered: true })
     expect(rows).toHaveLength(1)
     expect(rows[0].meta?.steer).toBe(true)
+    expect(rows.input.value).toBe('')
+  })
+
+  it('a refused steer hands the text back AND says why, framed as a send failure', async () => {
+    // The composer was cleared at submit and the optimistic bubble is not
+    // persisted, so a refusal that restored nothing would lose the text -- and
+    // the server's reason ("no running turn") is the user's next step, not a
+    // console line.
+    const rows = await steerWithReceipt({ httpStatus: 409, body: { ok: false, error: 'no running turn' } })
+    await waitFor(() => expect(rows.input.value).toBe(STEERED_TEXT))
+    const err = (rows.store.getState().chat.messages as ChatMessage[]).find(m => m.role === 'error')
+    expect(err?.content).toBe('Send failed: no running turn')
+    expect((rows.store.getState().chat.messages as ChatMessage[]).some(m => m.role === 'notice')).toBe(false)
+    // The optimistic bubble is dropped too: standing, it would be a third,
+    // false representation of the same text next to the error row.
+    await waitFor(() => expect(
+      (rows.store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === STEERED_TEXT),
+    ).toHaveLength(0))
+  })
+
+  it('a deadline-aborted steer removes the unconfirmed bubble and hands the text back under a WARN notice', async () => {
+    // The transport aborts a hung POST; the steer never had a deadline before,
+    // so a stalled socket the abort kills is a new way for the text to be lost.
+    // The bubble goes too: standing, it would read as delivered and make
+    // "check the transcript" unanswerable.
+    const rows = await steerWithReceipt({ reject: new DOMException('aborted', 'AbortError') })
+    await waitFor(() => expect(rows.input.value).toBe(STEERED_TEXT))
+    const notice = (rows.store.getState().chat.messages as ChatMessage[]).find(m => m.role === 'notice')
+    expect(notice?.content).toMatch(/^\u26A0\uFE0F Delivery not confirmed/)
+    await waitFor(() => expect(
+      (rows.store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === STEERED_TEXT),
+    ).toHaveLength(0))
+  })
+
+  it('a never-left steer hands the text back with the connection copy', async () => {
+    const rows = await steerWithReceipt({ reject: new TypeError('Failed to fetch') })
+    await waitFor(() => expect(rows.input.value).toBe(STEERED_TEXT))
+    const err = (rows.store.getState().chat.messages as ChatMessage[]).find(m => m.role === 'error')
+    expect(err?.content).toBe(i18nT('pages.chatPage.send_failed_connection'))
+    await waitFor(() => expect(
+      (rows.store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === STEERED_TEXT),
+    ).toHaveLength(0))
+  })
+
+  it('a refusal that lands after the user switched sessions is handed back to the ORIGINATING slot', async () => {
+    let rejectSend: (e: unknown) => void = () => {}
+    sendChat.mockReturnValue(new Promise((_, rej) => { rejectSend = rej }))
+    // Two live sessions, so the switch below is to a slot the page knows.
+    const store = makeStore([{ ...slotRow(), key: 'slot-b', running: false }])
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await act(async () => {
+      render(
+        <QueryClientProvider client={qc}>
+          <Provider store={store}>
+            <ThemeProvider>
+              <MemoryRouter><ChatPage /></MemoryRouter>
+            </ThemeProvider>
+          </Provider>
+        </QueryClientProvider>,
+      )
+    })
+    const input = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
+    fireEvent.change(input, { target: { value: STEERED_TEXT } })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }); await Promise.resolve() })
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    // Switch to another session and start typing there.
+    act(() => { store.dispatch(setActiveSlot('slot-b')) })
+    const inputB = await waitFor(() => screen.getByLabelText('Message input') as HTMLTextAreaElement)
+    expect(store.getState().chat.activeSlot).toBe('slot-b')
+    fireEvent.change(inputB, { target: { value: 'typing in B' } })
+    await act(async () => { rejectSend(new TypeError('Failed to fetch')); for (let i = 0; i < 6; i++) await Promise.resolve() })
+    // B's composer is untouched; A's draft holds the steer text; the error row
+    // is in A's transcript, not B's.
+    expect(inputB.value).toBe('typing in B')
+    expect(store.getState().chat.slotMessages['slot-a']?.some(m => m.role === 'error')).toBe(true)
+    expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(false)
+    expect(JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? '{}')['slot-a']).toBe(STEERED_TEXT)
   })
 })

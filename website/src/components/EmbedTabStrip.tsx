@@ -4,6 +4,8 @@ import { useMutation } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { X, Plus } from 'lucide-react'
+import ErrorNotice from './ErrorNotice'
+import { errMessage } from '../utils/thunkError'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import {
   TAB_STATUS_COLOR,
@@ -350,10 +352,8 @@ export default function EmbedTabStrip() {
   }
 
   return (
-    <div
-      className="flex items-center shrink-0 border-b border-border px-1.5 py-1.5"
-      style={{ background: 'var(--bg)' }}
-    >
+    <div className="shrink-0 border-b border-border" style={{ background: 'var(--bg)' }}>
+    <div className="flex items-center px-1.5 py-1.5">
       {/* The wrapper exists for the edge cues: absolutely-positioned children
           of the scroller itself would travel with the scrolled content, so the
           fades anchor to this non-scrolling parent. It also owns the flex
@@ -450,6 +450,24 @@ export default function EmbedTabStrip() {
       >
         <Plus size={14} />
       </button>
+    </div>
+      {createSlotMutation.isError && (
+        // A rejected createSlot otherwise leaves the "+" looking dead. Its own
+        // wrapping row beneath the strip: the tab row is a non-shrinking
+        // horizontal scroller, so a notice inside it would add a third action to
+        // that row and overflow a 320px viewport. The strip holds no draft (tabs
+        // are persisted to sessionStorage on every change), so the hand-off is on.
+        <div className="px-2 pb-1.5">
+          <ErrorNotice
+            variant="inline"
+            askAgent
+            testId="embed-tab-strip-create-error"
+            className="flex-wrap"
+            message={errMessage(createSlotMutation.error) || i18nT('components.embedTabStrip.new_chat_failed')}
+            onDismiss={() => createSlotMutation.reset()}
+          />
+        </div>
+      )}
     </div>
   )
 }

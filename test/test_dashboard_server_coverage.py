@@ -18,6 +18,7 @@ Everything stays inside ``tmp_path``: no network, no subprocess, no fixed port
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -442,6 +443,75 @@ class TestReviveIntendedInstances:
             "degraded",
             "ok",
         ]
+
+
+# ── _register_connections_warm_lifecycle ────────────────────────────────
+
+
+class TestConnectionsWarmLifecycle:
+    @pytest.mark.asyncio
+    async def test_kick_tracks_scavenging_without_blocking_and_cleanup_retires_runtime(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew.connections import warm
+
+        calls: list[str] = []
+        scavenge_started = asyncio.Event()
+        scavenge_release = asyncio.Event()
+
+        def _scavenge() -> int:
+            calls.append("scavenge")
+            return 0
+
+        async def _to_thread(func: Any, *args: Any) -> Any:
+            scavenge_started.set()
+            await scavenge_release.wait()
+            return func(*args)
+
+        async def _shutdown() -> None:
+            calls.append("shutdown")
+
+        # Patched on ``connections.warm``, which is where the deferred imports resolve both
+        # names: the scavenge import happens inside the kick's worker thread and the
+        # shutdown import inside the cleanup hook, to keep the warm dependency graph off
+        # the gateway boot path, so this module's globals never hold them.
+        monkeypatch.setattr(warm, "scavenge_warm_mint_artifacts", _scavenge)
+        monkeypatch.setattr(warm, "shutdown_warm_mint", _shutdown)
+        monkeypatch.setattr(asyncio, "to_thread", _to_thread)
+        app = web.Application()
+        state = _state()
+        srv._register_connections_warm_lifecycle(app, state)
+        assert not any(
+            hook.__name__.startswith("_connections_warm") for hook in app.on_startup
+        ), "scavenging must not ride on_startup: those hooks run before the listener binds"
+        cleanup = next(
+            hook for hook in app.on_cleanup if hook.__name__ == "_connections_warm_shutdown"
+        )
+
+        srv._kick_connections_warm_scavenge(state)
+        await scavenge_started.wait()
+
+        assert calls == []
+        assert len(state._background_tasks) == 1
+
+        scavenge_release.set()
+        await asyncio.gather(*state._background_tasks)
+        await cleanup(app)
+
+        assert calls == ["scavenge", "shutdown"]
+
+    def test_both_gateway_modes_register_the_same_lifecycle(self) -> None:
+        registration = "_register_connections_warm_lifecycle(app, state)"
+        kick = "_kick_connections_warm_scavenge(state)"
+        for entrypoint in (srv.start_dashboard, srv.start_api_server):
+            source = inspect.getsource(entrypoint)
+            assert registration in source
+            assert kick in source
+            # The kick must run strictly AFTER the listener binds: an on_startup hook (or
+            # any pre-bind call) puts the scavenge's deferred import in front of the bind,
+            # which no-new-work-on-gateway-boot-path forbids.
+            assert source.index("_start_site(site, port)") < source.index(kick)
 
 
 # ── _register_prevent_sleep_shutdown ────────────────────────────────────

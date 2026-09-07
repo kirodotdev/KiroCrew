@@ -1,4 +1,5 @@
-import { Lock, Loader2, AlertTriangle } from 'lucide-react'
+import { Lock, Loader2 } from 'lucide-react'
+import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 /**
@@ -35,17 +36,24 @@ export function ChannelDisabledPanel({
     )
   }
   if (variant === 'unavailable') {
+    // A failed governance fetch / policy evaluation — an error, unlike the
+    // `denied` and `pending` states below. Nothing is mounted behind it (the
+    // whole channel form is withheld), so the hand-off cannot lose anything.
     return (
-      <div className="py-10 flex flex-col items-center text-center max-w-md mx-auto">
-        <div className="w-12 h-12 rounded-full bg-bg-hover border border-border flex items-center justify-center mb-4">
-          <AlertTriangle size={20} className="lucide-inline text-warn" />
-        </div>
-        <div className="text-base font-semibold text-text-strong mb-1.5">
+      <div className="py-10 max-w-md mx-auto">
+        {/* Heading stays its own element rather than ErrorNotice's `title`: the
+            block variant renders title and message in ONE text run, and the
+            i18n render gate reads two catalog sentences in one run as a
+            glued fragment. */}
+        <div className="text-base font-semibold text-text-strong mb-2">
           {label} {i18nT('pages.settings.channelDisabledPanel.policy_status_unavailable')}
         </div>
-        <p className="text-sm text-muted leading-relaxed">
-          {i18nT('pages.settings.channelDisabledPanel.kirocrew_couldn_t_confirm_whether_your_organizat')}
-        </p>
+        <ErrorNotice
+          // The catalog string carries source-formatting newlines that a <p>
+          // used to collapse; ErrorNotice renders pre-wrap, so collapse them here.
+          message={i18nT('pages.settings.channelDisabledPanel.kirocrew_couldn_t_confirm_whether_your_organizat').replace(/\s+/g, ' ')}
+          askAgent
+        />
       </div>
     )
   }

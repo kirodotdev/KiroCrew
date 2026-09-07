@@ -207,7 +207,8 @@ SKIP_DIRS = (
     "website/node_modules/",
     "site/node_modules/",
     "temp-screenshots/",
-    # AGENTS.md excludes _vendor/ from every linter, and it holds native libraries
+    # docs/system-specs/common/code-style.md excludes _vendor/ from every linter,
+    # and it holds native libraries
     # whose suffixes (`.0`, `.dylib`) no extension list will ever fully enumerate.
     "src/kiro_crew/_vendor/",
 )

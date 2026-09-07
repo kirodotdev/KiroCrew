@@ -87,5 +87,5 @@ async def test_hard_cap_honors_persisted_config(tmp_path):
 @pytest.mark.asyncio
 async def test_subagent_max_turns_still_bounded(tmp_path):
     cfg = tmp_path / "config.json"
-    res = await _put({"subagent_max_turns": 999}, cfg)
-    assert res.status == 400  # generic 1..200 rule unchanged
+    res = await _put({"subagent_max_turns": 9999}, cfg)
+    assert res.status == 400  # generic 1..SUBAGENT_MAX_TURNS_CEILING rule unchanged

@@ -17,7 +17,8 @@ import {
 } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
-import { Badge, Btn, EmptyState, SendBtn, Skeleton } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
+import { Badge, Btn, SendBtn, Skeleton } from '../../components/ui'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -86,11 +87,14 @@ export default function MeetingView({
   if (loading) return <Skeleton className="h-40 m-6" />
 
   if (error) {
+    // A failed read is an error, not an empty state. Nothing else of the
+    // meeting rendered (the notes draft lives further down), so hand it off.
     return (
-      <EmptyState
-        icon={<AlertTriangle className="lucide-inline" />}
+      <ErrorNotice
         title={i18nT('apps.meetings.meeting.loadFailed')}
-        subtitle={error.message}
+        message={error.message}
+        askAgent
+        className="m-6"
       />
     )
   }

@@ -212,6 +212,42 @@ def test_no_source_descriptor_is_opened_where_xattrs_do_not_exist(tmp_path, monk
     assert opened == [], "no descriptor may be opened where xattrs do not exist"
 
 
+def test_pinned_caller_gets_a_descriptor_even_without_xattrs(tmp_path, monkeypatch):
+    """With ``dir_fd`` the helper returns a descriptor REGARDLESS of the flag.
+
+    This is the macOS composition (``openat`` and no ``listxattr``), simulated
+    deterministically: the flag is forced off while the platform can still pin.
+    The pinned branch must win — the MODE carry reads the bits off this
+    descriptor so they come from the inode inside the pinned directory, and a
+    ``None`` here would send the caller back to a by-name ``stat``, exactly the
+    re-resolution the pin exists to prevent. The Windows open-handle caveat
+    does not apply: pinning needs ``O_DIRECTORY``, which Windows lacks, so a
+    pinned caller is on POSIX where ``renameat`` publishes past open handles.
+    Issue #9060 group 1: the handler tests used to conflate "no xattr
+    syscalls" with "no descriptor" and reported this contract as a failure.
+    """
+    if not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
+        pytest.skip("platform cannot pin a parent directory")
+
+    import kiro_crew.atomic_write as aw
+
+    target = tmp_path / "file.txt"
+    target.write_text("before", encoding="utf-8")
+
+    monkeypatch.setattr(aw, "ACCESS_CONTROL_XATTRS_SUPPORTED", False)
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fd = aw.open_access_control_source(target, dir_fd=dir_fd)
+        assert isinstance(fd, int), "pinned branch must not be gated on the xattr flag"
+        try:
+            # The descriptor references the leaf inside the pinned directory.
+            assert os.read(fd, 16) == b"before"
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+
+
 def test_source_descriptor_is_opened_where_xattrs_exist(tmp_path):
     """Where the syscalls exist, the helper hands back a usable descriptor."""
     _needs_xattr()

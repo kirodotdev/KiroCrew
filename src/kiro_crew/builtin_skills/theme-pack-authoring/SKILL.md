@@ -90,6 +90,10 @@ REJECTED (install fails), so do not invent variables; the allowlist is
   `--json-str`, `--json-num`, `--json-bool`) are allowlisted — set them directly
   in `variables.json` like any other palette entry. No overrides.css workaround
   is needed for them.
+- Two terminal hues (`--term-magenta`, `--term-cyan`) and the seven `--diff-*`
+  vars are allowlisted too. The other fourteen terminal colors are derived from
+  `--bg` / `--text` / `--danger` / `--ok` / `--warn` / `--info`, so a pack that
+  wants its own terminal palette sets only those two.
 
 ## overrides.css — what installs is NOT what renders
 
@@ -107,9 +111,34 @@ Two different filters run, and they disagree by design:
 
 Consequence: a rule can pass install and never render. The browser console
 lists any rules the runtime dropped from the active theme (`[theme]
-overrides.css: dropped …`), and builds with the Settings notice show the same
-list under the theme selector in Settings → Display. If a rule you wrote has no
-effect, check there BEFORE suspecting specificity.
+overrides.css: dropped …`), and Settings → Display shows the same list under the
+theme selector whenever the active theme has any, with a link to the theming
+contract. That notice is condition-derived: it disappears on its own once you fix
+the pack and re-install, and that vanishing IS the confirmation. If a rule you
+wrote has no effect, check there BEFORE suspecting specificity.
+
+A compound on the same base survives, so `.topbar.compact:hover` is fine, and
+the scoping prefix may be written `html[data-theme="…"]` too. One failing
+selector kills the WHOLE comma group, so keep a risky selector in its own rule.
+`@media` wrappers survive — the wrapper is kept and its inner rules filtered by
+the same allowlist — while every other at-rule (`@font-face`, `@supports`,
+`@import`) is dropped at runtime.
+
+Each level also caps the pack as a whole: 32 entries / 256 KB at level 0, 64 /
+2 MB at level 1, 160 / 5 MB at level 2. With 512 KB per font face, the level-1
+total is what a font-heavy pack actually hits — budget the faces against 2 MB,
+not against the count of 6.
+
+Beyond `theme.json`, `variables.json`, `readme.md`, `styles/` and `LICENSE.txt`,
+the classifier also recognizes `branding/logo.{svg,png}`,
+`branding/favicon.{ico,png,svg}`, `branding/wordmark.{svg,png}` and
+`branding/preview.{png,webp}` at level 1, and `persona.md`, `overlays/*.html`,
+`topbar/{dark,light}.html`, `audio/manifest.json` and `audio/*.{mp3,ogg,wav}` at
+level 2. `styles/variables.json` is accepted as an alternative to the top-level
+file. Every path is classified against that fixed table, so an unrecognized file
+fails the install — do not park notes or scratch files in the pack (only VCS and
+LICENSE metadata is tolerated). Level-2 caps: at most 5 overlays, 2000 characters
+of `persona.md`, 48 characters of bot name.
 
 ## Validate and install
 

@@ -16,6 +16,8 @@ import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, PowerOff, AlertTriangle, Package, Bot } from 'lucide-react'
 import { AppApiProvider } from '../app-sdk'
 import { ContentSkeleton, Btn, PageHeader } from './ui'
+import ErrorNotice from './ErrorNotice'
+import { errMessage } from '../utils/thunkError'
 
 import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription } from './appstore/appManifest'
@@ -102,10 +104,16 @@ function AppCrashFallback({
         <div className="text-center max-w-md">
           <AlertTriangle size={48} className="text-danger mx-auto mb-4" />
           <h3 className="text-text font-medium mb-2">{appName} {i18nT('components.appHost.encountered_an_error')}</h3>
-          <p className="text-sm text-muted mb-2">{error.message}</p>
-          <p className="text-[12px] text-muted/60 mb-6 font-mono break-all max-h-24 overflow-y-auto">
-            {error.stack?.split('\n').slice(0, 4).join('\n')}
-          </p>
+          {/* Crash fallback: the app tree is already gone, so the hand-off loses
+              nothing. The message is the whole visible error — the stack stays
+              in the console and in the journal the hand-off carries; a second,
+              hand-written `<p>` of error text would bypass the shared surface. */}
+          <ErrorNotice
+            askAgent
+            testId="app-host-crash-error"
+            className="mb-6 text-left"
+            message={error.message || error.name}
+          />
           <div className="flex gap-2 justify-center">
             <Btn onClick={onRetry}><RefreshCw size={14} /> {i18nT('components.appHost.retry')}</Btn>
             <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
@@ -236,7 +244,13 @@ function AppHostInner({ app }: AppHostProps) {
               <div className="text-center max-w-md">
                 <AlertTriangle size={48} className="text-danger mx-auto mb-4" />
                 <h3 className="text-text font-medium mb-2">{i18nT('components.appHost.failed_to_load')} {appDisplayName(app)}</h3>
-                <p className="text-sm text-muted mb-4">{err.message}</p>
+                {/* Bundle load failure: nothing rendered yet, so the hand-off loses nothing. */}
+                <ErrorNotice
+                  askAgent
+                  testId="app-host-load-error"
+                  className="mb-4 text-left"
+                  message={errMessage(err) || String(err)}
+                />
                 <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('components.appHost.apps')}</Btn>
               </div>
             </div>

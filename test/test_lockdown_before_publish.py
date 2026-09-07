@@ -25,6 +25,7 @@ Nothing prevented a NEW writer from reintroducing the shape. Two layers here:
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import sys
 from pathlib import Path
@@ -561,8 +562,34 @@ def reasserter(path):
 class TestTheRealTree:
     """The gate the CI job runs."""
 
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def _scan_src() -> tuple[tuple[str, int, str, str], ...]:
+        """One whole-tree AST scan, shared by every test in this class.
+
+        Both tests below independently re-derive `checker.main`'s per-file
+        `scan_path` results over the same `src/kiro_crew` tree; walking and
+        re-parsing every file twice per test is what made this class slow.
+        """
+        src = REPO_ROOT / "src" / "kiro_crew"
+        found: list[tuple[str, int, str, str]] = []
+        for py in sorted(src.rglob("*.py")):
+            found.extend(checker.scan_path(py, REPO_ROOT))
+        return tuple(found)
+
     def test_src_has_no_unclassified_violation(self) -> None:
-        exit_code = checker.main(["check", str(REPO_ROOT / "src" / "kiro_crew")])
+        """Same pass/fail as `checker.main(["check", <src dir>])`, off the cached scan."""
+        new: list[tuple[str, int, str, str]] = []
+        seen_known: set[str] = set()
+        for rel, line, fn, expr in self._scan_src():
+            key = "%s::%s" % (rel, fn)
+            entry = checker.KNOWN_UNCONVERTED.get(key)
+            if entry is not None and entry[1] == expr:
+                seen_known.add(key)
+            else:
+                new.append((rel, line, fn, expr))
+        stale = set(checker.KNOWN_UNCONVERTED) - seen_known
+        exit_code = 1 if (new or stale) else 0
         assert exit_code == 0, (
             "a lockdown-before-publish violation is unclassified. Convert it to "
             "atomic_write(..., restrict_to_owner=True), or annotate a genuine "
@@ -576,11 +603,7 @@ class TestTheRealTree:
         future regression at one of those very sites would land unnoticed
         because its entry was already there.
         """
-        src = REPO_ROOT / "src" / "kiro_crew"
-        live: set[str] = set()
-        for py in sorted(src.rglob("*.py")):
-            for rel, _line, fn, _expr in checker.scan_path(py, REPO_ROOT):
-                live.add(f"{rel}::{fn}")
+        live = {f"{rel}::{fn}" for rel, _line, fn, _expr in self._scan_src()}
 
         stale = sorted(set(checker.KNOWN_UNCONVERTED) - live)
         assert not stale, (

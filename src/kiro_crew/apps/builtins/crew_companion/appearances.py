@@ -587,7 +587,8 @@ class AppearanceStore:
         """
         tmp = self._colour_path.with_suffix(f".json.tmp.{os.getpid()}")
         tmp.write_text(json.dumps(self._colour_maps, indent=2), "utf-8")
-        # chmod_safe, not os.chmod: the root AGENTS.md mandates the
+        # chmod_safe, not os.chmod: docs/system-specs/common/platform-compat.md
+        # mandates the
         # platform_compat shim, which is a no-op where POSIX modes mean
         # nothing (Windows) instead of raising or silently misleading.
         chmod_safe(tmp, 0o600)

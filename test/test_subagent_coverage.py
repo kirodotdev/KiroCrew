@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from conftest import absent_sysconf
 from kiro_crew import subagent as sa
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 
@@ -485,27 +486,53 @@ class TestMacosAvailableMemory:
     ``raising=False`` — the probe's own ``hasattr`` guard is what CI exercises."""
 
     def test_page_size_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            os, "sysconf", lambda _name: (_ for _ in ()).throw(ValueError), raising=False
-        )
+        real_sysconf = getattr(os, "sysconf", absent_sysconf)
+
+        def fake_sysconf(name):
+            if name == "SC_PAGE_SIZE":
+                raise ValueError("SC_PAGE_SIZE unavailable")
+            return real_sysconf(name)
+
+        monkeypatch.setattr(os, "sysconf", fake_sysconf, raising=False)
         assert sa._macos_available_memory_gb() == -1.0
 
     def test_nonpositive_page_size(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(os, "sysconf", lambda _name: 0, raising=False)
+        real_sysconf = getattr(os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            os, "sysconf", lambda n: 0 if n == "SC_PAGE_SIZE" else real_sysconf(n), raising=False
+        )
         assert sa._macos_available_memory_gb() == -1.0
 
     def test_no_reclaimable_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(os, "sysconf", lambda _name: 4096, raising=False)
+        real_sysconf = getattr(os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            os,
+            "sysconf",
+            lambda n: 4096 if n == "SC_PAGE_SIZE" else real_sysconf(n),
+            raising=False,
+        )
         monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: None)
         assert sa._macos_available_memory_gb() == -1.0
 
     def test_zero_pages_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(os, "sysconf", lambda _name: 4096, raising=False)
+        real_sysconf = getattr(os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            os,
+            "sysconf",
+            lambda n: 4096 if n == "SC_PAGE_SIZE" else real_sysconf(n),
+            raising=False,
+        )
         monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: 0)
         assert sa._macos_available_memory_gb() == -1.0
 
     def test_computes_gb_from_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(os, "sysconf", lambda _name: 4096, raising=False)
+        real_sysconf = getattr(os, "sysconf", absent_sysconf)
+        monkeypatch.setattr(
+            os,
+            "sysconf",
+            lambda n: 4096 if n == "SC_PAGE_SIZE" else real_sysconf(n),
+            raising=False,
+        )
         monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: 262144)
         assert sa._macos_available_memory_gb() == pytest.approx(1.0)
 

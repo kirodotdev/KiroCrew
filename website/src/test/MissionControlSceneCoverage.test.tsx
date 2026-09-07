@@ -295,7 +295,18 @@ describe('MissionControlScene arrivals and departures', () => {
 })
 
 describe('MissionControlScene idle errands', () => {
-  it('sends an idle agent for coffee, then to the bin with the empty mug', () => {
+  // The errand tests below are synchronous frame simulations, not async waits:
+  // an agent leaves its desk only after the scene's own idle timer (1800+ frames
+  // per sit-down, two sit-downs on the coffee->bin round trip), and every frame
+  // runs the full canvas draw through the recording context. That is ~8s of
+  // pure CPU on an idle laptop, which the file-wide 15s ceiling turns into a
+  // timeout the moment the host is shared with other workers (measured in five
+  // full runs). The ceiling is raised for exactly these tests because the work
+  // is real and bounded by the frame budgets passed to `reaches`, not because
+  // anything here is waiting on a timer or a promise.
+  const SIMULATION_TIMEOUT_MS = 60_000
+
+  it('sends an idle agent for coffee, then to the bin with the empty mug', { timeout: SIMULATION_TIMEOUT_MS }, () => {
     markAgentsKnown('missioncontrol', ['slot-coffee'])
     renderScene({ agents: [agent('slot-coffee')] })
     const seat = chair(0)
@@ -309,7 +320,7 @@ describe('MissionControlScene idle errands', () => {
     expect(reaches('SLOT-COFFEE', seat.x, seat.y, 1500)).toBe(true)
   })
 
-  it('fills a cup at the water cooler and carries it back to the desk', () => {
+  it('fills a cup at the water cooler and carries it back to the desk', { timeout: SIMULATION_TIMEOUT_MS }, () => {
     markAgentsKnown('missioncontrol', ['slot-water'])
     renderScene({ agents: [agent('slot-water')] })
     // Destination index 1 (water) once the idle timer expires.
@@ -322,7 +333,7 @@ describe('MissionControlScene idle errands', () => {
     expect(painted.colors.has(C.led.warn)).toBe(true)
   })
 
-  it('collects a snack from the vending machine and carries it back', () => {
+  it('collects a snack from the vending machine and carries it back', { timeout: SIMULATION_TIMEOUT_MS }, () => {
     markAgentsKnown('missioncontrol', ['slot-snack'])
     renderScene({ agents: [agent('slot-snack')] })
     // Destination index 2 (vending) once the idle timer expires.

@@ -1,7 +1,7 @@
 # Reaching a cloud-launched instance: native SSM vs legacy SSH
 
 When the cloud launcher provisions an EC2 box for you, it also registers that box
-in the **Instances** registry so the dashboard's **Settings → Instances** page can
+in the **Instances** registry so the dashboard's **Settings → Remote Instances** page can
 manage it — open a tunnel, mint a short-lived dashboard token, keep it warm, and
 self-heal a dropped connection. This page explains **how** that managed connection
 is made, and why the launcher now uses the **native SSM transport** instead of the
@@ -109,7 +109,7 @@ here, and opens the dashboard — all from your laptop.
 For setting up a box you manage yourself (SSH or SSM, and the common EC2 gotchas),
 see [remote-crew-on-ec2.md](remote-crew-on-ec2.md).
 
-## What you see in Settings → Instances
+## What you see in Settings → Remote Instances
 
 A launched box appears as a managed instance whose connection line reads, e.g.:
 

@@ -6,6 +6,7 @@ import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { Btn } from './ui'
+import ErrorNotice from './ErrorNotice'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
 import {
@@ -382,13 +383,25 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
               is in flight it carries the existing "Rendering…" string so a
               screen-reader user who pressed the action hears that something
               happened — the visual disabled state alone is silent to AT. */}
-          <span role="status" className="min-w-0">
-            {i18nT(pending
-              ? 'components.artifactBody.rendering'
-              : failed
-                ? 'components.artifactBody.could_not_render'
+          {failed && !pending ? (
+            // The mint request itself was rejected — a read failure with nothing
+            // in this subtree to lose, so the hand-off is on. `docSilent` is a
+            // status about a frame that did not report, not a failure, and keeps
+            // the live-region status text below.
+            <ErrorNotice
+              variant="inline"
+              askAgent
+              testId="artifact-body-mint-error"
+              className="min-w-0"
+              message={i18nT('components.artifactBody.could_not_render')}
+            />
+          ) : (
+            <span role="status" className="min-w-0">
+              {i18nT(pending
+                ? 'components.artifactBody.rendering'
                 : 'components.artifactBody.no_longer_showing')}
-          </span>
+            </span>
+          )}
           {/* The click is acknowledged by DISABLING the button, never by
               clearing `docSilent`: a re-mint can resolve with the same url
               string (a React no-op — no new `load`, so nothing would ever
@@ -519,9 +532,13 @@ export const ArtifactBodyImage = memo(function ArtifactBodyImage({
         {failed ? (
           <div className="flex flex-col items-center gap-2 text-center">
             <ImageOff size={24} className="text-muted" aria-hidden="true" />
-            <span className="text-sm text-muted">
-              {i18nT('components.artifactBody.image_could_not_be_loaded')}
-            </span>
+            {/* Read failure of a stored image; the viewer holds no draft, so the hand-off is on. */}
+            <ErrorNotice
+              variant="inline"
+              askAgent
+              testId="artifact-body-image-error"
+              message={i18nT('components.artifactBody.image_could_not_be_loaded')}
+            />
           </div>
         ) : (
           // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle handler (degrade to the "could not be loaded" notice), not a user interaction; there is nothing here for a keyboard to reach

@@ -74,6 +74,7 @@ _TO_DICT_KEYS = (
     "linked_session_key",
     "app",
     "origin",
+    "created_by",
 )
 
 

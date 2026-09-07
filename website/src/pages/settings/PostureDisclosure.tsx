@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, AlertTriangle, ExternalLink } from 'lucide-react'
 import { Badge, SearchInput } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
 import type { PostureControl, PostureItem } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
@@ -143,6 +144,11 @@ export function PostureDisclosureRow({
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
         {unresolved ? (
+          /* errors-use-error-notice: status chip only — the failure message and
+             the agent hand-off render through the ErrorNotice directly under
+             this header row (see `unresolved` below). The chip sits inside the
+             row's Clickable, so a hand-off button here would nest a button in a
+             button and toggle the disclosure on click. */
           <Badge variant="warn"><AlertTriangle className="lucide-inline" /> {i18nT('pages.settings.postureDisclosure.unavailable')}</Badge>
         ) : (
           <Badge variant="ok" className="tabular-nums">{count} {control.unit}</Badge>
@@ -170,6 +176,20 @@ export function PostureDisclosureRow({
         </Clickable>
       ) : (
         <div className={headerClass}>{headerInner}</div>
+      )}
+      {/* A null count is a FAILED resolution (the denied-commands query
+          rejected, or the server flagged the control unavailable), so the
+          message goes through ErrorNotice. Outside the Clickable header so the
+          hand-off is a real button, not one nested in another. askAgent on: a
+          read-only posture list holds nothing to lose. */}
+      {unresolved && (
+        <div className="pb-2 pl-6">
+          <ErrorNotice
+            variant="inline"
+            askAgent
+            message={i18nT('pages.settings.postureDisclosure.live_count_unavailable')}
+          />
+        </div>
       )}
       <AnimatePresence initial={false}>
         {open && canExpand && (

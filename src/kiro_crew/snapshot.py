@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import io
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import socket
 import stat as _stat
 import tarfile
 import tempfile
+import threading
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -2397,6 +2399,33 @@ _TERMINATORS = (b"\n", b"\r")
 # the same reason `subagent_cost` names its own.
 _NOTIFICATION_RECORD_CAP = RECORD_CAP
 
+# Largest notification SOURCE this will hold, in bytes. A whole-FILE cap, which the
+# streaming predecessor did not need and the single-read design does: the per-record
+# cap above bounds one record, not a file made of many.
+#
+# Sized from the destination's own invariants rather than from a sample.
+# ``_MAX_PERSISTED_NOTIFICATIONS`` is 200; ``_maybe_trim_notifications`` runs after
+# EVERY append and trims past 200*2; the loader keeps the last 200 and every rewrite
+# writes the last 200. So the live file is self-bounding at 400 records at all times,
+# and anything beyond 200 is discarded on the next read regardless -- installing more
+# than that is transient by construction, which is why refusing a larger source costs
+# the operator nothing real. Measured on a live install: 207 records, 370,107 bytes,
+# largest single record 20,821 bytes. 400 of that largest record is 8,316,000 bytes,
+# so this is ~4x the product-bounded worst case and a quarter of the per-record cap
+# the same file already accepts for ONE record.
+#
+# Peak held is about twice the SOURCE size, not twice this cap: the read accumulates in
+# 1 MiB chunks for that reason. A single `read(cap + 1)` preallocates the whole limit,
+# which made an 8 MB source cost 32 MiB and tied the peak to the constant rather than to
+# the file. Measured on the shipped code: 15.9 MiB for the 8.3 MB worst case below, and
+# 1.0 MiB for a realistic 207-record file. Both far under the 128 MiB single allocation
+# above.
+#
+# Over-cap is a REFUSAL naming the size, never a truncation and never a silent skip.
+# A cap that dropped the tail would recreate the defect this design removes, one layer
+# up: a partial install reported as success.
+_NOTIFICATION_SOURCE_CAP = 32 * 1024 * 1024
+
 
 def _notification_key(record: bytes, path: Path) -> tuple[Any, ...] | None:
     """The dedupe key for one raw notification record, or ``None`` if it has none.
@@ -2653,6 +2682,413 @@ def _merge_notifications(src_path: Path, dst_path: Path) -> None:
         print(f"  ⚠️  Stopped merging {_safe_name(src_path)} after {imported} record(s): {exc}")
         raise
     print(f"  Notifications imported: {imported}")
+
+
+def _serialise_with_notification_writes(work: Callable[[], None]) -> None:
+    """Run *work* in FIFO order with the dashboard's own notification writes.
+
+    ``_install_notifications`` writes the live ``notifications.jsonl`` while the
+    gateway may be writing it too, and ``O_APPEND`` alone is not enough. It stops a
+    concurrent row being OVERWRITTEN, and then orders it BEFORE the archive's rows:
+    the dashboard's append goes to end-of-file immediately while the copy's writes are
+    still buffered, so the live row lands first and the archive's follow it. The
+    reader's cap is POSITIONAL -- ``_load_notifications`` keeps the last
+    ``_MAX_PERSISTED_NOTIFICATIONS`` rows, not the newest by timestamp -- so importing
+    a full 200-record history pushes the live row out of the window. Measured: a note
+    delivered mid-copy landed at line 0 of 201 and the reader returned 200 rows
+    without it. Review's finding, and it is silent: the operator was told the
+    notification was delivered, and after the next reload it is gone.
+
+    Notification persistence runs on ONE worker in submission order
+    (``_notification_io_executor``), so running the copy on that same worker is what
+    makes the two ordered rather than concurrent. A queued append then runs strictly
+    after the copy and lands at the end of the file, where the cap keeps it.
+
+    Three branches decided whether to serialise, and TWO of them shared one mistake:
+    they treated the absence of an OBSERVABLE writer as the absence of a writer. The
+    shortcut assumed "no pool" means "no writer"; the writer is what makes the pool. A
+    fresh gateway has persisted nothing, so the pool was ``None``, so the copy ran
+    inline -- and a delivery arriving at that moment CREATED the executor and appended
+    through it, concurrently, putting the live row back at line 0 of 201 and outside the
+    reader's window. Review found that instance. The broad ``except Exception`` on the
+    import one line above was the same error a second time: it turned "I could not
+    check" into "there is nothing to check", so an import failing inside a live gateway
+    would have lost the ordering silently.
+
+    So this ACQUIRES rather than asks. ``_notification_io_executor()`` creates the
+    worker if there is none and returns the existing one if there is. That removes the
+    first hole outright -- there is no longer any "is there a pool" question to get
+    wrong -- and narrows the second to ``ImportError``.
+
+    TWO inline cases remain, and neither reads an absence of OBSERVATION as an absence
+    of a writer:
+
+    1. Already ON the worker. Then we ARE the ordering point, and submitting would wait
+       for a queue only this call can drain -- a deadlock rather than a race. This is
+       the one branch that was always sound.
+    2. The dashboard module does not import. A missing MODULE is categorically different
+       from a missing pool: the sink lives in that module, so if it is not importable
+       there is no writer that could exist, rather than none currently visible. That is
+       the CLI restore. Narrowed to ``ImportError`` precisely so it cannot absorb
+       anything else -- a module that fails to import for any OTHER reason is a real
+       failure and must surface rather than quietly degrade the guarantee.
+
+    Acquiring costs the CLI path one idle worker thread it did not previously create.
+    That is a short-lived process and the thread exits at interpreter shutdown; a silent
+    ordering hole is permanent, so the trade is not close.
+
+    The executor is released as soon as *work* returns OR raises: ``result()``
+    re-raises rather than swallowing, so the failure path needs no separate release
+    and cannot leave notification writes blocked.
+
+    Relying on that executor for ordering means its own CREATION has to be ordered too.
+    It was an unlocked check-then-set, so two threads could each observe ``None``, each
+    build a pool, and never be serialised against one another -- which would void this
+    guarantee rather than weaken it. ``dashboard/state.py`` now takes a lock around the
+    lazy init (issue #8788), so acquiring the executor is itself race-free.
+    """
+    try:
+        from kiro_crew.dashboard import state as dashboard_state
+    except ImportError:
+        work()
+        return
+    if threading.current_thread().name.startswith("notif-io"):
+        work()
+        return
+    dashboard_state._notification_io_executor().submit(work).result()
+
+
+class NotificationCopyUnsupported(Exception):
+    """This platform cannot install notification records safely, so it does not.
+
+    Deliberately not an ``OSError``: the copy's own error arm catches ``OSError`` and
+    re-raises it as a failed import, which is the wrong shape for "this platform was
+    never able to do this". A distinct type lets the callers report a SKIP, and an
+    unhandled one still aborts rather than passing silently.
+    """
+
+
+def _copy_notifications(src_path: Path, dst_path: Path) -> None:
+    """Install the snapshot's notification records, ordered against the live writer.
+
+    Refuses outright where ``O_NOFOLLOW`` does not exist -- see below. The refusal is
+    made HERE, before the executor is acquired and before anything is opened, because
+    it is a question about the platform rather than about this source.
+
+    The whole body runs on the dashboard's notification worker when one exists, so a
+    row the gateway delivers during the restore cannot be ordered ahead of the
+    archive's and dropped by the reader's positional cap. See
+    :func:`_serialise_with_notification_writes` for why ``O_APPEND`` alone was not
+    enough, and note the cost: a restore briefly blocks notification writes. A
+    restore is rare and user-initiated; a lost notification is silent and permanent.
+
+    WHY A MISSING ``O_NOFOLLOW`` REFUSES INSTEAD OF FALLING BACK. The predecessor
+    checked ``pinned_fs.is_reparse_point(src_path)`` by NAME and then opened the same
+    NAME. Against an adversary that is not a floor, it is a check-to-open window: the
+    threat model this function is written for -- stated in ``_install_notifications``
+    and demonstrated by the revision review blocked -- is a concurrent agent replacing
+    the extracted file, and such an agent chooses the timing. The descriptor check does
+    not save it either: ``fstat`` asserts ``S_ISREG``, and a reparse point resolving to
+    a regular ``.env`` passes ``S_ISREG``. So on a platform with no ``O_NOFOLLOW`` there
+    is no sequence of by-name checks that makes this safe, and the honest move is to not
+    do it.
+
+    The alternative -- a ctypes ``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT`` --
+    is declined, and not by me: ``eval/bench/safepath.py`` records that it "is no longer
+    worth considering here: it would buy the same property exclusive creation already
+    has, at the price of security code that cannot be exercised on the machine this
+    harness is developed on", and ``skill_trust.py`` records that Python "does not expose
+    an equivalent handle-relative, no-reparse walk on Windows". Both decline the capable
+    route, which means this repo has already chosen less capability on that platform over
+    a hand-rolled walk. Refusing extends those two decisions; falling back contradicts
+    them.
+
+    The cost is not symmetric, which is what makes the trade easy. Refusing loses
+    notification HISTORY on one platform for one operation -- the records remain in the
+    snapshot and nothing is destroyed. Falling back can put attacker-chosen bytes, a
+    credentials file among them, into a location the agent then reads. And this PR exists
+    because snapshot restore installed unvalidated bytes: a remaining path that installs
+    attacker-chosen bytes is the same defect, closed everywhere except where it is
+    hardest.
+
+    The refusal is LOUD and the callers report the skip. A silent skip would be the same
+    class of bug as the one being fixed, so the message names the platform, the missing
+    primitive, and what was not imported.
+    """
+    if not getattr(os, "O_NOFOLLOW", 0):
+        raise NotificationCopyUnsupported(
+            f"this platform ({os.name}) has no O_NOFOLLOW, so the notification source "
+            "cannot be opened with any guarantee that the name checked is the file "
+            "read -- a by-name reparse-point check followed by a by-name open is a "
+            "window a concurrent writer chooses the timing of, and fstat's S_ISREG "
+            "does not close it because a reparse point to a regular file passes it. "
+            "Refusing rather than importing bytes that may not be the archive's: "
+            f"{_safe_name(src_path)} was NOT imported and remains in the snapshot"
+        )
+    _serialise_with_notification_writes(lambda: _install_notifications(src_path, dst_path))
+
+
+def _install_notifications(src_path: Path, dst_path: Path) -> None:
+    """Install the snapshot's notification records where the live file does not exist yet.
+
+    The sibling of ``_merge_notifications``, and the reason it exists separately
+    is that the two branches of one ``if`` had different postures: the merge
+    validates every source record's encoding and ABORTS on one it cannot deliver
+    intact, while this branch was ``shutil.copy2`` and validated nothing. A
+    byte-exact copy is correct as a copy and that is exactly the problem -- it
+    faithfully installs bytes the destination's own reader refuses.
+    ``_load_notifications`` decodes the WHOLE file inside one ``try`` that
+    returns ``[]``, so one invalid byte costs every row, and the next
+    ``_rewrite_notifications`` -- any delete, ack or clear -- persists that empty
+    view. Unlike the merge this fired on every locale, because nothing decoded on
+    the way in, and it fired on a fresh install or a first restore, where the
+    operator has the least reason to suspect anything.
+
+    So the posture matches the merge: ABORT, never accept, never skip. That is not
+    a new product decision, it is the decision the merge branch already carries --
+    a snapshot with an undecodable record aborted the restore when a live file
+    existed and was installed silently when one did not.
+
+    It is a SEPARATE function rather than a call into the merge with an empty
+    destination, and both halves of that were measured, not assumed:
+
+    * ``_merge_notifications`` opens the destination for READ first, so a missing
+      one raises ``FileNotFoundError`` out of the arm that guarantees a
+      destination-scan failure is a true no-op. Teaching that arm to tell
+      "missing, fine" from "unreadable, abort" reopens the fail-closed posture
+      that arm exists for.
+    * The merge DEDUPLICATES against what it has already written, which a copy
+      must not: run four source records -- two sharing a ``ts``, two byte-identical
+      without one -- through a merge into an empty destination and two land. There
+      is nothing here to deduplicate against, so keying source records against
+      each other converts a faithful copy into a lossy one.
+
+    Every path here is resolved to a descriptor EXACTLY ONCE and all later work goes
+    through that descriptor. That invariant is the fix for a whole class rather than
+    for the instances that surfaced it: three separate review findings were the same
+    defect, an operation resolving a name more than once where another process can
+    change what the name means, and each earlier fix moved which name was vulnerable
+    instead of removing the second resolution. The source is opened once
+    ``O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_BINARY`` and read once, never seeked; the
+    destination is created once
+    ``O_CREAT|O_EXCL|O_WRONLY|O_APPEND|O_NOFOLLOW|O_BINARY``. The
+    remaining uses of either path -- ``_safe_name`` in the messages, and the ``path``
+    argument to ``strict_raw_records`` and ``_notification_key`` -- resolve nothing:
+    both callees only interpolate it into an error string.
+
+    That invariant is descriptor-bound on POSIX and CANNOT be on Windows, which has no
+    ``O_NOFOLLOW``: there the flag is 0. The predecessor put a by-name reparse-point
+    check in front of the open and treated it as a floor; it is not one, because a
+    by-name check followed by a by-name open is a window the concurrent agent in this
+    threat model chooses the timing of, and ``fstat``'s ``S_ISREG`` does not close it --
+    a reparse point resolving to a regular ``.env`` passes it. So this function is not
+    reached at all on such a platform: :func:`_copy_notifications` refuses the copy
+    before acquiring the executor. Naming the split rather than implying it, because
+    the two genuinely differ in what they can promise -- POSIX refuses a link inside
+    the open syscall, and a platform without the flag does not attempt the copy.
+
+    The caller reaches this branch on ``sn.is_file()`` and ``not dn.is_file()``, which
+    are by-name and therefore advisory. They are not trusted: each is confirmed or
+    refuted by the single authoritative resolution here. A destination that filled
+    after the check fails ``O_EXCL``, and a source that became a link or a FIFO fails
+    ``O_NOFOLLOW`` or the ``S_ISREG`` check on the descriptor. What is NOT closed here
+    is the ancestor chain -- both opens name a directory rather than a pinned
+    descriptor -- and that is deliberate: every core-file copy in this function
+    reaches its path the same way, so pinning one of ten sites would be the point
+    patch review already named. It is an axis for its own change.
+
+    ONE read of the source, and the ordering is the whole design:
+
+    1. The source is read ONCE, whole, under a byte cap, and the file is never
+       touched again. Everything after that reads the bytes in hand.
+    2. Those bytes are validated in full. A refusal here happens with the
+       destination never created, so there is nothing to roll back -- which matters
+       because there is no safe rollback: an earlier revision created the live file
+       and unlinked it on refusal, and ``apply_import_zip`` runs inside the live
+       gateway, so the dashboard's notification sink could append to that file first
+       and the unlink took the operator's notification with it. Review's finding.
+    3. The destination is then created
+       ``O_CREAT|O_EXCL|O_WRONLY|O_APPEND|O_NOFOLLOW|O_BINARY`` and the validated
+       bytes are written. ``O_EXCL`` decides inside one syscall, so a name that
+       filled after the caller's ``is_file()`` check is refused rather than written
+       through -- a dangling symlink at that name included, which ``is_file()``
+       reports as absent and ``copy2`` followed, writing the archive's bytes outside
+       the data home.
+
+    Reading once is not an optimisation, it is what makes a whole class of defect
+    UNREPRESENTABLE rather than detected. The predecessor read the file twice --
+    validate, then install -- and four consecutive review rounds each found a
+    different way for the source to change inside that window: swapped for a symlink
+    to a credential, reopened by name, truncated so the second pass met a clean EOF
+    and reported success having installed fewer records than it validated. Each fix
+    closed one variant and the next round produced another, because a check can only
+    catch the case someone thought of. With the bytes held in memory there is no name
+    left to resolve and no handle left open, so there is nothing for another process
+    to swap, truncate or extend. The two loops below are two passes over the same
+    immutable bytes, which is safe for exactly the reason two passes over the FILE
+    were not.
+
+    That trade needs a number, not a preference, and the number is the destination's
+    own bound: see ``_NOTIFICATION_SOURCE_CAP``. Peak held is about twice the SOURCE
+    size rather than twice the cap -- measured at 15.9 MiB for the 8.3 MB
+    product-bounded worst case and 1.0 MiB for a realistic 207-record file, against
+    the 128 MiB this same file already accepts for a SINGLE record. A source over the
+    cap is refused with its size named -- never truncated, never partially imported,
+    because a silently dropped tail is the defect being removed wearing a hat.
+
+    No temporary file, deliberately, and this is the second review finding: a temp
+    file in the data home is published through a NAME, and a same-user process that
+    can list that directory can swap what the name holds between the write and the
+    publish -- which links bytes this function never validated into place as
+    ``notifications.jsonl``. The mitigations for that are inode verification on both
+    ends plus a non-hardlink fallback (``pinned_fs.put_back_no_clobber`` is the
+    repo's audited version, and its own docstring notes the landed check narrows the
+    window rather than closing it). Writing straight to an ``O_EXCL`` destination
+    needs none of it: there is no intermediate name to swap.
+
+    What this does NOT close: everything on the DESTINATION side. ``O_EXCL`` refuses a
+    name that filled, ``O_APPEND`` keeps a concurrent notification from being
+    overwritten, and both remain necessary -- the live file has other writers and
+    reading the source once says nothing about them. Only the read window is gone.
+
+    Records are written verbatim -- what is validated is the source's bytes, never a
+    decoded form of them -- with a single repair: an unterminated final record gains
+    a terminator. That is not cosmetic once the write is record-wise.
+    ``_persist_notification`` appends ``json.dumps(note) + "\\n"``, so the first
+    notification after the restore would otherwise glue onto an unterminated last
+    line and produce one line that parses as neither row. It is the same repair the
+    merge makes through ``dst_unterminated``.
+    """
+    # `_notification_key`'s result is discarded -- it is called for the
+    # `UndecodableRecord` it raises, which its own docstring documents as how the
+    # encoding property is enforced. Reusing the merge's predicate rather than
+    # inlining a second decode is what keeps the two branches' acceptance criteria
+    # identical, and a second decode is exactly how they drifted apart in the first
+    # place.
+    #
+    # The SOURCE is resolved exactly once and read exactly once. The revision before
+    # this one opened the name once per pass, and between the two a running agent
+    # could replace the extracted file with a symlink to `.env`: the second open
+    # followed it and the secret landed in an agent-readable `notifications.jsonl`.
+    # `O_NOFOLLOW` refuses a link at the name instead of following it -- consistent
+    # with `_backup_and_copy`, which already skips a symlinked file coming out of an
+    # archive -- and reading once removes the second resolution the flag was
+    # protecting.
+    #
+    # `O_NONBLOCK` closes the other way that by-name selection misleads this open,
+    # which review did not name: the caller chose this branch on `is_file()`, and a
+    # name that became a FIFO afterwards would block the open forever and hang the
+    # restore rather than failing it. The kind is then judged on the DESCRIPTOR with
+    # `fstat`, NOT by re-checking the name -- a second by-name check would be the
+    # same mistake one layer down, whereas a held descriptor cannot be swapped.
+    src_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    # 0o666 so the kernel applies the umask, giving the same mode as the `open(path,
+    # "a")` in `_persist_notification`: a restored file must not be tighter than one
+    # the product wrote itself.
+    #
+    # `O_APPEND` because the dashboard's notification sink writes to this same file
+    # with it, and its append goes to end-of-file while an ordinary write goes to
+    # THIS handle's offset. Buffered, that offset is stale by the time it flushes, so
+    # a notification delivered mid-copy was overwritten by the flush. Review's
+    # finding. With `O_APPEND` every write lands at end-of-file, so the two writers
+    # interleave instead of clobbering. On the fresh file `O_EXCL` guarantees, it
+    # changes nothing about the ordinary outcome.
+    #
+    # `O_BINARY` on BOTH, because `os.open` is the one API here that can be in text
+    # mode: the repo documents it as required on Windows and every sibling passes it,
+    # `crash_dump_store.py` reaching for this exact read-flag triple. A no-op on
+    # POSIX, where the constant does not exist. It is a CONVENTION fix and not a
+    # corruption fix -- the corruption a review lane described is refuted by
+    # `test_a_clean_source_is_copied_record_for_record`, which asserts byte-exact
+    # `\\r\\n` survival through these very descriptors and passes on the Windows lane.
+    dst_flags = (
+        os.O_CREAT
+        | os.O_EXCL
+        | os.O_WRONLY
+        | os.O_APPEND
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    written = 0
+    opened_dst = False
+    try:
+        # No platform floor is attempted here. A platform with no `O_NOFOLLOW` to give
+        # never reaches this function: `_copy_notifications` refuses the whole copy up
+        # front, because a by-name `is_reparse_point` check followed by a by-name open
+        # is a check-to-open window and `fstat`'s `S_ISREG` does not close it -- a
+        # reparse point resolving to a regular `.env` passes it. So this open always
+        # carries a real `O_NOFOLLOW` and the refusal is decided by the open itself.
+        # An `lstat`-then-`fstat` identity comparison is deliberately NOT done -- that
+        # one pretends to close a window it merely narrows.
+        with os.fdopen(os.open(src_path, src_flags), "rb") as src:
+            if not _stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+                raise OSError("source is not a regular file")
+            # ONE read of the file, and the file is not touched again. Chunked, and
+            # that is not incidental: `read(cap + 1)` in one call PREALLOCATES a
+            # buffer the size of the cap, so an 8 MB source cost 32 MiB and the peak
+            # was a function of the limit rather than of the file. Measured, which is
+            # the only reason it was noticed. Accumulating 1 MiB at a time keeps the
+            # peak proportional to the actual source.
+            #
+            # The cap is enforced on bytes ALREADY READ, not on a separately-stated
+            # size: `st_size` can be stale by the time it is compared, and the bytes
+            # in hand cannot be. Enforced inside the loop, so an oversized source is
+            # abandoned as soon as it crosses the line instead of being materialised
+            # first.
+            acc = bytearray()
+            while True:
+                chunk = src.read(1 << 20)
+                if not chunk:
+                    break
+                if len(acc) + len(chunk) > _NOTIFICATION_SOURCE_CAP:
+                    raise OSError(
+                        f"notification source is at least "
+                        f"{len(acc) + len(chunk)} bytes, over the "
+                        f"{_NOTIFICATION_SOURCE_CAP} byte limit -- refusing rather "
+                        "than importing part of it"
+                    )
+                acc.extend(chunk)
+            blob = bytes(acc)
+        # Everything below reads MEMORY. The two loops are two passes over the same
+        # immutable bytes, which is what makes them safe where two passes over the FILE
+        # were not: nothing between them can swap the source for a symlink, truncate it,
+        # or append to it, because there is no name left to resolve and no file handle
+        # left open. The window is not detected here, it is unrepresentable.
+        #
+        # Framing goes through `strict_raw_records` over a `BytesIO` rather than a
+        # hand-rolled split, so the record boundaries are the SAME implementation the
+        # merge branch uses. A second splitter is how two paths drift apart, which is
+        # the defect this whole change exists to fix.
+        with io.BytesIO(blob) as buf:
+            for record in strict_raw_records(buf, src_path, cap=_NOTIFICATION_RECORD_CAP):
+                _notification_key(record, src_path)
+        with os.fdopen(os.open(dst_path, dst_flags, 0o666), "wb") as out:
+            opened_dst = True
+            with io.BytesIO(blob) as buf:
+                for record in strict_raw_records(buf, src_path, cap=_NOTIFICATION_RECORD_CAP):
+                    out.write(record if record.endswith(_TERMINATORS) else record + b"\n")
+                    written += 1
+    except (OSError, UnreadableRecord) as exc:
+        # Two outcomes, told apart by whether the destination was ever created:
+        # nothing written at all (a bad archive, a refused source, or a name that
+        # filled after the caller's check), or a prefix that STAYS. Every record in a
+        # prefix passed validation, and unlinking is what took a concurrent writer's
+        # file in the revision review blocked, so the count is named instead.
+        #
+        # `_safe_name` on the PATH because a bundle chooses its own inner root, so an
+        # archive-derived path can carry ANSI controls and printing one raw lets a
+        # hostile archive overwrite the lines right above the operator's prompt. The
+        # EXCEPTION does not need it, for the reason `_merge_notifications` states:
+        # both types this arm catches already render an embedded path with repr-style
+        # escaping.
+        tail = f"{written} imported" if opened_dst else "notifications not imported"
+        print(f"  ⚠️  Could not copy {_safe_name(src_path)}: {exc} — {tail}")
+        raise
 
 
 def _backup_and_copy(
@@ -3908,8 +4344,19 @@ def _do_merge(
             if dn.is_file():
                 _merge_notifications(sn, dn)
             else:
-                shutil.copy2(str(sn), str(dn))
-                print("  Notifications: copied")
+                # Not `copy2`: a byte-exact copy installs records the live file's
+                # own reader refuses, and that reader loses the whole file to one
+                # of them. Same abort posture as the merge branch above.
+                #
+                # The platform refusal is NOT that abort: it says this platform can
+                # never do this safely, not that this archive is bad, so it skips one
+                # component loudly and lets the rest of the restore proceed. Reported
+                # rather than swallowed -- a silent skip is the bug class being fixed.
+                try:
+                    _copy_notifications(sn, dn)
+                    print("  Notifications: copied")
+                except NotificationCopyUnsupported as exc:
+                    print(f"  ⚠️  Notifications: SKIPPED -- {exc}")
         print("  ✅ notifications")
 
     if _want(components, "security"):

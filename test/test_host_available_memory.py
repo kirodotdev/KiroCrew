@@ -24,6 +24,7 @@ import ctypes
 
 import pytest
 
+from conftest import absent_sysconf
 from kiro_crew import platform_compat as pc
 
 _SENTINEL_PORT = 0x1111
@@ -98,7 +99,20 @@ def as_macos(monkeypatch: pytest.MonkeyPatch):
         # raising=False: os.sysconf does not exist on Windows, and this fixture has
         # to install a page size there too -- the macOS branch under test reads it,
         # and a bare setattr would fail the whole class on the Windows shard.
-        monkeypatch.setattr(pc.os, "sysconf", lambda name: page_size, raising=False)
+        # ``pc.os`` is the process-wide ``os`` module, not a module-local alias, so
+        # the fake answers SC_PAGE_SIZE only and forwards every other name to the
+        # real os.sysconf -- an unscoped fake would feed this test's page size to
+        # any other thread reading SC_OPEN_MAX/SC_PHYS_PAGES concurrently.
+        real_sysconf = getattr(pc.os, "sysconf", None)
+
+        def fake_sysconf(name: str) -> int:
+            if name == "SC_PAGE_SIZE":
+                return page_size
+            if real_sysconf is not None:
+                return real_sysconf(name)
+            raise ValueError(name)
+
+        monkeypatch.setattr(pc.os, "sysconf", fake_sysconf, raising=False)
         return fake
 
     return _install
@@ -301,8 +315,14 @@ class TestTheMacosReadingFailsSafely:
         """A page count without a page size is not a byte count."""
         as_macos(fields={"free_count": 512 * _PAGES_PER_MIB})
 
+        real_sysconf = getattr(pc.os, "sysconf", absent_sysconf)
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(pc.os, "sysconf", lambda name: 0, raising=False)
+            mp.setattr(
+                pc.os,
+                "sysconf",
+                lambda name: 0 if name == "SC_PAGE_SIZE" else real_sysconf(name),
+                raising=False,
+            )
             assert pc.host_available_mib() == 0
 
     @pytest.mark.parametrize("kern_return", [0, 1])

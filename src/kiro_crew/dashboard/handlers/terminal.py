@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import time
@@ -143,6 +144,19 @@ class _TerminalSession:
     scrollback: bytearray = field(default_factory=bytearray)
     last_title: str | None = None  # last title pushed to the client (dedup)
     last_cwd: str | None = None  # last cwd pushed to the client (dedup)
+    # Absolute path of the shell this PTY actually launched, as _resolve_shell
+    # pinned it. Reported to the client in the `ready` frame: the client mints
+    # session ids and opens the socket without ever asking what got spawned, so
+    # a caller that needs to know which shell will interpret the bytes it is
+    # about to write (Run-in-terminal, which honors a code fence's language)
+    # has no other way to find out. Reporting is deliberately one-way -- the
+    # client is never given a say in WHICH shell is spawned.
+    shell: str = ""
+    # name -> absolute path for the shells a code fence can name, as resolved on
+    # this host. Reported alongside `shell` so a caller handing a snippet to a
+    # different shell can name an absolute path instead of a bare name a
+    # project-local PATH entry could hijack.
+    fence_shells: dict[str, str] = field(default_factory=dict)
     # (monotonic_ts, cwd) memo for the path-completion route. The title poller's
     # ``last_cwd`` is up to a second stale, which is long enough for a user to
     # `cd` and immediately request completions against the OLD directory — so
@@ -454,6 +468,125 @@ def _is_bash_shell(shell: str) -> bool:
     """Whether *shell* supports the injected post-profile readiness marker."""
     name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower()
     return name in {"bash", "bash.exe"}
+
+
+# The shells a code fence can name. FIXED here, never derived from anything a
+# client, a fence or an agent supplies: the client selects among the entries
+# this list produced, so no caller-supplied string is ever resolved or run.
+_FENCE_SHELL_NAMES = ("bash", "sh", "zsh", "fish")
+
+
+def _agent_can_rewrite(path: str, uid: int) -> bool:
+    """Whether *path* or any ancestor could be rewritten by uid.
+
+    Current mode bits are not the question: the OWNER of a directory can chmod it
+    writable whenever it likes, so a user-owned ``0555`` directory is mutable in
+    one syscall. Ownership is the durable property, and it has to hold for every
+    ancestor too -- being able to rename a parent is enough to substitute
+    everything under it.
+
+    A world- or group-writable directory counts as rewritable UNLESS it carries
+    the sticky bit, which is what stops a non-owner removing or renaming someone
+    else's entry (``/tmp`` is the ordinary case).
+
+    Two tests are needed and they catch different things. Ownership is the durable
+    property: an owner can chmod at will, so current permission proves nothing
+    about it. Mode bits are the cheap one. Note what this does NOT see: a POSIX
+    ACL grant on an ancestor is invisible to ``st_mode``, and probing it with
+    ``os.access`` here would read the REAL uid rather than this check's subject.
+    Such an ACL can only be placed by root or by the directory's owner, and either
+    of those can equally re-point the shell ``_resolve_shell`` itself resolves, so
+    the exposure it would add over the base is nil. The candidate FILE is probed
+    with ``os.access`` in the caller, where the subject is unambiguous.
+
+    Fails closed: a path that cannot be stat'ed is treated as rewritable.
+    """
+    current = os.path.abspath(path)
+    while True:
+        try:
+            st = os.lstat(current)
+        except OSError:
+            return True
+        if st.st_uid == uid:
+            return True
+        loose = st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        if loose and not st.st_mode & stat.S_ISVTX:
+            return True
+        parent = os.path.dirname(current)
+        if parent == current:
+            return False
+        current = parent
+
+
+def _resolve_fence_shells(launched: str) -> dict[str, str]:
+    """Fence-nameable shells that sit ALONGSIDE the shell *launched* came from.
+
+    Reported to the client so a snippet handed to a different shell names an
+    absolute path rather than a bare name -- the same reasoning as
+    ``_resolve_shell``'s pinning: the terminal runs with the chat's project
+    directory as its cwd, so a bare name would be resolved there, and a relative
+    ``PATH`` entry would let a project-planted executable win.
+
+    Discovery adds NO new trusted location and consults no ``PATH`` at all. Each
+    name is probed directly inside the directory the session's own shell
+    canonically came from, so the set reported here is exactly as trustworthy as
+    the shell ``_resolve_shell`` already chose. A planted binary therefore cannot
+    become a reported shell unless the attacker already controls that directory,
+    in which case the spawn itself is compromised first and a fence tag adds
+    nothing. Probing the directory rather than resolving and filtering also means
+    an unrelated ``PATH`` entry earlier in the search order (a venv, an asdf shim)
+    cannot shadow a co-located shell out of the map.
+
+    COVERAGE, deliberately narrow: a shell is offered only when it is co-located
+    with the session's own shell AND neither it nor any ancestor of that directory
+    is OWNED by the gateway's user (an owner can chmod at will, so mode bits alone
+    prove nothing). Nothing this process could rewrite is ever offered, which is
+    what closes the swap-after-discovery window: a path is reported now and invoked
+    later, when the user confirms. That leaves the ordinary distro layout
+    (root-owned ``/usr/bin``) and excludes a user-owned prefix -- Homebrew's, a
+    workspace, a project-local ``bin`` -- where the snippet then behaves exactly as
+    it does today. Under a root gateway every path is owned by the caller, so
+    nothing is offered at all; that is the safe direction.
+
+    Blocking note: a bounded handful of stats, run in the same off-loop hop as
+    ``_resolve_shell`` rather than inline.
+    """
+    if not launched:
+        return {}
+    trusted_dir = os.path.dirname(os.path.realpath(launched))
+    if not trusted_dir:
+        return {}
+    if platform_compat.IS_WINDOWS:
+        # POSIX-only by construction: there is no bash/sh/zsh/fish host here to
+        # hand a snippet to, and the ownership test below has no Windows
+        # equivalent -- report nothing rather than approximate it.
+        return {}
+    uid = os.geteuid()
+    if _agent_can_rewrite(trusted_dir, uid):
+        return {}
+    found: dict[str, str] = {}
+    for name in _FENCE_SHELL_NAMES:
+        candidate = os.path.join(trusted_dir, name)
+        if os.path.islink(candidate):
+            continue  # the link target is outside what was vetted above
+        if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+            continue
+        try:
+            st = os.lstat(candidate)
+        except OSError:
+            continue
+        if st.st_uid == uid or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            continue  # rewritable in place
+        if os.access(candidate, os.W_OK):
+            continue  # rewritable in place via an ACL the mode bits do not show
+        found[name] = candidate
+    return found
+
+
+def _resolve_shell_with_fence_shells(cfg: dict) -> tuple[str, str | None, dict[str, str]]:
+    """``_resolve_shell`` plus the fence-shell map, in one off-loop hop."""
+    shell, rejected = _resolve_shell(cfg)
+    return shell, rejected, _resolve_fence_shells(shell)
 
 
 # Names the readiness hook reads. When the hook runs, both are consumed and unset
@@ -783,9 +916,10 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
     # and the session registration, where an added await would suspend the
     # handler with the registry still holding the None placeholder — a window
     # every concurrent reader of the registry would then observe. One hop per
-    # WS open; the reconnect path simply ignores the value.
-    shell, rejected_shell = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), _resolve_shell, cfg,
+    # WS open, now also carrying the fence-shell map the ready frame reports;
+    # a reconnect keeps the values its original open resolved.
+    shell, rejected_shell, fence_shells = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _resolve_shell_with_fence_shells, cfg,
     )
 
     # Check if reconnecting to existing session. A None VALUE under an
@@ -859,7 +993,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             try:
                 async with existing.send_lock:
                     if existing.ws is ws and not ws.closed:
-                        await ws.send_str(json.dumps({"type": "ready"}))
+                        await ws.send_str(json.dumps({
+                            "type": "ready",
+                            "shell": existing.shell,
+                            "fence_shells": existing.fence_shells,
+                        }))
             except (ConnectionResetError, RuntimeError, OSError):
                 pass
         _sel().log_api_access(
@@ -901,7 +1039,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 await ws.close()
             return ws
         sess = _TerminalSession(
-            session_id=session_id, master_fd=-1, proc=None, winpty=wp, ws=ws,  # wokeignore:rule=master
+            session_id=session_id, master_fd=-1, proc=None, winpty=wp, ws=ws, shell=shell,  # wokeignore:rule=master
+            fence_shells=fence_shells,
         )
         registry[session_id] = sess
         _sel().log_api_access(
@@ -1007,6 +1146,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             proc=proc,
             ws=ws,
             ready_marker=ready_marker,
+            shell=shell,
+            fence_shells=fence_shells,
         )
         registry[session_id] = sess
         _sel().log_api_access(
@@ -1024,7 +1165,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             try:
                 async with sess.send_lock:
                     if sess.ws is ws and not ws.closed:
-                        await ws.send_str(json.dumps({"type": "ready"}))
+                        await ws.send_str(json.dumps({
+                            "type": "ready",
+                            "shell": sess.shell,
+                            "fence_shells": sess.fence_shells,
+                        }))
             except (ConnectionResetError, RuntimeError, OSError):
                 pass
 
@@ -1071,7 +1216,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                             became_ready = True
                         if became_ready:
                             try:
-                                await live.send_str(json.dumps({"type": "ready"}))
+                                await live.send_str(json.dumps({
+                                    "type": "ready",
+                                    "shell": sess.shell,
+                                    "fence_shells": sess.fence_shells,
+                                }))
                             except (ConnectionResetError, RuntimeError, OSError):
                                 # Preserve shell_ready so a reconnect can receive
                                 # the frame even if this socket disappeared here.

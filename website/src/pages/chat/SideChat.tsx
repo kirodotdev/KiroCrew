@@ -11,6 +11,7 @@ import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
 import ChatInput from '../../components/ChatInput'
+import ErrorNotice from '../../components/ErrorNotice'
 import { SlotProvider } from '../../providers/SlotContext'
 import { useConnected } from '../../hooks/useConnected'
 import type { SideMessage, SideQueueEntry } from '../../store/chatSlice'
@@ -609,7 +610,12 @@ export default function SideChat({ slot }: { slot: string }) {
         </div>
       </div>
       {displayError && (
-        <div className="px-3 py-1 text-[12px] text-danger border-t border-border">{displayError}</div>
+        <div className="px-3 py-1 border-t border-border">
+          {/* No hand-off: the side-chat composer draft (the failed question is
+              merged back into it by the mutation's onError) is unsaved local
+              state — a navigation would discard it. */}
+          <ErrorNotice variant="inline" message={displayError} />
+        </div>
       )}
       {!displayError && localNotice && (
         <div className="px-3 py-1 text-[12px] text-muted border-t border-border" role="status">{localNotice}</div>
@@ -658,6 +664,9 @@ export default function SideChat({ slot }: { slot: string }) {
             promptOptimizer={false}
             connected={connected}
           />
+          <div role="note" className="px-1 pt-1.5 text-[11px] leading-4 text-muted">
+            {i18nT('pages.chat.sideChat.context_only_tools_unavailable')}
+          </div>
         </SlotProvider>
       </div>
     </div>

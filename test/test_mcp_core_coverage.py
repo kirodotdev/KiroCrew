@@ -1136,7 +1136,13 @@ class TestFileSend:
         src = tmp_path / "creds.txt"
         src.write_text("AKIA" + "P" * 16)
         out = _call_tool("file_send", {"path": str(src)})
-        assert out == "Error: file content contains sensitive data; send aborted"
+        assert out.startswith("Error: file content contains sensitive data; send aborted")
+        # The refusal now names the remedy. A wall that does not say a consented
+        # path exists is the reported complaint behind issue #7770, so this
+        # asserts MORE than the previous exact-equality pin, not less -- and it
+        # asserts the never-grantable legs are named as such.
+        assert "/api/file-delivery/consent" in out
+        assert "can never be granted" in out
 
     def test_disallowed_binary_mime_is_refused(self, tmp_path):
         src = tmp_path / "payload.bin"
@@ -1211,8 +1217,14 @@ class TestFileSend:
 
         with patch.object(mcp_core, "_post", side_effect=_post) as m:
             out = _call_tool("file_send", {"path": str(src)})
-        assert out == "File sent: report.txt"
+        # The invariant this test owns: a channel SKIP does not disturb the
+        # Slack leg, which still runs as the fallback.
         assert any(c[0][0] == "/api/slack/upload-file" for c in m.call_args_list)
+        # The skip is also REPORTED. It used to read a bare "File sent:
+        # report.txt", which is indistinguishable from a delivery for a file
+        # that only reached the dashboard (see test_file_send_skip_reason.py).
+        assert out.startswith("File sent: report.txt")
+        assert "no_channel_destination" in out
 
     def test_channel_failure_warns_and_falls_back_to_slack(self, tmp_path, monkeypatch):
         monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")

@@ -2,6 +2,7 @@
 
 Covers:
 - _safe_avatar validation (shape guards, trait coercion, tile hex pinning)
+- Per-state expression and sound overrides on both avatar kinds
 - The field's defaults and asdict serialization
 - Round-trip through the agents-section from-dict parse
 """
@@ -9,6 +10,7 @@ Covers:
 import dataclasses
 import json
 import tempfile
+import types
 import unittest.mock
 from pathlib import Path
 
@@ -18,7 +20,7 @@ from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
 )
-from kiro_crew.config.sections import _safe_avatar
+from kiro_crew.config.sections import _AVATAR_SOUNDS, _AVATAR_TRAIT_MAX_LEN, _safe_avatar
 
 
 def _load_from_dict(data: dict) -> KiroCrewConfig:
@@ -956,3 +958,340 @@ class TestUploadedAvatarEndpoints:
         stored = KiroCrewConfig.load().agents[seeded_agent].avatar
         assert "promote" not in stored and "token" not in stored
         assert stored["kind"] == "image"
+
+
+_EXPRESSIONS = {"working": {"eyes": "squint"}, "error": {"eyes": "x", "mouth": "frown"}}
+_SOUNDS = {"working": "blip", "done": "chime", "error": "pulse"}
+
+
+class TestSafeAvatarPerStateOverrides:
+    """`expressions` and `sounds`: accepted on both kinds, junk dropped silently.
+
+    The forgiveness direction is the load-bearing one. `config.json` is
+    hand-editable and agent-writable, so a malformed per-state value must cost
+    the crew that value and nothing else -- never its whole avatar, and never a
+    400 at the endpoints.
+    """
+
+    def test_ghost_keeps_both_keys(self):
+        got = _safe_avatar({**_GHOST, "expressions": _EXPRESSIONS, "sounds": _SOUNDS})
+        assert got["traits"] == _GHOST["traits"]
+        assert got["expressions"] == _EXPRESSIONS
+        assert got["sounds"] == _SOUNDS
+
+    def test_image_keeps_both_keys(self):
+        got = _safe_avatar(
+            {
+                "kind": "image",
+                "v": 17,
+                "file": "0123456789abcdef.png",
+                "expressions": _EXPRESSIONS,
+                "sounds": _SOUNDS,
+            }
+        )
+        assert got == {
+            "kind": "image",
+            "v": 17,
+            "file": "0123456789abcdef.png",
+            "expressions": _EXPRESSIONS,
+            "sounds": _SOUNDS,
+        }
+
+    def test_ghost_without_traits_is_valid_when_it_carries_overrides(self):
+        """The new shape: name-derived face plus per-state overrides.
+
+        `traits` is omitted from the record rather than stored as `{}`, so the
+        frontend's "missing or empty means name-derived" rule reads one
+        spelling.
+        """
+        got = _safe_avatar({"kind": "ghost", "sounds": {"done": "ding"}})
+        assert got == {"kind": "ghost", "sounds": {"done": "ding"}}
+        assert "traits" not in got
+
+    def test_empty_traits_dict_also_yields_no_traits_key(self):
+        got = _safe_avatar({"kind": "ghost", "traits": {}, "expressions": {"done": {"eyes": "o"}}})
+        assert got == {"kind": "ghost", "expressions": {"done": {"eyes": "o"}}}
+
+    def test_bare_ghost_still_collapses(self):
+        assert _safe_avatar({"kind": "ghost"}) == {}
+
+    def test_ghost_whose_overrides_all_drop_out_collapses(self):
+        """`kind` alone is not an override -- it must read as "no override"."""
+        assert _safe_avatar({"kind": "ghost", "expressions": {"nope": {"eyes": "o"}}}) == {}
+        assert _safe_avatar({"kind": "ghost", "sounds": {"working": "airhorn"}}) == {}
+
+    def test_unknown_state_is_dropped(self):
+        got = _safe_avatar(
+            {
+                **_GHOST,
+                "expressions": {"working": {"eyes": "o"}, "idle": {"eyes": "o"}},
+                "sounds": {"done": "pop", "thinking": "pop"},
+            }
+        )
+        assert got["expressions"] == {"working": {"eyes": "o"}}
+        assert got["sounds"] == {"done": "pop"}
+
+    def test_only_eyes_and_mouth_move_per_state(self):
+        """Identity axes must not change with state, or the crew stops being itself."""
+        got = _safe_avatar(
+            {
+                **_GHOST,
+                "expressions": {
+                    "working": {
+                        "eyes": "squint",
+                        "mouth": "oh",
+                        "brows": "raised",
+                        "accessory": "halo",
+                        "prop": "mug",
+                        "tile": "#ffffff",
+                        "blush": True,
+                        "flip": True,
+                    }
+                },
+            }
+        )
+        assert got["expressions"] == {"working": {"eyes": "squint", "mouth": "oh"}}
+
+    def test_expression_values_are_truncated_like_traits(self):
+        got = _safe_avatar({**_GHOST, "expressions": {"working": {"eyes": "e" * 99}}})
+        assert got["expressions"]["working"]["eyes"] == "e" * _AVATAR_TRAIT_MAX_LEN
+
+    def test_empty_expression_value_is_dropped(self):
+        """An empty string already means "absent" -- do not store a second spelling."""
+        got = _safe_avatar({**_GHOST, "expressions": {"working": {"eyes": "", "mouth": "oh"}}})
+        assert got["expressions"] == {"working": {"mouth": "oh"}}
+
+    def test_a_state_left_with_no_axes_is_omitted(self):
+        got = _safe_avatar({**_GHOST, "expressions": {"working": {"eyes": ""}}})
+        assert "expressions" not in got
+
+    @pytest.mark.parametrize("preset", _AVATAR_SOUNDS)
+    def test_every_shipped_preset_is_accepted(self, preset):
+        got = _safe_avatar({**_GHOST, "sounds": {"working": preset}})
+        assert got["sounds"] == {"working": preset}
+
+    def test_none_is_kept_as_explicit_silence(self):
+        """Distinct from an absent state: one state can opt out of a fleet cue."""
+        got = _safe_avatar({**_GHOST, "sounds": {"working": "none", "done": "chime"}})
+        assert got["sounds"] == {"working": "none", "done": "chime"}
+
+    def test_unknown_preset_is_dropped(self):
+        got = _safe_avatar({**_GHOST, "sounds": {"working": "airhorn", "done": "chime"}})
+        assert got["sounds"] == {"done": "chime"}
+
+    def test_empty_objects_are_omitted_not_stored(self):
+        got = _safe_avatar({**_GHOST, "expressions": {}, "sounds": {}})
+        assert got == _GHOST
+
+    @pytest.mark.parametrize(
+        "junk",
+        [
+            "x",
+            7,
+            ["working"],
+            None,
+            {"working": 5},
+            {"working": "squint"},
+            {"working": ["squint"]},
+            {"working": {"eyes": 5}},
+            {"working": {"eyes": ["a"]}},
+        ],
+    )
+    def test_junk_expressions_never_collapse_a_valid_avatar(self, junk):
+        got = _safe_avatar({**_GHOST, "expressions": junk})
+        assert got["traits"] == _GHOST["traits"]
+        assert "expressions" not in got
+
+    @pytest.mark.parametrize(
+        "junk",
+        ["x", 7, ["chime"], None, {"working": 5}, {"working": ["chime"]}, {"working": {"a": "b"}}],
+    )
+    def test_junk_sounds_never_collapse_a_valid_avatar(self, junk):
+        got = _safe_avatar({**_GHOST, "sounds": junk})
+        assert got["traits"] == _GHOST["traits"]
+        assert "sounds" not in got
+
+    def test_junk_never_collapses_a_valid_image(self):
+        got = _safe_avatar({"kind": "image", "v": 3, "expressions": "x", "sounds": 9})
+        assert got == {"kind": "image", "v": 3}
+
+    def test_stored_overrides_survive_a_config_load(self):
+        avatar = {**_GHOST, "expressions": _EXPRESSIONS, "sounds": _SOUNDS}
+        cfg = _load_from_dict({"agents": {"radar": {"kiro_agent": "kirocrew", "avatar": avatar}}})
+        assert cfg.agents["radar"].avatar == avatar
+
+
+class TestPerStateOverridesRoundTripThroughTheEndpoints:
+    """PUT stores the per-state keys and GET hands them back, on both kinds."""
+
+    @staticmethod
+    def _app():
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import (
+            api_kirocrew_agent_avatar_upload,
+            api_kirocrew_agent_update,
+            api_kirocrew_agents,
+        )
+
+        app = web.Application()
+        app["state"] = types.SimpleNamespace(conversation_log=None)
+        app.router.add_get("/api/agents", api_kirocrew_agents)
+        app.router.add_post("/api/agents/{name}/avatar", api_kirocrew_agent_avatar_upload)
+        app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
+        return app
+
+    @pytest.fixture(autouse=True)
+    def _owner_caller(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+
+    @pytest.fixture()
+    def seeded_agent(self):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["existing"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        cfg.save()
+        return "existing"
+
+    @staticmethod
+    async def _roster_avatar_of(client, name: str):
+        resp = await client.get("/api/agents")
+        assert resp.status == 200
+        rows = (await resp.json())["agents"]
+        return next(r["avatar"] for r in rows if r["name"] == name)
+
+    @pytest.mark.asyncio
+    async def test_ghost_crew_round_trip(self, seeded_agent):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        avatar = {**_GHOST, "expressions": _EXPRESSIONS, "sounds": _SOUNDS}
+        async with TestClient(TestServer(self._app())) as client:
+            put = await client.put(f"/api/agents/{seeded_agent}", json={"avatar": avatar})
+            assert put.status == 200
+            got = await self._roster_avatar_of(client, seeded_agent)
+        assert got["expressions"] == _EXPRESSIONS
+        assert got["sounds"] == _SOUNDS
+        assert KiroCrewConfig.load().agents[seeded_agent].avatar == avatar
+
+    @pytest.mark.asyncio
+    async def test_ghost_crew_without_traits_round_trip(self, seeded_agent):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        avatar = {"kind": "ghost", "expressions": _EXPRESSIONS, "sounds": _SOUNDS}
+        async with TestClient(TestServer(self._app())) as client:
+            put = await client.put(f"/api/agents/{seeded_agent}", json={"avatar": avatar})
+            assert put.status == 200, await put.json()
+            got = await self._roster_avatar_of(client, seeded_agent)
+        assert got == avatar
+        assert KiroCrewConfig.load().agents[seeded_agent].avatar == avatar
+
+    @pytest.mark.asyncio
+    async def test_image_crew_keeps_its_sounds_across_the_commit(self, seeded_agent):
+        """The commit rebuilds the record from the stamp and pin.
+
+        A per-state key is validated INPUT, not commit output, so it has to be
+        carried across that rebuild -- otherwise saving a sound on a crew that
+        wears a picture returns 200 and stores nothing.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(self._app())) as client:
+            up = await client.post(f"/api/agents/{seeded_agent}/avatar", data=self._form(_PNG))
+            assert up.status == 200
+            put = await client.put(
+                f"/api/agents/{seeded_agent}",
+                json={
+                    "avatar": {
+                        "kind": "image",
+                        "promote": True,
+                        "token": (await up.json())["token"],
+                        "expressions": _EXPRESSIONS,
+                        "sounds": _SOUNDS,
+                    }
+                },
+            )
+            assert put.status == 200, await put.json()
+            got = await self._roster_avatar_of(client, seeded_agent)
+        assert got["kind"] == "image"
+        assert got["expressions"] == _EXPRESSIONS
+        assert got["sounds"] == _SOUNDS
+        stored = KiroCrewConfig.load().agents[seeded_agent].avatar
+        assert stored["expressions"] == _EXPRESSIONS and stored["sounds"] == _SOUNDS
+
+    @pytest.mark.asyncio
+    async def test_keeping_the_current_picture_carries_the_overrides(self, seeded_agent):
+        """The other image branch: no fresh upload, only per-state edits."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(self._app())) as client:
+            up = await client.post(f"/api/agents/{seeded_agent}/avatar", data=self._form(_PNG))
+            first = await client.put(
+                f"/api/agents/{seeded_agent}",
+                json={
+                    "avatar": {
+                        "kind": "image",
+                        "promote": True,
+                        "token": (await up.json())["token"],
+                    }
+                },
+            )
+            assert first.status == 200
+            pin = KiroCrewConfig.load().agents[seeded_agent].avatar["file"]
+            again = await client.put(
+                f"/api/agents/{seeded_agent}",
+                json={"avatar": {"kind": "image", "sounds": {"done": "pop"}}},
+            )
+            assert again.status == 200, await again.json()
+        stored = KiroCrewConfig.load().agents[seeded_agent].avatar
+        assert stored["file"] == pin, "the keep-current-picture branch lost the pin"
+        assert stored["sounds"] == {"done": "pop"}
+
+    @pytest.mark.asyncio
+    async def test_a_ghost_carrying_only_junk_is_still_refused(self, seeded_agent):
+        """The 400 gate is unchanged for a payload with no surviving content.
+
+        A traits-less ghost is now a legal shape, so this case is worth pinning
+        deliberately: when nothing in it survives validation it is a mistyped
+        payload, not an intentional reset, and refusing it is what keeps it from
+        silently deleting a crew's committed picture. Same answer a bare
+        ``{"kind": "ghost"}`` already gets.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents[seeded_agent].avatar = {"kind": "ghost", "sounds": {"done": "ding"}}
+        cfg.save()
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.put(
+                f"/api/agents/{seeded_agent}",
+                json={"avatar": {"kind": "ghost", "sounds": {"done": "airhorn"}}},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_avatar"
+        assert KiroCrewConfig.load().agents[seeded_agent].avatar == {
+            "kind": "ghost",
+            "sounds": {"done": "ding"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_junk_per_state_values_are_not_a_400(self, seeded_agent):
+        """Same forgiveness traits already get -- strip, never refuse."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(self._app())) as client:
+            resp = await client.put(
+                f"/api/agents/{seeded_agent}",
+                json={"avatar": {**_GHOST, "expressions": "x", "sounds": ["chime"]}},
+            )
+            assert resp.status == 200, await resp.json()
+        assert KiroCrewConfig.load().agents[seeded_agent].avatar == _GHOST
+
+    @staticmethod
+    def _form(data: bytes):
+        from aiohttp import FormData
+
+        form = FormData()
+        form.add_field("file", data, filename="face.bin", content_type="application/octet-stream")
+        return form

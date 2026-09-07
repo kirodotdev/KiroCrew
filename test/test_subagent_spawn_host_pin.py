@@ -52,8 +52,19 @@ def _spawning_modules() -> tuple[tuple[str, bool], ...]:
     found: list[tuple[str, bool]] = []
     for path in sorted(_TEST_DIR.glob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError, UnicodeDecodeError):
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        # A qualifying module must spell both names textually -- an AST node
+        # named `SubagentManager` or a `.spawn(` call cannot be parsed from
+        # source that lacks those characters -- so this is a necessary, not
+        # sufficient, precondition and skips straight past every file that
+        # cannot possibly match before paying for its parse.
+        if "SubagentManager" not in text or "spawn" not in text:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
             continue
         names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
         names |= {a.attr for a in ast.walk(tree) if isinstance(a, ast.Attribute)}

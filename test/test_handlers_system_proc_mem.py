@@ -20,7 +20,13 @@ def _run_collect() -> dict:
     """
     from kiro_crew.dashboard import handlers_system
 
-    with patch.object(handlers_system, "_get_static_system_info", return_value={}):
+    with (
+        patch.object(handlers_system, "_get_static_system_info", return_value={}),
+        # The local-IP block opens a real UDP socket to 8.8.8.8:80 to learn the
+        # outbound interface address. Refusing the connect exercises the same
+        # except-degrades-to-127.0.0.1 path without a real network reach-out.
+        patch.object(handlers_system, "_local_ip", return_value="127.0.0.1"),
+    ):
         handlers_system._metrics_cache.clear()
         handlers_system._metrics_cache_ts = 0.0
         handlers_system._proc_scan_cache = {}

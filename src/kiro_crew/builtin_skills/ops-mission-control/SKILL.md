@@ -42,6 +42,15 @@ ops_mission_control_api(method="POST", path="/incident/transition",
                         body_json='{"id": "INV-42", "status": "resolved"}')
 ```
 
+The whole agent surface is fourteen calls: GET `/state` `/signals` `/incidents`
+`/handover` `/rotation` `/ledger` `/ledger/contradictions`, and POST `/dispatch`
+`/incident/transition` `/incident/claim` `/incident/action` `/rotation/arm`
+`/ledger` `/ledger/hygiene`. Anything else — `/incident/propose`, `/proposals`,
+`/providers*`, `/settings`, `/webhook`, a bare `/incident` — is refused, because
+those are the human-decision and configuration routes and an agent that needs one
+is off-SOP. A query string is only accepted on GET, a body only on POST, and a
+body is capped at 32 KiB.
+
 Three rules, each of which cost a real unattended run:
 
 - **Do NOT call the API over raw HTTP** — no `curl`, no `web_fetch`, no
@@ -78,10 +87,19 @@ rediscover it from scratch.
 Read `GET /ledger` for the full set when the fingerprint match comes up empty
 but the failure feels familiar.
 
+Confidence decays on its own (high → medium → low) when an entry stops being
+confirmed, so a stale entry demotes itself rather than misleading forever. Two
+entries that share a fingerprint but disagree on the fix are surfaced as a
+contradiction: read `GET /ledger/contradictions` before trusting a match, and run
+the `sops/ledger-hygiene.md` flow (`POST /ledger/hygiene`) to reconcile them.
+
 ### 3. Gather evidence
 
-Evidence sources are already wired for the configured providers (CloudWatch alarm
-history and Logs Insights, Datadog monitor context). They run under a budget —
+You have NO AWS or provider credentials, by design. The gateway gathers the
+evidence for the configured providers (CloudWatch alarm history and Logs
+Insights, Datadog monitor context), redacts it at one chokepoint, and hands you
+scoped text in the incident brief. So do not try to fetch it yourself and do not
+ask for a profile. The gathering runs under a budget —
 calls, wall-clock, and bytes are capped — because these are paid APIs. Do not try
 to work around the budget; if the evidence is thin, say so in your diagnosis.
 
@@ -96,6 +114,11 @@ Pick exactly one:
 - **Needs human** — the diagnosis requires a judgement call, a credential you do
   not have, or a change to infrastructure.
 - **Escalated** — this belongs to another team or system. Say which, and why.
+- **Silence** — the condition is known and being handled elsewhere, and the alert
+  is only making noise. `POST /incident/action` with `silence` mutes it for a
+  BOUNDED window and it comes back on its own, which makes it the safest
+  write-back verb: a wrong silence expires instead of hiding a live fault. It
+  still needs `act` mode and a rule that grants it.
 
 A self-clearing transient is a real outcome. Check whether the signal is still
 firing before diagnosing at length.
@@ -159,10 +182,17 @@ shift, and the ordering of its headline is deliberate.
 
 ## Board semantics
 
-Statuses move `unclaimed → dispatched → investigating → {needs_human, resolved,
-escalated}`. An investigation idle beyond the stale window is released for
-re-pickup — if you cannot finish, say so and set `needs_human` rather than going
-quiet and letting it time out.
+Statuses are `unclaimed → dispatched → {investigating, needs_human, resolved} →
+{needs_human, resolved, escalated}`, plus `stale`. `needs_human` can go back to
+`investigating` when a parked incident is picked up again, and `dispatched` and
+`investigating` can each reach `stale` directly, so the sweep is not the only way
+in. The API enforces the grammar:
+you cannot jump from `unclaimed` to `resolved` — a resolved incident asserts an
+investigation happened — but `dispatched → resolved` IS legal, because a signal
+can clear before the first turn and the reconcile SOP needs a move for that.
 
-You cannot jump straight to `resolved` from `unclaimed`; the API refuses it. That
-is intentional — a resolved incident asserts an investigation happened.
+An investigation idle past the stale window is swept to `stale`, not back to
+`unclaimed`, and `needs_human` gets six times that window before it goes stale,
+because waiting on a person is not the same as being abandoned. A `stale`
+incident can be re-dispatched or resolved outright. If you cannot finish, set
+`needs_human` rather than going quiet and letting it time out.

@@ -12,21 +12,25 @@
 # venv). No unsigned/checksum-only fallback exists. Unlike install.sh (which
 # builds from a git clone), this pulls the published wheel.
 #
-# Python: uses the system interpreter (>=3.12) when one exists; otherwise — or
-# always, with --managed-python — provisions a python-build-standalone CPython
-# via a SHA-256-pinned uv into a user-owned directory. No package manager, no
-# sudo, works on old-glibc distros (CentOS 7).
+# Python: provisions a python-build-standalone CPython via a SHA-256-pinned uv
+# into a user-owned directory (the default) — no package manager, no sudo,
+# works on old-glibc distros (CentOS 7). Opt out with --system-python to run on
+# a system interpreter (>=3.12) instead; the choice is recorded and survives
+# updates. If the managed default cannot be provisioned (no network), the run
+# falls back to a usable system interpreter rather than failing.
 #
 # Options / env:
 #   --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
 #   --version <X.Y.Z>                    pin an exact version, verified against
 #                                        its immutable signed CLI manifest
 #   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
-#   --managed-python                     skip the system interpreters and run on
-#                                        a uv-provisioned Python instead (sticky:
-#                                        later runs and updates keep the choice;
-#                                        opt out with --system-python)
+#   --managed-python                     force the managed default back on after
+#                                        a recorded --system-python opt-out
 #                                        (env KIROCREW_MANAGED_PYTHON=1)
+#   --system-python                      run on the system interpreter instead
+#                                        of the managed default (sticky: later
+#                                        runs and updates keep the choice)
+#                                        (env KIROCREW_MANAGED_PYTHON=0)
 # ──────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -46,8 +50,9 @@ ARTIFACT_BASE="${KIROCREW_CDN_BASE:-https://download.crew.kiro.dev}"
 CHANNEL="${KIROCREW_CHANNEL:-stable}"
 PIN_VERSION=""
 # Three states: "" = undecided (fall back to the persisted python-mode marker,
-# then to system), "1" = managed, "0" = system. An explicit env value or flag
-# always outranks the marker, so an operator can override a sticky choice.
+# then to the managed default), "1" = managed, "0" = system. An explicit env
+# value or flag always outranks the marker, so an operator can override a
+# sticky choice.
 MANAGED_PYTHON="${KIROCREW_MANAGED_PYTHON:-}"
 
 # Pinned uv release used to provision a managed Python interpreter when the
@@ -106,16 +111,22 @@ Options / env:
   --version <X.Y.Z>                    pin an exact version, verified against
                                        its immutable signed CLI manifest
   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
-  --managed-python                     skip the system interpreters and run on a
-                                       uv-provisioned Python instead (sticky: later
-                                       runs and updates keep the choice)
-  --system-python                      opt back out of a recorded managed-python
-                                       choice and use the system interpreter
+  --managed-python                     force the managed default back on after
+                                       a recorded --system-python opt-out
                                        (env KIROCREW_MANAGED_PYTHON=1)
+  --system-python                      run on the system interpreter (>=3.12)
+                                       instead of the managed default (sticky:
+                                       later runs and updates keep the choice)
+                                       (env KIROCREW_MANAGED_PYTHON=0)
   KIROCREW_VENV                        override the managed venv location
   KIROCREW_PYTHON_DIR                  override where uv-provisioned interpreters
                                        are stored (default: beside the data home,
                                        ~/.kiro/crew-python)
+  KIROCREW_UV_URL                      mirror base for the uv release tarballs
+                                       (default: the uv GitHub release tree; the
+                                       SHA-256 pin is enforced either way)
+  UV_PYTHON_INSTALL_MIRROR             mirror for the python-build-standalone
+                                       interpreter downloads (read by uv)
 EOF
       exit 0 ;;
     *) echo "kirocrew-install: unknown argument '$1'" >&2; exit 2 ;;
@@ -242,46 +253,54 @@ _resolve_python() {
 # dependency-free binary, and the interpreters it installs are prebuilt
 # python-build-standalone archives that unpack into a user-owned directory —
 # no package manager, no sudo, and they run on old-glibc distros (CentOS 7)
-# whose base repos never reach 3.10. An installed `uv` on PATH is used as-is
-# (the user already made that trust decision); otherwise the pinned uv release
-# is downloaded and verified against the SHA-256 digests above before it runs.
+# whose base repos never reach 3.10. The pinned uv release is downloaded and
+# verified against the SHA-256 digests above before it runs -- an installed
+# `uv` on PATH is never consulted (see the note inside).
 # Sets PY on success. Network/platform failures return 1 so the caller can
 # print guidance; a digest mismatch is a security stop and errs immediately.
 _provision_python_via_uv() {
   _uv_bin=""
-  if command -v uv >/dev/null 2>&1; then
-    _uv_bin="$(command -v uv)"
-    echo "Using installed uv ($_uv_bin) to provision Python ($UV_PYTHON_SERIES) ..."
-  else
-    # GNU tar's -z shells out to gzip, so both must exist before downloading.
-    for _uv_tool in tar gzip; do
-      if ! command -v "$_uv_tool" >/dev/null 2>&1; then
-        echo "kirocrew-install: $_uv_tool is required to unpack uv" >&2
-        return 1
-      fi
-    done
-    case "$(uname -s)/$(uname -m)" in
-      Linux/x86_64)              _uv_target="x86_64-unknown-linux-musl";  _uv_sha="$UV_SHA_LINUX_X64" ;;
-      Linux/aarch64|Linux/arm64) _uv_target="aarch64-unknown-linux-musl"; _uv_sha="$UV_SHA_LINUX_ARM64" ;;
-      Darwin/x86_64)             _uv_target="x86_64-apple-darwin";        _uv_sha="$UV_SHA_MACOS_X64" ;;
-      Darwin/arm64)              _uv_target="aarch64-apple-darwin";       _uv_sha="$UV_SHA_MACOS_ARM64" ;;
-      *)
-        echo "kirocrew-install: no pinned uv build for $(uname -s)/$(uname -m)" >&2
-        return 1 ;;
-    esac
-    echo "Downloading uv $UV_VERSION ($_uv_target) ..."
-    # -L: GitHub release assets redirect to a storage host; --proto-redir keeps
-    # every hop on HTTPS (curl's redirect default would also allow plain http).
-    curl -fsSL --proto '=https' --proto-redir '=https' \
-      "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$_uv_target.tar.gz" \
-      -o "$TMP/uv.tar.gz" || return 1
-    _uv_got="$($SHA_CMD "$TMP/uv.tar.gz" | awk '{print $1}')"
-    [ "$_uv_got" = "$_uv_sha" ] \
-      || err "uv download SHA-256 mismatch (expected $_uv_sha, got $_uv_got) — refusing to continue"
-    ( cd "$TMP" && tar -xzf uv.tar.gz ) || return 1
-    _uv_bin="$TMP/uv-$_uv_target/uv"
-    [ -x "$_uv_bin" ] || return 1
-  fi
+  # An installed `uv` on PATH is deliberately NOT consulted. With managed as
+  # the default, every install and update run reaches this function, and PATH
+  # commonly leads with user-writable directories (~/.local/bin) that an agent
+  # session can write -- a planted `uv` shim would be executed by the user's
+  # own unattended update run. The pinned, SHA-256-verified tarball is the
+  # only uv this script runs. The download recurs on every managed run; a
+  # failure degrades to a usable system interpreter unless managed was
+  # explicitly requested this run (see the mode block below).
+  # GNU tar's -z shells out to gzip, so both must exist before downloading.
+  for _uv_tool in tar gzip; do
+    if ! command -v "$_uv_tool" >/dev/null 2>&1; then
+      echo "kirocrew-install: $_uv_tool is required to unpack uv" >&2
+      return 1
+    fi
+  done
+  case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64)              _uv_target="x86_64-unknown-linux-musl";  _uv_sha="$UV_SHA_LINUX_X64" ;;
+    Linux/aarch64|Linux/arm64) _uv_target="aarch64-unknown-linux-musl"; _uv_sha="$UV_SHA_LINUX_ARM64" ;;
+    Darwin/x86_64)             _uv_target="x86_64-apple-darwin";        _uv_sha="$UV_SHA_MACOS_X64" ;;
+    Darwin/arm64)              _uv_target="aarch64-apple-darwin";       _uv_sha="$UV_SHA_MACOS_ARM64" ;;
+    *)
+      echo "kirocrew-install: no pinned uv build for $(uname -s)/$(uname -m)" >&2
+      return 1 ;;
+  esac
+  echo "Downloading uv $UV_VERSION ($_uv_target) ..."
+  # -L: GitHub release assets redirect to a storage host; --proto-redir keeps
+  # every hop on HTTPS (curl's redirect default would also allow plain http).
+  # KIROCREW_UV_URL points air-gapped / proxied hosts at a mirror of the uv
+  # release tree; the SHA-256 pin below still applies, so a mirror can serve
+  # the bytes but never substitute them. (uv's own python-build-standalone
+  # download honors UV_PYTHON_INSTALL_MIRROR, which inherits through env.)
+  _uv_base="${KIROCREW_UV_URL:-https://github.com/astral-sh/uv/releases/download}"
+  curl -fsSL --proto '=https' --proto-redir '=https' \
+    "${_uv_base%/}/$UV_VERSION/uv-$_uv_target.tar.gz" \
+    -o "$TMP/uv.tar.gz" || return 1
+  _uv_got="$($SHA_CMD "$TMP/uv.tar.gz" | awk '{print $1}')"
+  [ "$_uv_got" = "$_uv_sha" ] \
+    || err "uv download SHA-256 mismatch (expected $_uv_sha, got $_uv_got) — refusing to continue"
+  ( cd "$TMP" && tar -xzf uv.tar.gz ) || return 1
+  _uv_bin="$TMP/uv-$_uv_target/uv"
+  [ -x "$_uv_bin" ] || return 1
   # The interpreter store lives BESIDE the data home, like the managed venv and
   # for the same blast-radius reason: no data-home-wide operation may ever
   # reach the interpreter that the venv's shebangs point at.
@@ -302,30 +321,84 @@ _provision_python_via_uv() {
   return 1
 }
 
+# Materialize and self-check the embedded trust root. The key id is the
+# SHA-256 fingerprint of SubjectPublicKeyInfo DER, so an accidental edit to
+# either pinned value fails before the network is consulted. This runs BEFORE
+# the interpreter block below -- the managed-Python default may download uv,
+# and the fail-before-network guarantee must not depend on how the
+# interpreter is provisioned -- so it uses openssl (a hard prerequisite
+# checked above) rather than an interpreter to decode the key.
+printf '%s' "$CLI_MANIFEST_PUBLIC_KEY_B64" \
+  | openssl base64 -d -A > "$TMP/cli-manifest-public.pem" 2>/dev/null || true
+if ! [ -s "$TMP/cli-manifest-public.pem" ] \
+    || ! openssl pkey -pubin -in "$TMP/cli-manifest-public.pem" \
+      -outform DER -out "$TMP/cli-manifest-public.der" 2>/dev/null; then
+  err "embedded CLI manifest public key is invalid"
+fi
+PINNED_KEY_SHA="$($SHA_CMD "$TMP/cli-manifest-public.der" | awk '{print $1}')"
+[ "$CLI_MANIFEST_KEY_ID" = "sha256:$PINNED_KEY_SHA" ] \
+  || err "embedded CLI manifest public key fingerprint mismatch"
+
 PY=""
 # The interpreter choice is STICKY: a completed install records its mode in
 # the data home (next to `channel`), and a later run without an explicit flag
 # or env value reuses it. Without this, every re-run of the one-liner -- most
-# importantly the one `kirocrew update` performs -- would silently flip a
-# --managed-python install back onto whatever system interpreter it finds.
-# Opt back out explicitly with --system-python (or KIROCREW_MANAGED_PYTHON=0).
+# importantly the one `kirocrew update` performs -- would silently flip the
+# interpreter under an existing install.
+#
+# Managed is the DEFAULT: with no flag, no env value, and no recorded pin,
+# the installer provisions a python-build-standalone CPython via uv. Opt out
+# with --system-python (or KIROCREW_MANAGED_PYTHON=0), which records a
+# `system-pinned` marker so the choice survives updates. A bare `system`
+# marker is NOT an opt-out: earlier installers recorded it for every default
+# install, so it only says "an old default ran here" -- such installs migrate
+# onto the managed default at their next update.
 _DATA_HOME="${KIROCREW_HOME:-$HOME/.kiro/crew}"
 # The marker is agent-writable state, so the READ is guarded like the write:
 # only a plain regular file counts (a planted symlink -- e.g. to /dev/zero --
 # or a FIFO would wedge an unbounded read or spoof the mode), and the read is
 # bounded to the first bytes rather than slurping the file.
 _py_mode_file="$_DATA_HOME/python-mode"
-if [ -z "$MANAGED_PYTHON" ] && [ -f "$_py_mode_file" ] && [ ! -L "$_py_mode_file" ] \
-    && [ "$(head -c 16 "$_py_mode_file" 2>/dev/null || true)" = "managed" ]; then
-  echo "Reusing the recorded managed-python choice (override with --system-python)."
-  MANAGED_PYTHON=1
+# Tracks whether the resolved mode was ASKED FOR in THIS run (flag or env
+# value). Only an explicit managed request fails hard when uv cannot
+# provision. A `managed` marker records a DEFAULTED choice, so marker-driven
+# runs keep the degrade-to-system fallback below -- otherwise the first
+# successful default install would turn every later update into a hard
+# network dependency on the uv download.
+PY_MODE_EXPLICIT=0
+PY_MODE_FALLBACK=0
+[ -n "$MANAGED_PYTHON" ] && PY_MODE_EXPLICIT=1
+if [ -z "$MANAGED_PYTHON" ] && [ -f "$_py_mode_file" ] && [ ! -L "$_py_mode_file" ]; then
+  case "$(head -c 16 "$_py_mode_file" 2>/dev/null || true)" in
+    managed)
+      echo "Reusing the recorded managed-python choice (override with --system-python)."
+      MANAGED_PYTHON=1 ;;
+    system-pinned)
+      echo "Reusing the recorded system-python choice (override with --managed-python)."
+      MANAGED_PYTHON=0; PY_MODE_EXPLICIT=1 ;;
+  esac
 fi
-[ -n "$MANAGED_PYTHON" ] || MANAGED_PYTHON=0
+[ -n "$MANAGED_PYTHON" ] || MANAGED_PYTHON=1
 
 if [ "$MANAGED_PYTHON" = "1" ]; then
-  echo "managed-python: skipping system interpreters."
-  _provision_python_via_uv \
-    || err "could not provision a managed Python via uv. Check the network connection, or install Python >=3.12 yourself and re-run without --managed-python."
+  echo "Using a managed Python (the default; opt out with --system-python)."
+  # Interpreters in the store are ALWAYS resolved through the pinned,
+  # SHA-256-verified uv binary (`uv python install` is idempotent, so a
+  # healthy interpreter is reused without a re-download). The store is never
+  # scanned or executed directly: it lives on an agent-writable disk, and a
+  # planted executable there would otherwise run inside the user's own
+  # unattended update.
+  if ! _provision_python_via_uv; then
+    if [ "$PY_MODE_EXPLICIT" = "1" ]; then
+      err "could not provision a managed Python via uv. Check the network connection, or re-run with --system-python to use a system interpreter instead."
+    fi
+    _resolve_python || true
+    if [ -n "$PY" ]; then
+      echo "kirocrew-install: WARNING: could not provision a managed Python (network?); using the system interpreter $PY for this run. The next run retries the managed default." >&2
+      MANAGED_PYTHON=0
+      PY_MODE_FALLBACK=1
+    fi
+  fi
 else
   _resolve_python || true
   if [ -z "$PY" ]; then
@@ -335,22 +408,9 @@ else
 fi
 [ -n "$PY" ] || err "Python >=3.12 is required and could not be found or provisioned. Install Python 3.12+ yourself (your distro's packages, or https://www.python.org/downloads/), then re-run."
 
-# Materialize and self-check the embedded trust root. The key id is the SHA-256
-# fingerprint of SubjectPublicKeyInfo DER, so an accidental edit to either
-# pinned value fails before the network is consulted.
-if ! printf '%s' "$CLI_MANIFEST_PUBLIC_KEY_B64" \
-    | "$PY" -c 'import base64,sys; open(sys.argv[1], "xb").write(base64.b64decode(sys.stdin.buffer.read(), validate=True))' \
-        "$TMP/cli-manifest-public.pem" 2>/dev/null; then
-  err "embedded CLI manifest public key is malformed"
-fi
-if ! openssl pkey -pubin -in "$TMP/cli-manifest-public.pem" \
-    -outform DER -out "$TMP/cli-manifest-public.der" 2>/dev/null; then
-  err "embedded CLI manifest public key is invalid"
-fi
-PINNED_KEY_SHA="$($SHA_CMD "$TMP/cli-manifest-public.der" | awk '{print $1}')"
-[ "$CLI_MANIFEST_KEY_ID" = "sha256:$PINNED_KEY_SHA" ] \
-  || err "embedded CLI manifest public key fingerprint mismatch"
-
+# The trust root was materialized and self-checked BEFORE the interpreter
+# block above: the managed-Python default may download uv, and a corrupted
+# trust root must fail before any network I/O.
 if [ -n "$PIN_VERSION" ]; then
   case "$PIN_VERSION" in
     *[!A-Za-z0-9._+]*) err "invalid pinned version '$PIN_VERSION'" ;;
@@ -537,25 +597,62 @@ else
   # Rebuilding over an EXISTING venv must not keep the old interpreter: the
   # venv module rewrites pyvenv.cfg but leaves an existing bin/python* symlink
   # in place, producing a hybrid that CLAIMS the new interpreter while running
-  # the old one -- silently defeating --managed-python for an existing install
-  # and dying with a dangling shebang the day the old interpreter disappears.
-  # Remove ONLY the interpreter links so the venv rebuild recreates them
-  # against $PY. Never `--clear`: that empties site-packages and the
-  # entrypoint too, so a download failure in the pip step below would leave
-  # the user with NO working install where a plain re-run used to keep the
-  # old one. The links are the only stale asset, and they are regenerated by
-  # the very next command. Guards: pyvenv.cfg proves the target IS a venv (a
-  # mis-pointed KIROCREW_VENV at a plain directory is never touched), and a
-  # symlinked venv root (trailing slash stripped so `-L` sees the link
-  # itself) is left as-is -- the venv module refuses a symlink root anyway,
-  # and removing links inside its target first would break the linked venv
-  # before that refusal.
+  # the old one. And a rebuild is not committed until the wheel lands: a
+  # relink to a different interpreter series orphans the old site-packages,
+  # so a download failure in the pip step below would otherwise leave a venv
+  # that can no longer import the CLI at all. Make the rebuild transactional:
+  # move the working venv aside (a rename, so it costs nothing), build fresh,
+  # and restore the original on failure. Guards: pyvenv.cfg proves the target
+  # IS a venv (a mis-pointed KIROCREW_VENV at a plain directory is never
+  # touched), and a symlinked venv root (trailing slash stripped so `-L` sees
+  # the link itself) is left as-is. If the rename itself fails (exotic
+  # filesystem), fall back to removing only the stale interpreter links so
+  # the rebuild still cannot produce the hybrid.
+  _VENV_BACKUP=""
   if [ -f "$VENV/pyvenv.cfg" ] && [ ! -L "${VENV%/}" ]; then
-    rm -f "$VENV/bin/python" "$VENV/bin/python3" "$VENV/bin"/python3.* 2>/dev/null || true
+    _VENV_BACKUP="${VENV%/}.pre-rebuild.$$"
+    # A tree already at the backup path (a crashed earlier run whose PID was
+    # recycled) would make `mv` nest the venv INSIDE it instead of renaming.
+    # That tree may be the only WORKING install left -- a run interrupted
+    # between its move-aside and its restore parks the good venv exactly
+    # there -- so it is never deleted: pick the next free sibling instead.
+    _n=0
+    while [ -e "$_VENV_BACKUP" ]; do
+      _n=$((_n + 1))
+      _VENV_BACKUP="${VENV%/}.pre-rebuild.$$.$_n"
+    done
+    if ! mv "$VENV" "$_VENV_BACKUP" 2>/dev/null; then
+      _VENV_BACKUP=""
+      rm -f "$VENV/bin/python" "$VENV/bin/python3" "$VENV/bin"/python3.* 2>/dev/null || true
+    fi
   fi
-  "$PY" -m venv "$VENV"
+  # EVERY failure after the move-aside must restore the backup -- under
+  # `set -eu` an unguarded command would exit past the restore and leave the
+  # working install orphaned at the backup path.
+  if ! "$PY" -m venv "$VENV"; then
+    if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
+      rm -rf "$VENV" 2>/dev/null || true
+      mv "$_VENV_BACKUP" "$VENV" 2>/dev/null \
+        && err "creating the venv at $VENV failed (disk full?). The previous install was restored and keeps working; re-run this installer to retry." \
+        || err "creating the venv at $VENV failed and the previous install could not be restored from $_VENV_BACKUP."
+    fi
+    err "creating the venv at $VENV failed."
+  fi
   "$VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
-  "$VENV/bin/pip" install --quiet "$WHL"
+  # On failure, put the pre-rebuild venv back so the previous install keeps
+  # working -- then name the retry instead of dying with a raw pip trace.
+  if ! "$VENV/bin/pip" install --quiet "$WHL"; then
+    if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
+      rm -rf "$VENV" 2>/dev/null || true
+      mv "$_VENV_BACKUP" "$VENV" 2>/dev/null \
+        && err "installing the wheel into $VENV failed (network?). The previous install was restored and keeps working; re-run this installer to retry." \
+        || err "installing the wheel into $VENV failed and the previous install could not be restored from $_VENV_BACKUP. Re-run this installer to complete the install."
+    fi
+    err "installing the wheel into $VENV failed. Re-run this installer to complete the install; until then the previous 'kirocrew' command may be unusable."
+  fi
+  if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
+    rm -rf "$_VENV_BACKUP" 2>/dev/null || true
+  fi
   # Keep the stable launch path (`${VENV}-current`) naming the tree that holds
   # the LAST-INSTALLED version. The gateway's shadow-venv updater
   # (kiro_crew/platform/wheel_engine.py) promotes this same symlink to a fresh
@@ -657,10 +754,15 @@ _write_marker() {
 _write_marker channel "$CHANNEL"
 # Record the interpreter mode so the next run -- including the re-run that
 # `kirocrew update` performs -- keeps the same choice without the flag.
+# `system-pinned` is only ever written for an EXPLICIT system choice; a
+# transient fallback from the managed default records nothing, so the next
+# run retries managed instead of freezing a network hiccup into a pin.
 if [ "$MANAGED_PYTHON" = "1" ]; then
   _write_marker python-mode managed
+elif [ "$PY_MODE_FALLBACK" = "1" ]; then
+  :
 else
-  _write_marker python-mode system
+  _write_marker python-mode system-pinned
 fi
 
 echo ""

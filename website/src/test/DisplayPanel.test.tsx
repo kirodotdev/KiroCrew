@@ -342,32 +342,20 @@ describe('DisplayPanel – font family setting', () => {
   })
 })
 
-describe('DisplayPanel – plain diffs setting', () => {
+describe('DisplayPanel – plain diffs setting lives on the Chat tab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
   })
 
-  it('persists the choice to the key the diff surfaces read', async () => {
-    const user = userEvent.setup()
+  // The toggle governs how a diff READS in the transcript, so it belongs beside
+  // File change chips in Chat → Messages, not in Display → View, which holds
+  // Language and Interface (app-shell scope). Its behaviour is covered by
+  // ChatPanel.plainDiff.test.tsx; this guards only against it reappearing here
+  // and shipping as two switches over one localStorage key.
+  it('does not render the toggle', () => {
     renderWithProviders(<DisplayPanel />)
-
-    const toggle = screen.getByRole('switch', { name: 'Plain diffs' })
-    // Highlighted diffs are what a new install shows, so the switch starts off.
-    expect(toggle).toHaveAttribute('aria-checked', 'false')
-
-    await user.click(toggle)
-    // The literal key matters: PierrePatch and DiffBlock read `mc-diff-plain`
-    // through usePlainDiff, and nothing on the server mediates between them.
-    await waitFor(() => expect(localStorage.getItem('mc-diff-plain')).toBe('1'))
-    expect(toggle).toHaveAttribute('aria-checked', 'true')
-  })
-
-  it('seeds from the stored preference', () => {
-    localStorage.setItem('mc-diff-plain', '1')
-    renderWithProviders(<DisplayPanel />)
-
-    expect(screen.getByRole('switch', { name: 'Plain diffs' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('switch', { name: 'Plain diffs' })).toBeNull()
   })
 })
 

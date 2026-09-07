@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import type { ArtifactComment } from '../types'
 import Clickable from './Clickable'
+import ErrorNotice from './ErrorNotice'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 
@@ -315,6 +316,11 @@ export interface CommentsSidebarProps {
   loading?: boolean
   /** Remote-sync failure surfaced from the GET response. */
   remoteSyncError?: string | null
+  /** The comments read itself failed (useQuery error), so the list may be stale or empty. */
+  loadError?: string | null
+  /** The most recent comment write (post / reply / resolve / edit / delete) was rejected. */
+  mutationError?: string | null
+  onDismissMutationError?: () => void
   /** Doc-level add (no anchor). Anchored adds happen via the inline popover. */
   onAdd: (text: string) => void
   onReply: (parentId: string, text: string) => void
@@ -374,7 +380,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const isMobile = useIsMobile()
   const {
-    comments, loading, remoteSyncError, onAdd, onReply, onResolve,
+    comments, loading, remoteSyncError, loadError, mutationError, onDismissMutationError, onAdd, onReply, onResolve,
     onMarkReview, onDelete, onRefresh, onAskAgent, onClose, restrictActions, hideResolve, hideDelete,
     onCommentClick, onReopen, activeCommentId, flashCommentId,
     containerClassName, containerStyle, onEditComment,
@@ -485,11 +491,35 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
         </div>
       </div>
 
-      {/* remote sync error */}
+      {/* No hand-off on any of these: the sidebar's comment composer draft
+          (the textarea at the bottom, plus any in-place edit) is unsaved. */}
       {remoteSyncError && (
-        <div className="px-3 py-2 border-b border-warn/30 bg-warn-subtle text-[11px] text-warn flex items-start gap-1.5 shrink-0">
-          <AlertTriangle size={12} className="shrink-0 mt-0.5" />
-          <span>{i18nT('components.commentsSidebar.remote_comment_sync_unavailable')} {remoteSyncError}</span>
+        <div className="px-3 py-2 border-b border-border shrink-0">
+          <ErrorNotice
+            variant="inline"
+            testId="comments-sidebar-sync-error"
+            title={i18nT('components.commentsSidebar.remote_comment_sync_unavailable')}
+            message={remoteSyncError}
+          />
+        </div>
+      )}
+      {loadError && (
+        <div className="px-3 py-2 border-b border-border shrink-0">
+          <ErrorNotice
+            variant="inline"
+            testId="comments-sidebar-load-error"
+            message={loadError}
+          />
+        </div>
+      )}
+      {mutationError && (
+        <div className="px-3 py-2 border-b border-border shrink-0">
+          <ErrorNotice
+            variant="inline"
+            testId="comments-sidebar-mutation-error"
+            message={mutationError}
+            onDismiss={onDismissMutationError}
+          />
         </div>
       )}
 

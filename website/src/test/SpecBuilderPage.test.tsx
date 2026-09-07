@@ -72,10 +72,12 @@ describe('SpecBuilderPage', () => {
 
     renderPage()
 
+    // The banner is the shared ErrorNotice: `role="alert"` carries an implicit
+    // `aria-live="assertive"`, so the announcement no longer needs the attribute.
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveAttribute('aria-live', 'assertive')
+    expect(alert).toHaveTextContent('boom')
     // Icon-only dismiss must carry an accessible name, not just a tooltip.
-    expect(screen.getByRole('button', { name: 'Dismiss error' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
   })
 })
 
@@ -276,5 +278,14 @@ describe('NewSpecView — non-Latin description enables creation (issue #3002)',
     expect(created[0].name).toMatch(BACKEND_NAME_RE)
     expect(created[0].description).toBe('한국어로만 쓴 작업 설명')
     expect(onCreated).toHaveBeenCalledWith(created[0].name)
+  })
+
+  it('previews the derived name so the user sees what the spec will be called', () => {
+    renderNewSpec([], () => {})
+    expect(screen.queryByText(/this spec will be called/i)).toBeNull()
+    fireEvent.change(screen.getByLabelText('Describe what you want to do'), {
+      target: { value: 'Add login with Google so users need no passwords' },
+    })
+    expect(screen.getByText('This spec will be called add-login-with-google-so')).toBeInTheDocument()
   })
 })

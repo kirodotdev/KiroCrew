@@ -29,5 +29,11 @@
       "nc *",
       "ncat *"
     ]
+  },
+  "approval_modes": {
+    "mode": "deny",
+    "deny": [
+      "yolo"
+    ]
   }
 }

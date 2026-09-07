@@ -255,6 +255,7 @@ def _get_vector_store(state: DashboardState):
         store = VectorMemoryStore(
             embedding_dim=cfg.memory.embedding_dim,
             decay_rates=cfg.memory.decay_rates or None,
+            dedup_threshold=cfg.memory.episodic_dedup_threshold,
         )
         store.init()
         state._standalone_vector = store  # type: ignore[attr-defined]

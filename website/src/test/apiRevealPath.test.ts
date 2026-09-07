@@ -91,10 +91,14 @@ describe('api.revealPath', () => {
 describe('revealOrOpen failure wording', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>
   let alertSpy: ReturnType<typeof vi.spyOn>
+  let onError: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // No blocking dialog exists on this path any more: every failure is handed
+    // to the caller's `onError`, which renders it through the shared ErrorNotice.
     alertSpy = vi.spyOn(globalThis, 'alert').mockImplementation(() => {})
+    onError = vi.fn()
   })
 
   afterEach(() => {
@@ -102,7 +106,7 @@ describe('revealOrOpen failure wording', () => {
     alertSpy.mockRestore()
   })
 
-  it('shows the blocked-by-policy string on a sensitive-path 403 denial', async () => {
+  it('reports the blocked-by-policy string on a sensitive-path 403 denial', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ error: 'access denied' }), {
         status: 403,
@@ -110,18 +114,20 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    await revealOrOpen('/etc/shadow', 'reveal')
+    const result = await revealOrOpen('/etc/shadow', 'reveal', { onError })
 
-    expect(alertSpy).toHaveBeenCalledTimes(1)
+    expect(alertSpy).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledTimes(1)
     // Resolve through i18nT so the assertion holds whether the test i18n setup
     // returns the English value or the raw key. The point is it is the BLOCKED
     // string, distinct from the generic failure string below.
-    expect(alertSpy).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_blocked'))
+    expect(onError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_blocked'))
     // The raw server prose never reaches the UI.
-    expect(alertSpy).not.toHaveBeenCalledWith(expect.stringContaining('access denied'))
+    expect(onError).not.toHaveBeenCalledWith(expect.stringContaining('access denied'))
+    expect(result).toEqual({ copied: false, copyFailed: false })
   })
 
-  it('shows the generic failure string on a non-403 malfunction', async () => {
+  it('reports the generic failure string on a non-403 malfunction', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ error: 'boom' }), {
         status: 500,
@@ -129,10 +135,11 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    await revealOrOpen('/home/user/file.txt', 'reveal')
+    await revealOrOpen('/home/user/file.txt', 'reveal', { onError })
 
-    expect(alertSpy).toHaveBeenCalledTimes(1)
-    expect(alertSpy).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed'))
+    expect(alertSpy).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed'))
   })
 
   it('keeps the generic wording for an auth-expiry 403 (has its own re-auth recovery)', async () => {
@@ -143,10 +150,10 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    await revealOrOpen('/home/user/file.txt', 'reveal')
+    await revealOrOpen('/home/user/file.txt', 'reveal', { onError })
 
-    expect(alertSpy).toHaveBeenCalledTimes(1)
-    expect(alertSpy).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed'))
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed'))
   })
 
   // The copy-degrade is a SUCCESS, not a failure: the surface that routed here
@@ -162,7 +169,7 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    const result = await revealOrOpen('/remote/path/file.txt', 'reveal')
+    const result = await revealOrOpen('/remote/path/file.txt', 'reveal', { onError })
 
     expect(copyToClipboard).toHaveBeenCalledWith('/remote/path/file.txt')
     expect(copyToClipboard).toHaveBeenCalledTimes(1)
@@ -184,7 +191,7 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    const result = await revealOrOpen('/remote/path/file.txt', 'reveal')
+    const result = await revealOrOpen('/remote/path/file.txt', 'reveal', { onError })
 
     expect(copyToClipboard).toHaveBeenCalledWith('/remote/path/file.txt')
     expect(result).toEqual({ copied: false, copyFailed: true })
@@ -200,7 +207,7 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    const result = await revealOrOpen('/home/user/file.txt', 'reveal')
+    const result = await revealOrOpen('/home/user/file.txt', 'reveal', { onError })
 
     expect(copyToClipboard).not.toHaveBeenCalled()
     expect(result).toEqual({ copied: false, copyFailed: false })

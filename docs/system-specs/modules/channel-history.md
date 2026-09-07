@@ -52,9 +52,9 @@ When `thread_ts` is provided, output includes only messages from the current thr
 Follow-up messages (non-new sessions) inject **no transcript context**.
 ACP/kiro-cli maintains native conversation history — injecting a parallel
 copy from ConversationLog creates dual sources of truth that contradict
-each other (especially after compaction or rotation). This follows the
-Only inject transcript on new sessions (via
-`build_session_context`), never on follow-ups.
+each other (especially after compaction or rotation). The transcript is
+therefore injected only on new sessions (via `build_session_context`), never on
+follow-ups.
 
 Episodic memory is also restricted to new sessions only, to avoid
 cross-thread contamination on follow-up messages.
@@ -69,7 +69,7 @@ cross-thread contamination on follow-up messages.
 
 ### Context Builder (`context.py`)
 
-`build_message(text, is_new, session_key, channel_id=channel, thread_ts=thread_ts)` —
+`build_message(text, is_new_session, session_key, channel_id=channel, thread_ts=thread_ts)` —
 calls `context_for(channel_id, thread_ts=thread_ts)` and injects result.
 Also injects lightweight thread reminder on non-new sessions.
 
@@ -88,9 +88,11 @@ Passes `channel_id=channel` and `thread_ts=thread_ts or msg_ts` to `build_messag
 
 | Method | Purpose |
 |--------|---------|
-| `push(channel_id, user, text, thread_ts=None)` | Record a message with optional thread |
+| `push(channel_id, user, text, thread_ts=None, msg_ts=None)` | Record a message with optional thread and its own timestamp |
 | `context_for(channel_id, thread_ts=None)` | Format messages, split by thread if provided |
 | `clear(channel_id)` | Clear a specific channel buffer |
+| `set_observe(channel_id)` | Enable observe mode: deeper buffer, loaded from the channel's persisted history file if one exists |
+| `unset_observe(channel_id)` | Leave observe mode and remove the persisted history file |
 | `channel_count` | Property: number of channels with history |
 | `entry_count(channel_id)` | Message count for a specific channel |
 | `set_user_name(user_id, name)` | Cache a display name for a user ID |
@@ -123,16 +125,9 @@ to `false`, the bot requires an explicit @-mention for every message, even
 in threads it previously responded in. Useful for helpline/support channels
 where continued thread engagement is undesirable.
 
-## Related: A2A Exchange Budget (implemented in `channel.py`)
+## Related: A2A exchange budget
 
-> **Note**: The behavior below is implemented in `channel.py` (the persistent
-> multi-agent channel orchestration module), NOT in `channel_history.py`.
-> It is documented here for cross-reference since both modules deal with
-> channel message flow, but `channel_history.py` is the ephemeral Slack
-> message buffer only.
-
-Agent-to-agent (A2A) conversations in persistent agent channels are gated
-by an exchange budget (`max_exchanges`, default: 3, configurable per channel).
-Previously, the budget accumulated over the channel's lifetime and permanently
-blocked agent pairs. Now the budget resets whenever a human sends a message,
-giving agents a fresh round of autonomous discussion.
+Agent-to-agent delivery in persistent agent channels is gated by an exchange
+budget that a human message resets. That contract lives in `channel.py`, not
+`channel_history.py`, and is specified in
+[persistent-agent-channels.md](persistent-agent-channels.md).

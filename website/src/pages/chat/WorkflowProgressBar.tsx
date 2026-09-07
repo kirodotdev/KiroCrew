@@ -8,6 +8,7 @@ import WorkflowRunTree from '../../apps/workflows/WorkflowRunTree'
 import WorkflowSourcePanel from '../../apps/workflows/WorkflowSourcePanel'
 import { useRunSnapshot } from '../../apps/workflows/useRunSnapshot'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
+import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -174,23 +175,32 @@ function ExpandableRunRow({
           {run.status === 'running' && lastLog && (
             <div className="text-muted truncate italic text-[12px]">{lastLog}</div>
           )}
-          {run.status === 'failed' && errMsg && (
-            <div className="text-danger truncate text-[12px]">{errMsg}</div>
-          )}
         </div>
         <ChevronDown
           size={14}
           className={`text-muted shrink-0 mt-0.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
         />
       </button>
+      {/* Outside the toggle button, not inside it as the plain red line was:
+          the notice carries its own hand-off button, and a button inside a
+          button is invalid markup that screen readers flatten. askAgent on —
+          the bar is a status surface with nothing editable, and the composer
+          draft beneath it is persisted per slot, so a hand-off loses nothing. */}
+      {run.status === 'failed' && errMsg && (
+        <div className="pl-9 pr-3 pb-1.5">
+          <ErrorNotice variant="inline" message={errMsg} askAgent testId="workflow-run-error" />
+        </div>
+      )}
 
       {expanded && (
         <div className="px-3 pb-2 pt-1 flex flex-col gap-2">
-          {snapshotError && (
-            <div className="text-[11px] text-red-500 border border-red-500/30 rounded p-2">
-              {i18nT('pages.chat.workflowProgressBar.could_not_load_run_snapshot')} {sanitizeLlmOutput(snapshotError).slice(0, 200)}
-            </div>
-          )}
+          {/* The label is the `title` and the backend reason the `message`, so
+              the reason stays the journal lookup key for the hand-off. */}
+          <ErrorNotice
+            title={i18nT('pages.chat.workflowProgressBar.could_not_load_run_snapshot')}
+            message={snapshotError ? sanitizeLlmOutput(snapshotError).slice(0, 200) : null}
+            askAgent
+          />
           <WorkflowRunTree
             events={snapshot?.events ?? []}
             status={

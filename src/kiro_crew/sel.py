@@ -2140,7 +2140,11 @@ class SecurityEventLog:
         The HMAC chain (prev_hash/entry_hash) is computed in the writer thread
         in enqueue order, so callers never pay the hash + file-append cost on
         the hot path. If the writer can't be started (unexpected), fall back to
-        a synchronous write so an event is never silently dropped.
+        a synchronous write off the event loop; ON the loop the non-critical
+        event is dropped with a warning instead, because the inline write's
+        filesystem work would freeze every task the loop serves
+        (no-blocking-call-on-event-loop) — best-effort audit loss is the
+        survivable direction.
 
         When ``critical=True`` the event is written SYNCHRONOUSLY and a
         filesystem failure is re-raised, so a fail-closed caller (e.g. safety
@@ -2179,13 +2183,33 @@ class SecurityEventLog:
                 self.flush()
             self._flush_batch([event], raise_on_error=True)
             return
+        incremented = False
         try:
             self._ensure_writer()
             with self._pending_cond:
                 self._pending += 1
+            incremented = True
             self._queue.put(event)
         except Exception:
-            # Writer unavailable — write synchronously so the audit entry lands.
+            # The event never reached the queue, so return its pending credit —
+            # otherwise flush() waits its full timeout on a count nothing will
+            # ever decrement (the writer only credits batches it dequeues).
+            if incremented:
+                self._decr_pending(1)
+            # Writer unavailable. Off the loop, write synchronously so the
+            # audit entry lands. ON the loop, drop it instead: `_flush_batch`
+            # is redaction + chain lock + open/write/flush on the caller's
+            # thread, and a non-critical audit is best-effort by contract —
+            # losing one event is survivable, freezing every session's turn
+            # and the liveness heartbeat is not (no-blocking-call-on-event-loop).
+            # Critical writes never take this branch; they fail closed above.
+            if _on_event_loop():
+                logger.warning(
+                    "SEL writer enqueue failed on the event loop; "
+                    "dropping non-critical event",
+                    exc_info=True,
+                )
+                return
             logger.warning("SEL writer enqueue failed; writing synchronously", exc_info=True)
             self._flush_batch([event])
 
@@ -3320,6 +3344,60 @@ def audit_sources() -> tuple[str, ...]:
 def sel() -> SecurityEventLog:
     """Module-level accessor for the singleton SEL instance."""
     return SecurityEventLog()
+
+
+async def warm_sel_singleton() -> None:
+    """Prime the SecurityEventLog singleton OFF the event loop at startup.
+
+    The first ``sel()`` of a process runs ``_init_locked`` — blocking file I/O
+    (trust-dir creation, HMAC key load/create, a tail read of the live log) —
+    on whatever thread touches it first. Before this warm existed, every
+    handler that could plausibly be a fresh gateway's first SEL touch carried
+    its own ``asyncio.to_thread`` wrapper (18+ sites), while 250+ other
+    ``log_api_access`` call sites remained candidate first-touch stalls
+    (#8608). Warming once here, before the server accepts traffic, fixes the
+    class: a post-init ``log_api_access`` only enqueues to the writer thread
+    (after the writer's one-time daemon-thread start on first ``log()``), so
+    call sites need no thread hop.
+
+    Both async startup paths (``start_dashboard`` / ``start_api_server``)
+    ``await`` this before building the middleware chain — the same pattern as
+    ``token_auth.warm_auth_singletons``. The cost does not scale with user
+    data: one key-file read (or create), one backward tail read of the live
+    log (a single 4 KiB chunk on a healthy log; worst case a full backward
+    scan of the live log, bounded by rotation's ``_SEGMENT_MAX_BYTES``, when
+    its tail holds no parseable record), and a ``stat``.
+
+    Best-effort by design: construction can raise (e.g. a trust root too
+    short to sign the chain), and an SEL init failure must not keep the
+    gateway from becoming ready — audit degradation is survivable, a boot
+    loop is not. On a failed warm the first later touch retries init on its
+    caller's thread, as every call site did before the per-site hops existed;
+    every ``critical=True`` audit still fails closed at its own site.
+    """
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:
+        logger.warning(
+            "SEL startup warm failed; the first audit write will retry init",
+            exc_info=True,
+        )
+
+
+def sel_is_warm() -> bool:
+    """Is the singleton constructed, so that ``sel()`` is a plain attribute read?
+
+    The complement to :func:`warm_sel_singleton`'s best-effort contract. A
+    failed warm leaves ``_instance`` allocated but ``_initialized`` False, and
+    the next ``sel()`` retries ``_init_locked`` -- blocking file I/O -- on the
+    caller's thread. A call site that must never block the event loop (a
+    middleware deny path is the one every request can hit) asks this first and
+    takes a thread hop ONLY when the answer is no; on the healthy path (the
+    warm succeeded, which is every normal start) it keeps the direct enqueue
+    that #8608 established. Cheap and lock-free: two attribute reads.
+    """
+    inst = SecurityEventLog._instance
+    return inst is not None and bool(getattr(inst, "_initialized", False))
 
 
 def _trust_root_key_loads(path: Path) -> bool:

@@ -455,11 +455,12 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
     """Wiring pin: every middleware that refuses BEFORE ``sel_audit_middleware``
     must route its audit through the shared ``_audit_denied`` helper.
 
-    That helper owns two properties which are easy to omit at a new deny site
-    and invisible when omitted: the write runs OFF the event loop (the first
-    ``sel()`` of a process constructs the log — trust-dir creation, key
-    validation, an ``icacls`` subprocess on Windows), and it is best-effort (an
-    audit that raises must not turn the 403 into a 500).
+    That helper owns a property which is easy to omit at a new deny site and
+    invisible when omitted: the write is best-effort (an audit that raises
+    must not turn the 403 into a 500). The write itself is a direct enqueue —
+    the SEL singleton is warmed at gateway startup (``sel.warm_sel_singleton``,
+    pinned in test_sel_startup_warm.py), so the per-call thread hop the helper
+    used to carry is gone (#8608) and must not quietly return.
 
     A bare raise with no audit at all is no longer a silent failure — the
     deny-audit boundary records it by position (see the chain tests below) — so
@@ -473,9 +474,22 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
     from kiro_crew.dashboard import server as server_mod
 
     helper = inspect.getsource(server_mod._audit_denied)
-    assert (
-        "asyncio.to_thread" in helper
-    ), "_audit_denied no longer offloads the SEL write off the event loop"
+    # The healthy path is a direct enqueue: no unconditional hop. The hop that
+    # remains is GATED on the warm having failed (sel_is_warm() false), which is
+    # the one case where sel() would run blocking file I/O on the loop.
+    assert "if sel_is_warm():" in helper, (
+        "_audit_denied must gate on sel_is_warm(): direct enqueue when the startup "
+        "warm succeeded, a thread hop only when it did not"
+    )
+    warm_branch, _, cold_branch = helper.partition("if sel_is_warm():")
+    assert "asyncio.to_thread" not in warm_branch, (
+        "_audit_denied re-grew an unconditional per-call thread hop; SEL is warmed "
+        "at startup (sel.warm_sel_singleton), so log_api_access is a non-blocking enqueue"
+    )
+    assert "await asyncio.to_thread(_write)" in cold_branch, (
+        "a FAILED startup warm leaves sel() to construct on the caller's thread; "
+        "that must not be the event loop"
+    )
     assert "except Exception" in helper, "_audit_denied is no longer best-effort"
 
     # Both pre-audit barriers are built by a shared factory, so the deny arms live
@@ -490,7 +504,7 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
         ), f"{name} has a deny arm that no longer audits via _audit_denied"
         assert 'outcome="denied"' not in src, (
             f"{name} re-grew a hand-rolled denial audit; route it through "
-            "_audit_denied so the off-loop and best-effort properties hold "
+            "_audit_denied so the best-effort property holds "
             "(sel_audit_middleware's ok/error request audit is unaffected)"
         )
 
@@ -502,7 +516,7 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
     ):
         assert 'outcome="denied"' not in inspect.getsource(func), (
             f"{name} re-grew a hand-rolled denial audit; route it through "
-            "_audit_denied so the off-loop and best-effort properties hold "
+            "_audit_denied so the best-effort property holds "
             "(sel_audit_middleware's ok/error request audit is unaffected)"
         )
 
@@ -594,7 +608,7 @@ async def test_a_forgetful_pre_audit_refusal_is_still_audited_by_position(
     This barrier raises a bare 403 and audits nothing — exactly the omission
     that used to leave a refusal in no log at all, because
     ``sel_audit_middleware`` is registered inner to it. The record must appear
-    anyway, off the event loop, and the 403 must still reach the client.
+    anyway, on the event loop's thread, and the 403 must still reach the client.
     """
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -602,6 +616,13 @@ async def test_a_forgetful_pre_audit_refusal_is_still_audited_by_position(
 
     spy = _SelSpy()
     monkeypatch.setattr(server_mod, "sel", lambda: spy)
+    # Establish the warm precondition HERE rather than inheriting it: production
+    # awaits sel.warm_sel_singleton() before the middleware chain is built, but
+    # this test builds its own chain and performs no warm, so whether the real
+    # sel_is_warm() answers True depends on what else ran first in this worker
+    # (#8885). Patching it — like server_mod.sel above — keeps the test hermetic
+    # and pins the warm path's contract: a direct enqueue, no thread hop (#8608).
+    monkeypatch.setattr(server_mod, "sel_is_warm", lambda: True)
 
     @web.middleware
     async def forgetful_barrier(request: web.Request, handler: object) -> web.StreamResponse:
@@ -617,8 +638,48 @@ async def test_a_forgetful_pre_audit_refusal_is_still_audited_by_position(
     assert denials[0]["operation"] == "GET /api/sessions"
     assert denials[0]["resources"] == "/api/sessions"
     assert "403" in denials[0]["error"]
-    # Off the loop, via the shared helper — not an inline sel() call on the
-    # event loop, which the first sel() of a process would block on.
+    # Warm singleton (patched above) ⇒ a direct enqueue on the loop thread via
+    # the shared helper — no per-call thread hop on the healthy path (#8608).
+    assert spy.threads[0] == "MainThread"
+
+
+@pytest.mark.asyncio
+async def test_a_pre_audit_refusal_on_a_cold_sel_is_audited_off_the_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same refusal when the startup warm FAILED: recorded, but never on the loop.
+
+    ``warm_sel_singleton`` is best-effort, so a cold singleton is a real
+    production state: the next ``sel()`` retries construction — blocking file
+    I/O — on the caller's thread. ``_audit_denied`` keeps a thread hop for
+    exactly that case (``server.py``'s warm/cold branch, #8608/#8885), and this
+    pins its side of the contract: the record still lands, off the loop thread.
+    The assertion is on the contract (not MainThread), not on the executor's
+    ``asyncio_N`` naming, which is an environment detail.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import server as server_mod
+
+    spy = _SelSpy()
+    monkeypatch.setattr(server_mod, "sel", lambda: spy)
+    monkeypatch.setattr(server_mod, "sel_is_warm", lambda: False)
+
+    @web.middleware
+    async def forgetful_barrier(request: web.Request, handler: object) -> web.StreamResponse:
+        raise web.HTTPForbidden(text="nope")
+
+    async with TestClient(TestServer(_boundary_app(forgetful_barrier))) as client:
+        resp = await client.get("/api/sessions")
+        assert resp.status == 403
+        assert await resp.text() == "nope"
+
+    denials = spy.denials()
+    assert len(denials) == 1, f"the refusal was not audited: {spy.calls}"
+    assert denials[0]["operation"] == "GET /api/sessions"
+    assert denials[0]["resources"] == "/api/sessions"
+    assert "403" in denials[0]["error"]
+    # Cold singleton (patched above) ⇒ the write took the asyncio.to_thread hop.
     assert spy.threads[0] != "MainThread"
 
 

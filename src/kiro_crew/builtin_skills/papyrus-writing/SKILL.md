@@ -31,11 +31,22 @@ The KiroCrew data home is `~/.kiro/crew` unless `KIROCREW_HOME` is set. Each
 project has a main `.tex` file (usually `main.tex`), typically a
 `references.bib`, and often a `sections/` or `figures/` subfolder.
 
-- Which project you are in is in the chat session title: `papyrus-<project>`.
+- Your first message names the project and its main document ("You are the
+  co-author for the Papyrus paper \"&lt;project&gt;\". The main document is
+  &lt;main&gt;.tex."). The session title is localized ("Papyrus: &lt;project&gt;"
+  in English), so read the project from the opening context, not from the title.
 - Read and edit the `.tex` files with your normal file tools. Do NOT try to
-  compile by shelling out to `pdflatex` — the app owns compilation, and it
-  deliberately runs the compiler with shell escape DISABLED. After you edit,
+  compile by shelling out to a compiler yourself — the app owns compilation, and
+  it deliberately runs it with shell escape DISABLED. It uses `pdflatex` when
+  present, otherwise `tectonic`, otherwise a Tectonic install it manages itself
+  (the Papyrus page offers to install one). Because the engine can be Tectonic,
+  do not assume a TeX Live-only package is available; prefer packages the
+  document already loads. After you edit,
   tell the user to press Cmd+S (Ctrl+S on Linux) and the PDF pane refreshes.
+- A project may be a git clone (a hosted LaTeX service or a lab repo); the app
+  shows the branch and can push commits back. Treat the working tree as shared —
+  read before you write, and leave committing and pushing to the user through the
+  app rather than running git yourself.
 - Compilation errors are surfaced in the app as a clickable list. If the user
   pastes one, the line number refers to the file named in the message, which is
   not always the main document (an error inside `\input{sections/intro}` reports

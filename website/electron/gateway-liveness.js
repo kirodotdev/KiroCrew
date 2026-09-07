@@ -108,4 +108,45 @@ function createLivenessMonitor({
   return { start, stop, tick, getState };
 }
 
-module.exports = { createLivenessMonitor };
+// How long ONE post-handoff probe waits for /api/status before it counts as a
+// miss. This is deliberately NOT the 2s the boot poll uses. The boot poll runs
+// every 500ms and a slow answer just means "poll again"; here three misses in a
+// row force-kill the gateway, so the budget has to tell a loop that is merely
+// SLOW from one that is WEDGED. Observed on a Windows desktop under a full test
+// run plus several subagents: the event loop logged 1-9s of lag from synchronous
+// disk I/O, still answered every request, and was killed anyway because three
+// 2s probes in a row timed out — 6 subagents orphaned for a loop that was never
+// stuck. A wedged loop answers nothing at all, so 8s costs it only ~6s of extra
+// detection (3 probes × 10s interval ≈ 28s vs 22s), still inside the in-process
+// loop-stall watchdog's own 25s budget, which reports a true wedge through the
+// spawn 'exit' watcher rather than through this monitor.
+const LIVENESS_PROBE_TIMEOUT_MS = 8_000;
+
+/**
+ * Build the probe the post-handoff monitor polls with: one GET against the
+ * loop-turning status endpoint, resolving on any non-5xx answer and rejecting
+ * on a connection error, a 5xx, or `timeoutMs` of silence.
+ *
+ * Pure and injectable like the monitor itself: `httpMod` is whatever exposes
+ * `get(url, options, callback)`, so tests can assert the option the request is
+ * made with instead of racing a real socket.
+ *
+ * @param {object} o
+ * @param {{get: Function}} o.httpMod
+ * @param {string} o.url
+ * @param {number} [o.timeoutMs=LIVENESS_PROBE_TIMEOUT_MS]
+ * @returns {() => Promise<void>}
+ */
+function createBackendProbe({ httpMod, url, timeoutMs = LIVENESS_PROBE_TIMEOUT_MS }) {
+  return () => new Promise((resolve, reject) => {
+    const req = httpMod.get(url, { timeout: timeoutMs }, (res) => {
+      res.resume();
+      if (res.statusCode < 500) resolve();
+      else reject(new Error(`status ${res.statusCode}`));
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error(`no answer in ${timeoutMs}ms`)); });
+  });
+}
+
+module.exports = { createLivenessMonitor, createBackendProbe, LIVENESS_PROBE_TIMEOUT_MS };

@@ -17,6 +17,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Webhook, ExternalLink, TriangleAlert, ShieldCheck, WebhookOff } from 'lucide-react'
 import { api, type WebhookTokenEntry } from '../api/client'
 import { Badge, Btn, Skeleton } from './ui'
+import ErrorNotice from './ErrorNotice'
 import { timeAgo } from '../utils/timeAgo'
 import { crewWebhooksQueryKey, webhookBoundToCrew, webhookCanCallIn } from './crew/wakesCrew'
 
@@ -92,9 +93,14 @@ export default function CrewWebhookSection({ crew }: { crew: string }) {
     ? <Skeleton className="h-12" />
     : isError
       ? (
-        <div className="flex items-center gap-2 rounded-md border border-warn-subtle bg-warn-subtle px-3 py-2.5 text-[11.5px] leading-relaxed text-muted" role="alert">
-          <TriangleAlert className="lucide-inline shrink-0" aria-hidden="true" />
-          <span className="flex-1">{i18nT('components.crewWebhookSection.could_not_load_webhooks')}</span>
+        <div className="flex items-center gap-2">
+          {/* Read failure; the section holds no draft (tokens are edited on the Webhooks page). */}
+          <ErrorNotice
+            askAgent
+            testId="crew-webhook-load-error"
+            className="flex-1"
+            message={i18nT('components.crewWebhookSection.could_not_load_webhooks')}
+          />
           <Btn onClick={() => { void refetch() }}>{i18nT('components.crewWebhookSection.retry')}</Btn>
         </div>
       )

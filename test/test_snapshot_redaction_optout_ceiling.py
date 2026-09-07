@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -33,21 +32,26 @@ class TestTheSwitchIsBeyondTheAgentsReach:
         """The layer that holds on every platform: containment, not pattern matching."""
         assert security.is_sensitive_path(str(redact.redaction_switch_path()))
 
-    @pytest.mark.skipif(
-        os.name != "posix",
-        reason=(
-            "The shell-form scan does not recognise a drive-letter data home, so it fires "
-            "for no fenced file at all on Windows -- not this one, and not the deny list "
-            "or the computer-use enable either. That is a limit of the shared scanner, "
-            "proven by the companion test below, and asserting it here would claim "
-            "protection the platform does not give."
-        ),
-    )
-    @pytest.mark.parametrize("verb", ["cat {p}", "echo x > {p}", "tee {p}", "rm {p}"])
-    def test_every_shell_form_refuses_it(self, home: Path, verb: str) -> None:
-        """A read-only fence is not enough: flipping it is the attack, reading it is recon."""
-        cmd = verb.format(p=redact.redaction_switch_path())
-        assert security.is_sensitive_bash_command(cmd), cmd
+    def test_the_os_layer_fences_it_for_every_verb(self, home: Path) -> None:
+        """The layer that binds a SUBPROCESS, which no text matcher can.
+
+        This assertion used to run `is_sensitive_bash_command` over four shell forms
+        (`cat`, `echo >`, `tee`, `rm`). That tested a layer which cannot hold for a
+        spawned command: a shell reaches a file through an `open()` that never routes
+        through the tool gate, so a path fenced only there is readable in any sandbox
+        mode whatever the matcher recognises, and the set of spellings is unbounded --
+        `sandbox.py` says so in as many words.
+
+        `backup` carries the HIDDEN disposition, the strongest of the three: the whole
+        directory is bind-masked in EVERY sandbox mode, so the switch is unreachable for
+        read, write and delete alike. That is broader than the four verbs enumerated
+        above and needs no platform skip, since it asserts the disposition rather than
+        one platform's parsing of a data-home path.
+        """
+        from kiro_crew import sandbox
+
+        assert "backup" in sandbox._CREW_HIDDEN_LEAVES
+        assert redact.redaction_switch_path().parent.name == "backup"
 
     def test_the_shell_scan_treats_this_file_exactly_like_the_other_ceilings(
         self, home: Path

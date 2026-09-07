@@ -42,6 +42,9 @@ def _collect_with_meminfo(meminfo_text: str) -> dict:
         patch.object(handlers_system, "_get_static_system_info", return_value={}),
         patch.object(handlers_system, "_system_cpu_pct_from_proc_stat", return_value=5.0),
         patch("builtins.open", side_effect=_fake_open_for_meminfo(meminfo_text)),
+        # The local-IP probe is the one real network reach in a system-info
+        # render; pin its answer so the test never dials out.
+        patch.object(handlers_system, "_local_ip", return_value="127.0.0.1"),
     ):
         return handlers_system._collect_system_metrics()
 

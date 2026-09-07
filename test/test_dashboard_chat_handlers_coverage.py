@@ -1005,13 +1005,94 @@ class TestSlotWorkspace:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_switch_is_refused_once_the_conversation_started(self):
+    async def test_switch_is_allowed_once_the_conversation_started(self):
+        # #1717: a started conversation used to answer 409. It now switches,
+        # because the transcript is workspace-independent -- only the live
+        # agent process is restarted, exactly as the sibling switches do.
         slot = _ChatSlot("s1")
         slot.workspace = "default"
         slot.total_messages = 3
-        status, body = await self._post(_state(slot), "s1", {"workspace": "other"})
+        state = _state(slot)
+        with patch(f"{MOD}._reset_slot_session", new=AsyncMock()) as reset:
+            with patch(f"{MOD}.default_project_dir", return_value="/tmp/ws-other"):
+                status, body = await self._post(state, "s1", {"workspace": "other"})
+
+        assert (status, body) == (200, {"ok": True, "workspace": "other"})
+        assert slot.workspace == "other"
+        assert slot.project == "/tmp/ws-other"
+        reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_op_switch_does_not_reset(self):
+        # Re-picking the workspace the slot already has changes nothing, so it
+        # must not tear the live session down (Opus review finding on #9084).
+        slot = _ChatSlot("s1")
+        slot.workspace = "same-ws"
+        slot.project = "/tmp/ws-same"
+        slot.total_messages = 3
+        state = _state(slot)
+        with patch(f"{MOD}._reset_slot_session", new=AsyncMock()) as reset:
+            with patch(f"{MOD}.default_project_dir", return_value="/tmp/ws-same"):
+                status, body = await self._post(state, "s1", {"workspace": "same-ws"})
+
+        assert (status, body) == (200, {"ok": True, "workspace": "same-ws"})
+        reset.assert_not_awaited()
+        assert slot.project == "/tmp/ws-same"
+        assert slot._dirty is False
+
+    @pytest.mark.asyncio
+    async def test_switch_on_started_conversation_marks_the_slot_dirty(self):
+        # The periodic flush persists a slot's metadata only while _dirty is
+        # set (GPT review finding on #9084). Without this a crash before the
+        # next message restores the OLD workspace over a switch the user saw
+        # succeed. Only reachable now that a started conversation may switch.
+        slot = _ChatSlot("s1")
+        slot.workspace = "default"
+        slot.total_messages = 3
+        slot._dirty = False
+        with patch(f"{MOD}._reset_slot_session", new=AsyncMock()):
+            with patch(f"{MOD}.default_project_dir", return_value="/tmp/ws-other"):
+                status, _ = await self._post(_state(slot), "s1", {"workspace": "other"})
+
+        assert status == 200
+        assert slot._dirty is True
+
+    @pytest.mark.asyncio
+    async def test_switch_refused_while_subagents_attached(self):
+        # The reset kills the runtime attached children run on, so the switch
+        # refuses like every sibling switch handler (GPT review finding on
+        # #9084). Before the commit: workspace/project untouched.
+        slot = _ChatSlot("s1")
+        slot.workspace = "default"
+        slot.project = "/tmp/ws-default"
+        slot.total_messages = 3
+        state = _state(slot)
+        refusal = web.json_response(
+            {"error": "sub-agents are running", "code": "slot_subagents_running"}, status=409
+        )
+        with patch(f"{MOD}._subagents_attached_response", return_value=refusal) as probe:
+            with patch(f"{MOD}._reset_slot_session", new=AsyncMock()) as reset:
+                status, body = await self._post(state, "s1", {"workspace": "other"})
+
         assert status == 409
-        assert "new session" in body["error"]
+        assert body["code"] == "slot_subagents_running"
+        assert probe.call_args.args[3] == "slot_workspace"
+        reset.assert_not_awaited()
+        assert slot.workspace == "default"
+        assert slot.project == "/tmp/ws-default"
+
+    @pytest.mark.asyncio
+    async def test_non_string_workspace_is_400(self):
+        # With the message-count refusal lifted this value reaches
+        # `default_project_dir` and the slot header on a live conversation, so
+        # it is type-checked at the boundary (the sibling project handler's
+        # guard).
+        slot = _ChatSlot("s1")
+        slot.workspace = "default"
+        status, body = await self._post(_state(slot), "s1", {"workspace": {"evil": 1}})
+        assert status == 400
+        assert body["code"] == "invalid_workspace"
+        assert "string" in body["error"]
         assert slot.workspace == "default"
 
     @pytest.mark.asyncio

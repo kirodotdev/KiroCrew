@@ -256,6 +256,10 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         caller="session-directive",
         gate=gate,
         replace_existing=False,
+        # The directive re-arm is the one path allowed to displace a retained
+        # STOPPED row: monitor_update's approval-stall refusal names
+        # monitor_start as the remedy, so refusing here deadlocks it.
+        replace_stopped=True,
     )
     if error is not None:
         # The authorizer already audited its own refusal; the wrapper's record
@@ -323,6 +327,9 @@ async def _monitor_watch(state: Any, session_key: str, args: dict[str, Any]) -> 
         source="mcp-directive",
         caller="session-directive",
         replace_existing=False,
+        # Same opt-in as _monitor_start: a monitor stopped and retained for
+        # inspection must not block this session's next directive arm.
+        replace_stopped=True,
         monitor=monitor,
     )
     if error is not None:

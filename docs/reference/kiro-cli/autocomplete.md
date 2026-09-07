@@ -1,6 +1,6 @@
 # Completions & Autocomplete
 
-Source: https://kiro.dev/docs/cli/autocomplete/
+Source: https://kiro.dev/docs/cli/autocomplete/ (fetched 2026-09-06)
 
 Two AI-powered features: autocomplete dropdown menu and inline ghost-text suggestions. Both support hundreds of CLI tools (git, npm, docker, aws, etc.).
 
@@ -12,6 +12,8 @@ Appears automatically as you type. Arrow keys to navigate, Tab/Enter to select.
 kiro-cli settings autocomplete.disable false   # enable
 kiro-cli settings autocomplete.disable true    # disable
 kiro-cli theme dark|light|system               # change theme
+kiro-cli theme                                 # print the current theme
+kiro-cli theme --list                          # list available themes
 ```
 
 ## Inline suggestions

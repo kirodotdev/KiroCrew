@@ -50,7 +50,7 @@ from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
@@ -430,9 +430,21 @@ async def _handle_yolo(
         if so.is_active():
             await respond(f"🟢 YOLO mode is already *ON* ({describe_grant_lifetime()}).")
             return
-        result = so.activate("slack")
+        # Off-loop: activate() writes a SEL event and consults the
+        # ``approval_modes`` policy, so running it inline stalls the whole gateway
+        # on a slow home. The sibling slash path in handler.py already offloads it.
+        result = await asyncio.to_thread(so.activate, "slack")
         if not result.active:
-            await respond("❌ Failed to activate YOLO mode (audit system unavailable).")
+            # Arming can be REFUSED by policy, not just fail on audit. Reporting an
+            # audit fault for a policy denial sends the owner to the wrong place, so
+            # the two causes are told apart and they have two different places to
+            # look: the org's policy, or the audit system. Same split as the slash
+            # path in ``handler.py``, which must not drift from this one. The verdict
+            # is a memory read (pushed at ceiling install), so no thread.
+            if not yolo_policy_permits():
+                await respond("🔒 YOLO mode is disabled by your organization's policy.")
+            else:
+                await respond("❌ Failed to activate YOLO mode (audit system unavailable).")
             return
         sel().log_api_access(
             caller=caller_id,

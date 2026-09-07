@@ -346,6 +346,12 @@ def test_webex_held_env_lock_leaves_legacy_credential_intact(tmp_path, monkeypat
     monkeypatch.setattr(loader, "env_path", lambda: env)
     monkeypatch.setattr(loader, "config_path", lambda: cfg)
     monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+    # A pasted bot_token is checked against the real Webex API before it is
+    # stored (Phase 1.5); stub that verification so the test's lock-contention
+    # scenario never reaches the network.
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(mod, "_validate_webex_token", AsyncMock(return_value=None))
 
     # Simulate a held .env lock: _write_env_updates raises OSError.
     def _write_env_raises(_updates):
@@ -408,6 +414,12 @@ def test_teams_held_env_lock_leaves_legacy_credential_intact(tmp_path, monkeypat
     monkeypatch.setattr(loader, "env_path", lambda: env)
     monkeypatch.setattr(loader, "config_path", lambda: cfg)
     monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+    # A pasted app_password is checked against Azure AD before it is stored
+    # (client-credentials token exchange); stub that verification so the
+    # test's lock-contention scenario never reaches the network.
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(mod, "_validate_teams_app_credentials", AsyncMock(return_value=None))
 
     # Simulate a held .env lock: asyncio.to_thread(_write_env_updates, ...) raises.
     _orig_to_thread = asyncio.to_thread
