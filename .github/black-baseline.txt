@@ -10,7 +10,6 @@
 src/kiro_crew/_process_group_supervisor.py
 src/kiro_crew/acp/kas_wire.py
 src/kiro_crew/acp/liveness.py
-src/kiro_crew/acp/runtime.py
 src/kiro_crew/acp/session_handle.py
 src/kiro_crew/acp/worker_pool.py
 src/kiro_crew/apps/__init__.py

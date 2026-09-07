@@ -2015,6 +2015,12 @@ _PYTHON_ENV_PREFIXES: list[str] = [
 # has the same parent-side scrub as the POSIX sandbox launchers. Loader coverage
 # is pinned by regression test.
 _AGENT_DENIED_ENV_KEYS: list[str] = [
+    # The ACP frame recorder's switch. A child agent that inherited it (a
+    # nested Kiro Crew, or any tool that honours the variable) would record
+    # its own frames into the SAME per-backend file, interleaving another
+    # process's transcript with this gateway's. The recorder is a gateway-side
+    # development aid; the children it observes must not see the switch.
+    "KIROCREW_ACP_RECORD_FRAMES",
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
     "SLACK_USER_TOKEN",

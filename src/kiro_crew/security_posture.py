@@ -1295,6 +1295,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # a third party — the surfaces that SHOW a refusal (the dashboard's
         # notice line) are the registered sinks.
         "name_grant.py",
+        # Capture-side, not egress: the opt-in frame recorder scrubs a raw ACP
+        # frame as it WRITES it to a local file, so a credential never lands in
+        # a recording the operator may later commit to the replay corpus. There
+        # is no transport and no audience -- the file is on the operator's own
+        # machine, written only while KIROCREW_ACP_RECORD_FRAMES names a
+        # directory, and the scrub is a floor under the hand review the corpus
+        # README requires rather than a boundary's own guarantee. The surfaces
+        # that SHOW frame-derived text are the registered sinks.
+        "acp/_frame_record.py",
         # Internal coordinator partitions behind the single registered
         # ``subagent.py`` output boundary.  They redact lifecycle payloads before
         # handing them to facade-owned event/completion callbacks, but the split

@@ -66,6 +66,7 @@ from kiro_crew.acp._dispatch import (
     redact_text,
     tool_call_content_text,
 )
+from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.liveness import (
     EVIDENCE_SAMPLING,
     VERDICT_WORKING,
@@ -6151,6 +6152,15 @@ class AcpClient:
         except json.JSONDecodeError:
             logger.debug("Skipping non-JSON line from ACP: %.100s", text)
             return None
+
+        # Opt-in raw-frame recording for the replay corpus. A no-op unless
+        # KIROCREW_ACP_RECORD_FRAMES names a directory, and the write is
+        # offloaded off this loop when it is set. It never raises -- see
+        # kiro_crew.acp._frame_record. Placed after the buffer early-return
+        # above so a frame is recorded once, when it comes off the wire, not
+        # again when a turn loop replays it out of _buffer.
+        if isinstance(data, dict):
+            await record_frame(self.backend, data, len(line))
 
         return JsonRpcMessage(
             id=data.get("id"),

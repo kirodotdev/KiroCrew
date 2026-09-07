@@ -120,6 +120,19 @@ import warnings
 
 import pytest
 
+# ── ACP frame recorder switch (rootdir floor) ───────────────────────────────
+# ``kiro_crew.acp._frame_record`` starts its writer thread at IMPORT time when
+# ``KIROCREW_ACP_RECORD_FRAMES`` is set, and ``acp.client`` (hence the dashboard
+# server, the session handle, the Slack handler, ...) imports it transitively. An
+# operator running the suite with a live recording configured would otherwise
+# have every collected test module's fake frames appended to their real corpus
+# file -- from ANY testpath, including the ~108 modules under
+# ``src/kiro_crew/apps/builtins/*/tests/`` that never see ``test/conftest.py``.
+# Cleared here, at rootdir-conftest import, which precedes every test module's
+# first ``kiro_crew`` import; tests that need the switch set it themselves
+# through monkeypatch.
+os.environ.pop("KIROCREW_ACP_RECORD_FRAMES", None)
+
 # ── Hypothesis example database (rootdir floor) ─────────────────────────────
 # ``test/conftest.py`` registers the "default"/"thorough" profiles but never sets
 # ``database=``, so hypothesis falls back to its own default: ``.hypothesis/examples``
