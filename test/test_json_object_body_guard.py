@@ -160,6 +160,13 @@ _CAP_REASONS = {
 _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # Pre-existing capped sites -- the bounded read's live consumers.
     "chat_pins.py::api_chat_pins_create": ("<default>", _BOUNDED_BY_DEFAULT),
+    # Voice config is a flat set of short scalars (provider name, voice name,
+    # rate, paths) and voice synthesis takes one reply's text, which the panel
+    # already truncates well below the shared default. Neither has a legitimate
+    # body anywhere near 64 KB, so the default cap is the right one and there is
+    # nothing route-specific to own elsewhere.
+    "chat_voice.py::api_voice_config": ("<default>", _BOUNDED_BY_DEFAULT),
+    "chat_voice.py::api_voice_synthesize": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/messaging.py::api_notification_agent_push": (
         "<default>",

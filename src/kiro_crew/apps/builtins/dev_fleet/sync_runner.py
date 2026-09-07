@@ -249,6 +249,8 @@ def run_steps(
     reserved: frozenset[int],
     preflight_label: str,
     exit_restore_failed: int,
+    exit_frontend_skip: int | None = None,
+    frontend_labels: frozenset[str] = frozenset(),
 ) -> int:
     """Run the reconciled step list in order, fail-fast, with the transaction.
 
@@ -256,12 +258,40 @@ def run_steps(
     these to name the current step in the dashboard. Returns the exit code to
     exit with: 0 if every step passed, otherwise the first non-zero code (after
     reserved-code demotion and any restore-failure override).
+
+    The frontend-skip verdict is held HERE, in runner state, not on disk. When
+    the trusted preflight step (identified by ``preflight_label``) exits
+    ``exit_frontend_skip``, the incoming ref proved the frontend install and
+    build are already present, so this treats that as success and skips every
+    later step whose label is in ``frontend_labels`` -- WITHOUT running their
+    node_modules transaction (a skipped step's transaction would move the tree
+    aside and drop the backup on its no-op exit, deleting it). The verdict can
+    come ONLY from the preflight: a worktree-run step (a pip lifecycle script)
+    exiting the same code is demoted to a plain failure by
+    :func:`demote_reserved`, so an untrusted step cannot forge a "skip the
+    build" verdict and ship stale assets (#7132).
     """
+    skip_frontend = False
     for i, st in enumerate(steps):
         print("::step::%d::%s" % (i, st["label"]), flush=True)
+        if skip_frontend and st["label"] in frontend_labels:
+            print(
+                "::skip::%d::%s -- backend-only sync, frontend unchanged and "
+                "node_modules populated" % (i, st["label"]),
+                flush=True,
+            )
+            continue
         with NodeModulesTransaction(st.get("stash"), exit_restore_failed) as txn:
             rc = run_step(st, cwd)
             rc = demote_reserved(rc, st["label"], reserved, preflight_label)
+            # The preflight asserting the frontend is already built is a SUCCESS
+            # that also suppresses the two frontend steps. Only the trusted
+            # preflight label may assert it: demote_reserved above has already
+            # turned this same code from any other step into a plain failure, so
+            # a worktree-run step cannot forge the skip.
+            if st["label"] == preflight_label and rc == exit_frontend_skip:
+                skip_frontend = True
+                rc = 0
             txn.rc = rc
         # The transaction may have overridden rc to its restore-failed code.
         rc = txn.rc
@@ -314,6 +344,25 @@ def main(argv: list[str] | None = None) -> int:
         help="exit code for a failed post-step restore (npm_preflight owns the value)",
     )
     ap.add_argument(
+        "--exit-frontend-skip",
+        type=int,
+        default=None,
+        help=(
+            "exit code the preflight uses to assert the frontend install/build "
+            "is already present (npm_preflight owns the value); trusted only "
+            "from the preflight step, demoted from any other. Omitted disables "
+            "the suppression, so both frontend steps always run"
+        ),
+    )
+    ap.add_argument(
+        "--frontend-labels",
+        default="",
+        help=(
+            "comma-separated step labels suppressed when the preflight asserts "
+            "the frontend-skip verdict"
+        ),
+    )
+    ap.add_argument(
         "--steps-sha256",
         required=True,
         help=(
@@ -340,9 +389,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     steps = json.loads(raw.decode("utf-8"))
     reserved = frozenset(int(c) for c in args.reserved.split(",") if c.strip())
+    frontend_labels = frozenset(s for s in args.frontend_labels.split(",") if s.strip())
 
     reconcile_leftovers(steps, args.exit_tree_ambiguous)
-    return run_steps(steps, args.cwd, reserved, args.preflight_label, args.exit_restore_failed)
+    return run_steps(
+        steps,
+        args.cwd,
+        reserved,
+        args.preflight_label,
+        args.exit_restore_failed,
+        args.exit_frontend_skip,
+        frontend_labels,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a subprocess

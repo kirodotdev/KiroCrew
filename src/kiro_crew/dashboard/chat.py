@@ -180,6 +180,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 from kiro_crew.dashboard.chat_voice import (  # noqa: F401
     api_voice_config,
     api_voice_synthesize,
+    api_voice_system_voices,
     api_voice_voices,
 )
 from kiro_crew.security import is_sensitive_path  # noqa: F401

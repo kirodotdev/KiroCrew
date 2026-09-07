@@ -37,6 +37,24 @@ banner here. Reachability alone cannot separate them, which is why a provider
 with no token file could wear a Connected badge and an authorized one could sit
 on "not verified".
 
+**Static-header entries: the reachability probe presents what the runtime
+presents.** A remote entry may authorize with a static header whose value
+carries a `${VAR}`/`${env:VAR}` reference — a documented config form kiro-cli
+resolves at session runtime. The `/api/mcp` probe resolves those references
+through the gateway rewriter's declared-env expander
+(`mcp_gateway.rewriter._expand_env_placeholders`): same regex, same
+credential-filtered source view (`is_secret_env_key`, `is_credential_env_key`
+and `scrub_agent_denied_env` names are misses), and an unresolved reference is
+left literal for kiro-cli parity. So a header that authenticates in a session
+authenticates in the probe. A still-unresolved reference is **not a supplied
+credential**: a 401 against it reports `needs_auth` rather than a
+rejected-credential error whose remediation advice would be to delete a working
+header. Probe-error redaction keys on the values the probe actually sent —
+including each individually resolved placeholder value, since a partially
+expanded header (`${TOKEN}${MISSING}`) sends a value a server can echo only a
+fragment of — so an error echoing a *resolved* secret is scrubbed by the
+exact-value layer, not left to the generic credential-shaped scanners alone.
+
 `GET /api/connections/status` answers the authorization axis only. It reports
 `grantPresent` — a local, network-free stat of kiro-cli's OAuth artifact
 directory (the paired token + registration files; presence only, the bytes are

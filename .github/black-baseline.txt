@@ -117,8 +117,6 @@ src/kiro_crew/apps/builtins/meetings/backend/domain/dictionary.py
 src/kiro_crew/apps/builtins/meetings/backend/domain/session.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/calendar.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/tasks.py
-src/kiro_crew/apps/builtins/meetings/backend/routes/__init__.py
-src/kiro_crew/apps/builtins/meetings/backend/routes/_common.py
 src/kiro_crew/apps/builtins/meetings/backend/routes/calendar.py
 src/kiro_crew/apps/builtins/meetings/backend/routes/tasks.py
 src/kiro_crew/apps/builtins/mochi/backend/routes.py
@@ -284,7 +282,6 @@ src/kiro_crew/knowledge/watcher.py
 src/kiro_crew/mcp_apps_render.py
 src/kiro_crew/mcp_caller.py
 src/kiro_crew/mcp_cleanup.py
-src/kiro_crew/mcp_discovery.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
 src/kiro_crew/mcp_gateway/apps.py
@@ -324,7 +321,6 @@ src/kiro_crew/platform/update_layout.py
 src/kiro_crew/pod/config.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/pod/provision.py
-src/kiro_crew/pod/unit.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
@@ -588,7 +584,6 @@ test/test_dashboard_sessions_search.py
 test/test_dashboard_start_site.py
 test/test_dashboard_state_ws.py
 test/test_dashboard_themes_coverage.py
-test/test_dashboard_updates_coverage.py
 test/test_dashboard_worktree_coverage.py
 test/test_dashboard_ws_offloop_fanout.py
 test/test_dashboard_ws_task_tracking.py
@@ -735,7 +730,6 @@ test/test_interactions_shortcut.py
 test/test_ios_simulator_preview_skill.py
 test/test_is_interrupted.py
 test/test_issue_radar_crew_github.py
-test/test_issue_radar_crew_mcp_tools.py
 test/test_issue_radar_crew_routes.py
 test/test_issue_radar_crew_runtime.py
 test/test_issue_radar_crew_store.py
@@ -805,7 +799,6 @@ test/test_mcp_cron_persistent_session.py
 test/test_mcp_cron_security.py
 test/test_mcp_custom_api.py
 test/test_mcp_dashboard_registration.py
-test/test_mcp_discovery.py
 test/test_mcp_gateway_apps_spool.py
 test/test_mcp_gateway_backend_coverage.py
 test/test_mcp_gateway_claim.py
@@ -849,7 +842,6 @@ test/test_md_notebook.py
 test/test_meetings_agent_names.py
 test/test_meetings_dictionary.py
 test/test_meetings_providers.py
-test/test_meetings_routes.py
 test/test_meetings_session.py
 test/test_memory_benchmark_workflow.py
 test/test_memory_selfheal.py

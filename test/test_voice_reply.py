@@ -3,27 +3,47 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
+import re
 import tempfile
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew.voice_reply import (
+    _SAY_VOICE_RE,
     DEFAULT_LENGTH_SCALE,
     DEFAULT_PITCH,
     DEFAULT_PROVIDER,
     DEFAULT_RATE,
     PROVIDER_PIPER,
     PROVIDER_POLLY,
+    PROVIDER_SYSTEM,
+    SYSTEM_ENGINE_ESPEAK,
+    SYSTEM_ENGINE_SAPI,
+    SYSTEM_ENGINE_SAY,
     VALID_ENGINES,
     VALID_PROVIDERS,
+    SystemVoiceProbeError,
+    _parse_system_voices,
+    _produced_audio,
     _resolve_piper_binary,
+    _sapi_encoded_command,
+    _sapi_rate,
     _synthesize_piper,
     _synthesize_polly,
+    _synthesize_system,
+    _system_wpm,
     _validate_pitch,
     _validate_rate,
     is_available,
+    list_system_voices,
+    resolve_configured_provider,
+    resolve_system_tts,
+    resolve_system_tts_async,
     split_sentences,
     stitch_mp3s,
     strip_markdown,
@@ -400,11 +420,16 @@ class TestProviderConstants:
     def test_constants_defined(self) -> None:
         assert PROVIDER_POLLY == "polly"
         assert PROVIDER_PIPER == "piper"
-        # Piper (local offline TTS) is the documented recommended default —
-        # it works without AWS credentials. Polly stays valid when explicitly selected.
-        assert DEFAULT_PROVIDER == PROVIDER_PIPER
+        assert PROVIDER_SYSTEM == "system"
+        # The host's built-in engine is the default because it is the only
+        # provider that needs nothing installed, so auto-speak works on a fresh
+        # machine. The paired assertion is the load-bearing one: whatever the
+        # default becomes, it must never be the paid cloud provider.
+        assert DEFAULT_PROVIDER == PROVIDER_SYSTEM
+        assert DEFAULT_PROVIDER != PROVIDER_POLLY
         assert PROVIDER_POLLY in VALID_PROVIDERS
         assert PROVIDER_PIPER in VALID_PROVIDERS
+        assert PROVIDER_SYSTEM in VALID_PROVIDERS
 
 
 # ── is_available() ──────────────────────────────────────────────────────
@@ -463,6 +488,355 @@ class TestIsAvailable:
     def test_unknown_provider_returns_false(self, caplog) -> None:
         assert is_available("bogus") is False
 
+    def test_system_available_when_engine_resolves(self) -> None:
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ):
+            assert is_available(PROVIDER_SYSTEM) is True
+
+    def test_system_unavailable_without_engine(self) -> None:
+        with patch("kiro_crew.voice_reply.resolve_system_tts", return_value=None):
+            assert is_available(PROVIDER_SYSTEM) is False
+
+
+# ── resolve_system_tts() ─────────────────────────────────────────────────
+
+
+class TestResolveSystemTts:
+    def test_macos_uses_say(self) -> None:
+        with patch("kiro_crew.voice_reply.IS_MACOS", True), patch(
+            "kiro_crew.voice_reply.IS_WINDOWS", False
+        ), patch(
+            "kiro_crew.voice_reply.trusted_system_bin", return_value="/usr/bin/say"
+        ) as probe:
+            assert resolve_system_tts() == (SYSTEM_ENGINE_SAY, "/usr/bin/say")
+        probe.assert_called_once_with("say")
+
+    def test_windows_uses_powershell_five(self) -> None:
+        # Windows PowerShell specifically: System.Speech is .NET-Framework-only
+        # and throws in pwsh 7, so resolving anything else would report a
+        # provider as available that fails on every call.
+        ps = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        with patch("kiro_crew.voice_reply.IS_MACOS", False), patch(
+            "kiro_crew.voice_reply.IS_WINDOWS", True
+        ), patch("kiro_crew.voice_reply.trusted_system_bin", return_value=ps) as probe:
+            assert resolve_system_tts() == (SYSTEM_ENGINE_SAPI, ps)
+        probe.assert_called_once_with("powershell")
+
+    def test_linux_prefers_espeak_ng_then_espeak(self) -> None:
+        calls: list[str] = []
+
+        def probe(name: str) -> str | None:
+            calls.append(name)
+            return "/usr/bin/espeak" if name == "espeak" else None
+
+        with patch("kiro_crew.voice_reply.IS_MACOS", False), patch(
+            "kiro_crew.voice_reply.IS_WINDOWS", False
+        ), patch("kiro_crew.voice_reply.trusted_system_bin", side_effect=probe):
+            assert resolve_system_tts() == (SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak")
+        assert calls == ["espeak-ng", "espeak"]
+
+    def test_linux_without_engine_returns_none(self) -> None:
+        # The normal answer on a stock server image, not a broken host.
+        with patch("kiro_crew.voice_reply.IS_MACOS", False), patch(
+            "kiro_crew.voice_reply.IS_WINDOWS", False
+        ), patch("kiro_crew.voice_reply.trusted_system_bin", return_value=None):
+            assert resolve_system_tts() is None
+
+    def test_macos_without_say_returns_none(self) -> None:
+        with patch("kiro_crew.voice_reply.IS_MACOS", True), patch(
+            "kiro_crew.voice_reply.IS_WINDOWS", False
+        ), patch("kiro_crew.voice_reply.trusted_system_bin", return_value=None):
+            assert resolve_system_tts() is None
+
+
+# ── system speed mapping ─────────────────────────────────────────────────
+
+
+class TestResolveSystemTtsAsync:
+    @pytest.mark.asyncio
+    async def test_resolution_runs_off_the_event_loop(self) -> None:
+        """Directory stats are not bounded, and one loop serves every session.
+
+        A fixed directory on a stalled network or fuse mount would freeze the
+        gateway and its heartbeats, so resolution is handed to a worker thread.
+        """
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+
+        def slow_resolve() -> tuple[str, str] | None:
+            seen.append(threading.get_ident())
+            return (SYSTEM_ENGINE_SAY, "/usr/bin/say")
+
+        with patch("kiro_crew.voice_reply.resolve_system_tts", side_effect=slow_resolve):
+            assert await resolve_system_tts_async() == (SYSTEM_ENGINE_SAY, "/usr/bin/say")
+        assert seen and seen[0] != loop_thread
+
+
+# ── system speed mapping ─────────────────────────────────────────────────
+
+
+class TestSystemRateMapping:
+    def test_wpm_scales_from_the_engine_default(self) -> None:
+        assert _system_wpm("100%") == 175
+        assert _system_wpm("200%") == 350
+        assert _system_wpm("50%") == 88
+
+    def test_wpm_is_clamped_to_a_speakable_band(self) -> None:
+        # A rate the UI cannot produce but config.json can.
+        assert _system_wpm("999%") == 500
+        assert _system_wpm("1%") == 80
+
+    def test_wpm_falls_back_on_an_invalid_rate(self) -> None:
+        assert _system_wpm("fast") == 175
+
+    def test_a_non_string_rate_does_not_crash(self) -> None:
+        # config.json is JSON, so a hand-edited `"rate": 100` arrives as an int
+        # and used to reach `_RATE_RE.match` as a non-string. The built-in engine
+        # is the default, so that typo would drop the audio of every reply.
+        assert _system_wpm(100) == 175  # type: ignore[arg-type]
+        assert _sapi_rate(100) == 0  # type: ignore[arg-type]
+        assert _system_wpm(None) == 175  # type: ignore[arg-type]
+        assert _sapi_rate(None) == 0  # type: ignore[arg-type]
+
+    def test_the_validators_themselves_absorb_a_non_string(self) -> None:
+        """Pinned on the validators, not their callers.
+
+        The coercion lives inside ``_validate_rate`` / ``_validate_pitch`` so
+        every reader is covered at once. Guarding only the built-in engine's two
+        call sites left ``text_to_ssml`` — reached from both Polly paths — with
+        the same TypeError, and left pitch unguarded entirely.
+        """
+        assert _validate_rate(100) == "100%"  # type: ignore[arg-type]
+        assert _validate_rate(None) == "100%"  # type: ignore[arg-type]
+        assert _validate_rate([]) == "100%"  # type: ignore[arg-type]
+        assert _validate_pitch(0) == "+0%"  # type: ignore[arg-type]
+        assert _validate_pitch(None) == "+0%"  # type: ignore[arg-type]
+        assert _validate_pitch({}) == "+0%"  # type: ignore[arg-type]
+        # The SSML builder is the third caller; a non-string must not reach it
+        # as one. A pitch that lands on the default is omitted from the prosody
+        # by design, so only the rate is asserted here.
+        ssml = text_to_ssml("hi", rate=100, pitch=0)  # type: ignore[arg-type]
+        assert 'rate="100%"' in ssml and "pitch=" not in ssml
+        assert 'rate="100%"' in text_to_ssml("hi", rate=100, pitch=-25)  # type: ignore[arg-type]
+
+    def test_sapi_rate_centres_on_zero(self) -> None:
+        assert _sapi_rate("100%") == 0
+        assert _sapi_rate("150%") == 5
+        assert _sapi_rate("80%") == -2
+
+    def test_sapi_rate_is_clamped_to_the_api_range(self) -> None:
+        assert _sapi_rate("999%") == 10
+        assert _sapi_rate("1%") == -10
+
+
+# ── _sapi_encoded_command() ──────────────────────────────────────────────
+
+
+class TestSapiEncodedCommand:
+    def _decode(self, payload: str) -> str:
+        return base64.b64decode(payload).decode("utf-16-le")
+
+    def test_payload_is_utf16le_base64(self) -> None:
+        script = self._decode(_sapi_encoded_command("out.wav", "in.txt", "", 0))
+        assert "System.Speech" in script
+        assert "SetOutputToWaveFile" in script
+
+    def test_spoken_text_is_never_in_the_script(self) -> None:
+        # The whole reason the text goes to a file: nothing a model produced may
+        # reach a command line, where quoting decides how it is parsed.
+        script = self._decode(_sapi_encoded_command("out.wav", "in.txt", "", 0))
+        assert "ReadAllText('in.txt'" in script
+        assert "Speak($t)" in script
+
+    def test_quotes_in_paths_are_escaped(self) -> None:
+        script = self._decode(_sapi_encoded_command("o'ut.wav", "in.txt", "", 0))
+        assert "'o''ut.wav'" in script
+
+    def test_the_voice_name_is_read_from_a_file_never_the_script(self) -> None:
+        """The configured voice must not reach argv, only its temp path.
+
+        This is what makes the Windows argv derived entirely inside the package,
+        which is the claim ``first_party_fixed_argv`` rests on at the sandbox
+        chokepoint. A name interpolated into the script would be user config
+        travelling on the command line.
+        """
+        without = self._decode(_sapi_encoded_command("o.wav", "i.txt", "", 0))
+        assert "SelectVoice" not in without
+
+        script = self._decode(_sapi_encoded_command("o.wav", "i.txt", "/tmp/v.txt", 0))
+        assert "ReadAllText('/tmp/v.txt'" in script
+        assert "SelectVoice($v)" in script
+        # The name itself appears nowhere — only the path it is read from.
+        assert "Zira" not in script
+
+    def test_rate_is_interpolated_as_an_integer(self) -> None:
+        assert "$s.Rate=-3;" in self._decode(
+            _sapi_encoded_command("o.wav", "i.txt", "", -3)
+        )
+
+
+# ── _parse_system_voices() ───────────────────────────────────────────────
+
+
+class TestParseSystemVoices:
+    def test_say_listing(self) -> None:
+        out = (
+            "Alex                en_US    # Most people recognize me by my voice.\n"
+            "Grandma (Deutsch)   de_DE    # Ich bin die Oma.\n"
+            "Tingting            zh_CN    # 你好。\n"
+        )
+        assert _parse_system_voices(SYSTEM_ENGINE_SAY, out) == [
+            {"id": "Grandma (Deutsch)", "name": "Grandma (Deutsch)", "language": "de-DE"},
+            {"id": "Alex", "name": "Alex", "language": "en-US"},
+            {"id": "Tingting", "name": "Tingting", "language": "zh-CN"},
+        ]
+
+    def test_say_name_containing_spaces_is_not_split(self) -> None:
+        # Two-space padding is the only field separator, so a name with an
+        # internal space would otherwise be truncated to its first word.
+        rows = _parse_system_voices(
+            SYSTEM_ENGINE_SAY, "Eddy (English (UK))  en_GB    # Hello.\n"
+        )
+        assert rows[0]["name"] == "Eddy (English (UK))"
+
+    def test_espeak_listing_skips_header(self) -> None:
+        out = (
+            "Pty Language       Age/Gender VoiceName          File\n"
+            " 5  af              --/M      Afrikaans          gmw/af\n"
+            " 5  en-gb           --/M      English_(GB)       gmw/en\n"
+        )
+        assert _parse_system_voices(SYSTEM_ENGINE_ESPEAK, out) == [
+            {"id": "af", "name": "Afrikaans", "language": "af"},
+            {"id": "en-gb", "name": "English_(GB)", "language": "en-gb"},
+        ]
+
+    def test_sapi_listing(self) -> None:
+        out = "Microsoft Zira Desktop|en-US\nMicrosoft Hanhan Desktop|zh-CN\n"
+        assert _parse_system_voices(SYSTEM_ENGINE_SAPI, out) == [
+            {
+                "id": "Microsoft Zira Desktop",
+                "name": "Microsoft Zira Desktop",
+                "language": "en-US",
+            },
+            {
+                "id": "Microsoft Hanhan Desktop",
+                "name": "Microsoft Hanhan Desktop",
+                "language": "zh-CN",
+            },
+        ]
+
+    def test_duplicates_are_collapsed(self) -> None:
+        out = "Alex                en_US    # a\nAlex                en_US    # a\n"
+        assert len(_parse_system_voices(SYSTEM_ENGINE_SAY, out)) == 1
+
+    def test_blank_and_unparseable_lines_are_skipped(self) -> None:
+        assert _parse_system_voices(SYSTEM_ENGINE_SAY, "\n   \ngarbage\n") == []
+
+    def test_the_locale_group_cannot_backtrack_exponentially(self) -> None:
+        """The locale tail must exclude the separators that delimit it.
+
+        With ``\\w`` the tail could also match ``-``/``_``, so a run like
+        ``_0_0_0`` has many valid partitions and a non-matching line makes the
+        engine try them all — measured at 34ms for 20 repetitions and growing
+        ~3.7x per further two, i.e. hours by 40. A voice listing is engine
+        output, but a third-party installed voice supplies its own name.
+
+        Asserted as SHAPE first, because that is deterministic: no separator may
+        appear in the repeated group's character class. The timing check is a
+        generously-bounded backstop for a future rewrite that reintroduces the
+        ambiguity some other way.
+        """
+        # The repeated group is `(?:<sep class><tail class>+)`. Ambiguity exists
+        # exactly when the tail class can also match a separator, so compile it
+        # and ask, instead of pattern-matching the source text.
+        pattern = _SAY_VOICE_RE.pattern
+        group = pattern[pattern.index("(?:") : pattern.index(")*")]
+        classes = re.findall(r"\[[^\]]*\]", group)
+        assert len(classes) == 2, f"unexpected locale group shape: {group}"
+        tail = re.compile(classes[1])
+        for sep in ("-", "_"):
+            assert not tail.match(sep), f"locale tail also matches {sep!r}: {classes[1]}"
+
+        adversarial = "Voice  en" + "_0" * 5_000 + "!\n"
+        start = time.perf_counter()
+        assert _parse_system_voices(SYSTEM_ENGINE_SAY, adversarial) == []
+        # Linear parsing lands near a millisecond; the ambiguous form would not
+        # finish. The ceiling is loose on purpose — this is not a benchmark.
+        assert time.perf_counter() - start < 2.0
+
+
+# ── list_system_voices() ─────────────────────────────────────────────────
+
+
+class TestListSystemVoices:
+    """A failed probe must be distinguishable from a host with no engine.
+
+    Both used to answer with an empty list, so the endpoint reported
+    ``available: true`` and the panel rendered a picker holding only the OS
+    default — which reads as "this host has one voice", not as a failure the
+    user can retry.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_engine_is_an_empty_list_not_an_error(self) -> None:
+        with patch("kiro_crew.voice_reply.resolve_system_tts", return_value=None):
+            assert await list_system_voices() == []
+
+    @pytest.mark.asyncio
+    async def test_a_spawn_failure_raises(self) -> None:
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=OSError("no exec")):
+            with pytest.raises(SystemVoiceProbeError):
+                await list_system_voices()
+
+    @pytest.mark.asyncio
+    async def test_a_nonzero_exit_raises(self) -> None:
+        async def fake_exec(*_cmd, **_kw):
+            return _mock_subprocess(returncode=3, stderr=b"bad flag")
+
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            with pytest.raises(SystemVoiceProbeError):
+                await list_system_voices()
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_raises_and_reaps(self) -> None:
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        async def fake_exec(*_cmd, **_kw):
+            return proc
+
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            with pytest.raises(SystemVoiceProbeError):
+                await list_system_voices()
+        # A probe left running would hold the pipe open for the process's life.
+        proc.kill.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_still_propagates_as_cancellation(self) -> None:
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+
+        async def fake_exec(*_cmd, **_kw):
+            return proc
+
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            with pytest.raises(asyncio.CancelledError):
+                await list_system_voices()
+
 
 # ── resolve_polly_cli() (#4770) ─────────────────────────────────────────
 
@@ -519,6 +893,35 @@ class TestResolvePiperBinary:
     def test_configured_path_missing_returns_none(self, tmp_path) -> None:
         assert _resolve_piper_binary(str(tmp_path / "nope")) is None
 
+    def test_windows_rejects_a_non_launchable_suffix(self, tmp_path, monkeypatch) -> None:
+        """A `.txt` must not pass as a Windows binary.
+
+        `os.access(X_OK)` calls any readable file executable there, so without a
+        suffix check a configured notes file reports the provider available, the
+        caller skips its "voice unavailable" notice, and the spawn then fails
+        with nothing shown to the user.
+        """
+        monkeypatch.setattr("kiro_crew.voice_reply.IS_WINDOWS", True)
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        notes = tmp_path / "piper_notes.txt"
+        notes.write_text("not a binary")
+        assert _resolve_piper_binary(str(notes)) is None
+        exe = tmp_path / "piper.exe"
+        exe.write_text("stub")
+        assert _resolve_piper_binary(str(exe)) == str(exe)
+        # Case is not significant on Windows, and PATHEXT is operator-extensible.
+        ps1 = tmp_path / "piper.PS1"
+        ps1.write_text("stub")
+        assert _resolve_piper_binary(str(ps1)) is None
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.PS1")
+        assert _resolve_piper_binary(str(ps1)) == str(ps1)
+        # An extensionless explicit path stands: PATHEXT governs how a bare NAME
+        # resolves against PATH, not what CreateProcess launches from a full
+        # path, and a PE image carries no required suffix.
+        bare = tmp_path / "my-piper"
+        bare.write_text("stub")
+        assert _resolve_piper_binary(str(bare)) == str(bare)
+
     def test_configured_path_not_executable_returns_none(self, tmp_path) -> None:
         p = tmp_path / "not-exec"
         p.write_bytes(b"")  # exists but not chmod +x
@@ -549,6 +952,433 @@ class TestResolvePiperBinary:
         monkeypatch.setenv("HOME", str(tmp_path))  # no venv exists
         with patch("kiro_crew.voice_reply.shutil.which", return_value=None):
             assert _resolve_piper_binary("") is None
+
+
+# ── resolve_configured_provider() ────────────────────────────────────────
+
+
+class TestResolveConfiguredProvider:
+    def test_named_provider_is_kept(self) -> None:
+        for name in (PROVIDER_SYSTEM, PROVIDER_PIPER, PROVIDER_POLLY):
+            assert resolve_configured_provider({"provider": name}) == name
+
+    @pytest.mark.parametrize("malformed", [{}, [], 0, 3, None, "", "   "])
+    def test_a_malformed_piper_model_does_not_claim_a_piper_install(self, malformed):
+        """The migration gate must read a real path, not any truthy stringification.
+
+        It answers one question -- did an operator configure Piper? -- and keeping
+        Piper for an upgrader is only correct when the answer is yes. ``str({})``
+        is ``"{}"``, which is truthy, so a malformed value would answer yes and
+        hand that operator a provider with no model file: silence, which is the
+        precise failure the new default exists to remove. A config with no usable
+        model resolves to the default instead.
+        """
+        assert resolve_configured_provider({"piper_model": malformed}) == DEFAULT_PROVIDER
+
+    def test_a_real_piper_model_still_keeps_piper(self):
+        """The migration guarantee itself -- tightening the gate must not drop it."""
+        assert (
+            resolve_configured_provider({"piper_model": "/models/en_US.onnx"})
+            == PROVIDER_PIPER
+        )
+
+    def test_absent_section_resolves_to_the_default(self) -> None:
+        assert resolve_configured_provider(None) == DEFAULT_PROVIDER
+        assert resolve_configured_provider({}) == DEFAULT_PROVIDER
+
+    def test_invalid_provider_warns_and_never_reaches_polly(self, caplog) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_reply"):
+            assert resolve_configured_provider({"provider": "ploly"}) == DEFAULT_PROVIDER
+        assert DEFAULT_PROVIDER != PROVIDER_POLLY
+        assert any("ploly" in rec.message for rec in caplog.records)
+
+    def test_unhashable_provider_does_not_raise(self) -> None:
+        # config.json can hold a list or dict where a string belongs; `in
+        # VALID_PROVIDERS` would raise TypeError on those.
+        assert resolve_configured_provider({"provider": ["piper"]}) == DEFAULT_PROVIDER
+        assert resolve_configured_provider({"provider": {"a": 1}}) == DEFAULT_PROVIDER
+
+    def test_a_configured_piper_model_keeps_piper_when_unnamed(self) -> None:
+        # The upgrade case: a working Piper install from before the built-in
+        # engine became the default. Resolving it to the default would silently
+        # downgrade the voice with nothing to alert the operator.
+        assert (
+            resolve_configured_provider({"piper_model": "~/voices/en.onnx"})
+            == PROVIDER_PIPER
+        )
+        assert resolve_configured_provider({"provider": "", "piper_model": "~/v.onnx"}) == (
+            PROVIDER_PIPER
+        )
+
+    def test_a_blank_piper_model_does_not_win(self) -> None:
+        assert resolve_configured_provider({"piper_model": "   "}) == DEFAULT_PROVIDER
+
+    def test_an_explicit_provider_outranks_a_configured_model(self) -> None:
+        assert (
+            resolve_configured_provider(
+                {"provider": PROVIDER_SYSTEM, "piper_model": "~/voices/en.onnx"}
+            )
+            == PROVIDER_SYSTEM
+        )
+
+
+# ── _synthesize_system() ─────────────────────────────────────────────────
+
+
+def _writing_exec(flag: str, *, size: int = 200):
+    """A ``create_subprocess_exec`` stub that writes a WAV at the *flag* argument."""
+    captured: dict[str, object] = {}
+
+    async def fake_exec(*cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = dict(kwargs)
+        out_path = cmd[cmd.index(flag) + 1]
+        with open(out_path, "wb") as fh:
+            fh.write(b"RIFF" + b"x" * size)
+        return _mock_subprocess(returncode=0)
+
+    return fake_exec, captured
+
+
+def _passthrough_wrap():
+    """Patch the sandbox wrap to return its argv unchanged.
+
+    The built-in engine is confined on macOS and Linux, so on those hosts the
+    real wrap prepends the launcher and ``cmd[0]`` is no longer the engine.
+    These tests assert how the ENGINE's own argv is built, which is what sits
+    inside the wrap either way, so they pin that rather than the host's backend.
+    """
+
+    async def identity(cmd, *_a, **_kw):
+        return list(cmd), {}, None
+
+    return patch("kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=identity)
+
+
+def _prepared(cleanup=None, env=None):
+    """An async ``sandboxed_spawn_argv_async`` double returning its argv intact.
+
+    The real call returns (argv, scrubbed_env, cleanup_path); these tests assert
+    the engine's own argv and the env/cleanup handling around it, so the double
+    passes argv through and lets each caller pin the other two.
+    """
+
+    async def prepare(cmd, *_a, **_kw):
+        return list(cmd), {} if env is None else env, cleanup
+
+    return prepare
+
+
+class TestSynthesizeSystem:
+    @pytest.mark.asyncio
+    async def test_no_engine_returns_none(self) -> None:
+        with patch("kiro_crew.voice_reply.resolve_system_tts", return_value=None):
+            assert await _synthesize_system("hi") is None
+
+    @pytest.mark.asyncio
+    async def test_say_argv_and_stdin(self) -> None:
+        fake_exec, captured = _writing_exec("-o")
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec), _passthrough_wrap():
+            result = await _synthesize_system("hello", voice="Alex", rate="150%")
+        assert result is not None and result.endswith(".wav")
+        os.unlink(result)
+        cmd = captured["cmd"]
+        assert cmd[0] == "/usr/bin/say"
+        assert "--file-format=WAVE" in cmd
+        assert "--data-format=LEI16@22050" in cmd
+        assert cmd[cmd.index("-r") + 1] == "262"
+        assert cmd[cmd.index("-v") + 1] == "Alex"
+        # The spoken text is piped, never spelled on the command line.
+        assert "hello" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_a_non_string_voice_degrades_to_the_engine_default(self) -> None:
+        """A hand-edited `"system_voice": []` must not reach any engine.
+
+        The value arrives raw from config.json and each engine breaks on it
+        differently: SAPI's `_ps_quote` raises AttributeError, and the two argv
+        engines raise TypeError inside the spawn. Coerced at this one consumer,
+        so the Slack loader and the `_SYNTHESIS_KEYS` table are both covered.
+        """
+        for bad in ([], {}, 7, None):
+            fake_exec, captured = _writing_exec("-o")
+            with patch(
+                "kiro_crew.voice_reply.resolve_system_tts",
+                return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+            ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec), _passthrough_wrap():
+                result = await _synthesize_system("hello", voice=bad)  # type: ignore[arg-type]
+            assert result is not None, f"voice={bad!r} produced no audio"
+            os.unlink(result)
+            assert "-v" not in captured["cmd"], f"voice={bad!r} reached argv"
+
+    @pytest.mark.asyncio
+    async def test_say_omits_voice_flag_when_unset(self) -> None:
+        fake_exec, captured = _writing_exec("-o")
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec), _passthrough_wrap():
+            result = await _synthesize_system("hello")
+        assert result is not None
+        os.unlink(result)
+        assert "-v" not in captured["cmd"]
+
+    @pytest.mark.asyncio
+    async def test_espeak_argv(self) -> None:
+        fake_exec, captured = _writing_exec("-w")
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec), _passthrough_wrap():
+            result = await _synthesize_system("hallo", voice="de", rate="100%")
+        assert result is not None
+        os.unlink(result)
+        cmd = captured["cmd"]
+        assert cmd[0] == "/usr/bin/espeak-ng"
+        assert cmd[cmd.index("-s") + 1] == "175"
+        assert cmd[cmd.index("-v") + 1] == "de"
+        assert "hallo" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_sapi_writes_text_to_a_file_and_removes_it(self, monkeypatch) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+        text_seen: list[str] = []
+
+        async def fake_exec(*cmd, **kwargs):
+            payload = cmd[cmd.index("-EncodedCommand") + 1]
+            script = base64.b64decode(payload).decode("utf-16-le")
+            # Recover the input path the script would read, and the output path.
+            in_path = [p for p in allocated if p.endswith(".txt")][0]
+            out_path = [p for p in allocated if p.endswith(".wav")][0]
+            assert in_path in script and out_path in script
+            with open(in_path, encoding="utf-8") as fh:
+                text_seen.append(fh.read())
+            with open(out_path, "wb") as fh:
+                fh.write(b"RIFF" + b"x" * 200)
+            return _mock_subprocess(returncode=0)
+
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAPI, "powershell.exe"),
+        ), patch(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=_prepared()
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await _synthesize_system("你好 world", rate="100%")
+        assert result is not None
+        os.unlink(result)
+        assert text_seen == ["你好 world"]
+        # The text file is scratch: leaving it behind would persist a decoded
+        # copy of the reply in the temp dir.
+        assert not any(os.path.exists(p) for p in allocated if p.endswith(".txt"))
+
+    @pytest.mark.asyncio
+    async def test_every_engine_is_wrapped_and_only_sapi_claims_first_party(self) -> None:
+        """No engine skips the wrap; the carve-out is per-engine, not per-platform.
+
+        Every engine parses text it did not author, so confinement is the
+        default. The Windows branch alone claims ``first_party_fixed_argv``,
+        which is what keeps a backend-less host from fail-closing into having no
+        built-in voice — and it still runs env-scrubbed, warned and audited.
+        ``say``/``espeak-ng`` carry the configured voice on argv, so they must
+        NOT claim it.
+        """
+        seen: list[bool] = []
+
+        async def identity(cmd, *_a, **kw):
+            seen.append(bool(kw.get("first_party_fixed_argv")))
+            return list(cmd), {}, None
+
+        for engine, binp, flag in (
+            (SYSTEM_ENGINE_SAY, "/usr/bin/say", "-o"),
+            (SYSTEM_ENGINE_ESPEAK, "/usr/bin/espeak-ng", "-w"),
+        ):
+            seen.clear()
+            fake_exec, _captured = _writing_exec(flag)
+            with patch(
+                "kiro_crew.voice_reply.resolve_system_tts", return_value=(engine, binp)
+            ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec), patch(
+                "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=identity
+            ):
+                result = await _synthesize_system("hello", voice="Zira")
+            assert result is not None, f"{engine} produced no audio"
+            os.unlink(result)
+            assert seen == [False], f"{engine} must not claim the carve-out: {seen}"
+
+    @pytest.mark.asyncio
+    async def test_spawn_uses_the_scrubbed_env_not_the_gateway_s(self) -> None:
+        """The prepared env must reach the child, or the scrub buys nothing.
+
+        ``sandboxed_spawn_argv`` returns the sandbox wrap AND a scrubbed env as
+        two separate values; passing the argv while dropping the env leaves the
+        child holding the gateway's credentials. That is the whole protection on
+        a host with no sandbox backend, where the wrap itself is inert, so this
+        pins the handoff rather than trusting the call site to look right.
+        """
+        scrubbed = {"PATH": "/usr/bin", "HOME": "/home/x"}
+
+        async def prepare(cmd, *_a, **_kw):
+            return list(cmd), dict(scrubbed), None
+
+        fake_exec, captured = _writing_exec("-o")
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec), patch(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=prepare
+        ):
+            result = await _synthesize_system("hello", voice="Alex")
+        assert result is not None
+        os.unlink(result)
+        assert captured["kwargs"].get("env") == scrubbed, (
+            "the child must run under the prepared env, not the inherited one"
+        )
+
+    @pytest.mark.asyncio
+    async def test_every_filesystem_step_runs_off_the_event_loop(self, monkeypatch) -> None:
+        """No stat on the synthesis path may block the loop.
+
+        Three of them sit here and each stats a different tree: the sandbox probe
+        walks PATH, the cgroup wrap ensures the parent slice's limits, and the
+        output check stats TMPDIR — which an operator can point at a network or
+        FUSE mount. A stalled stat in any of them freezes every session and
+        heartbeat this loop serves. Thread identity is asserted because it is the
+        part a reader of the call site cannot otherwise tell from an inline call.
+        """
+        loop_thread = threading.get_ident()
+        threads: dict[str, int] = {}
+
+        def record_cgroup(argv: list[str]) -> list[str]:
+            threads["cgroup"] = threading.get_ident()
+            return list(argv)
+
+        def record_output(path: str) -> bool:
+            threads["output"] = threading.get_ident()
+            return _produced_audio(path)
+
+        monkeypatch.setattr("kiro_crew.voice_reply.cgroup_scope_argv", record_cgroup)
+        monkeypatch.setattr("kiro_crew.voice_reply._produced_audio", record_output)
+        fake_exec, _captured = _writing_exec("-o")
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec), patch(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=_prepared()
+        ):
+            result = await _synthesize_system("hello", voice="Alex")
+        assert result is not None
+        os.unlink(result)
+        assert set(threads) == {"cgroup", "output"}, f"a step was never reached: {threads}"
+        for step, tid in threads.items():
+            assert tid != loop_thread, f"{step} ran on the event-loop thread"
+
+    @pytest.mark.asyncio
+    async def test_sapi_claims_the_first_party_carve_out(self, monkeypatch) -> None:
+        """Windows alone claims it, so a backend-less host keeps a voice.
+
+        Its argv after the two spills is a System32 binary plus module constants
+        and internally-derived temp paths, which is the property the carve-out
+        requires; it still runs env-scrubbed, warned and SEL-audited, and a
+        governance sandbox floor still refuses it.
+        """
+        allocated = _capture_mkstemp(monkeypatch)
+        seen: list[bool] = []
+        argvs: list[list[str]] = []
+
+        async def identity(cmd, *_a, **kw):
+            seen.append(bool(kw.get("first_party_fixed_argv")))
+            return list(cmd), {}, None
+
+        async def fake_exec(*cmd, **_kw):
+            argvs.append(list(cmd))
+            out = [p for p in allocated if p.endswith(".wav")][0]
+            with open(out, "wb") as fh:
+                fh.write(b"RIFF" + b"x" * 200)
+            return _mock_subprocess(returncode=0)
+
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAPI, "powershell.exe"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec), patch(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=identity
+        ):
+            result = await _synthesize_system("hello", voice="Zira")
+        assert result is not None
+        os.unlink(result)
+        assert seen == [True]
+
+        # The claim is about the REAL argv, so assert it there rather than on the
+        # script builder in isolation: neither the configured voice nor the reply
+        # text may appear anywhere in it, including inside the base64 payload.
+        assert argvs, "the engine was never spawned"
+        argv = argvs[0]
+        payload = argv[argv.index("-EncodedCommand") + 1]
+        script = base64.b64decode(payload).decode("utf-16-le")
+        for secret in ("Zira", "hello"):
+            assert secret not in script, f"{secret!r} reached the argv payload"
+            assert not any(secret in a for a in argv), f"{secret!r} reached argv"
+        # Both spills are scratch, so neither survives the call.
+        assert not any(os.path.exists(p) for p in allocated if p.endswith(".txt"))
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_discards_the_temp_file(self, monkeypatch) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+
+        async def fake_exec(*cmd, **kwargs):
+            return _mock_subprocess(returncode=1, stderr=b"boom")
+
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=_prepared()
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            assert await _synthesize_system("hello") is None
+        assert allocated and not any(os.path.exists(p) for p in allocated)
+
+    @pytest.mark.asyncio
+    async def test_undersized_output_discards_the_temp_file(self, monkeypatch) -> None:
+        allocated = _capture_mkstemp(monkeypatch)
+        fake_exec, _captured = _writing_exec("-o", size=1)
+
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=_prepared()
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            assert await _synthesize_system("hello") is None
+        assert allocated and not any(os.path.exists(p) for p in allocated)
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_and_discards(self, monkeypatch) -> None:
+        """A timed-out child is killed and its temp file discarded.
+
+        The prepare seam is patched because this asserts the TIMEOUT path: on a
+        host whose sandbox refuses (a CI container with no usable backend) the
+        synthesis returns None before it ever spawns, which satisfies the
+        ``is None`` assertion for the wrong reason and leaves ``kill`` uncalled.
+        """
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch(
+            "kiro_crew.voice_reply.resolve_system_tts",
+            return_value=(SYSTEM_ENGINE_SAY, "/usr/bin/say"),
+        ), patch(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=_prepared()
+        ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            assert await _synthesize_system("hello") is None
+        proc.kill.assert_called_once()
+        assert allocated and not any(os.path.exists(p) for p in allocated)
 
 
 # ── _synthesize_piper() ──────────────────────────────────────────────────
@@ -583,8 +1413,8 @@ class TestSynthesizePiper:
 
         proc = _mock_subprocess(returncode=0)
 
-        def fake_wrap(cmd, mode):
-            return cmd, None  # no sandbox, no cleanup
+        async def fake_wrap(cmd, *_a, **_kw):
+            return cmd, {}, None  # no sandbox, no cleanup
 
         # The synthesized file needs size >= 100 to be considered valid.
         async def fake_exec(*cmd, **kwargs):
@@ -597,7 +1427,9 @@ class TestSynthesizePiper:
 
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
-        ), patch("kiro_crew.voice_reply.wrap_argv", side_effect=fake_wrap), patch(
+        ), patch(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=fake_wrap
+        ), patch(
             "asyncio.create_subprocess_exec", side_effect=fake_exec,
         ):
             result = await _synthesize_piper(
@@ -620,9 +1452,9 @@ class TestSynthesizePiper:
         proc = _mock_subprocess(returncode=0)
         captured_cmd: list[str] = []
 
-        def fake_wrap(cmd, mode):
+        async def fake_wrap(cmd, *_a, **_kw):
             captured_cmd.extend(cmd)
-            return cmd, None
+            return cmd, {}, None
 
         async def fake_exec(*cmd, **kwargs):
             out_path = cmd[cmd.index("-f") + 1]
@@ -632,7 +1464,9 @@ class TestSynthesizePiper:
 
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
-        ), patch("kiro_crew.voice_reply.wrap_argv", side_effect=fake_wrap), patch(
+        ), patch(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", side_effect=fake_wrap
+        ), patch(
             "asyncio.create_subprocess_exec", side_effect=fake_exec,
         ):
             result = await _synthesize_piper(
@@ -661,7 +1495,8 @@ class TestSynthesizePiper:
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+            side_effect=_prepared(),
         ), patch(
             "asyncio.create_subprocess_exec", return_value=proc,
         ):
@@ -685,7 +1520,8 @@ class TestSynthesizePiper:
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+            side_effect=_prepared(),
         ), patch(
             "asyncio.create_subprocess_exec", side_effect=fake_exec,
         ):
@@ -709,7 +1545,8 @@ class TestSynthesizePiper:
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+            side_effect=_prepared(),
         ), patch(
             "asyncio.create_subprocess_exec", return_value=proc,
         ), patch("asyncio.wait_for", side_effect=hang_wait_for):
@@ -741,7 +1578,8 @@ class TestSynthesizePiper:
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+            side_effect=_prepared(),
         ), patch(
             "asyncio.create_subprocess_exec", return_value=proc,
         ), patch("asyncio.wait_for", side_effect=hang_wait_for):
@@ -769,7 +1607,8 @@ class TestSynthesizePiper:
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+            side_effect=_prepared(),
         ), patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
             with pytest.raises(asyncio.CancelledError):
                 await _synthesize_piper("hello", piper_model=str(model))
@@ -804,7 +1643,8 @@ class TestSynthesizePiper:
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+            side_effect=_prepared(),
         ), patch("asyncio.create_subprocess_exec", side_effect=cancelled_exec):
             with pytest.raises(asyncio.CancelledError):
                 await _synthesize_piper("hello", piper_model=str(model))
@@ -822,7 +1662,8 @@ class TestSynthesizePiper:
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_crew.voice_reply.wrap_argv", side_effect=lambda c, mode: (c, None),
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+            side_effect=_prepared(),
         ), patch(
             "asyncio.create_subprocess_exec", side_effect=OSError("boom"),
         ):
@@ -857,10 +1698,12 @@ class TestSynthesizePiper:
 
         monkeypatch.setattr("kiro_crew.voice_reply.tempfile.mkstemp", tracking_mkstemp)
 
-        def refuse(cmd, mode):
+        async def refuse(cmd, *_a, **_kw):
             raise SandboxUnavailableError(_SANDBOX_REMEDY, "no_backend", "not Linux")
 
-        monkeypatch.setattr("kiro_crew.voice_reply.wrap_argv", refuse)
+        monkeypatch.setattr(
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", refuse
+        )
         monkeypatch.setattr(
             "kiro_crew.voice_reply._resolve_piper_binary", lambda *a, **k: str(bin_path)
         )
@@ -895,8 +1738,8 @@ class TestSynthesizePiper:
         with patch(
             "kiro_crew.voice_reply._resolve_piper_binary", return_value=str(bin_path),
         ), patch(
-            "kiro_crew.voice_reply.wrap_argv",
-            side_effect=lambda c, mode: (c, str(cleanup_path)),
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+            side_effect=_prepared(cleanup=str(cleanup_path)),
         ), patch(
             "asyncio.create_subprocess_exec", side_effect=fake_exec,
         ):
@@ -1304,6 +2147,40 @@ class TestSynthesizeSpeechDispatcher:
         assert out == "/tmp/out.wav"
         mock_piper.assert_awaited_once()
         mock_polly.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_system_dispatch(self) -> None:
+        with patch(
+            "kiro_crew.voice_reply._synthesize_polly",
+            new=AsyncMock(return_value="/tmp/out.mp3"),
+        ) as mock_polly, patch(
+            "kiro_crew.voice_reply._synthesize_piper",
+            new=AsyncMock(return_value="/tmp/piper.wav"),
+        ) as mock_piper, patch(
+            "kiro_crew.voice_reply._synthesize_system",
+            new=AsyncMock(return_value="/tmp/system.wav"),
+        ) as mock_system:
+            out = await synthesize_speech(
+                "**hello** world",
+                provider=PROVIDER_SYSTEM,
+                system_voice="Alex",
+                rate="120%",
+            )
+        assert out == "/tmp/system.wav"
+        mock_polly.assert_not_awaited()
+        mock_piper.assert_not_awaited()
+        # Markdown is stripped before it reaches an engine that speaks it
+        # literally, and the speed knob is the shared `rate` percentage.
+        mock_system.assert_awaited_once_with("hello world", voice="Alex", rate="120%")
+
+    @pytest.mark.asyncio
+    async def test_system_empty_text_returns_none(self) -> None:
+        with patch(
+            "kiro_crew.voice_reply._synthesize_system",
+            new=AsyncMock(return_value="/tmp/system.wav"),
+        ) as mock_system:
+            assert await synthesize_speech("**", provider=PROVIDER_SYSTEM) is None
+        mock_system.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unknown_provider_returns_none(self) -> None:
@@ -1825,7 +2702,7 @@ class TestSynthesizePiperCancelOwnership:
             "kiro_crew.voice_reply._resolve_piper_binary", lambda cfg: str(bin_path)
         )
         monkeypatch.setattr(
-            "kiro_crew.voice_reply.wrap_argv", lambda c, mode: (list(c), None)
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async", _prepared()
         )
         return model, owned
 
@@ -1910,14 +2787,14 @@ class TestSynthesizePiperCancelOwnership:
     async def test_cancellation_still_unlinks_the_sandbox_cleanup_path(
         self, tmp_path, monkeypatch
     ):
-        """The outer ``finally`` owns the wrap_argv cleanup path; a cancelled
+        """The outer ``finally`` owns the sandbox cleanup path; a cancelled
         synthesis must not leak the launcher script either."""
         model, owned = self._piper_env(tmp_path, monkeypatch)
         launcher = tmp_path / "launcher.sh"
         launcher.write_text("#!/bin/sh\n")
         monkeypatch.setattr(
-            "kiro_crew.voice_reply.wrap_argv",
-            lambda c, mode: (list(c), str(launcher)),
+            "kiro_crew.voice_reply.sandboxed_spawn_argv_async",
+            _prepared(cleanup=str(launcher)),
         )
         events: list[str] = []
 

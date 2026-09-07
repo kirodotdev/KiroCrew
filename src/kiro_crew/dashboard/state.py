@@ -3344,6 +3344,7 @@ class _ChatSlot:
         "_ephemeral",
         "_pending_context",
         "_deferred_notes",
+        "_dropped_note_ids",
         "_app",
         "_human_seen",
         "_origin",
@@ -3839,6 +3840,11 @@ class _ChatSlot:
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
         self._deferred_notes: list[dict[str, Any]] = []
+        # Note ids dropped at the flush's rebind seam (issue #4093). A dropped
+        # note has no delivery obligation left, but its durable entry may only
+        # be retired by a save — the ids recorded here are how the next full
+        # save knows to retire entries whose rows will never exist.
+        self._dropped_note_ids: set[str] = set()
         self._app: str = ""  # App identity tag (App Kit §5.2)
         # FIX 1 (unattended approval park). Evidence that a HUMAN has driven
         # this slot through a dashboard-user route (typed a message, answered an

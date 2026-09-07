@@ -88,7 +88,13 @@ class HybridRetriever:
         self.store = store
         self.embedder = embedder
 
-    def search(self, query: str, limit: int = 10, source_id: str | None = None) -> list[dict]:
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        source_id: str | None = None,
+        namespace: str | None = None,
+    ) -> list[dict]:
         """Hybrid search with RRF fusion. Returns [{id, title, summary, content, score, source, match_type}].
 
         ``source_id`` scopes the SEED legs only (FTS5 keyword + vector
@@ -96,10 +102,21 @@ class HybridRetriever:
         vocabularies collide across a heterogeneous corpus. The graph leg is
         deliberately left unfiltered so cross-source entity connections can
         still contribute traversal context to the fused ranking.
+
+        ``namespace`` scopes the SAME seed legs to items in one namespace
+        (``items.namespace``), the organisational label the store and the
+        dashboard browse filter already use. It is a relevance/organisation
+        filter, NOT a security boundary: like ``source_id`` it narrows the
+        seeds, and the graph leg stays unfiltered for the same reason. The two
+        filters compose (both applied when both are given).
         """
-        kw = self._keyword_search(query, limit=limit * 2, source_id=source_id)
+        kw = self._keyword_search(
+            query, limit=limit * 2, source_id=source_id, namespace=namespace
+        )
         gr = self._graph_search(query, limit=limit * 2)
-        vec = self._vector_search(query, limit=limit * 2, source_id=source_id)
+        vec = self._vector_search(
+            query, limit=limit * 2, source_id=source_id, namespace=namespace
+        )
 
         # Vector leg is weighted higher so semantic matches dominate when the
         # keyword leg is weak. Weights align positionally
@@ -260,12 +277,18 @@ class HybridRetriever:
                 result["artifact_slug"], result["artifact_name"] = artifact
 
     def _keyword_search(
-        self, query: str, limit: int = 20, source_id: str | None = None
+        self,
+        query: str,
+        limit: int = 20,
+        source_id: str | None = None,
+        namespace: str | None = None,
     ) -> list[tuple[str, int]]:
         """FTS5 search. Returns [(item_id, rank)] where rank is position (1=best).
 
         ``source_id`` narrows matches to items of one source via a
-        parameterized WHERE clause (never string interpolation).
+        parameterized WHERE clause (never string interpolation). ``namespace``
+        narrows to items carrying that ``items.namespace`` label the same way;
+        both compose when given together.
         """
         # A legacy database still holds the pre-CJK-segmentation term
         # representation. Migrating it is a reader's job, not the constructor's,
@@ -289,6 +312,11 @@ class HybridRetriever:
                 " (SELECT sl.item_id FROM source_locations sl WHERE sl.source_id = ?))"
             )
             params.extend([source_id, source_id])
+        if namespace is not None:
+            # namespace lives directly on items (organisational label), so this
+            # is a plain column match -- no source_locations join.
+            sql += " AND i.namespace = ?"
+            params.append(namespace)
         sql += " ORDER BY fts.rank LIMIT ?"
         params.append(limit)
         try:
@@ -370,12 +398,18 @@ class HybridRetriever:
         return [(item_id, rank + 1) for rank, (item_id, _) in enumerate(sorted_items)]
 
     def _vector_search(
-        self, query: str, limit: int = 20, source_id: str | None = None
+        self,
+        query: str,
+        limit: int = 20,
+        source_id: str | None = None,
+        namespace: str | None = None,
     ) -> list[tuple[str, int]] | None:
         """Brute-force cosine similarity against stored embeddings. Returns None if no embedder.
 
         ``source_id`` narrows candidates to items of one source via a
-        parameterized WHERE clause (never string interpolation).
+        parameterized WHERE clause (never string interpolation). ``namespace``
+        narrows to items carrying that ``items.namespace`` label the same way;
+        both compose when given together.
         """
         if self.embedder is None:
             return None
@@ -384,14 +418,18 @@ class HybridRetriever:
         if not query_vec:
             return None
         sql = "SELECT id, embedding FROM items WHERE embedding IS NOT NULL AND status = 'active'"
-        params: tuple[str, ...] = ()
+        params: list[object] = []
         if source_id is not None:
             # Ownership OR location — same membership rule as _keyword_search.
             sql += (
                 " AND (source_id = ? OR id IN"
                 " (SELECT sl.item_id FROM source_locations sl WHERE sl.source_id = ?))"
             )
-            params = (source_id, source_id)
+            params.extend([source_id, source_id])
+        if namespace is not None:
+            # namespace lives directly on items — plain column match.
+            sql += " AND namespace = ?"
+            params.append(namespace)
         rows = self.store.db.execute(sql, params).fetchall()
 
         scored = []

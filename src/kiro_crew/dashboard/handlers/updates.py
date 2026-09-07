@@ -23,9 +23,11 @@ from kiro_crew.changelog import Release, base_version, build_release_list, relea
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
+    coerce_dict_section,
     config_path,
     update_config_locked,
 )
+from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.executors import subprocess_executor
@@ -1763,12 +1765,19 @@ async def api_log_level(request: web.Request) -> web.Response:
     root.setLevel(_LOG_LEVELS[level_name])
     logger.info("Log level changed to %s via dashboard", level_name)
 
-    # Persist to config so the level survives restarts.
+    # Persist to config so the level survives restarts: a DELTA read-modify-
+    # write of the one key this endpoint owns, inside a single sidecar-flock
+    # hold (update_config_locked), dispatched off the loop with both config
+    # locks via run_config_write -- the transaction shape run_config_write's
+    # docstring prescribes (#4767). A whole-document save() here would publish
+    # a snapshot that can revert a concurrent writer's unrelated settings.
+    def _set_level(doc: dict) -> dict:
+        coerce_dict_section(doc, "agent")["log_level"] = level_name
+        return doc
+
     persisted = False
     try:
-        cfg = KiroCrewConfig.load()
-        cfg.agent.log_level = level_name
-        cfg.save()
+        await run_config_write(update_config_locked, mutate=_set_level)
         persisted = True
     except Exception:
         logger.warning("Failed to persist log level to config", exc_info=True)

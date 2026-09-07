@@ -2324,6 +2324,7 @@ CRON_ADD_SCHEMA = ToolSchema(
             item_pattern=re.compile(r"^\d{4}-\d{2}-\d{2}$"),
         ),
         FieldSpec("timezone", str, max_len=50, pattern=re.compile(r"^[A-Za-z0-9_/+-]+$")),
+        FieldSpec("folder", str, max_len=MAX_SHORT_STRING),
         FieldSpec("persistent_session", bool),
         FieldSpec("minimal_context", bool),
         FieldSpec("hide_in_chat", bool),
@@ -2739,6 +2740,11 @@ LOCAL_KNOWLEDGE_SEARCH_SCHEMA = ToolSchema(
         # the handler for a graceful "use knowledge_list_sources" reply, not a
         # ValidationError; every downstream use is a parameterized SQL bind.
         FieldSpec("source_id", str, required=False, max_len=64),
+        # Organisational namespace label (items.namespace). Same 64-char cap the
+        # store enforces on ingest (handlers/knowledge.py). No pattern: an
+        # unknown namespace just yields no results, and the value is a
+        # parameterized SQL bind. It is a relevance filter, not a boundary.
+        FieldSpec("namespace", str, required=False, max_len=64),
     ],
 )
 
@@ -2951,6 +2957,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
                 item_pattern=re.compile(r"^\d{4}-\d{2}-\d{2}$"),
             ),
             FieldSpec("timezone", str, max_len=50, pattern=re.compile(r"^[A-Za-z0-9_/+-]+$")),
+            FieldSpec("folder", str, max_len=MAX_SHORT_STRING),
             FieldSpec("persistent_session", bool),
             FieldSpec("minimal_context", bool),
             FieldSpec("hide_in_chat", bool),

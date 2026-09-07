@@ -79,12 +79,14 @@ class TestParseSessions:
             assert r["total_sessions"] == 0
 
     def test_refused_transcripts_are_reported_not_swallowed(self, tmp_path, caplog):
-        """#6733: a refused transcript is skipped, and the skip must leave a
-        trace. Before this, a home whose every transcript the path validator
-        refused rendered as a legitimate "zero sessions" with nothing logged.
+        """#6733: a refused transcript is skipped, and the skip must be visible.
+        Before this, a home whose every transcript the path validator refused
+        rendered as a legitimate "zero sessions" with nothing to say why.
 
-        Asserted on the LOG, not the payload: the count is deliberately not an
-        API field while no renderer reads it (First Principles review on #7285).
+        Asserted on BOTH the payload field and the log: the count is now carried
+        in ``refused_transcripts`` so the usage page can render a warning instead
+        of a confident zero (the earlier #7285 review kept it log-only while no
+        renderer read it; UsageTab now does).
         """
         d = tmp_path / "cli"
         d.mkdir()
@@ -95,16 +97,18 @@ class TestParseSessions:
         ), caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"):
             r = _parse_sessions()
         assert r["total_sessions"] == 0
+        # The silent-zero fix: the count reaches the client, not just the log.
+        assert r["refused_transcripts"] == 2
         # One aggregated record, not one per file: a UNC home refuses every
         # transcript, and per-file logging would emit thousands.
         refusals = [
-            rec for rec in caplog.records if "refused by path validation" in rec.getMessage()
+            rec for rec in caplog.records if "could not be loaded" in rec.getMessage()
         ]
         assert len(refusals) == 1
         assert "2" in refusals[0].getMessage()
 
     def test_no_refusal_log_when_every_transcript_validates(self, tmp_path, caplog):
-        """The counterpart: the healthy path stays quiet."""
+        """The counterpart: the healthy path stays quiet and reports zero refusals."""
         d = tmp_path / "cli"
         d.mkdir()
         f = d / "s1.jsonl"
@@ -114,7 +118,8 @@ class TestParseSessions:
         ), caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"):
             r = _parse_sessions()
         assert r["total_sessions"] == 1
-        assert not [rec for rec in caplog.records if "refused" in rec.getMessage()]
+        assert r["refused_transcripts"] == 0
+        assert not [rec for rec in caplog.records if "could not be loaded" in rec.getMessage()]
 
     def test_stat_oserror(self, tmp_path):
         d = tmp_path / "cli"
@@ -133,6 +138,75 @@ class TestParseSessions:
         ), patch.object(Path, "stat", stat_side_effect):
             r = _parse_sessions()
             assert r["all_time_sessions"] == 0
+            # #6733 First Principles: a stat failure is a did-not-load branch, so
+            # it feeds the incomplete-data count -- otherwise the transcript
+            # vanishes with no trace and the warning stays silent.
+            assert r["refused_transcripts"] == 1
+
+    def test_all_three_did_not_load_branches_feed_the_count(self, tmp_path, caplog):
+        """#6733 First Principles: the warning's ABSENCE promises complete data,
+        so every branch that drops a transcript must feed refused_transcripts --
+        not just the validator refusal. Three transcripts, one lost to each of
+        the three branches (validator refusal, stat failure, read failure);
+        the count must be 3 and total_sessions 0, so a page hit by only the two
+        non-validator branches still shows the warning rather than a silent
+        under-count.
+        """
+        d = tmp_path / "cli"
+        d.mkdir()
+        f_refuse = d / "refuse.jsonl"
+        f_stat = d / "stat.jsonl"
+        f_read = d / "read.jsonl"
+        _write_session(f_refuse, [{"kind": "Prompt"}])
+        _write_session(f_stat, [{"kind": "Prompt"}])
+        _write_session(f_read, [{"kind": "Prompt"}])
+
+        def validate(p):
+            return None if p.endswith("refuse.jsonl") else p
+
+        orig_stat = Path.stat
+
+        def stat_side_effect(self_, *a, **kw):
+            if self_.name == f_stat.name:
+                raise OSError("stat fail")
+            return orig_stat(self_, *a, **kw)
+
+        orig_open = Path.open
+
+        def open_side_effect(self_, *a, **kw):
+            if self_.name == f_read.name:
+                raise OSError("read fail")
+            return orig_open(self_, *a, **kw)
+
+        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
+            usage_mod, "validate_file_path", side_effect=validate
+        ), patch.object(Path, "stat", stat_side_effect), patch.object(
+            Path, "open", open_side_effect
+        ), caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"):
+            r = _parse_sessions()
+        assert r["total_sessions"] == 0
+        assert r["refused_transcripts"] == 3
+        loaded_msgs = [
+            rec for rec in caplog.records if "could not be loaded" in rec.getMessage()
+        ]
+        assert len(loaded_msgs) == 1
+        assert "3" in loaded_msgs[0].getMessage()
+
+    def test_old_session_is_not_counted_as_did_not_load(self, tmp_path):
+        """The cutoff branch is a deliberate 30-day window filter, NOT a load
+        failure: an old transcript loaded fine, so it must NOT inflate the
+        incomplete-data count (it stays in all_time_sessions)."""
+        d = tmp_path / "cli"
+        d.mkdir()
+        f = d / "old.jsonl"
+        old_mtime = time.time() - (60 * 86400)
+        _write_session(f, [{"kind": "Prompt"}], mtime=old_mtime)
+        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
+            usage_mod, "validate_file_path", return_value=str(f)
+        ):
+            r = _parse_sessions()
+        assert r["all_time_sessions"] == 1
+        assert r["refused_transcripts"] == 0
 
     def test_old_session_counted_alltime_only(self, tmp_path):
         d = tmp_path / "cli"

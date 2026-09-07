@@ -526,17 +526,15 @@ async def test_state_persists_import_onboarded(monkeypatch, tmp_path) -> None:
     module = _handler_module()
     audit = _AuditLog()
     saved = tmp_path / "saved.txt"
-    dashboard = SimpleNamespace(import_onboarded=False)
 
-    class Config:
-        def __init__(self) -> None:
-            self.dashboard = dashboard
+    def _fake_update_config_locked(*args, **kwargs):
+        # The handler persists via a delta mutate through update_config_locked
+        # (#4767): apply it to an empty document and record what it wrote.
+        doc = kwargs["mutate"]({})
+        saved.write_text(str(doc["dashboard"]["import_onboarded"]), encoding="utf-8")
+        return doc
 
-        def save(self) -> None:
-            saved.write_text(str(self.dashboard.import_onboarded), encoding="utf-8")
-
-    config = Config()
-    monkeypatch.setattr(module.KiroCrewConfig, "load", lambda: config)
+    monkeypatch.setattr(module, "update_config_locked", _fake_update_config_locked)
     monkeypatch.setattr(module, "_sel", lambda: audit)
 
     async with TestClient(TestServer(_make_app(module))) as client:
@@ -612,10 +610,10 @@ async def test_state_failure_is_generic_and_credential_free(monkeypatch) -> None
     audit = _AuditLog()
     private_detail = "/Users/alice/.kiro/crew/config.json"
 
-    def fail_load():
+    def fail_write(*args, **kwargs):
         raise OSError(private_detail)
 
-    monkeypatch.setattr(module.KiroCrewConfig, "load", fail_load)
+    monkeypatch.setattr(module, "update_config_locked", fail_write)
     monkeypatch.setattr(module, "_sel", lambda: audit)
 
     async with TestClient(TestServer(_make_app(module))) as client:
@@ -1141,10 +1139,10 @@ async def test_state_failure_code_equals_the_audited_error(monkeypatch) -> None:
     module = _handler_module()
     audit = _AuditLog()
 
-    def fail_load():
+    def fail_write(*args, **kwargs):
         raise OSError("boom")
 
-    monkeypatch.setattr(module.KiroCrewConfig, "load", fail_load)
+    monkeypatch.setattr(module, "update_config_locked", fail_write)
     monkeypatch.setattr(module, "_sel", lambda: audit)
 
     async with TestClient(TestServer(_make_app(module))) as client:

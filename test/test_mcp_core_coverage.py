@@ -1012,6 +1012,44 @@ class TestRegisterHook:
         assert "hooks.json is corrupted" in out
         assert hook_file.read_text() == "{not json"
 
+    def test_acquiring_the_lock_does_not_truncate_the_lock_file(self):
+        """The lock-file open must be WRITABLE but MUST NOT truncate.
+
+        ``msvcrt.locking`` needs a writable handle, so the fd cannot be opened
+        ``"r"``; but ``"w"`` truncates at open, and on Windows a truncating
+        open of a lock file whose first byte another holder already locked
+        raises a sharing violation instead of waiting — the contending acquirer
+        crashes before it reaches ``flock_exclusive`` and the serialisation the
+        lock exists to provide never happens. POSIX ``flock`` tolerates the
+        truncate, which is why the defect is invisible on Linux.
+
+        Issue #9248; same fix as ``work_ledger._open_lock`` (PR #9237) and
+        ``session_pid.py`` (PR #9250). ``hooks.json.lock`` is the SAME file
+        ``webhooks.locked`` guards from another module, so cross-process
+        contention on it is the store's normal state — which is why truncation
+        (the platform-independent observable those PRs pinned) is asserted
+        here: seed the lock file, register a hook, require the bytes survived.
+        """
+        seed = b"lock-file-content-that-must-survive"
+        lock_path = mcp_core.config_dir() / "hooks.json.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_bytes(seed)
+
+        out = _call_tool("register_hook", {"hook_id": "review-bot", "context_summary": "c"})
+
+        assert "Hook registered: review-bot" in out
+        assert lock_path.read_bytes() == seed
+
+    def test_registration_works_when_the_lock_file_is_absent(self):
+        """First registration must create the lock file rather than raise."""
+        lock_path = mcp_core.config_dir() / "hooks.json.lock"
+        assert not lock_path.exists()
+
+        out = _call_tool("register_hook", {"hook_id": "first-run", "context_summary": "c"})
+
+        assert "Hook registered: first-run" in out
+        assert lock_path.exists()
+
 
 class TestReadSlackProfile:
     def test_profile_values_are_redacted_but_id_is_preserved(self):

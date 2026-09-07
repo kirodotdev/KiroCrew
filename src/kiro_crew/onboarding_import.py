@@ -37,6 +37,7 @@ from croniter import croniter  # type: ignore[import-untyped]
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config.loader import ConfigReadError, update_config_locked
 from kiro_crew.config.paths import config_dir
 from kiro_crew.embeddings import make_sync_embed_fn
 from kiro_crew.frontmatter import ONBOARDING_IMPORT, parse_block_scalar_header, split_frontmatter
@@ -4395,51 +4396,72 @@ def _write_workspace(
         return _WriteOutcome("rejected")
 
     path = data_home / "config.json"
-    data = _load_json_dict(path, fail_closed=True)
-    workspaces = data.get("workspaces")
-    if workspaces is None:
-        workspaces = {}
-        data["workspaces"] = workspaces
-    if not isinstance(workspaces, dict):
-        return _WriteOutcome("conflict")
+    # ONE locked read-modify-write (#4767): the raw _load_json_dict +
+    # _write_json pair this replaces took no advisory lock, so a concurrent
+    # locked writer (CLI, dashboard) landing between the read and the atomic
+    # write was silently reverted by this import's whole-document publish.
+    outcome: _WriteOutcome | None = None
 
-    canonical = str(workspace)
-    for existing in workspaces.values():
-        if isinstance(existing, dict):
-            existing_dir = existing.get("dir")
-        elif isinstance(existing, str):
-            existing_dir = existing
-        else:
-            existing_dir = None
-        if not isinstance(existing_dir, str):
-            continue
-        try:
-            if str(Path(existing_dir).expanduser().resolve()) == canonical:
-                return _WriteOutcome("existing")
-        except (OSError, RuntimeError):
-            continue
+    def _mutate(data: dict) -> dict | None:
+        nonlocal outcome
+        workspaces = data.get("workspaces")
+        if workspaces is None:
+            workspaces = {}
+            data["workspaces"] = workspaces
+        if not isinstance(workspaces, dict):
+            outcome = _WriteOutcome("conflict")
+            return None
 
-    base_name = _SAFE_NAME_RE.sub("-", workspace.name).strip("-._").lower()
-    base_name = base_name[:64] or f"imported-{item.source_id}"
-    if base_name not in workspaces:
-        workspaces[base_name] = {"dir": canonical}
-        _write_json(path, data)
-        return _WriteOutcome("imported")
+        canonical = str(workspace)
+        for existing in workspaces.values():
+            if isinstance(existing, dict):
+                existing_dir = existing.get("dir")
+            elif isinstance(existing, str):
+                existing_dir = existing
+            else:
+                existing_dir = None
+            if not isinstance(existing_dir, str):
+                continue
+            try:
+                if str(Path(existing_dir).expanduser().resolve()) == canonical:
+                    outcome = _WriteOutcome("existing")
+                    return None
+            except (OSError, RuntimeError):
+                continue
 
-    # The name is taken by a DIFFERENT directory. Deriving a suffixed name is a
-    # rename, so it now requires the user to have asked for one; a plain skip
-    # reports the collision instead of quietly inventing a name.
-    if strategy != STRATEGY_RENAME:
-        return _WriteOutcome("conflict")
-    for candidate in (
-        f"{base_name}-{item.source_id}"[:64],
-        f"{base_name[:55]}-{item.fingerprint[:8]}",
-    ):
-        if candidate not in workspaces:
-            workspaces[candidate] = {"dir": canonical}
-            _write_json(path, data)
-            return _WriteOutcome("imported", renamed_to=candidate)
-    return _WriteOutcome("conflict")
+        base_name = _SAFE_NAME_RE.sub("-", workspace.name).strip("-._").lower()
+        base_name = base_name[:64] or f"imported-{item.source_id}"
+        if base_name not in workspaces:
+            workspaces[base_name] = {"dir": canonical}
+            outcome = _WriteOutcome("imported")
+            return data
+
+        # The name is taken by a DIFFERENT directory. Deriving a suffixed name
+        # is a rename, so it now requires the user to have asked for one; a
+        # plain skip reports the collision instead of quietly inventing a name.
+        if strategy != STRATEGY_RENAME:
+            outcome = _WriteOutcome("conflict")
+            return None
+        for candidate in (
+            f"{base_name}-{item.source_id}"[:64],
+            f"{base_name[:55]}-{item.fingerprint[:8]}",
+        ):
+            if candidate not in workspaces:
+                workspaces[candidate] = {"dir": canonical}
+                outcome = _WriteOutcome("imported", renamed_to=candidate)
+                return data
+        outcome = _WriteOutcome("conflict")
+        return None
+
+    # stamp_meta=False: this import is merge-only and must not alter any byte
+    # it did not add; a ConfigReadError keeps the old fail_closed contract
+    # (ValueError), which the apply loop maps to a rejected outcome.
+    try:
+        update_config_locked(path, mutate=_mutate, stamp_meta=False)
+    except ConfigReadError as exc:
+        raise ValueError("invalid destination JSON") from exc
+    assert outcome is not None  # every _mutate path sets it
+    return outcome
 
 
 @contextmanager
@@ -4838,12 +4860,20 @@ def _write_schedule(item: _Item, cron_service: Any) -> _WriteOutcome:
 
 def _write_settings(item: _Item, data_home: Path) -> _WriteOutcome:
     path = data_home / "config.json"
-    data = _load_json_dict(path, fail_closed=True)
-    changed = _merge_missing(data, item.payload)
-    if not changed:
-        return _WriteOutcome("existing")
-    _write_json(path, data)
-    return _WriteOutcome("imported")
+    # ONE locked read-modify-write (#4767) -- see the workspace importer above
+    # for why the raw read+write pair this replaces lost concurrent updates.
+    changed = False
+
+    def _mutate(data: dict) -> dict | None:
+        nonlocal changed
+        changed = _merge_missing(data, item.payload)
+        return data if changed else None
+
+    try:
+        update_config_locked(path, mutate=_mutate, stamp_meta=False)
+    except ConfigReadError as exc:
+        raise ValueError("invalid destination JSON") from exc
+    return _WriteOutcome("imported" if changed else "existing")
 
 
 def apply_import(

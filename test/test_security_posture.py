@@ -247,7 +247,8 @@ def _gate_side_baseline_log_sites(
 #: nets to zero (both edits land in one reviewed diff), and the scan is
 #: single-scope (see :func:`_gate_side_baseline_log_sites`).
 _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
-    "acp/client.py": 7,
+    # +1: model-unavailable warning log in the rejected-model path
+    "acp/client.py": 8,
     "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
     "dashboard/chat_orchestrator.py": 1,

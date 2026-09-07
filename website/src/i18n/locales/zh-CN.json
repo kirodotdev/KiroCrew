@@ -5544,6 +5544,7 @@
       "approve_all": "全部批准",
       "approve_sub_agent": "批准子代理：{{name}}",
       "attach_files": "附加文件",
+      "editor_unavailable_standard_input": "增强编辑器无法加载，已启用标准输入。你的草稿保持不变。",
       "branch": "分支：{{branch}}",
       "click_again_to_force_stop": "再次点击强制停止",
       "command": "命令",
@@ -5642,7 +5643,8 @@
       "more_actions": "更多操作",
       "session_control_needs_attention": "需要处理",
       "session_control_ready": "就绪",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "此会话跟随默认代理（{{name}}）。它没有自己的代理，因此默认代理变化时它也会变化。点击可固定一个。"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -6523,7 +6525,8 @@
       "copy_diagram_source": "复制图表源代码",
       "diagram_source": "图表源代码",
       "copy_failed": "复制失败",
-      "mermaid_render_failed": "无法渲染此图表。改为显示源代码。"
+      "mermaid_render_failed": "无法渲染此图表。改为显示源代码。",
+      "image_position": "第 {{index}} 张，共 {{total}} 张"
     },
     "markdownToc": {
       "contents": "目录",
@@ -6748,6 +6751,8 @@
     "pastedChip": {
       "collapse_paste": "折叠粘贴内容",
       "expand_paste": "展开粘贴内容",
+      "hide_paste_preview": "隐藏粘贴预览",
+      "show_paste_preview": "显示粘贴预览",
       "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]",
       "preview_more_lines_other": "… 还有 {{count}} 行"
     },
@@ -7934,6 +7939,12 @@
       "could_not_load": "无法加载 {{label}}",
       "loading": "正在加载 {{label}}…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "格式化",
+      "raw": "原始",
+      "render_the_markdown_headings_lists_tables_links": "渲染 Markdown - 标题、列表、表格、链接",
+      "show_the_exact_markdown_source": "显示确切的 Markdown 源码"
     }
   },
   "hooks": {
@@ -11370,6 +11381,7 @@
         "msgs": "条消息 /",
         "output_tokens": "输出令牌",
         "plan": "套餐",
+        "refused_transcripts_warning": "{{productName}} 无法加载你的 {{count}} 条聊天记录，因此下列数字并不完整。当你的 Windows 配置文件保存在网络驱动器上时，可能会出现这种情况。",
         "resets": "重置时间",
         "session_activity_30_days": "会话活动（30 天）",
         "sessions": "会话",
@@ -13304,6 +13316,7 @@
         "aws_profile_polly": "AWS 配置（Amazon Polly）",
         "aws_region_for_polly_api": "Amazon Polly API 使用的 AWS 区域",
         "aws_region_polly": "AWS 区域（Amazon Polly）",
+        "could_not_read_the_hosts_voice_list_only_the_operat": "无法读取本机语音列表，只能选择操作系统默认语音。",
         "default": "默认",
         "engine": "引擎",
         "failed_to_load_voice_config": "加载语音配置失败。",
@@ -13311,13 +13324,13 @@
         "faster": "更快",
         "fastest": "最快",
         "normal": "正常",
-        "path_to_the_piper_executable_leave_blank_to_auto": "Piper 可执行文件的路径。留空则自动在 PATH 或 ~/piper-venv/bin/piper 中检测",
-        "path_to_the_piper_voice_model_onnx_required_down": "Piper 语音模型（.onnx）的路径。必填 — 从 github.com/rhasspy/piper 下载",
+        "os_default_voice": "操作系统默认",
+        "path_to_the_piper_executable_leave_blank_to_auto": "Piper 可执行文件的路径。留空则自动在 PATH 或 ~/piper-venv 安装中检测",
+        "path_to_the_piper_voice_model_onnx_required_down": "Piper 语音模型（.onnx）的路径。必填 — 从 huggingface.co/rhasspy/piper-voices 下载",
         "piper_binary": "Piper 可执行文件",
         "piper_en_us_lessac_medium_onnx": "~/piper/en_US-lessac-medium.onnx",
         "piper_local_offline": "Piper（本地、离线）",
         "piper_model": "Piper 模型",
-        "piper_runs_locally_and_offline_polly_uses_aws_cr": "Piper 在本地离线运行；Amazon Polly 需要 AWS 凭证 + 网络",
         "piper_speech_speed_length_scale": "Piper 语速（length scale）",
         "polly_engine_type": "Amazon Polly 引擎类型",
         "provider": "提供方",
@@ -13326,13 +13339,19 @@
         "slower": "更慢",
         "slowest": "最慢",
         "speak_every_assistant_reply_automatically": "自动朗读每条助手回复",
-        "speech_rate": "语速",
+        "speech_rate_for_spoken_replies_built_in": "朗读回复的语速（内置引擎）",
+        "speech_rate_for_spoken_replies_polly": "朗读回复的语速（Amazon Polly）",
         "speech_to_text": "语音转文字",
         "speed": "速度",
+        "system_built_in": "系统内置",
         "text_to_speech": "文字转语音",
+        "the_built_in_engine_needs_no_setup_piper_is_offlin": "内置引擎无需任何安装；Piper 离线运行且音质更好；Amazon Polly 需要 AWS 凭证 + 网络",
+        "this_host_has_no_built_in_speech_engine_install_es": "此主机没有内置语音引擎。请安装 espeak-ng（例如：sudo apt install espeak-ng），或选择其他提供方。",
         "us_east_1": "us-east-1",
         "voice": "语音",
-        "voice_catalogue_unavailable": "无法加载 Polly 语音列表。选择器显示的是内置的备用列表。"
+        "voice_catalogue_unavailable": "无法加载 Polly 语音列表。选择器显示的是内置的备用列表。",
+        "voice_from_the_hosts_built_in_speech_engine": "来自本机内置语音引擎的语音",
+        "recheck": "重新检出"
       },
       "weComPanel": {
         "allow_all_bypass_note": "已开启全部允许：上方的 userid 列表不再生效。它会保留下来，方便你切换回去。",
@@ -13924,6 +13943,8 @@
       "empty_roster": "还没有团队成员。在团队管理页创建一个 crew 后会显示在这里。",
       "inherited": "继承",
       "member_count_other": "{{count}} 位成员",
+      "member_gone": "已改为显示 {{shown}}——“{{name}}”已不在成员列表中。",
+      "member_gone_roster": "“{{name}}”已不在成员列表中。",
       "memory_dedicated_note": "偏好与项目笔记读取自 {{store}} 存储，而非共享的默认存储。对话记忆与经验尚未分开：告诉这位成员的内容，其他成员仍然知道。",
       "memory_shared_note": "成员目前共享同一份记忆：告诉一位成员的内容，其他成员也知道。",
       "memory_store": "记忆存储",

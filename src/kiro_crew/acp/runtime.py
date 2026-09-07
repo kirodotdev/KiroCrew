@@ -43,10 +43,12 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.client import (
     OversizeLineUnrecoverable,
+    _apply_pod_home_remap,
     _drain_oversize_line,
     _get_start_time,
     _KiroExecutableTrustError,
     _resolve_kiro_bin_for_spawn,
+    apply_pod_bundle_spawn,
     finish_suspended_spawn,
     is_auth_failure_output,
     kiro_cli_not_found_message,
@@ -70,6 +72,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KIRO_IDENTITY_STORE,
+    ACP_BACKENDS_POD_HOME_REMAP,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
     METHOD_KAS_SESSION_DELETE,
@@ -1218,11 +1221,20 @@ class AcpRuntime:
         # have Crew's seatbelt skipped in favour of an internal sandbox that never
         # starts. KAS is a Node process with no internal sandbox, so it takes
         # Crew's seatbelt directly, and so does every harness added later.
+        #
+        # Inside a pod apply_pod_bundle_spawn answers both questions instead, from
+        # the single reason recorded on that function: the pod HOME remap breaks
+        # the toolbox shim's own sandbox, so the child runs the bundle binary the
+        # shim itself falls back to and Crew's launcher wraps it. Off-loop because
+        # the resolution stats the candidate path.
+        argv, delegate_internal_sandbox = await asyncio.to_thread(
+            apply_pod_bundle_spawn, argv, backend=self._acp_backend
+        )
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
-            is_kiro_cli=self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX,
+            is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
@@ -1278,6 +1290,16 @@ class AcpRuntime:
         # credential-pointer/API-key resolution so no resolver can reintroduce a
         # denied variable; KIRO_API_KEY itself is intentionally not denied.
         env = scrub_agent_subprocess_env(env)
+        # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
+        # confined to the pod's tree instead of the real host's -- see
+        # acp.client._apply_pod_home_remap's docstring. No-op outside a pod and
+        # for every harness outside ACP_BACKENDS_POD_HOME_REMAP, which is its
+        # own membership set rather than a reuse of the internal-sandbox one:
+        # "carries its own OS sandbox" and "relocating HOME moves its
+        # credential store" are different questions (harness-parity H6).
+        env = _apply_pod_home_remap(
+            env, pod_home_remap=self._acp_backend in ACP_BACKENDS_POD_HOME_REMAP
+        )
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.

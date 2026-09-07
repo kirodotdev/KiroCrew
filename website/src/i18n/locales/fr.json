@@ -5730,6 +5730,7 @@
       "approve_all": "Tout approuver",
       "approve_sub_agent": "Approuver le sous-agent : {{name}}",
       "attach_files": "Joindre des fichiers",
+      "editor_unavailable_standard_input": "L'éditeur amélioré n'a pas pu se charger, la saisie standard est donc active. Votre brouillon reste inchangé.",
       "branch": "Branche : {{branch}}",
       "click_again_to_force_stop": "Cliquer à nouveau pour forcer l’arrêt",
       "command": "Commande",
@@ -5828,7 +5829,8 @@
       "more_actions": "Plus d'actions",
       "session_control_needs_attention": "Attention requise",
       "session_control_ready": "Prêt",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "Cette session suit l’agent par défaut ({{name}}). Elle n’a pas d’agent propre, elle change donc si le défaut change. Cliquez pour en épingler un."
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -6727,7 +6729,8 @@
       "copy_diagram_source": "Copier la source du diagramme",
       "diagram_source": "Source du diagramme",
       "copy_failed": "Échec de la copie",
-      "mermaid_render_failed": "Impossible d’afficher ce diagramme. La source est affichée à la place."
+      "mermaid_render_failed": "Impossible d’afficher ce diagramme. La source est affichée à la place.",
+      "image_position": "{{index}} sur {{total}}"
     },
     "markdownToc": {
       "contents": "Sommaire",
@@ -6952,6 +6955,8 @@
     "pastedChip": {
       "collapse_paste": "Réduire le contenu collé",
       "expand_paste": "Développer le contenu collé",
+      "hide_paste_preview": "Masquer l'aperçu du collage",
+      "show_paste_preview": "Afficher l'aperçu du collage",
       "paste_lines_many": "[ Collage n°{{seq}} · {{count}} lignes ]",
       "paste_lines_one": "[ Collage n°{{seq}} · {{count}} ligne ]",
       "paste_lines_other": "[ Collage n°{{seq}} · {{count}} lignes ]",
@@ -8154,6 +8159,12 @@
       "could_not_load": "Impossible de charger {{label}}",
       "loading": "Chargement de {{label}}…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "Formaté",
+      "raw": "Brut",
+      "render_the_markdown_headings_lists_tables_links": "Afficher le markdown rendu - titres, listes, tableaux, liens",
+      "show_the_exact_markdown_source": "Afficher la source markdown exacte"
     }
   },
   "hooks": {
@@ -11696,6 +11707,7 @@
         "msgs": "msg /",
         "output_tokens": "Tokens de sortie",
         "plan": "Forfait",
+        "refused_transcripts_warning": "{{productName}} n'a pas pu charger {{count}} de vos conversations, ces chiffres sont donc incomplets. Cela peut arriver lorsque votre profil Windows est stocké sur un lecteur réseau.",
         "resets": "Réinitialisation",
         "session_activity_30_days": "Activité des sessions (30 jours)",
         "sessions": "Sessions",
@@ -13649,6 +13661,7 @@
         "aws_profile_polly": "Profil AWS (Amazon Polly)",
         "aws_region_for_polly_api": "Région AWS pour l'API Amazon Polly",
         "aws_region_polly": "Région AWS (Amazon Polly)",
+        "could_not_read_the_hosts_voice_list_only_the_operat": "Impossible de lire la liste des voix de la machine. Seule la valeur par défaut du système d'exploitation est proposée.",
         "default": "default",
         "engine": "Moteur",
         "failed_to_load_voice_config": "Échec du chargement de la configuration vocale.",
@@ -13656,13 +13669,13 @@
         "faster": "Plus rapide",
         "fastest": "Le plus rapide",
         "normal": "Normal",
-        "path_to_the_piper_executable_leave_blank_to_auto": "Chemin vers l'exécutable piper. Laissez vide pour une détection automatique dans PATH ou ~/piper-venv/bin/piper",
-        "path_to_the_piper_voice_model_onnx_required_down": "Chemin vers le modèle de voix Piper (.onnx). Requis — à télécharger depuis github.com/rhasspy/piper",
+        "os_default_voice": "Valeur par défaut du système d'exploitation",
+        "path_to_the_piper_executable_leave_blank_to_auto": "Chemin vers l'exécutable piper. Laissez vide pour une détection automatique dans PATH ou dans une installation ~/piper-venv",
+        "path_to_the_piper_voice_model_onnx_required_down": "Chemin vers le modèle de voix Piper (.onnx). Requis — à télécharger depuis huggingface.co/rhasspy/piper-voices",
         "piper_binary": "Binaire Piper",
         "piper_en_us_lessac_medium_onnx": "~/piper/en_US-lessac-medium.onnx",
         "piper_local_offline": "Piper (local, hors ligne)",
         "piper_model": "Modèle Piper",
-        "piper_runs_locally_and_offline_polly_uses_aws_cr": "Piper fonctionne en local et hors ligne ; Amazon Polly utilise des identifiants AWS et le réseau",
         "piper_speech_speed_length_scale": "Vitesse de parole de Piper (length scale)",
         "polly_engine_type": "Type de moteur Amazon Polly",
         "provider": "Fournisseur",
@@ -13671,13 +13684,19 @@
         "slower": "Plus lent",
         "slowest": "Le plus lent",
         "speak_every_assistant_reply_automatically": "Lire à voix haute automatiquement chaque réponse de l'assistant",
-        "speech_rate": "Débit de parole",
+        "speech_rate_for_spoken_replies_built_in": "Débit de parole des réponses vocales (moteur intégré)",
+        "speech_rate_for_spoken_replies_polly": "Débit de parole des réponses vocales (Amazon Polly)",
         "speech_to_text": "Reconnaissance vocale",
         "speed": "Vitesse",
+        "system_built_in": "Système (intégré)",
         "text_to_speech": "Synthèse vocale",
+        "the_built_in_engine_needs_no_setup_piper_is_offlin": "Le moteur intégré ne demande aucune installation ; Piper fonctionne hors ligne avec une meilleure qualité ; Amazon Polly utilise des identifiants AWS et le réseau",
+        "this_host_has_no_built_in_speech_engine_install_es": "Cet hôte n'a aucun moteur de synthèse vocale intégré. Installez espeak-ng (par exemple : sudo apt install espeak-ng), ou choisissez un autre fournisseur.",
         "us_east_1": "us-east-1",
         "voice": "Voix",
-        "voice_catalogue_unavailable": "Impossible de charger la liste des voix Polly. Le sélecteur affiche une liste de secours intégrée."
+        "voice_catalogue_unavailable": "Impossible de charger la liste des voix Polly. Le sélecteur affiche une liste de secours intégrée.",
+        "voice_from_the_hosts_built_in_speech_engine": "Voix du moteur vocal intégré de la machine",
+        "recheck": "Vérifier à nouveau"
       },
       "weComPanel": {
         "allow_all_bypass_note": "L’autorisation générale est activée : la liste de userid ci-dessus est ignorée. Elle est conservée pour ton retour en arrière.",
@@ -14289,6 +14308,8 @@
       "member_count_many": "{{count}} membres",
       "member_count_one": "{{count}} membre",
       "member_count_other": "{{count}} membres",
+      "member_gone": "Affichage de {{shown}} : « {{name}} » ne figure plus dans la liste.",
+      "member_gone_roster": "« {{name}} » ne figure plus dans la liste.",
       "memory_dedicated_note": "Les préférences et les notes de projet viennent du magasin {{store}} plutôt que du magasin partagé par défaut. La mémoire de conversation et les leçons ne sont pas encore séparées : ce que tu dis à ce membre reste connu de tous.",
       "memory_shared_note": "Les membres partagent actuellement une seule mémoire. Ce que vous dites à l'un est connu de tous.",
       "memory_store": "Mémoire",

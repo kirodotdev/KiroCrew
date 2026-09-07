@@ -251,6 +251,15 @@ class CronEntry:
     # Calendar dates (YYYY-MM-DD, evaluated in ``timezone``) the job must not
     # fire on -- e.g. a publisher's own holiday list.
     skip_dates: list[str] = field(default_factory=list)
+    # Schedule-page folder NAME to file the job in (names, not ids: a manifest
+    # is portable across installs, and folder ids are minted per-machine by the
+    # dashboard). Resolved against existing folders at registration; a name
+    # with no matching folder registers the job ungrouped with a logged
+    # warning, and re-files it on the next enable once the folder exists.
+    # Empty = ungrouped. Registration re-applies this on every enable, so the
+    # assignment survives the disable/enable delete-and-recreate cycle that
+    # loses a folder set by hand on an app cron.
+    folder: str = ""
     # When False the cron is registered in a paused state (visible in the
     # dashboard Schedule view, resumable) instead of firing on install/enable.
     # Apps that need user configuration before their crons are useful ship
@@ -292,6 +301,8 @@ class CronEntry:
             d["timezone"] = self.timezone
         if self.skip_dates:
             d["skip_dates"] = self.skip_dates
+        if self.folder:
+            d["folder"] = self.folder
         if not self.persistent_session:
             d["persistent_session"] = False
         if self.silent:
@@ -383,6 +394,7 @@ class CronEntry:
             },
             timezone=_str_or_flagged("timezone", data.get("timezone")),
             skip_dates=[str(d) for d in _list_or_empty("skip_dates", data.get("skip_dates"))],
+            folder=_str_or_empty(data.get("folder")),
             persistent_session=bool(data.get("persistent_session", True)),
             silent=bool(data.get("silent", False)),
             # STRICT boolean: "enabled" gates whether a cron fires at all, so a

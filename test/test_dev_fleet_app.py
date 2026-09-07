@@ -7939,7 +7939,15 @@ async def test_sync_builds_and_stages_under_one_lock_holder(monkeypatch, tmp_pat
     # whole Pull+Build. The repo to build is passed as an argument instead.
     assert argvs[stage_i][0] == sys.executable
     assert str(repo) in argvs[stage_i], "the target repo must be passed explicitly"
-    assert argvs[stage_i][-1].endswith("npm"), "the trusted npm path is passed through"
+    # The build+stage child reads its args positionally: sys.argv[1]=repo,
+    # sys.argv[2]=npm, sys.argv[3]=git. Both binaries are the trusted _trusted_bin
+    # paths (stubbed here to /usr/bin/<name>), passed through explicitly rather
+    # than re-resolved in the child. The git path is a later addition (the
+    # read-only build-source fingerprint, #7132), so npm is now the
+    # second-to-last arg and git the last -- assert each trusted path reaches the
+    # spawn at the position its child consumes, not merely that one is last.
+    assert argvs[stage_i][4].endswith("npm"), "the trusted npm path is passed through (argv[2])"
+    assert argvs[stage_i][5].endswith("git"), "the trusted git path is passed through (argv[3])"
     assert not any(
         a[1:] == ["run", "build", "--prefix", "website"] for a in argvs
     ), "a separate unlocked npm build step would reintroduce the race"
@@ -9931,10 +9939,23 @@ async def test_only_the_preflight_step_may_assert_a_diagnosis(monkeypatch):
     assert passed == ",".join(str(c) for c in reserved), passed
     assert "--preflight-label" in cmd
     assert cmd[cmd.index("--preflight-label") + 1] == mod._PREFLIGHT_LABEL
-    # Every code the gateway will explain must be in the guarded set, or a code
-    # it explains could still arrive forged.
+    # Every code the gateway EXPLAINS must be in the guarded set, or a diagnosis
+    # it explains could arrive forged. The converse does not hold:
+    # EXIT_FRONTEND_SKIP is guarded so an untrusted step cannot forge it, but it
+    # is a SUCCESS verdict, not a diagnosis, so it carries no explanation.
     for code in reserved:
+        if code == npm_preflight.EXIT_FRONTEND_SKIP:
+            assert not npm_preflight.explain_exit(code), "the skip verdict is not a diagnosis"
+            continue
         assert npm_preflight.explain_exit(code), code
+    # The frontend-skip verdict must be guarded (reserved) so a worktree-run step
+    # cannot forge it to suppress the build, and the gateway must tell the runner
+    # its value and which labels it suppresses.
+    assert npm_preflight.EXIT_FRONTEND_SKIP in npm_preflight.RESERVED_EXIT_CODES
+    assert "--exit-frontend-skip" in cmd
+    assert cmd[cmd.index("--exit-frontend-skip") + 1] == str(npm_preflight.EXIT_FRONTEND_SKIP)
+    assert "--frontend-labels" in cmd
+    assert cmd[cmd.index("--frontend-labels") + 1] == "npm ci,npm build + stage"
 
 
 def test_the_trusted_label_matches_the_step_that_carries_it():

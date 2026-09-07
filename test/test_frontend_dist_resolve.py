@@ -875,6 +875,12 @@ def test_build_and_stage_accepts_a_string_repo_path(tmp_path):
 
     class _Done:
         returncode = 0
+        # build_and_stage now also runs read-only `git status`/`rev-parse` to
+        # fingerprint the built source; stubbed git returns empty output, read as
+        # a clean tree with no resolvable id, so no fingerprint is written and
+        # the staged-bundle assertion below is unaffected.
+        stdout = b""
+        stderr = b""
 
         def wait(self, timeout=None):
             return 0

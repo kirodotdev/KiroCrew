@@ -399,6 +399,23 @@ def _normalize_advertised_key(provider_id: str) -> str:
     return s.strip("-")
 
 
+def strip_provider_id_prefix(provider_id: str) -> str:
+    """Peel ONE leading inference-profile prefix, returned in WIRE form.
+
+    The wire-spelling counterpart of the prefix strip inside
+    :func:`_normalize_advertised_key`: when a prefixed id
+    (``global.anthropic.claude-opus-4-8[1m]``) is rejected by an adapter whose
+    accepted set carries the bare spelling, the retry candidate is this
+    function's output (``claude-opus-4-8[1m]``). Unchanged when no known
+    prefix matches.
+    """
+    s = provider_id.strip()
+    for pfx in _PROVIDER_ID_PREFIXES:
+        if s.lower().startswith(pfx):
+            return s[len(pfx) :]
+    return s
+
+
 def _is_1m_id(model_id: str) -> bool:
     """True if ``model_id`` names a 1M-window variant (``[1m]`` suffix or a
     standalone ``1m`` token)."""

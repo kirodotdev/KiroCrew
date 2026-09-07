@@ -726,6 +726,43 @@ class TestValidateFilePath:
         )
         assert validate_file_path("~/doc.txt") is None
 
+    def test_unc_home_sessions_transcript_is_refused(self, monkeypatch):
+        """#6733: a kiro-cli session transcript under a Windows roaming-profile
+        (UNC) home is refused by the UNC trusted-root gate, because the sessions
+        dir is not one of unc_probe_allowed's admitted roots. This is the exact
+        refusal the usage page counts as ``refused_transcripts`` instead of
+        rendering a confident zero. Exercised as DATA -- a ``\\\\server\\share``
+        string through validate_file_path -- so it runs on a POSIX host; the
+        Windows CI shard confirms the native backslash form.
+
+        The fix for #6733 does NOT relax this refusal: admitting the sessions
+        dir to the gate is a separate trust decision (open issue #8079). This
+        test therefore pins that the transcript STAYS refused.
+        """
+        from kiro_crew import platform_compat
+
+        # No linked ancestor: isolate the pure UNC-shape screen.
+        monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: None)
+        self._windows(monkeypatch)
+        unc_transcript = "//roaming-server/profiles/alice/.kiro/sessions/cli/s1.jsonl"
+        assert validate_file_path(unc_transcript) is None
+
+    def test_unc_path_under_data_home_still_validates(self, monkeypatch, tmp_path):
+        """Control for the test above: a UNC path UNDER an admitted root (the
+        data home) is NOT refused by the UNC gate -- so the refusal there is
+        attributable to the sessions dir being outside the trusted roots, not
+        to a blanket UNC ban. Uses a UNC-shaped data_home so unc_probe_allowed
+        has a UNC root to match against."""
+        import kiro_crew.hooks as hooks_mod
+
+        unc_home = "//roaming-server/profiles/alice/.kiro/crew"
+        monkeypatch.setattr(hooks_mod._config_paths, "data_home", lambda: Path(unc_home))
+        self._windows(monkeypatch)
+        candidate = unc_home + "/ledger/state.json"
+        # The UNC gate admits it (unc_probe_allowed returns True); the value may
+        # still be canonicalized downstream, but it is NOT refused by the gate.
+        assert hooks_mod.unc_probe_allowed(candidate) is True
+
 
 class TestSafeReadFile:
     def test_reads_text(self, tmp_path):

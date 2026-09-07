@@ -332,6 +332,7 @@
     "apps.awsControl.console.move_up": "Destination button in the move-file folder picker (AWS Control cloud drive): the PARENT folder of the one the file is in; {{name}} is that parent folder's name. \"Up\" as in one level up the folder tree.",
     "apps.awsControl.console.move_no_folders": "Empty state of the move-file folder picker (AWS Control cloud drive) when the file is at the top level and the current listing has no folders, so there is nowhere to move it.",
     "apps.awsControl.console.move_moving": "Progress line in the move-file folder picker (AWS Control cloud drive) while the server copies then deletes the object. The verb \"move\" in progress, same word as the row's Move action.",
-    "apps.awsControl.console.library_add_empty": "Empty state of the \"Add from Artifacts\" picker (AWS Control cloud drive) when the user has NO artifacts at all — distinct from library_add_none, which is a search or filter that matched nothing."
+    "apps.awsControl.console.library_add_empty": "Empty state of the \"Add from Artifacts\" picker (AWS Control cloud drive) when the user has NO artifacts at all — distinct from library_add_none, which is a search or filter that matched nothing.",
+    "components.markdownCard.raw": "Segment label on the Formatted | Raw toggle of a markdown content card in the chat transcript, paired with \"Formatted\". Selects the verbatim markdown SOURCE (the exact text, unrendered, with an edit affordance) over the rendered view. \"Raw\" as in unprocessed source, not uncooked food; keep it to one short word, it sits in a two-segment toggle."
   }
 }

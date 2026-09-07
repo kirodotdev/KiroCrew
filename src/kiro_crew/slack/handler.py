@@ -144,9 +144,19 @@ from kiro_crew.stats import Stats
 from kiro_crew.subagent import SubagentManager
 from kiro_crew.task import Task
 from kiro_crew.taskrunner import TaskRunner
-from kiro_crew.voice_reply import DEFAULT_PROVIDER, VALID_PROVIDERS
+from kiro_crew.voice_reply import (
+    DEFAULT_PROVIDER,
+    PROVIDER_PIPER,
+    PROVIDER_SYSTEM,
+)
 from kiro_crew.voice_reply import is_available as _tts_available
+from kiro_crew.voice_reply import (
+    resolve_configured_provider,
+)
 from kiro_crew.voice_reply import validate_length_scale as _validate_length_scale
+from kiro_crew.voice_reply import (
+    validated_config_string,
+)
 from kiro_crew.voice_reply import voice_reply as _voice_reply_fn
 
 logger = logging.getLogger(__name__)
@@ -204,6 +214,13 @@ _THINKING_PLACEHOLDER = "💭 _Thinking…_"
 _CURSOR = " ▍"
 _NO_RESPONSE = "_No response._"
 _STATUS_WORKING = "is working on your request"
+#: First chunk of a REPLACEMENT stream opened by ``_rotate_stream``. A rotation
+#: abandons the message the reader is already watching and continues the same
+#: answer in a new one, so without this the thread reads as a stalled reply
+#: followed by an unexplained second reply. Slack appends stream chunks and
+#: never replaces them, so the text already shown stays in the abandoned
+#: message — this line is what tells the reader the two belong together.
+_STREAM_CONTINUED = "_(continued)_\n\n"
 
 # Max chars of reasoning to surface inline in Slack before truncating. Keeps
 # the 💭 Thinking block from becoming a wall of text; the full
@@ -560,18 +577,21 @@ class _VoiceConfig:
     default_pitch: str = "+0%"
     aws_profile: str = ""
     region: str = ""
-    # TTS provider. Defaults to the LOCAL provider (Piper), matching
+    # TTS provider. Defaults to the LOCAL provider, matching
     # ``voice_reply.DEFAULT_PROVIDER``. It used to default to "polly" here,
     # which meant enabling voice reply without naming a provider silently sent
     # text to a paid AWS service under whatever the ambient credential chain
     # resolved to. Sourced from the single constant so the two cannot drift
     # again.
     provider: str = DEFAULT_PROVIDER
-    # Piper-specific (ignored when provider="polly"):
+    # Piper-specific (ignored by the other providers):
     piper_binary: str = ""
     piper_model: str = ""
     piper_model_config: str = ""
     piper_length_scale: float = 1.0
+    # Built-in-engine voice. Empty means the OS default voice, which is the
+    # right answer whenever the host language matches the reply language.
+    system_voice: str = ""
     # If True, a message carrying voice input (a transcribed voice memo)
     # automatically receives a voice reply, even without `!voice on`. The
     # config-load default follows ``enabled`` (see ``set_orch_cfg``); the
@@ -1181,6 +1201,31 @@ def set_orch_cfg(cfg: KiroCrewConfig) -> None:
     load_voice_reply_config(cfg)
 
 
+def _str_or_default(value: object, default: str = "") -> str:
+    """Return *value* stripped when it is a string, else *default*.
+
+    The tolerant READ half of :func:`validated_config_string`, which is the strict
+    WRITE half. The asymmetry is deliberate: the dashboard PUT rejects a
+    wrong-typed field with 400 because a caller can still fix it, whereas this
+    runs at boot against whatever is already on disk, where refusing would mean
+    failing to start over a hand-edited typo. So the boundary rejects and the
+    loader falls back.
+
+    Every string field in the ``voice_reply`` block is hand-editable JSON, so a
+    dict, list or number can arrive where a string is expected, and all of them
+    reach the dashboard's config GET where a non-string crashes the React panel
+    that renders it. Falling back beats ``str(value)``, which would keep ``"{}"``
+    as a voice name or a binary path and push the failure into synthesis.
+
+    *default* is per-field on purpose: an unset voice or engine has a real
+    fallback, whereas an unset profile or path means "not configured". Coercing
+    ``rate``/``pitch`` here as well as in their synthesis-time validators is not
+    redundant — the validators protect synthesis, this protects the GET.
+    """
+    validated = validated_config_string(value)
+    return default if validated is None else validated
+
+
 def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     """Populate the live voice state (``_vc``) from config's ``voice_reply``.
 
@@ -1202,40 +1247,27 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     if _enabled:
         _vc.global_enabled = True
     _vc.auto_speak = bool(_vr.get("auto_speak", False))
-    _vc.default_voice = _vr.get("voice_id", "Ruth")
-    _vc.default_engine = _vr.get("engine", "generative")
-    _vc.default_rate = _vr.get("rate", "100%")
-    _vc.default_pitch = _vr.get("pitch", "+0%")
-    _vc.aws_profile = _vr.get("aws_profile", "")
-    _vc.region = _vr.get("region", "")
+    # All ten string reads in this block go through the same coercion: each is
+    # hand-editable JSON that reaches the dashboard's config GET verbatim.
+    _vc.default_voice = _str_or_default(_vr.get("voice_id"), "Ruth")
+    _vc.default_engine = _str_or_default(_vr.get("engine"), "generative")
+    _vc.default_rate = _str_or_default(_vr.get("rate"), "100%")
+    _vc.default_pitch = _str_or_default(_vr.get("pitch"), "+0%")
+    _vc.aws_profile = _str_or_default(_vr.get("aws_profile"))
+    _vc.region = _str_or_default(_vr.get("region"))
     # ``auto_reply_to_voice`` defaults to ``enabled``'s value: users with
     # explicit ``enabled=false`` keep the existing zero-voice behavior, and
     # users who turn voice on globally also get symmetric voice-in/voice-out
     # without needing to set a second flag.
     _vc.auto_reply_to_voice = bool(_vr.get("auto_reply_to_voice", _enabled))
-    # Validate provider on load — a typo (e.g. "ploly") would otherwise pass
-    # through and only fail at synthesis time, after the user has already sent
-    # a voice memo expecting a voice reply.
-    #
-    # Both the absent-key default and the invalid-value fallback resolve to the
-    # LOCAL provider. They previously resolved to "polly", so a config that
-    # enabled voice reply without naming a provider — or that named one with a
-    # typo — reached a paid AWS service with no operator decision behind it.
-    # Falling back to local is also the safer half of the pair: a wrong local
-    # provider costs nothing and degrades to a "TTS isn't configured" notice.
-    _provider = _vr.get("provider", DEFAULT_PROVIDER)
-    if _provider not in VALID_PROVIDERS:
-        logger.warning(
-            "voice_reply.provider %r not in %s, defaulting to %r",
-            _provider,
-            sorted(VALID_PROVIDERS),
-            DEFAULT_PROVIDER,
-        )
-        _provider = DEFAULT_PROVIDER
-    _vc.provider = _provider
-    _vc.piper_binary = _vr.get("piper_binary", "")
-    _vc.piper_model = _vr.get("piper_model", "")
-    _vc.piper_model_config = _vr.get("piper_model_config", "")
+    # Resolution rules (validate-or-default, and keep an existing Piper install)
+    # live in one shared resolver so this loader, the Telegram settings path, and
+    # the dashboard cannot drift apart on them.
+    _vc.provider = resolve_configured_provider(_vr)
+    _vc.piper_binary = _str_or_default(_vr.get("piper_binary"))
+    _vc.piper_model = _str_or_default(_vr.get("piper_model"))
+    _vc.piper_model_config = _str_or_default(_vr.get("piper_model_config"))
+    _vc.system_voice = _str_or_default(_vr.get("system_voice"))
     # Coerce to finite/positive — a config.json with inf/NaN (JSON accepts both)
     # would otherwise reach synthesis and be re-serialized as non-RFC JSON,
     # breaking the dashboard's config GET.
@@ -1411,6 +1443,7 @@ async def _safe_voice_reply(
             piper_model=_vc.piper_model,
             piper_model_config=_vc.piper_model_config,
             length_scale=_vc.piper_length_scale,
+            system_voice=_vc.system_voice,
         )
     except Exception:
         logger.debug("Voice reply failed", exc_info=True)
@@ -3014,7 +3047,11 @@ async def handle_message(
         if stream_ts:
             await slack.stop_stream(channel, stream_ts)
         new_ts = await slack.start_stream(
-            channel, reply_ts, team_id=team_id or None, user_id=user_id or None
+            channel,
+            reply_ts,
+            initial_text=_STREAM_CONTINUED,
+            team_id=team_id or None,
+            user_id=user_id or None,
         )
         if new_ts:
             stream_ts = new_ts
@@ -3052,19 +3089,26 @@ async def handle_message(
         return ok
 
     async def _append_task(task_id: str, title: str, status: str, details: str = "") -> bool:
-        """Append task card to stream, rotating on failure."""
+        """Append task card to stream. Never rotates — see below.
+
+        A task card is progress decoration: the tool's name, its state, and the
+        elapsed-time refresh ``_tool_elapsed_updater`` fires every 30s for as
+        long as a tool runs. During a several-minute tool phase it is the ONLY
+        thing appending to the stream, which makes it by far the likeliest call
+        to meet a rate limit or a stream Slack has already closed.
+
+        Rotating on that failure costs the reader their in-progress message and
+        moves the rest of the answer into a new one, so a transient refusal on a
+        decorative refresh renders as a failed reply plus a second reply minutes
+        later. Skipping the card costs nothing: no answer text is withheld, and
+        ``_append_stream`` still rotates when there is real text to deliver and
+        the stream refuses it, which is the moment a rotation is worth its price.
+        """
         if not stream_ts:
             return False
         if channel_activation == ACTIVATION_REVIEW:
             return True  # Suppress task cards in review mode
-        ok = await slack.append_task(channel, stream_ts, task_id, title, status, details=details)
-        if not ok and use_slack_stream:
-            if await _rotate_stream():
-                assert stream_ts is not None
-                return await slack.append_task(
-                    channel, stream_ts, task_id, title, status, details=details
-                )
-        return ok
+        return await slack.append_task(channel, stream_ts, task_id, title, status, details=details)
 
     async def _tool_elapsed_updater() -> None:
         """Periodically update the active task card with elapsed time (every 30s)."""
@@ -4251,7 +4295,13 @@ async def handle_message(
     voice_auto_reply = had_voice_input and _vc.auto_reply_to_voice
     if _vc.global_enabled or session_key in _vc.sessions or voice_auto_reply:
         if len(accumulated) >= 50:
-            _tts_ok = _tts_available(
+            # Off the loop: the probe stats fixed directories (and, for Polly,
+            # searches PATH). A stat is unbounded — one on a stalled network or
+            # fuse mount would freeze every session and heartbeat sharing this
+            # loop — and the same rule governs ``resolve_system_tts_async``,
+            # which this reaches for the built-in provider.
+            _tts_ok = await asyncio.to_thread(
+                _tts_available,
                 provider=_vc.provider,
                 piper_binary=_vc.piper_binary,
                 piper_model=_vc.piper_model,
@@ -4262,11 +4312,17 @@ async def handle_message(
                 # available. Post a one-shot ephemeral so the user knows the
                 # response fell back to text only — silent fallback is worse
                 # UX for users who explicitly opted in.
-                if _vc.provider == "piper":
+                if _vc.provider == PROVIDER_SYSTEM:
+                    # Only reachable on a host whose built-in engine is absent,
+                    # which in practice means a Linux box without espeak-ng.
                     hint = (
-                        "Install piper (`pip install piper-tts` in a Python "
-                        "3.11 venv) and set `voice_reply.piper_model` to your "
-                        "voice .onnx file."
+                        "Install the host speech engine (`espeak-ng`) or pick "
+                        "another provider in Voice settings."
+                    )
+                elif _vc.provider == PROVIDER_PIPER:
+                    hint = (
+                        "Install piper (`pip install piper-tts`) and set "
+                        "`voice_reply.piper_model` to your voice .onnx file."
                     )
                 else:
                     hint = "Run `ada credentials update` and ensure `aws` CLI " "is on PATH."

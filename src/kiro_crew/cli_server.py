@@ -1822,7 +1822,13 @@ async def _gateway(
 
     if not config_path().exists():
         cfg = KiroCrewConfig()
-        cfg.save()
+        # _gateway is a coroutine, so this runs on the event loop: save() takes
+        # the sidecar advisory flock (#4767) and a contended wait (another
+        # process writing config at boot) must block a worker thread, not the
+        # loop. run_config_write does not fit here — the dashboard's asyncio
+        # config lock guards loop-side handler writers, none of which exist
+        # before run_gateway starts serving.
+        await asyncio.to_thread(cfg.save)
         print(f"👻 Created default config: {config_path()}")
 
     cfg = KiroCrewConfig.load()

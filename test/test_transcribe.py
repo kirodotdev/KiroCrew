@@ -887,6 +887,50 @@ class TestPcmFromWav:
         assert pcm.size == frames
         np.testing.assert_allclose(pcm, np.full(frames, 2_000 / 32768.0, dtype=np.float32))
 
+    def test_multichannel_folding_is_sliced_and_exact_across_the_slice_boundary(self, tmp_path):
+        """A whole-file multichannel read holds the interleaved int16 buffer
+        AND its float32 conversion at once — ~1.5 GiB for a four-channel hour,
+        an OOM on an input the import byte cap admits (GPT review r23). The
+        fold therefore runs in byte-bounded slices (8 MiB of raw int16 per
+        slice — GPT review r34: bounding by SECONDS let the channel count
+        scale the transient without limit); this file spans the slice boundary
+        and must fold to exactly the same per-frame mean as a whole-file fold."""
+        channels = 4
+        # One slice is (8 MiB // (channels * 2)) frames; cross it by a second.
+        frames = (8 * 1024 * 1024) // (channels * 2) + transcribe.stt.SAMPLE_RATE_HZ
+        rng = np.random.default_rng(23)
+        interleaved = rng.integers(-30_000, 30_000, frames * channels, dtype=np.int16)
+        audio = tmp_path / "quad.wav"
+        _write_wav(audio, interleaved, channels=channels)
+
+        pcm = transcribe._pcm_from_wav(str(audio))
+
+        assert pcm is not None and pcm.size == frames
+        expected = (interleaved.astype(np.float32) / 32768.0).reshape(-1, channels).mean(axis=1)
+        np.testing.assert_allclose(pcm, expected, rtol=0, atol=1e-7)
+
+    def test_slice_byte_budget_is_channel_count_independent(self, tmp_path):
+        """GPT review r34: a valid 256-channel WAV under the import size cap
+        must not make one slice allocate hundreds of MiB. The slice frame
+        count shrinks with the channel count, so the raw bytes read per
+        ``readframes`` call stay bounded — pinned here by folding a
+        256-channel file whose whole-file read would be ~50 MiB while each
+        slice stays at 8 MiB, and checking exactness end to end."""
+        channels = 256
+        # One slice for 256 channels is (8 MiB // 512) = 16384 frames; span
+        # three slices so the loop and the boundary are both exercised.
+        frames = 16384 * 2 + 1000
+        rng = np.random.default_rng(34)
+        interleaved = rng.integers(-30_000, 30_000, frames * channels, dtype=np.int16)
+        audio = tmp_path / "many.wav"
+        _write_wav(audio, interleaved, channels=channels)
+
+        pcm = transcribe._pcm_from_wav(str(audio))
+
+        assert pcm is not None and pcm.size == frames
+        expected = (interleaved.astype(np.float32) / 32768.0).reshape(-1, channels).mean(axis=1)
+        np.testing.assert_allclose(pcm, expected, rtol=0, atol=1e-7)
+
     @pytest.mark.parametrize("rate", [8_000, 44_100, 48_000])
     def test_other_sample_rates_defer_to_ffmpeg(self, tmp_path, rate):
         audio = tmp_path / "rate.wav"
@@ -1198,6 +1242,39 @@ class TestSensitivePathGuard:
         with patch("kiro_crew.security.is_sensitive_path", return_value=True):
             result = await transcribe_audio(str(audio), cfg)
         assert result is None
+
+    def test_the_gateways_own_voice_runtime_snapshot_is_not_refused(self, tmp_path, monkeypatch):
+        """GPT review r30: the crew ``run/`` dir is a sensitive leaf, and the
+        import snapshots are staged under ``run/voice-runtime`` precisely
+        because agents cannot reach it — so without the exemption every import
+        would be refused by the gateway's own guard and the feature would
+        always fail."""
+        root = tmp_path / "voice-root"
+        root.mkdir()
+        snap = root / "kc-meetings-x-import" / "recording.wav"
+        snap.parent.mkdir()
+        snap.write_bytes(b"bytes")
+        monkeypatch.setattr(
+            "kiro_crew.sandbox.prime_voice_runtime_sandbox_paths", lambda: str(root)
+        )
+        with patch("kiro_crew.security.is_sensitive_path", return_value=True):
+            assert transcribe._is_sensitive_audio_path(str(snap)) is False
+
+    @pytest.mark.skipif(not hasattr(os, "symlink"), reason="platform has no symlinks")
+    def test_a_link_planted_under_the_runtime_root_is_still_judged(self, tmp_path, monkeypatch):
+        """The exemption is by REAL path: a link under the root resolves to its
+        target outside it and is judged as whatever it points at."""
+        root = tmp_path / "voice-root"
+        root.mkdir()
+        outside = tmp_path / "outside.wav"
+        outside.write_bytes(b"bytes")
+        link = root / "recording.wav"
+        link.symlink_to(outside)
+        monkeypatch.setattr(
+            "kiro_crew.sandbox.prime_voice_runtime_sandbox_paths", lambda: str(root)
+        )
+        with patch("kiro_crew.security.is_sensitive_path", return_value=True):
+            assert transcribe._is_sensitive_audio_path(str(link)) is True
 
 
 class TestTranscriptRedaction:
@@ -1940,6 +2017,107 @@ class TestBundledFfmpeg:
         await transcribe._close_ffmpeg_for_execution(opened)
         with pytest.raises(OSError):
             os.fstat(descriptor)
+
+    @pytest.mark.asyncio
+    async def test_every_spawn_is_pinned_to_local_protocols(self, monkeypatch):
+        """GPT review r19: the import suffix allowlist is not a content check,
+        so an allowed-suffix file whose bytes are an HLS/ffconcat playlist
+        reaches the demuxer — which would then FETCH the playlist's segment
+        URLs (SSRF). Every spawn must therefore carry FFmpeg's protocol
+        allowlist flag (pinned to ``file,pipe``) AHEAD of the caller's args,
+        so it precedes every ``-i`` and applies to nested (playlist-segment)
+        opens too."""
+        captured: list[tuple[str, ...]] = []
+        sentinel = object()
+
+        async def fake_spawn(execution_path, *args, **kwargs):
+            captured.append(args)
+            return sentinel
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+        result = await transcribe._create_ffmpeg_subprocess(
+            "ffmpeg", "-y", "-i", "/tmp/a.wav", "out.ogg"
+        )
+        assert result is sentinel
+        flag = "-protocol_whitelist"  # wokeignore:rule=whitelist
+        assert captured[0][:2] == (flag, "file,pipe")
+        assert captured[0].index(flag) < captured[0].index("-i")
+
+    def test_every_import_suffix_has_a_forced_demuxer(self):
+        """GPT review r20: the protocol pin stops NETWORK fetches, but an
+        auto-probed playlist demuxer could still open other LOCAL files its
+        text names — reads that never went through ``validate_file_path``.
+        Forcing the validated suffix's own demuxer turns playlist text into a
+        decode error. Every import-admissible suffix must therefore map to a
+        demuxer, so no attacker-influenced input ever falls back to content
+        sniffing."""
+        from kiro_crew.apps.builtins.meetings.backend import constants as k
+
+        for suffix in k.IMPORT_AUDIO_EXTENSIONS:
+            forced = transcribe._forced_demuxer_args(f"/tmp/talk{suffix}")
+            assert forced and forced[0] == "-f", f"no forced demuxer for {suffix}"
+        # Internal temp files with unrecognized names keep the old behaviour.
+        assert transcribe._forced_demuxer_args("/tmp/unknown.xyz") == ()
+
+    @pytest.mark.skipif(os.name == "nt", reason="descriptor paths are the POSIX branch")
+    def test_a_descriptor_path_resolves_the_pinned_files_real_suffix(self, tmp_path):
+        """An import hands consumers ``/dev/fd/N`` (GPT review r21). Format
+        decisions must follow the suffix of the file the descriptor REALLY
+        holds — resolved through the kernel, never the mutable name."""
+        real = tmp_path / "talk.webm"
+        real.write_bytes(b"x")
+        fd = os.open(str(real), os.O_RDONLY)
+        try:
+            dev_path = f"/dev/fd/{fd}"
+            assert transcribe._input_suffix(dev_path) == ".webm"
+            assert transcribe._forced_demuxer_args(dev_path) == ("-f", "matroska,webm")
+        finally:
+            os.close(fd)
+        # Closed descriptor: the suffix is unknowable, and the demuxer pin
+        # refuses rather than letting FFmpeg sniff the content.
+        assert transcribe._input_suffix(dev_path) is None
+        with pytest.raises(OSError):
+            transcribe._forced_demuxer_args(dev_path)
+
+    @pytest.mark.skipif(os.name == "nt", reason="descriptor paths are the POSIX branch")
+    def test_a_descriptor_input_renamed_to_an_unmapped_suffix_is_refused(self, tmp_path):
+        """The r25 attack: the suffix behind ``/dev/fd/N`` follows the
+        descriptor's CURRENT name, so a same-uid rename that strips the suffix
+        after pinning would drop the forced demuxer and re-enable content
+        sniffing. A descriptor input must REFUSE on an unmapped suffix — the
+        sniffing fallback belongs only to plain-path internal temps."""
+        real = tmp_path / "talk.webm"
+        real.write_bytes(b"x")
+        fd = os.open(str(real), os.O_RDONLY)
+        try:
+            os.rename(real, tmp_path / "talk")  # the racer strips the suffix
+            with pytest.raises(OSError, match="unmapped suffix"):
+                transcribe._forced_demuxer_args(f"/dev/fd/{fd}")
+        finally:
+            os.close(fd)
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name == "nt", reason="descriptor paths are the POSIX branch")
+    async def test_descriptor_inputs_are_inherited_by_the_ffmpeg_child(self, tmp_path, monkeypatch):
+        """A ``/dev/fd/N`` argv entry is useless to the child unless N survives
+        the exec: the spawn seam must put it in ``pass_fds``."""
+        real = tmp_path / "talk.wav"
+        real.write_bytes(b"x")
+        fd = os.open(str(real), os.O_RDONLY)
+        captured: dict = {}
+
+        async def fake_spawn(program, *args, **kwargs):
+            captured["kwargs"] = kwargs
+            return object()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+        try:
+            await transcribe._create_ffmpeg_subprocess(
+                "ffmpeg", "-y", "-i", f"/dev/fd/{fd}", "out.ogg"
+            )
+            assert fd in captured["kwargs"].get("pass_fds", ())
+        finally:
+            os.close(fd)
 
     @pytest.mark.asyncio
     async def test_failed_spawn_closes_handle_off_event_loop(self, monkeypatch, tmp_path):
@@ -2904,3 +3082,229 @@ class TestFfmpegIsNotResolvedFromPath:
                 assert os.path.basename(d.rstrip(os.sep)) in (
                     "bin",
                 ), f"{d} is not a package-manager bin directory"
+
+
+class TestBatchDurationCap:
+    """The provider-aware ceiling the meetings import route gates on."""
+
+    def _cfg(self, provider: str) -> SimpleNamespace:
+        return SimpleNamespace(provider=provider)
+
+    def test_the_local_provider_has_the_decoder_ceiling(self):
+        assert transcribe.batch_duration_cap_secs(self._cfg("local")) == transcribe._MAX_AUDIO_SECS
+
+    def test_the_apple_provider_shares_the_ceiling(self):
+        """The Apple lane's to-native remux is bounded with ``-t`` (an
+        unbounded conversion could exhaust the temp volume, GPT review r23),
+        so the import gate must refuse over-cap recordings for it too."""
+        assert transcribe.batch_duration_cap_secs(self._cfg("apple")) == transcribe._MAX_AUDIO_SECS
+
+    def test_providers_that_fail_loudly_have_no_ceiling(self):
+        """AWS refuses an oversized payload outright, so it needs — and may
+        impose — no local ceiling."""
+        assert transcribe.batch_duration_cap_secs(self._cfg("transcribe")) is None
+
+    def test_an_unrecognised_provider_gets_the_local_ceiling(self):
+        """The dispatch in transcribe_audio lands unknown providers on the local
+        engine, so the cap answer must travel with them."""
+        assert (
+            transcribe.batch_duration_cap_secs(self._cfg("something-new"))
+            == transcribe._MAX_AUDIO_SECS
+        )
+
+
+class TestAudioExceedsSecs:
+    """Duration verdicts: exact for WAV headers, honest None when unanswerable."""
+
+    def _write_wav(self, path, seconds: int, rate: int = 100) -> None:
+        with wave.open(str(path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(rate)
+            wav.writeframes(b"\x00\x00" * (seconds * rate))
+
+    @pytest.mark.asyncio
+    async def test_a_short_wav_is_under_the_cap(self, tmp_path):
+        p = tmp_path / "short.wav"
+        self._write_wav(p, seconds=5)
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is False
+
+    @pytest.mark.asyncio
+    async def test_a_wav_over_the_cap_is_detected_from_the_header_alone(self, tmp_path):
+        """No decode and no sample read: the verdict is header math, which is
+        how a multi-hour meeting WAV can be refused instantly."""
+        p = tmp_path / "marathon.wav"
+        self._write_wav(p, seconds=11)
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is True
+
+    @pytest.mark.asyncio
+    async def test_a_wav_exactly_at_the_cap_is_not_over_it(self, tmp_path):
+        p = tmp_path / "exact.wav"
+        self._write_wav(p, seconds=10)
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is False
+
+    @pytest.mark.asyncio
+    async def test_a_nonwav_with_no_ffmpeg_is_unanswerable_not_wrong(self, tmp_path, monkeypatch):
+        """None, not False: without the decoder there is no answer — and the
+        transcode that would truncate needs the same missing binary, so nothing
+        is silently lost by proceeding."""
+        p = tmp_path / "memo.opus"
+        p.write_bytes(b"not really audio")
+
+        async def _no_decoder():
+            return None
+
+        monkeypatch.setattr(transcribe, "_resolve_ffmpeg_for_execution", _no_decoder)
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is None
+
+    def test_the_progress_parser_reads_the_last_out_time(self):
+        """ffmpeg emits a progress block per interval; only the final decoded
+        timestamp is the file's (bounded) duration."""
+        stdout = b"out_time_us=1000000\nprogress=continue\nout_time_us=3601000000\nprogress=end\n"
+        matches = transcribe._PROGRESS_OUT_TIME_RE.findall(stdout)
+        assert int(matches[-1]) / 1_000_000 == 3601.0
+
+    def test_wav_duration_math_ignores_sample_rate_mismatches(self, tmp_path):
+        """_pcm_from_wav would reject a 44.1 kHz file (ffmpeg's job), but the
+        duration answer is pure header math and stays exact for any rate."""
+        p = tmp_path / "hifi.wav"
+        self._write_wav(p, seconds=7, rate=200)
+        assert transcribe._wav_duration_secs(str(p)) == 7.0
+
+    def test_an_unreadable_file_has_no_wav_duration(self, tmp_path):
+        p = tmp_path / "not.wav"
+        p.write_bytes(b"RIFF but not really")
+        assert transcribe._wav_duration_secs(str(p)) is None
+
+
+class _FakeFfmpegProc:
+    """Stand-in for the ffmpeg probe child: scripted stdout/returncode, and a
+    hang mode that blocks until kill() so the timeout arm and _kill_and_reap
+    can both be exercised without a real process (or a real platform)."""
+
+    def __init__(self, stdout: bytes = b"", returncode: int = 0, hang: bool = False) -> None:
+        self._stdout = stdout
+        self.returncode = returncode
+        self._hang = hang
+        self._released = asyncio.Event()
+        self.killed = False
+
+    async def communicate(self):
+        if self._hang and not self.killed:
+            await self._released.wait()
+        return self._stdout, b""
+
+    def kill(self) -> None:
+        self.killed = True
+        self._released.set()
+
+
+class TestAudioExceedsSecsProbe:
+    """The ffmpeg null-decode branch, driven through a scripted child process."""
+
+    def _arm(self, monkeypatch, proc):
+        async def _resolve():
+            return "/opt/fake/ffmpeg"
+
+        async def _spawn(_executable, *_argv, **_kw):
+            if isinstance(proc, BaseException):
+                raise proc
+            return proc
+
+        monkeypatch.setattr(transcribe, "_resolve_ffmpeg_for_execution", _resolve)
+        monkeypatch.setattr(transcribe, "_create_ffmpeg_subprocess", _spawn)
+
+    @pytest.mark.asyncio
+    async def test_a_decode_past_the_cap_answers_true(self, tmp_path, monkeypatch):
+        p = tmp_path / "long.webm"
+        p.write_bytes(b"x")
+        stdout = b"out_time_us=5000000\nprogress=continue\nout_time_us=11000000\nprogress=end\n"
+        self._arm(monkeypatch, _FakeFfmpegProc(stdout=stdout))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("returncode", [0, 1])
+    async def test_the_probe_closes_the_authenticated_handle_off_loop(
+        self, tmp_path, monkeypatch, returncode
+    ):
+        """GPT+Opus review r33: after #8918 moved close ownership to callers,
+        the probe resolved an authenticated handle and never closed it, so the
+        blocking ``os.close`` ran on the gateway event loop via ``__del__``.
+        Every exit — success and failure alike — must release the handle
+        through ``_close_ffmpeg_for_execution``, off the loop thread, like the
+        module's sibling spawn sites."""
+        import threading
+
+        p = tmp_path / "talk.webm"
+        p.write_bytes(b"x")
+        loop_thread = threading.get_ident()
+        close_threads: list[int] = []
+
+        handle = transcribe._AuthenticatedFfmpeg("src", -1, "/opt/fake/ffmpeg")
+        original_close = transcribe._AuthenticatedFfmpeg.close
+
+        def recording_close(self):
+            close_threads.append(threading.get_ident())
+            original_close(self)
+
+        monkeypatch.setattr(transcribe._AuthenticatedFfmpeg, "close", recording_close)
+
+        async def _resolve():
+            return handle
+
+        stdout = b"out_time_us=2000000\nprogress=end\n" if returncode == 0 else b""
+        proc = _FakeFfmpegProc(stdout=stdout, returncode=returncode)
+
+        async def _spawn(_executable, *_argv, **_kw):
+            return proc
+
+        monkeypatch.setattr(transcribe, "_resolve_ffmpeg_for_execution", _resolve)
+        monkeypatch.setattr(transcribe, "_create_ffmpeg_subprocess", _spawn)
+        await transcribe.audio_exceeds_secs(str(p), 10)
+        assert len(close_threads) == 1, "the handle must be closed exactly once"
+        assert close_threads[0] != loop_thread, "the close must run off the event loop"
+
+    @pytest.mark.asyncio
+    async def test_a_decode_under_the_cap_answers_false(self, tmp_path, monkeypatch):
+        p = tmp_path / "short.webm"
+        p.write_bytes(b"x")
+        self._arm(monkeypatch, _FakeFfmpegProc(stdout=b"out_time_us=2000000\nprogress=end\n"))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_decode_is_unanswerable(self, tmp_path, monkeypatch):
+        p = tmp_path / "corrupt.webm"
+        p.write_bytes(b"x")
+        self._arm(monkeypatch, _FakeFfmpegProc(returncode=1))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is None
+
+    @pytest.mark.asyncio
+    async def test_a_decode_with_no_progress_output_is_unanswerable(self, tmp_path, monkeypatch):
+        p = tmp_path / "odd.webm"
+        p.write_bytes(b"x")
+        self._arm(monkeypatch, _FakeFfmpegProc(stdout=b""))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is None
+
+    @pytest.mark.asyncio
+    async def test_a_hung_probe_times_out_reaps_the_child_and_answers_none(
+        self, tmp_path, monkeypatch
+    ):
+        p = tmp_path / "hang.webm"
+        p.write_bytes(b"x")
+        proc = _FakeFfmpegProc(hang=True)
+        self._arm(monkeypatch, proc)
+        assert await transcribe.audio_exceeds_secs(str(p), 10, timeout_secs=0) is None
+        assert proc.killed, "the timed-out child must be killed, not leaked"
+
+    @pytest.mark.asyncio
+    async def test_an_unspawnable_ffmpeg_is_unanswerable(self, tmp_path, monkeypatch):
+        p = tmp_path / "noexec.webm"
+        p.write_bytes(b"x")
+        self._arm(monkeypatch, OSError("exec format error"))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is None
+
+    def test_the_capless_answer_loads_config_when_none_is_given(self, monkeypatch):
+        monkeypatch.setattr(
+            transcribe, "_load_stt_config", lambda: SimpleNamespace(provider="transcribe")
+        )
+        assert transcribe.batch_duration_cap_secs() is None

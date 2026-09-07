@@ -63,6 +63,7 @@ function config(over: Record<string, unknown> = {}) {
     piper_model: '',
     piper_model_config: '',
     piper_length_scale: 1.0,
+    system_voice: '',
     ...over,
   } as VoiceConfig
 }
@@ -75,6 +76,15 @@ const CATALOGUE = {
   ],
 }
 
+/** The host engine's listing, as `/api/voice/system-voices` returns it. */
+const SYSTEM_VOICES = {
+  available: true,
+  voices: [
+    { id: 'Alex', name: 'Alex', language: 'en-US' },
+    { id: 'Tingting', name: 'Tingting', language: 'zh-CN' },
+  ],
+}
+
 interface SeedOpts {
   /** Reject the config query instead of resolving it. */
   configFails?: boolean
@@ -84,6 +94,10 @@ interface SeedOpts {
   voicesFail?: boolean
   /** Reject the save, driving the `onError` rollback arm. */
   saveFails?: boolean
+  /** Report a host with no built-in speech engine. */
+  systemUnavailable?: boolean
+  /** Reject the host-voice probe, driving the inline notice + retry. */
+  systemVoicesFail?: boolean
 }
 
 function seed(over: Record<string, unknown> = {}, opts: SeedOpts = {}) {
@@ -98,12 +112,18 @@ function seed(over: Record<string, unknown> = {}, opts: SeedOpts = {}) {
   if (opts.voicesFail) voices.mockRejectedValue(new Error('no aws cli'))
   else voices.mockResolvedValue(CATALOGUE)
 
+  const systemVoices = vi.spyOn(api, 'voiceSystemVoices')
+  if (opts.systemVoicesFail) systemVoices.mockRejectedValue(new Error('probe failed'))
+  else systemVoices.mockResolvedValue(
+    opts.systemUnavailable ? { available: false, voices: [] } : SYSTEM_VOICES,
+  )
+
   const save = vi.spyOn(api, 'updateVoiceConfig')
   if (opts.saveFails) save.mockRejectedValue(new Error('write refused'))
   else save.mockImplementation(async (patch: object) => ({ ...cfg, ...patch }) as VoiceConfig)
 
   const view = renderWithProviders(<VoicePanel />)
-  return { ...view, cfg, load, voices, save }
+  return { ...view, cfg, load, voices, systemVoices, save }
 }
 
 /** A field's label proves the success branch rendered. */
@@ -204,6 +224,117 @@ describe('VoicePanel piper fields', () => {
     await field('Piper Model')
     await pick(/^Provider$/, 'Amazon Polly (cloud)')
     await waitFor(() => expect(save).toHaveBeenCalledWith({ provider: 'polly' }))
+  })
+})
+
+/* ── System (built-in engine, the default provider) ───────────────────────── */
+
+describe('VoicePanel system fields', () => {
+  it('renders the built-in field set and no other provider fields', async () => {
+    seed({ provider: 'system' })
+    expect(await screen.findByRole('combobox', { name: /^Voice$/ })).toBeTruthy()
+    expect(select(/^Speed$/)).toBeTruthy()
+    expect(screen.queryByText('Piper Model')).toBeNull()
+    expect(screen.queryByText('Piper Binary')).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /^Engine$/ })).toBeNull()
+    expect(screen.queryByText('AWS Profile (Amazon Polly)')).toBeNull()
+  })
+
+  it('does not fetch the Polly catalogue for a built-in-engine user', async () => {
+    const { voices } = seed({ provider: 'system' })
+    await screen.findByRole('combobox', { name: /^Voice$/ })
+    expect(voices).not.toHaveBeenCalled()
+  })
+
+  it('does not probe the host engine while another provider is selected', async () => {
+    const { systemVoices } = seed({ provider: 'piper' })
+    await field('Piper Model')
+    expect(systemVoices).not.toHaveBeenCalled()
+  })
+
+  it('offers the OS default alongside each enumerated voice', async () => {
+    seed({ provider: 'system' })
+    await screen.findByRole('combobox', { name: /^Voice$/ })
+    await waitFor(() => expect(screen.getByText('Operating system default')).toBeTruthy())
+    fireEvent.click(select(/^Voice$/))
+    expect(await screen.findByRole('option', { name: 'Alex (en-US)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Tingting (zh-CN)' })).toBeTruthy()
+  })
+
+  it('saves the picked built-in voice', async () => {
+    const { save } = seed({ provider: 'system' })
+    await screen.findByRole('combobox', { name: /^Voice$/ })
+    await pick(/^Voice$/, 'Tingting (zh-CN)')
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ system_voice: 'Tingting' }))
+  })
+
+  it('saves speed as the shared rate percentage, not length_scale', async () => {
+    const { save } = seed({ provider: 'system' })
+    await screen.findByRole('combobox', { name: /^Voice$/ })
+    await pick(/^Speed$/, '120%')
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ rate: '120%' }))
+  })
+
+  it('reports a missing engine neutrally, not as an error, and offers a neutral re-check rather than a failure Retry', async () => {
+    // A probe that SUCCEEDED and found no engine is status, not a failure, so
+    // it must not render through the error surface. The re-check is what makes
+    // the "install espeak-ng" instruction actionable: the voices query caches
+    // for an hour, so following it would otherwise change nothing until a
+    // full reload.
+    const { systemVoices } = seed({ provider: 'system' }, { systemUnavailable: true })
+    const line = await screen.findByTestId('system-engine-absent', undefined, { timeout: 5_000 })
+    expect(line.textContent).toMatch(/no built-in speech engine/i)
+    expect(line.querySelector('[role="alert"]')).toBeNull()
+    await waitFor(() => {
+      expect(select(/^Voice$/).getAttribute('data-disabled')).not.toBeNull()
+    })
+    const calls = systemVoices.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(systemVoices.mock.calls.length).toBeGreaterThan(calls))
+  })
+
+  it('disables the re-fetch button while the probe is in flight', async () => {
+    // The probe spawns a subprocess, so it takes real time. Leaving the button
+    // idle and the notice unchanged makes the click look ignored and invites
+    // re-clicks, each spawning another probe.
+    const { systemVoices } = seed({ provider: 'system' }, { systemUnavailable: true })
+    await screen.findByTestId('system-engine-absent', undefined, { timeout: 5_000 })
+    let release: (() => void) | undefined
+    systemVoices.mockImplementationOnce(
+      () => new Promise(resolve => { release = () => resolve({ available: false, voices: [] }) }),
+    )
+    const btn = screen.getByRole('button', { name: 'Check again' })
+    expect(btn.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(btn)
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Check again' }).hasAttribute('disabled')).toBe(true),
+    )
+    release?.()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Check again' }).hasAttribute('disabled')).toBe(false),
+    )
+  })
+
+  it('surfaces a failed voice probe instead of a silent default-only picker', async () => {
+    // Without this the dropdown collapses to one entry and reads as "this host
+    // has a single voice" rather than as a failure.
+    const { systemVoices } = seed({ provider: 'system' }, { systemVoicesFail: true })
+    await screen.findByText(/Could not read the host's voice list/i, undefined, { timeout: 5_000 })
+    // A real failure DOES render as an error, and hands off to the agent: this
+    // branch mounts no editable field, so the navigation destroys no draft.
+    expect(screen.getByRole('button', { name: /ask.*agent/i })).toBeTruthy()
+    // One label for one operation: both branches trigger the same refetch, so
+    // a returning user does not learn two words for the same act.
+    const calls = systemVoices.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(systemVoices.mock.calls.length).toBeGreaterThan(calls))
+  })
+
+  it('switches provider to Piper from the dropdown', async () => {
+    const { save } = seed({ provider: 'system' })
+    await screen.findByRole('combobox', { name: /^Voice$/ })
+    await pick(/^Provider$/, 'Piper (local, offline)')
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ provider: 'piper' }))
   })
 })
 

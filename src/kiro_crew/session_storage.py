@@ -791,8 +791,21 @@ def select_reclaimable(
 
 
 def _pod_root() -> Path:
+    """The host-side pod root, anchored the same way ``pod.config`` anchors it.
+
+    A SECOND reader of ``KIROCREW_POD_ROOT``, independent of :class:`PodConfig`
+    (this module must not import the pod package). It gets the same
+    ``expanduser`` + ``abspath`` treatment for the same reason: a relative
+    override resolved against this process's working directory, so a gateway
+    started from ``/`` scanned a different root than the CLI that wrote it and
+    the co-tenant probe below silently found nothing. See
+    ``pod.config._canonical_override`` for the full rationale; the two must not
+    drift, which is why the rule is restated rather than left implicit.
+    """
     raw = os.environ.get("KIROCREW_POD_ROOT")
-    return Path(raw).expanduser() if raw else Path.home() / ".kirocrew-pods"
+    if not raw:
+        return Path.home() / ".kirocrew-pods"
+    return Path(os.path.abspath(os.path.expanduser(raw)))
 
 
 def _replay_store_cotenants() -> list[str]:

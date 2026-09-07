@@ -205,6 +205,7 @@ class CronSDK:
         enabled: bool,
         timezone: str,
         skip_dates: list[str] | None,
+        folder_id: str = "",
     ) -> dict[str, Any]:
         """Build the kwargs common to the sync/async ``CronService.add_job``.
 
@@ -234,6 +235,7 @@ class CronSDK:
             enabled=enabled,
             timezone=timezone or "",
             skip_dates=skip_dates or None,
+            folder_id=folder_id or "",
             created_by=self._owner_prefix,
         )
 
@@ -270,6 +272,11 @@ class CronSDK:
         save, so an unknown zone or a malformed ``YYYY-MM-DD`` raises
         ``ValueError`` at create time instead of silently resolving to UTC when
         the job fires.
+
+        A manifest folder is NOT assignable here: app cron registration goes
+        through :meth:`add_job_if_absent_async`, which is the only method
+        ``bridges`` calls, so a ``folder_id`` on this method would be an
+        untested parameter no caller reaches.
         """
         self._vet_command_script(name, command, script)
         job = _run_sync_mutator(
@@ -311,7 +318,8 @@ class CronSDK:
 
         ``timezone``/``skip_dates`` behave exactly as in :meth:`add_job` --
         validated at the persistence owner and folded into the single locked
-        save, so a job never exists with the wrong calendar settings.
+        save, so a job never exists with the wrong calendar settings. Folder
+        assignment is likewise absent for the reason given there.
         """
         self._vet_command_script(name, command, script)
         job = await self._cron.add_job_async(
@@ -343,6 +351,7 @@ class CronSDK:
         enabled: bool = True,
         timezone: str = "",
         skip_dates: list[str] | None = None,
+        folder_id: str = "",
     ) -> Any:
         """Atomic add-if-absent by job name; returns None when already present.
 
@@ -365,6 +374,7 @@ class CronSDK:
                 command=command, script=script, agent_sequence=agent_sequence,
                 env=env, persistent_session=persistent_session, silent=silent,
                 enabled=enabled, timezone=timezone, skip_dates=skip_dates,
+                folder_id=folder_id,
             ),
         )
         if job is not None:

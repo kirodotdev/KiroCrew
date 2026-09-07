@@ -102,8 +102,16 @@ extrapolating onto a 64-core host nobody measured.
 
 ## Voice Output (Text-to-Speech)
 
-Kiro Crew can speak responses aloud, through local Piper by default or through
-Amazon Polly. Two modes are available:
+Kiro Crew can speak responses aloud. Three providers are available, and the
+default needs nothing installed:
+
+| Provider | What it needs | Notes |
+|---|---|---|
+| `system` (default) | nothing on macOS and Windows | The host's own engine: `say` on macOS, `System.Speech` through Windows PowerShell on Windows, `espeak-ng` on Linux when installed. Linux is the one platform where it can be missing; install `espeak-ng` (about 355 kB) or pick another provider. |
+| `piper` | the `piper` binary plus a voice model on disk | Best offline quality. `pip install piper-tts` publishes wheels for macOS, Linux and Windows x64. |
+| `polly` | the `aws` CLI, AWS credentials, network | Paid AWS service, and it asks you to confirm the account first. |
+
+Two playback modes are available:
 
 ### Auto-Speak (Non-Interruptive Streaming)
 
@@ -114,7 +122,8 @@ synthesizes each sentence as soon as it's complete.
 **How it works:**
 1. The assistant starts streaming a response.
 2. As each sentence completes (detected by `.` `!` `?` boundaries), it's sent
-   to Amazon Polly for synthesis.
+   for synthesis. Polly streams sentence by sentence; the local providers
+   return one clip per request.
 3. Audio chunks arrive via WebSocket and play sequentially.
 4. When the response finishes, any remaining text is spoken.
 
@@ -126,7 +135,8 @@ you can interrupt at any time by typing or speaking your next message.
 **Enable it:**
 1. Open **Settings > Voice**.
 2. Toggle **Auto-speak Responses** on.
-3. Configure your AWS profile if needed (Polly requires AWS credentials).
+3. Nothing else on macOS or Windows — the built-in engine is already selected.
+   Pick a voice matching your language if the OS default speaks another one.
 
 ### Manual Replay
 
@@ -162,7 +172,7 @@ Settings are in **Settings > Voice**, or directly in
 {
   "voice_reply": {
     "enabled": true,
-    "provider": "polly",
+    "provider": "system",
     "auto_reply_to_voice": true,
 
     "voice_id": "Ruth",
@@ -175,7 +185,9 @@ Settings are in **Settings > Voice**, or directly in
     "piper_binary": "",
     "piper_model": "",
     "piper_model_config": "",
-    "piper_length_scale": 1.0
+    "piper_length_scale": 1.0,
+
+    "system_voice": ""
   }
 }
 ```
@@ -183,17 +195,19 @@ Settings are in **Settings > Voice**, or directly in
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | `enabled` | `false` | Turn on voice replies for **every** Kiro Crew response (text-triggered). Also seeds the `auto_reply_to_voice` default — see below. |
-| `provider` | `"piper"` | TTS backend: `"piper"` (local, offline) or `"polly"` (AWS, cloud, and billed). An unrecognized value falls back to `piper` with a warning logged: reaching for a paid service is not a choice a typo may make for you. |
+| `provider` | `"system"` | TTS backend: `"system"` (the host's built-in engine, nothing to install), `"piper"` (local, offline, better quality) or `"polly"` (AWS, cloud, and billed). An unrecognized value falls back to `system` with a warning logged: reaching for a paid service is not a choice a typo may make for you. If the key is ABSENT but `piper_model` is set, Piper is kept, so an existing Piper install is not silently downgraded on upgrade. |
 | `auto_reply_to_voice` | _follows `enabled`_ | **Voice-triggered**: when the user sends a voice memo, auto-respond with voice. Defaults to whatever `enabled` is — set explicitly to override. |
-| **Polly-specific** | | ignored when `provider="piper"` |
+| `rate` | `100%` | 50%–200%. Shared by `polly` and `system`; `piper` uses `piper_length_scale` instead |
+| **Built-in-engine-specific** | | ignored by the other providers |
+| `system_voice` | _(OS default)_ | The engine's own voice selector: a voice name for `say` and Windows, a language code for `espeak-ng`. Pick one in **Settings > Voice** rather than typing it |
+| **Polly-specific** | | ignored by the other providers |
 | `voice_id` | `Ruth` | Any [Amazon Polly voice](https://docs.aws.amazon.com/polly/latest/dg/voicelist.html) |
 | `engine` | `generative` | `generative`, `neural`, `long-form`, `standard` |
-| `rate` | `100%` | 50%–200% |
 | `pitch` | `+0%` | -20% to +20% (neural/standard only) |
 | `aws_profile` | _(empty)_ | AWS CLI profile; empty = default credentials |
 | `region` | _(empty)_ | AWS region for Polly; empty = CLI default |
-| **Piper-specific** | | ignored when `provider="polly"` |
-| `piper_binary` | _(auto-detect)_ | Path to `piper` CLI. Auto-detects `piper` on `PATH` and `~/piper-venv/bin/piper` |
+| **Piper-specific** | | ignored by the other providers |
+| `piper_binary` | _(auto-detect)_ | Path to `piper` CLI. Auto-detects `piper` on `PATH`, then the console script in `~/piper-venv` (`Scripts\piper.exe` on Windows, `bin/piper` elsewhere) |
 | `piper_model` | _(required)_ | Absolute path to a piper voice `.onnx` model |
 | `piper_model_config` | _(optional)_ | Path to `.onnx.json` config; piper auto-detects one next to the `.onnx` |
 | `piper_length_scale` | `1.0` | Speech speed. `<1` faster, `>1` slower |

@@ -68,6 +68,17 @@ def schemas() -> list[dict[str, Any]]:
                             "IDs with knowledge_list_sources."
                         ),
                     },
+                    "namespace": {
+                        "type": "string",
+                        "description": (
+                            "Optional namespace to scope keyword/vector seeding "
+                            "to documents filed under one organisational label "
+                            "(graph traversal still surfaces cross-namespace "
+                            "connections). This is a relevance filter, not a "
+                            "security boundary. Discover namespaces in the "
+                            "dashboard Knowledge panel; composes with source_id."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -176,6 +187,7 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     query = args["query"]
     limit = args.get("limit", 3)
     source_id = args.get("source_id") or None
+    namespace = args.get("namespace") or None
 
     db_path = Path(mcp_core.config_dir()) / "workspace" / "knowledge" / "knowledge.db"
     if not db_path.exists():
@@ -225,7 +237,7 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     embed_fn = embedder.embed if embedder and embedder.is_available() else None
     retriever = mcp_core.HybridRetriever(store, embedder=embed_fn)
 
-    results = retriever.search(query, limit=limit, source_id=source_id)
+    results = retriever.search(query, limit=limit, source_id=source_id, namespace=namespace)
 
     # Filter by minimum confidence score
     min_score = 0.012

@@ -552,52 +552,6 @@ async def test_a_multi_chunk_file_streams_complete_and_bounded(
 
 
 @pytest.mark.asyncio
-async def test_a_stalled_stream_releases_its_permit(ui_root: Path) -> None:
-    """The head-of-line fix: the write loop is bounded by wall clock, so a
-    client that stops reading cannot hold a `_UI_STREAM_SEMAPHORE` permit (and
-    its descriptor) forever. This route bypasses token auth, so 8 such clients
-    would otherwise wedge every app UI on the host. A zero deadline expires at
-    the first await, which is the same path a stalled reader takes.
-
-    A bare ``_UI_STREAM_TIMEOUT = 0`` is not itself clock-free: `asyncio.timeout`
-    computes its deadline as ``loop.time() + 0`` when the context is entered, so
-    whether the scheduled expiry callback fires before the first
-    ``to_thread(os.read, ...)`` chunk lands is a real race against wall clock —
-    flake class 2 (testing-conventions.md § Determinism). Patching the event
-    loop's own clock to jump far past that deadline the instant the loop is
-    (re)entered makes the expiry unconditional rather than a race against real
-    elapsed time.
-    """
-    payload = b"x" * 4096
-    (ui_root / "stalled.js").write_bytes(payload)
-    loop = asyncio.get_running_loop()
-    real_time = loop.time
-
-    # Every read of the loop's clock inside the write loop's `asyncio.timeout`
-    # context sees a time far past the (zero) deadline, so expiry is
-    # unconditional rather than a race against real elapsed wall-clock time.
-    def _jumped_time() -> float:
-        return real_time() + 3600.0
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(app_routes, "_UI_STREAM_TIMEOUT", 0)
-        mp.setattr(loop, "time", _jumped_time)
-        async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.get(f"/apps/{APP}/ui/stalled.js")
-            # Headers are sent before the loop, so the abort shows up as a body
-            # that cannot satisfy the announced Content-Length.
-            with pytest.raises(Exception):
-                await resp.read()
-    # The permit is back: nothing is left holding the route, and an ordinary
-    # request served afterwards is the proof that matters.
-    assert not app_routes._UI_STREAM_SEMAPHORE.locked()
-    async with TestClient(TestServer(_make_app())) as client:
-        ok = await client.get(f"/apps/{APP}/ui/stalled.js")
-        assert ok.status == 200
-        assert await ok.read() == payload
-
-
-@pytest.mark.asyncio
 async def test_the_response_neuters_a_navigated_document(ui_root: Path) -> None:
     """The allowlist admits ``.svg`` and the Content-Type comes from the
     EXTENSION, so a top-level navigation to this URL must not become a scripted

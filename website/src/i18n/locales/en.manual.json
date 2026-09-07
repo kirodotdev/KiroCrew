@@ -1554,6 +1554,7 @@
       "switch_to_voice": "Switch to voice",
       "drop_to_attach": "Drop to attach",
       "agent": "Agent: {{name}}",
+      "agent_inherited_default": "This session follows the default agent ({{name}}). It has no agent of its own, so it changes if the default does. Click to pin one.",
       "approve_sub_agent": "Approve sub-agent: {{name}}",
       "branch": "Branch: {{branch}}",
       "detached_head_at": "Detached HEAD at {{branch}}",
@@ -2126,7 +2127,8 @@
       "copy_diagram_source": "Copy diagram source",
       "diagram_source": "Diagram source",
       "copy_failed": "Copy failed",
-      "mermaid_render_failed": "Couldn’t render this diagram. Showing the source instead."
+      "mermaid_render_failed": "Couldn’t render this diagram. Showing the source instead.",
+      "image_position": "{{index}} of {{total}}"
     },
     "mcpAppFrame": {
       "collapse": "Collapse",
@@ -2220,6 +2222,8 @@
     "pastedChip": {
       "collapse_paste": "Collapse paste",
       "expand_paste": "Expand paste",
+      "hide_paste_preview": "Hide paste preview",
+      "show_paste_preview": "Show paste preview",
       "paste_lines_one": "[ Paste #{{seq}} · {{count}} line ]",
       "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]",
       "preview_more_lines_one": "… {{count}} more line",
@@ -2808,6 +2812,12 @@
       "could_not_load": "Could not load {{label}}",
       "loading": "Loading {{label}}…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "Formatted",
+      "raw": "Raw",
+      "render_the_markdown_headings_lists_tables_links": "Render the markdown - headings, lists, tables, links",
+      "show_the_exact_markdown_source": "Show the exact markdown source"
     }
   },
   "hooks": {
@@ -5391,16 +5401,24 @@
         "where_to_find_the_client_secret": "Where to find the client secret"
       },
       "voicePanel": {
-        "failed_to_save_voice_config": "Failed to save voice config",
         "amazon_polly_cloud": "Amazon Polly (cloud)",
+        "could_not_read_the_hosts_voice_list_only_the_operat": "Could not read the host's voice list. Only the operating system default is offered.",
+        "failed_to_save_voice_config": "Failed to save voice config",
         "faster": "Faster",
         "fastest": "Fastest",
         "normal": "Normal",
+        "os_default_voice": "Operating system default",
         "piper_local_offline": "Piper (local, offline)",
         "slow": "Slow",
         "slower": "Slower",
         "slowest": "Slowest",
-        "voice_catalogue_unavailable": "Could not load the Polly voice list. The picker shows a built-in fallback list."
+        "system_built_in": "System (built-in)",
+        "the_built_in_engine_needs_no_setup_piper_is_offlin": "The built-in engine needs no setup; Piper is offline with better quality; Amazon Polly uses AWS credentials + network",
+        "this_host_has_no_built_in_speech_engine_install_es": "This host has no built-in speech engine. Install espeak-ng (for example: sudo apt install espeak-ng), or pick another provider.",
+        "voice_catalogue_unavailable": "Could not load the Polly voice list. The picker shows a built-in fallback list.",
+        "voice_from_the_hosts_built_in_speech_engine": "Voice from the host's built-in speech engine",
+        "speech_rate_for_spoken_replies_built_in": "Speech rate for spoken replies (built-in engine)",
+        "speech_rate_for_spoken_replies_polly": "Speech rate for spoken replies (Amazon Polly)"
       },
       "iMessagePanel": {
         "access": "Access",

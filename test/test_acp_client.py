@@ -11520,6 +11520,162 @@ def _record(sink):
     return _send_request
 
 
+class TestColdCacheModelFallback:
+    """The cold-cache push twin of TestModelEntitlementPreflight.
+
+    ``resolve_wire_model_id`` folds onto the advertised spelling only when the
+    advertised cache is warm. On the first-ever session that cache is empty,
+    so a prefixed ``[1m]`` id reached the wire verbatim and the adapter
+    rejected it — resetting the session and dropping the user onto the default
+    with no explanation (the ``Invalid value for config option model:
+    global.anthropic.claude-sonnet-4-6[1m]`` report). The push helper derives
+    fallback spellings from the id itself and lets the adapter judge each.
+    """
+
+    @staticmethod
+    def _claude_client(model):
+        from kiro_crew.acp.client import ACP_BACKEND_CLAUDE, AcpClient
+
+        client = AcpClient()
+        client._session_id = "sess-1"
+        client._model = model
+        client._resolved_model_id = model
+        client._acp_backend = ACP_BACKEND_CLAUDE
+        return client
+
+    @staticmethod
+    def _rejecting_set_config_option(applied, accepted):
+        from kiro_crew.acp.client import AcpError
+
+        async def _set_config_option(config_id, value):
+            applied.append((config_id, value))
+            if value not in accepted:
+                raise AcpError(f"Invalid value for config option model: {value}")
+
+        return _set_config_option
+
+    @pytest.mark.asyncio
+    async def test_startup_falls_back_to_bare_spelling(self):
+        """The reported failure: prefixed [1m] id refused, bare spelling served."""
+        from kiro_crew.acp.client import DEFAULT_MODEL
+
+        client = self._claude_client("global.anthropic.claude-sonnet-4-6[1m]")
+        applied = []
+        client.set_config_option = self._rejecting_set_config_option(
+            applied, {"claude-sonnet-4-6[1m]"}
+        )
+
+        await client._apply_startup_model()
+
+        assert applied == [
+            ("model", "global.anthropic.claude-sonnet-4-6[1m]"),
+            ("model", "claude-sonnet-4-6[1m]"),
+        ]
+        # Records the spelling that actually went on the wire, not the refused
+        # one (the warm-pool re-apply path reads this field).
+        assert client._model == "claude-sonnet-4-6[1m]"
+        assert client._model != DEFAULT_MODEL
+
+    @pytest.mark.asyncio
+    async def test_startup_prefers_verbatim_when_accepted(self):
+        """A warm cache folds before the wire: the original id is accepted as-is."""
+        client = self._claude_client("claude-sonnet-4-6[1m]")
+        applied = []
+        client.set_config_option = self._rejecting_set_config_option(
+            applied, {"claude-sonnet-4-6[1m]"}
+        )
+
+        await client._apply_startup_model()
+
+        assert applied == [("model", "claude-sonnet-4-6[1m]")]
+        assert client._model == "claude-sonnet-4-6[1m]"
+
+    @pytest.mark.asyncio
+    async def test_startup_all_refused_stays_on_default(self):
+        """Every spelling refused = the withhold contract, not a crash."""
+        from kiro_crew.acp.client import DEFAULT_MODEL
+
+        client = self._claude_client("global.anthropic.claude-sonnet-4-6[1m]")
+        applied = []
+        client.set_config_option = self._rejecting_set_config_option(applied, set())
+
+        await client._apply_startup_model()
+
+        assert len(applied) == 3  # verbatim, prefix-stripped, fully bare
+        assert client._model == DEFAULT_MODEL
+
+    @pytest.mark.asyncio
+    async def test_explicit_switch_refused_raises_unavailable(self):
+        """set_model is an explicit pick: refusal is typed, never a silent lie."""
+        from kiro_crew.acp.client import AcpModelUnavailable
+
+        client = self._claude_client("claude-sonnet-4-6[1m]")
+        client.set_config_option = self._rejecting_set_config_option([], set())
+
+        with pytest.raises(AcpModelUnavailable):
+            await client.set_model("global.anthropic.claude-sonnet-4-6[1m]")
+
+    @pytest.mark.asyncio
+    async def test_explicit_switch_sends_accepted_fallback(self):
+        """An explicit pick that SOME spelling serves still lands on the model."""
+        client = self._claude_client("global.anthropic.claude-sonnet-4-6[1m]")
+        applied = []
+        client.set_config_option = self._rejecting_set_config_option(
+            applied, {"claude-sonnet-4-6[1m]"}
+        )
+
+        await client.set_model("global.anthropic.claude-sonnet-4-6[1m]")
+
+        assert applied[-1] == ("model", "claude-sonnet-4-6[1m]")
+        assert client._model == "claude-sonnet-4-6[1m]"
+        assert client._resolved_model_id == "claude-sonnet-4-6[1m]"
+
+    @pytest.mark.asyncio
+    async def test_unknown_config_option_skips_push(self):
+        """No 'model' option at all (other adapter build): no spelling retry."""
+        from kiro_crew.acp.client import DEFAULT_MODEL, AcpError
+
+        client = self._claude_client("global.anthropic.claude-sonnet-4-6[1m]")
+        applied = []
+
+        async def _unknown(config_id, value):
+            applied.append((config_id, value))
+            raise AcpError("Unknown config option: model")
+
+        client.set_config_option = _unknown
+
+        await client._apply_startup_model()
+
+        assert applied == [("model", "global.anthropic.claude-sonnet-4-6[1m]")]
+        assert client._model == DEFAULT_MODEL
+
+    @pytest.mark.asyncio
+    async def test_transport_error_propagates(self):
+        """A non-value-rejection failure is not ours to swallow."""
+        from kiro_crew.acp.client import AcpError
+
+        client = self._claude_client("claude-sonnet-4-6[1m]")
+
+        async def _transport(config_id, value):
+            raise AcpError("transport closed")
+
+        client.set_config_option = _transport
+
+        with pytest.raises(AcpError, match="transport closed"):
+            await client._apply_startup_model()
+
+    def test_candidate_order_is_derived_from_the_id(self):
+        from kiro_crew.acp.client import AcpClient
+
+        assert AcpClient._model_config_candidates("global.anthropic.claude-sonnet-4-6[1m]") == [
+            "global.anthropic.claude-sonnet-4-6[1m]",
+            "claude-sonnet-4-6[1m]",
+            "claude-sonnet-4-6",
+        ]
+        # No prefix / no window marker: single candidate, nothing derived.
+        assert AcpClient._model_config_candidates("claude-sonnet-4-6") == ["claude-sonnet-4-6"]
+
+
 class TestMiseNodeInstallsDir:
     """ACP node resolution must honour mise's real data root (#1605).
 

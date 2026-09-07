@@ -407,12 +407,18 @@ class TestCli:
         assert rc == 1
         assert "refusing to run" in capsys.readouterr().out
 
-    def test_real_embedder_refuses_when_absent(
+    def test_real_embedder_refuses_when_warmup_times_out(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import kiro_crew.knowledge.embedder as emb
 
-        monkeypatch.setattr(emb.InProcessEmbedder, "is_available", lambda self: False)
+        timeouts: list[float | None] = []
+
+        def _wait_ready(self: object, timeout: float | None = None) -> bool:
+            timeouts.append(timeout)
+            return False
+
+        monkeypatch.setattr(emb.InProcessEmbedder, "wait_ready", _wait_ready)
         rc = bench_cmd(
             _Args(
                 bench_action="kb-retrieval",
@@ -423,25 +429,35 @@ class TestCli:
             )
         )
         assert rc == 1
-        assert "not resident" in capsys.readouterr().out
+        assert timeouts == [120.0]
+        assert "did not become ready within 120 seconds" in capsys.readouterr().out
 
-    def test_real_embedder_reports_actual_model_identity(
+    def test_real_embedder_waits_and_reports_actual_model_identity(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A custom embedding model must be labeled truthfully in the report.
+        """A cold or custom embedding model is warmed and labeled truthfully.
 
-        Regression: the CLI hardcoded ``embedder_id = "qwen3-embedding:0.6b"``,
-        so a --real-embedder run whose ``InProcessEmbedder`` resolved a
-        different model still reported Qwen3. The label must come from
-        ``embedder.model``.
+        The CLI must use the explicit blocking readiness seam instead of the
+        non-blocking availability probe, then report the model actually serving
+        the run rather than a hardcoded Qwen3 label.
         """
         import kiro_crew.knowledge.embedder as emb
         from kiro_crew.eval.bench.toy_embedder import toy_embed_fn
 
         fake_model = "custom-embedding:test-9b"
         deterministic = toy_embed_fn()
+        timeouts: list[float | None] = []
 
-        monkeypatch.setattr(emb.InProcessEmbedder, "is_available", lambda self: True)
+        def _wait_ready(self: object, timeout: float | None = None) -> bool:
+            timeouts.append(timeout)
+            return True
+
+        monkeypatch.setattr(emb.InProcessEmbedder, "wait_ready", _wait_ready)
+        monkeypatch.setattr(
+            emb.InProcessEmbedder,
+            "is_available",
+            lambda self: pytest.fail("the non-blocking probe must not gate a one-shot run"),
+        )
         monkeypatch.setattr(emb.InProcessEmbedder, "model", property(lambda self: fake_model))
         monkeypatch.setattr(emb.InProcessEmbedder, "embed", lambda self, text: deterministic(text))
         rc = bench_cmd(
@@ -454,6 +470,7 @@ class TestCli:
             )
         )
         assert rc == 0
+        assert timeouts == [120.0]
         out = capsys.readouterr().out
         assert fake_model in out
         assert "qwen" not in out.lower()

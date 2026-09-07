@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import random
+import re
 import string
 import struct
 import sys
@@ -7822,3 +7823,250 @@ class TestARefusalNamesItsRuleAndSpan:
         line = refusal_diagnostic(smuggled, smuggled, "abc").as_line()
         assert "rule=unnamed component=unnamed" in line
         assert self.AWS not in line
+
+
+_ISSUE_HOST = "github.com"
+_ISSUE_PATH = "/kirodotdev/KiroCrew/issues/new"
+# Percent-encoded prose, deliberately over _EXFIL_QUERY_MIN_LEN so the LENGTH
+# signal is the one in play, and with no 40-char run in [A-Za-z0-9+/=] and no 20
+# consecutive octets so no PATTERN signal fires. Both properties are ASSERTED by
+# the two guard tests below rather than assumed: a fixture that tripped a pattern
+# would make the positive case pass for the wrong reason, and one under 200 chars
+# would make it pass without exercising the carve-out at all.
+_ISSUE_QUERY = (
+    "title=Narrow%20the%20suspicious%20URL%20heuristic"
+    "&body=The%20aggregate%20query%20length%20check%20fires%20on%20ordinary%20links"
+    "%20and%20drops%20them%20from%20the%20rendered%20message%20so%20they%20cannot"
+    "%20be%20clicked%20or%20copied&labels=bug"
+)
+
+
+def _issue_link(
+    *,
+    scheme: str = "https",
+    host: str = _ISSUE_HOST,
+    port: str = "",
+    path: str = _ISSUE_PATH,
+    query: str = _ISSUE_QUERY,
+) -> str:
+    return f"{scheme}://{host}{port}{path}?{query}"
+
+
+class TestPrefilledGitHubIssueUrl:
+    """A model-authored GitHub issue-prefill link IS redacted — no shape earns a waiver.
+
+    This class previously pinned the opposite. Two waivers were tried and both
+    removed: one keyed to the prefill SHAPE, one additionally pinned to this
+    project's own tracker. Both are exfiltration primitives, because what
+    ``redact_exfiltration_urls`` sanitizes is MODEL-AUTHORED text —
+
+      injected content steers the model into emitting a prefill URL whose ``body``
+      carries percent-encoded private context; the waiver skips aggregate query
+      length; the link renders as the familiar "file an issue" affordance; the user
+      submits it; and the issue is PUBLIC, so the attacker reads it.
+
+    Pinning the repository does not close that, because this project's tracker is
+    world-readable by design. A URL's shape says nothing about who authored it, and
+    an in-band marker travels in the channel the injection controls — so provenance
+    has to come from a different channel. It already does: ``diagnostics._issue_url``
+    assembles the prefill link from STRUCTURED fields and the dashboard renders its
+    own anchor from ``BundleResult.github_issue_url``, a JSON field no redactor
+    scans. ``TestTrustedIssueLinkChannel`` below pins that seam.
+    """
+
+    def _assert_redacted(self, url: str) -> None:
+        cleaned, warnings = redact_exfiltration_urls(f"see {url} for detail")
+        assert "[REDACTED: suspicious URL to" in cleaned, cleaned
+        assert url not in cleaned, cleaned
+        assert warnings
+
+    # ── guards: keep the positive case from passing for the wrong reason ──
+
+    def test_the_fixture_query_is_long_enough_to_reach_the_length_gate(self) -> None:
+        """Under _EXFIL_QUERY_MIN_LEN the case would pass for the wrong reason."""
+        assert len(_ISSUE_QUERY) >= security._EXFIL_QUERY_MIN_LEN
+
+    def test_no_pattern_signal_fires_on_the_fixture(self) -> None:
+        """The fixture must isolate LENGTH: no base64 run, no percent run.
+
+        Without this the URL would be redacted by a pattern rule and the test would
+        say nothing about the length gate, which is the rule the waivers waived.
+        """
+        assert not security._EXFIL_PERCENT_RE.search(_ISSUE_QUERY)
+        assert (
+            max((len(m) for m in re.findall(r"[A-Za-z0-9+/=]{40,}", _ISSUE_QUERY)), default=0) == 0
+        )
+
+    # ── the exfiltration case, and it is the CANONICAL tracker ──
+
+    def test_a_prefill_link_to_this_projects_own_tracker_is_redacted(self) -> None:
+        """The finding that removed the second waiver, pinned as a regression.
+
+        This URL is maximally trustworthy by shape AND by destination: exact
+        ``https``, host exactly ``github.com``, no port, the path is literally this
+        repository's ``issues/new``, and every query key is one GitHub documents.
+        It is still redacted, because none of that establishes that the model was
+        not steered into emitting it, and a submitted issue here is public.
+        """
+        self._assert_redacted(_issue_link())
+
+    def test_a_prefill_link_to_an_attacker_owned_repository_is_redacted(self) -> None:
+        self._assert_redacted(_issue_link(path="/attacker/exfil-sink/issues/new"))
+
+    def test_a_cased_host_does_not_change_the_verdict(self) -> None:
+        """RFC 4343 leaves DNS case insignificant; with no waiver it changes nothing."""
+        self._assert_redacted(_issue_link(host="GitHub.com"))
+
+    # ── the other signals are independent of this change and must still fire ──
+
+    def test_a_credential_in_a_documented_parameter_is_redacted(self) -> None:
+        """The unconditional credential floor is unchanged by removing the waiver."""
+        self._assert_redacted(_issue_link(query=f"{_ISSUE_QUERY}%20AKIAIOSFODNN7EXAMPLE"))
+
+    def test_a_base64_blob_in_a_documented_parameter_is_redacted(self) -> None:
+        blob = "A" * 30 + "b3Rvb2xvbmdibG9i"
+        self._assert_redacted(_issue_link(query=f"title=x&body={blob}&labels=bug"))
+
+    def test_heavy_percent_encoding_in_a_documented_parameter_is_redacted(self) -> None:
+        self._assert_redacted(_issue_link(query=f"title=x&body={'%41' * 21}&labels=bug"))
+
+    def test_the_length_gate_is_the_rule_that_fires(self) -> None:
+        """Names the RULE, so a future waiver cannot pass this class by accident.
+
+        The three tests above would still pass if the length gate were waived and a
+        pattern rule caught the URL instead. This one asserts the classification
+        came from ``exfil_query_length`` on a fixture that trips nothing else.
+        """
+        rules: list[str] = []
+        assert (
+            security._exfil_url_warning(
+                _ISSUE_HOST,
+                f"{_ISSUE_PATH}?{_ISSUE_QUERY}",
+                frozenset(),
+                _rule_out=rules,
+            )
+            is not None
+        )
+        assert rules == ["exfil_query_length"]
+
+    def test_the_predicate_takes_no_waiver_parameter(self) -> None:
+        """A reintroduced escape hatch fails here even if every case above is kept."""
+        import inspect
+
+        params = inspect.signature(security._exfil_url_warning).parameters
+        assert "allow_prefilled_issue" not in params
+        assert not hasattr(security, "_is_prefilled_issue_url")
+
+    # ── the authentication admission gate must not move ──
+
+    def test_the_oauth_banner_gate_still_rejects_the_link(self) -> None:
+        """``oauth_url_contains_credential`` ADMITS an OAuth banner URL.
+
+        It shares this classifier, so it was the one call site the waiver was gated
+        OFF for. With no waiver anywhere the gate needs no opt-out, and this pins
+        that removing the plumbing did not loosen it.
+        """
+        assert oauth_url_contains_credential(_issue_link()) is True
+
+    def test_a_generic_long_query_url_is_redacted_the_same_way(self) -> None:
+        """The other host #7820 reports. It gets the same verdict as the prefill link.
+
+        Both were false positives in the report and both stay redacted: the fix for
+        a long legitimate URL is to narrow this heuristic for every host on its own
+        merits, not to carve out one shape.
+        """
+        self._assert_redacted(
+            "https://monitorportal.amazon.com/metrics?namespace=AWS/SageMaker"
+            "&metricName=Invocations&dimensions=EndpointName%3Dmy-endpoint"
+            "&startTime=2026-09-01T00%3A00%3A00Z&endTime=2026-09-07T00%3A00%3A00Z"
+            "&period=300&stat=Sum&region=us-west-2&accountId=123456789012&view=timeSeries"
+        )
+
+
+class TestTrustedIssueLinkChannel:
+    """The prefilled link #7820 wanted, delivered without a redactor waiver.
+
+    Provenance cannot be recovered from model prose, so it comes from a different
+    channel: ``diagnostics._issue_url`` assembles the query from STRUCTURED fields
+    and the dashboard renders its own anchor from the ``github_issue_url`` JSON
+    field (``ReportProblemModal``, ``ReportProblemCard``). Nothing on that path is
+    text a model wrote, and no redactor scans a JSON response body — which is why
+    the link survives there while the same URL in chat does not.
+
+    These tests pin the two halves of that claim that live in Python.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_host_probe(self, monkeypatch) -> None:
+        """Keep the builder off the real `kiro-cli --version` subprocess.
+
+        Every test here calls ``_issue_url`` or ``terminal_issue_url``, and both
+        interpolate ``_kiro_cli_version()`` into the ``context`` field, which shells
+        out to the installed binary. That makes the suite depend on whether kiro-cli
+        is on the host and how long it takes to answer. Autouse rather than
+        per-test so a case added later cannot reintroduce the spawn. Same stub
+        ``test_diagnostics.py::_isolate`` uses.
+
+        The other two host reads in that field are pure: ``platform.platform()`` is
+        stdlib and ``beacon.distribution()`` reads a baked constant or an env var.
+        """
+        from kiro_crew import diagnostics
+
+        monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
+
+    def _bundle(self) -> object:
+        from kiro_crew import diagnostics
+
+        return diagnostics.BundleResult(
+            zip_path=Path("/tmp/kirocrew-diagnostics-20260907.zip"),
+            filename="kirocrew-diagnostics-20260907.zip",
+            redaction_summary={"kirocrew.log": 3},
+        )
+
+    def test_the_trusted_builder_assembles_the_prefill_from_structured_fields(self) -> None:
+        """Built by code from named fields, never parsed out of prose."""
+        from kiro_crew import diagnostics
+
+        url = diagnostics._issue_url(self._bundle(), "chat drops long links")
+        assert url.startswith(f"https://github.com/{diagnostics._ISSUE_REPO}/issues/new?")
+        assert "what-happened=chat%20drops%20long%20links" in url
+        assert "context=" in url and "version=" in url
+        # Also proves `_stub_host_probe` is actually wired: without it this reads the
+        # real `kiro-cli --version`, so a passing suite would say nothing about
+        # whether the spawn was avoided.
+        assert "kiro-cli%202.14.2" in url
+
+    def test_that_builders_output_is_what_the_dashboard_field_carries(self) -> None:
+        """``github_issue_url`` is the prefilled variant, so the feature still works."""
+        from kiro_crew import diagnostics
+
+        result = self._bundle()
+        result.github_issue_url = diagnostics._issue_url(result, "note")
+        assert "context=" in result.as_dict()["github_issue_url"]
+
+    def test_the_prefilled_variant_would_not_survive_model_prose(self) -> None:
+        """The reason the trusted channel is needed rather than a waiver.
+
+        The same URL the dashboard renders intact IS redacted once it travels as
+        text, and that is now true with no exception. Pinned so nobody 'fixes' the
+        asymmetry by reaching back into the redactor.
+        """
+        from kiro_crew import diagnostics
+
+        url = diagnostics._issue_url(self._bundle(), "chat drops long links")
+        cleaned, warnings = redact_exfiltration_urls(f"file it here: {url}")
+        assert url not in cleaned
+        assert warnings
+
+    def test_the_terminal_variant_is_the_bounded_alternative_for_prose(self) -> None:
+        """``terminal_issue_url`` drops the free-form fields so it survives unwaived.
+
+        This is the shape the codebase already chose for paths that DO get relayed
+        through prose, and it is why removing the waiver strands nothing.
+        """
+        from kiro_crew import diagnostics
+
+        url = diagnostics.terminal_issue_url(self._bundle(), "note")
+        cleaned, warnings = redact_exfiltration_urls(f"file it here: {url}")
+        assert url in cleaned, cleaned
+        assert warnings == []

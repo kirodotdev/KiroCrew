@@ -21,6 +21,7 @@ import time
 import urllib.parse
 import uuid
 import zipfile
+from dataclasses import asdict
 from pathlib import Path
 from typing import BinaryIO, NamedTuple
 
@@ -35,9 +36,20 @@ from kiro_crew.atomic_write import (
     pinned_parent_replace_supported,
 )
 from kiro_crew.config import loader as config_loader
-from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir, data_home
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    WorkspaceConfig,
+    coerce_dict_section,
+    config_dir,
+    data_home,
+    update_config_locked,
+)
 from kiro_crew.dashboard import part_stream, upload_destination
-from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+from kiro_crew.dashboard.chat_utils import (
+    dashboard_slot_key,
+    drained_to_thread,
+    run_config_write,
+)
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS
 from kiro_crew.dashboard.handlers._shared import _probe_persisted_session, read_bounded_json
 from kiro_crew.dashboard.origin import is_direct_local_request
@@ -1520,6 +1532,31 @@ async def api_workspaces(request: web.Request) -> web.Response:
     return web.json_response({"workspaces": result, "default": default_ws})
 
 
+def _resolve_ws_dir(d: str) -> Path:
+    """Resolve a workspace dir string the way collision checks compare them."""
+    p = Path(d).expanduser()
+    return p.resolve() if p.is_absolute() else (data_home() / d).resolve()
+
+
+class _WorkspaceConflict(Exception):
+    """A workspace precondition failed against FRESH state inside the lock.
+
+    The handlers validate on a snapshot loaded before their awaits (fast 4xxs
+    for the common case), but the decision that guards config integrity --
+    name/directory collisions, default-workspace and agent references -- must
+    be re-made against the state the mutation actually lands on, inside the
+    run_config_write critical section, or two overlapping owner requests can
+    both pass the stale check and persist a conflicting document (#4767 GPT
+    review round 1). Carries the response payload the handler returns.
+    """
+
+    def __init__(self, status: int, error: str, code: str) -> None:
+        super().__init__(error)
+        self.status = status
+        self.error = error
+        self.code = code
+
+
 async def api_workspaces_create(request: web.Request) -> web.Response:
     """POST /api/workspaces — create a new workspace."""
     import shutil  # noqa: F811
@@ -1551,6 +1588,13 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     if name in cfg.workspaces:
         return web.json_response({"error": f"Workspace '{name}' already exists"}, status=409)
     copy_from = body.get("copy_from", "").strip()
+    # Set only once ALL validation has passed (staging is the LAST pre-persist
+    # step): the staged tree awaiting install, and the destination it installs
+    # into once the in-lock checks pass. copy_pending records that the branch
+    # wants a copy, deferred until after the shared path validation below.
+    staged_path: Path | None = None
+    install_dst: Path | None = None
+    copy_pending = False
     if copy_from:
         if copy_from not in cfg.workspaces:
             return web.json_response(
@@ -1601,27 +1645,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                 {"error": "Cannot use config root as workspace directory"}, status=400
             )
         if src_path.is_dir():
-            # Use the module-level is_sensitive_path alias to filter entries
-            # instead of hardcoded names -- one binding for one guard.
-
-            def _ignore_sensitive(directory: str, entries: list[str]) -> set[str]:
-                from pathlib import Path as _Path  # noqa: F811
-
-                skip: set[str] = set()
-                for entry in entries:
-                    full = str(_Path(directory, entry).resolve())
-                    if is_sensitive_path(full):
-                        skip.add(entry)
-                return skip
-
-            await asyncio.to_thread(
-                shutil.copytree,
-                src_path,
-                dst_path,
-                dirs_exist_ok=True,
-                symlinks=True,
-                ignore=_ignore_sensitive,
-            )
+            copy_pending = True
     else:
         ws_dir = body.get("dir", f"workspace-{name}")
     # Guard against path traversal for relative paths; absolute paths are allowed
@@ -1635,10 +1659,6 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     )
 
     # Check for directory collision with existing workspaces (resolve both sides)
-    def _resolve_ws_dir(d: str) -> Path:
-        p = Path(d).expanduser()
-        return p.resolve() if p.is_absolute() else (data_home() / d).resolve()
-
     existing_resolved = {_resolve_ws_dir(ws.dir) for ws in cfg.workspaces.values()}
     if _resolve_ws_dir(ws_dir) in existing_resolved:
         return web.json_response(
@@ -1674,8 +1694,131 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Cannot use config root as workspace directory"}, status=400
         )
-    cfg.workspaces[name] = WorkspaceConfig(dir=ws_dir)
-    cfg.save()
+    if copy_pending:
+        # STAGE the copy_from tree only now, after EVERY validation above has
+        # passed -- a stage before validation leaks the copied tree on any 4xx
+        # (#4767 review round 3). It is INSTALLED into place inside the locked
+        # persist below, so a losing create never mutates the destination.
+
+        def _ignore_sensitive(directory: str, entries: list[str]) -> set[str]:
+            # Module-level is_sensitive_path alias -- one binding for one guard.
+            from pathlib import Path as _Path  # noqa: F811
+
+            skip: set[str] = set()
+            for entry in entries:
+                full = str(_Path(directory, entry).resolve())
+                if is_sensitive_path(full):
+                    skip.add(entry)
+            return skip
+
+        staging = dst_path.parent / f".{dst_path.name}.staging-{uuid.uuid4().hex[:8]}"
+
+        def _copy_staged() -> None:
+            shutil.copytree(src_path, staging, symlinks=True, ignore=_ignore_sensitive)
+
+        def _drop_staging() -> None:
+            shutil.rmtree(staging, ignore_errors=True)
+
+        try:
+            # drained_to_thread, not bare to_thread: a cancellation at the
+            # await would leave the copytree THREAD still writing while the
+            # cleanup below rmtrees the same tree -- the race can strand
+            # partial ``.staging-*`` residue (#4767 review round 6). Draining
+            # runs the copy to completion first, so the cleanup only ever
+            # starts on a quiescent tree, and the cleanup itself is drained so
+            # it cannot be abandoned mid-delete either.
+            await drained_to_thread(_copy_staged)
+        except BaseException:
+            await drained_to_thread(_drop_staging)
+            raise
+        staged_path = staging
+        install_dst = dst_path
+
+    # Persist as ONE delta read-modify-write on the raw document, inside a
+    # single hold of the sidecar flock (update_config_locked), dispatched off
+    # the loop with both locks via run_config_write -- the transaction shape
+    # run_config_write's own docstring prescribes (#4767 review round 3). The
+    # handler's `cfg` was loaded before awaits above (the copytree can run for
+    # seconds), so the state-dependent preconditions are re-decided against
+    # the document as read INSIDE the lock, and only the keys this create owns
+    # are written -- a concurrent write to any other setting is untouchable.
+    def _mutate_create(doc: dict) -> dict:
+        workspaces = coerce_dict_section(doc, "workspaces")
+        if name in workspaces:
+            raise _WorkspaceConflict(409, f"Workspace '{name}' already exists", "workspace_exists")
+        raw_dirs = {
+            _resolve_ws_dir(str(ws.get("dir", "")))
+            for ws in workspaces.values()
+            if isinstance(ws, dict)
+        }
+        if _resolve_ws_dir(ws_dir) in raw_dirs:
+            raise _WorkspaceConflict(
+                409,
+                f"Directory '{ws_dir}' is already used by another workspace",
+                "workspace_dir_in_use",
+            )
+        # Checks passed: INSTALL the staged tree now (we are in a worker
+        # thread, inside the flock hold), before the config write, so a
+        # directory only ever appears at the destination for a create that is
+        # actually being persisted. The install invariant that makes rollback
+        # TOTAL: the destination must not exist AT ALL -- any pre-existing
+        # directory (even empty: its inode and metadata are not ours to
+        # replace) is refused. publish_dir_noreplace, not check-then-rename:
+        # POSIX os.rename silently replaces an EMPTY destination, so a racer's
+        # directory created between a check and the rename would be destroyed
+        # (#4767 round 9); the no-replace rename closes that window in the
+        # filesystem itself.
+        if staged_path is not None and install_dst is not None:
+            if install_dst.exists():
+                raise _WorkspaceConflict(
+                    409,
+                    f"Destination directory '{ws_dir}' already exists; choose "
+                    "another dir or remove it first",
+                    "workspace_dir_occupied",
+                )
+            try:
+                platform_compat.publish_dir_noreplace(staged_path, install_dst)
+            except (FileExistsError, OSError) as exc:
+                # A filesystem racer created the destination between the check
+                # and the rename; refuse rather than replace anything.
+                raise _WorkspaceConflict(
+                    409,
+                    f"Destination directory '{ws_dir}' already exists; choose "
+                    "another dir or remove it first",
+                    "workspace_dir_occupied",
+                ) from exc
+            install_state["installed"] = True
+        workspaces[name] = asdict(WorkspaceConfig(dir=ws_dir))
+        return doc
+
+    install_state: dict = {"installed": False}
+    try:
+        await run_config_write(update_config_locked, mutate=_mutate_create)
+    except _WorkspaceConflict as conflict:
+        # The staged tree was never installed; drop it in a worker -- an
+        # inline rmtree of a large copied workspace would stall the loop.
+        if staged_path is not None:
+            await asyncio.to_thread(shutil.rmtree, staged_path, ignore_errors=True)
+        return web.json_response({"error": conflict.error, "code": conflict.code}, status=409)
+    except asyncio.CancelledError:
+        # run_config_write SHIELDS and DRAINS the worker: a CancelledError
+        # surfacing here means the worker ran to completion -- the install
+        # landed AND the config write registered the workspace (a worker
+        # failure would surface as that failure, not as cancellation).
+        # Rolling back would delete a directory config.json now points at.
+        # Nothing to clean: the staged tree was consumed by the install.
+        raise
+    except BaseException:
+        # The worker itself failed (unreadable config, a failed atomic
+        # write): the workspace was NOT registered, so an installed tree is a
+        # phantom -- roll it back; an uninstalled staging tree is residue --
+        # drop it. Both off the loop. The rollback can only remove a tree
+        # this request created (see the install invariant above).
+        if install_state["installed"] and install_dst is not None:
+            await asyncio.to_thread(shutil.rmtree, install_dst, ignore_errors=True)
+        elif staged_path is not None:
+            await asyncio.to_thread(shutil.rmtree, staged_path, ignore_errors=True)
+        raise
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="workspace.create",
@@ -1753,8 +1896,43 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
                 {"error": f"Directory '{new_dir}' is already used by another workspace"},
                 status=409,
             )
-        cfg.workspaces[name].dir = new_dir
-    cfg.save()
+
+    # Persist as ONE delta RMW on the raw document inside the flock hold (see
+    # workspace.create): the mutation AND its state-dependent precondition
+    # (dir collision) are re-decided against the document as read inside the
+    # lock, and only this workspace's entry is written.
+    def _mutate_update(doc: dict) -> dict | None:
+        workspaces = coerce_dict_section(doc, "workspaces")
+        ws = workspaces.get(name)
+        if not isinstance(ws, dict):
+            # A concurrent delete won the race after our 404 check; recreating
+            # the workspace from this handler's older view would undo it.
+            raise _WorkspaceConflict(404, f"Workspace '{name}' not found", "workspace_not_found")
+        if "dir" in body:
+            new_resolved = _resolve_ws_dir(body["dir"])
+            others = {
+                _resolve_ws_dir(str(w.get("dir", "")))
+                for n2, w in workspaces.items()
+                if n2 != name and isinstance(w, dict)
+            }
+            if new_resolved in others:
+                raise _WorkspaceConflict(
+                    409,
+                    f"Directory '{body['dir']}' is already used by another workspace",
+                    "workspace_dir_in_use",
+                )
+            ws["dir"] = body["dir"]
+            return doc
+        return None  # nothing to change -- skip the write
+
+    try:
+        await run_config_write(update_config_locked, mutate=_mutate_update)
+    except _WorkspaceConflict as conflict:
+        if conflict.status == 404:
+            return web.json_response(
+                {"error": conflict.error, "code": conflict.code}, status=404
+            )
+        return web.json_response({"error": conflict.error, "code": conflict.code}, status=409)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="workspace.update",
@@ -1790,8 +1968,38 @@ async def api_workspaces_delete(request: web.Request) -> web.Response:
             {"error": f"Workspace '{name}' is referenced by agents: {', '.join(referencing)}"},
             status=409,
         )
-    del cfg.workspaces[name]
-    cfg.save()
+    # Persist as ONE delta RMW on the raw document inside the flock hold (see
+    # workspace.create); the referential guards (default workspace, agent
+    # references) are re-run against the document as read inside the lock.
+
+    def _mutate_delete(doc: dict) -> dict | None:
+        workspaces = coerce_dict_section(doc, "workspaces")
+        if name not in workspaces:
+            return None  # already gone -- a concurrent delete landed first
+        if name == doc.get("default_workspace", "default"):
+            raise _WorkspaceConflict(
+                409,
+                f"Cannot delete default workspace '{name}'. Change default_workspace first.",
+                "workspace_is_default",
+            )
+        fresh_refs = [
+            a
+            for a, ac in coerce_dict_section(doc, "agents").items()
+            if isinstance(ac, dict) and ac.get("workspace") == name
+        ]
+        if fresh_refs:
+            raise _WorkspaceConflict(
+                409,
+                f"Workspace '{name}' is referenced by agents: {', '.join(fresh_refs)}",
+                "workspace_referenced",
+            )
+        del workspaces[name]
+        return doc
+
+    try:
+        await run_config_write(update_config_locked, mutate=_mutate_delete)
+    except _WorkspaceConflict as conflict:
+        return web.json_response({"error": conflict.error, "code": conflict.code}, status=409)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="workspace.delete",

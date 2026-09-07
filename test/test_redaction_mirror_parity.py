@@ -52,7 +52,16 @@ from kiro_crew.security import _CREDENTIAL_PATTERNS
 
 ROOT = Path(__file__).resolve().parents[1]
 
-BACKEND = ROOT / "src" / "kiro_crew" / "security.py"
+# The security PACKAGE, not one module: #9183 split `security.py` into
+# vocabulary / helpers / shell_normalizer / paths / denied_rules / redaction /
+# exfil / argv_floor / diagnostics behind a facade, and a waiver reintroduced in
+# any of them — or in `__init__.py` — would be just as live. Scanning the whole
+# tree keeps the absence guard below correct across further splits, which is the
+# failure mode that already retired the single-file path this replaced.
+BACKEND_PKG = ROOT / "src" / "kiro_crew" / "security"
+# The module that owns the exfil URL classifier today. Named separately so a
+# guard can point at the enforcing site while the sweep stays package-wide.
+BACKEND_EXFIL = BACKEND_PKG / "exfil.py"
 PREPARE_PR = (
     ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_findings.py"
 )
@@ -182,4 +191,97 @@ class TestDeliberateNonMirrors:
         assert three_segment not in text and two_segment not in text, (
             "token_mint.py now carries a backend alternative verbatim. If it became a "
             "mirror, move the assertion into TestMirrorsMatchTheBackend."
+        )
+
+
+class TestPrefilledIssueCarveOutParity:
+    """NEITHER half may carve out the issue-prefill shape, and this pins the absence.
+
+    A carve-out landed on the frontend first (#7824) and a backend twin followed;
+    both are gone. Two spellings were tried — one keyed to the prefill SHAPE, one
+    additionally pinned to this project's own tracker — and both are exfiltration
+    primitives, because what these functions sanitize is MODEL-AUTHORED text.
+    Injected content steers the model into emitting a prefill URL whose ``body``
+    carries percent-encoded private context, the waiver skips aggregate query
+    length, and the user submits it into a PUBLIC issue the attacker reads. Pinning
+    the repository does not help: the tracker is world-readable by design.
+
+    Behavioural tests on each side cannot hold this. A waiver reintroduced on ONE
+    half is silent — the backend redacts first on every server-rendered surface, so
+    a frontend-only waiver leaves both suites green while opening the hole on any
+    client-only render path, and a backend-only waiver opens it everywhere. So the
+    guard is structural and reads both enforcing sources at run time.
+
+    The feature that needed the waiver has a channel instead: ``_issue_url`` builds
+    the prefill link from structured fields and the dashboard renders its own anchor
+    from ``BundleResult.github_issue_url``, a JSON field no redactor scans. That is
+    what makes deleting these waivers cost nothing.
+    """
+
+    def test_the_backend_has_no_prefill_carve_out(self) -> None:
+        modules = sorted(BACKEND_PKG.rglob("*.py"))
+        assert modules, f"no modules under {BACKEND_PKG} — the package moved"
+        for symbol in ("_is_prefilled_issue_url", "allow_prefilled_issue", "_ISSUE_PREFILL_"):
+            offenders = [
+                f"{module.name}:{number}"
+                for module in modules
+                for number, line in enumerate(
+                    module.read_text(encoding="utf-8").splitlines(), start=1
+                )
+                if symbol in line and not line.lstrip().startswith("#")
+            ]
+            assert not offenders, (
+                f"{symbol} is back in the security package as executable code: "
+                f"{offenders}. A shape-based waiver on model-authored text is an "
+                "exfiltration primitive regardless of destination — see this "
+                "class's docstring."
+            )
+
+    def test_the_frontend_mirror_has_no_prefill_carve_out(self) -> None:
+        source = FRONTEND.read_text(encoding="utf-8")
+        for symbol in ("isPrefilledIssueUrl", "EXFIL_ISSUE_"):
+            offenders = [
+                line
+                for line in source.splitlines()
+                if symbol in line and not line.lstrip().startswith("//")
+            ]
+            assert not offenders, (
+                f"{symbol} is back in sanitize.ts as executable code: {offenders}. "
+                "The backend redacts first, so a frontend-only waiver is silent on "
+                "server-rendered surfaces and live on client-only ones."
+            )
+
+    def test_the_length_gate_is_unconditional_on_both_sides(self) -> None:
+        """The rule the waivers waived, asserted at its own site on each half.
+
+        Reads the comparison itself rather than the absence of a symbol name, so a
+        waiver spelled with fresh identifiers still fails one of these two tests.
+        """
+        backend = BACKEND_EXFIL.read_text(encoding="utf-8")
+        assert "if len(heuristic_query) >= _EXFIL_QUERY_MIN_LEN:" in backend, (
+            f"the aggregate-length gate is no longer an unconditional comparison in "
+            f"{BACKEND_EXFIL.name} — something was added to its condition, or the "
+            "classifier moved to another module and this guard needs repointing"
+        )
+        frontend = FRONTEND.read_text(encoding="utf-8")
+        assert "query.length >= EXFIL_QUERY_MIN_LEN" in frontend
+        assert "if (!redact && query.length >= EXFIL_QUERY_MIN_LEN)" not in frontend, (
+            "the frontend length signal is behind a conditional again"
+        )
+
+    def test_the_trusted_channel_the_waiver_was_replaced_by_still_exists(self) -> None:
+        """Deleting the waivers is only free while this seam is here.
+
+        If the structured path is removed or renamed, the pressure to re-add a
+        redactor waiver returns and this test is the place that says so.
+        """
+        diagnostics = (ROOT / "src" / "kiro_crew" / "diagnostics.py").read_text(encoding="utf-8")
+        assert "def _issue_url(" in diagnostics
+        assert "github_issue_url" in diagnostics
+        renderer = (
+            ROOT / "website" / "src" / "components" / "ReportProblemModal.tsx"
+        ).read_text(encoding="utf-8")
+        assert "result.github_issue_url" in renderer, (
+            "the dashboard no longer renders its own anchor from the structured "
+            "field — the trusted issue-link channel moved"
         )

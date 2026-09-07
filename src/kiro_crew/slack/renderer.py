@@ -62,6 +62,7 @@ from kiro_crew.slack.handler import (
     _APPROVAL_TIMEOUT,
     _CURSOR,
     _EDIT_INTERVAL,
+    _STREAM_CONTINUED,
     _THINKING,
     StatusReactionController,
     _append_footer_actions,
@@ -434,7 +435,10 @@ class SlackRenderer(Renderer):
         if self._stream_ts:
             await self.slack.stop_stream(self.channel, self._stream_ts)
         new_ts = await self.slack.start_stream(
-            self.channel, self.thread_ts or "", user_id=self._user_id or None
+            self.channel,
+            self.thread_ts or "",
+            initial_text=_STREAM_CONTINUED,
+            user_id=self._user_id or None,
         )
         if new_ts:
             self._stream_ts = new_ts
@@ -689,19 +693,19 @@ class SlackRenderer(Renderer):
                 logger.debug("slack: posting a continuation chunk failed", exc_info=True)
 
     async def _append_task(self, task_id: str, title: str, status: str, details: str = "") -> bool:
-        """Append a task card, rotating once on failure (native ``_append_task``)."""
+        """Append a task card. Never rotates (native ``_append_task``).
+
+        The card is progress decoration and ``_tool_elapsed_updater`` re-sends it
+        every 30s for as long as a tool runs, so on a long tool phase it is the
+        only caller touching the stream — and rotating on its failure would cost
+        the reader the message they are watching and split the answer in two.
+        ``_append_stream`` still rotates for real text.
+        """
         if not self._stream_ts:
             return False
-        ok = await self.slack.append_task(
+        return await self.slack.append_task(
             self.channel, self._stream_ts, task_id, title, status, details=details
         )
-        if not ok and self._use_slack_stream:
-            if await self._rotate_stream():
-                assert self._stream_ts is not None
-                return await self.slack.append_task(
-                    self.channel, self._stream_ts, task_id, title, status, details=details
-                )
-        return ok
 
     def _tool_elapsed_str(self) -> str:
         """Formatted elapsed time for the active tool, or '' (native helper)."""

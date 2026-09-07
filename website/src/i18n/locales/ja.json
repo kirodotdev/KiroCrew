@@ -5544,6 +5544,7 @@
       "approve_all": "すべて承認",
       "approve_sub_agent": "サブエージェントを承認：{{name}}",
       "attach_files": "ファイルを添付",
+      "editor_unavailable_standard_input": "拡張エディターを読み込めなかったため、標準入力が有効になっています。下書きは変更されていません。",
       "branch": "ブランチ：{{branch}}",
       "click_again_to_force_stop": "もう一度クリックして強制停止",
       "command": "コマンド",
@@ -5642,7 +5643,8 @@
       "more_actions": "その他の操作",
       "session_control_needs_attention": "要対応",
       "session_control_ready": "準備完了",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "このセッションはデフォルトエージェント（{{name}}）に従います。独自のエージェントを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -6523,7 +6525,8 @@
       "copy_diagram_source": "図のソースをコピー",
       "diagram_source": "図のソース",
       "copy_failed": "コピーできませんでした",
-      "mermaid_render_failed": "この図を描画できませんでした。代わりにソースを表示します。"
+      "mermaid_render_failed": "この図を描画できませんでした。代わりにソースを表示します。",
+      "image_position": "{{total}} 枚中 {{index}} 枚目"
     },
     "markdownToc": {
       "contents": "目次",
@@ -6748,6 +6751,8 @@
     "pastedChip": {
       "collapse_paste": "ペーストを折りたたむ",
       "expand_paste": "ペーストを展開",
+      "hide_paste_preview": "貼り付けのプレビューを非表示",
+      "show_paste_preview": "貼り付けのプレビューを表示",
       "paste_lines_other": "[ ペースト #{{seq}} · {{count}} 行 ]",
       "preview_more_lines_other": "… 他{{count}}行"
     },
@@ -7934,6 +7939,12 @@
       "could_not_load": "{{label}} を読み込めませんでした",
       "loading": "{{label}} を読み込み中…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "整形",
+      "raw": "生",
+      "render_the_markdown_headings_lists_tables_links": "マークダウンを描画します - 見出し、リスト、表、リンク",
+      "show_the_exact_markdown_source": "正確なマークダウンソースを表示します"
     }
   },
   "hooks": {
@@ -11370,6 +11381,7 @@
         "msgs": "メッセージ /",
         "output_tokens": "出力トークン",
         "plan": "計画",
+        "refused_transcripts_warning": "{{productName}} はあなたのチャットを {{count}} 件読み込めなかったため、これらの数値は不完全です。Windows のプロファイルがネットワークドライブに保存されている場合に起こることがあります。",
         "resets": "リセット",
         "session_activity_30_days": "セッションアクティビティ（30日）",
         "sessions": "セッション",
@@ -13304,6 +13316,7 @@
         "aws_profile_polly": "AWS プロファイル (Amazon Polly)",
         "aws_region_for_polly_api": "Amazon Polly API用 AWS リージョン",
         "aws_region_polly": "AWS リージョン (Amazon Polly)",
+        "could_not_read_the_hosts_voice_list_only_the_operat": "ホストの音声一覧を読み取れませんでした。オペレーティングシステムの既定のみ選択できます。",
         "default": "デフォルト",
         "engine": "エンジン",
         "failed_to_load_voice_config": "音声設定の読み込みに失敗。",
@@ -13311,13 +13324,13 @@
         "faster": "高速",
         "fastest": "最高速",
         "normal": "通常",
-        "path_to_the_piper_executable_leave_blank_to_auto": "Piper 実行ファイルへのパス。空欄にすると PATH または ~/piper-venv/bin/piper から自動検出します。",
-        "path_to_the_piper_voice_model_onnx_required_down": "Piperボイスモデル (.onnx)へのパス。必須 — github.com/rhasspy/piperからダウンロード",
+        "os_default_voice": "オペレーティングシステムの既定",
+        "path_to_the_piper_executable_leave_blank_to_auto": "Piper 実行ファイルへのパス。空欄にすると PATH または ~/piper-venv のインストールから自動検出します。",
+        "path_to_the_piper_voice_model_onnx_required_down": "Piperボイスモデル (.onnx)へのパス。必須 — huggingface.co/rhasspy/piper-voices からダウンロード",
         "piper_binary": "Piperバイナリ",
         "piper_en_us_lessac_medium_onnx": "~/piper/en_US-lessac-medium.onnx",
         "piper_local_offline": "Piper (ローカル、オフライン)",
         "piper_model": "Piperモデル",
-        "piper_runs_locally_and_offline_polly_uses_aws_cr": "Piperはローカルおよびオフラインで実行;Amazon Polly は AWS 認証情報+ネットワークを使用",
         "piper_speech_speed_length_scale": "Piperスピーチスピード (長さスケール)",
         "polly_engine_type": "Amazon Polly エンジンタイプ",
         "provider": "プロバイダー",
@@ -13326,13 +13339,19 @@
         "slower": "もっと遅い",
         "slowest": "最も遅い",
         "speak_every_assistant_reply_automatically": "アシスタントのすべての返信を自動的に音声で読み上げる",
-        "speech_rate": "話速",
+        "speech_rate_for_spoken_replies_built_in": "音声で読み上げる返信の速度（内蔵エンジン）",
+        "speech_rate_for_spoken_replies_polly": "音声で読み上げる返信の速度（Amazon Polly）",
         "speech_to_text": "音声テキスト変換",
         "speed": "速度",
+        "system_built_in": "システム内蔵",
         "text_to_speech": "テキスト音声変換",
+        "the_built_in_engine_needs_no_setup_piper_is_offlin": "内蔵エンジンはセットアップ不要;Piper はオフラインで音質が良い;Amazon Polly は AWS 認証情報+ネットワークを使用",
+        "this_host_has_no_built_in_speech_engine_install_es": "このホストには組み込みの音声エンジンがありません。espeak-ng をインストールする (例: sudo apt install espeak-ng) か、別のプロバイダーを選択してください。",
         "us_east_1": "us-east-1",
         "voice": "音声",
-        "voice_catalogue_unavailable": "Polly の音声一覧を読み込めませんでした。ピッカーには内蔵の代替一覧を表示しています。"
+        "voice_catalogue_unavailable": "Polly の音声一覧を読み込めませんでした。ピッカーには内蔵の代替一覧を表示しています。",
+        "voice_from_the_hosts_built_in_speech_engine": "ホストの内蔵音声エンジンの音声",
+        "recheck": "再確認"
       },
       "weComPanel": {
         "allow_all_bypass_note": "すべて許可がオンになっています。上記のユーザーIDリストはスキップされます。戻すときのために保持されています。",
@@ -13924,6 +13943,8 @@
       "empty_roster": "クルーメンバーはまだいません。クルー管理ページで作成するとここに表示されます。",
       "inherited": "継承",
       "member_count_other": "{{count}} 名のメンバー",
+      "member_gone": "{{shown}} を表示しています。「{{name}}」はメンバー一覧にありません。",
+      "member_gone_roster": "「{{name}}」はメンバー一覧にありません。",
       "memory_dedicated_note": "設定とプロジェクトメモは、共有のデフォルトではなく「{{store}}」ストアから読み込まれます。会話の記憶とレッスンはまだ分離されていません。このメンバーに伝えた内容は、引き続き全員が知ることになります。",
       "memory_shared_note": "メンバーは現在同じメモリを共有しています。あるメンバーに伝えた内容は全員が知ることになります。",
       "memory_store": "メモリストア",

@@ -4,8 +4,8 @@ Pins the four seams the member-dispatch mount rides on:
 
 - ``members.member_dispatch_session_server`` — the session-level ``mcpServers``
   element, carrying strict identity via ``KIROCREW_SESSION_KEY`` in its env
-  plus the gateway's bound port, which the from-scratch env would otherwise
-  drop.
+  plus the gateway's bound port and its ``KIROCREW_HOME`` override, both of
+  which the from-scratch env would otherwise drop.
 - ``kas_agents.to_client_custom_agent(member_dispatch=True)`` — the KAS wire
   projection widening: the server joins ``tools`` and the conductor's
   approval-free dashboard verbs join the ``allowedTools`` input BEFORE the
@@ -104,6 +104,36 @@ class TestMemberDispatchSessionServer:
         assert "KIROCREW_SESSION_KEY" in names
         assert "KIROCREW_BOUND_PORT" in names
         assert "KIROCREW_PORT" not in names
+
+    def test_env_carries_the_gateway_home_override(self, monkeypatch):
+        """On an install with ``KIROCREW_HOME`` set (a pod, a second profile) the
+        server must resolve THIS gateway from that home. Without the override it
+        would present the member's identity to the default home's gateway, where
+        the member slot does not exist, and every verb would be refused as
+        ``caller_unidentified``. Same helper the managed Crew servers use, so the
+        two cannot drift."""
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {"KIROCREW_HOME": "/pods/x"})
+        entry = member_dispatch_session_server(MEMBER_KEY)
+        assert entry is not None
+        assert {"name": "KIROCREW_HOME", "value": "/pods/x"} in entry["env"]
+        assert {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY} in entry["env"]
+
+    def test_default_install_carries_no_home_override(self, monkeypatch):
+        """No ``KIROCREW_HOME`` override on a default install: the env is exactly
+        the identity pair plus the bound port — byte-identical to before the
+        override was threaded through."""
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {})
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "7779")
+        entry = member_dispatch_session_server(MEMBER_KEY)
+        assert entry is not None
+        assert entry["env"] == [
+            {"name": "KIROCREW_SESSION_KEY", "value": MEMBER_KEY},
+            {"name": "KIROCREW_BOUND_PORT", "value": "7779"},
+        ]
 
     def test_unresolvable_command_degrades_to_none(self, monkeypatch):
         import kiro_crew.agent as agent_mod

@@ -318,7 +318,11 @@ async def _handle_dashboard(
     assert orch.slack is not None
     url = await send_dashboard_link(orch.slack, caller_id, session_ttl)
     if url:
-        blks = dashboard_link_block(url, LINK_WINDOW_SECS // 60, session_ttl // 60)
+        # Same clamp the mint applies (``exp = now + min(LINK_WINDOW_SECS,
+        # session_ttl)``) and the same one the DM reports, so the ephemeral
+        # block cannot outlast the link it describes.
+        link_mins = min(LINK_WINDOW_SECS, session_ttl) // 60
+        blks = dashboard_link_block(url, link_mins, session_ttl // 60)
         await respond("🔗 Dashboard link sent to your DMs.", blocks=blks)
     else:
         await respond("❌ Failed to send dashboard link.")

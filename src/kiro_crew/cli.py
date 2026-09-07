@@ -1360,6 +1360,12 @@ Examples:
         help="Suppress auto-delivery; agent controls notifications",
     )
     cron_add.add_argument(
+        "--folder",
+        default="",
+        help="Schedule-page folder to file the job in (existing folder name or id). "
+        "The CLI does not create folders — create them in the dashboard's Schedule page.",
+    )
+    cron_add.add_argument(
         "--approval-mode",
         dest="approval_mode",
         choices=["auto"],

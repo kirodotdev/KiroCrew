@@ -5823,6 +5823,7 @@
       "approve_all": "Разрешить все",
       "approve_sub_agent": "Одобрить субагента: {{name}}",
       "attach_files": "Прикрепить файлы",
+      "editor_unavailable_standard_input": "Не удалось загрузить улучшенный редактор, поэтому активен стандартный ввод. Ваш черновик не изменён.",
       "branch": "Ветка: {{branch}}",
       "click_again_to_force_stop": "Нажмите снова для принудительной остановки",
       "command": "Команда",
@@ -5921,7 +5922,8 @@
       "more_actions": "Другие действия",
       "session_control_needs_attention": "Требует внимания",
       "session_control_ready": "Готово",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "Эта сессия использует агента по умолчанию ({{name}}). У неё нет собственного агента, поэтому она меняется вместе с ним. Нажмите, чтобы закрепить агента."
     },
     "chatPane": {
       "agent_list": "Список агентов",
@@ -6829,7 +6831,8 @@
       "copy_diagram_source": "Копировать исходный код диаграммы",
       "diagram_source": "Исходный код диаграммы",
       "copy_failed": "Не удалось скопировать",
-      "mermaid_render_failed": "Не удалось отобразить эту диаграмму. Вместо неё показан исходный код."
+      "mermaid_render_failed": "Не удалось отобразить эту диаграмму. Вместо неё показан исходный код.",
+      "image_position": "{{index}} из {{total}}"
     },
     "markdownToc": {
       "contents": "Содержание",
@@ -7054,6 +7057,8 @@
     "pastedChip": {
       "collapse_paste": "Свернуть вставку",
       "expand_paste": "Развернуть вставку",
+      "hide_paste_preview": "Скрыть предпросмотр вставки",
+      "show_paste_preview": "Показать предпросмотр вставки",
       "paste_lines_few": "[ Вставка №{{seq}} · {{count}} строки ]",
       "paste_lines_many": "[ Вставка №{{seq}} · {{count}} строк ]",
       "paste_lines_one": "[ Вставка №{{seq}} · {{count}} строка ]",
@@ -8264,6 +8269,12 @@
       "could_not_load": "Не удалось загрузить {{label}}",
       "loading": "Загрузка {{label}}…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "Форматировано",
+      "raw": "Исходник",
+      "render_the_markdown_headings_lists_tables_links": "Отобразить markdown - заголовки, списки, таблицы, ссылки",
+      "show_the_exact_markdown_source": "Показать точный исходный markdown"
     }
   },
   "hooks": {
@@ -11859,6 +11870,7 @@
         "msgs": "сообщ. /",
         "output_tokens": "Выходные токены",
         "plan": "Тариф",
+        "refused_transcripts_warning": "{{productName}} не удалось загрузить {{count}} из ваших чатов, поэтому эти числа неполны. Это может произойти, когда профиль Windows хранится на сетевом диске.",
         "resets": "Сброс",
         "session_activity_30_days": "Активность сессий (30 дней)",
         "sessions": "Сессии",
@@ -13821,6 +13833,7 @@
         "aws_profile_polly": "Профиль AWS (Amazon Polly)",
         "aws_region_for_polly_api": "Регион AWS для API Amazon Polly",
         "aws_region_polly": "Регион AWS (Amazon Polly)",
+        "could_not_read_the_hosts_voice_list_only_the_operat": "Не удалось прочитать список голосов хоста. Доступен только вариант по умолчанию в операционной системе.",
         "default": "по умолчанию",
         "engine": "Движок",
         "failed_to_load_voice_config": "Не удалось загрузить настройки голоса.",
@@ -13828,13 +13841,13 @@
         "faster": "Быстрее",
         "fastest": "Самая быстрая",
         "normal": "Обычная",
-        "path_to_the_piper_executable_leave_blank_to_auto": "Путь к исполняемому файлу piper. Оставьте пустым для автоопределения в PATH или ~/piper-venv/bin/piper",
-        "path_to_the_piper_voice_model_onnx_required_down": "Путь к голосовой модели Piper (.onnx). Обязательно — скачайте с github.com/rhasspy/piper",
+        "os_default_voice": "По умолчанию в операционной системе",
+        "path_to_the_piper_executable_leave_blank_to_auto": "Путь к исполняемому файлу piper. Оставьте пустым для автоопределения в PATH или в установке ~/piper-venv",
+        "path_to_the_piper_voice_model_onnx_required_down": "Путь к голосовой модели Piper (.onnx). Обязательно — скачайте с huggingface.co/rhasspy/piper-voices",
         "piper_binary": "Исполняемый файл Piper",
         "piper_en_us_lessac_medium_onnx": "~/piper/en_US-lessac-medium.onnx",
         "piper_local_offline": "Piper (локально, офлайн)",
         "piper_model": "Модель Piper",
-        "piper_runs_locally_and_offline_polly_uses_aws_cr": "Piper работает локально и без сети; Amazon Polly использует учётные данные AWS и сеть",
         "piper_speech_speed_length_scale": "Скорость речи Piper (length scale)",
         "polly_engine_type": "Тип движка Amazon Polly",
         "provider": "Провайдер",
@@ -13843,13 +13856,19 @@
         "slower": "Медленнее",
         "slowest": "Самая медленная",
         "speak_every_assistant_reply_automatically": "Автоматически озвучивать каждый ответ ассистента",
-        "speech_rate": "Скорость речи",
+        "speech_rate_for_spoken_replies_built_in": "Скорость речи для озвучиваемых ответов (встроенный движок)",
+        "speech_rate_for_spoken_replies_polly": "Скорость речи для озвучиваемых ответов (Amazon Polly)",
         "speech_to_text": "Речь в текст",
         "speed": "Скорость",
+        "system_built_in": "Системный (встроенный)",
         "text_to_speech": "Текст в речь",
+        "the_built_in_engine_needs_no_setup_piper_is_offlin": "Встроенный движок не требует установки; Piper работает без сети и звучит лучше; Amazon Polly использует учётные данные AWS и сеть",
+        "this_host_has_no_built_in_speech_engine_install_es": "На этом хосте нет встроенного движка синтеза речи. Установите espeak-ng (например: sudo apt install espeak-ng) или выберите другого поставщика.",
         "us_east_1": "us-east-1",
         "voice": "Голос",
-        "voice_catalogue_unavailable": "Не удалось загрузить список голосов Polly. В списке показан встроенный резервный набор."
+        "voice_catalogue_unavailable": "Не удалось загрузить список голосов Polly. В списке показан встроенный резервный набор.",
+        "voice_from_the_hosts_built_in_speech_engine": "Голос встроенного речевого движка хоста",
+        "recheck": "Проверить снова"
       },
       "weComPanel": {
         "allow_all_bypass_note": "Режим «разрешить всем» включён: список userid выше не используется. Он сохранён на случай возврата.",
@@ -14471,6 +14490,8 @@
       "member_count_many": "{{count}} участников",
       "member_count_one": "{{count}} участник",
       "member_count_other": "{{count}} участника",
+      "member_gone": "Показан {{shown}} — «{{name}}» больше нет в списке участников.",
+      "member_gone_roster": "«{{name}}» больше нет в списке участников.",
       "memory_dedicated_note": "Предпочтения и заметки по проектам берутся из хранилища {{store}}, а не из общего хранилища по умолчанию. Память разговоров и уроки пока не разделены: то, что ты скажешь этому участнику, по-прежнему известно всем.",
       "memory_shared_note": "Сейчас у участников общая память: то, что вы скажете одному, известно всем.",
       "memory_store": "Хранилище памяти",

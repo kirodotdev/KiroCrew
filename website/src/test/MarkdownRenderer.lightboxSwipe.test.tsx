@@ -70,7 +70,9 @@ describe('Lightbox swipe-to-dismiss', () => {
     expect(container.querySelector('img')).not.toBeNull()
   })
 
-  it('drops the gesture when the drag is horizontal', () => {
+  // Horizontal intent pages through the set (see MarkdownRenderer.lightboxPaging);
+  // a lone image has nowhere to page to, so there the gesture is dropped instead.
+  it('drops the gesture when a single-image drag is horizontal', () => {
     const { container } = render(<Lightbox />)
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, inner } = surfaces(container)

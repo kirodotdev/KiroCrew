@@ -34,6 +34,7 @@ function spliceChildren(parent: HastParent, index: number, nodes: Array<HastElem
 }
 import '../utils/hljs'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
+import SegmentedControl from './SegmentedControl'
 import { usePathKind, type PathKind } from '../hooks/usePathKind'
 import { useGatewayPlatform, type GatewayPlatform } from '../hooks/useGatewayPlatform'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM } from '../hooks/usePinchZoom'
@@ -3733,10 +3734,70 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   return <LinkUnfurlCtx.Provider value={unfurlCtx}>{body}</LinkUnfurlCtx.Provider>
 })
 
+/** Languages whose fenced content IS markdown, so a rendered view is
+ *  meaningful. Kept in sync with `NESTABLE_LANGS` in useBlockAssembler for the
+ *  markup/doc subset a reader would want rendered — mdx is included because its
+ *  markdown structure still renders, its JSX just passes through as text. */
+const MARKDOWN_LANGS = new Set(['markdown', 'md', 'mdx'])
+function isMarkdownLang(lang?: string): boolean {
+  return lang != null && MARKDOWN_LANGS.has(lang.toLowerCase())
+}
+
+/** A markdown content card in the chat transcript: a ```markdown fence with a
+ *  Formatted | Raw view toggle in the upper right, matching the segmented
+ *  control tool detail cards carry (see pages/chat/ToolDetails.tsx). Formatted
+ *  renders through the same pipeline as agent prose; Raw is the verbatim source
+ *  with the edit affordance, which keeps editing Raw-only. Opens Formatted; the
+ *  control overrides per card. Only mounted for a COMPLETE fence — see the
+ *  caller in BlockRenderer. */
+const MarkdownContentCard = memo(function MarkdownContentCard(
+  { content, lang }: { content: string; lang?: string },
+) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const [view, setView] = useState<'formatted' | 'raw'>('formatted')
+
+  return (
+    <div className="my-2">
+      <div className="flex items-center justify-end mb-1">
+        <SegmentedControl<'formatted' | 'raw'>
+          segments={[
+            {
+              key: 'formatted',
+              label: i18nT('components.markdownCard.formatted'),
+              tooltip: i18nT('components.markdownCard.render_the_markdown_headings_lists_tables_links'),
+            },
+            {
+              key: 'raw',
+              label: i18nT('components.markdownCard.raw'),
+              tooltip: i18nT('components.markdownCard.show_the_exact_markdown_source'),
+            },
+          ]}
+          value={view}
+          onChange={setView}
+          layoutId="md-card-view"
+          collapse={false}
+        />
+      </div>
+      {/* Both views stay MOUNTED; the inactive one is hidden with `hidden`
+          rather than unmounted. EditableCodeBlock's Raw scratch editor holds
+          unsaved local edits in its own state, so unmounting it on a toggle to
+          Formatted would silently discard them. Keeping it mounted preserves
+          that state across any number of view switches. */}
+      <div className={view === 'formatted' ? undefined : 'hidden'}>
+        <MarkdownBlock content={content} />
+      </div>
+      <div className={view === 'raw' ? undefined : 'hidden'}>
+        <EditableCodeBlock code={content} lang={lang} complete={true} />
+      </div>
+    </div>
+  )
+})
+
 import WidgetFrame from './WidgetFrame'
 import WidgetPlaceholder from './WidgetPlaceholder'
 
 import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
 /** Try to extract a file path from chat text immediately preceding a diff
  * block. Tools sometimes emit "Created /path/to/file:" or "Modified ..."
  * before a bare diff with no +++/--- headers; this hint lets DiffBlock's
@@ -3766,7 +3827,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
   return undefined
 }
 
-function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean }) {
+function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean }) {
   switch (block.type) {
     case 'diff': {
       const pathHint = prevBlock?.type === 'markdown'
@@ -3810,6 +3871,17 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
         <div className="my-2 p-3 bg-bg-elevated border border-border rounded-md text-muted text-[12px] italic animate-pulse">{i18nT('components.markdownRenderer.generating_diagram')}</div>
       )
     case 'code': {
+      // A ```markdown / ```md / ```mdx fence is the "markdown content card":
+      // today it renders verbatim source with an edit affordance. In the chat
+      // transcript (`mdCardToggle`) give it a Formatted | Raw segmented control
+      // like tool detail cards carry, so long docs can be read rendered. Raw is
+      // the pre-toggle EditableCodeBlock, so the edit affordance stays Raw-only.
+      // Only fenced content whose CLOSE has arrived is offered a rendered view:
+      // a half-streamed markdown source would flip structure as delimiters land.
+      if (mdCardToggle && block.complete && isMarkdownLang(block.language)) {
+        const mdNode = <MarkdownContentCard content={block.content} lang={block.language} />
+        return smooth ? <SmoothResize enabled={!block.complete}>{mdNode}</SmoothResize> : mdNode
+      }
       const node = <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} />
       // Height-grow only — streaming code renders as one plain <pre> text node
       // so per-line content animation isn't applied here.
@@ -3827,7 +3899,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, collapseDiffs = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, collapseDiffs = false, mdCardToggle = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const blocks = useBlockAssembler(content, streaming)
 
@@ -3979,6 +4051,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             smooth={smooth}
             softBreaks={softBreaks}
             collapseDiffs={collapseDiffs}
+            mdCardToggle={mdCardToggle}
           />
         ))}
       </ImageVersionCtx.Provider>
@@ -4015,6 +4088,19 @@ const LIGHTBOX_ZOOM_STEP = 0.5
 const LIGHTBOX_DISMISS_SLOP = 8
 const LIGHTBOX_DISMISS_DISTANCE = 96
 const LIGHTBOX_DISMISS_TRAVEL = 260
+
+/** Release threshold that commits a horizontal page, deliberately SHORTER than
+ *  the dismiss distance. Paging is reversible — the opposite swipe comes back —
+ *  while a dismiss destroys the viewing context, so it can commit on less travel.
+ *  Distance is the only criterion, for the reason the dismiss path already gives:
+ *  the flick a user actually makes travels past it anyway, and a velocity path
+ *  would cost per-move rate tracking plus a second threshold. */
+const LIGHTBOX_PAGE_DISTANCE = 64
+
+/** How far a drag with nowhere to go still follows the finger: the ends of the
+ *  set, and the upward direction of the dismiss drag. Both are gestures that must
+ *  not commit but must not feel dead either — a silent no-op reads as broken. */
+const LIGHTBOX_RUBBER_BAND_DIVISOR = 4
 
 /** True when a keyboard event originates from an editable element, so global
  *  printable-key shortcuts (like the lightbox 'd' download) don't hijack typing. */
@@ -4091,6 +4177,11 @@ export function dispatchLightbox(target: HTMLImageElement): void {
  *  payload and the legacy { src, alt } single-image shape. */
 export function Lightbox() {
   const [state, setState] = useState<LightboxDetail | null>(null)
+  // A fresh mirror of `state`, so handlers subscribed once per open — the global
+  // keydown listener's download shortcut, and the paging gesture's read of the
+  // set's size and position — see the current value rather than a stale closure.
+  const stateRef = useRef<LightboxDetail | null>(null)
+  stateRef.current = state
   const imgRef = useRef<HTMLImageElement>(null)
   /** The overlay root. Separate from `imgRef` because the transform target is the
    *  image while the surface a user perceives as "the viewer" is the whole
@@ -4157,31 +4248,43 @@ export function Lightbox() {
     d.active = false
     if (d.dragging) { d.dragging = false; setDragging(false) }
   }, [])
-  // ── swipe-down-to-dismiss ────────────────────────────────────────────────
-  // A touch drag anywhere over the overlay pulls the image with the finger and
-  // dismisses on release. Gated to fit zoom (above it the same gesture already
+  // ── one-finger overlay drag: dismiss down, page sideways ─────────────────
+  // A touch drag anywhere over the overlay locks an AXIS once it crosses the
+  // slop, then either pulls the image down to dismiss or sideways to page
+  // through the set. Both are gated to fit zoom (above it the same drag already
   // means "pan", handled on the <img>) and to non-mouse pointers, so the desktop
   // click-backdrop-to-close behaviour is untouched.
-  const [swipeY, setSwipeY] = useState(0)
-  const [swiping, setSwiping] = useState(false)
-  // `engaged` flips once SLOP is crossed with vertical intent; until then the
-  // gesture is still a candidate tap. `suppressClick` makes the click that
-  // follows a real drag a no-op, so a spring-back does not also close via the
-  // backdrop handler.
   //
-  // `pointerId` is what keeps a PINCH from reading as a dismiss. Every finger
+  // The horizontal half exists because the set was otherwise reachable only from
+  // ArrowLeft/ArrowRight: on a phone every image after the first was unreachable.
+  // Owning that axis is safe here for a reason worth stating — the app-wide nav
+  // drawer claims horizontal drags everywhere else, and yields only to an element
+  // whose computed `touch-action` is `none`. The overlay's `touch-none` (already
+  // there to take page zoom) is what makes this gesture ours rather than a fight.
+  const [swipeY, setSwipeY] = useState(0)
+  const [swipeX, setSwipeX] = useState(0)
+  const [swiping, setSwiping] = useState(false)
+  // `engaged` flips once SLOP is crossed, fixing `axis` for the rest of the
+  // gesture; until then it is still a candidate tap. Locking the axis is what
+  // keeps a diagonal drag from both dimming the backdrop and paging.
+  // `suppressClick` makes the click that follows a real drag a no-op, so a
+  // spring-back does not also close via the backdrop handler.
+  //
+  // `pointerId` is what keeps a PINCH from reading as a drag. Every finger
   // raises its own pointerdown/move/up, so without an id the second finger
   // rewrites the gesture's origin and a two-finger zoom attempt walks the image
   // down and closes the viewer the user was zooming into.
-  const swipeRef = useRef({ pointerId: -1, startX: 0, startY: 0, active: false, engaged: false })
+  const swipeRef = useRef({ pointerId: -1, startX: 0, startY: 0, active: false, engaged: false, axis: '' as '' | 'x' | 'y' })
   // Abandon the in-flight gesture and return the image to rest. Used by the
   // multi-touch bail-out and by pointercancel.
   const abortSwipe = useCallback(() => {
     const s = swipeRef.current
     s.active = false
     if (s.engaged) { s.engaged = false; setSwiping(false); suppressClickRef.current = true }
+    s.axis = ''
     s.pointerId = -1
     setSwipeY(0)
+    setSwipeX(0)
   }, [])
   // Publish it for the hook's `onPinchStart`, which is constructed above this.
   abortSwipeRef.current = abortSwipe
@@ -4250,7 +4353,7 @@ export function Lightbox() {
     // instead of consulting the still-fit ref and re-arming swipe-to-dismiss.
     if (onDoubleTap(e)) return
     if (zoomRef.current > LIGHTBOX_ZOOM_MIN) return // the <img> pan owns this gesture
-    swipeRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: true, engaged: false }
+    swipeRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: true, engaged: false, axis: '' }
   }, [trackPointerDown, onDoubleTap, zoomRef])
   const onOverlayPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     // A live pinch consumes the move (scale + focal-anchored pan).
@@ -4259,18 +4362,30 @@ export function Lightbox() {
     if (!s.active || e.pointerId !== s.pointerId) return
     const dx = e.clientX - s.startX
     const dy = e.clientY - s.startY
+    const cur = stateRef.current
+    const total = cur ? cur.images.length : 0
     if (!s.engaged) {
       if (Math.hypot(dx, dy) < LIGHTBOX_DISMISS_SLOP) return
-      // Horizontal intent is not a dismiss — drop the gesture rather than
-      // yanking the image sideways.
-      if (Math.abs(dx) > Math.abs(dy)) { s.active = false; return }
+      const axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
+      // Paging needs somewhere to go. A single image has no neighbours, so the
+      // horizontal gesture is dropped outright rather than rubber-banding an
+      // image whose set cannot move — which is what it did before paging existed.
+      if (axis === 'x' && total < 2) { s.active = false; return }
+      s.axis = axis
       s.engaged = true
       setSwiping(true)
       lastTapRef.current = { t: 0, x: 0, y: 0 }
     }
+    if (s.axis === 'x') {
+      // Mid-set the image tracks the finger 1:1; at either end it is rubber-banded,
+      // which is what says "no more images this way" instead of looking broken.
+      const blocked = (dx > 0 && cur?.index === 0) || (dx < 0 && cur?.index === total - 1)
+      setSwipeX(blocked ? dx / LIGHTBOX_RUBBER_BAND_DIVISOR : dx)
+      return
+    }
     // Downward travel tracks the finger 1:1; upward is rubber-banded, since
     // pulling up is not a dismiss but should not feel dead either.
-    setSwipeY(dy >= 0 ? dy : dy / 4)
+    setSwipeY(dy >= 0 ? dy : dy / LIGHTBOX_RUBBER_BAND_DIVISOR)
   }, [trackPointerMove])
   const endSwipe = useCallback((e: React.PointerEvent<HTMLDivElement>, cancelled: boolean) => {
     // The hook drops the contact and ends the pinch on the FIRST lift (rather than
@@ -4284,8 +4399,22 @@ export function Lightbox() {
     s.pointerId = -1
     if (!s.engaged) return
     s.engaged = false
+    const axis = s.axis
+    s.axis = ''
     setSwiping(false)
     suppressClickRef.current = true
+    if (axis === 'x') {
+      // Clamped the same way the arrow keys are, so a drag that reached the
+      // threshold at either end springs back instead of paging off the set.
+      const dx = e.clientX - s.startX
+      if (dx <= -LIGHTBOX_PAGE_DISTANCE) {
+        setState(cur => (cur && cur.index < cur.images.length - 1 ? { ...cur, index: cur.index + 1 } : cur))
+      } else if (dx >= LIGHTBOX_PAGE_DISTANCE) {
+        setState(cur => (cur && cur.index > 0 ? { ...cur, index: cur.index - 1 } : cur))
+      }
+      setSwipeX(0)
+      return
+    }
     if (e.clientY - s.startY > LIGHTBOX_DISMISS_DISTANCE) setState(null)
     else setSwipeY(0)
   }, [abortSwipe, trackPointerUp])
@@ -4295,10 +4424,6 @@ export function Lightbox() {
     if (suppressClickRef.current) { suppressClickRef.current = false; return }
     setState(null)
   }, [])
-  // Keep a fresh ref so the global keydown handler (subscribed once per open)
-  // can read the current image for the download shortcut without a stale closure.
-  const stateRef = useRef<LightboxDetail | null>(null)
-  stateRef.current = state
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as Partial<LightboxDetail> & Partial<LightboxImage> | undefined
@@ -4321,10 +4446,12 @@ export function Lightbox() {
   // right after a spring-back must not start half-dragged.
   useEffect(() => {
     setSwipeY(0)
+    setSwipeX(0)
     setSwiping(false)
     lastTapRef.current = { t: 0, x: 0, y: 0 }
     swipeRef.current.active = false
     swipeRef.current.engaged = false
+    swipeRef.current.axis = ''
     swipeRef.current.pointerId = -1
     // Contacts do not survive the viewer: closing mid-pinch (or an image change
     // driven from the keyboard while fingers are down) must not leave a stale
@@ -4382,6 +4509,15 @@ export function Lightbox() {
   // 0 → untouched, 1 → full dismiss feedback. Downward pull only; the
   // rubber-banded upward direction keeps the backdrop at full strength.
   const swipeProgress = Math.min(1, Math.max(0, swipeY) / LIGHTBOX_DISMISS_TRAVEL)
+  // The axis is locked for the whole gesture, so only one of the two offsets is
+  // ever live. Paging carries no shrink and no backdrop fade: it is not a
+  // dismiss, and dimming on the way to another image of the same set would read
+  // as the viewer leaving.
+  const swipeTransform = swipeX !== 0
+    ? `translateX(${swipeX.toFixed(1)}px)`
+    : swipeY !== 0
+      ? `translateY(${swipeY.toFixed(1)}px) scale(${(1 - swipeProgress * 0.15).toFixed(3)})`
+      : undefined
   return (
     <Clickable
       ref={overlayRef}
@@ -4403,7 +4539,7 @@ export function Lightbox() {
           <img> so it composes with (rather than fights) the pan/zoom transform. */}
       <div
         className={`flex items-center justify-center w-full h-full ${swiping ? '' : 'transition-transform duration-200'}`}
-        style={swipeY !== 0 ? { transform: `translateY(${swipeY.toFixed(1)}px) scale(${(1 - swipeProgress * 0.15).toFixed(3)})` } : undefined}
+        style={swipeTransform ? { transform: swipeTransform } : undefined}
       >
         {/* The image is a drag surface for panning when zoomed; zoom itself
             lives in the toolbar + keyboard. A plain click only stops the
@@ -4492,6 +4628,24 @@ export function Lightbox() {
           <X className="lucide-inline" aria-hidden="true" />
         </button>
       </div>
+      {/* Position in the set. Without it the swipe is invisible — nothing on
+          screen says a set exists, which is how every image after the first came
+          to be unreachable on touch while the keyboard could still reach them.
+          `aria-live` carries the same fact to a screen reader as the image
+          changes, which nothing did before. Rendered LAST so the overlay's first
+          child stays the wrapper the drag transform is written to. Matches the
+          toolbar's own treatment because the scrim is dark in every theme. */}
+      {state.images.length > 1 && (
+        <div
+          className="fixed bottom-safe-offset-4 left-1/2 -translate-x-1/2 rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-3 py-1 text-sm text-white/90 tabular-nums"
+          aria-live="polite"
+        >
+          {i18nT('components.markdownRenderer.image_position', {
+            index: fmtNumber(state.index + 1),
+            total: fmtNumber(state.images.length),
+          })}
+        </div>
+      )}
     </Clickable>
   )
 }

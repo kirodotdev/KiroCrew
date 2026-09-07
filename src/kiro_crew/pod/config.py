@@ -24,15 +24,82 @@ DEFAULT_BASE_PORT = 7810
 # systemd --user template unit. ``<prefix>@<wt>.service`` is one pod.
 DEFAULT_UNIT_PREFIX = "kirocrew-pod"
 
+#: Boot exit codes a RESTART CANNOT HEAL, so the unit must not retry them.
+#:
+#: The pod unit is ``Restart=on-failure`` + ``RestartSec=5``. Every refusal in
+#: :func:`kiro_crew.pod.runtime.boot` is a standing condition -- no pinned
+#: checkout, no venv, no built dist, the derived port IS the live plane, or a pod
+#: OS-home component that could not be verified -- so retrying re-runs the same
+#: refusal every 5 seconds, forever, and buries the FATAL line under repeats.
+#: ``pod/unit.py`` feeds these into ``RestartPreventExitStatus`` so the unit goes
+#: ``failed`` and STAYS there with the reason visible.
+#:
+#: Lives here rather than in ``runtime`` because ``runtime`` imports ``unit`` (so
+#: ``unit`` cannot import ``runtime`` back) while both already import this module
+#: -- one definition, no drift between the code that returns a value and the unit
+#: that exempts it.
+EXIT_PROVISIONING = 3
+EXIT_LIVE_PORT_COLLISION = 70
+#: A security invariant the pod could not establish (currently: the OS home whose
+#: components must all be link-checked before it becomes the child's ``HOME``).
+EXIT_REFUSED_UNRECOVERABLE = 78
+TERMINAL_BOOT_EXIT_CODES: tuple[int, ...] = (
+    EXIT_PROVISIONING,
+    EXIT_LIVE_PORT_COLLISION,
+    EXIT_REFUSED_UNRECOVERABLE,
+)
+
+
+def _canonical_override(raw: str) -> Path:
+    """An operator-supplied path override, anchored so every reader agrees.
+
+    ``expanduser`` then ``abspath``. The second half is the load-bearing one: a
+    RELATIVE override resolves against the reading process's working directory,
+    and the two processes that must agree on a pod plane do not share one. The CLI
+    runs from wherever the operator invoked it; the service-manager-booted gateway
+    runs from whatever the unit specifies, and the pod unit deliberately sets no
+    ``WorkingDirectory`` (see ``pod/unit.py``), so systemd hands it ``/``. With the
+    value carried through verbatim, ``KIROCREW_POD_ROOT=tmp/pods`` therefore named
+    ``$PWD/tmp/pods`` to the CLI and ``/tmp/pods`` to the gateway -- two different
+    directories under one name.
+
+    That split is a CREDENTIAL leak, not merely a confusing path. ``pod down``
+    reclaims the tree the CLI resolves, while the pod's kiro-cli child mints its
+    MCP OAuth grants under the tree the GATEWAY resolved (``KIROCREW_OS_HOME``,
+    derived from ``pod_root``), so teardown swept a directory the grants were never
+    in and they outlived the pod on the real machine -- the exact durable
+    machine-level grant writer the pod-scoping work exists to prevent.
+
+    Anchored HERE, at the producer, because this is the one place both sides come
+    from: :meth:`PodConfig.load` reads it and :func:`environment_vars` serialises
+    what ``load`` resolved, so pinning it once makes the unit carry an absolute
+    path and every consumer inherit the agreement. Fixing it in a consumer instead
+    would leave each new reader to re-derive the rule.
+
+    ``abspath`` rather than ``Path.resolve()``, deliberately. Both would close the
+    relative case; ``resolve()`` additionally rewrites the operator's symlink
+    spelling, which is not the defect (two spellings of one directory still name
+    one inode, so teardown scope is unaffected) and which would silently change
+    the value pinned into a unit -- on macOS every ``/tmp/...`` plane becomes
+    ``/private/tmp/...``. ``abspath`` normalises ``.``/``..`` and anchors to the
+    CWD without touching links, and is the same primitive
+    ``security._resolved_env_root`` falls back to.
+
+    Only an OVERRIDE is anchored; a built-in default is already ``$HOME``-rooted
+    and is left exactly as it was, which is what keeps :func:`environment_vars`
+    emitting ``{}`` for an all-defaults plane on a host whose ``$HOME`` is a link.
+    """
+    return Path(os.path.abspath(os.path.expanduser(raw)))
+
 
 def _env_path(key: str, default: Path) -> Path:
     val = os.environ.get(key)
-    return Path(val).expanduser() if val else default
+    return _canonical_override(val) if val else default
 
 
 def _env_path_opt(key: str) -> Path | None:
     val = os.environ.get(key)
-    return Path(val).expanduser() if val else None
+    return _canonical_override(val) if val else None
 
 
 def _env_int(key: str, default: int) -> int:
@@ -154,3 +221,25 @@ class PodConfig:
     def env_file(self, name: str) -> Path:
         """Per-pod env file holding pinned ``CHECKOUT=`` / ``PORT=`` / ``SEED=``."""
         return self.pods_dir / f"{name}.env"
+
+    def refusal_file(self, name: str) -> Path:
+        """Where a TERMINAL boot refusal is recorded for pod *name*.
+
+        Host-side (beside the env file), deliberately NOT under
+        :meth:`home_dir`: the refusal this records is precisely "a component of
+        that tree could not be verified", so the tree is the wrong place to keep
+        the evidence -- and ``down`` nukes the home, which would erase it.
+
+        Exists because the two service managers make a refusal visible in
+        different amounts. systemd leaves the unit ``failed`` with the ``FATAL``
+        line in ``journalctl``. launchd has no journal and, under the exit-0
+        mechanism that stops its restart loop (see
+        :func:`kiro_crew.pod.launchd.launchd_exit_code`), a terminal refusal
+        looks like an ORDINARY CLEAN EXIT to ``launchctl``. This file is what
+        keeps it legible on both: ``kirocrew pod ls`` reads it through
+        :func:`kiro_crew.pod.cli._print_refusals` and reports the refusal as its
+        own section, so a refused pod does not silently drop out of the listing
+        for merely not running. The ``--json`` form of ``ls`` reports live pods
+        only and does not carry these records.
+        """
+        return self.pods_dir / f"{name}.refused"

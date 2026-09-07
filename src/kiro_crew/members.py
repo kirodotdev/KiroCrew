@@ -207,12 +207,20 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     asked for" and is persisted, while this is the transient fact of what got
     bound.
 
+    It also carries the same home override every managed Crew server carries
+    (``_managed_mcp_env``): the server resolves *which gateway* to call from
+    its data home, so on an install where ``KIROCREW_HOME`` is set (a pod, a
+    second profile) an entry without it would present this member's identity to
+    the default home's gateway, which has no such slot and refuses every verb
+    as ``caller_unidentified``. On a default install the helper returns nothing
+    and the entry is unchanged.
+
     ``None`` when the server command cannot be resolved — the member thread
     then runs as plain chat and the caller logs the degradation.
     """
     # circular import: agent's module graph is heavy and imports config, which
     # sits below this module for the thread-endpoint path.
-    from kiro_crew.agent import _kirocrew_mcp_invocation
+    from kiro_crew.agent import _kirocrew_mcp_invocation, _managed_mcp_env
 
     # circular import, same shape: port_resolution reaches config.loader, whose
     # provider-backend path imports this module.
@@ -225,7 +233,15 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
         return None
     if not command:
         return None
-    env: list[dict[str, str]] = [{"name": "KIROCREW_SESSION_KEY", "value": session_key}]
+    # The SAME home override every managed Crew server carries
+    # (``_managed_mcp_env``): the server resolves the gateway to call from its
+    # data home, so on an install with ``KIROCREW_HOME`` set (a pod, a second
+    # profile) an entry without it would authenticate as this member to the
+    # DEFAULT home's gateway — where the member slot does not exist and every
+    # verb is refused as ``caller_unidentified``. Empty on a default install.
+    env: list[dict[str, str]] = [{"name": k, "value": v} for k, v in _managed_mcp_env().items()]
+    # Then the identity key.
+    env.append({"name": "KIROCREW_SESSION_KEY", "value": session_key})
     # resolve_serving_port() reads KIROCREW_BOUND_PORT first and only then falls
     # through the client order, so one call covers both "the gateway exported the
     # port it bound" and "derive it" — and a malformed export is ignored rather

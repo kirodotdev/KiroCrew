@@ -186,7 +186,11 @@ def locked(path: Path) -> Iterator[None]:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.parent / (path.name + ".lock")
-    with open(lock_path, "w") as lock_fd:
+    # touch + "r+", never "w": a truncating open of a lock file another holder
+    # already locked raises a sharing violation on Windows instead of waiting.
+    # Full rationale at work_ledger._open_lock (issue #9248).
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as lock_fd:
         with platform_compat.flock_exclusive(lock_fd.fileno()):
             yield
 

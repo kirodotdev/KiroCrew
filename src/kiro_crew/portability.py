@@ -9,6 +9,7 @@ Credentials (.env, session secrets) are always excluded from exports.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import logging
@@ -17,15 +18,18 @@ import shutil
 import socket
 import stat
 import tempfile
+import time
 import zipfile
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 
 try:
     import pysqlite3 as sqlite3
 except ImportError:
     import sqlite3
 
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.security import is_sensitive_path
@@ -119,6 +123,266 @@ def _backup_sqlite(src: Path, dst_buffer: io.BytesIO) -> None:
         mem_conn.close()
 
 
+#: A Windows junction is a reparse point whose tag is not the symlink tag, so
+#: ``islink``/``DirEntry.is_symlink`` are False for one. The ATTRIBUTE is what
+#: every kind of reparse point has in common. Absent off Windows, where the
+#: concept does not exist.
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _entry_is_link(entry: os.DirEntry) -> bool:
+    """True if *entry* is a symlink or, on Windows, any other reparse point.
+
+    Answered entirely from the directory listing the kernel has ALREADY
+    returned: ``FindFirstFileW`` carries ``dwFileAttributes`` and the reparse tag
+    inline, so ``entry.stat(follow_symlinks=False)`` reads cached bytes rather
+    than issuing a lookup -- and, decisively, never a lookup THROUGH the child.
+    That is the property this walk is built on. The ordinary way to ask the same
+    question, ``Path(child).is_file()`` or ``is_sensitive_path(str(child))``,
+    resolves the name; if a junction there aims at ``\\\\host\\share`` that
+    resolution IS an outbound SMB authentication, and no later refusal recalls
+    it.
+
+    ``DirEntry.is_symlink()`` alone is not enough and is exactly how ``rglob``
+    came to descend a junction: a junction's tag is ``IO_REPARSE_TAG_MOUNT_POINT``
+    rather than ``IO_REPARSE_TAG_SYMLINK``, so that method reports False for one
+    while ``is_dir(follow_symlinks=False)`` reports True.
+
+    Every reparse point is treated the same rather than only link-shaped ones,
+    because that is already what the layer below refuses --
+    :func:`platform_compat.pin_directory` rejects any reparse point at a
+    directory name and :func:`platform_compat.open_file_no_reparse` rejects one
+    at a file name. This classifies what those opens would refuse anyway: a cheap
+    skip, never the enforcement. On POSIX the attribute check is skipped
+    entirely; ``is_symlink()`` uses ``d_type`` and costs nothing, and asking for
+    a stat there would add a real syscall for a concept the platform lacks.
+    """
+    if entry.is_symlink():
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        info = entry.stat(follow_symlinks=False)
+    except OSError:
+        return True  # unclassifiable -> refuse to walk into it
+    return bool(getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _keep_for_export(rel: PurePath) -> bool:
+    """The old loop's by-name filters, unchanged and in the same order.
+
+    Purely lexical, and it has to stay that way: this runs on a child the walk
+    has not verified yet, so a filesystem call here would be the very probe the
+    walk exists to remove.
+
+    The old loop also asked ``is_sensitive_path`` at this point, about the
+    PATHNAME. That call is gone rather than moved, because resolving an
+    unverified name is the probe. The same question is still asked -- in
+    :func:`_open_verified`, of the descriptor's real path -- and that was always
+    the load-bearing one: a name can be re-pointed between the check and the
+    open, a descriptor cannot.
+    """
+    # ``PurePosixPath(*rel.parts)``, never ``PurePosixPath(str(rel))``: on Windows
+    # ``str(rel)`` is backslash-separated, so ``PurePosixPath`` parses the whole
+    # relative path as a SINGLE component. ``.name`` is then the entire path and
+    # ``.parts`` has length one, so the ``EXPORT_EXCLUDE`` basename set and the
+    # ``EXCLUDE_DIRS`` walk both stop matching -- ``workspace/notes/.env`` was
+    # exported on Windows. Rebuilding from ``parts`` keeps the separator the
+    # exclusion rules are written against.
+    if _is_excluded(PurePosixPath(*rel.parts)):
+        return False
+    return not (rel.parts[0] == "skills" and "auto" in rel.parts)
+
+
+def _walk_contained(
+    root_real: str,
+    rel_dir: PurePath,
+    keep: Callable[[PurePath], bool],
+) -> Iterator[tuple[PurePath, int]]:
+    """Yield ``(rel, fd)`` for every regular file under ``root_real / rel_dir``.
+
+    The export's own enumeration, in place of ``rglob``. ``rglob`` DESCENDS a
+    Windows junction, and every by-name question then asked about what it yields
+    resolves that junction before any guard has run. Measured on this module
+    before the change, exporting a workspace holding one pre-planted junction:
+    twelve resolving calls went out through it -- four ``os.path.realpath``,
+    eight ``ntpath._getfinalpathname`` -- while the export correctly archived
+    nothing from behind it. Nothing being archived was never the question. If the
+    junction names a UNC share those resolutions are the outbound authentication,
+    and containment refusing the bytes afterwards has already paid the cost it
+    exists to prevent.
+
+    So this descends and verifies in one motion, root first:
+
+    1. the directory is PINNED. :func:`platform_compat.pin_directory` opens it
+       with ``OPEN_REPARSE_POINT``, so a junction sitting at the name fails here
+       instead of being traversed -- the refusal and the open are one operation,
+       not a check followed by an open. On Windows the handle also omits
+       ``FILE_SHARE_DELETE``, so while it lives neither that directory nor
+       anything above it can be renamed or deleted;
+    2. only then is it listed, and each child classified from the listing itself
+       (:func:`_entry_is_link`) -- nothing resolves a child;
+    3. a child directory is descended only by re-entering at step 1, so the path
+       the kernel walks to reach component *n* runs entirely through components
+       already opened and verified;
+    4. a child file is opened by :func:`_open_verified`, which does not follow a
+       reparse point at the final name, while its whole parent chain is still
+       held.
+
+    Each pin is held for as long as the subtree under it is being produced --
+    a generator frame stays alive across ``yield``, so an outer level's handle
+    outlives the inner walk -- and released in ``finally``, which also runs when
+    the consumer abandons the walk. Depth, not breadth, bounds how many are open.
+
+    *keep* is asked about relative paths only and must not touch the filesystem.
+    It is applied to FILES only, exactly where the old loop applied it: matching
+    a directory NAME does not prune its contents, because ``_is_excluded``
+    decides that through ``parts`` and did so before.
+
+    On POSIX ``pin_directory`` is ``O_RDONLY | O_DIRECTORY | O_NOFOLLOW``. Its
+    refusal of a symlinked directory is real there and is what ``rglob`` already
+    did, so the set of exported files is unchanged; the anti-rename property is
+    NOT real there -- POSIX has no such lock -- and nothing here relies on it.
+    Containment on POSIX rests where it always did, on ``_open_verified``
+    checking the descriptor's real path.
+    """
+    yield from _walk_pinned(root_real, PurePath(), rel_dir.parts, keep)
+
+
+def _walk_pinned(
+    root_real: str,
+    rel_dir: PurePath,
+    descend: tuple[str, ...],
+    keep: Callable[[PurePath], bool],
+) -> Iterator[tuple[PurePath, int]]:
+    """Pin ``root_real / rel_dir``, then walk it -- or step into *descend*'s first name.
+
+    One frame per directory, and the frame that lists a directory is the frame
+    that pinned it, so nothing is ever listed by a frame that did not verify it.
+    The chain therefore starts at the crew root itself: the kernel walks that name
+    to reach every candidate, so leaving it unpinned would leave the whole export
+    hanging off a component that could still be renamed away.
+
+    *descend* carries the components between the root and the tree being exported
+    (``workspace``, ``plan_memory``, ``skills``). They are stepped through by NAME
+    with no classification, which is safe for the same reason the walk needs no
+    pre-check anywhere else: :func:`platform_compat.pin_directory` refuses a
+    reparse point at the name itself, so a junction planted at ``workspace``
+    fails at its own open rather than being followed.
+    """
+    here = os.path.join(root_real, *rel_dir.parts)
+    try:
+        pin = platform_compat.pin_directory(here)
+    except OSError:
+        return  # not a real directory, or a reparse point: refused, not followed
+    try:
+        if descend:
+            yield from _walk_pinned(root_real, rel_dir / descend[0], descend[1:], keep)
+            return
+        try:
+            with os.scandir(here) as scan:
+                entries = sorted(scan, key=lambda e: e.name)
+        except OSError:
+            return
+        for entry in entries:
+            if _entry_is_link(entry):
+                continue
+            rel = rel_dir / entry.name
+            if entry.is_dir(follow_symlinks=False):
+                yield from _walk_pinned(root_real, rel, (), keep)
+            elif entry.is_file(follow_symlinks=False) and keep(rel):
+                fd = _open_verified(os.path.join(root_real, *rel.parts), root_real)
+                if fd is not None:
+                    yield rel, fd
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(pin)
+
+
+def _open_verified(target: str, root_real: str) -> int | None:
+    """Open *target* without following a link at its name, and vet the descriptor.
+
+    Split out so :func:`_open_inside` can hold the ancestor pins across the whole
+    of it: the descriptor checks below are only worth anything while the path they
+    were reached through is still the path that was verified.
+    """
+    try:
+        fd = platform_compat.open_file_no_reparse(target)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        if st.st_nlink > 1:
+            # A hardlink is invisible to every path-based guard: it shares the
+            # target's inode, so the fd's real path is the ALIAS's own name --
+            # `fd_real_path` reports the path the descriptor was opened by, not a
+            # canonical one -- and `is_sensitive_path` is then asked about an
+            # innocent workspace name while the bytes behind it are a credential
+            # file's. `O_NOFOLLOW` has no link to refuse, because there is no
+            # symlink. Only the link COUNT, read off this descriptor, sees it.
+            #
+            # Refused rather than resolved: there is no way to ask "which of my
+            # names is the sensitive one?", and the cost is honest and small --
+            # a workspace file that legitimately has a second link is left out of
+            # the export. Same rule and same reasoning as
+            # `pinned_fs.refuse_hardlink_alias` and
+            # `hooks.safe_read_file_bytes_nolink`.
+            return None
+        real = pinned_fs.fd_real_path(fd)
+        if real is None:
+            return None  # cannot witness containment -> fail closed
+        try:
+            if os.path.commonpath([real, root_real]) != root_real:
+                return None
+        except ValueError:  # different drives on Windows
+            return None
+        if is_sensitive_path(real):
+            return None
+    except OSError:
+        return None
+    else:
+        held, fd = fd, -1
+        return held
+    finally:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
+    """Stream the bytes behind *fd* into *zf* as *arcname*.
+
+    ``ZipFile.write`` takes a NAME and opens it itself, which is the re-open
+    :func:`_open_inside` exists to remove, so the entry is built by hand instead.
+    Streaming rather than reading the file whole is deliberate: a workspace file
+    has no size bound here, and the export used to copy one of any size.
+
+    The entry's timestamp and mode come from the same descriptor, so the metadata
+    describes the bytes actually archived — not whatever the name pointed at when
+    the header was built.
+
+    ``force_zip64`` is not optional here. ``ZipFile.write`` took a name, stat'd it,
+    and turned ZIP64 on by itself for a large source; a streamed entry does not know
+    its size when the header is written, so without this a file over
+    ``zipfile.ZIP64_LIMIT`` raises ``RuntimeError`` part-way through and the export
+    endpoint answers 500. A multi-GiB file under ``workspace/`` is ordinary — a
+    dataset, a model artifact — and it used to export fine, so leaving this off
+    would trade one defect for a regression.
+    """
+    st = os.fstat(fd)
+    info = zipfile.ZipInfo(arcname, date_time=time.localtime(st.st_mtime)[:6])
+    info.compress_type = zf.compression
+    info.external_attr = (st.st_mode & 0xFFFF) << 16
+    os.lseek(fd, 0, os.SEEK_SET)
+    with (
+        os.fdopen(os.dup(fd), "rb", closefd=True) as src,
+        zf.open(info, "w", force_zip64=True) as dest,
+    ):
+        shutil.copyfileobj(src, dest)
+
+
 def create_export_zip() -> tuple[bytes, dict]:
     """Create a zip archive of KiroCrew state. Returns (zip_bytes, manifest_dict)."""
     mc = _mc_dir()
@@ -156,24 +420,26 @@ def create_export_zip() -> tuple[bytes, dict]:
                 contents_summary[db_name] = db_buf.tell()
 
         # Directory trees: workspace, plan_memory, skills
+        #
+        # ``mc`` is resolved once, before the walk, and the walk is anchored on the
+        # RESOLVED root: ``$KIROCREW_HOME`` may itself legitimately be a link, and
+        # ``pin_directory`` refuses a reparse point at a name, so pinning the
+        # configured spelling would return an empty archive on such a host.
+        mc_real = os.path.realpath(mc)
         dir_counts: dict[str, int] = {}
         for dirname in ("workspace", "plan_memory", "skills"):
-            src_dir = mc / dirname
             count = 0
-            if src_dir.is_dir():
-                for fpath in src_dir.rglob("*"):
-                    if fpath.is_symlink():
-                        continue
-                    rel = fpath.relative_to(mc)
-                    if _is_excluded(PurePosixPath(str(rel))):
-                        continue
-                    if is_sensitive_path(str(fpath)):
-                        continue
-                    if dirname == "skills" and "auto" in rel.parts:
-                        continue
-                    if fpath.is_file():
-                        zf.write(str(fpath), f"{prefix}/{rel}")
-                        count += 1
+            for rel, fd in _walk_contained(mc_real, PurePath(dirname), _keep_for_export):
+                try:
+                    # ``as_posix()`` for the same reason the filter rebuilds from
+                    # parts: a zip member name is POSIX-separated by spec.
+                    # ``ZipInfo`` happens to rewrite ``os.sep`` today, so this is
+                    # not a fix for a live bug -- it stops the archive name
+                    # depending on that, next to a filter that must not.
+                    _add_from_fd(zf, fd, f"{prefix}/{rel.as_posix()}")
+                finally:
+                    os.close(fd)
+                count += 1
             dir_counts[dirname] = count
         contents_summary["workspace_files"] = dir_counts.get("workspace", 0)
         contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)

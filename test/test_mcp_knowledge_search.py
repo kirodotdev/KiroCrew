@@ -129,7 +129,7 @@ class TestKnowledgeSearchResults:
 
         _call_tool_inner("local_knowledge_search", {"query": "test"})
         mock_retriever_cls.return_value.search.assert_called_once_with(
-            "test", limit=3, source_id=None
+            "test", limit=3, source_id=None, namespace=None
         )
 
     @patch("kiro_crew.mcp_core.config_dir")
@@ -260,6 +260,14 @@ class TestKnowledgeSearchToolDefinition:
         assert "source_id" in tool["inputSchema"]["properties"]
         assert "source_id" not in tool["inputSchema"]["required"]
 
+    def test_namespace_is_optional(self):
+        from kiro_crew.mcp_core import _list_tools
+
+        tools = _list_tools()
+        tool = next(t for t in tools if t["name"] == "local_knowledge_search")
+        assert "namespace" in tool["inputSchema"]["properties"]
+        assert "namespace" not in tool["inputSchema"]["required"]
+
     def test_list_sources_tool_listed(self):
         from kiro_crew.mcp_core import _list_tools
 
@@ -297,7 +305,39 @@ class TestKnowledgeSearchSourceFilter:
 
         _call_tool_inner("local_knowledge_search", {"query": "auth", "source_id": "src-1"})
         mock_retriever_cls.return_value.search.assert_called_once_with(
-            "auth", limit=3, source_id="src-1"
+            "auth", limit=3, source_id="src-1", namespace=None
+        )
+
+    def test_namespace_rejects_non_string(self):
+        from kiro_crew.mcp_core import _call_tool_inner
+
+        with pytest.raises(ValidationError):
+            _call_tool_inner("local_knowledge_search", {"query": "q", "namespace": 7})
+
+    def test_namespace_rejects_overlong_value(self):
+        from kiro_crew.mcp_core import _call_tool_inner
+
+        with pytest.raises(ValidationError):
+            _call_tool_inner("local_knowledge_search", {"query": "q", "namespace": "x" * 65})
+
+    @patch("kiro_crew.mcp_core.config_dir")
+    @patch("kiro_crew.mcp_core.HybridRetriever")
+    @patch("kiro_crew.mcp_core._get_knowledge_search")
+    def test_namespace_passed_through_to_retriever(
+        self, mock_get_search, mock_retriever_cls, mock_config_dir, mock_db_exists
+    ):
+        # A namespace does not need to exist as a source, so no sources probe
+        # is required (unlike source_id): it flows straight to the retriever.
+        mock_config_dir.return_value = mock_db_exists
+        mock_store = MagicMock()
+        mock_get_search.return_value = (mock_store, None)
+        mock_retriever_cls.return_value.search.return_value = []
+
+        from kiro_crew.mcp_core import _call_tool_inner
+
+        _call_tool_inner("local_knowledge_search", {"query": "auth", "namespace": "client-a"})
+        mock_retriever_cls.return_value.search.assert_called_once_with(
+            "auth", limit=3, source_id=None, namespace="client-a"
         )
 
     @patch("kiro_crew.mcp_core.config_dir")

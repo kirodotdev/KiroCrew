@@ -106,6 +106,14 @@ from kiro_crew.dashboard.remote_relay import (
     relay_remote_turn,
     remote_bound_refusal,
 )
+from kiro_crew.dashboard.slot_buffers import (
+    MAX_DEFERRED_NOTE_CHARS,
+    MAX_DEFERRED_NOTES,
+    DeferredHoldFull,
+    DeferredHoldRebound,
+    note_hold_durable,
+    persist_deferred_notes_sync,
+)
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
@@ -2990,11 +2998,15 @@ async def _persist_handover_tail(state: DashboardState, name: str, slot: _ChatSl
         slot.flush_deferred_notes()
     except Exception:
         # The flush puts the unwritten suffix back before raising, so this count is
-        # what is still held — and held notes are in-memory only, so they die with
-        # the popped object.
+        # what is still held. Since #4093 the hold also has a durable copy in the
+        # slot's metadata line, so these notes are re-delivered after the NEXT
+        # gateway restart rather than dying with the popped object — but nothing
+        # in THIS process will visit this slot again, so for this lifetime they
+        # are undeliverable and the log must still say so.
         logger.error(
             "Slot %s: %d held note(s) could not be flushed before the key was handed "
-            "to a concurrent recreate; they are lost with the original slot",
+            "to a concurrent recreate; they are undeliverable until the persisted "
+            "hold replays on the next restart",
             name,
             len(slot._deferred_notes),
             exc_info=True,
@@ -5276,14 +5288,16 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # Order is unchanged and load-bearing: the cancel above, then the
             # flush, then the save. What the guard adds is failure handling, and
             # the flush shares the save's ``except`` arm rather than logging and
-            # falling through. ``_deferred_notes`` is in-memory only -- it is a
-            # ``__slots__`` attribute and the persistence layer never reads it --
-            # so once the slot is popped, the only place a note put back by a
-            # partial flush can live is this slot object. Falling through would
-            # write the transcript WITHOUT that note, discard the slot, and still
-            # report the key in ``archived``: data loss reported as success.
-            # Sharing the arm restores the slot with its notes still held and
-            # reports the key in ``failed`` instead.
+            # falling through. ``_deferred_notes`` now has a durable copy in the
+            # slot's metadata line (issue #4093), so a note put back by a
+            # partial flush is no longer held ONLY by this popped object — a
+            # restart replays the persisted hold. The restore below still
+            # matters for THIS gateway lifetime: falling through would write
+            # the transcript WITHOUT that note, discard the slot, and still
+            # report the key in ``archived`` — delivery deferred to the next
+            # restart and reported as success. Sharing the arm restores the
+            # slot with its notes still held and reports the key in ``failed``
+            # instead.
             removed.flush_deferred_notes()
             await save_slot_off_loop(
                 state, removed, closed=True, closed_at=closed_at, best_effort=False
@@ -9623,7 +9637,9 @@ _MAX_CONTEXT_CONTENT = 40000
 _NOTE_CONTEXT_MAX_AGE = 86400
 # Bounds the visible lines a caller can park on one in-flight turn. Matches the
 # per-source context cap so neither half of /note outlives the other by much.
-_MAX_DEFERRED_NOTES = 10
+# Shared with the persistence restore path (which enforces the same cap on notes
+# read back from disk), so the value lives in slot_buffers.
+_MAX_DEFERRED_NOTES = MAX_DEFERRED_NOTES
 
 # Distinguishes "key absent" from an explicit JSON null, which `body.get("maxAge")`
 # alone cannot: both yield None, so the two cannot mean different things without it.
@@ -10052,6 +10068,232 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "pending": len(slot._pending_context)})
 
 
+def _discard_held_note(slot: _ChatSlot, note: dict[str, object]) -> None:
+    """Remove *note* from the live hold by IDENTITY, if it is still there.
+
+    Identity, never equality: two same-content notes from a capped source are
+    byte-identical dicts (their context half is None), and ``list.remove``
+    would evict the FIRST equal one — a sibling note that already received its
+    durable 200 — leaving this failed note behind to be persisted by the next
+    successful write. A note the flush already drained is simply absent; that
+    absence carries NO meaning here (it can be delivered OR dropped at the
+    rebind seam), which is why the caller answers from positive evidence, not
+    from this function.
+    """
+    for i, held in enumerate(slot._deferred_notes):
+        if held is note:
+            del slot._deferred_notes[i]
+            return
+
+
+def _note_delivered_live(slot: _ChatSlot, note: dict[str, object]) -> bool:
+    """True when a delivered row stamped with this note's id is in the slot's
+    LIVE message list — evidence clause (a): the flush delivered the note this
+    lifetime, and the save that commits the row retires its durable entry.
+    In-memory and synchronous, so every branch can afford it. A note with no
+    id has no row stamp to look for and reads as not-delivered, toward the
+    branch's refusal (retryable, never a silent unkept promise)."""
+    note_id = note.get("id")
+    if not isinstance(note_id, str) or not note_id:
+        return False
+    for row in slot.messages:
+        row_meta = row.get("meta")
+        if isinstance(row_meta, dict) and row_meta.get("noteId") == note_id:
+            return True
+    return False
+
+
+async def _persist_deferred_note_hold(
+    state: DashboardState,
+    slot: _ChatSlot,
+    note: dict[str, object],
+    authorized_history_key: str,
+) -> web.Response | None:
+    """Make a just-held /note durable before the 200 acknowledges it.
+
+    Returns ``None`` on success (or when there is nothing durable to keep the
+    promise against) and a non-200 the caller must return otherwise.
+    Semantics, per issue #4093 — durable-before-200, honestly degraded at the
+    edges:
+
+    - **No conversation log** (memory-only deployment, bare test states):
+      nothing survives a restart at all, so a 200 keeps its original
+      "accepted for this gateway lifetime" meaning. No write, no failure.
+    - **No metadata line yet** (the guard refuses the merge): the SLOT has no
+      durable identity, so a restart drops the tab itself and there is no
+      restored slot the note could outlive. Accepted without a durable copy —
+      but ONLY when the slot never had one: a file that existed when this
+      write began and is gone under the lock means a concurrent permanent
+      delete won, and that is refused with the uniform not-found shape
+      instead, because the 200's durable promise was just destroyed along
+      with the session itself.
+    - **Rebind in the window** (DeferredHoldRebound): the slot no longer
+      routes to the transcript this note was authorized against, so the write
+      was refused rather than landing app content in a foreign transcript's
+      metadata. Refused with the endpoint's uniform not-found shape — the
+      same answer the ownership gate gives, so nothing an unauthorized caller
+      can observe distinguishes the cases. A note the concurrent flush
+      DROPPED at the rebind seam takes this 404 too: it was never delivered
+      and has no durable copy, so a 200 would be a delivery promise nothing
+      owns (the defect behind four review rounds on this span).
+    - **Hold full** (DeferredHoldFull): admitting the entry would evict a
+      retained one — the only durable copy of an already acknowledged note —
+      so the NEW note is refused with the live cap's retryable 429.
+    - **Write raises** (lock timeout, I/O error): the promise cannot be kept,
+      so the note is discarded and the caller gets a retryable 503 rather
+      than a 200 that lies about durability.
+
+    On EVERY branch — the success path included — the 200 stands only on
+    POSITIVE EVIDENCE that the note has an owner, never on inference from a
+    negative signal (absent-from-the-hold used to be read as "delivered",
+    which misread a rebind-dropped note; a written merge used to be read as
+    "durable", which misread a flush-side drop under a diverged
+    channel-origin key). The evidence clauses, any one sufficient:
+
+    (a) a delivered row stamped ``meta.noteId`` is in the slot's LIVE message
+        list — the flush delivered it this lifetime (checked here,
+        in-memory);
+    (b) its id is in the durable hold — on disk already (a sibling's merge
+        writer commits the WHOLE live list), or in the merge this write
+        committed (resolved under the lock, carried on the outcome and both
+        hold exceptions);
+    (c) its delivered row is in the COMMITTED transcript (same locked
+        resolver).
+
+    With evidence, an error answer would make the caller re-post a note that
+    is already delivered or already durable, and the restore would then
+    produce a duplicate. Without evidence, the branch's refusal is the honest
+    answer. The generic failure branch carries no resolver verdict (the
+    writer may have failed before its guard ran), so it makes the durable
+    observation itself with :func:`_note_already_durable`.
+    """
+    conversation_log = getattr(state, "conversation_log", None)
+    if conversation_log is None:
+        return None
+    # Whether the slot HAS a durable identity, decided before the write. The
+    # slot-side flag is MONOTONIC and synchronous — a permanent delete racing
+    # this worker cannot unwind it, so a delete landing even before the probe
+    # below still reads as "the slot had an identity" and a no-line outcome is
+    # refused rather than 200-acknowledged. The mtime probe supplements it for
+    # a file that exists without this slot object ever having observed it.
+    # A slot that never had a file keeps the documented
+    # accepted-without-durable-copy semantics.
+    had_durable_identity = bool(getattr(slot, "_disk_meta_observed", False)) or (
+        await asyncio.to_thread(conversation_log.mtime_of, authorized_history_key) is not None
+    )
+    try:
+        outcome = await asyncio.to_thread(
+            persist_deferred_notes_sync,
+            conversation_log,
+            slot,
+            note,
+            authorized_history_key,
+        )
+    except DeferredHoldRebound as exc:
+        if exc.evidence.durable or exc.evidence.committed or _note_delivered_live(slot, note):
+            return None
+        sel().log_api_access(
+            caller=str(note.get("session", "")) or "dashboard",
+            operation="note_post",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error="slot was rebound to another session while the hold was persisting",
+        )
+        _discard_held_note(slot, note)
+        return _slot_not_found()
+    except DeferredHoldFull as exc:
+        if exc.evidence.durable or exc.evidence.committed or _note_delivered_live(slot, note):
+            return None
+        _discard_held_note(slot, note)
+        return web.json_response(
+            {
+                "error": "slot's durable deferred-note hold is full until its rows are saved",
+                "code": "deferred_notes_full",
+            },
+            status=429,
+        )
+    except Exception:
+        logger.error(
+            "Failed to persist the deferred-note hold for slot %s", slot.key, exc_info=True
+        )
+        # No resolver verdict travels with a generic failure (the writer may
+        # have failed before its guard ran), so make the durable observation
+        # here — it is still an observation, never an inference. A recorded
+        # drop dominates it (same rule as the resolver): a drop-marked
+        # durable entry is retired row-lessly by the next save, so it cannot
+        # back a delivery promise.
+        note_id = note.get("id")
+        recorded_dropped = isinstance(note_id, str) and note_id in getattr(
+            slot, "_dropped_note_ids", set()
+        )
+        if (
+            not recorded_dropped
+            and await _note_already_durable(conversation_log, authorized_history_key, note)
+        ) or _note_delivered_live(slot, note):
+            return None
+        _discard_held_note(slot, note)
+        return web.json_response(
+            {
+                "error": "failed to persist the held note; retry the request",
+                "code": "deferred_note_persist_failed",
+            },
+            status=503,
+        )
+    if outcome.written:
+        if (
+            outcome.evidence.durable
+            or outcome.evidence.committed
+            or _note_delivered_live(slot, note)
+        ):
+            return None
+        # The merge landed but carries NO representation of this note: the
+        # concurrent flush dropped it at the rebind seam while the slot's
+        # history key still matched (the two keys diverge for a
+        # channel-origin slot), so nothing will ever deliver or replay it.
+        # Same refusal as the rebind branch — the note's authorization no
+        # longer matches where the slot routes.
+        sel().log_api_access(
+            caller=str(note.get("session", "")) or "dashboard",
+            operation="note_post",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error="held note was dropped at the rebind seam while the hold was persisting",
+        )
+        _discard_held_note(slot, note)
+        return _slot_not_found()
+    if had_durable_identity:
+        # The guard saw NO metadata line for a slot whose file existed when
+        # this write began: a permanent delete won the lock. The session and
+        # any durable copy are gone, so a 200 here would acknowledge a note
+        # that can never be delivered or restored. Refuse with the endpoint's
+        # uniform not-found shape (what the caller would have seen had the
+        # delete landed a moment earlier).
+        if outcome.evidence.committed or _note_delivered_live(slot, note):
+            return None
+        _discard_held_note(slot, note)
+        return _slot_not_found()
+    return None
+
+
+async def _note_already_durable(
+    conversation_log: object, authorized_history_key: str, note: dict[str, object]
+) -> bool:
+    """True when a concurrent sibling's merge writer already persisted *note*.
+
+    Off the loop (locked file read). When it answers True the note must NOT
+    be rolled back or error-answered: its durable entry is real, the restore
+    will replay it, and a 503/429 would make the caller re-post a duplicate.
+    """
+    note_id = note.get("id")
+    if not isinstance(note_id, str) or not note_id:
+        return False
+    return await asyncio.to_thread(
+        note_hold_durable, conversation_log, authorized_history_key, note_id
+    )
+
+
 async def api_chat_slot_note(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/note — visible transcript line + silent next-turn context.
 
@@ -10104,16 +10346,24 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
 
     When a turn is already running BOTH halves are held and written at that
     turn's end, so ``appended`` is false and ``visibleDeferred`` is true. Its
-    order is preserved and it is not dropped while this gateway stays up -- the
-    hold is in memory, so a 200 means accepted for this gateway lifetime, not
-    durable delivery.
+    order is preserved, and the hold is DURABLE (issue #4093): it is persisted
+    into the slot's own metadata line before the 200 is returned, replayed by
+    both slot-restore paths after a gateway restart, and retired by the save
+    that commits the delivered rows. A caller therefore never needs to re-post
+    after a restart; the one retry signal is a 503 ``deferred_note_persist_failed``,
+    which means the hold could not be made durable and was not accepted.
     Appending mid-turn would take the row the replay path skips and cause the
     user's own request to be replayed; queueing the context mid-turn would let
     the turn already in flight drain it, so the note would shape the request it
     was written after and the next turn would find nothing. Every rejection
     still happens on the POST. ``pending`` counts held entries too, so it always
     reports what the model will receive. Holding more than
-    ``_MAX_DEFERRED_NOTES`` on one turn is a 429 ``deferred_notes_full``.
+    ``_MAX_DEFERRED_NOTES`` on one turn is a 429 ``deferred_notes_full`` (also
+    returned when the durable hold still carries delivered-but-unsaved entries
+    at its ceiling), and a held note's content is bounded at
+    ``MAX_DEFERRED_NOTE_CHARS`` — a 413 ``deferred_note_too_large`` — because
+    the durable copy is persisted verbatim and must replay exactly what the
+    200 accepted.
     """
 
     state: DashboardState = request.app["state"]
@@ -10169,6 +10419,24 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             },
             status=429,
         )
+    if deferred and len(content) > MAX_DEFERRED_NOTE_CHARS:
+        # A held note is persisted VERBATIM before the 200 (issue #4093), so
+        # what the 200 accepts is exactly what a restart replays — truncating
+        # the durable copy would replay altered content for an acknowledged
+        # note. The bound therefore sits at the boundary, where the caller can
+        # act on it: shorten the note, or wait for the turn to end (immediate
+        # notes keep the larger shared content bound).
+        return web.json_response(
+            {
+                "error": (
+                    f"a note posted during a running turn is capped at "
+                    f"{MAX_DEFERRED_NOTE_CHARS} characters; shorten it or wait "
+                    "for the turn to end"
+                ),
+                "code": "deferred_note_too_large",
+            },
+            status=413,
+        )
 
     # The per-source cap protects the context QUEUE, not the transcript. So when
     # the context half is capped we still write the VISIBLE line -- the audit
@@ -10209,19 +10477,57 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # URLs first, since that pass collapses the whole URL.
     visible_content, _ = redact_exfiltration_urls(content)
     visible_content, _ = redact_credentials(visible_content)
-    if deferred:
-        slot._deferred_notes.append(
+    if deferred and len(visible_content) > MAX_DEFERRED_NOTE_CHARS:
+        # The bound must hold on the PERSISTED string, not just the raw input:
+        # redaction can GROW content (each flagged URL becomes a longer
+        # [REDACTED: ...] tag), and a persisted entry over the bound is dropped
+        # fail-closed by the restore sanitizer — a 200 here would be an
+        # acknowledgement the restart silently breaks. The raw-content check
+        # above still stands on its own: the context half persists the RAW
+        # string, and the sanitizer applies the same bound to it.
+        return web.json_response(
             {
-                "content": visible_content,
-                "cls": "reconcile-note",
-                "context": context_entry,
-                # The session this note was authorized against. The gate above
-                # only admits a slot that still routes to its own session, but
-                # an unbound slot can acquire a foreign binding while the note
-                # is held, and the flush resolves its target late.
-                "session": effective_session_key(slot),
-            }
+                "error": (
+                    f"a note posted during a running turn is capped at "
+                    f"{MAX_DEFERRED_NOTE_CHARS} characters after redaction; "
+                    "shorten it or wait for the turn to end"
+                ),
+                "code": "deferred_note_too_large",
+            },
+            status=413,
         )
+    if deferred:
+        note: dict[str, object] = {
+            # Identity for the durable hold's merge (slot_buffers.
+            # persist_deferred_notes_sync): a disk entry whose id is absent
+            # from the in-memory hold was delivered or dropped, never lost.
+            "id": uuid.uuid4().hex[:12],
+            "content": visible_content,
+            "cls": "reconcile-note",
+            "context": context_entry,
+            # The session this note was authorized against. The gate above
+            # only admits a slot that still routes to its own session, but
+            # an unbound slot can acquire a foreign binding while the note
+            # is held, and the flush resolves its target late.
+            "session": effective_session_key(slot),
+        }
+        # The transcript this authorization resolves to, captured in the SAME
+        # routing observation as the session stamp above: the durable write
+        # targets this key and re-verifies the slot still resolves to it
+        # under the store lock, so a rebind during the persist window cannot
+        # land app-authorized content in a foreign transcript's metadata.
+        authorized_history_key = slot_history_key(slot)
+        slot._deferred_notes.append(note)
+        # Make the hold durable BEFORE the 200 acknowledges it (issue #4093):
+        # ``visibleDeferred: true`` is a delivery promise for a transcript
+        # line, and an in-memory-only hold silently voids it on a gateway
+        # restart. The write persists the CURRENT hold into the slot's own
+        # metadata line under the history lock, off the event loop, and the
+        # restore paths replay it into ``_deferred_notes`` on the first boot
+        # after a restart.
+        err = await _persist_deferred_note_hold(state, slot, note, authorized_history_key)
+        if err is not None:
+            return err
     else:
         slot.append(
             role="inject",

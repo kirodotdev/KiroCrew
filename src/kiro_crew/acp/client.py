@@ -84,6 +84,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_STEER,
@@ -162,6 +163,7 @@ from kiro_crew.hooks import (
     fire_tool_hooks,
     get_global_hook_store,
 )
+from kiro_crew.identity_stores import IDENTITY_STORE_ROOTS
 from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import injection_server_names, pooled_session_servers
@@ -841,6 +843,325 @@ def _resolve_spawn_env(env: dict[str, str], *, kiro_api_key: bool = False) -> di
     else:
         strip_kiro_cli_api_key(env)
     return env
+
+
+#: The data-root override variables the identity store consults, DERIVED from
+#: ``identity_stores.IDENTITY_STORE_ROOTS`` so this set cannot drift from the table
+#: that actually resolves the store. Today: ``XDG_DATA_HOME`` (POSIX),
+#: ``LOCALAPPDATA`` and ``APPDATA`` (Windows). macOS rows carry no env var (fixed
+#: anchor), so nothing is scrubbed for them. Consumed by
+#: :func:`_apply_pod_home_remap`, which pops each one from a pod child's env.
+IDENTITY_STORE_ROOT_ENV_VARS: frozenset[str] = frozenset(
+    root.env_var for root in IDENTITY_STORE_ROOTS if root.env_var
+)
+
+
+#: Credential POINTERS: variables whose VALUE is an absolute path or URL the AWS
+#: SDK chain dereferences to obtain credentials. Popped from a pod child's env by
+#: :func:`_apply_pod_home_remap`.
+#:
+#: Why this is an explicit list and not a derivation. ``IDENTITY_STORE_ROOT_ENV_VARS``
+#: is derived from ``identity_stores.IDENTITY_STORE_ROOTS`` and correctly does NOT
+#: cover these: a store ROOT is a directory the product's own layout hangs off, while
+#: these name a credential FILE or a credential ENDPOINT directly. No table in this
+#: repo enumerates them, so deriving them would mean inventing one whose only
+#: consumer is this scrub -- a list with extra steps. They are enumerated here, with
+#: the rule for extending it stated rather than implied: a variable belongs here when
+#: its value is a LOCATION that yields credentials when followed.
+#:
+#: Why not ``sandbox._SENSITIVE_ENV_PREFIXES``, which is the repo's one global scrub.
+#: That set covers ``AWS_SECRET`` / ``AWS_SESSION`` -- variables that CARRY a secret --
+#: and deliberately stops there, because the standard sandbox tier leaves the real
+#: ``~/.aws`` visible so the AWS CLI and ``credential_process`` keep working for
+#: non-pod agent turns. Adding pointers there would break that supported path
+#: everywhere to fix a pod-only exposure. The exposure IS pod-only: outside a pod the
+#: pointer and the fence agree about where credentials live, while inside one ``HOME``
+#: moves and ``.aws/config`` / ``.aws/credentials`` / ``.aws/cli`` are empty-masked
+#: under the new home -- so an inherited ABSOLUTE pointer at the host path walks
+#: around the relocation entirely and the agent reads the operator's real credentials
+#: by dereferencing it. One philosophy, two scopes: secrets are scrubbed globally,
+#: pointers are scrubbed where the thing they point at has been relocated.
+#:
+#: REMOVED rather than re-anchored, for the same reason as the store roots: deleting
+#: the variable lets the SDK's own ``$HOME``-relative default resolve under the pod
+#: home (where the masks apply), and a wrong re-anchored value would fail OPEN.
+CREDENTIAL_POINTER_ENV_VARS: frozenset[str] = frozenset(
+    {
+        # Credential/config FILES the SDK reads directly.
+        "AWS_CONFIG_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        # An OIDC token file exchanged for role credentials (web-identity flow).
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        # The container credential provider: a URL the SDK GETs for credentials,
+        # plus the bearer that authorizes that GET. Not a filesystem path, so no
+        # mask or HOME remap can reach any of them -- which is exactly why they
+        # have to be dropped from the env rather than fenced.
+        #
+        # The authorization token has TWO spellings and both must go. The ``_FILE``
+        # form names a file holding the bearer; the bare form carries the bearer
+        # IN THE VALUE, in plain text. Per the SDK reference the bare form is the
+        # documented alternative used when ``_FILE`` is unset (and is what Lambda
+        # SnapStart sets), so scrubbing only ``_FILE`` leaves the strictly worse
+        # variable in the child's environment: a live bearer the agent can read
+        # straight out of ``env`` with no file to open and no path to fence.
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    }
+)
+
+
+def _apply_pod_home_remap(env: dict[str, str], *, pod_home_remap: bool) -> dict[str, str]:
+    """Remap *env*'s ``HOME`` to the pod's own OAuth-grant tree, for a
+    pod-spawned kiro-cli child ONLY. Mutates *env* in place and returns it.
+
+    Gated on BOTH the pod marker (``KIROCREW_POD``, set by
+    ``pod.runtime.build_pod_env`` for the whole pod gateway) and
+    *pod_home_remap* (membership in ``ACP_BACKENDS_POD_HOME_REMAP`` --
+    harness-parity H6/H7, never a bare backend-name comparison), so this touches
+    nothing outside a pod and nothing for a harness whose credentials do not
+    follow ``$HOME``. That set is deliberately NOT
+    ``ACP_BACKENDS_INTERNAL_SANDBOX``: the two answer different questions --
+    "does this harness carry its own OS sandbox?" versus "does relocating this
+    harness's HOME move its credential store?" -- so reusing the sandbox set
+    would hand a harness added there for sandbox reasons credential-relocation
+    semantics it never opted into.
+
+    The marker is compared EXACTLY to ``"1"`` rather than tested for
+    truthiness. Every non-empty string is truthy in Python, so an inherited
+    ``KIROCREW_POD=false`` or ``KIROCREW_POD=0`` would otherwise remap ``HOME``
+    for a child that is not in a pod at all -- the inverse of what the value
+    says.
+
+    kiro-cli derives its MCP OAuth artifact directory
+    (``mcp_grant.kiro_oauth_cache_dir()``) from the SPAWNED PROCESS's real
+    ``$HOME`` -- there is no env var that
+    relocates just that one subtree (see ``config.paths.kiro_oauth_cache_home``
+    for why ``KIRO_HOME`` does not help either) -- so the only way to make
+    kiro-cli's OWN writes land in the pod's tree is to remap the child's
+    ``HOME`` at spawn time. ``KIROCREW_OS_HOME`` names the SAME directory
+    ``config.paths.kiro_oauth_cache_home()`` resolves for the pod's ``mcp_grant``
+    reads, which is what keeps kiro-cli's writer and every ``mcp_grant`` reader
+    looking at one tree instead of two independent derivations of "where do
+    grants live" (see ``mcp_grant.kiro_oauth_cache_dir``'s docstring for the
+    split this closes).
+
+    A remap absent ``KIROCREW_OS_HOME`` (the marker set with no pod-scoped
+    directory to point at -- a malformed pod env, or a caller that set the
+    marker without the directory) leaves ``env`` untouched: an unset ``HOME``
+    on a spawned child would break far more than OAuth grants, so the fail
+    mode here is "kiro-cli reads the real host home", the status quo, not a
+    broken spawn.
+
+    Three obligations come with moving ``HOME``, each closed here:
+
+    * kiro-cli's own sign-in must keep working. ``pod.runtime._seed_pod_os_home``
+      mirrors the AGENT RUNTIME's identity store (``~/.local/share/kiro-cli`` and
+      its per-platform siblings, derived from ``identity_stores``) into this tree
+      at pod boot, which is where the harness actually resolves its access token.
+      The host's ``.aws/sso/cache`` is NOT copied: that staging existed in an
+      earlier revision and was deleted, so a pod's ``.aws/sso/cache`` starts empty
+      and holds only grants the pod itself mints.
+    * ``USERPROFILE`` moves WITH ``HOME`` (Windows spelling of the same
+      concept) so a Windows pod does not read one remapped path and the other
+      unremapped.
+    * **AWS file-based credentials deliberately do NOT follow the child into the
+      pod.** ``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` default to
+      ``$HOME/.aws/{config,credentials}`` when unset, so a remapped ``HOME``
+      sends the credential chain at the pod's own tree. An earlier revision
+      pinned both variables back to the REAL home so a pod agent turn could
+      still reach the operator's profiles. That pin is REMOVED, because naming
+      those files in the child environment is itself the leak: ``security.py``
+      matches command TEXT and performs no variable expansion, so the exported
+      name is a working alias for a path the sensitive-path fence refuses by
+      name -- and the alias is retrievable through an unbounded set of
+      spellings (``$VAR``, ``${VAR}``, ``%VAR%``, ``$env:VAR``,
+      ``os.environ['VAR']``, ``$(printenv VAR)``, ``eval``, indirect expansion,
+      a helper script). Three review rounds each closed one spelling; a text
+      matcher cannot close the class. Deleting the export deletes the alias,
+      which is the only fix that does not depend on out-matching command
+      substitution.
+
+      What this costs, stated rather than implied: **an ACP agent turn inside a
+      pod has no inherited AWS credentials on any path.** Both legs are closed,
+      and an earlier revision of this comment got the second one wrong:
+
+      * FILE credentials: removing the exports means ``~/.aws/{config,credentials}``
+        resolves under the remapped (empty) pod home, so a profile that lives only
+        in a file -- including a ``credential_process`` profile -- does not resolve.
+      * ENVIRONMENT credentials: ``sandbox.scrub_agent_subprocess_env`` scrubs
+        ``_SENSITIVE_ENV_PREFIXES``, which includes ``AWS_SECRET`` and
+        ``AWS_SESSION``, from every Kiro/ACP child. So ``AWS_SECRET_ACCESS_KEY``
+        and ``AWS_SESSION_TOKEN`` never reach the agent turn even when the
+        operator has them. ``AWS_ACCESS_KEY_ID`` survives (no ``AWS_ACCESS``
+        prefix), but a key id without its secret is not a credential.
+
+      This comment previously claimed "env-credentialed turns are unaffected",
+      pointing at ``build_pod_env`` keeping ``AWS_*``. That keep is real but it is
+      not the last word: ``build_pod_env`` shapes the pod GATEWAY's environment,
+      and the ACP child is scrubbed AFTER it, so the two statements are about
+      different processes. The corrected posture is strictly stronger than the one
+      claimed, and it is the intended one for a throwaway instance whose whole
+      purpose is to not hold machine-level credentials.
+
+      An operator who needs AWS from inside a pod therefore cannot get it by
+      exporting credentials into their shell; that is a deliberate property of the
+      agent-subprocess scrub, not something this function can or should undo.
+
+      An operator who sets either pointer variable in their OWN environment has it
+      REMOVED here too, which is the half a later round corrected: whose file the
+      variable names does not change what the pod's agent obtains by dereferencing
+      it, and an absolute host pointer walks around the ``HOME`` relocation
+      entirely. ``CREDENTIAL_POINTER_ENV_VARS`` carries the whole family, so the
+      scrub below covers an inherited pointer and a manufactured one alike.
+    """
+    if not pod_home_remap or env.get("KIROCREW_POD") != "1":
+        return env
+    os_home = env.get("KIROCREW_OS_HOME")
+    if not os_home:
+        return env
+    env["HOME"] = os_home
+    env["USERPROFILE"] = os_home
+    # Remapping HOME alone is NOT enough. The identity store's root is
+    # ``$HOME``-relative only when no OVERRIDE is set: ``identity_stores``
+    # resolves each store from ``StoreRoot.env_var`` first (``XDG_DATA_HOME`` on
+    # POSIX, ``LOCALAPPDATA`` / ``APPDATA`` on Windows; macOS anchors are fixed and
+    # carry no env var). An inherited override pointing at a host path therefore
+    # made the pod's kiro-cli read AND WRITE the HOST identity store, so its
+    # sign-in state survived ``pod down`` -- the exact escape this remap exists to
+    # prevent, reached around the side.
+    #
+    # REMOVED rather than re-anchored, deliberately. Deleting the variable lets the
+    # product's own ``$HOME``-relative default resolve under ``os_home``, which is
+    # the behaviour already tested and already staged into; re-anchoring would
+    # invent a second spelling of "where the store lives" that has to stay in sync
+    # with ``identity_stores`` forever, and a wrong value fails OPEN (a live store
+    # somewhere unintended) instead of closed. The set is DERIVED from the store
+    # table rather than restated, so a platform or product added there is scrubbed
+    # here without a second edit.
+    for var in IDENTITY_STORE_ROOT_ENV_VARS:
+        env.pop(var, None)
+    # Credential pointers, same removal for a different reason: their value is a
+    # LOCATION that yields credentials when followed, and an operator-set absolute
+    # one still names the HOST's file after ``HOME`` has moved. See
+    # ``CREDENTIAL_POINTER_ENV_VARS`` for why this set is explicit and why it is not
+    # folded into the repo's global secret scrub.
+    for var in CREDENTIAL_POINTER_ENV_VARS:
+        env.pop(var, None)
+    return env
+
+
+#: The executable name inside a toolbox kiro-cli bundle. The installed
+#: ``kiro-cli`` is frequently a SHIM that prefers ``exec aim sandbox --client
+#: kiro-cli "$@"`` and falls back to ``exec "$KIRO_CLI_PATH"``, which it derives
+#: as ``<bundle root>/kiro-cli`` from its own resolved symlink chain. Naming the
+#: same executable here keeps :func:`_kiro_cli_bundle_binary` single-sourced with
+#: the shim's own fallback instead of hardcoding one install layout.
+_KIRO_CLI_BUNDLE_EXECUTABLE = "kiro-cli"
+
+
+def _kiro_cli_bundle_binary(
+    executable: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> str | None:
+    """The bundle binary the kiro-cli shim's OWN fallback would exec, or ``None``.
+
+    Mirrors the shim's two-step resolution rather than inventing a third one:
+    an executable ``KIRO_CLI_PATH`` wins outright (the shim honors a pre-set
+    value before it computes anything), otherwise the shim resolves its own
+    symlink chain, takes ``<dirname>/..`` as the bundle root and execs
+    ``<bundle root>/kiro-cli``.
+
+    Returns ``None`` -- meaning "spawn what was resolved, unchanged" -- for every
+    case where the swap is not provably available: *executable* IS already the
+    bundle binary (the computed candidate resolves back to it), the candidate
+    does not exist, or it is not executable. A caller therefore never has to
+    handle a path that cannot be spawned, and a host with no toolbox bundle keeps
+    the status quo instead of failing at spawn time.
+    """
+    env = os.environ if environ is None else environ
+    pinned = env.get("KIRO_CLI_PATH")
+    if pinned and os.path.isfile(pinned) and os.access(pinned, os.X_OK):
+        return pinned
+    try:
+        real = os.path.realpath(executable)
+        candidate = os.path.join(
+            os.path.dirname(os.path.dirname(real)), _KIRO_CLI_BUNDLE_EXECUTABLE
+        )
+    except OSError:  # pragma: no cover - defensive; a spawn must not fail on this
+        return None
+    if os.path.realpath(candidate) == real:
+        return None  # already the bundle binary; the shim is not in the chain
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def apply_pod_bundle_spawn(
+    argv: list[str],
+    *,
+    backend: str,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[list[str], bool]:
+    """Resolve a pod child's kiro-cli spawn: which binary, and who sandboxes it.
+
+    Returns ``(argv, delegate_internal_sandbox)``. The second element is what
+    callers pass as ``wrap_argv``'s ``is_kiro_cli``, so the binary choice and the
+    sandbox-ownership choice cannot drift apart -- they are one decision with one
+    cause, made here once for both ACP transports rather than restated in each.
+
+    **Outside a pod this is a no-op by construction**: *argv* is returned
+    unchanged and ``delegate_internal_sandbox`` is plain membership in
+    ``ACP_BACKENDS_INTERNAL_SANDBOX``, byte-identical to what both call sites
+    computed inline before. The exception is stated POSITIVELY (pod condition
+    true) and gated on exactly the conditions that make
+    :func:`_apply_pod_home_remap` fire -- the pod marker compared exactly to
+    ``"1"``, membership in ``ACP_BACKENDS_POD_HOME_REMAP``, and a
+    ``KIROCREW_OS_HOME`` to point at -- never on a backend negation, so a harness
+    added to a set for some other reason cannot inherit this behaviour by
+    accident (harness-parity H6/H7).
+
+    **Why a pod child must not run the shim.** The remap gives the child a
+    pod-owned ``HOME`` so kiro-cli's OAuth grants die with the pod. The installed
+    ``kiro-cli`` is a shim that prefers ``aim sandbox``, and toolbox's sandbox
+    builds its mount plan around the REAL user home: under a remapped ``HOME`` it
+    fails to construct at all, exiting before kiro-cli starts (observed as
+    ``Failed to spawn child process: Device or resource busy (os error 16)``, and
+    inside a pod as ``toolbox: Unable to run aim: Command "aim" doesn't appear to
+    be associated with any tool`` followed by a broken ACP pipe). Staging state
+    into the pod home does not help -- an empty os-home, one carrying a
+    ``.toolbox`` symlink, and one carrying a real ``.toolbox`` skeleton all fail
+    identically -- because the obstacle is toolbox's mount plan, not a file the
+    child cannot find. The bundle binary the shim itself falls back to has no
+    such dependency: under the same remapped ``HOME`` it starts and reaches its
+    normal "not logged in" state, which is precisely the state
+    ``pod.runtime._seed_pod_os_home``'s staged SSO token answers.
+
+    **So Kiro Crew's own sandbox takes over for that child.** Skipping the
+    seatbelt/delegation is only sound while kiro-cli's internal sandbox actually
+    runs; bypassing the shim means it does not, so ``delegate_internal_sandbox``
+    goes ``False`` and ``wrap_argv`` wraps the child in Crew's launcher instead.
+    The substitution is per-pod-child and never reaches a host session.
+
+    If the bundle binary cannot be located the pair degrades to the status quo
+    (shim, internal sandbox) rather than spawning something unlaunchable; a pod
+    whose child cannot bootstrap is meant to be refused loudly at ``pod up``, not
+    papered over here.
+    """
+    delegate = backend in ACP_BACKENDS_INTERNAL_SANDBOX
+    env = os.environ if environ is None else environ
+    if env.get("KIROCREW_POD") != "1":
+        return argv, delegate
+    if backend not in ACP_BACKENDS_POD_HOME_REMAP or not env.get("KIROCREW_OS_HOME"):
+        return argv, delegate
+    if not argv:  # pragma: no cover - defensive; callers always pass argv[0]
+        return argv, delegate
+    bundle = _kiro_cli_bundle_binary(argv[0], environ=env)
+    if bundle is None:
+        return argv, delegate
+    return [bundle, *argv[1:]], False
 
 
 # Subprocess stdout buffer — kiro-cli can send large JSON-RPC lines (tool outputs)
@@ -3849,7 +4170,7 @@ class AcpClient:
                 model_id, self._model_registry_namespace
             )
         if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
-            await self.set_config_option("model", model_id)
+            model_id = await self._push_model_config_option(model_id, strict=True)
         else:
             await self._send_request(
                 METHOD_SET_MODEL,
@@ -4008,6 +4329,79 @@ class AcpClient:
         """
         return model_is_unusable(model_id, self._advertised_model_ids())
 
+    @staticmethod
+    def _model_config_candidates(model_id: str) -> list[str]:
+        """Ordered fallback spellings for a config-option model push.
+
+        The cold-cache companion to :func:`resolve_wire_model_id`'s fold: with
+        an empty advertised cache there is nothing to fold against, so a
+        prefixed ``[1m]`` id would otherwise reach the wire verbatim. Candidates
+        are derived from the id itself — verbatim, then prefix-stripped, then
+        prefix- and window-stripped — and the adapter judges each; it knows
+        what it accepts.
+        """
+        out = [model_id]
+        stripped = model_registry.strip_provider_id_prefix(model_id)
+        if stripped != model_id:
+            out.append(stripped)
+        bare = stripped.replace("[1m]", "")
+        if bare != stripped:
+            out.append(bare)
+        return out
+
+    async def _push_model_config_option(self, model_id: str, *, strict: bool) -> str:
+        """Push ``model`` over ``session/set_config_option`` with cold-cache fallback.
+
+        The value-rejection twin of ``_set_effort_config_option``'s ladder in
+        ``providers.acp``: a model the adapter refuses must not bubble up as a
+        generic ``AcpError`` — that failure path resets the session and drops
+        the user onto the adapter default with no explanation. Each candidate
+        spelling is tried in turn; the first accepted one wins and is returned
+        so the caller records the spelling that actually went on the wire.
+
+        ``strict=True`` (an explicit user pick, ``set_model``) raises
+        ``AcpModelUnavailable`` when every candidate is refused — a silent
+        downgrade would report success while running something else.
+        ``strict=False`` (startup application of an inherited value) returns
+        ``""`` so the caller stays on the backend default, mirroring the
+        withhold contract in :meth:`_apply_startup_model`.
+        """
+        last_exc: AcpError | None = None
+        for cand in self._model_config_candidates(model_id):
+            try:
+                await self.set_config_option("model", cand)
+            except AcpError as exc:
+                msg = str(exc)
+                lowered = msg.lower()
+                if "unknown config option" in lowered:
+                    # No 'model' config option at all (other adapter build):
+                    # retrying spellings cannot help.
+                    if strict:
+                        raise
+                    logger.debug("adapter exposes no 'model' config option; skipping model push")
+                    return ""
+                if "config option model" not in lowered:
+                    raise  # transport/protocol failure — not a value rejection
+                last_exc = exc
+                continue
+            if cand != model_id:
+                logger.info(
+                    "ACP model %r rejected by the adapter; applied fallback spelling %r",
+                    model_id,
+                    cand,
+                )
+            return cand
+        _rejected_log, _ = redact_exfiltration_urls(str(model_id))
+        _rejected_log, _ = redact_credentials(_rejected_log)
+        if strict:
+            raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids()) from last_exc
+        logger.warning(
+            "ACP model %s rejected by the adapter; staying on the backend default %s",
+            _rejected_log,
+            self._resolved_model_id or DEFAULT_MODEL,
+        )
+        return ""
+
     async def _apply_startup_model(self) -> None:
         """Apply the configured model to a freshly initialized session.
 
@@ -4077,7 +4471,15 @@ class AcpClient:
                 self._model = DEFAULT_MODEL
                 return
         if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
-            await self.set_config_option("model", self._model)
+            sent = await self._push_model_config_option(self._model, strict=False)
+            if not sent:
+                # Every spelling refused: record the session as running the
+                # default (the warm-pool re-apply path reads this field, so
+                # leaving the refused id here would re-offer it every claim)
+                # and let session/new's own model stand.
+                self._model = DEFAULT_MODEL
+                return
+            self._model = sent
         else:
             await self._send_request(
                 METHOD_SET_MODEL,
@@ -4545,6 +4947,14 @@ class AcpClient:
         # Crew's seatbelt on macOS and grants Windows's Kiro-only delegation in
         # favour of the harness's own internal sandbox, so a harness without one
         # must never be granted it by the absence of another harness.
+        #
+        # Inside a pod both answers come from apply_pod_bundle_spawn, which is
+        # where the ONE reason lives: the pod HOME remap breaks the toolbox shim's
+        # own sandbox, so the child runs the bundle binary and Crew's launcher
+        # wraps it. Off-loop because the resolution stats the candidate path.
+        argv, delegate_internal_sandbox = await asyncio.to_thread(
+            apply_pod_bundle_spawn, argv, backend=self.backend
+        )
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
@@ -4553,7 +4963,7 @@ class AcpClient:
             # that an enforced adapter has no claim on. Empty for every harness
             # this core does not enforce, so their spawn arguments are unchanged.
             extra_hidden_dirs=adapter_hidden_dirs,
-            is_kiro_cli=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
+            is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
@@ -4617,6 +5027,18 @@ class AcpClient:
         # cannot reintroduce a denied pointer; KIRO_API_KEY remains available only
         # to the positively identified Kiro backend.
         env = scrub_agent_subprocess_env(env)
+        # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
+        # confined to the pod's tree instead of the real host's -- see
+        # _apply_pod_home_remap's docstring. No-op outside a pod
+        # (KIROCREW_POD is not exactly "1") and for every harness outside
+        # ACP_BACKENDS_POD_HOME_REMAP, which is deliberately its own set rather
+        # than the internal-sandbox one (H6). Kept AFTER
+        # scrub_agent_subprocess_env: neither HOME nor the AWS credential-file
+        # pointers are in that scrub's denied-prefix set, so ordering is not
+        # load-bearing here, but placing it beside every other
+        # identity-affecting mutation on this env keeps the sequence readable
+        # as one pass rather than two.
+        env = _apply_pod_home_remap(env, pod_home_remap=self.backend in ACP_BACKENDS_POD_HOME_REMAP)
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.

@@ -12,6 +12,7 @@ dashboard URL via the config file. (The dashboard *port* is set with the
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -22,7 +23,7 @@ import shutil
 import stat as _stat
 import threading
 import uuid
-from collections.abc import Callable, Iterable, Mapping, MutableMapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1151,6 +1152,66 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
         atomic_write(path, payload, fsync=fsync, mode=mode)
 
 
+def coerce_dict_section(doc: dict, key: str) -> dict:
+    """Return ``doc[key]`` as a dict, REPLACING a degraded (non-dict) value.
+
+    The validated loader treats a malformed top-level section (``"workspaces":
+    []``, ``"agents": "oops"``) as absent and supplies defaults, so the
+    dataclass view never sees the damage. A raw delta mutator working on the
+    document as read (``update_config_locked``'s ``mutate``) must take the
+    same posture: a plain ``doc.setdefault(key, {})`` hands the degraded value
+    straight back, and the mutator then crashes on ``.values()``/``[name]``
+    with an HTTP 500 for the caller. Replacing the degraded section with a
+    fresh dict matches what the validated load already presents everywhere
+    else, and happens inside the same locked write, so the repair is atomic
+    with the mutation that needed it.
+    """
+    section = doc.get(key)
+    if not isinstance(section, dict):
+        section = {}
+        doc[key] = section
+    return section
+
+
+@contextlib.contextmanager
+def _config_write_lock(p: Path, *, wait: bool = True) -> Iterator[None]:
+    """Hold the sidecar advisory lock that serializes config-file writers.
+
+    THE one lock path for a config write: :func:`update_config_locked` and
+    :meth:`KiroCrewConfig.save` both come through here, so a second, subtly
+    different lock file can never reappear — the sidecar is always
+    ``<p>.lock`` beside the file being written (callers resolve a symlinked
+    config first, so it lands beside the TARGET; see :func:`_lock_target`).
+
+    The sidecar is opened (created if absent) and the advisory lock is taken
+    via :func:`platform_compat.file_lock` — ``fcntl.flock`` on POSIX, a bounded
+    ``msvcrt.locking`` spin on Windows, both fail-closed. The sidecar file
+    itself is deliberately left in place on exit: unlinking a lockfile that a
+    concurrent waiter has already opened re-introduces the race the lock
+    exists to prevent (the waiter would hold a lock on an unlinked inode while
+    a third writer creates a fresh sidecar and locks that instead), and on
+    Windows deleting a file another process holds open fails outright. One
+    stable sidecar per config file is the whole lifecycle.
+
+    **Lock ordering.** A caller that also holds the loop-side asyncio config
+    lock (``dashboard/handlers/agents._get_config_lock``) must acquire that
+    FIRST and this flock second, from a worker thread — the order
+    ``dashboard/chat_utils.run_config_write`` documents. Taking them in the
+    other order can deadlock against ``run_config_write`` holders. A POSIX
+    ``flock`` wait blocks its thread, so this must never be entered on the
+    event-loop thread with ``wait=True``; async callers offload (see
+    :meth:`KiroCrewConfig.save`).
+    """
+    lock_path = p.parent / (p.name + ".lock")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        with platform_compat.file_lock(fd, exclusive=True, wait=wait):
+            yield
+    finally:
+        os.close(fd)
+
+
 def update_config_locked(
     path: Path | None = None,
     *,
@@ -1176,29 +1237,25 @@ def update_config_locked(
     Read "direct caller outside this module" strictly: it is the exact set the
     ratchet checks, and it is NOT the same as "every writer that reaches
     ``config.json``".  :meth:`KiroCrewConfig.save` calls
-    :func:`write_config_atomically` and does NOT come through here -- see the
-    second family below.
+    :func:`write_config_atomically` and does NOT come through here -- but since
+    #4767 it holds the SAME sidecar lock (via :func:`_config_write_lock`), so
+    its rename can no longer land inside this function's read-modify-write.
+    ``save`` is still a whole-document publish of in-memory state, not an RMW:
+    a stale snapshot saved after a locked update overwrites it with older
+    values.  The lock fixes interleaving, not staleness.
 
     A SECOND family of writers still bypasses this lock, and the ratchet does
-    NOT reach it -- for two different reasons, neither of which is visible from a
-    call site:
+    NOT reach it: writers that reach ``config_path()`` through
+    ``kiro_crew.agent._atomic_json_write`` (``messaging.py``'s per-channel
+    savers, ``core.py``'s STT PUT, ``mcp.py``'s gateway-enable). The ratchet
+    matches calls to :func:`write_config_atomically`, and these make none.
 
-    * Writers that reach ``config_path()`` through
-      ``kiro_crew.agent._atomic_json_write`` (``messaging.py``'s per-channel
-      savers, ``core.py``'s STT PUT, ``mcp.py``'s gateway-enable). The ratchet
-      matches calls to :func:`write_config_atomically`, and these make none.
-    * Writers that go through :meth:`KiroCrewConfig.save` (``updates.py``'s
-      log-level PUT, ``core.py``'s theme PUT, several ``agents.py`` agent CRUD
-      endpoints). ``save`` DOES call :func:`write_config_atomically` directly,
-      but it does so from inside this module, which the ratchet exempts -- so the
-      write is invisible to it at every caller.
-
-    Both rely on the in-process asyncio ``_get_config_lock()`` only, which
-    serializes same-loop callers and nothing else, so they can still interleave
-    with a holder of this lock.  Converting them is follow-up work; do not read
-    the ratchet's green as covering them, and note that an ALIASED import of
-    :func:`write_config_atomically` would evade it for the same matching reason
-    as the first bullet.
+    That family relies on the in-process asyncio ``_get_config_lock()`` only,
+    which serializes same-loop callers and nothing else, so it can still
+    interleave with a holder of this lock.  Converting it is follow-up work; do
+    not read the ratchet's green as covering it, and note that an ALIASED
+    import of :func:`write_config_atomically` would evade it for the same
+    matching reason.
 
     Contract:
 
@@ -1282,27 +1339,21 @@ def update_config_locked(
             p = p.resolve()
     except OSError:
         pass
-    lock_path = p.parent / (p.name + ".lock")
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        with platform_compat.file_lock(fd, exclusive=True, wait=wait_for_lock):
-            try:
-                data = read_config_for_update(p)
-            except ConfigReadError:
-                if on_corrupt == "fail":
-                    raise
-                # on_corrupt="reset": treat as empty inside the same lock hold.
-                data = {}
-            result = mutate(data)
-            if result is None:
-                return data
-            if stamp_meta:
-                result = stamp_config_meta(result)
-            write_config_atomically(p, result, fsync=fsync)
-            return result
-    finally:
-        os.close(fd)
+    with _config_write_lock(p, wait=wait_for_lock):
+        try:
+            data = read_config_for_update(p)
+        except ConfigReadError:
+            if on_corrupt == "fail":
+                raise
+            # on_corrupt="reset": treat as empty inside the same lock hold.
+            data = {}
+        result = mutate(data)
+        if result is None:
+            return data
+        if stamp_meta:
+            result = stamp_config_meta(result)
+        write_config_atomically(p, result, fsync=fsync)
+        return result
 
 
 # Keys already warned about in this process. The gateway loads config repeatedly
@@ -2209,10 +2260,10 @@ class KiroCrewConfig:
     #: is a strict ``=== true``, so coercing e.g. the string ``"true"`` would
     #: only make the two ends disagree about what was configured.
     connections_ui: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Connections UI",
-            "Show the Connections gallery (held for a later release).",
+            "Show the Connections services gallery (set false to hide it).",
         ),
     )
     #: Top-level sections that were PRESENT on disk but not a JSON object, and
@@ -3554,7 +3605,7 @@ class KiroCrewConfig:
                 cursor_motion=_safe_bool(computer_use_data.get("cursor_motion", False), False),
             ),
             auto_update=data.get("auto_update", True),
-            connections_ui=_safe_bool(data.get("connections_ui", False), False),
+            connections_ui=_safe_bool(data.get("connections_ui", True), True),
             _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
             timezone=data.get("timezone", ""),
             snapshot_dir=data.get("snapshot_dir", ""),
@@ -3947,6 +3998,34 @@ class KiroCrewConfig:
 
         Values that exist in ``config.local.json`` are stripped from the
         output to prevent overlay settings from leaking into the base file.
+
+        **The write happens under the sidecar advisory lock** — the same
+        ``<config>.lock`` that :func:`update_config_locked` holds (#4767).
+        Without it, this whole-document rename could land INSIDE another
+        writer's read-modify-write (a CLI ``update_config_locked`` holder, a
+        boot refresh, a second gateway), and whichever renamed second
+        published a document that never saw the other's change. The lock
+        serializes the writes; it does NOT re-read the file — ``save()``
+        still publishes this object's in-memory snapshot.
+
+        **The staleness contract that follows.** Because the snapshot is
+        taken at ``load()`` and only the rename is locked, any suspension
+        point (an ``await``, a lock wait, a long computation) between the
+        load and this call is a window in which a concurrent writer's change
+        is silently overwritten by the eventual publish. ``save()`` is
+        therefore ONLY for single-flow callers with no suspension between
+        their load and their save — CLI one-shots and the boot default-config
+        write. Every read-modify-write flow, and every dashboard/coroutine
+        caller, belongs on :func:`update_config_locked` (via
+        ``dashboard/chat_utils.run_config_write``), which holds the flock
+        across the WHOLE read-mutate-write transaction; as of #4767 no
+        coroutine in the tree calls ``save()`` at all
+        (``TestNoInlineSaveOnTheEventLoop`` pins that structurally).
+
+        **Async callers must offload.** A contended POSIX ``flock`` blocks
+        the calling thread for as long as the holder keeps it, which on the
+        event-loop thread stalls the whole gateway — the exact failure that
+        reverted the first attempt at this lock (#4371).
         """
 
         d = self.to_dict()
@@ -3983,7 +4062,19 @@ class KiroCrewConfig:
         # Atomic + mode-preserving: a concurrent reader must never observe a
         # half-written config, and the write must not widen who can read a file
         # that may hold inline credentials. See write_config_atomically.
-        write_config_atomically(config_path(), stamp_config_meta(d))
+        #
+        # Resolve a symlinked config BEFORE locking (same logic as
+        # update_config_locked) so the sidecar sits beside the ACTUAL file the
+        # rename will replace — a lock beside the symlink would not serialize
+        # against a writer that resolved first.
+        p = config_path()
+        try:
+            if p.is_symlink():
+                p = p.resolve()
+        except OSError:
+            pass
+        with _config_write_lock(p):
+            write_config_atomically(p, stamp_config_meta(d))
         # Drop the validated-data cache so the next load() re-reads this write.
         # mtime-keying already detects the change; this makes it immediate even
         # if the filesystem mtime resolution is coarse.

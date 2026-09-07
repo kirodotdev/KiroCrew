@@ -979,6 +979,62 @@ class TestHybridRetrieverSourceFilter:
         assert [r["title"] for r in retriever.search("JWT", source_id=src_b)] == ["Shared Doc"]
 
 
+class TestHybridRetrieverNamespaceFilter:
+    def test_namespace_narrows_keyword_seeds(self, store):
+        # Both items match the query; scoping to one namespace keeps only its
+        # item. namespace is an organisational label on items, not a source.
+        store.add_item("Auth A", "JWT tokens for service alpha", "doc", namespace="client-a")
+        store.add_item("Auth B", "JWT tokens for service beta", "doc", namespace="client-b")
+        retriever = HybridRetriever(store)
+        results = retriever.search("JWT", namespace="client-a")
+        assert [r["title"] for r in results] == ["Auth A"]
+
+    def test_omitted_namespace_keeps_current_behavior(self, store):
+        # Regression: no namespace == the pre-filter result set.
+        store.add_item("Auth A", "JWT tokens for service alpha", "doc", namespace="client-a")
+        store.add_item("Auth B", "JWT tokens for service beta", "doc", namespace="client-b")
+        retriever = HybridRetriever(store)
+        results = retriever.search("JWT")
+        assert {r["title"] for r in results} == {"Auth A", "Auth B"}
+
+    def test_namespace_narrows_vector_seeds(self, store):
+        # Identical embeddings in two namespaces; scoping keeps one. The query
+        # shares no tokens with the content, isolating the vector leg.
+        vec = json.dumps([1.0, 0.0, 0.0, 0.0]).encode()
+        store.add_item("Vec A", "alpha content", "doc", namespace="client-a", embedding=vec)
+        store.add_item("Vec B", "beta content", "doc", namespace="client-b", embedding=vec)
+        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0])
+        results = retriever.search("unrelatedquerytoken", namespace="client-a")
+        assert [r["title"] for r in results] == ["Vec A"]
+
+    def test_unknown_namespace_returns_no_results(self, store):
+        # A nonexistent namespace empties the seed legs without raising; unlike
+        # source_id there is no existence probe, so it just yields nothing.
+        store.add_item("Auth", "JWT tokens", "doc", namespace="client-a")
+        retriever = HybridRetriever(store)
+        assert retriever.search("JWT", namespace="no-such-namespace") == []
+
+    def test_namespace_and_source_id_compose(self, store):
+        # Both filters apply together: only the item matching BOTH the source
+        # and the namespace survives the seed legs.
+        src_a = store.add_source("Docs A", "local_folder", "/tmp/a")
+        src_b = store.add_source("Docs B", "local_folder", "/tmp/b")
+        store.add_item(
+            "Match", "JWT tokens here", "doc", source_id=src_a, namespace="client-a"
+        )
+        # Same source, wrong namespace.
+        store.add_item(
+            "Wrong NS", "JWT tokens here", "doc", source_id=src_a, namespace="client-b"
+        )
+        # Right namespace, wrong source.
+        store.add_item(
+            "Wrong Src", "JWT tokens here", "doc", source_id=src_b, namespace="client-a"
+        )
+        retriever = HybridRetriever(store)
+        results = retriever.search("JWT", source_id=src_a, namespace="client-a")
+        assert [r["title"] for r in results] == ["Match"]
+
+
 # ---------------------------------------------------------------------------
 # 6. SimpleDiGraph
 # ---------------------------------------------------------------------------

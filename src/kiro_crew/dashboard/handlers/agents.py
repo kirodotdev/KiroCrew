@@ -54,6 +54,7 @@ from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
     _safe_color,
+    coerce_dict_section,
     coerce_effort,
     inject_kiro_cli_api_key,
     normalize_agent_model,
@@ -80,6 +81,7 @@ from kiro_crew.dashboard.chat_utils import (
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
     _history_key_for,
+    drained_to_thread,
     is_deprecated_model,
     run_config_write,
 )
@@ -2986,6 +2988,21 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
 _config_lock = LoopBoundLock()
 
 
+class _AgentExistsError(Exception):
+    """An agent name re-check failed against the document INSIDE the flock.
+
+    The handler's 409 pre-check runs on a snapshot under the asyncio lock,
+    which excludes in-process races only; a cross-process create (the CLI)
+    can land between that check and the write. The delta mutate re-checks
+    against the document as read inside the sidecar lock and raises this,
+    which the handler maps to the same 409 (#4767).
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.name = name
+
+
 def _get_config_lock() -> LoopBoundLock:
     """Return the config lock (loop-bound; rebinds when the running loop changes)."""
     return _config_lock
@@ -3005,6 +3022,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     cfg = KiroCrewConfig.load()
     synced: list[str] = []
     pruned: list[str] = []
+    prune_candidates: dict[str, dict] = {}
     try:
         discovered_agents = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), lambda: list(list_agents())
@@ -3094,6 +3112,11 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 if agent_cfg.source in ("package", "aim") and (
                     agent_cfg.kiro_agent not in discovered_names
                 ):
+                    # Record the SNAPSHOT entry: the locked mutate below only
+                    # prunes a name whose in-lock entry still equals this one,
+                    # so an agent (re)added by a newer sync between this
+                    # snapshot and the lock is never deleted on stale evidence.
+                    prune_candidates[name] = dataclasses.asdict(agent_cfg)
                     del cfg.agents[name]
                     pruned.append(name)
     except Exception:
@@ -3111,7 +3134,38 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
 
     if synced or pruned:
         try:
-            cfg.save()
+            # The caller (api_kirocrew_agents_sync) holds _get_config_lock().
+            # Persist as a DELTA read-modify-write inside a single sidecar-
+            # flock hold (#4767): the adds and prunes decided on the snapshot
+            # above are re-applied to the document as read inside the lock,
+            # so a concurrent writer's unrelated settings are untouchable --
+            # a whole-document save() would publish the stale snapshot over
+            # them. _drained_to_thread so a cancellation cannot release the
+            # asyncio lock while the worker is mid-write.
+            to_add = {n: cfg.agents[n] for n in synced if n in cfg.agents}
+
+            def _write_sync() -> None:
+                def _mutate(doc: dict) -> dict | None:
+                    agents = coerce_dict_section(doc, "agents")
+                    changed = False
+                    for aname, acfg in to_add.items():
+                        if aname not in agents:
+                            agents[aname] = dataclasses.asdict(acfg)
+                            changed = True
+                    # Prune ONLY this sync's snapshot candidates, and only
+                    # while the in-lock entry still equals the snapshot entry:
+                    # an agent (re)added or edited between the discovery
+                    # snapshot and this lock hold is newer evidence than the
+                    # stale discovered_names and must survive (#4767 round 8).
+                    for aname, snap_entry in prune_candidates.items():
+                        if agents.get(aname) == snap_entry:
+                            del agents[aname]
+                            changed = True
+                    return doc if changed else None
+
+                update_config_locked(mutate=_mutate)
+
+            await _drained_to_thread(_write_sync)
         except Exception:
             logger.warning("Failed to save config after agent sync", exc_info=True)
             try:
@@ -3470,7 +3524,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
         if model_reason:
             return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)
-        cfg.agents[name] = KiroCrewAgentConfig(
+        new_agent = KiroCrewAgentConfig(
             kiro_agent=kiro_agent,
             workspace=body.get("workspace", "default"),
             memory_store=body.get("memory_store", "default"),
@@ -3482,7 +3536,33 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             session_color=session_color,
             avatar=avatar,
         )
-        cfg.save()
+
+        # Under _get_config_lock() (the async with above): persist as a DELTA
+        # read-modify-write of this one agent entry inside a single sidecar-
+        # flock hold (#4767) -- a whole-document save() would publish the
+        # handler's snapshot and could revert a concurrent writer's unrelated
+        # settings. _drained_to_thread, not bare to_thread: a cancellation at
+        # the await must not release the asyncio lock while the worker is
+        # still inside the write (see its docstring).
+        def _write_agent() -> None:
+            def _mutate(doc: dict) -> dict:
+                agents = coerce_dict_section(doc, "agents")
+                if name in agents:
+                    # A cross-process create (CLI) won the race after our
+                    # snapshot check above.
+                    raise _AgentExistsError(name)
+                agents[name] = dataclasses.asdict(new_agent)
+                return doc
+
+            update_config_locked(mutate=_mutate)
+
+        try:
+            await _drained_to_thread(_write_agent)
+        except _AgentExistsError:
+            return web.json_response(
+                {"error": f"Agent '{name}' already exists", "code": "agent_exists"},
+                status=409,
+            )
     # A crew APPEARING changes what the effort chain resolves even with no pin of
     # its own: the factory's captured config does not know the crew, so it cannot
     # read the binding the role default keys on, and a scheduled or messaging
@@ -4052,32 +4132,10 @@ def _live_avatar_file(name: str, pin: object) -> Path | None:
     return None
 
 
-async def _drained_to_thread(fn, /, *args):
-    """``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation.
-
-    A plain ``await to_thread(...)`` raises ``CancelledError`` at the await
-    while the worker THREAD keeps running — inside ``async with
-    _get_config_lock()`` that releases the lock with the filesystem/config
-    mutation still in flight, so a concurrent save interleaves with it.
-    Shielding the task keeps the await alive until the worker actually
-    finishes, then re-raises the cancellation, so the lock is only ever
-    released with no mutation in flight.
-    """
-    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
-    cancelled: asyncio.CancelledError | None = None
-    while True:
-        try:
-            result = await asyncio.shield(task)
-            break
-        except asyncio.CancelledError as exc:
-            if task.cancelled():
-                raise
-            # OUR await was cancelled, not the worker: remember it, keep
-            # draining the still-running thread.
-            cancelled = exc
-    if cancelled is not None:
-        raise cancelled
-    return result
+# ``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation --
+# moved to chat_utils so the files handler's staging copy can share the one
+# implementation; the local name is kept for the call sites below.
+_drained_to_thread = drained_to_thread
 
 
 def _sniff_image_ext(head: bytes) -> str:

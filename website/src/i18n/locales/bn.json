@@ -5637,6 +5637,7 @@
       "approve_all": "সব অনুমোদন",
       "approve_sub_agent": "সাব-এজেন্ট অনুমোদন করো: {{name}}",
       "attach_files": "ফাইল সংযুক্ত করুন",
+      "editor_unavailable_standard_input": "উন্নত সম্পাদকটি লোড হতে পারেনি, তাই স্ট্যান্ডার্ড ইনপুট সক্রিয় রয়েছে। আপনার খসড়া অপরিবর্তিত আছে।",
       "branch": "ব্রাঞ্চ: {{branch}}",
       "click_again_to_force_stop": "জোর করে থামাতে আবার ক্লিক করুন",
       "command": "কমান্ড",
@@ -5735,7 +5736,8 @@
       "more_actions": "আরও অ্যাকশন",
       "session_control_needs_attention": "নজর দেওয়া দরকার",
       "session_control_ready": "প্রস্তুত",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "এই সেশনটি ডিফল্ট এজেন্ট ({{name}}) অনুসরণ করে। এর নিজস্ব কোনো এজেন্ট নেই, তাই ডিফল্ট পরিবর্তন হলে এটিও পরিবর্তন হয়। পিন করতে ক্লিক করুন।"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -6625,7 +6627,8 @@
       "copy_diagram_source": "ডায়াগ্রামের সোর্স কপি করুন",
       "diagram_source": "ডায়াগ্রামের সোর্স",
       "copy_failed": "কপি ব্যর্থ",
-      "mermaid_render_failed": "এই ডায়াগ্রামটি রেন্ডার করা যায়নি। এর পরিবর্তে সোর্স দেখানো হচ্ছে।"
+      "mermaid_render_failed": "এই ডায়াগ্রামটি রেন্ডার করা যায়নি। এর পরিবর্তে সোর্স দেখানো হচ্ছে।",
+      "image_position": "{{total}}টির মধ্যে {{index}}"
     },
     "markdownToc": {
       "contents": "বিষয়সূচি",
@@ -6850,6 +6853,8 @@
     "pastedChip": {
       "collapse_paste": "পেস্ট সংকুচিত করো",
       "expand_paste": "পেস্ট প্রসারিত করো",
+      "hide_paste_preview": "পেস্টের প্রিভিউ লুকাও",
+      "show_paste_preview": "পেস্টের প্রিভিউ দেখাও",
       "paste_lines_one": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "preview_more_lines_one": "… আরও {{count}} লাইন",
@@ -8044,6 +8049,12 @@
       "could_not_load": "{{label}} লোড করা যায়নি",
       "loading": "{{label}} লোড হচ্ছে…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "ফরম্যাট করা",
+      "raw": "মূল",
+      "render_the_markdown_headings_lists_tables_links": "মার্কডাউন রেন্ডার করুন - শিরোনাম, তালিকা, টেবিল, লিঙ্ক",
+      "show_the_exact_markdown_source": "হুবহু মার্কডাউন সোর্স দেখান"
     }
   },
   "hooks": {
@@ -11533,6 +11544,7 @@
         "msgs": "বার্তা /",
         "output_tokens": "আউটপুট টোকেন",
         "plan": "প্ল্যান",
+        "refused_transcripts_warning": "{{productName}} আপনার {{count}}টি চ্যাট লোড করতে পারেনি, তাই এই সংখ্যাগুলি অসম্পূর্ণ। আপনার Windows প্রোফাইল নেটওয়ার্ক ড্রাইভে সংরক্ষিত থাকলে এমনটা হতে পারে।",
         "resets": "রিসেট হবে",
         "session_activity_30_days": "সেশন কার্যকলাপ (30 দিন)",
         "sessions": "সেশন",
@@ -13477,6 +13489,7 @@
         "aws_profile_polly": "AWS প্রোফাইল (Amazon Polly)",
         "aws_region_for_polly_api": "Amazon Polly API-র জন্য AWS রিজিয়ন",
         "aws_region_polly": "AWS রিজিয়ন (Amazon Polly)",
+        "could_not_read_the_hosts_voice_list_only_the_operat": "হোস্টের কণ্ঠের তালিকা পড়া যায়নি। কেবল অপারেটিং সিস্টেমের ডিফল্ট পাওয়া যাচ্ছে।",
         "default": "ডিফল্ট",
         "engine": "ইঞ্জিন",
         "failed_to_load_voice_config": "ভয়েস কনফিগ লোড করা যায়নি।",
@@ -13484,13 +13497,13 @@
         "faster": "দ্রুততর",
         "fastest": "দ্রুততম",
         "normal": "সাধারণ",
-        "path_to_the_piper_executable_leave_blank_to_auto": "piper এক্সিকিউটেবলের পাথ। PATH বা ~/piper-venv/bin/piper-এ স্বয়ংক্রিয়ভাবে শনাক্ত করতে খালি রাখুন",
-        "path_to_the_piper_voice_model_onnx_required_down": "Piper ভয়েস মডেলের (.onnx) পাথ। আবশ্যক — github.com/rhasspy/piper থেকে ডাউনলোড করুন",
+        "os_default_voice": "অপারেটিং সিস্টেমের ডিফল্ট",
+        "path_to_the_piper_executable_leave_blank_to_auto": "piper এক্সিকিউটেবলের পাথ। PATH বা ~/piper-venv ইনস্টলে স্বয়ংক্রিয়ভাবে শনাক্ত করতে খালি রাখুন",
+        "path_to_the_piper_voice_model_onnx_required_down": "Piper ভয়েস মডেলের (.onnx) পাথ। আবশ্যক — huggingface.co/rhasspy/piper-voices থেকে ডাউনলোড করুন",
         "piper_binary": "Piper বাইনারি",
         "piper_en_us_lessac_medium_onnx": "~/piper/en_US-lessac-medium.onnx",
         "piper_local_offline": "Piper (লোকাল, অফলাইন)",
         "piper_model": "Piper মডেল",
-        "piper_runs_locally_and_offline_polly_uses_aws_cr": "Piper স্থানীয়ভাবে ও অফলাইনে চলে; Amazon Polly AWS ক্রেডেনশিয়াল + নেটওয়ার্ক ব্যবহার করে",
         "piper_speech_speed_length_scale": "Piper কথার গতি (length scale)",
         "polly_engine_type": "Amazon Polly ইঞ্জিনের ধরন",
         "provider": "প্রদানকারী",
@@ -13499,13 +13512,19 @@
         "slower": "ধীরতর",
         "slowest": "ধীরতম",
         "speak_every_assistant_reply_automatically": "সহকারীর প্রতিটি উত্তর স্বয়ংক্রিয়ভাবে পড়ে শোনাও",
-        "speech_rate": "কথার গতি",
+        "speech_rate_for_spoken_replies_built_in": "কথিত উত্তরের বাক্‌ গতি (অন্তর্নির্মিত ইঞ্জিন)",
+        "speech_rate_for_spoken_replies_polly": "কথিত উত্তরের বাক্‌ গতি (Amazon Polly)",
         "speech_to_text": "স্পিচ-টু-টেক্সট",
         "speed": "গতি",
+        "system_built_in": "সিস্টেম (অন্তর্নির্মিত)",
         "text_to_speech": "টেক্সট-টু-স্পিচ",
+        "the_built_in_engine_needs_no_setup_piper_is_offlin": "অন্তর্নির্মিত ইঞ্জিনের কোনো সেটআপ লাগে না; Piper অফলাইনে চলে এবং গুণমান ভালো; Amazon Polly AWS ক্রেডেনশিয়াল + নেটওয়ার্ক ব্যবহার করে",
+        "this_host_has_no_built_in_speech_engine_install_es": "এই হোস্টে কোনও অন্তর্নির্মিত স্পিচ ইঞ্জিন নেই। espeak-ng ইনস্টল করুন (উদাহরণ: sudo apt install espeak-ng), বা অন্য প্রোভাইডার বাছুন।",
         "us_east_1": "us-east-1",
         "voice": "কণ্ঠস্বর",
-        "voice_catalogue_unavailable": "Polly ভয়েস তালিকা লোড করা যায়নি। পিকারে বিল্ট-ইন বিকল্প তালিকা দেখানো হচ্ছে।"
+        "voice_catalogue_unavailable": "Polly ভয়েস তালিকা লোড করা যায়নি। পিকারে বিল্ট-ইন বিকল্প তালিকা দেখানো হচ্ছে।",
+        "voice_from_the_hosts_built_in_speech_engine": "হোস্টের অন্তর্নির্মিত স্পিচ ইঞ্জিনের কণ্ঠ",
+        "recheck": "আবার পরীক্ষা করুন"
       },
       "weComPanel": {
         "allow_all_bypass_note": "সবাইকে অনুমতি চালু আছে: উপরের userid তালিকা এড়িয়ে যাওয়া হচ্ছে। আবার ফিরে গেলে কাজে লাগবে বলে তালিকাটা রেখে দেওয়া হয়েছে।",
@@ -14107,6 +14126,8 @@
       "inherited": "উত্তরাধিকারসূত্রে",
       "member_count_one": "{{count}} জন সদস্য",
       "member_count_other": "{{count}} জন সদস্য",
+      "member_gone": "{{shown}} দেখানো হচ্ছে — '{{name}}' এখন আর সদস্য তালিকায় নেই।",
+      "member_gone_roster": "'{{name}}' এখন আর সদস্য তালিকায় নেই।",
       "memory_dedicated_note": "পছন্দ ও প্রজেক্ট নোট শেয়ার করা ডিফল্টের বদলে {{store}} স্টোর থেকে আসে। কথাবার্তার মেমরি ও শিক্ষা এখনও আলাদা নয়: এই সদস্যকে বলা কথা এখনও সবাই জানে।",
       "memory_shared_note": "সদস্যরা বর্তমানে একই মেমরি ভাগ করে। একজনকে বলা কথা সবাই জানে।",
       "memory_store": "মেমরি স্টোর",

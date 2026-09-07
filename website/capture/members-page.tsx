@@ -9,11 +9,18 @@
  * Scenes via query string: ?theme=dark|light — the script drives the page
  * itself (clicking a REAL roster row opens the thread), so a frame documents
  * the shipped wiring, not forced component state.
+ *   ?route=<path>   the router's initial entry (default /members), so a frame
+ *                   can arrive by deep link (`/members?member=ghost`).
+ *   ?nav=1          mount a one-line caption bar printing the live
+ *                   pathname+search (the address bar is outside the capture),
+ *                   with a Back button that pops the router's history, and a
+ *                   stand-in `/elsewhere` route so a frame can show where one
+ *                   Back lands after switching members on /members.
  */
 import { createRoot } from 'react-dom/client'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
 import MembersPage from '../src/pages/members/MembersPage'
 import { initI18n } from '../src/i18n/all'
@@ -23,6 +30,8 @@ import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
+const route = params.get('route') || '/members'
+const nav = params.get('nav') === '1'
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 
 // Live presence rides the WS `slots` frames; seed the same shape so the
@@ -57,14 +66,65 @@ store.dispatch(
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
+/** Prints the router's live URL and offers a history pop — the two things a
+ *  still frame of a MemoryRouter cannot otherwise show. Capture chrome only. */
+function CaptionBar() {
+  const loc = useLocation()
+  const go = useNavigate()
+  return (
+    <div
+      data-capture-url
+      className="shrink-0 flex items-center gap-3 px-3 h-8 border-t border-border bg-surface font-mono text-[12px] text-muted"
+    >
+      <button
+        type="button"
+        data-capture-back
+        onClick={() => go(-1)}
+        className="px-2 py-0.5 rounded border border-border text-text hover:bg-accent/40"
+      >
+        ← Back
+      </button>
+      <span data-capture-url-text>{loc.pathname + loc.search}</span>
+    </div>
+  )
+}
+
+/** Where one Back lands after leaving /members: a stand-in for any other page. */
+function Elsewhere() {
+  const go = useNavigate()
+  return (
+    <div className="h-full flex flex-col items-center justify-center gap-3 text-text" data-capture-elsewhere>
+      <div className="text-lg">Another page</div>
+      <button
+        type="button"
+        data-capture-go-members
+        onClick={() => go('/members')}
+        className="px-3 py-1 rounded border border-border hover:bg-accent/40"
+      >
+        Open Crew Members
+      </button>
+    </div>
+  )
+}
+
 async function main() {
   await initI18n()
   createRoot(document.getElementById('root')!).render(
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
-          <div className="h-screen bg-bg text-text" data-capture-root>
-            <MembersPage />
+        <MemoryRouter initialEntries={[route]}>
+          <div className="h-screen flex flex-col bg-bg text-text" data-capture-root>
+            <div className="flex-1 min-h-0">
+              {nav ? (
+                <Routes>
+                  <Route path="/elsewhere" element={<Elsewhere />} />
+                  <Route path="*" element={<MembersPage />} />
+                </Routes>
+              ) : (
+                <MembersPage />
+              )}
+            </div>
+            {nav && <CaptionBar />}
           </div>
         </MemoryRouter>
       </QueryClientProvider>

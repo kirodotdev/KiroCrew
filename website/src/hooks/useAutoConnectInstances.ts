@@ -159,7 +159,7 @@ export function useAutoConnectInstances() {
       await runBounded(targets, CONCURRENCY, async id => {
         lastAttempt.current[id] = Date.now()
         try {
-          await connectInstanceInto(dispatch, id)
+          await connectInstanceInto(dispatch, id, 'auto-connect')
         } catch {
           // A failed/unreachable host settles into the switcher's terminal error
           // dot via the status poll; auto-connect stays silent and lets the

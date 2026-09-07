@@ -83,31 +83,37 @@ def _grant(service=aws_consent.SERVICE_POLLY, *, profile="", region="us-east-1",
 class TestProviderDefaultIsLocal:
     """Turning voice on without naming a provider must not reach AWS."""
 
-    def test_dataclass_default_is_piper(self):
+    def test_dataclass_default_is_local(self):
         from kiro_crew.slack.handler import _VoiceConfig
-        from kiro_crew.voice_reply import DEFAULT_PROVIDER, PROVIDER_PIPER
+        from kiro_crew.voice_reply import DEFAULT_PROVIDER, PROVIDER_POLLY
 
-        assert DEFAULT_PROVIDER == PROVIDER_PIPER
-        assert _VoiceConfig().provider == PROVIDER_PIPER
+        # Pinned as "not the paid provider" rather than as one provider name:
+        # which local provider is the default is a product decision that may
+        # move, while "the default never bills an AWS account" is the property
+        # this class exists to hold.
+        assert DEFAULT_PROVIDER != PROVIDER_POLLY
+        assert _VoiceConfig().provider == DEFAULT_PROVIDER
 
-    def test_absent_provider_key_loads_as_piper(self, home):
+    def test_absent_provider_key_loads_as_local(self, home):
         """The regression: a config with voice ON but no provider named."""
         from kiro_crew.config.loader import config_path
         from kiro_crew.slack.handler import _vc, load_voice_reply_config
-        from kiro_crew.voice_reply import PROVIDER_PIPER
+        from kiro_crew.voice_reply import DEFAULT_PROVIDER, PROVIDER_POLLY
 
         config_path().write_text(json.dumps({"voice_reply": {"enabled": True}}))
         load_voice_reply_config()
-        assert _vc.provider == PROVIDER_PIPER
+        assert _vc.provider == DEFAULT_PROVIDER
+        assert _vc.provider != PROVIDER_POLLY
 
-    def test_invalid_provider_falls_back_to_piper(self, home):
+    def test_invalid_provider_falls_back_to_local(self, home):
         from kiro_crew.config.loader import config_path
         from kiro_crew.slack.handler import _vc, load_voice_reply_config
-        from kiro_crew.voice_reply import PROVIDER_PIPER
+        from kiro_crew.voice_reply import DEFAULT_PROVIDER, PROVIDER_POLLY
 
         config_path().write_text(json.dumps({"voice_reply": {"provider": "ploly"}}))
         load_voice_reply_config()
-        assert _vc.provider == PROVIDER_PIPER
+        assert _vc.provider == DEFAULT_PROVIDER
+        assert _vc.provider != PROVIDER_POLLY
 
 
 # ── Step 2: the gate, and where the grant lives ──

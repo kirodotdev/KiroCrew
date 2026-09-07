@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
 import kiro_crew.slack.handler as h
+import kiro_crew.voice_reply as voice_reply
 from conftest import MockSlackClient
 from kiro_crew.acp.client import AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import (
@@ -294,7 +296,8 @@ class TestSetOrchCfgProviderValidation:
         monkeypatch.setattr(h, "_orch_cfg", None, raising=False)
         with caplog.at_level("WARNING"):
             h.set_orch_cfg(_Cfg({"enabled": True, "provider": "ploly"}))
-        assert h._vc.provider == "piper"
+        assert h._vc.provider == voice_reply.DEFAULT_PROVIDER
+        assert h._vc.provider != voice_reply.PROVIDER_POLLY
         assert "ploly" in caplog.text
 
     def test_valid_provider_is_kept_and_enabled_implies_auto_reply(self, monkeypatch):
@@ -1135,6 +1138,30 @@ def _voice_on(monkeypatch, **fields):
 
 
 class TestVoiceReply:
+    @pytest.mark.asyncio
+    async def test_the_availability_probe_runs_off_the_event_loop(self, monkeypatch):
+        """The probe stats fixed directories, and one loop serves every session.
+
+        A stat is unbounded — on a stalled network or fuse mount it would freeze
+        every session and heartbeat sharing the loop — so this async caller must
+        offload it, the same rule ``resolve_system_tts_async`` exists for.
+        """
+        _voice_on(monkeypatch, global_enabled=True, provider="system")
+        loop_thread = threading.get_ident()
+        probed: list[int] = []
+
+        def probe(**_kw):
+            probed.append(threading.get_ident())
+            return False
+
+        monkeypatch.setattr(h, "_tts_available", probe)
+        slack = MockSlackClient()
+        provider = FakeProvider([AcpEvent(kind=EVENT_TEXT_CHUNK, text=_LONG_ANSWER)])
+        await handle_message(slack, FakeSessions(provider), "C1", "go", None, "m1", "U1")
+
+        assert probed, "the availability probe never ran"
+        assert probed[0] != loop_thread
+
     @pytest.mark.asyncio
     async def test_missing_tts_backend_warns_the_opted_in_user(self, monkeypatch):
         _voice_on(monkeypatch, global_enabled=True, provider="piper")

@@ -156,9 +156,9 @@ class TestGatewayPathsAreReachableWithTheInternalSecret(unittest.TestCase):
 
                 # Fail on the real reason, not on a KeyError three lines later.
                 assert "error" not in got, f"{helper.__name__} never sent a request: {got}"
-                assert seen["key"] == "MINE", (
-                    f"{helper.__name__} ignored the verified key and re-resolved one"
-                )
+                assert (
+                    seen["key"] == "MINE"
+                ), f"{helper.__name__} ignored the verified key and re-resolved one"
 
     def test_both_crew_routes_are_mixed_internal_paths(self):
         from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS
@@ -235,9 +235,9 @@ class TestToolRegistration(unittest.TestCase):
         assert "sweep" in spec["inputSchema"]["properties"]["event_kind"]["enum"]
 
     def test_record_advertises_no_identity_arguments(self):
-        props = next(
-            t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL
-        )["inputSchema"]["properties"]
+        props = next(t for t in mcp_core._list_tools() if t["name"] == RECORD_TOOL)["inputSchema"][
+            "properties"
+        ]
         for forbidden in ("owner", "repo", "crew_id", "id"):
             assert forbidden not in props
         assert {f.name for f in MCP_CORE_SCHEMAS[RECORD_TOOL].fields}.isdisjoint(
@@ -404,10 +404,10 @@ class TestIdentityComesFromTheSession(unittest.TestCase):
                 reached["called"] = True
                 raise AssertionError("must not reach the HTTP leg")
 
-            with patch.object(
-                mcp_core, "_resolve_session_key_strict", return_value=""
-            ), patch.object(mcp_core, "_get", side_effect=_boom), patch.object(
-                mcp_core, "_put", side_effect=_boom
+            with (
+                patch.object(mcp_core, "_resolve_session_key_strict", return_value=""),
+                patch.object(mcp_core, "_get", side_effect=_boom),
+                patch.object(mcp_core, "_put", side_effect=_boom),
             ):
                 out = mcp_core._call_tool_inner(tool, args)
 
@@ -423,9 +423,7 @@ class TestIdentityComesFromTheSession(unittest.TestCase):
 
     def test_a_read_error_is_surfaced_instead_of_writing_blind(self):
         cleaned = _clean()
-        with patch.object(
-            mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"
-        ):
+        with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
             with patch.object(mcp_core, "_get", return_value={"error": "not connected"}):
                 with patch.object(mcp_core, "_put") as put:
                     out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
@@ -434,14 +432,208 @@ class TestIdentityComesFromTheSession(unittest.TestCase):
 
     def test_a_write_error_is_surfaced_instead_of_claiming_success(self):
         cleaned = _clean(next="rebase onto main")
-        with patch.object(
-            mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"
-        ):
+        with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
             with patch.object(mcp_core, "_get", return_value=CREW_PAYLOAD):
                 with patch.object(mcp_core, "_put", return_value={"error": "unknown crew"}):
                     out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
             assert out.startswith("Error:")
             assert "unknown crew" in out
+
+
+class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
+    """The POSITIVE twin of ``test_a_subagent_resolved_identity_cannot_read_or_write``.
+
+    The strict gate refuses a subagent because it resolves to its PARENT slot;
+    that test (above, in ``TestIdentityComesFromTheSession``) pins the refusal.
+    This pins the other half: an Issue Radar crew driven by an auto-nudge cycle
+    is NOT a subagent -- it is the same principal, its own dashboard slot,
+    re-entered on a timer -- so it must resolve to its OWN crew identity and be
+    let through the gate. Issue #5905 reported the crew ledger tools refusing an
+    auto-nudge worker "classified as a subagent". There is no such
+    classification; the two turns already resolve identically. The refutation is
+    "correct by construction", and this test is what keeps the construction from
+    silently regressing.
+
+    The property, not the implementation: a nudge-driven turn on a slot and a
+    directly-driven turn on that same slot resolve the SAME session identity.
+    Both dashboard turns run through the one ``_run_chat`` entry, which resolves
+    identity as ``effective_session_key(slot)`` and hands exactly that key to
+    the single shared writer ``messaging.identity.publish_turn_identity`` -- the
+    mapping the strict gate later reads back. So if a future refactor of
+    ``_fire_dashboard_nudge`` routed the nudge somewhere that skipped
+    ``_run_chat`` (or drove it on a different session), the identity a crew tool
+    resolves would diverge from a human turn's and every crew tool would start
+    refusing again with #5905's confusing message. The assertions below name the
+    slot key and the writer rather than any call ordering, so they survive an
+    internal rewrite that preserves the property.
+    """
+
+    @staticmethod
+    def _fire_env():
+        """The dashboard fire harness, mirrored from test_autonudge_dashboard_fire.
+
+        Built here rather than imported so this file's identity story is
+        self-contained: the neighbour file pins the slot-resolution/rehydration
+        contract, this one pins the identity contract, and neither should break
+        when the other's harness changes.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.autonudge import NudgeLoop
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.slack import gateway as gw
+
+        slot_key = "crew-c_7f3a"
+        loop = NudgeLoop(
+            id="loop-crew",
+            slot_key=slot_key,
+            message="sweep the queue",
+            idle_secs=300,
+            max_cycles=24,
+            cycle_count=2,
+        )
+        slot = MagicMock()
+        slot.key = slot_key
+        slot.running = False
+        slot._in_stage_execution = False
+        slot._closing = False
+        slot.mode = ""
+        slot.memory_mode = "persistent"
+        # A bare crew slot is not channel-born, so it has no linked_session_key;
+        # effective_session_key then derives identity from slot.key. Model that
+        # explicitly rather than leaving a truthy MagicMock attribute that would
+        # make the slot look channel-linked.
+        slot.linked_session_key = ""
+
+        cfg = KiroCrewConfig()
+        with patch.object(cfg, "load_credentials", return_value={"KIROCREW_OWNER_ID": "U_OWNER"}):
+            orch = gw.GatewayOrchestrator(cfg, no_dashboard=True, no_crons=True, no_open=True)
+        orch.dashboard_state = SimpleNamespace(
+            get_slot=MagicMock(return_value=slot),
+            push_slots_update=MagicMock(),
+            _background_tasks=set(),
+            run_background_turn=MagicMock(side_effect=lambda _slot, coro: coro),
+            sessions=MagicMock(),
+        )
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.remove = AsyncMock()
+        orch._session_tasks = {}
+        return orch, loop, slot
+
+    @pytest.mark.asyncio
+    async def test_the_nudge_turn_publishes_the_slots_own_identity(self):
+        """A nudge fire drives _run_chat on the loop's own slot -> that identity.
+
+        ``publish_turn_identity`` is stubbed with the REAL ``_run_chat``
+        replaced by a stand-in that publishes exactly as the runner does:
+        ``effective_session_key(slot)``. The assertion is that the key published
+        for the nudge turn is the crew slot's own resolved identity -- the same
+        key a directly-typed turn on this slot would publish (asserted by the
+        control below) -- and never a parent/other identity. That equality is
+        what puts an auto-nudge crew on the allowed side of the strict gate.
+
+        The expected value is ``effective_session_key(slot)`` rather than a
+        hardcoded string: the runner derives identity through that function (a
+        bare dashboard slot resolves to a ``dashboard:``-prefixed key, not the
+        raw slot key), so pinning its output keeps the test about the
+        nudge==direct property and not about the key's spelling.
+        """
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.slack import gateway as gw
+
+        orch, loop, slot = self._fire_env()
+        expected = effective_session_key(slot)
+        published: list[str] = []
+
+        async def _fake_run_chat(state, target_slot, message, **kwargs):
+            # Stand in for the runner's identity step verbatim: the real
+            # _run_chat computes session_key = effective_session_key(slot) and
+            # hands THAT to publish_turn_identity (chat_runner.py). Recording the
+            # key the shared writer receives is recording the identity the crew
+            # tools will resolve.
+            published.append(effective_session_key(target_slot))
+
+        def _spawn(_state, _slot, coro, **kwargs):
+            # Run the runner coroutine to completion so the publish happens, the
+            # same way the neighbour harness drives a nudge turn.
+            import asyncio
+
+            return asyncio.ensure_future(coro)
+
+        with (
+            patch.object(gw, "spawn_guarded_turn", _spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=_fake_run_chat),
+        ):
+            result = await orch._fire_dashboard_nudge(loop)
+            # Drain the spawned turn so the publish recorded above has run.
+            import asyncio
+
+            await asyncio.sleep(0)
+            for task in list(orch._session_tasks.values()):
+                if asyncio.isfuture(task):
+                    await task
+
+        assert result is True, "the nudge did not dispatch a turn on the crew slot"
+        assert published == [expected], (
+            "the nudge turn published an identity other than the crew slot's own "
+            f"-- got {published!r}, expected [{expected!r}]; an auto-nudge crew "
+            "would then be refused by the strict gate exactly as #5905 reported"
+        )
+
+    def test_a_direct_turn_on_the_slot_would_publish_the_identical_key(self):
+        """The control: the SAME slot, driven directly, resolves the same key.
+
+        Without this the test above only proves the nudge path publishes
+        ``effective_session_key(slot)``; it does not prove that is the identity a
+        human turn resolves. The runner uses ``effective_session_key(slot)`` for
+        BOTH a direct send and a nudge (there is one ``_run_chat``), so
+        evaluating it here on the same slot object is the direct turn's identity
+        by the same code the runner runs. The equality asserted is that a direct
+        turn's identity is non-empty and slot-derived -- i.e. the crew resolves
+        to a real session, not the empty string the strict gate refuses.
+        """
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        _, _, slot = self._fire_env()
+        direct_identity = effective_session_key(slot)
+        assert direct_identity, (
+            "a direct turn on the crew slot resolves to no identity at all; the "
+            "strict gate would refuse it and every crew tool would fail closed"
+        )
+        assert slot.key in direct_identity, (
+            "a direct turn on the crew slot no longer derives its identity from "
+            "the slot's own key; the nudge/direct identity equality this feature "
+            "relies on is broken at the source"
+        )
+
+    def test_the_shared_identity_writer_is_still_the_one_run_chat_calls(self):
+        """The construction the refutation rests on: ONE writer, called by _run_chat.
+
+        If ``_run_chat`` stopped importing/calling ``publish_turn_identity``, the
+        nudge turn (and the human turn) would publish no identity at all and the
+        crew tools would fail closed. Asserting the wiring by source keeps the
+        "correct by construction" claim honest: the property tests above stub the
+        writer, so only this guards the real edge between the runner and the one
+        shared writer.
+        """
+        import inspect
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.messaging import identity
+
+        src = inspect.getsource(chat_runner._run_chat)
+        assert "publish_turn_identity" in src, (
+            "_run_chat no longer calls the shared identity writer; a nudge or "
+            "human turn would publish no session identity and crew tools refuse"
+        )
+        # The writer keys off the slot's session key it is handed, not a re-resolve.
+        writer_src = inspect.getsource(identity.publish_turn_identity)
+        assert "session_key" in inspect.signature(identity.publish_turn_identity).parameters
+        assert "get_pid" in writer_src, (
+            "the shared writer no longer maps the passed session key to its pid "
+            "sidecar; the identity channel the strict gate reads would be gone"
+        )
 
 
 class TestEmptyFieldsAreDropped(unittest.TestCase):
@@ -464,8 +656,11 @@ class TestEmptyFieldsAreDropped(unittest.TestCase):
 
     def test_a_skip_carries_its_scope_to_the_route(self):
         captured, _ = _record(
-            phase="skipped", event="passing — needs a design call", event_kind="skip",
-            why="the fix changes the on-disk shape", skip_scope="needs-design",
+            phase="skipped",
+            event="passing — needs a design call",
+            event_kind="skip",
+            why="the fix changes the on-disk shape",
+            skip_scope="needs-design",
         )
         assert captured["body"]["phase"] == "skipped"
         assert captured["body"]["skip_scope"] == "needs-design"
@@ -524,14 +719,17 @@ class TestACrewCanReportAnEmptyQueue(unittest.TestCase):
 
         def fake_put(path, body=None, session_key=None):
             captured["body"] = body
-            return put_result if put_result is not None else {
-                "item": None, "skip": None,
-                "event": {"text": body.get("event") or ""},
-            }
+            return (
+                put_result
+                if put_result is not None
+                else {
+                    "item": None,
+                    "skip": None,
+                    "event": {"text": body.get("event") or ""},
+                }
+            )
 
-        with patch.object(
-            mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"
-        ):
+        with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
             with patch.object(mcp_core, "_get", return_value=CREW_PAYLOAD):
                 with patch.object(mcp_core, "_put", side_effect=fake_put):
                     out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
@@ -720,9 +918,9 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
         is free.
         """
         captured, _ = _record(labels_applied=[])
-        assert "labels_applied" in captured["body"], (
-            "an emptied label set was dropped, so the store keeps the stale one"
-        )
+        assert (
+            "labels_applied" in captured["body"]
+        ), "an emptied label set was dropped, so the store keeps the stale one"
         assert captured["body"]["labels_applied"] == []
 
     def test_omitting_labels_entirely_still_leaves_the_field_alone(self):
@@ -746,12 +944,12 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
         Both legs are asserted because the read is the write's precondition.
         """
         captured, _ = _record()
-        assert captured["get_session_key"] == "crew-c_7f3a", (
-            "the precondition read re-resolved its own identity"
-        )
-        assert captured["put_session_key"] == "crew-c_7f3a", (
-            "the ledger write re-resolved its own identity"
-        )
+        assert (
+            captured["get_session_key"] == "crew-c_7f3a"
+        ), "the precondition read re-resolved its own identity"
+        assert (
+            captured["put_session_key"] == "crew-c_7f3a"
+        ), "the ledger write re-resolved its own identity"
 
 
 class TestRecordOutput(unittest.TestCase):
@@ -784,23 +982,22 @@ class TestRecordOutput(unittest.TestCase):
         assert "architecture" not in out.split("Shared skip index")[1]
 
     def test_no_skip_line_when_the_write_did_not_index_anything(self):
-        _, out = _record(
-            phase="implementing", event="starting the fix", event_kind="implement"
-        )
+        _, out = _record(phase="implementing", event="starting the fix", event_kind="implement")
         assert "Shared skip index" not in out
 
     def test_echoes_the_stored_event_not_the_argument(self):
         # If a sanitizer pass changed the line, the crew must see what actually
         # became public — otherwise it believes it published something else.
         cleaned = _clean(event="pushed round 3", event_kind="ci")
-        with patch.object(
-            mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"
-        ):
+        with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
             with patch.object(mcp_core, "_get", return_value=CREW_PAYLOAD):
                 with patch.object(
                     mcp_core,
                     "_put",
-                    return_value={"item": {"phase": "awaiting-ci"}, "event": {"text": "stored line"}},
+                    return_value={
+                        "item": {"phase": "awaiting-ci"},
+                        "event": {"text": "stored line"},
+                    },
                 ):
                     out = mcp_core._call_tool_inner(RECORD_TOOL, cleaned)
             assert "stored line" in out
@@ -813,9 +1010,10 @@ class TestRecordOutput(unittest.TestCase):
 
 class TestReadOutput(unittest.TestCase):
     def _read(self, payload):
-        with patch.object(
-            mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"
-        ), patch.object(mcp_core, "_get", return_value=payload):
+        with (
+            patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"),
+            patch.object(mcp_core, "_get", return_value=payload),
+        ):
             return mcp_core._call_tool_inner(READ_TOOL, {})
 
     def test_returns_the_crew_settings_and_open_items(self):
@@ -874,8 +1072,9 @@ class TestReadOutput(unittest.TestCase):
     def test_an_older_payload_without_the_skip_fields_still_reads(self):
         # A gateway that predates the index answers without these keys; the
         # projection must degrade to "nothing known skipped", not KeyError.
-        payload = {k: v for k, v in CREW_PAYLOAD.items()
-                   if k not in ("skipped_numbers", "recent_skips")}
+        payload = {
+            k: v for k, v in CREW_PAYLOAD.items() if k not in ("skipped_numbers", "recent_skips")
+        }
         out = json.loads(self._read(payload))
         assert out["skipped_numbers"] == []
         assert out["recent_skips"] == []

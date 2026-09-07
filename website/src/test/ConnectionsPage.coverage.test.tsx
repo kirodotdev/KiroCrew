@@ -5,9 +5,10 @@
 //
 // Two things shape this file:
 //
-//   1. The gallery is GATED. `servicesEnabled` defaults to false and the panel
-//      then deliberately offers zero providers, so every card test has to opt in
-//      with `servicesEnabled` — that flag is the module's own seam, not a hack.
+//   1. The gallery is GATED. `servicesEnabled` carries the `connections_ui`
+//      escape hatch: the shipped default is on, but the component's own parameter
+//      default is false, so a test that wants the closed panel passes
+//      `servicesEnabled: false` — that flag is the module's own seam, not a hack.
 //   2. The page's only outside seams are `api` (mocked here — nothing dials the
 //      network) and the MCP Servers sub-tab, which is a whole page of its own.
 //      `McpTab` is stubbed at its module boundary with a button that fires
@@ -183,7 +184,7 @@ beforeEach(() => {
   })
 })
 
-describe('the held-back gallery', () => {
+describe('the opted-out gallery', () => {
   it('offers no provider, no search and no way to connect when services are disabled', async () => {
     mount({ servicesEnabled: false })
 

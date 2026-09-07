@@ -604,3 +604,194 @@ class TestWorkspaceDirContainmentMessage:
             pytest.raises(SystemExit),
         ):
             main()
+
+
+# ── #4767: CLI CRUD writes are locked deltas, not whole-document saves ──
+
+
+class TestCliCrudIsLockedDelta:
+    """The CLI CRUD commands persist via ``update_config_locked`` deltas.
+
+    Round 7 of the #4767 review: the old load -> mutate dataclass ->
+    ``cfg.save()`` shape re-serialized the command's stale snapshot, so a
+    change another process landed between the load and the save was silently
+    erased. A delta on the document read inside the flock cannot lose it.
+    """
+
+    def _run(self, argv: list[str], cfg_path: Path, tmp_path: Path) -> None:
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", *argv]),
+        ):
+            main()
+
+    def test_workspace_create_preserves_a_concurrently_landed_key(self, tmp_path: Path) -> None:
+        """A document key the CLI's snapshot never saw survives the write.
+
+        ``KiroCrewConfig`` drops unknown keys on re-serialization, so under
+        the old ``cfg.save()`` path the marker below was erased; the delta
+        write rewrites only the workspaces section and keeps it.
+        """
+        data = _base_config()
+        data["zz_concurrent_marker"] = {"landed": True}
+        cfg_path = _write_config(tmp_path, data)
+        self._run(
+            ["workspace", "create", "--name", "fresh", "--dir", "workspace-fresh"],
+            cfg_path,
+            tmp_path,
+        )
+        doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert doc["workspaces"]["fresh"]["dir"] == "workspace-fresh"
+        assert doc.get("zz_concurrent_marker") == {"landed": True}, (
+            "the CLI create rewrote the whole document from its stale "
+            "snapshot and erased a concurrently landed change"
+        )
+
+    def test_agent_update_preserves_a_concurrently_landed_key(self, tmp_path: Path) -> None:
+        data = _base_config()
+        data["zz_concurrent_marker"] = {"landed": True}
+        cfg_path = _write_config(tmp_path, data)
+        self._run(
+            ["agent", "update", "default", "--workspace", "staging"],
+            cfg_path,
+            tmp_path,
+        )
+        doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert doc["agents"]["default"]["workspace"] == "staging"
+        assert doc.get("zz_concurrent_marker") == {"landed": True}
+
+    def test_workspace_create_recheck_conflicts_in_lock(self, tmp_path: Path) -> None:
+        """The in-lock re-check refuses a name the pre-check snapshot missed."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        real_load = json.loads
+
+        # Simulate a racer: the name is free in the CLI's snapshot but taken
+        # by the time the locked read runs. Patch the loader's snapshot load
+        # to hide the workspace from the pre-check only.
+        import kiro_crew.cli_commands as cli_commands_module
+
+        original_mutator_runner = cli_commands_module._locked_config_write
+
+        def _inject_racer_then_run(mutate, **kwargs):
+            doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+            doc["workspaces"]["fresh"] = {"dir": "workspace-racer"}
+            cfg_path.write_text(json.dumps(doc), encoding="utf-8")
+            original_mutator_runner(mutate, **kwargs)
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch.object(
+                cli_commands_module, "_locked_config_write", _inject_racer_then_run
+            ),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "fresh", "--dir", "workspace-f2"],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        doc = real_load(cfg_path.read_text(encoding="utf-8"))
+        assert (
+            doc["workspaces"]["fresh"]["dir"] == "workspace-racer"
+        ), "the CLI overwrote a workspace the racer created first"
+
+
+# ── #4767 round 8: in-lock default re-checks + staged copy_from install ──
+
+
+class TestCliRound8Hardening:
+    def _base_with_defaults(self) -> dict:
+        data = _base_config()
+        return data
+
+    def test_workspace_delete_refuses_a_concurrently_selected_default(self, tmp_path: Path) -> None:
+        """A racer makes the workspace the default between snapshot and lock."""
+        data = _base_config()
+        cfg_path = _write_config(tmp_path, data)
+
+        import kiro_crew.cli_commands as cc
+
+        original = cc._locked_config_write
+
+        def _racer_selects_default_then_run(mutate, **kwargs):
+            doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+            doc["default_workspace"] = "staging"
+            cfg_path.write_text(json.dumps(doc), encoding="utf-8")
+            original(mutate, **kwargs)
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch.object(cc, "_locked_config_write", _racer_selects_default_then_run),
+            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "delete", "staging"]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert (
+            "staging" in doc["workspaces"]
+        ), "the delete removed a workspace a racer had just made the default"
+
+    def test_agent_delete_refuses_top_level_default(self, tmp_path: Path) -> None:
+        """The authoritative default_agent key is TOP-LEVEL; the in-lock
+        re-check must read it there, not only the migration-era agent section."""
+        data = _base_config()
+        data["agents"]["spare"] = dict(data["agents"]["default"])
+        data["default_agent"] = "spare"
+        cfg_path = _write_config(tmp_path, data)
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "agent", "delete", "spare"]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "spare" in doc["agents"]
+
+    def test_losing_copy_from_race_leaves_winner_untouched(self, tmp_path: Path) -> None:
+        """The copy is STAGED: when the locked check refuses (racer took the
+        name), the winner's directory contains none of the loser's files and
+        no staging residue remains."""
+        src = tmp_path / "workspace"
+        src.mkdir()
+        (src / "loser-file.md").write_text("x", encoding="utf-8")
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        import kiro_crew.cli_commands as cc
+
+        original = cc._locked_config_write
+
+        def _racer_takes_name_then_run(mutate, **kwargs):
+            winner_dir = tmp_path / "workspace-copied"
+            winner_dir.mkdir()
+            (winner_dir / "winner-file.md").write_text("w", encoding="utf-8")
+            doc = json.loads(cfg_path.read_text(encoding="utf-8"))
+            doc["workspaces"]["copied"] = {"dir": "workspace-copied"}
+            cfg_path.write_text(json.dumps(doc), encoding="utf-8")
+            original(mutate, **kwargs)
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch.object(cc, "_locked_config_write", _racer_takes_name_then_run),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "copied", "--copy-from", "default"],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        winner_dir = tmp_path / "workspace-copied"
+        assert sorted(p.name for p in winner_dir.iterdir()) == [
+            "winner-file.md"
+        ], "the losing create's copied files leaked into the winner's workspace"
+        leftovers = [p.name for p in tmp_path.iterdir() if ".staging-" in p.name]
+        assert leftovers == [], f"staging residue: {leftovers}"

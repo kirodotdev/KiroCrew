@@ -360,6 +360,7 @@ def build_and_stage(
     proj_path: "str | Path | None" = None,
     npm: str | None = None,
     log: Callable[[str], None] = print,
+    git: str | None = None,
 ) -> bool:
     """Build this install's frontend and stage it, both under one lock.
 
@@ -372,8 +373,10 @@ def build_and_stage(
     ``proj_path`` accepts a string because the callers that need it are
     out-of-process and pass it through ``argv``. ``npm`` names the executable to
     run, so a caller that resolved a trusted path passes it rather than having it
-    re-resolved here. Returns ``True`` when ``static/dist`` holds the newly built
-    bundle.
+    re-resolved here. ``git`` likewise names the git executable for the read-only
+    build-source fingerprint: the Dev Fleet sync passes its trusted-bin absolute
+    path so the fingerprint's git calls never depend on a PATH search. Returns
+    ``True`` when ``static/dist`` holds the newly built bundle.
     """
     root = (
         Path(proj_path)
@@ -388,12 +391,95 @@ def build_and_stage(
     if not npm_bin:
         log("  ⚠️  npm not found — cannot build the frontend")
         return False
+    git_bin = git or shutil.which("git") or "git"
     try:
         with _staging_lock(root / "src" / "kiro_crew" / "static"):
-            return _npm_build_and_stage_locked(website_dir, root, npm_bin, log)
+            staged = _npm_build_and_stage_locked(website_dir, root, npm_bin, log)
+            if staged:
+                _write_build_source_fingerprint(root, git_bin, log)
+            return staged
     except OSError as exc:
         log(f"  ⚠️  Could not acquire the static/dist staging lock: {exc}")
         return False
+
+
+#: Records WHICH ``website/`` source the currently staged bundle was built from.
+#: Written beside the staged dist on every successful build+stage, and read by
+#: Dev Fleet's backend-only-sync skip: the skip is only safe when this equals the
+#: source the sync will end up with. It is the fingerprint the #7132 skip needs
+#: to distinguish "the build is already current" from a STALE tree left when a
+#: prior frontend sync merged new source but its ``npm ci`` failed and the
+#: transaction restored the old node_modules -- a case where the subtree stops
+#: changing yet the staged bundle was never built from it.
+_BUILD_SOURCE_FINGERPRINT = "kirocrew-build-source.txt"
+
+
+def _write_build_source_fingerprint(root: Path, git_bin: str, log: Callable[[str], None]) -> None:
+    """Stamp the git tree id of ``website/`` at HEAD beside the staged dist.
+
+    The git tree object id of ``website/`` is the exact identity of the built
+    source: it changes iff any tracked file under ``website/`` changes, and it
+    costs one ``git rev-parse``. Written to ``static/dist`` so it travels with
+    the bundle and is swept/replaced with it. Best-effort: a failure to stamp
+    leaves no fingerprint, and a missing fingerprint makes the skip decision fall
+    through to a rebuild (the safe direction), so this never blocks a build.
+
+    ``git_bin`` is the git executable to run -- the Dev Fleet sync passes its
+    trusted-bin absolute path, so these read-only calls do not depend on a PATH
+    search. Both calls are fixed list-argv, shell-free, and carry no
+    agent-supplied component; ``root`` is the operator's own registered checkout.
+
+    STAMPED ONLY WHEN ``website/`` IS CLEAN. ``HEAD:website`` names the committed
+    tree, but the build compiles the WORKING tree -- so if ``website/`` carried
+    uncommitted edits, the bundle was built from content ``HEAD:website`` does
+    not describe. Stamping anyway would let a later backend-only sync skip on a
+    fingerprint that matches HEAD while the dirty edit that was actually built
+    has since been reverted, serving a bundle built from content no longer on
+    disk. So a dirty ``website/`` writes NO fingerprint, and the next sync
+    rebuilds. The sync's own build runs after a ``merge --ff-only`` and is clean;
+    this guard covers the other callers (pod provision, dashboard update) and any
+    path that could build a dirty tree.
+    """
+    static_dist = root / "src" / "kiro_crew" / "static" / "dist"
+    try:
+        dirty = subprocess.run(  # nosec B603 - argv list, no shell
+            [git_bin, "-C", str(root), "status", "--porcelain", "--", "website"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if dirty.returncode != 0 or (dirty.stdout or b"").strip():
+            # Non-zero: cannot establish cleanliness. Non-empty: website/ has
+            # uncommitted changes, so HEAD:website does not describe what was
+            # built. Either way, leave no fingerprint -> the next sync rebuilds.
+            log(
+                "  ⚠️  website/ was not clean at build time; not fingerprinting "
+                "the bundle, so the next backend-only sync will rebuild"
+            )
+            return
+        proc = subprocess.run(  # nosec B603 - argv list, no shell
+            [git_bin, "-C", str(root), "rev-parse", "HEAD:website"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0:
+            log(
+                "  ⚠️  Could not fingerprint the built frontend source; the next "
+                "backend-only sync will rebuild rather than skip"
+            )
+            return
+        tree_id = proc.stdout.decode(errors="replace").strip()
+        if not tree_id:
+            # An empty rev-parse output proves nothing; leave no fingerprint so
+            # the next sync rebuilds rather than trusting an empty tree id.
+            return
+        (static_dist / _BUILD_SOURCE_FINGERPRINT).write_text(tree_id, encoding="utf-8")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log(
+            f"  ⚠️  Could not write the build source fingerprint ({exc}); the next "
+            "backend-only sync will rebuild rather than skip"
+        )
 
 
 def _discard_path(path: Path) -> None:

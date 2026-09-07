@@ -56,6 +56,7 @@ class MockCronJob:
     cron_expr: str | None = None
     timezone: str = ""
     skip_dates: list[str] = field(default_factory=list)
+    folder_id: str = ""
 
 
 class MockCronService:

@@ -194,6 +194,11 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "folder_id",
         "app",
         "artifact",
+        # Durable copy of the slot's held /note lines (issue #4093). Owned, not
+        # monotonic: the hold is written while notes are held and must be
+        # CLEARED by absence once the flush delivers them — carried forward
+        # instead, a restart would re-deliver a note the user already saw.
+        "deferred_notes",
         "pinned",
         "color_index",
         "color_hex",

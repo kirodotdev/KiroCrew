@@ -47,7 +47,7 @@ import wave
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterator
 
-from kiro_crew import aws_consent, platform_compat, stt
+from kiro_crew import aws_consent, pinned_fs, platform_compat, stt
 
 # The pinned-artifact table and the digest-verified decoder store live here. It
 # imports no numpy and no recogniser binding, so this stays cheap on the gateway
@@ -1011,16 +1011,132 @@ async def _create_ffmpeg_subprocess(
     close and must run it once the child has exited. A failed spawn never
     produced a child, so nothing depends on the path surviving and the handle
     is closed here before the error propagates.
+
+    Every invocation is pinned to LOCAL protocols: FFmpeg's protocol allowlist
+    flag is prepended ahead of the caller's args (set to ``file,pipe``) so it
+    precedes every ``-i``. The import suffix allowlist upstream is a "did the
+    user mean this" filter, not a content check, so a file whose bytes are an
+    HLS/ffconcat playlist reaches the demuxer — without the protocol pin the
+    demuxer would then FETCH the playlist's segment URLs (SSRF from a crafted
+    recording, GPT review r19). Every caller in this module reads one
+    validated local file and writes a local temp file, a null sink, or a pipe,
+    so nothing legitimate needs a network protocol; the pin applies to nested
+    opens (playlist segments) as well as the top-level input.
     """
+    guarded = ("-protocol_whitelist", "file,pipe", *args)  # wokeignore:rule=whitelist
+    if not platform_compat.IS_WINDOWS:
+        # A descriptor-path input (``/dev/fd/N``) is only readable by the child
+        # if N survives the exec: collect every one in the argv and inherit it.
+        # ``pass_fds`` keeps the same numbers open in the child, so the argv
+        # needs no rewriting. Windows never receives descriptor paths (the
+        # import route refuses platforms without pinned traversal), so this is
+        # POSIX-only by construction.
+        dev_fds = tuple(
+            fd for fd in (_dev_fd_number(a) for a in args if isinstance(a, str)) if fd is not None
+        )
+        if dev_fds:
+            kwargs["pass_fds"] = tuple(kwargs.get("pass_fds", ())) + dev_fds
     if isinstance(executable, str):
-        return await asyncio.create_subprocess_exec(executable, *args, **kwargs)
+        return await asyncio.create_subprocess_exec(executable, *guarded, **kwargs)
     try:
         if not platform_compat.IS_WINDOWS:
-            kwargs["pass_fds"] = (executable.descriptor,)
-        return await asyncio.create_subprocess_exec(executable.execution_path, *args, **kwargs)
+            kwargs["pass_fds"] = tuple(kwargs.get("pass_fds", ())) + (executable.descriptor,)
+        return await asyncio.create_subprocess_exec(executable.execution_path, *guarded, **kwargs)
     except BaseException:
         await _close_ffmpeg_for_execution(executable, preserve_active_exception=True)
         raise
+
+
+#: The FFmpeg demuxer each supported audio suffix promises to be. Forcing the
+#: demuxer (``-f <name>`` before ``-i``) is the second half of the r19 protocol
+#: pin: the protocol allowlist stops NETWORK fetches, but a crafted
+#: allowed-suffix HLS/ffconcat playlist could still make an auto-probed demuxer
+#: open OTHER LOCAL FILES its text names — reads that never went through
+#: ``validate_file_path`` (GPT review r20). With the suffix's own demuxer
+#: forced, playlist text is a decode error rather than a set of paths to open.
+#: A mislabeled-but-genuine recording is refused the same way, which matches
+#: the import vet gate's "did the user mean this" contract.
+_DEMUXER_BY_SUFFIX = {
+    ".wav": "wav",
+    ".mp3": "mp3",
+    ".m4a": "mov,mp4,m4a,3gp,3g2,mj2",
+    ".mp4": "mov,mp4,m4a,3gp,3g2,mj2",
+    ".ogg": "ogg",
+    ".oga": "ogg",
+    ".opus": "ogg",
+    ".flac": "flac",
+    ".webm": "matroska,webm",
+    ".mkv": "matroska,webm",
+    ".aac": "aac",
+    ".wma": "asf",
+}
+
+
+#: Descriptor-path inputs (``/dev/fd/N``, and Linux's ``/proc/self/fd/N``): an
+#: import hands its consumers one of these instead of the snapshot's mutable
+#: name, so every open — ours and FFmpeg's — pins the inode the route opened
+#: (GPT review r21: a same-uid racer could otherwise swap the snapshot between
+#: the duration probe and the transcode, defeating the truncation guard).
+_DEV_FD_RE = re.compile(r"^(?:/dev/fd|/proc/self/fd)/(\d+)$")
+
+
+def _dev_fd_number(audio_path: str) -> int | None:
+    """The descriptor a ``/dev/fd``-style input names, or None for a plain path."""
+    match = _DEV_FD_RE.match(audio_path)
+    return int(match.group(1)) if match else None
+
+
+def _input_suffix(audio_path: str) -> str | None:
+    """The validated suffix behind *audio_path*, resolving descriptor paths.
+
+    Format decisions (demuxer pin, WAV fast paths, remux branches) must follow
+    the suffix the caller VALIDATED. For a descriptor path that suffix is read
+    through the kernel's own name for the open descriptor
+    (:func:`kiro_crew.pinned_fs.fd_real_path`) — never by trusting the mutable
+    original name. ``None`` means the suffix cannot be known (an unresolvable
+    descriptor path): callers take no fast path, and the demuxer pin refuses
+    rather than falling back to content sniffing.
+    """
+    fd = _dev_fd_number(audio_path)
+    if fd is None:
+        return os.path.splitext(audio_path)[1].lower()
+    real = pinned_fs.fd_real_path(fd)
+    if real is None:
+        return None
+    return os.path.splitext(real)[1].lower()
+
+
+def _forced_demuxer_args(audio_path: str) -> tuple[str, ...]:
+    """``("-f", <demuxer>)`` for a recognized audio suffix, else ``()``.
+
+    Every import-admissible suffix (``k.IMPORT_AUDIO_EXTENSIONS``) is covered,
+    so an attacker-influenced import input is ALWAYS decoded by the demuxer its
+    validated name promises — never by content sniffing. The empty fallback is
+    reachable only for the gateway's own internal temp files, whose names this
+    process chose itself.
+    """
+    suffix = _input_suffix(audio_path)
+    if suffix is None:
+        # A descriptor-pinned input whose real suffix cannot be read: refuse.
+        # Falling back to content sniffing here is exactly the playlist hole
+        # the demuxer pin closes. OSError, so every spawn site's existing
+        # failure arm turns it into that caller's normal "could not decode"
+        # answer (a retryable refusal for the import route).
+        raise OSError(f"cannot resolve the suffix behind {audio_path}")
+    demuxer = _DEMUXER_BY_SUFFIX.get(suffix)
+    if demuxer is None:
+        if _dev_fd_number(audio_path) is not None:
+            # Descriptor inputs are the attacker-influenced imports, and their
+            # VALIDATED suffix always maps (the coverage test pins every
+            # IMPORT_AUDIO_EXTENSIONS entry). The resolution follows the
+            # descriptor's CURRENT name, so an unmapped answer here means the
+            # snapshot was renamed after pinning — a same-uid racer stripping
+            # the suffix to re-enable content sniffing (GPT review r25).
+            # Refuse: a rename may only ever cause a loud refusal, never a
+            # sniffed playlist.
+            raise OSError(f"descriptor input {audio_path} resolved to unmapped suffix {suffix!r}")
+        return ()
+    return ("-f", demuxer)
 
 
 def ensure_ffmpeg_in_path() -> None:
@@ -1258,11 +1374,67 @@ def _load_stt_config() -> Any:
     return KiroCrewConfig.load().stt
 
 
+def load_stt_config() -> Any:
+    """One STT configuration snapshot, for callers that must not re-read it.
+
+    Every function here that takes an ``stt_config`` parameter re-loads the
+    configuration when handed None. That is right for a single call, and wrong
+    for a SEQUENCE whose answers must agree: a readiness check, a duration-cap
+    answer, and the transcription itself each re-reading the file can straddle an
+    operator changing the provider in Settings, so the gate evaluates one
+    provider's rules and the decode runs under another's. A caller doing several
+    of those calls loads ONE snapshot here and passes it to each. BLOCKING
+    (reads config); call off the event loop.
+    """
+    return _load_stt_config()
+
+
+def _under_voice_runtime_root(real: str) -> bool:
+    """Whether *real* lies under the gateway's own voice-runtime staging root.
+
+    The crew ``run/`` directory is a read+write-sensitive leaf (it holds spawn
+    trust roots), so ``is_sensitive_path`` refuses everything beneath it —
+    including the import snapshots this gateway itself stages under
+    ``run/voice-runtime`` precisely BECAUSE agents cannot reach that root
+    (GPT review r29 relocation). Judged against the kernel-resolved name of an
+    already-pinned descriptor, membership here means "a file this process
+    staged", not "a caller-supplied path": the route's own vet gate has
+    already refused sensitive ORIGINAL paths before any snapshot exists.
+    """
+    from kiro_crew.sandbox import prime_voice_runtime_sandbox_paths
+
+    root = os.path.realpath(prime_voice_runtime_sandbox_paths())
+    try:
+        return os.path.commonpath((os.path.realpath(real), root)) == root
+    except ValueError:  # different drives on Windows
+        return False
+
+
 def _is_sensitive_audio_path(audio_path: str) -> bool:
-    """Run the filesystem-resolving sensitive-path guard off the event loop."""
+    """Run the filesystem-resolving sensitive-path guard off the event loop.
+
+    A descriptor path is judged by the kernel's name for the open descriptor,
+    and an unresolvable one is refused outright — the guard must never answer
+    "not sensitive" for a file it cannot identify. The one exemption is the
+    gateway's own voice-runtime snapshot staging (see
+    :func:`_under_voice_runtime_root`), on BOTH branches: POSIX consumers hold
+    a ``/dev/fd`` path, while Windows consumers hold the snapshot NAME (the
+    open handle blocks rename/delete there). The membership test resolves the
+    real path first, so a link planted under the root resolves outside it and
+    is judged as whatever it points at.
+    """
     from kiro_crew.security import is_sensitive_path
 
-    return is_sensitive_path(audio_path)
+    fd = _dev_fd_number(audio_path)
+    if fd is not None:
+        real = pinned_fs.fd_real_path(fd)
+        if real is None:
+            return True
+    else:
+        real = audio_path
+    if _under_voice_runtime_root(real):
+        return False
+    return is_sensitive_path(real)
 
 
 def _redact_transcript(transcript: str) -> str:
@@ -1389,7 +1561,7 @@ def _read_audio_bytes(audio_path: str) -> bytes:
 
 async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
     """Transcribe using AWS Transcribe Streaming API (ogg-opus)."""
-    ext = os.path.splitext(audio_path)[1].lower()
+    ext = _input_suffix(audio_path)
     if ext not in (".ogg", ".webm"):
         logger.error("Unsupported format '%s' for Transcribe (expected .ogg or .webm)", ext)
         return None
@@ -1423,6 +1595,13 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
     tmp_ogg = None
     actual_path = audio_path
     if ext in (".webm",):
+        try:
+            # BEFORE the decoder handle is resolved: a refusal here must not
+            # leak the authenticated FFmpeg descriptor the seam would own.
+            demux_args = _forced_demuxer_args(audio_path)
+        except OSError:
+            logger.exception("Could not resolve a demuxer to remux %s", audio_path)
+            return None
         ffmpeg_bin = await _resolve_ffmpeg_for_execution()
         if not ffmpeg_bin:
             logger.error("ffmpeg required to remux webm to ogg for Transcribe")
@@ -1438,6 +1617,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
                 proc = await _create_ffmpeg_subprocess(
                     ffmpeg_bin,
                     "-y",
+                    *demux_args,
                     "-i",
                     audio_path,
                     "-c:a",
@@ -1620,6 +1800,145 @@ _WAV_SUFFIXES = (".wav", ".wave")
 _MAX_AUDIO_SECS = 3600
 
 
+def batch_duration_cap_secs(stt_config=None) -> int | None:  # type: ignore[no-untyped-def]
+    """The longest recording the ACTIVE provider transcribes whole, or None.
+
+    The local recogniser truncates: both of its decode paths stop at
+    ``_MAX_AUDIO_SECS`` (the WAV reader caps ``readframes``, the ffmpeg transcode
+    passes ``-t``), and neither reports that it did. The Apple lane's
+    to-native conversion is bounded the same way (``-t`` on the remux — an
+    unbounded conversion of a large low-bitrate input could exhaust the temp
+    volume, GPT review r23), so it shares the ceiling. AWS Transcribe refuses
+    an oversized payload outright (a loud ``None``), so for it there is no
+    silent ceiling to guard. Callers that must not dispatch a truncated
+    transcript — the meetings import route — ask here which ceiling applies
+    and refuse longer input BEFORE transcribing. BLOCKING when *stt_config*
+    is None (reads config).
+    """
+    if stt_config is None:
+        stt_config = _load_stt_config()
+    if stt_config.provider == "transcribe":
+        return None
+    return _MAX_AUDIO_SECS
+
+
+def _wav_duration_secs(audio_path: str) -> float | None:
+    """Exact duration from a WAV header, or None when it is not a readable WAV.
+
+    Header math only — no sample data is read — so this works for any rate or
+    width, including files :func:`_pcm_from_wav` would hand to ffmpeg. BLOCKING.
+    """
+    try:
+        with wave.open(audio_path, "rb") as wav:
+            rate = wav.getframerate()
+            if rate <= 0:
+                return None
+            return wav.getnframes() / rate
+    except (OSError, EOFError, wave.Error):
+        return None
+
+
+_PROGRESS_OUT_TIME_RE = re.compile(rb"^out_time_us=(\d+)", re.MULTILINE)
+
+
+async def audio_exceeds_secs(
+    audio_path: str, max_secs: int, *, timeout_secs: int = 300
+) -> bool | None:
+    """Whether the recording at *audio_path* is longer than *max_secs*.
+
+    True/False when the answer is known, None when it cannot be determined.
+
+    WAV files are answered exactly from the header. Everything else is answered
+    by the same decoder that will transcribe it: a null decode bounded at
+    ``max_secs`` plus one second (``-t``), reading the decoded timestamp from
+    ffmpeg's ``-progress`` stream. Decoding — not metadata — is deliberate: the
+    dashboard's own recordings are MediaRecorder webm, whose header carries no
+    duration at all, so a metadata probe would answer None for exactly the files
+    users are most likely to import. The ``-t`` bound keeps the probe's cost
+    proportional to the cap, not to the file.
+
+    A None is honest, not fail-open in disguise, ONLY while the caller gives the
+    probe at least the timeout the transcode itself will get (callers with an
+    ``stt_config`` in hand pass ``stt_config.timeout_secs``; the default matches
+    the config default). The probe decodes at most ``max_secs + 1`` seconds — a
+    strict subset of the transcode's work — so under an aligned budget every
+    None cause leads to a loud downstream failure: an undecodable file fails the
+    transcode the same way, and a host slow enough to time the probe out times
+    the strictly-larger transcode out too. A SHORTER probe budget would reopen
+    the gap where the probe gives up but the transcode "succeeds" truncated —
+    silent data loss on exactly the over-cap files this guard exists to catch.
+    """
+    duration = await asyncio.to_thread(_wav_duration_secs, audio_path)
+    if duration is not None:
+        return duration > max_secs
+    try:
+        # BEFORE the decoder handle is resolved: a refusal here must not leak
+        # the authenticated FFmpeg descriptor the seam would otherwise own.
+        demux_args = _forced_demuxer_args(audio_path)
+    except OSError:
+        logger.exception("Could not resolve a demuxer to probe %s", audio_path)
+        return None
+    ffmpeg_bin = await _resolve_ffmpeg_for_execution()
+    if not ffmpeg_bin:
+        return None
+    try:
+        try:
+            proc = await _create_ffmpeg_subprocess(
+                ffmpeg_bin,
+                "-v",
+                "error",
+                "-nostdin",
+                "-progress",
+                "pipe:1",
+                *demux_args,
+                "-i",
+                audio_path,
+                "-vn",
+                # One second PAST the cap: the probe only needs to know whether the
+                # recording crosses it, so decoding further would be pure waste.
+                "-t",
+                str(max_secs + 1),
+                "-f",
+                "null",
+                "-",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError:
+            logger.exception("Could not run ffmpeg (%s) to probe %s", ffmpeg_bin, audio_path)
+            return None
+        try:
+            stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+        except asyncio.TimeoutError:
+            await _kill_and_reap(proc)
+            logger.error(
+                "ffmpeg duration probe of %s timed out after %ds", audio_path, timeout_secs
+            )
+            return None
+        except BaseException:
+            # CancelledError is a BaseException; stop AND reap the child so an
+            # abandoned request does not leak a decoder process.
+            await _kill_and_reap(proc)
+            raise
+        if proc.returncode != 0:
+            return None
+        matches = _PROGRESS_OUT_TIME_RE.findall(stdout or b"")
+        if not matches:
+            return None
+        return int(matches[-1]) / 1_000_000 > max_secs
+    finally:
+        # The authenticated handle must outlive the spawn (#8918): every path
+        # reaching this ``finally`` has already reaped the child (``communicate``
+        # on success and nonzero exit, kill-and-reap on timeout and
+        # cancellation) or never spawned one, so the staged image can be
+        # released now — off the loop, like every sibling spawn site, instead
+        # of by ``__del__`` running the blocking close on the gateway loop.
+        await _close_ffmpeg_for_execution(
+            ffmpeg_bin,
+            preserve_active_exception=sys.exc_info()[1] is not None,
+        )
+
+
 def _whisper_language(language_code: str) -> str:
     """Reduce a BCP-47 tag to the bare language whisper wants (``en-US`` -> ``en``).
 
@@ -1656,21 +1975,52 @@ def _pcm_from_wav(audio_path: str) -> np.ndarray | None:
             channels = wav.getnchannels()
             if wav.getframerate() != stt.SAMPLE_RATE_HZ or wav.getsampwidth() != 2 or channels < 1:
                 return None
-            raw = wav.readframes(min(wav.getnframes(), _MAX_AUDIO_SECS * stt.SAMPLE_RATE_HZ))
+            frames_total = min(wav.getnframes(), _MAX_AUDIO_SECS * stt.SAMPLE_RATE_HZ)
+            if channels == 1:
+                return stt.pcm_from_int16(wav.readframes(frames_total))
+            # Fold to mono in BYTE-bounded slices. A whole-file read would hold
+            # the interleaved int16 buffer AND its float32 conversion at once —
+            # around 1.5 GiB for a four-channel hour, enough to OOM the
+            # gateway on an input the 512 MiB import cap admits (GPT review
+            # r23). And the bound must be BYTES, not seconds: a frame is
+            # ``channels * 2`` bytes, so a fixed frame count lets the channel
+            # count scale the transient without limit — a valid 256-channel
+            # minute under the same cap would make a "60-second" slice
+            # allocate ~0.5 GiB raw plus its float32 conversion (GPT review
+            # r34). 8 MiB of raw int16 per slice keeps the transient under a
+            # few tens of MiB for ANY channel count, while the result stays
+            # the same: the per-frame mean is local to each frame, and
+            # ``readframes`` counts whole frames, so no frame is ever split
+            # across slices.
+            chunk_frames = max(1, (8 * 1024 * 1024) // (channels * 2))
+            folded = []
+            remaining = frames_total
+            while remaining > 0:
+                take = min(chunk_frames, remaining)
+                raw = wav.readframes(take)
+                if not raw:
+                    break
+                remaining -= take
+                pcm = stt.pcm_from_int16(raw)
+                # Drop a final frame the file cut in half before folding
+                # channels, so the reshape cannot fail on a truncated
+                # recording.
+                usable = pcm.size - (pcm.size % channels)
+                if usable <= 0:
+                    continue
+                folded.append(pcm[:usable].reshape(-1, channels).mean(axis=1, dtype=pcm.dtype))
     except (OSError, EOFError, wave.Error):
         # Not a readable PCM WAV (a compressed payload, a truncated header, a
         # mislabelled suffix). ffmpeg reads far more than the stdlib does, so this
         # is a "try the other route", not a failure.
         return None
-    pcm = stt.pcm_from_int16(raw)
-    if channels == 1:
-        return pcm
-    # Drop a final frame the file cut in half before folding channels, so the
-    # reshape cannot fail on a truncated recording.
-    usable = pcm.size - (pcm.size % channels)
-    if usable <= 0:
+    if not folded:
         return None
-    return pcm[:usable].reshape(-1, channels).mean(axis=1, dtype=pcm.dtype)
+    if len(folded) == 1:
+        return folded[0]
+    import numpy as np  # runtime import: module-level numpy is typing-only here
+
+    return np.concatenate(folded)
 
 
 async def _kill_and_reap(proc: Any) -> None:
@@ -1703,6 +2053,13 @@ async def _pcm_via_ffmpeg(audio_path: str, timeout_secs: int) -> np.ndarray | No
     accepts exactly one format, so the transcode targets it directly rather than
     leaving a rate conversion for later.
     """
+    try:
+        # BEFORE the decoder handle is resolved: a refusal here must not leak
+        # the authenticated FFmpeg descriptor the seam would otherwise own.
+        demux_args = _forced_demuxer_args(audio_path)
+    except OSError:
+        logger.exception("Could not resolve a demuxer to decode %s", audio_path)
+        return None
     ffmpeg_bin = await _resolve_ffmpeg_for_execution()
     if not ffmpeg_bin:
         logger.error(
@@ -1721,6 +2078,7 @@ async def _pcm_via_ffmpeg(audio_path: str, timeout_secs: int) -> np.ndarray | No
             proc = await _create_ffmpeg_subprocess(
                 ffmpeg_bin,
                 "-y",
+                *demux_args,
                 "-i",
                 audio_path,
                 "-ar",
@@ -1802,7 +2160,7 @@ async def _transcribe_local(audio_path: str, stt_config) -> str | None:  # type:
         return None
 
     pcm: np.ndarray | None = None
-    if os.path.splitext(audio_path)[1].lower() in _WAV_SUFFIXES:
+    if _input_suffix(audio_path) in _WAV_SUFFIXES:
         pcm = await asyncio.to_thread(_pcm_from_wav, audio_path)
     if pcm is None:
         pcm = await _pcm_via_ffmpeg(audio_path, stt_config.timeout_secs)

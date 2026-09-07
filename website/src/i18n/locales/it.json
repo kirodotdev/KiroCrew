@@ -5730,6 +5730,7 @@
       "approve_all": "Approva tutto",
       "approve_sub_agent": "Approva il sotto-agente: {{name}}",
       "attach_files": "Allega file",
+      "editor_unavailable_standard_input": "L'editor avanzato non è stato caricato, quindi è attivo l'input standard. La tua bozza è invariata.",
       "branch": "Ramo: {{branch}}",
       "click_again_to_force_stop": "Clicca di nuovo per forzare l'arresto",
       "command": "Comando",
@@ -5828,7 +5829,8 @@
       "more_actions": "Altre azioni",
       "session_control_needs_attention": "Richiede attenzione",
       "session_control_ready": "Pronto",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "Questa sessione segue l’agente predefinito ({{name}}). Non ha un agente proprio, quindi cambia se cambia il predefinito. Fai clic per fissarne uno."
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",
@@ -6727,7 +6729,8 @@
       "copy_diagram_source": "Copia il codice sorgente del diagramma",
       "diagram_source": "Codice sorgente del diagramma",
       "copy_failed": "Copia non riuscita",
-      "mermaid_render_failed": "Impossibile visualizzare questo diagramma. Viene mostrato il codice sorgente."
+      "mermaid_render_failed": "Impossibile visualizzare questo diagramma. Viene mostrato il codice sorgente.",
+      "image_position": "{{index}} di {{total}}"
     },
     "markdownToc": {
       "contents": "Contenuto",
@@ -6952,6 +6955,8 @@
     "pastedChip": {
       "collapse_paste": "Comprimi il testo incollato",
       "expand_paste": "Espandi il testo incollato",
+      "hide_paste_preview": "Nascondi l'anteprima dell'incollato",
+      "show_paste_preview": "Mostra l'anteprima dell'incollato",
       "paste_lines_many": "[ Incolla #{{seq}} · {{count}} righe ]",
       "paste_lines_one": "[ Incolla #{{seq}} · {{count}} riga ]",
       "paste_lines_other": "[ Incolla #{{seq}} · {{count}} righe ]",
@@ -8154,6 +8159,12 @@
       "could_not_load": "Impossibile caricare {{label}}",
       "loading": "Caricamento di {{label}}…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "Formattato",
+      "raw": "Grezzo",
+      "render_the_markdown_headings_lists_tables_links": "Visualizza il markdown - titoli, elenchi, tabelle, link",
+      "show_the_exact_markdown_source": "Mostra il sorgente markdown esatto"
     }
   },
   "hooks": {
@@ -11696,6 +11707,7 @@
         "msgs": "msg /",
         "output_tokens": "Token di output",
         "plan": "Piano",
+        "refused_transcripts_warning": "{{productName}} non è riuscito a caricare {{count}} delle tue chat, quindi questi numeri sono incompleti. Può succedere quando il tuo profilo di Windows è archiviato su un'unità di rete.",
         "resets": "Reimpostazioni",
         "session_activity_30_days": "Attività delle sessioni (30 giorni)",
         "sessions": "Sessioni",
@@ -13648,6 +13660,7 @@
         "aws_profile_polly": "Profilo AWS (Amazon Polly)",
         "aws_region_for_polly_api": "Regione AWS per l'API Amazon Polly",
         "aws_region_polly": "Regione AWS (Amazon Polly)",
+        "could_not_read_the_hosts_voice_list_only_the_operat": "Non è stato possibile leggere l'elenco delle voci dell'host. È disponibile solo il predefinito del sistema operativo.",
         "default": "predefinito",
         "engine": "Motore",
         "failed_to_load_voice_config": "Impossibile caricare la configurazione vocale.",
@@ -13655,13 +13668,13 @@
         "faster": "Più veloce",
         "fastest": "Molto veloce",
         "normal": "Normale",
-        "path_to_the_piper_executable_leave_blank_to_auto": "Percorso dell'eseguibile piper. Lascia vuoto per il rilevamento automatico in PATH o ~/piper-venv/bin/piper",
-        "path_to_the_piper_voice_model_onnx_required_down": "Percorso del modello vocale Piper (.onnx). Obbligatorio — scaricalo da github.com/rhasspy/piper",
+        "os_default_voice": "Predefinito del sistema operativo",
+        "path_to_the_piper_executable_leave_blank_to_auto": "Percorso dell'eseguibile piper. Lascia vuoto per il rilevamento automatico in PATH o in un'installazione ~/piper-venv",
+        "path_to_the_piper_voice_model_onnx_required_down": "Percorso del modello vocale Piper (.onnx). Obbligatorio — scaricalo da huggingface.co/rhasspy/piper-voices",
         "piper_binary": "Binario di Piper",
         "piper_en_us_lessac_medium_onnx": "~/piper/en_US-lessac-medium.onnx",
         "piper_local_offline": "Piper (locale, offline)",
         "piper_model": "Modello Piper",
-        "piper_runs_locally_and_offline_polly_uses_aws_cr": "Piper funziona in locale e offline; Amazon Polly usa credenziali AWS + rete",
         "piper_speech_speed_length_scale": "Velocità di eloquio di Piper (scala di lunghezza)",
         "polly_engine_type": "Tipo di motore Amazon Polly",
         "provider": "Provider",
@@ -13670,13 +13683,19 @@
         "slower": "Più lento",
         "slowest": "Molto lento",
         "speak_every_assistant_reply_automatically": "Leggi automaticamente ad alta voce ogni risposta dell'assistente",
-        "speech_rate": "Velocità dell'eloquio",
+        "speech_rate_for_spoken_replies_built_in": "Velocità di lettura delle risposte vocali (motore integrato)",
+        "speech_rate_for_spoken_replies_polly": "Velocità di lettura delle risposte vocali (Amazon Polly)",
         "speech_to_text": "Da voce a testo",
         "speed": "Velocità",
+        "system_built_in": "Sistema (integrato)",
         "text_to_speech": "Da testo a voce",
+        "the_built_in_engine_needs_no_setup_piper_is_offlin": "Il motore integrato non richiede configurazione; Piper funziona offline con qualità migliore; Amazon Polly usa credenziali AWS + rete",
+        "this_host_has_no_built_in_speech_engine_install_es": "Questo host non ha un motore vocale integrato. Installa espeak-ng (per esempio: sudo apt install espeak-ng), oppure scegli un altro provider.",
         "us_east_1": "us-east-1",
         "voice": "Voce",
-        "voice_catalogue_unavailable": "Impossibile caricare l'elenco delle voci Polly. Il selettore mostra un elenco di riserva integrato."
+        "voice_catalogue_unavailable": "Impossibile caricare l'elenco delle voci Polly. Il selettore mostra un elenco di riserva integrato.",
+        "voice_from_the_hosts_built_in_speech_engine": "Voce dal motore vocale integrato dell'host",
+        "recheck": "Controlla di nuovo"
       },
       "weComPanel": {
         "allow_all_bypass_note": "«Consenti a tutti» è attivo: l’elenco di userid qui sopra viene ignorato. Viene conservato per quando tornerai indietro.",
@@ -14288,6 +14307,8 @@
       "member_count_many": "{{count}} membri",
       "member_count_one": "{{count}} membro",
       "member_count_other": "{{count}} membri",
+      "member_gone": "Viene mostrato {{shown}}: «{{name}}» non è più nell'elenco.",
+      "member_gone_roster": "«{{name}}» non è più nell'elenco.",
       "memory_dedicated_note": "Le preferenze e le note di progetto arrivano dall’archivio {{store}} invece che da quello predefinito condiviso. La memoria delle conversazioni e le lezioni non sono ancora separate: ciò che dici a questo membro lo sanno comunque tutti.",
       "memory_shared_note": "I membri condividono attualmente una sola memoria. Ciò che dici a uno lo sanno tutti.",
       "memory_store": "Archivio memoria",

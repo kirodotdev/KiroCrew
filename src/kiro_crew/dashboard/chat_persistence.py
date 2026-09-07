@@ -36,6 +36,13 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     slot_transcript_key,
 )
+from kiro_crew.dashboard.slot_buffers import (
+    committed_filtered_note_ids,
+    drop_committed_restored_notes,
+    sanitize_restored_deferred_notes,
+    serialize_deferred_notes,
+    union_deferred_notes,
+)
 from kiro_crew.dashboard.state import (
     _TRANSIENT_ROLES,
     DashboardState,
@@ -1044,6 +1051,19 @@ def _rehydrate_slot_from_history(
             # been working in keeps the full approval window instead of silently
             # dropping to the unattended deny-fast (state._ChatSlot.unattended).
             slot._human_seen = True
+        restored_notes = sanitize_restored_deferred_notes(meta.get("deferred_notes"))
+        if restored_notes:
+            # Replay the persisted deferred-note hold (issue #4093) so the
+            # existing flush_deferred_notes() call sites deliver it on the
+            # first turn after the restart. Sanitized, and bounded by the
+            # DURABLE CEILING (2x the live cap): every durable entry is a
+            # 200-acknowledged note, and the first flush drains the surplus
+            # while the live cap still binds new enqueues. Entries whose
+            # delivered row is already committed (the rows-only handover
+            # window) are dropped below, once the message window is loaded —
+            # the filter is pure and scans that in-memory window, never the
+            # transcript file (this function runs on the event loop).
+            slot._deferred_notes = restored_notes
         mm = meta.get("memory_mode", "persistent")
         slot.memory_mode = mm
         if mm != "persistent":
@@ -1085,6 +1105,18 @@ def _rehydrate_slot_from_history(
             if _prefetched_messages is not None
             else state.conversation_log.read_messages_chained(history_key)
         )
+        if slot._deferred_notes:
+            # The committed-row dedup deferred from the hold restore above:
+            # pure scan of the in-memory window, no file I/O on the loop.
+            _pre_filter_notes = slot._deferred_notes
+            slot._deferred_notes = drop_committed_restored_notes(messages, _pre_filter_notes)
+            # A filtered entry's row is committed (often by a rows-only
+            # handover save, into the frozen prefix no later save window
+            # carries) — record its id so the next full save retires the
+            # durable entry row-lessly instead of retaining it forever.
+            slot._dropped_note_ids.update(
+                committed_filtered_note_ids(_pre_filter_notes, slot._deferred_notes)
+            )
         if needs_tab_id_backfill:
             # Persist the freshly-minted tab_id AFTER reading the transcript above,
             # never before. update_metadata_off_loop dispatches an os.replace() of
@@ -1553,6 +1585,20 @@ def _apply_recent_session(
         # been working in keeps the full approval window instead of silently
         # dropping to the unattended deny-fast (state._ChatSlot.unattended).
         slot._human_seen = True
+    _sanitized_notes = sanitize_restored_deferred_notes(meta.get("deferred_notes"))
+    restored_notes = drop_committed_restored_notes(messages, _sanitized_notes)
+    # A filtered entry's row is committed (often by a rows-only handover save,
+    # into the frozen prefix no later save window carries) — record its id so
+    # the next full save retires the durable entry row-lessly instead of
+    # retaining it forever. Sanitizer-dropped entries are NOT recorded: only
+    # the committed-filter delta has a transcript owner.
+    slot._dropped_note_ids.update(committed_filtered_note_ids(_sanitized_notes, restored_notes))
+    if restored_notes:
+        # Replay the persisted deferred-note hold (issue #4093) — see the
+        # mirror in _rehydrate_slot_from_history (committed rows dropped by a
+        # pure scan of the already-prefetched messages; no file I/O here,
+        # this apply half runs on the event loop).
+        slot._deferred_notes = restored_notes
     mm = meta.get("memory_mode", "persistent")
     slot.memory_mode = mm
     if mm != "persistent":
@@ -2881,6 +2927,17 @@ def _save_slot_to_history(
                     return False
                 merged_fields.clear()
                 merged_fields.update(_fresh_fields())
+                # Held /note lines (issue #4093): a MERGE writer, so it unions
+                # with the on-disk hold and never shrinks it. A live-state
+                # mirror here could race a turn-end flush that just delivered
+                # rows into a window this empty-window save does not write —
+                # clearing the only durable copy of a note whose row is
+                # unsaved. Retirement belongs to the full save's paired
+                # snapshot alone.
+                merged_fields["deferred_notes"] = union_deferred_notes(
+                    meta.get("deferred_notes"),
+                    serialize_deferred_notes(slot._deferred_notes[:]),
+                )
                 return True
 
             applied = state.conversation_log.update_metadata_if(
@@ -3174,6 +3231,46 @@ def _save_slot_to_history(
                 # SLOT_OWNED_META_KEYS and survive via carry_unowned_metadata
                 # even on a save by a slot that has not learned the flag yet.
                 meta_line["human_seen"] = True
+            # Durable copy of the held /note lines (issue #4093). OWNED
+            # (in SLOT_OWNED_META_KEYS), so this rebuild decides the key's
+            # whole value — and retirement is ROW-DERIVED: an entry is
+            # retired exactly when the window THIS save writes contains its
+            # delivered row (``meta.noteId``, stamped by the flush) or its id
+            # was recorded as dropped at the rebind seam. Everything else —
+            # the on-disk hold and the live hold, both read HERE, under the
+            # same history lock the merge writers commit under — is kept, so
+            # a /note persist that won the lock during this save's patient
+            # acquire is unioned rather than overwritten, and a flush
+            # interleaving anywhere around the window snapshot leaves the
+            # entry to the save that actually writes its row. Row and
+            # retirement land in one atomic file replace; a crash on either
+            # side re-delivers rather than loses.
+            window_note_ids: set[str] = set()
+            for row in window:
+                row_meta = row.get("meta")
+                if isinstance(row_meta, dict):
+                    row_note_id = row_meta.get("noteId")
+                    if isinstance(row_note_id, str) and row_note_id:
+                        window_note_ids.add(row_note_id)
+            dropped_note_ids = set(slot._dropped_note_ids)
+            surviving_hold = [
+                entry
+                for entry in union_deferred_notes(
+                    existing_meta.get("deferred_notes"),
+                    serialize_deferred_notes(slot._deferred_notes[:]),
+                )
+                if entry.get("id") not in window_note_ids
+                and entry.get("id") not in dropped_note_ids
+            ]
+            if surviving_hold:
+                meta_line["deferred_notes"] = surviving_hold
+            # The drop records this write retires are CONSUMED only after the
+            # atomic_write below commits (and never on the rows-only path,
+            # which defers the key to the on-disk value): a dropped note's row
+            # never exists, so the recorded id is its ONLY retirement path —
+            # consuming it before the write commits would leak the entry into
+            # the durable hold forever if the write fails.
+            retired_drop_ids = dropped_note_ids if not rows_only else set()
             if slot.forked_from is not None:
                 meta_line["forked_from"] = slot.forked_from
             if slot.linked_session_key:
@@ -3376,6 +3473,12 @@ def _save_slot_to_history(
                     _preserve_mtime = None
 
             atomic_write(path, payload, fsync=True)
+            # The write committed: the deferred-note drop records it retired
+            # are now safe to consume (see the meta build above). Discard is
+            # idempotent, and a record consumed here can no longer be needed —
+            # the retired entry left the durable hold in the same file replace.
+            for retired_id in retired_drop_ids:
+                slot._dropped_note_ids.discard(retired_id)
             if _preserve_mtime is not None:
                 try:
                     os.utime(path, (_preserve_mtime, _preserve_mtime))

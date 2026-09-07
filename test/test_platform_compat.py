@@ -4385,3 +4385,109 @@ class TestKillAndReap:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert events == ["killed", "reap-started", "reaped"]
+
+
+class TestPublishDirNoreplace:
+    """#4767 round 9: workspace installs must never replace a raced empty
+    destination -- POSIX os.rename silently replaces an empty directory, so
+    the publish goes through the no-replace rename primitive."""
+
+    def test_publishes_into_absent_destination(self, tmp_path):
+        src = tmp_path / ".ws.staging-abc"
+        src.mkdir()
+        (src / "f.txt").write_text("x", encoding="utf-8")
+        dst = tmp_path / "ws"
+        pc.publish_dir_noreplace(src, dst)
+        assert (dst / "f.txt").read_text(encoding="utf-8") == "x"
+        assert not src.exists()
+
+    def test_refuses_an_existing_empty_destination(self, tmp_path):
+        """The exact race: an EMPTY directory at the destination survives."""
+        src = tmp_path / ".ws.staging-abc"
+        src.mkdir()
+        (src / "f.txt").write_text("x", encoding="utf-8")
+        dst = tmp_path / "ws"
+        dst.mkdir()  # a racer's just-created empty dir
+        before = dst.stat().st_ino
+        with pytest.raises((FileExistsError, OSError)):
+            pc.publish_dir_noreplace(src, dst)
+        assert dst.stat().st_ino == before, "the racer's directory was replaced"
+        assert src.exists(), "the staged tree was consumed by a refused publish"
+
+    def test_refuses_non_sibling_paths(self, tmp_path):
+        src = tmp_path / "a" / ".ws.staging-abc"
+        src.mkdir(parents=True)
+        dst = tmp_path / "b" / "ws"
+        (tmp_path / "b").mkdir()
+        if pc.IS_WINDOWS:
+            pytest.skip("sibling contract is POSIX-only (Windows uses os.rename)")
+        with pytest.raises(ValueError):
+            pc.publish_dir_noreplace(src, dst)
+
+    def test_fallback_without_renameat2_publishes_and_still_refuses_occupied(
+        self, tmp_path, monkeypatch
+    ):
+        """#4767 round 10: a host without renameat2 (glibc < 2.28, NFS/FUSE)
+        must not crash with NotImplementedError -- the mkdir-claim fallback
+        publishes into an absent destination and still refuses an existing
+        one, preserving the no-replace guarantee for creation races."""
+        if pc.IS_WINDOWS:
+            pytest.skip("fallback is POSIX-only (Windows os.rename never replaces)")
+
+        def _unsupported(*args, **kwargs):
+            raise NotImplementedError("filesystem lacks atomic no-replace rename")
+
+        monkeypatch.setattr(pc, "rename_noreplace", _unsupported)
+
+        # Publishes into an absent destination.
+        src = tmp_path / ".ws.staging-abc"
+        src.mkdir()
+        (src / "f.txt").write_text("x", encoding="utf-8")
+        dst = tmp_path / "ws"
+        pc.publish_dir_noreplace(src, dst)
+        assert (dst / "f.txt").read_text(encoding="utf-8") == "x"
+        assert not src.exists()
+
+        # Refuses an existing EMPTY destination; nothing is consumed.
+        src2 = tmp_path / ".ws2.staging-abc"
+        src2.mkdir()
+        dst2 = tmp_path / "ws2"
+        dst2.mkdir()  # a racer's just-created empty dir
+        before = dst2.stat().st_ino
+        with pytest.raises(FileExistsError):
+            pc.publish_dir_noreplace(src2, dst2)
+        assert dst2.stat().st_ino == before, "the racer's directory was replaced"
+        assert src2.exists(), "the staged tree was consumed by a refused publish"
+
+    def test_fallback_rename_failure_drops_the_claim(self, tmp_path, monkeypatch):
+        """#4767 round 11: when the fallback's rename fails, the empty mkdir
+        claim is removed so a retry is not permanently blocked, and the
+        staged tree is not consumed."""
+        if pc.IS_WINDOWS:
+            pytest.skip("fallback is POSIX-only")
+
+        def _unsupported(*args, **kwargs):
+            raise NotImplementedError("filesystem lacks atomic no-replace rename")
+
+        monkeypatch.setattr(pc, "rename_noreplace", _unsupported)
+
+        real_rename = os.rename
+
+        def _failing_rename(src, dst, **kwargs):
+            raise OSError(errno.EXDEV, "simulated cross-device rename failure")
+
+        src = tmp_path / ".ws.staging-abc"
+        src.mkdir()
+        (src / "f.txt").write_text("x", encoding="utf-8")
+        dst = tmp_path / "ws"
+        monkeypatch.setattr(os, "rename", _failing_rename)
+        try:
+            with pytest.raises(OSError):
+                pc.publish_dir_noreplace(src, dst)
+        finally:
+            monkeypatch.setattr(os, "rename", real_rename)
+        assert not dst.exists(), (
+            "the failed fallback left an orphaned empty claim that would "
+            "permanently block retries"
+        )
+        assert (src / "f.txt").exists(), "the staged tree was consumed by a failed publish"

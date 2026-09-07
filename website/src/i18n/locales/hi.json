@@ -5637,6 +5637,7 @@
       "approve_all": "सभी को मंज़ूरी दें",
       "approve_sub_agent": "सब-एजेंट को मंज़ूरी दो: {{name}}",
       "attach_files": "फ़ाइलें अटैच करें",
+      "editor_unavailable_standard_input": "उन्नत संपादक लोड नहीं हो सका, इसलिए मानक इनपुट सक्रिय है। तुम्हारा ड्राफ़्ट अपरिवर्तित है।",
       "branch": "ब्रांच: {{branch}}",
       "click_again_to_force_stop": "ज़बरदस्ती रोकने के लिए फिर क्लिक करें",
       "command": "कमांड",
@@ -5735,7 +5736,8 @@
       "more_actions": "और कार्रवाइयां",
       "session_control_needs_attention": "ध्यान देने की ज़रूरत",
       "session_control_ready": "तैयार",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "यह सत्र डिफ़ॉल्ट एजेंट ({{name}}) का अनुसरण करता है। इसका अपना कोई एजेंट नहीं है, इसलिए डिफ़ॉल्ट बदलने पर यह भी बदल जाता है। पिन करने के लिए क्लिक करें।"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",
@@ -6625,7 +6627,8 @@
       "copy_diagram_source": "आरेख स्रोत कॉपी करें",
       "diagram_source": "आरेख स्रोत",
       "copy_failed": "कॉपी विफल",
-      "mermaid_render_failed": "यह आरेख रेंडर नहीं किया जा सका। इसके बजाय स्रोत दिखाया जा रहा है।"
+      "mermaid_render_failed": "यह आरेख रेंडर नहीं किया जा सका। इसके बजाय स्रोत दिखाया जा रहा है।",
+      "image_position": "{{total}} में से {{index}}"
     },
     "markdownToc": {
       "contents": "विषय-सूची",
@@ -6850,6 +6853,8 @@
     "pastedChip": {
       "collapse_paste": "पेस्ट समेटें",
       "expand_paste": "पेस्ट फैलाएँ",
+      "hide_paste_preview": "पेस्ट का पूर्वावलोकन छिपाओ",
+      "show_paste_preview": "पेस्ट का पूर्वावलोकन दिखाओ",
       "paste_lines_one": "[ पेस्ट #{{seq}} · {{count}} पंक्ति ]",
       "paste_lines_other": "[ पेस्ट #{{seq}} · {{count}} पंक्तियाँ ]",
       "preview_more_lines_one": "… {{count}} और पंक्ति",
@@ -8044,6 +8049,12 @@
       "could_not_load": "{{label}} लोड नहीं हो सका",
       "loading": "{{label}} लोड हो रहा है…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "फ़ॉर्मैट",
+      "raw": "रॉ",
+      "render_the_markdown_headings_lists_tables_links": "मार्कडाउन रेंडर करें - शीर्षक, सूचियाँ, तालिकाएँ, लिंक",
+      "show_the_exact_markdown_source": "बिल्कुल वैसा मार्कडाउन सोर्स दिखाएँ"
     }
   },
   "hooks": {
@@ -11533,6 +11544,7 @@
         "msgs": "संदेश /",
         "output_tokens": "आउटपुट टोकन",
         "plan": "प्लान",
+        "refused_transcripts_warning": "{{productName}} आपकी {{count}} चैट लोड नहीं कर सका, इसलिए ये संख्याएँ अधूरी हैं। ऐसा तब हो सकता है जब आपकी Windows प्रोफ़ाइल किसी नेटवर्क ड्राइव पर संग्रहीत हो।",
         "resets": "रीसेट",
         "session_activity_30_days": "सत्र गतिविधि (30 दिन)",
         "sessions": "सत्र",
@@ -13477,6 +13489,7 @@
         "aws_profile_polly": "AWS प्रोफ़ाइल (Amazon Polly)",
         "aws_region_for_polly_api": "Amazon Polly API के लिए AWS रीजन",
         "aws_region_polly": "AWS रीजन (Amazon Polly)",
+        "could_not_read_the_hosts_voice_list_only_the_operat": "होस्ट की आवाज़ों की सूची पढ़ी नहीं जा सकी। केवल ऑपरेटिंग सिस्टम डिफ़ॉल्ट उपलब्ध है।",
         "default": "default",
         "engine": "इंजन",
         "failed_to_load_voice_config": "वॉइस कॉन्फ़िग लोड नहीं हो सका।",
@@ -13484,13 +13497,13 @@
         "faster": "तेज़",
         "fastest": "सबसे तेज़",
         "normal": "सामान्य",
-        "path_to_the_piper_executable_leave_blank_to_auto": "piper एक्ज़ीक्यूटेबल का पथ। PATH या ~/piper-venv/bin/piper पर स्वतः पहचान के लिए खाली छोड़ें",
-        "path_to_the_piper_voice_model_onnx_required_down": "Piper वॉइस मॉडल (.onnx) का पथ। आवश्यक — github.com/rhasspy/piper से डाउनलोड करें",
+        "os_default_voice": "ऑपरेटिंग सिस्टम डिफ़ॉल्ट",
+        "path_to_the_piper_executable_leave_blank_to_auto": "piper एक्ज़ीक्यूटेबल का पथ। PATH या ~/piper-venv इंस्टॉल में स्वतः पहचान के लिए खाली छोड़ें",
+        "path_to_the_piper_voice_model_onnx_required_down": "Piper वॉइस मॉडल (.onnx) का पथ। आवश्यक — huggingface.co/rhasspy/piper-voices से डाउनलोड करें",
         "piper_binary": "Piper बाइनरी",
         "piper_en_us_lessac_medium_onnx": "~/piper/en_US-lessac-medium.onnx",
         "piper_local_offline": "Piper (स्थानीय, ऑफ़लाइन)",
         "piper_model": "Piper मॉडल",
-        "piper_runs_locally_and_offline_polly_uses_aws_cr": "Piper लोकल और ऑफ़लाइन चलता है; Amazon Polly AWS क्रेडेंशियल + नेटवर्क का उपयोग करता है",
         "piper_speech_speed_length_scale": "Piper बोलने की गति (length scale)",
         "polly_engine_type": "Amazon Polly इंजन का प्रकार",
         "provider": "प्रदाता",
@@ -13499,13 +13512,19 @@
         "slower": "और धीमा",
         "slowest": "सबसे धीमा",
         "speak_every_assistant_reply_automatically": "सहायक के हर उत्तर को स्वतः बोलें",
-        "speech_rate": "बोलने की गति",
+        "speech_rate_for_spoken_replies_built_in": "बोले गए उत्तरों की वाक् गति (अंतर्निहित इंजन)",
+        "speech_rate_for_spoken_replies_polly": "बोले गए उत्तरों की वाक् गति (Amazon Polly)",
         "speech_to_text": "स्पीच-टू-टेक्स्ट",
         "speed": "गति",
+        "system_built_in": "सिस्टम (अंतर्निहित)",
         "text_to_speech": "टेक्स्ट-टू-स्पीच",
+        "the_built_in_engine_needs_no_setup_piper_is_offlin": "अंतर्निहित इंजन को किसी सेटअप की ज़रूरत नहीं; Piper ऑफ़लाइन चलता है और गुणवत्ता बेहतर है; Amazon Polly AWS क्रेडेंशियल + नेटवर्क का उपयोग करता है",
+        "this_host_has_no_built_in_speech_engine_install_es": "इस होस्ट में कोई अंतर्निहित स्पीच इंजन नहीं है। espeak-ng इंस्टॉल करें (उदाहरण: sudo apt install espeak-ng), या दूसरा प्रदाता चुनें।",
         "us_east_1": "us-east-1",
         "voice": "वॉइस",
-        "voice_catalogue_unavailable": "Polly वॉइस सूची लोड नहीं हो सकी। पिकर में बिल्ट-इन वैकल्पिक सूची दिख रही है।"
+        "voice_catalogue_unavailable": "Polly वॉइस सूची लोड नहीं हो सकी। पिकर में बिल्ट-इन वैकल्पिक सूची दिख रही है।",
+        "voice_from_the_hosts_built_in_speech_engine": "होस्ट के अंतर्निहित स्पीच इंजन की आवाज़",
+        "recheck": "फिर से जाँचें"
       },
       "weComPanel": {
         "allow_all_bypass_note": "सभी को अनुमति चालू है: ऊपर की userid सूची दरकिनार है। वापस बदलने के लिए यह सुरक्षित रखी गई है।",
@@ -14107,6 +14126,8 @@
       "inherited": "विरासत में मिला",
       "member_count_one": "{{count}} सदस्य",
       "member_count_other": "{{count}} सदस्य",
+      "member_gone": "{{shown}} दिखाया जा रहा है — '{{name}}' अब सदस्य सूची में नहीं है।",
+      "member_gone_roster": "'{{name}}' अब सदस्य सूची में नहीं है।",
       "memory_dedicated_note": "प्राथमिकताएँ और प्रोजेक्ट नोट साझा डिफ़ॉल्ट के बजाय {{store}} स्टोर से आते हैं। बातचीत की मेमोरी और सीख अभी अलग नहीं हैं: इस सदस्य को बताई गई बात अभी भी सभी को पता होती है।",
       "memory_shared_note": "सदस्य वर्तमान में एक ही मेमोरी साझा करते हैं। एक सदस्य को बताई गई बात सभी को पता होती है।",
       "memory_store": "मेमोरी स्टोर",

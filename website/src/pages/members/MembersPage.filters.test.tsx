@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 
 /* Same api mock shape as MembersPage.test.tsx, plus the crew update endpoint
@@ -7,7 +7,11 @@ import { renderWithProviders } from '../../test/helpers'
 vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
-    memberThread: vi.fn(),
+    // The page opens a member on arrival, so the thread endpoint must answer
+    // from the first render; echo the slug back as the member (happy path).
+    memberThread: vi.fn((slug: string) =>
+      Promise.resolve({ slot_key: 'member-' + slug, slug, member: slug, created: true }),
+    ),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
     webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
@@ -74,7 +78,9 @@ async function renderPage(members = ROSTER) {
   ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members })
   const utils = renderWithProviders(<MembersPage />)
   await waitFor(() => expect(api.members).toHaveBeenCalled())
-  await screen.findByText('conductor')
+  // Scoped to the roster: the first row auto-opens on arrival, so its name
+  // also renders in the thread header.
+  await within(await screen.findByTestId('member-roster')).findByText('conductor')
   return utils
 }
 
@@ -192,7 +198,8 @@ describe('MembersPage star', () => {
     expect(api.updateKirocrewAgent).toHaveBeenCalledWith('pkg-a', { starred: true })
     expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true')
     // Does not open the member's thread — the star is a sibling of the row.
-    expect(api.memberThread).not.toHaveBeenCalled()
+    // (The page opened the FIRST row on arrival; pkg-a must not be posted.)
+    expect(api.memberThread).not.toHaveBeenCalledWith('pkg-a')
   })
 
   it('disables the star while its write is pending, so rapid toggles cannot race', async () => {

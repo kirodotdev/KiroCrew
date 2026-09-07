@@ -127,6 +127,34 @@ async def run_config_write(fn, /, *args, **kwargs):
         return result
 
 
+async def drained_to_thread(fn, /, *args):
+    """``asyncio.to_thread`` that a cancellation cannot abandon mid-mutation.
+
+    A plain ``await to_thread(...)`` raises ``CancelledError`` at the await
+    while the worker THREAD keeps running — a handler that then performs
+    cleanup (releasing a lock, removing a staging directory) races its own
+    still-running worker. Shielding the task keeps the await alive until the
+    worker actually finishes, then re-raises the cancellation, so control only
+    ever returns with no mutation in flight. Shared by the agents handler's
+    config writers and the files handler's workspace-copy staging.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            # OUR await was cancelled, not the worker: remember it, keep
+            # draining the still-running thread.
+            cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
 # Per-turn compaction-failure backoff. See
 # _broadcast_compaction_result for the full rationale. Kept small: this is a
 # UX/spam guard, not a correctness gate — the underlying compaction attempt

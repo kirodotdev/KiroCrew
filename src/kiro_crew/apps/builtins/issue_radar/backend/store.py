@@ -68,7 +68,8 @@ def _config_lock(root: Path | None = None):
     that race, so every config RMW below holds this exclusive lock across the
     whole read→mutate→atomic-write."""
     lock_path = data_dir(root) / "config.json.lock"
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
 
@@ -174,7 +175,9 @@ def issues_cache_lock(owner: str, repo: str, root: Path | None = None, state: st
     """
     path = issues_cache_path(owner, repo, root, state)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_suffix(".json.lock"), "w") as fd:
+    lock_path = path.with_suffix(".json.lock")
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
 
@@ -193,7 +196,8 @@ def issue_write_lock(owner: str, repo: str, number: int, root: Path | None = Non
     the network call, which is the point: ordering the writes is what matters."""
     path = repo_data_dir(owner, repo, root) / f"issue-{int(number)}.write.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as fd:
+    path.touch(exist_ok=True)
+    with open(path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
 
@@ -365,7 +369,9 @@ def labels_cache_lock(owner: str, repo: str, root: Path | None = None):
     could be dropped and stay invisible until a manual refresh."""
     path = labels_cache_path(owner, repo, root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_suffix(".json.lock"), "w") as fd:
+    lock_path = path.with_suffix(".json.lock")
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
 
@@ -1344,7 +1350,9 @@ def _tagging_cache_lock(owner: str, repo: str, root: Path | None = None):
     with its own stale copy. Same reasoning as :func:`_config_lock`."""
     path = tagging_cache_path(owner, repo, root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_suffix(".json.lock"), "w") as fd:
+    lock_path = path.with_suffix(".json.lock")
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
 
@@ -2050,7 +2058,8 @@ def write_investigation(
     now = _now_iso()
     lock_path = investigation_path(owner, repo, number, root, kind=kind).with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             existing = read_investigation(owner, repo, number, root, kind=kind) or {}
             # Read the findings' owning session from the PRE-patch record: the
@@ -2172,7 +2181,9 @@ def _pulls_cache_lock(owner: str, repo: str, root: Path | None, state: str):
     """
     path = pulls_cache_path(owner, repo, root, state)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_suffix(".json.lock"), "w") as fd:
+    lock_path = path.with_suffix(".json.lock")
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
 

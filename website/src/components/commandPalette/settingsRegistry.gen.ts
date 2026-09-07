@@ -1825,7 +1825,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.piper-binary",
     "label": "Piper Binary",
     "labelKey": "pages.settings.voicePanel.piper_binary",
-    "description": "Path to the piper executable. Leave blank to auto-detect on PATH or ~/piper-venv/bin/piper",
+    "description": "Path to the piper executable. Leave blank to auto-detect on PATH or in a ~/piper-venv install",
     "tab": "voice",
     "type": "input",
     "occurrence": 1
@@ -1834,7 +1834,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.piper-model",
     "label": "Piper Model",
     "labelKey": "pages.settings.voicePanel.piper_model",
-    "description": "Path to the Piper voice model (.onnx). Required — download from github.com/rhasspy/piper",
+    "description": "Path to the Piper voice model (.onnx). Required — download from huggingface.co/rhasspy/piper-voices",
     "tab": "voice",
     "type": "input",
     "occurrence": 1
@@ -1853,7 +1853,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.provider-2",
     "label": "Provider",
     "labelKey": "pages.settings.voicePanel.provider",
-    "description": "Piper runs locally and offline; Amazon Polly uses AWS credentials + network",
+    "description": "The built-in engine needs no setup; Piper is offline with better quality; Amazon Polly uses AWS credentials + network",
     "tab": "voice",
     "type": "select",
     "occurrence": 2
@@ -1870,7 +1870,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.speed",
     "label": "Speed",
     "labelKey": "pages.settings.voicePanel.speed",
-    "description": "Speech rate",
+    "description": "Speech rate for spoken replies (built-in engine)",
     "tab": "voice",
     "type": "select",
     "occurrence": 1
@@ -1879,10 +1879,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.speed-2",
     "label": "Speed",
     "labelKey": "pages.settings.voicePanel.speed",
-    "description": "Piper speech speed (length scale)",
+    "description": "Speech rate for spoken replies (Amazon Polly)",
     "tab": "voice",
     "type": "select",
     "occurrence": 2
+  },
+  {
+    "id": "voice.speed-3",
+    "label": "Speed",
+    "labelKey": "pages.settings.voicePanel.speed",
+    "description": "Piper speech speed (length scale)",
+    "tab": "voice",
+    "type": "select",
+    "occurrence": 3
   },
   {
     "id": "voice.streaming",
@@ -1907,9 +1916,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.voice",
     "label": "Voice",
     "labelKey": "pages.settings.voicePanel.voice",
-    "description": "Amazon Polly voice for TTS",
+    "description": "Voice from the host's built-in speech engine",
     "tab": "voice",
     "type": "select",
     "occurrence": 1
+  },
+  {
+    "id": "voice.voice-2",
+    "label": "Voice",
+    "labelKey": "pages.settings.voicePanel.voice",
+    "description": "Amazon Polly voice for TTS",
+    "tab": "voice",
+    "type": "select",
+    "occurrence": 2
   }
 ]

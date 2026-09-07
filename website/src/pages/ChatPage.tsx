@@ -10,6 +10,7 @@ import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
 import { isBrowseCommand } from '../utils/browseCommand'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
@@ -7687,6 +7688,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onVoiceStop={voiceInputSupported ? stopVoice : undefined}
               voiceCaptureActive={voice.recording}
               agentName={activeAgentName}
+              // The chip shows the inherited-default marker; `agentName` stays
+              // the raw resolved alias for the skills query and switch title.
+              // Uses the SLOT's stored agent (not `activeAgentName`, which has
+              // already collapsed empty->default) so an agent-less slot reads
+              // `<default> · default` and a pinned one reads the bare alias (#8770).
+              agentLabel={agentOrDefaultLabel(currentSlot?.agent, effectiveDefaultAgent)}
+              agentIsInheritedDefault={!currentSlot?.agent && !!effectiveDefaultAgent}
               agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
               modelName={shownModel}
               onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); setAgentDropdown(!agentDropdown) } : undefined}

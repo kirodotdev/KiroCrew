@@ -532,23 +532,75 @@ def is_available() -> bool:
     return availability().ok
 
 
-async def _to_native_audio(audio_path: str) -> tuple[str, bool]:
+class TranscriptionRefusedError(RuntimeError):
+    """Base for pre-conversion refusals ``transcribe()`` surfaces as errors."""
+
+
+class RecordingTooLongError(TranscriptionRefusedError):
+    """The input exceeds the transcription ceiling; refusing beats truncating."""
+
+
+class DurationUnverifiedError(TranscriptionRefusedError):
+    """The duration probe could not answer; refusing beats risking truncation.
+
+    A ``None`` probe is not proof the input is under the ceiling: a TRANSIENT
+    cause — a load spike that times the probe out but clears before the
+    remux — would let the ``-t``-bounded conversion succeed on the truncated
+    prefix of an over-cap recording (GPT review r27). Only a persistent cause
+    is covered by the aligned-budget argument, so ``None`` must refuse loudly
+    and retryably, exactly as the meetings import gate does (r14).
+    """
+
+
+async def _to_native_audio(
+    audio_path: str, probe_timeout_secs: int = DEFAULT_TIMEOUT_SECS
+) -> tuple[str, bool]:
     """Return a path ``AVAudioFile`` can open, plus whether it is a temp file.
 
     Transcodes to 16 kHz mono WAV with ffmpeg when the input container is not one
     the framework reads. Falls back to the original path when ffmpeg is missing, so
     the caller still gets the framework's own error rather than a silent refusal.
-    """
-    if Path(audio_path).suffix.lower() in _NATIVE_AUDIO_SUFFIXES:
-        return audio_path, False
 
+    Raises :class:`RecordingTooLongError` for an input the duration probe shows
+    is over the transcription ceiling, and :class:`DurationUnverifiedError`
+    when the probe cannot answer at all — both BEFORE the conversion, because
+    the remux below is ``-t``-bounded (a temp-disk guard) and converting only
+    the first hour of a longer-or-unknown recording would return a silently
+    truncated transcript, the exact data loss the meetings import gate refuses
+    (GPT reviews r26/r27). The no-ffmpeg degrade path is exempt: with no
+    decoder there is no remux and therefore no truncation to guard against.
+    """
     from kiro_crew.transcribe import (
+        _MAX_AUDIO_SECS,
         _close_ffmpeg_for_execution,
         _create_ffmpeg_subprocess,
         _describe_ffmpeg_exit,
+        _dev_fd_number,
+        _forced_demuxer_args,
+        _input_suffix,
         _resolve_ffmpeg_for_execution,
+        audio_exceeds_secs,
         ensure_ffmpeg_in_path,
     )
+
+    # The native fast path hands *audio_path* to the Swift helper BY VALUE, and
+    # a descriptor path (``/dev/fd/N``) names a descriptor of THIS process —
+    # useless to the helper, whose own fd table does not hold N (GPT review
+    # r23: a native-suffix import would fail with a 502). The remux below is
+    # the materializing path: its FFmpeg child inherits the descriptor via the
+    # spawn seam and writes a NAMED temp file the helper can open.
+    if _dev_fd_number(audio_path) is None and _input_suffix(audio_path) in _NATIVE_AUDIO_SUFFIXES:
+        return audio_path, False
+
+    try:
+        # Same demuxer pin as every other FFmpeg input (transcribe r20/r21):
+        # resolved BEFORE the decoder handle so a refusal cannot leak it. The
+        # loud-failure convention below applies: the helper then reports the
+        # undecodable input rather than this remux sniffing its content.
+        demux_args = _forced_demuxer_args(audio_path)
+    except OSError:
+        logger.warning("apple_speech: cannot resolve a demuxer for %s", audio_path)
+        return audio_path, False
 
     await asyncio.to_thread(ensure_ffmpeg_in_path)
     # A bundled decoder is 49-88 MB and is SHA-256 authenticated on every
@@ -560,6 +612,34 @@ async def _to_native_audio(audio_path: str) -> tuple[str, bool]:
             Path(audio_path).suffix or "<no suffix>",
         )
         return audio_path, False
+
+    # Duration gate, AFTER the decoder resolve on purpose: with no ffmpeg there
+    # is no remux and therefore no truncation to guard against (the degrade
+    # return above hands the original file over and the framework fails
+    # loudly), while WITH a decoder the ``-t``-bounded conversion below must
+    # never run on an input whose duration is over — or UNKNOWN. ``None``
+    # refuses too (GPT review r27): a transient probe cause (a load spike that
+    # clears before the remux) is not covered by the aligned-budget argument,
+    # and proceeding would transcribe a silently truncated prefix.
+    try:
+        exceeds = await audio_exceeds_secs(
+            audio_path, _MAX_AUDIO_SECS, timeout_secs=probe_timeout_secs
+        )
+    except BaseException:
+        await _close_ffmpeg_for_execution(ffmpeg, preserve_active_exception=True)
+        raise
+    if exceeds:
+        await _close_ffmpeg_for_execution(ffmpeg)
+        raise RecordingTooLongError(
+            f"recording exceeds the {_MAX_AUDIO_SECS // 60}-minute transcription "
+            "ceiling; trim it rather than transcribing a truncated prefix"
+        )
+    if exceeds is None:
+        await _close_ffmpeg_for_execution(ffmpeg)
+        raise DurationUnverifiedError(
+            "could not verify the recording's duration just now; retry, or trim "
+            f"it to under {_MAX_AUDIO_SECS // 60} minutes"
+        )
 
     # Both syscalls in ONE thread hop. `os.close` alone is trivial, but
     # `tempfile.mkstemp` is the heavier half — it creates a file — and leaving it
@@ -582,12 +662,21 @@ async def _to_native_audio(audio_path: str) -> tuple[str, bool]:
             proc = await _create_ffmpeg_subprocess(
                 ffmpeg,
                 "-y",
+                *demux_args,
                 "-i",
                 audio_path,
                 "-ar",
                 "16000",
                 "-ac",
                 "1",
+                # Bounds the temp file as well as the conversion itself: a large
+                # low-bitrate input could otherwise expand into a multi-gigabyte
+                # WAV and exhaust the temp volume (GPT review r23). This is the
+                # ceiling ``batch_duration_cap_secs`` reports for the Apple lane,
+                # so the meetings import refuses over-cap recordings loudly
+                # BEFORE this truncation could ever bite.
+                "-t",
+                str(_MAX_AUDIO_SECS),
                 out,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
@@ -676,7 +765,13 @@ async def transcribe(
     if not helper:
         return None, {"error": "speech helper could not be built"}
 
-    native_path, is_temp = await _to_native_audio(audio_path)
+    try:
+        native_path, is_temp = await _to_native_audio(audio_path, probe_timeout_secs=timeout_secs)
+    except TranscriptionRefusedError as exc:
+        # Loud, user-actionable refusal — never a transcript that silently
+        # omits everything past the ceiling (GPT review r26/r27): over-cap
+        # AND duration-unverified inputs both stop here, before conversion.
+        return None, {"error": str(exc)}
     # When `is_temp` is true this invocation owns the transcode temp from here
     # on, so every exit — the sandbox rejection included — must route through
     # the cleanup `finally` below. An original input (`is_temp` false) is the

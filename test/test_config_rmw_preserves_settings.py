@@ -640,16 +640,20 @@ class TestEveryConfigWriterIsLocked:
 
     **What it does NOT cover.** Only calls to ``write_config_atomically``. A
     second family of writers reaches ``config.json`` through
-    ``kiro_crew.agent._atomic_json_write`` or :meth:`KiroCrewConfig.save`
-    (``messaging.py``'s channel savers, ``core.py``'s STT and theme PUTs,
-    ``mcp.py``'s gateway-enable, ``updates.py``'s log-level PUT, several
-    ``agents.py`` CRUD endpoints) and still bypasses the lock. Green here does
-    not mean every config writer is locked -- it means this class of them is.
+    ``kiro_crew.agent._atomic_json_write`` (``messaging.py``'s channel savers,
+    ``core.py``'s STT PUT, ``mcp.py``'s gateway-enable) and still bypasses the
+    lock. :meth:`KiroCrewConfig.save` (``updates.py``'s log-level PUT, the
+    workspace CRUD in ``files.py``, several ``agents.py`` CRUD endpoints) used
+    to be in that family and no longer is: since #4767 it holds the same
+    ``<path>.lock`` sidecar — see ``TestSaveHoldsTheAdvisoryLock`` in
+    ``test_config_save_locking.py``. Green here does not mean every config
+    writer is locked -- it means this class of them is.
     """
 
     #: The primitive itself writes through ``write_config_atomically`` by
-    #: definition, and ``KiroCrewConfig.save`` is the head of the second family
-    #: above. Both live here, so the module is exempt as a whole.
+    #: definition, and ``KiroCrewConfig.save`` writes under the same sidecar
+    #: lock via ``_config_write_lock``. Both live here, so the module is
+    #: exempt as a whole.
     _ALLOWED_FILES = {"loader.py"}
 
     #: Resolvers whose return value IS a config document path.

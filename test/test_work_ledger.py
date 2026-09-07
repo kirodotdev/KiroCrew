@@ -1349,22 +1349,53 @@ def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
                 wl.apply_conductor_action(key, "create", title="t", acceptance={})["item"].item_id,
             )
         )
-    outcomes: list[str] = []
+    # One record per thread, keyed by the conductor that thread bound with, so a
+    # thread that dies silently or never finishes still leaves a named entry. The
+    # old helper caught only ``wl.WorkLedgerError`` and appended nothing on anything
+    # else, so a Windows sharing violation (a bare ``OSError`` per #9250's own
+    # docstring) killed the thread without a trace and shortened the count — the
+    # test then reported ``assert 2 == 3`` and threw away the one fact that names
+    # the cause. Each thread starts as ``"never-started"`` and is overwritten only
+    # when its body actually runs, so a thread that never scheduled is
+    # distinguishable from one that ran and died.
+    records: dict[str, str] = {key: "never-started" for key, _ in items}
 
     def bind(key: str, item_id: str) -> None:
         try:
             wl.apply_conductor_action(key, "bind", item_id=item_id, worker_session_key=WORKER)
-            outcomes.append("bound")
+            records[key] = "bound"
         except wl.WorkLedgerError as exc:
-            outcomes.append(exc.code)
+            records[key] = exc.code
+        except BaseException as exc:  # noqa: BLE001 — diagnostic: never swallow, always name
+            records[key] = f"{type(exc).__name__}: {exc}"
 
-    threads = [threading.Thread(target=bind, args=pair) for pair in items]
-    for thread in threads:
+    threads = {key: threading.Thread(target=bind, args=(key, item_id)) for key, item_id in items}
+    for thread in threads.values():
         thread.start()
-    for thread in threads:
+    for thread in threads.values():
         thread.join(timeout=120)
-    assert outcomes.count("bound") == 1
-    assert outcomes.count(wl.CODE_ALREADY_BOUND) == 3
+
+    # A ``join`` that timed out returns with the thread still alive, which is
+    # indistinguishable from a silent death by the records alone — mark those
+    # explicitly so a hung thread names itself instead of masquerading as one that
+    # appended nothing.
+    for key, thread in threads.items():
+        if thread.is_alive():
+            records[key] = f"still-running-after-120s (last record: {records[key]})"
+
+    outcomes = list(records.values())
+    _detail = "; ".join(f"{key}={records[key]}" for key, _ in items)
+    assert outcomes.count("bound") == 1, (
+        f"expected exactly one thread to bind the worker, got "
+        f"{outcomes.count('bound')} — per-thread outcomes: {_detail}"
+    )
+    assert outcomes.count(wl.CODE_ALREADY_BOUND) == 3, (
+        f"expected 3 threads to report {wl.CODE_ALREADY_BOUND!r}, got "
+        f"{outcomes.count(wl.CODE_ALREADY_BOUND)} — a shortfall means a thread hit "
+        f"something other than a clean already-bound refusal (a bare OSError from a "
+        f"Windows sharing violation, or a thread that never finished); per-thread "
+        f"outcomes: {_detail}"
+    )
     binding = wl.read_binding(WORKER)
     assert binding is not None
     bound = [pair for pair in items if pair == binding]

@@ -385,8 +385,9 @@ permission to spend. The authenticated dashboard is the only writer — there is
 deliberately no CLI verb, because a terminal command that records a grant on
 request is a grant an automated caller can take.
 
-Both local defaults (`piper` for TTS, `local` for STT) need no AWS account and no
-confirmation.
+Both local defaults (`system` for TTS, `local` for STT) need no AWS account and no
+confirmation. `system` additionally needs nothing installed on macOS and Windows,
+which is why it is the TTS default rather than `piper`.
 
 ### Memory and embeddings
 

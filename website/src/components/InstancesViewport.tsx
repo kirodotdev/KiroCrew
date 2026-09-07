@@ -39,8 +39,9 @@ import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
-import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
+import { parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
+import { connectInstanceInto } from '../lib/connectInstance'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import ErrorNotice from './ErrorNotice'
@@ -224,26 +225,15 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const autoWarm = useCallback(
     async (id: string) => {
       try {
-        const st = await api.connectInstance(id)
-        if (st.state === 'connected' && st.local_port && st.token) {
-          dispatch(setWarm({ id, conn: { port: st.local_port, token: st.token } }))
-          paneLog('warm', { id, port: st.local_port, via: 'auto' })
-        } else {
-          // No `else` used to exist here, and that is why a failed auto-warm was
-          // untraceable: it leaves any PREVIOUS warm entry in place, so the tab
-          // still renders a pane and the user sees only "loading" forever.
-          paneLog('warm-declined', {
-            id,
-            via: 'auto',
-            state: st.state,
-            hasPort: !!st.local_port,
-            hasToken: !!st.token,
-            error: st.error || undefined,
-            reason: st.diagnosis?.reason || undefined,
-          })
-        }
-      } catch (err) {
-        paneLog('warm-failed', { id, via: 'auto', error: (err as Error)?.message || 'unknown' })
+        // The shared connect step journals its own outcome (`warm` /
+        // `warm-declined` / `warm-failed`, tagged via=auto-warm), so a failed
+        // auto-warm is no longer untraceable: it used to leave any PREVIOUS warm
+        // entry in place with nothing in the log, and the user saw only
+        // "loading" forever.
+        await connectInstanceInto(dispatch, id, 'auto-warm')
+      } catch {
+        // Already journaled by connectInstanceInto; the sticky tab + in-pane
+        // panel handle an instance that cannot be warmed.
       }
     },
     [dispatch],
@@ -273,10 +263,25 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
-      const id = resolveTunnelOrigin(e.origin, portToIdRef.current)
-      if (!id) return
       const data = e.data
       if (!data || typeof data !== 'object') return
+      const id = resolveTunnelOrigin(e.origin, portToIdRef.current)
+      if (!id) {
+        // A readiness announce from a loopback origin this parent does not
+        // currently map to a warm pane is the handshake being dropped on the
+        // floor: the pane loaded and said so, and the parent could not tell
+        // whose voice it was (the warm entry moved to another port, was
+        // evicted, or the origin map has not caught up). Only THIS type is
+        // journaled, and the child sends it at most six times per load, so the
+        // line cannot flood; every other unattributed message stays silent.
+        if (data.type === 'mc-embedded-ready' && parseLoopbackOriginPort(e.origin) !== null) {
+          paneLog('ready-unattributed', {
+            origin: e.origin,
+            knownPorts: [...portToIdRef.current.keys()].join(','),
+          })
+        }
+        return
+      }
       if (data.type === 'mc-unread-slots') {
         const count = Number(data.count)
         if (!Number.isFinite(count) || count < 0) return
@@ -433,29 +438,13 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // iframe. Idempotent on the backend (the tunnel is often already live after a
   // startup auto-reconnect), so this mainly restores the browser-side token.
   const connectMutation = useMutation({
-    mutationFn: (id: string) => api.connectInstance(id),
-    onSuccess: (st, id) => {
-      if (st.state === 'connected' && st.local_port && st.token) {
-        dispatch(setWarm({ id, conn: { port: st.local_port, token: st.token } }))
-        paneLog('warm', { id, port: st.local_port, via: 'connect' })
-      } else {
-        // Same silent shape as the auto-warm path: Retry can "succeed" as a
-        // request while warming nothing, and the pane then reloads into the same
-        // stuck state with no error anywhere.
-        paneLog('warm-declined', {
-          id,
-          via: 'connect',
-          state: st.state,
-          hasPort: !!st.local_port,
-          hasToken: !!st.token,
-          error: st.error || undefined,
-          reason: st.diagnosis?.reason || undefined,
-        })
-      }
+    // The shared connect step writes the warm entry and journals the outcome
+    // (via=retry). Retry can "succeed" as a request while warming nothing, and
+    // the pane then reloads into the same stuck state — that case is the
+    // `warm-declined` line the step emits.
+    mutationFn: (id: string) => connectInstanceInto(dispatch, id, 'retry'),
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['instances'] })
-    },
-    onError: (err, id) => {
-      paneLog('warm-failed', { id, via: 'connect', error: (err as Error)?.message || 'unknown' })
     },
   })
 
@@ -511,6 +500,12 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     if (!activeId || activeWarmPort === undefined || activeReady) return
     const id = activeId
     const port = activeWarmPort
+    // The countdown STARTING is journaled too, not only its expiry. A pane that
+    // shows "loading" forever without ever producing `load-timeout` is a pane
+    // whose watchdog never armed — because this effect saw `activeReady` as
+    // true while the overlay used a different verdict, or because it re-armed
+    // in a loop — and the absence of an arm line is what says so.
+    paneLog('watchdog-armed', { id, port, seq: activeSeq })
     const t = window.setTimeout(() => {
       setTimedOut(prev => (prev[id] ? prev : { ...prev, [id]: true }))
       // `frame` is the verdict: `cross-origin` means the pane really loaded the
@@ -554,7 +549,15 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     const ids = Object.keys(warm)
     if (ids.length <= warmCap) return
     const victim = [...mru].reverse().find(id => id !== activeId && warm[id])
-    if (victim) dispatch(removeWarm(victim))
+    if (victim) {
+      // Journaled because eviction is the one teardown the user never asked
+      // for: the tab stays, the tunnel stays, only the iframe goes — and the
+      // next click re-warms it as a brand-new load. Without this line a pane
+      // that was evicted and then failed to re-warm reads, in the log, like a
+      // pane that never had a problem until it suddenly did.
+      paneLog('evict', { id: victim, port: warm[victim]?.port, warmCount: ids.length, cap: warmCap })
+      dispatch(removeWarm(victim))
+    }
   }, [warm, warmCap, mru, activeId, dispatch])
 
   // Drop the per-pane load facts of a pane that is no longer warm. Both the

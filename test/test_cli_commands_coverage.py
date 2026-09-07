@@ -16,6 +16,7 @@ Follows the style already established by ``test_cli.py`` (``argparse.Namespace``
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import io
 import json
 import urllib.error
@@ -91,6 +92,28 @@ def _cfg_with(
     cfg.default_workspace = default_workspace
     cfg.save = MagicMock()  # type: ignore[method-assign]
     return cfg
+
+
+def _seed_doc_file(tmp_path: Path, cfg: KiroCrewConfig) -> Path:
+    """Materialize *cfg* as a real config.json for the locked-delta writers.
+
+    The CLI CRUD commands no longer mutate the loaded snapshot and ``save()``
+    it -- they write a delta on the document read inside the sidecar flock
+    (#4767 round 7), so tests that check persistence must seed and read the
+    FILE, not the in-memory dataclass.
+    """
+    doc = {
+        "workspaces": {n: dataclasses.asdict(w) for n, w in cfg.workspaces.items()},
+        "agents": {n: dataclasses.asdict(a) for n, a in cfg.agents.items()},
+        "agent": {"default_agent": cfg.default_agent},
+    }
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps(doc), encoding="utf-8")
+    return p
+
+
+def _read_doc(p: Path) -> dict:
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 # ── _internal_secret / _format_schedule ──
@@ -706,9 +729,15 @@ class TestAgentCli:
         out = capsys.readouterr().out
         assert "default *" in out and "other" in out and "alt" in out
 
-    def test_create_persists_new_agent(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_create_persists_new_agent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         cfg = _cfg_with(agents={})
-        with patch.object(KiroCrewConfig, "load", return_value=cfg):
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+        ):
             cc._handle_agent(
                 _ns(
                     agent_action="create",
@@ -718,9 +747,9 @@ class TestAgentCli:
                     memory_store="ms",
                 )
             )
-        assert cfg.agents["new"].kiro_agent == "ka"
-        assert cfg.agents["new"].workspace == "ws"
-        cfg.save.assert_called_once()  # type: ignore[attr-defined]
+        doc = _read_doc(cfg_path)
+        assert doc["agents"]["new"]["kiro_agent"] == "ka"
+        assert doc["agents"]["new"]["workspace"] == "ws"
         assert "Created agent: new" in capsys.readouterr().out
 
     def test_create_duplicate_exits_1_without_saving(
@@ -744,11 +773,15 @@ class TestAgentCli:
         cfg.save.assert_not_called()  # type: ignore[attr-defined]
         assert "already exists" in capsys.readouterr().err
 
-    def test_update_applies_only_provided_fields(self) -> None:
+    def test_update_applies_only_provided_fields(self, tmp_path: Path) -> None:
         cfg = _cfg_with(
             agents={"a": KiroCrewAgentConfig(kiro_agent="old", workspace="ws0", memory_store="m0")}
         )
-        with patch.object(KiroCrewConfig, "load", return_value=cfg):
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+        ):
             cc._handle_agent(
                 _ns(
                     agent_action="update",
@@ -758,13 +791,18 @@ class TestAgentCli:
                     memory_store=None,
                 )
             )
-        assert cfg.agents["a"].kiro_agent == "new"
-        assert cfg.agents["a"].workspace == "ws0"
-        assert cfg.agents["a"].memory_store == "m0"
+        agent = _read_doc(cfg_path)["agents"]["a"]
+        assert agent["kiro_agent"] == "new"
+        assert agent["workspace"] == "ws0"
+        assert agent["memory_store"] == "m0"
 
-    def test_update_all_fields(self) -> None:
+    def test_update_all_fields(self, tmp_path: Path) -> None:
         cfg = _cfg_with(agents={"a": KiroCrewAgentConfig()})
-        with patch.object(KiroCrewConfig, "load", return_value=cfg):
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+        ):
             cc._handle_agent(
                 _ns(
                     agent_action="update",
@@ -774,8 +812,12 @@ class TestAgentCli:
                     memory_store="m",
                 )
             )
-        agent = cfg.agents["a"]
-        assert (agent.kiro_agent, agent.workspace, agent.memory_store) == ("k", "w", "m")
+        agent = _read_doc(cfg_path)["agents"]["a"]
+        assert (agent["kiro_agent"], agent["workspace"], agent["memory_store"]) == (
+            "k",
+            "w",
+            "m",
+        )
 
     def test_update_missing_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
         cfg = _cfg_with(agents={})
@@ -795,13 +837,19 @@ class TestAgentCli:
         assert exc.value.code == 1
         assert "not found" in capsys.readouterr().err
 
-    def test_delete_removes_non_default(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_delete_removes_non_default(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         cfg = _cfg_with(
             agents={"default": KiroCrewAgentConfig(), "spare": KiroCrewAgentConfig()},
         )
-        with patch.object(KiroCrewConfig, "load", return_value=cfg):
+        cfg_path = _seed_doc_file(tmp_path, cfg)
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+        ):
             cc._handle_agent(_ns(agent_action="delete", name="spare"))
-        assert "spare" not in cfg.agents
+        assert "spare" not in _read_doc(cfg_path)["agents"]
         assert "Deleted agent: spare" in capsys.readouterr().out
 
     def test_delete_default_is_refused(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -860,16 +908,18 @@ class TestWorkspaceCopyFrom:
         (src / "memory").mkdir(parents=True)
         (src / "memory" / "notes.md").write_text("hi", encoding="utf-8")
         cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             patch("kiro_crew.cli_commands.sel"),
         ):
             cc._handle_workspace(
                 _ns(workspace_action="create", name="copy1", dir=None, copy_from="src")
             )
         assert (tmp_path / "workspace-copy1" / "memory" / "notes.md").read_text() == "hi"
-        assert cfg.workspaces["copy1"].dir == "workspace-copy1"
+        assert _read_doc(cfg_path)["workspaces"]["copy1"]["dir"] == "workspace-copy1"
         assert "Created workspace: copy1" in capsys.readouterr().out
 
     def test_copy_from_skips_sensitive_entries(self, tmp_path: Path) -> None:
@@ -928,15 +978,17 @@ class TestWorkspaceCopyFrom:
     def test_copy_from_missing_source_dir_still_registers(self, tmp_path: Path) -> None:
         """A source workspace with no directory on disk is a config-only copy."""
         cfg = self._base()
+        cfg_path = _seed_doc_file(tmp_path, cfg)
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             patch("kiro_crew.cli_commands.sel"),
         ):
             cc._handle_workspace(
                 _ns(workspace_action="create", name="copy3", dir=None, copy_from="src")
             )
-        assert "copy3" in cfg.workspaces
+        assert "copy3" in _read_doc(cfg_path)["workspaces"]
         assert not (tmp_path / "workspace-copy3").exists()
 
 

@@ -773,6 +773,40 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/dev_fleet/npm_preflight.py::_extract",
         "apps/builtins/dev_fleet/npm_preflight.py::_install_already_proven",
         "apps/builtins/dev_fleet/npm_preflight.py::probe",
+        # _frontend_build_already_current is the STRONGER build-skip predicate
+        # that wraps _install_already_proven (listed directly above) and adds one
+        # read-only spawn: `<git> -C <repo> rev-parse <ref>:website`. Same three
+        # sources as its wrapped sibling -- the binary is the sync's _trusted_bin
+        # git (never a PATH search), the repo is the operator-configured checkout,
+        # and <ref> is the sync's own per-PID base ref, never agent-supplied. It
+        # is fixed list-argv, shell-free, and only READS (it resolves a tree id to
+        # compare against the staged bundle's fingerprint); nothing is written.
+        # Consistent with npm_preflight.py::_install_already_proven / ::_extract
+        # above and git_divergence.py::count_divergence below -- and refusing it
+        # while the function it wraps is listed would make the same subprocess
+        # benign when called directly and forbidden through a one-line wrapper.
+        "apps/builtins/dev_fleet/npm_preflight.py::_frontend_build_already_current",
+        # _frontend_worktree_clean is one of that predicate's two guards. One
+        # read-only spawn: `<git> -C <repo> status --porcelain
+        # --untracked-files=normal -- website`. Fixed list-argv, shell-free, no
+        # agent-supplied component -- the binary is the sync's _trusted_bin git
+        # (threaded in via _frontend_build_already_current, never a PATH search),
+        # the repo is the operator-configured checkout, and the subcommand,
+        # flags and pathspec are literals. It only READS the working-tree status
+        # (writes nothing). Same class as
+        # npm_preflight.py::_install_already_proven / ::_extract above and
+        # git_divergence.py::count_divergence below.
+        "apps/builtins/dev_fleet/npm_preflight.py::_frontend_worktree_clean",
+        # _frontend_tree_complete is the predicate's other guard: the on-disk
+        # node_modules completeness check. One read-only spawn: `<npm> ls --all`
+        # with cwd set to <repo>/website. Fixed list-argv, shell-free, no
+        # agent-supplied component -- the binary is the sync's _trusted_bin npm
+        # (the same npm probe() uses), the cwd is the operator-configured
+        # checkout's website subtree, and the args are literals. `npm ls` only
+        # WALKS the installed tree against the lockfile (writes nothing, runs no
+        # lifecycle scripts). Same class as npm_preflight.py::probe, whose npm
+        # spawn is listed above.
+        "apps/builtins/dev_fleet/npm_preflight.py::_frontend_tree_complete",
         # Foreground last-resort restart (Make Live on hosts with no drivable
         # service manager): a detached `kirocrew restart --port <marker port>`,
         # fixed argv whose binary is validated (basenamed kirocrew, absolute,
@@ -1042,6 +1076,20 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "frontend.py::_npm_build_and_stage_locked",
         "frontend.py::build_frontend_async",
         "frontend.py::build_frontend_sync",
+        # _write_build_source_fingerprint stamps the built bundle's source
+        # identity beside static/dist, with two read-only spawns:
+        # `<git> -C <root> status --porcelain -- website` and
+        # `<git> -C <root> rev-parse HEAD:website`. Fixed list-argv, shell-free,
+        # no agent-supplied component: <root> is the operator's own registered
+        # checkout, the subcommands and pathspec are literals, and neither call
+        # writes anything (only the resulting tree id is written to a file, by
+        # Python, not by git). The git binary is the sync's _trusted_bin absolute
+        # path when Dev Fleet calls build_and_stage (git= is threaded through);
+        # the standalone callers fall back to a PATH `git`, the same resolution
+        # the sibling frontend.py::_npm_build_and_stage_locked already uses for
+        # npm. Same trust class as npm_preflight.py::_install_already_proven and
+        # git_divergence.py::count_divergence.
+        "frontend.py::_write_build_source_fingerprint",
         # The shared ahead/behind divergence count: a read-only ``git rev-list
         # --count --left-right HEAD...<upstream>`` fixed list-argv (no shell)
         # run against the install's own checkout. Callers pass the repo path
@@ -1268,7 +1316,21 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # sandboxed_spawn_argv: codesign must read the system trust store and
         # evaluate the Apple certificate chain, which the OS sandbox denies.
         "transcribe.py::_macos_developer_id_authentic",
+        # `_pcm_via_ffmpeg` decodes a container the stdlib cannot read (a Slack
+        # voice memo's ogg/Opus, an uploaded m4a) down to the 16 kHz mono PCM the
+        # recogniser takes. Fixed argv, ffmpeg only; the sole variable part is a
+        # positional audio path that `_is_sensitive_audio_path` has already
+        # cleared, so a hostile value can only name a bad file, not a command.
+        # (`audio_exceeds_secs`, the meetings import route's duration probe, is
+        # the same ffmpeg on the same class of path and routes through
+        # `_create_ffmpeg_subprocess` above — `_SPAWN_NAMES` propagates the audit
+        # to each caller, so it is classified here like the other three: a null
+        # decode with fixed flags, `-t` bounded at the duration cap, no output
+        # file at all (`-f null -`), and the only variable argv element a
+        # positional path that `_vet_audio_file` validated and the route then
+        # snapshot-copied via `pinned_fs` into its own 0700 directory.)
         "transcribe.py::_pcm_via_ffmpeg",
+        "transcribe.py::audio_exceeds_secs",
         "transcribe.py::_transcribe_aws",
         # The build probe executes the same authenticated image with the single
         # fixed `-version` argument; it accepts no external input at all. Both
@@ -1294,6 +1356,24 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # interpreter + stdin-only data + killed on timeout ⇒ benign, not routed.
         "validation.py::_bounded_pattern_search",
         "voice_reply.py::stitch_mp3s",
+        # Enumerating the host speech engine's voices. The whole argv is fixed
+        # by this module: the binary comes from ``trusted_system_bin`` (a system
+        # directory, resolved WITHOUT consulting PATH, so a shim in an
+        # agent-writable directory cannot be reached), and the arguments are
+        # module constants — ``-v ?`` for ``say``, ``--voices`` for
+        # ``espeak-ng``, or a constant base64 ``-EncodedCommand`` for Windows
+        # PowerShell. Nothing from the agent, the model, or user config enters
+        # the command, no stdin is written, and the output is only parsed.
+        # It stands on those properties ALONE, and deliberately not by analogy to
+        # the synthesis path: that path always goes through
+        # ``sandboxed_spawn_argv_async``, claiming the first-party carve-out only
+        # on the SAPI branch, so citing it here would teach the next reader an
+        # invariant the tree does not have. What makes this probe benign is that
+        # it parses no attacker-supplied text — synthesis parses a reply the model
+        # wrote, which is exactly why synthesis is confined and this is not.
+        # Fixed argv + trusted-directory binary + read-only output ⇒ benign, not
+        # routed.
+        "voice_reply.py::list_system_voices",
     }
 )
 
@@ -1319,6 +1399,26 @@ FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
         # managed command/args/env compare unequal, pass False, and keep the
         # full fail-close + opt-in behavior.
         "mcp_discovery.py::probe_server",
+        # The built-in SAPI synthesizer. The flag value is COMPUTED
+        # (``engine == SYSTEM_ENGINE_SAPI``), so only the Windows branch claims
+        # it: that argv is a System32 ``powershell.exe`` resolved by
+        # ``trusted_system_bin`` (never PATH), four module-constant flags, and a
+        # base64 ``-EncodedCommand`` whose script interpolates ONLY
+        # internally-derived ``mkstemp`` paths plus an integer from
+        # ``_validate_rate``. The two values a user or a model supplies — the
+        # reply text and ``system_voice`` — are spilled to files the script
+        # reads at runtime, so neither reaches argv. The ``say``/``espeak-ng``
+        # branches DO carry the configured voice on argv and evaluate False,
+        # which costs nothing: both platforms have a backend, where the
+        # carve-out is inert anyway.
+        "voice_reply.py::_synthesize_system",
+        # The shared local-TTS runner. It DECIDES nothing: it forwards its own
+        # parameter to the chokepoint, and its only caller passing a non-default
+        # value is the reviewed ``_synthesize_system`` entry above (piper's call
+        # omits it and takes the False default). Listed rather than excluded
+        # because the scan is deliberately value-blind, so a future caller
+        # passing True here would still have to be reviewed as its own entry.
+        "voice_reply.py::_run_tts_subprocess",
     }
 )
 

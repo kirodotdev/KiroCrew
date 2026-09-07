@@ -1095,6 +1095,14 @@ export default [
               // for — `aliases` moves _total 1842 -> 1840 and changes no other file's
               // entry, so it hands nothing back.
               'aliases',
+              // `namespace: 'KiroCrewComposer'` — Lexical's editor-instance
+              // identifier (`createEditor({ namespace })`), used to tag devtools
+              // and error frames and matched by value; never rendered. Same
+              // lookup-key class as `key`/`navId` above. Measured under the
+              // `aliases` standard: one occurrence in the tree (the new
+              // LexicalComposerInput.tsx), zero baseline entries touched, so the
+              // exemption hands back no other file's debt.
+              'namespace',
               // `error` on a VALIDATION RESULT object (`{ ok: false, error }`) — the
               // same class as `errors.push` in `callees` above, and exempt for the same
               // reason. A user-facing failure message belongs in a toast or a rendered

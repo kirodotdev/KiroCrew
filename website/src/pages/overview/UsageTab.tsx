@@ -1,6 +1,7 @@
 import { BarChart3, AlertTriangle } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, CardTitle, Badge } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useProvider } from '../../providers'
 import type { NormalizedUsage } from '../../providers'
 import { TokenDailyChart } from './TokenDailyChart'
@@ -84,6 +85,14 @@ export default function UsageTab() {
 
       <Card>
         <CardTitle><BarChart3 className="lucide-inline" /> {i18nT('pages.overview.usageTab.session_activity_30_days')}</CardTitle>
+        {s.refusedTranscripts > 0 && (
+          <ErrorNotice
+            variant="inline"
+            askAgent
+            className="mb-4"
+            message={i18nT('pages.overview.usageTab.refused_transcripts_warning', { count: s.refusedTranscripts })}
+          />
+        )}
         <div className="grid grid-cols-3 gap-4 max-[600px]:grid-cols-1 mb-4">
           <PeriodCard label={i18nT('pages.overview.usageTab.today')} p={s.today} />
           <PeriodCard label={i18nT('pages.overview.usageTab.this_week')} p={s.thisWeek} />

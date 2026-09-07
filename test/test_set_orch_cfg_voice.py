@@ -9,6 +9,7 @@ import pytest
 
 from kiro_crew.slack import handler as handler_mod
 from kiro_crew.slack.handler import _vc, load_voice_reply_config, set_orch_cfg
+from kiro_crew.voice_reply import DEFAULT_PROVIDER, PROVIDER_POLLY
 
 
 @pytest.fixture(autouse=True)
@@ -132,7 +133,10 @@ def test_provider_typo_falls_back_to_local_with_warning(tmp_path, monkeypatch, c
     _cfg_file(tmp_path, monkeypatch, {"provider": "ploly"})
     with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.handler"):
         set_orch_cfg(SimpleNamespace())
-    assert _vc.provider == "piper"
+    assert _vc.provider == DEFAULT_PROVIDER
+    # The direction is the point: a bad or absent value must never resolve
+    # to the paid cloud provider.
+    assert _vc.provider != PROVIDER_POLLY
     assert any(
         "voice_reply.provider" in rec.message and "ploly" in rec.message for rec in caplog.records
     ), "expected a warning log naming the bad provider value"
@@ -141,7 +145,10 @@ def test_provider_typo_falls_back_to_local_with_warning(tmp_path, monkeypatch, c
 def test_provider_empty_string_falls_back_to_local(tmp_path, monkeypatch):
     _cfg_file(tmp_path, monkeypatch, {"provider": ""})
     set_orch_cfg(SimpleNamespace())
-    assert _vc.provider == "piper"
+    assert _vc.provider == DEFAULT_PROVIDER
+    # The direction is the point: a bad or absent value must never resolve
+    # to the paid cloud provider.
+    assert _vc.provider != PROVIDER_POLLY
 
 
 def test_provider_omitted_defaults_to_local(tmp_path, monkeypatch):
@@ -153,7 +160,71 @@ def test_provider_omitted_defaults_to_local(tmp_path, monkeypatch):
     """
     _cfg_file(tmp_path, monkeypatch, {})
     set_orch_cfg(SimpleNamespace())
-    assert _vc.provider == "piper"
+    assert _vc.provider == DEFAULT_PROVIDER
+    # The direction is the point: a bad or absent value must never resolve
+    # to the paid cloud provider.
+    assert _vc.provider != PROVIDER_POLLY
+
+
+def test_non_string_path_and_voice_values_normalise_to_unset(tmp_path, monkeypatch):
+    """A wrong TYPE in config.json must not reach the dashboard's config GET.
+
+    `config.json` is hand-editable and JSON permits any shape, so `system_voice:
+    {}` used to be stored verbatim, served by the config endpoint, and crash the
+    React panel that renders it. Normalising to `""` (unset) rather than
+    `str(value)` matters: stringifying would persist `"{}"` as a voice name and
+    move the failure into synthesis instead of removing it.
+
+    All TEN string reads in that block are covered, not just the four this
+    feature touched: they are the same shape and fail identically, and stopping
+    at a subset would leave the next reader guessing which ones are safe.
+    ``rate``/``pitch`` are coerced here as well as in their synthesis-time
+    validators, because the validators protect synthesis and this protects the
+    config GET.
+    """
+    _cfg_file(
+        tmp_path,
+        monkeypatch,
+        {
+            "enabled": True,
+            "system_voice": {},
+            "piper_binary": ["/usr/bin/piper"],
+            "piper_model": 42,
+            "piper_model_config": None,
+            "voice_id": {},
+            "engine": [],
+            "rate": {"pct": 100},
+            "pitch": 0,
+            "aws_profile": {},
+            "region": [],
+        },
+    )
+    load_voice_reply_config()
+    # Fields whose "unset" is empty.
+    assert _vc.system_voice == ""
+    assert _vc.piper_binary == ""
+    assert _vc.piper_model == ""
+    assert _vc.piper_model_config == ""
+    assert _vc.aws_profile == ""
+    assert _vc.region == ""
+    # Fields with a real documented default fall back to it, not to empty: an
+    # empty engine or rate would be a different defect from the one being fixed.
+    assert _vc.default_voice == "Ruth"
+    assert _vc.default_engine == "generative"
+    assert _vc.default_rate == "100%"
+    assert _vc.default_pitch == "+0%"
+
+
+def test_string_path_and_voice_values_are_preserved(tmp_path, monkeypatch):
+    """The normalisation must not eat legitimate values."""
+    _cfg_file(
+        tmp_path,
+        monkeypatch,
+        {"enabled": True, "system_voice": "Alex", "piper_binary": "/usr/bin/piper"},
+    )
+    load_voice_reply_config()
+    assert _vc.system_voice == "Alex"
+    assert _vc.piper_binary == "/usr/bin/piper"
 
 
 # ── restore without a Slack orchestrator (dashboard-only gateway) ────────

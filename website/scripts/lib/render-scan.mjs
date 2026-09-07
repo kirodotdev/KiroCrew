@@ -122,6 +122,8 @@ export const ALWAYS_LATIN = [
   // detection or the `Crew` half orphans as a reportable Latin run.
   'AWS', 'Discord', 'Docker', 'Git', 'GitHub', 'GitLab', 'JSON', 'Kiro', 'Kiro Crew',
   'KiroCrew',
+  // Connections launch-set provider brands (registry names; DNT proper nouns).
+  'Atlassian', 'Linear', 'Notion', 'Stripe', 'Vercel',
   'MCP', 'Markdown', 'Node.js', 'OAuth', 'Playwright', 'Python', 'Slack',
   'Telegram', 'TypeScript', 'Webex', 'WhatsApp', 'YAML', 'iMessage', 'npm',
   // `WeCom` and `WeChat` are deliberately ABSENT despite rendering from the same

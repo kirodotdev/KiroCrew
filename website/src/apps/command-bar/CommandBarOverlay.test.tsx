@@ -164,16 +164,21 @@ describe('CommandBarOverlay rows', () => {
   })
 
   it('renders settings subtitles that tell same-label rows apart', () => {
-    // Two `Speed` selects live in the Voice tab, distinguished in the registry only
-    // by their description. A tab-only subtitle renders them identically, which is
-    // the shipped defect: the user cannot tell which row they are choosing. The tab
-    // name must also be localized, never a raw machine key like `computer-use`.
+    // Several `Speed` selects live in the Voice tab, one per TTS provider,
+    // distinguished in the registry only by their description. A tab-only
+    // subtitle renders them identically, which is the shipped defect: the user
+    // cannot tell which row they are choosing. The tab name must also be
+    // localized, never a raw machine key like `computer-use`.
+    //
+    // The count is derived, not pinned: adding a provider adds a row, and a
+    // literal here would fail for that rather than for a lost subtitle. What
+    // must hold is one DISTINCT subtitle per duplicate row, whatever the count.
     mount()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'speed' } })
     const dupes = SETTINGS_REGISTRY.filter(e => e.label === 'Speed' && e.tab === 'voice')
-    expect(dupes.length).toBe(2)
+    expect(dupes.length).toBeGreaterThan(1)
     const subtitles = dupes.map(e => settingsSubtitle(e))
-    expect(new Set(subtitles).size).toBe(2)
+    expect(new Set(subtitles).size).toBe(dupes.length)
     for (const s of subtitles) {
       expect(s).toContain(settingsTabLabel('voice'))
       expect(screen.getByText(s)).toBeTruthy()

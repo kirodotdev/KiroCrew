@@ -406,7 +406,9 @@ def _skip_lock_path(owner: str, repo: str, number: int, root: Path | None = None
 def _skip_lock(owner: str, repo: str, number: int, root: Path | None = None):
     """Hold :func:`_skip_lock_path` for *number*. See it for why, and the module
     docstring for where this sits in the lock order."""
-    with open(_skip_lock_path(owner, repo, number, root), "w") as fd:
+    lock_path = _skip_lock_path(owner, repo, number, root)
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
 
@@ -515,7 +517,8 @@ def write_settings(
 ) -> dict[str, Any]:
     """Merge *patch* into the repo's protocol settings. Returns the stored doc."""
     lock_path = crews_dir(owner, repo, root) / "settings.lock"
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_settings(owner, repo, root)
             if "claim_ttl_hours" in patch:
@@ -658,7 +661,8 @@ def create_crew(
         raise CrewStoreError("a crew needs a name")
 
     lock_path = _records_lock_path(owner, repo, root)
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             if name in taken_names(owner, repo, root):
                 raise CrewStoreError(f"crew name {name!r} is already taken in this repo")
@@ -719,7 +723,8 @@ def update_crew(
     those crews. See ``_records_lock_path``.
     """
     lock_path = _records_lock_path(owner, repo, root)
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_crew(owner, repo, crew_id, root)
             if record is None:
@@ -767,7 +772,8 @@ def retire_crew(
     its work log all survive."""
     record = update_crew(owner, repo, crew_id, {"enabled": False}, root)
     lock_path = _records_lock_path(owner, repo, root)
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_crew(owner, repo, crew_id, root) or record
             record["retired_at"] = store._now_iso()
@@ -855,7 +861,8 @@ def upsert_work_item(
     same thread blocks on itself forever rather than nesting.
     """
     lock_path = _crew_lock_path(owner, repo, crew_id, root)
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             return _upsert_work_item_locked(owner, repo, crew_id, number, patch, root)
 
@@ -1120,7 +1127,8 @@ def append_event(
     logged reason, and folding one in twice must still merge.
     """
     lock_path = crews_dir(owner, repo, root) / "events.lock"
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             entry = _event_entry(crew_id, number, kind, text, phase=phase)
             _write_event_line(owner, repo, entry, root)
@@ -1230,7 +1238,8 @@ def record_crew_checkpoint(
     # an idle crew appends once per stretch, not once per wake -- but a compaction
     # story is still owed if the file becomes large enough to matter here.
     lock_path = crews_dir(owner, repo, root) / "events.lock"
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             latest = _latest_crew_event(owner, repo, crew_id, root)
             if latest is not None and latest.get("kind") == CREW_LEVEL_EVENT_KIND:
@@ -1415,7 +1424,8 @@ def record_skip(
         "decided_at": store._now_iso(),
     }
     lock_path = _records_lock_path(owner, repo, root)
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             index = read_skips(owner, repo, root)
             existing = index.get(key)
@@ -1453,7 +1463,8 @@ def unrecord_skip(
     """
     key = str(int(number))
     lock_path = _records_lock_path(owner, repo, root)
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             index = read_skips(owner, repo, root)
             if index.get(key) != entry:
@@ -1571,7 +1582,8 @@ def commit_work_progress(
     """
     number = int(number)
     lock_path = _crew_lock_path(owner, repo, crew_id, root)
-    with open(lock_path, "w") as fd:
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             # Under the lock that also guards the write, so no writer can land
             # between the two and leave this holding a value that is already stale.

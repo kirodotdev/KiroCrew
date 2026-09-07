@@ -5637,6 +5637,7 @@
       "approve_all": "Alle genehmigen",
       "approve_sub_agent": "Subagent genehmigen: {{name}}",
       "attach_files": "Dateien anhängen",
+      "editor_unavailable_standard_input": "Der erweiterte Editor konnte nicht geladen werden, daher ist die Standardeingabe aktiv. Ihr Entwurf bleibt unverändert.",
       "branch": "Branch: {{branch}}",
       "click_again_to_force_stop": "Erneut klicken, um das Stoppen zu erzwingen",
       "command": "Befehl",
@@ -5735,7 +5736,8 @@
       "more_actions": "Weitere Aktionen",
       "session_control_needs_attention": "Aktion erforderlich",
       "session_control_ready": "Bereit",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "Diese Sitzung folgt dem Standard-Agenten ({{name}}). Sie hat keinen eigenen Agenten, ändert sich also mit dem Standard. Zum Anheften klicken."
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -6625,7 +6627,8 @@
       "copy_diagram_source": "Diagrammquelltext kopieren",
       "diagram_source": "Diagrammquelltext",
       "copy_failed": "Kopieren fehlgeschlagen",
-      "mermaid_render_failed": "Dieses Diagramm konnte nicht gerendert werden. Stattdessen wird der Quelltext angezeigt."
+      "mermaid_render_failed": "Dieses Diagramm konnte nicht gerendert werden. Stattdessen wird der Quelltext angezeigt.",
+      "image_position": "{{index}} von {{total}}"
     },
     "markdownToc": {
       "contents": "Inhalt",
@@ -6850,6 +6853,8 @@
     "pastedChip": {
       "collapse_paste": "Einfügung einklappen",
       "expand_paste": "Einfügung aufklappen",
+      "hide_paste_preview": "Einfügungsvorschau ausblenden",
+      "show_paste_preview": "Einfügungsvorschau anzeigen",
       "paste_lines_one": "[ Einfügen #{{seq}} · {{count}} Zeile ]",
       "paste_lines_other": "[ Einfügen #{{seq}} · {{count}} Zeilen ]",
       "preview_more_lines_one": "… {{count}} weitere Zeile",
@@ -8044,6 +8049,12 @@
       "could_not_load": "{{label}} konnte nicht geladen werden",
       "loading": "{{label}} wird geladen…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "Formatiert",
+      "raw": "Roh",
+      "render_the_markdown_headings_lists_tables_links": "Markdown rendern - Überschriften, Listen, Tabellen, Links",
+      "show_the_exact_markdown_source": "Den exakten Markdown-Quelltext anzeigen"
     }
   },
   "hooks": {
@@ -11533,6 +11544,7 @@
         "msgs": "Nachr. /",
         "output_tokens": "Ausgabe-Tokens",
         "plan": "Plan",
+        "refused_transcripts_warning": "{{productName}} konnte {{count}} Ihrer Chats nicht laden, daher sind diese Zahlen unvollständig. Das kann passieren, wenn Ihr Windows-Profil auf einem Netzlaufwerk gespeichert ist.",
         "resets": "Zurücksetzungen",
         "session_activity_30_days": "Sitzungsaktivität (30 Tage)",
         "sessions": "Sitzungen",
@@ -13476,6 +13488,7 @@
         "aws_profile_polly": "AWS-Profil (Amazon Polly)",
         "aws_region_for_polly_api": "AWS-Region für die Amazon Polly-API",
         "aws_region_polly": "AWS-Region (Amazon Polly)",
+        "could_not_read_the_hosts_voice_list_only_the_operat": "Die Stimmenliste des Hosts konnte nicht gelesen werden. Nur der Standard des Betriebssystems steht zur Auswahl.",
         "default": "Standard",
         "engine": "Engine",
         "failed_to_load_voice_config": "Sprachkonfiguration konnte nicht geladen werden.",
@@ -13483,13 +13496,13 @@
         "faster": "Schneller",
         "fastest": "Am schnellsten",
         "normal": "Normal",
-        "path_to_the_piper_executable_leave_blank_to_auto": "Pfad zur ausführbaren Piper-Datei. Leer lassen, um automatisch in PATH oder ~/piper-venv/bin/piper zu suchen",
-        "path_to_the_piper_voice_model_onnx_required_down": "Pfad zum Piper-Sprachmodell (.onnx). Erforderlich — herunterladen von github.com/rhasspy/piper",
+        "os_default_voice": "Standard des Betriebssystems",
+        "path_to_the_piper_executable_leave_blank_to_auto": "Pfad zur ausführbaren Piper-Datei. Leer lassen, um automatisch in PATH oder in einer ~/piper-venv-Installation zu suchen",
+        "path_to_the_piper_voice_model_onnx_required_down": "Pfad zum Piper-Sprachmodell (.onnx). Erforderlich — herunterladen von huggingface.co/rhasspy/piper-voices",
         "piper_binary": "Piper-Binärdatei",
         "piper_en_us_lessac_medium_onnx": "~/piper/en_US-lessac-medium.onnx",
         "piper_local_offline": "Piper (lokal, offline)",
         "piper_model": "Piper-Modell",
-        "piper_runs_locally_and_offline_polly_uses_aws_cr": "Piper läuft lokal und offline; Amazon Polly verwendet AWS-Anmeldedaten + Netzwerk",
         "piper_speech_speed_length_scale": "Piper-Sprechgeschwindigkeit (Längenskala)",
         "polly_engine_type": "Amazon Polly-Engine-Typ",
         "provider": "Anbieter",
@@ -13498,13 +13511,19 @@
         "slower": "Langsamer",
         "slowest": "Am langsamsten",
         "speak_every_assistant_reply_automatically": "Jede Assistentenantwort automatisch vorlesen",
-        "speech_rate": "Sprechgeschwindigkeit",
+        "speech_rate_for_spoken_replies_built_in": "Sprechgeschwindigkeit für gesprochene Antworten (integrierte Engine)",
+        "speech_rate_for_spoken_replies_polly": "Sprechgeschwindigkeit für gesprochene Antworten (Amazon Polly)",
         "speech_to_text": "Sprache-zu-Text",
         "speed": "Geschwindigkeit",
+        "system_built_in": "System (integriert)",
         "text_to_speech": "Text-zu-Sprache",
+        "the_built_in_engine_needs_no_setup_piper_is_offlin": "Die integrierte Engine braucht keine Einrichtung; Piper läuft offline mit besserer Qualität; Amazon Polly verwendet AWS-Anmeldedaten + Netzwerk",
+        "this_host_has_no_built_in_speech_engine_install_es": "Auf diesem Host ist keine integrierte Sprachausgabe vorhanden. Installieren Sie espeak-ng (zum Beispiel: sudo apt install espeak-ng), oder wählen Sie einen anderen Anbieter.",
         "us_east_1": "us-east-1",
         "voice": "Sprache",
-        "voice_catalogue_unavailable": "Die Polly-Stimmenliste konnte nicht geladen werden. Die Auswahl zeigt eine integrierte Ersatzliste."
+        "voice_catalogue_unavailable": "Die Polly-Stimmenliste konnte nicht geladen werden. Die Auswahl zeigt eine integrierte Ersatzliste.",
+        "voice_from_the_hosts_built_in_speech_engine": "Stimme aus der integrierten Sprach-Engine des Hosts",
+        "recheck": "Erneut prüfen"
       },
       "weComPanel": {
         "allow_all_bypass_note": "„Alle erlauben“ ist aktiv: Die Liste der userids oben wird übergangen. Die Liste bleibt erhalten, falls du zurückwechselst.",
@@ -14106,6 +14125,8 @@
       "inherited": "Geerbt",
       "member_count_one": "{{count}} Mitglied",
       "member_count_other": "{{count}} Mitglieder",
+      "member_gone": "{{shown}} wird angezeigt – „{{name}}“ steht nicht mehr auf der Liste.",
+      "member_gone_roster": "„{{name}}“ steht nicht mehr auf der Liste.",
       "memory_dedicated_note": "Einstellungen und Projektnotizen kommen aus dem Speicher {{store}} statt aus dem gemeinsamen Standardspeicher. Gesprächsgedächtnis und Lektionen sind noch nicht getrennt: Was du diesem Mitglied sagst, wissen weiterhin alle.",
       "memory_shared_note": "Mitglieder teilen sich derzeit ein Gedächtnis. Was du einem Mitglied sagst, wissen alle.",
       "memory_store": "Speicher",

@@ -182,6 +182,47 @@ _ENV_DUMP_GREP_AWS_PATTERN = (
 # (``printenv | grep ...``) is ``_ENV_DUMP_GREP_AWS_PATTERN``'s job.
 _PRINTENV_AWS_SECRET_PATTERN = r"(?<![\w-])printenv(?!\w).*AWS_" + _AWS_SECRET_VAR_NAMES
 
+# ``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` hold a PATH, not a
+# secret, so neither is scrubbed from an agent child's environment -- the AWS CLI
+# and every SDK read them directly.
+#
+# Two rules here previously denied RETRIEVAL of those two names: a shell
+# dereference (``$NAME``, ``${NAME}``, ``%NAME%``, ``!NAME!``, ``$env:NAME``) and
+# an inline-interpreter environment lookup (``os.environ['NAME']``). Both are
+# REMOVED, deliberately, and the reasoning is worth keeping because it
+# generalizes to any future "deny the variable name" proposal.
+#
+# They existed because ``acp.client._apply_pod_home_remap`` used to EXPORT both
+# names into a pod child, pinned at the real home, so that a pod agent turn could
+# still reach the operator's AWS profiles after ``HOME`` moved. That export made
+# each name an alias for a path the sensitive-path keystone fences, and since the
+# matchers here work on command TEXT with no variable expansion, the alias was
+# reachable while the literal path was refused.
+#
+# Three review rounds each closed one spelling of that retrieval -- the shell
+# sigils, then the interpreter lookup, then ``cp "$(printenv NAME)" x`` -- which
+# is the shape of a losing race: command substitution, ``eval``, indirect
+# expansion (``v=NAME; cat "${!v}"``), and a two-line helper script are all still
+# available, and no text matcher can see through them. The alias was deleted at
+# its source instead: the remap no longer exports either name. With nothing
+# manufacturing the alias, these rules guarded only an operator who set the
+# variable in their own environment -- their own named file, not an alias this
+# codebase created -- at the cost of implying a completeness the pattern class
+# cannot deliver. Partial coverage of an unbounded bypass space is worse than
+# none, because it reads as a fence.
+#
+# #9183 then generalized that same judgement across this whole catalog, which is
+# why this note now reads as precedent rather than as an exception: the
+# twenty-seven sensitive-file-read rows were deleted for the identical reason, so
+# no path -- named literally or through a variable -- is fenced at the text layer
+# any more. The floor is what it always was, minus a layer that never held:
+# ``redact_credentials`` on the output, ``is_sensitive_path`` on every resolved
+# path a file tool opens (which anchors ``KIROCREW_OS_HOME`` as an alternate home
+# root, so a pod's relocated credential tree is covered there), and the OS sandbox
+# on the subprocess. ``_AWS_SECRET_VAR_NAMES`` above still denies retrieval of the
+# variables that hold a SECRET rather than a path; that set is closed and
+# enumerable, which is why a name-based rule is defensible there and was not here.
+
 
 BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     DeniedCommandRule(

@@ -45,7 +45,12 @@ class _RecSlack:
     async def start_stream(self, channel, thread_ts, **kw):
         self.calls.append((
             "start_stream",
-            {"channel": channel, "thread_ts": thread_ts, "user_id": kw.get("user_id")},
+            {
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "user_id": kw.get("user_id"),
+                "initial_text": kw.get("initial_text"),
+            },
         ))
         return self._ts()
 
@@ -597,6 +602,78 @@ class _FlakyAppendSlack(_RecSlack):
         ok = self._n_append > 1  # first append fails -> rotation, retry succeeds
         self.calls.append(("append_stream", {"text": text, "ok": ok}))
         return ok
+
+
+class _FlakyTaskSlack(_RecSlack):
+    """append_task refuses; append_stream is healthy.
+
+    The shape of a long tool phase meeting a rate limit: the 30s elapsed-time
+    refresh is the only thing touching the stream, and Slack turns it down.
+    """
+
+    async def append_task(self, channel, ts, task_id, title, status, details="", output=""):
+        self.calls.append(("append_task", {"title": title, "status": status, "ok": False}))
+        return False
+
+
+class TestTaskCardNeverAbandonsTheStream:
+    """A refused task card must not cost the reader their in-progress message.
+
+    Rotating on a task-card failure stops the stream the reader is watching and
+    continues the answer in a NEW message, so the thread reads as a reply that
+    failed followed minutes later by an unexplained second reply (issue 8511).
+    The card is decoration; skipping it withholds no answer text, and
+    ``_append_stream`` still rotates when real text is refused.
+    """
+
+    def test_refused_task_card_does_not_rotate(self):
+        rec = _FlakyTaskSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+
+        async def scenario():
+            ts = await renderer._ensure_stream()
+            assert await renderer._append_task("t-1", "Bash", "in_progress") is False
+            return ts
+
+        opened = asyncio.run(scenario())
+        opens = [kw for m, kw in rec.calls if m == "start_stream"]
+        assert len(opens) == 1, rec.calls
+        assert renderer._stream_ts == opened, rec.calls
+        assert not [m for m, _ in rec.calls if m == "stop_stream"], rec.calls
+
+    def test_elapsed_refresh_failure_leaves_the_answer_in_one_message(self):
+        """Whole-turn shape: tool runs, its card is refused, the answer still
+        lands in the message that was already open."""
+        rec = _FlakyTaskSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider([
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="looking "),
+            AcpEvent(kind=EVENT_TOOL_CALL, title="Bash", tool_name="Bash"),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="done "),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ])
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        opens = [kw for m, kw in rec.calls if m == "start_stream"]
+        assert len(opens) == 1, rec.calls
+        assert [kw for m, kw in rec.calls if m == "append_task"], rec.calls
+
+    def test_real_text_refused_still_rotates_and_says_it_continues(self):
+        """The branch that protects delivery is untouched, and the replacement
+        stream opens with the continuation marker so the two messages read as
+        one answer rather than as a failure plus a mystery reply."""
+        rec = _FlakyAppendSlack()  # first append_stream fails => one rotation
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider([
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="hi "),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ])
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        opens = [kw for m, kw in rec.calls if m == "start_stream"]
+        assert len(opens) == 2, rec.calls
+        assert opens[0]["initial_text"] is None, opens
+        # The literal, not the constant: a test that imports the constant still
+        # passes when the marker is emptied out.
+        assert "continued" in (opens[1]["initial_text"] or ""), opens
 
 
 class _NoStreamSlack(_RecSlack):

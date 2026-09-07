@@ -1308,11 +1308,53 @@ def _home_dir_targets_uncached(
     crew_home = resolved.crew_home
     kiro_home_override = resolved.kiro_home
     logical_home = resolved.logical_home
+    os_home = resolved.os_home
 
     def _anchor(root: str, d: str) -> str:
         return os.path.join(root, *_leaf_segments(d)).casefold()
 
+    def _anchor_both_separators(root: str, d: str) -> set[str]:
+        """*d* under *root*, spelled with BOTH separators.
+
+        ``_anchor`` joins with the RUNNING OS's separator, which is right for a
+        candidate that reached the matcher as a native path. It is not enough for
+        a pod root: this anchors a root that arrives from an ENV VARIABLE rather
+        than from ``Path.home()``, so the operator's own spelling reaches the set
+        and a Windows pod home would otherwise be all-backslash while a candidate
+        normalised to forward slashes never compared equal -- the gate silently
+        stops covering its own targets on that platform.
+
+        Emitting both spellings is strictly WIDENING -- no target is removed, and a
+        path is fenced under either spelling on either platform -- which is the
+        right direction for a gate whose documented stance is that a *maybe*
+        answers yes. Cheaper and more honest than teaching every candidate path to
+        re-derive the separator it should have used.
+        """
+        parts = _leaf_segments(d)
+        return {
+            os.path.join(root, *parts).casefold(),
+            "/".join([root.rstrip("/\\"), *parts]).casefold(),
+            "\\".join([root.rstrip("/\\"), *parts]).casefold(),
+        }
+
     sensitive_targets: set[str] = {_anchor(home, d) for d in home_dirs}
+    # ``KIROCREW_OS_HOME`` is an ALTERNATE ``$HOME`` (see _resolved_root_key):
+    # a pod-spawned kiro-cli child runs with it as its literal HOME, so its
+    # credential store and the pod-minted OAuth grants live under this root. Every
+    # entry re-anchors here -- the variable relocates the whole home, not just
+    # ``.aws`` -- so a secret cannot be moved out from under its own gate.
+    #
+    # Resolved through ``_realpath_or_none`` for the same reason ``home`` is: it
+    # touches the filesystem (and opens the directory on Windows), which is why the
+    # whole rebuild runs off the loop, and ``None`` degrades to the lexical anchors
+    # already added above rather than raising.
+    if os_home:
+        for d in home_dirs:
+            sensitive_targets |= _anchor_both_separators(os_home, d)
+        os_home_real = _realpath_or_none(os_home) or os_home
+        if os_home_real.casefold() != os_home.casefold():
+            for d in home_dirs:
+                sensitive_targets |= _anchor_both_separators(os_home_real, d)
     # ``home`` arrives RESOLVED from the cache key, so this is normally a no-op;
     # it still opens the directory on Windows, which is why the whole rebuild
     # runs off the loop.  None degrades to the lexical anchors already in the set.
@@ -1466,6 +1508,21 @@ class _ResolvedRoots(NamedTuple):
     claude_config_dir: str | None
     claude_home: str | None
     logical_home: str
+    # ``KIROCREW_OS_HOME`` is an ALTERNATE WHOLE ``$HOME``, not one adapter's
+    # credential leaf: ``pod.runtime.build_pod_env`` sets it and
+    # ``acp.client._apply_pod_home_remap`` makes it the literal ``HOME`` of a
+    # pod-spawned kiro-cli child, so that child's whole credential store -- the
+    # runtime identity store ``pod.runtime._seed_pod_os_home`` snapshots in, and
+    # the MCP OAuth grants that child MINTS under ``.aws/sso/cache`` -- lives
+    # under this root. No host SSO cache contents are copied in; that staging was
+    # removed. It is therefore anchored by re-anchoring EVERY ``home_dirs`` entry
+    # in ``_home_dir_targets_uncached``, rather than through
+    # ``_OVERRIDE_ANCHORED_LEAVES``, which maps one leaf to the roots its parent
+    # can move to. Without it the relocated tree sits at a path no matcher
+    # covers, so an agent inside a pod could read the operator's identity token
+    # at the pod-path spelling while the identical bytes at ``~/.aws`` are
+    # refused.
+    os_home: str | None
 
 
 #: Sensitive leaf → the override roots its parent directory can be moved to.
@@ -1536,15 +1593,16 @@ _OVERRIDE_ROOT_ENVS: tuple[tuple[str, str], ...] = (
     ("codex_home", "CODEX_HOME"),
     ("claude_config_dir", "CLAUDE_CONFIG_DIR"),
     ("claude_home", "CLAUDE_HOME"),
+    ("os_home", "KIROCREW_OS_HOME"),
 )
 
 
 def _resolve_root_anchors(logical_home: str) -> _ResolvedRoots:
     """Resolve every root the target set anchors on; runs on the ``mc-pathres`` pool.
 
-    One worker call resolves ``$HOME`` and all five override roots together,
+    One worker call resolves ``$HOME`` and all six override roots together,
     so :func:`_resolved_root_key` -- which runs once per ``is_sensitive_path``
-    call, on the event loop -- pays a single thread hop rather than six.  The
+    call, on the event loop -- pays a single thread hop rather than seven.  The
     stall bookkeeping is charged to the logical home's prefix: that is the
     mount every root ordinarily lives under, and it is the one the crash dumps
     named.
@@ -1580,11 +1638,30 @@ def _resolved_root_key() -> _ResolvedRoots:
     spelling, which must still hit a target or the gate fails OPEN on exactly
     the hosts where ``$HOME`` is a link.  Keyed here so an env change that
     moves the logical spelling invalidates the cache like any other anchor.
+
+    ``os_home`` is the resolved ``KIROCREW_OS_HOME`` override, or ``None`` when
+    unset. It is an ALTERNATE ``$HOME``: ``pod.runtime.build_pod_env`` sets it
+    and ``acp.client._apply_pod_home_remap`` makes it the literal ``HOME`` of a
+    pod-spawned kiro-cli child, so kiro-cli's own ``$HOME``-derived credential
+    store — the runtime identity store ``pod.runtime._seed_pod_os_home`` mirrors
+    in, and the MCP OAuth grants that pod's own child MINTS under
+    ``.aws/sso/cache`` — lives under this root rather than under the real home.
+    No host SSO cache contents are copied in; that staging was removed. Anchoring
+    it here is what fences the relocated tree, and it is the ONLY layer that can:
+    the pod child's mount namespace must keep that tree readable AND writable
+    because kiro-cli writes its grants there and no env lever relocates them. So
+    the two audiences are split — the harness process reaches the tree, while an
+    agent TOOL call naming any path under it is refused in-band here. Every
+    ``home_dirs`` entry is re-anchored under it, not merely ``.aws``, because
+    the variable relocates the whole home: the crew-home leaves, ``.ssh`` and
+    every other fenced entry move with it. Same reasoning as the
+    ``KIROCREW_HOME`` expansion below — an override must not move a secret out
+    from under its own gate.
     """
     logical_home = str(Path.home())
     # Bounded (see _rebuild_targets_bounded): this runs on the event loop once per
     # is_sensitive_path call, and an inline resolve of a slow-to-stat $HOME is
-    # exactly the stall the watchdog dumps caught.  All six roots resolve in
+    # exactly the stall the watchdog dumps caught.  All seven roots resolve in
     # ONE pool hop (_resolve_root_anchors).
     #
     # INVARIANT: the gate only ever compares against anchors resolved FRESH,

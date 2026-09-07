@@ -361,3 +361,55 @@ class TestConcurrentMutationsAreSerialised:
         assert "review:pr-123" in after
         assert len(after["hooks"]) == 16
         assert len(store.list_all()) == 16
+
+
+class TestAcquiringTheSharedLockDoesNotTruncateTheLockFile:
+    """A lock file must be opened WRITABLE but never TRUNCATING.
+
+    ``msvcrt.locking`` needs a writable handle, so the fd cannot be opened
+    ``"r"``. But ``"w"`` truncates at open, and on Windows a truncating open of
+    a lock file whose first byte another holder already locked raises a sharing
+    violation instead of waiting — so the contending acquirer crashes with a
+    bare ``OSError`` *before* it reaches ``file_lock``, and the serialisation
+    the lock exists to provide never happens. POSIX ``flock`` tolerates the
+    truncate, which is why the defect is invisible on Linux and reddens only
+    the Windows shards.
+
+    Issue #9248; same defect and same fix as ``work_ledger._open_lock``
+    (PR #9237) and ``session_pid.py``'s three lock helpers (PR #9250).
+    ``webhooks.locked`` matters doubly: it guards ``hooks.json.lock``, the SAME
+    file ``register_hook`` (``mcp_tools/control.py``) locks from another
+    module, so cross-process contention on it is the store's normal state.
+
+    Truncation is the direct, PLATFORM-INDEPENDENT observable, and that is what
+    this asserts: seed the lock file with bytes, take and release the lock, and
+    require the bytes to have survived. Under the old ``open(lock_path, "w")``
+    this fails on every platform, so the guard does not depend on running the
+    suite on Windows to have teeth.
+    """
+
+    SEED = b"lock-file-content-that-must-survive"
+
+    def test_locked_preserves_the_lock_file(self, tmp_path):
+        from kiro_crew import webhooks
+
+        path = tmp_path / "hooks.json"
+        lock_path = tmp_path / "hooks.json.lock"
+        lock_path.write_bytes(self.SEED)
+
+        with webhooks.locked(path):
+            pass
+
+        assert lock_path.read_bytes() == self.SEED
+
+    def test_locked_works_when_the_lock_file_is_absent(self, tmp_path):
+        """First acquisition must create the lock file rather than raise."""
+        from kiro_crew import webhooks
+
+        path = tmp_path / "hooks.json"
+        assert not (tmp_path / "hooks.json.lock").exists()
+
+        with webhooks.locked(path):
+            pass
+
+        assert (tmp_path / "hooks.json.lock").exists()

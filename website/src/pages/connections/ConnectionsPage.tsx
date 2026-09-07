@@ -1123,18 +1123,19 @@ function ConnectionCard({
 }
 
 /**
- * `servicesEnabled` gates the provider gallery. The Connections work is merged
- * on main but held for a later release, so the default is CLOSED: the Services
- * panel offers no providers, so no card, Connect button or OAuth flow is
- * reachable.
+ * `servicesEnabled` gates the provider gallery. The gallery ships ON, so the
+ * dashboard normally passes `true`; the PARAMETER default stays closed so a
+ * caller that forgets to pass it cannot open a gallery by omission. False means
+ * the instance pulled the `connections_ui` escape hatch: the Services panel
+ * offers no providers, so no card, Connect button or OAuth flow is reachable.
  *
- * The panel still RENDERS rather than being removed, which is deliberate.
+ * A closed panel still RENDERS rather than being removed, which is deliberate.
  * Hiding the sub-tab and defaulting to the MCP Servers table was tried and
  * reverted: it makes that table the default-rendered surface and so exposes its
  * pre-existing i18n debt to the render-time gate, which measured
  * `capabilities-mcp` going 44 -> 102 findings. Emptying the list keeps the
- * measured surface comparable to main (568 -> 558 overall, gate PASS) while
- * still removing every way to actually connect a provider.
+ * measured surface comparable (568 -> 558 overall, gate PASS) while still
+ * removing every way to actually connect a provider.
  */
 export default function ConnectionsPage({ servicesEnabled = false }: { servicesEnabled?: boolean } = {}) {
   const { t } = useTranslation()
@@ -1323,10 +1324,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   }, [servers, oauthByServer, mintByServer, locallyWaiting, queryClient, t])
 
   const filteredProviders = useMemo(() => {
-    // Held feature: offer nothing. No card renders, so no Connect button and no
-    // OAuth flow is reachable, while the panel itself still renders exactly the
-    // markup it renders on main -- which is what keeps the render-time i18n gate
-    // measuring a comparable surface.
+    // Opted out (`connections_ui: false`): offer nothing. No card renders, so no
+    // Connect button and no OAuth flow is reachable, while the panel itself still
+    // renders exactly the markup a launched gallery renders -- which is what keeps
+    // the render-time i18n gate measuring a comparable surface.
     if (!servicesEnabled) return []
     const needle = search.trim().toLowerCase()
     if (!needle) return CONNECTION_PROVIDERS
