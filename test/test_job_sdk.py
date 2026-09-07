@@ -3304,25 +3304,44 @@ class TestAnUndrivenResultIsFailedNotDone:
         suspended.close()
 
     def test_an_unsettled_future_discloses_that_the_work_may_still_run(self) -> None:
-        """The record must warn the owner, because the SDK cannot stop the work.
+        """The record must warn the owner about work the SDK could NOT stop.
 
-        An unsettled future stands for a thread this SDK does not own. Marking the run
-        terminal releases the dedupe key, so an owner who retries can start a second
-        run overlapping work that never stopped. `failed` is the true verdict about the
-        RUN -- the runner returned before finishing, violating its contract -- but the
-        reason has to name what the SDK cannot control, since the owner reading it is
-        the only party who can judge whether retrying is safe.
+        An unsettled future can stand for work already executing in a pool this SDK
+        does not own. Marking the run terminal releases the dedupe key, so an owner
+        who retries can start a second run overlapping work that never stopped.
+        `failed` is the true verdict about the RUN -- the runner returned before
+        finishing, violating its contract -- but the reason has to name what the SDK
+        cannot control, since the owner reading it is the only party who can judge
+        whether retrying is safe.
+
+        The FIXTURE changed with #7814 and the change is the point. This test used to
+        pass a bare `concurrent.futures.Future()`, which is PENDING and therefore
+        stoppable -- so it asserted "may still be running" about work that provably
+        had not started, and passed only because the SDK never looked. The un-stoppable
+        case is work that is genuinely RUNNING, which is what this now builds.
         """
-        pool_future: concurrent.futures.Future = concurrent.futures.Future()
+        entered = threading.Event()
+        release = threading.Event()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        def slow() -> str:
+            entered.set()
+            release.wait(5)
+            return "done"
+
         try:
+            pool_future = pool.submit(slow)
+            assert entered.wait(5), "premise: the work must be executing, not queued"
             verdict = job_sdk._undriven_result(pool_future)
             assert "not settled" in verdict
             # The disclosure, pinned on the FACTS it must convey rather than wording.
             assert "may still be running" in verdict
             assert "cannot stop" in verdict
             assert "overlap" in verdict
+            assert "cannot overlap" not in verdict, "must not claim a stop it did not make"
         finally:
-            pool_future.cancel()
+            release.set()
+            pool.shutdown(wait=True)
 
     def test_the_states_are_reachable_and_deliberately_not_distinguished(self) -> None:
         """The states are real; the verdict ignores them ON PURPOSE.
@@ -3694,6 +3713,258 @@ class TestAnUndrivenResultIsFailedNotDone:
         sdk.register("probe", lambda h: Probe())
         assert _wait_terminal(sdk, sdk.start("probe")).status == FAILED
         assert closed == [True]
+
+
+# ── 8. stopping work the runner spawned outside the worker thread (#7814) ──
+
+
+class TestStoppingWorkTheRunnerHandedBack:
+    """The reachability half of #7814, and the reason it is reachable at all.
+
+    The SDK cannot stop work a runner spawned onto a thread it does not own -- unless
+    the runner hands that work back, and the reported case does exactly that: it
+    submits to a pool and returns the unwaited `concurrent.futures.Future`. For one
+    instant `_execute` holds the only reference to that work.
+
+    It already ASKED that reference to stop before this change, as hygiene, and threw
+    the answer away -- so the record warned about work the next line had guaranteed
+    would never run. These tests pin both directions: the record must say a stop
+    happened when it did, and must never say one happened when it did not.
+    """
+
+    def test_work_the_runner_spawned_is_stopped_and_the_record_says_so(self, sdk: JobSDK) -> None:
+        """The losing branch, end to end: spawned outside the thread, then stopped.
+
+        A one-worker pool is occupied, so the runner's own submission sits PENDING and
+        the runner returns it unwaited. Two things must hold together: the spawned work
+        never runs, and the record does not warn the owner about work that cannot
+        overlap a retry.
+        """
+        entered = threading.Event()
+        release = threading.Event()
+        ran: list[str] = []
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        def occupy() -> None:
+            entered.set()
+            release.wait(5)
+
+        def spawned() -> str:
+            ran.append("spawned")
+            return "spawned"
+
+        def wrapper(handle: JobHandle):
+            pool.submit(occupy)
+            assert entered.wait(5), "premise: the single worker must be busy"
+            # Queued behind `occupy`, so PENDING, and handed back undriven.
+            return pool.submit(spawned)
+
+        try:
+            sdk.register("poolspawn", wrapper)
+            run = _wait_terminal(sdk, sdk.start("poolspawn"))
+            assert run.status == FAILED, run.error
+            assert "not settled" in run.error
+            assert ran == [], f"the spawned work ran despite the stop: {ran}"
+            assert "may still be running" not in run.error, (
+                "the record warns the owner about work this SDK stopped, so work that "
+                "provably never started reads as work a retry could overlap"
+            )
+            assert (
+                "cannot stop" not in run.error
+            ), "the record claims it cannot stop work it did stop"
+            assert "stopped it" in run.error, "the record does not say the stop happened"
+            assert (
+                "cannot overlap" in run.error
+            ), "the record does not tell the owner a retry is safe"
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
+        assert ran == [], "the cancelled work ran once the pool drained"
+
+    def test_work_already_executing_is_never_claimed_stopped(self, sdk: JobSDK) -> None:
+        """The direction that matters more: a stop must not be reported when it failed.
+
+        Work already running in a pool cannot be stopped from here. Reporting success
+        would be worse than reporting failure -- the owner would believe the work is
+        over and proceed -- so this run keeps the disclosure #7737 shipped, verbatim.
+        """
+        entered = threading.Event()
+        release = threading.Event()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        def slow() -> str:
+            entered.set()
+            release.wait(5)
+            return "done"
+
+        def wrapper(handle: JobHandle):
+            future = pool.submit(slow)
+            assert entered.wait(5), "premise: the work must be executing, not queued"
+            return future
+
+        try:
+            sdk.register("poolrunning", wrapper)
+            run = _wait_terminal(sdk, sdk.start("poolrunning"))
+            assert run.status == FAILED, run.error
+            assert "may still be running" in run.error
+            assert "cannot stop" in run.error
+            assert (
+                "cannot overlap" not in run.error
+            ), "a stop was claimed for work that is still executing"
+            assert (
+                "stopped it" not in run.error
+            ), "a stop was claimed for work that is still executing"
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
+
+    def test_the_stop_answers_two_ways_one_case_per_answer(self) -> None:
+        """One control per branch, so True is not inferred from the others.
+
+        True is the only answer that licenses the record to claim a stop, so each
+        way of reaching False needs its own case.
+        """
+        entered = threading.Event()
+        release = threading.Event()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        def occupy() -> None:
+            entered.set()
+            release.wait(5)
+
+        try:
+            pool.submit(occupy)
+            assert entered.wait(5), "premise: the single worker must be busy"
+            pending = pool.submit(lambda: 1)
+            assert job_sdk._stop_returned_work(pending) is True
+            assert pending.cancelled(), "True was returned without cancelling"
+
+            release.set()
+            running_entered = threading.Event()
+            running_release = threading.Event()
+
+            def slow() -> int:
+                running_entered.set()
+                running_release.wait(5)
+                return 1
+
+            running = pool.submit(slow)
+            assert running_entered.wait(5), "premise: the work must be executing"
+            assert job_sdk._stop_returned_work(running) is False
+            running_release.set()
+
+            settled: concurrent.futures.Future = concurrent.futures.Future()
+            settled.set_result(1)
+            assert job_sdk._stop_returned_work(settled) is False
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
+
+    def test_a_callback_raising_baseexception_cannot_corrupt_the_record(self, sdk: JobSDK) -> None:
+        """The stop runs app code on this thread, so it must not lose the record.
+
+        `Future.cancel` invokes done callbacks inline and `_invoke_callbacks` catches
+        only `Exception`, so a callback raising `SystemExit` escapes `cancel()` --
+        measured on 3.10, 3.11 and 3.12. Unfenced, that escape passes `_execute`'s
+        `except JobCancelled` and `except Exception`, leaves the status at RUNNING,
+        and the `finally` persists a `running` record while dropping the live entry
+        and the dedupe key. The run then reads as active with nothing owning it, and
+        nothing revisits it until a restart makes its origin foreign.
+        """
+        entered = threading.Event()
+        release = threading.Event()
+        ran: list[str] = []
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        def occupy() -> None:
+            entered.set()
+            release.wait(5)
+
+        def hostile(_future: concurrent.futures.Future) -> None:
+            raise SystemExit("a done callback that does not play nicely")
+
+        def wrapper(handle: JobHandle):
+            pool.submit(occupy)
+            assert entered.wait(5), "premise: the single worker must be busy"
+            future = pool.submit(lambda: ran.append("spawned"))
+            future.add_done_callback(hostile)
+            return future
+
+        try:
+            sdk.register("hostilecb", wrapper)
+            run_id = sdk.start("hostilecb")
+            deadline = time.monotonic() + 5.0
+            run = None
+            while time.monotonic() < deadline:
+                run = sdk.get(run_id)
+                if run is not None and run.is_terminal:
+                    break
+                time.sleep(0.01)
+            assert run is not None, "the record vanished"
+            assert run.status == FAILED, (
+                f"a done callback raising BaseException left the record at "
+                f"{run.status!r} with no worker owning it, so the run reads as "
+                f"active forever and only a restart resolves it"
+            )
+            # The fence under-claims rather than guessing, so the owner gets the
+            # hedged disclosure even though the state did transition.
+            assert "may still be running" in run.error
+            assert "cannot overlap" not in run.error
+        finally:
+            release.set()
+            pool.shutdown(wait=True)
+        assert ran == [], "the cancelled work ran once the pool drained"
+
+    def test_a_truthy_cancel_is_not_accepted_as_a_stop(self) -> None:
+        """Why the answer is keyed on the TYPE and not on having a `cancel` method.
+
+        Measured identically on 3.10, 3.11 and 3.12: an `asyncio.Task` whose coroutine
+        suppresses `CancelledError` answers `cancel()` with True and then finishes and
+        returns a value. A duck-typed check would read that True as a stop and record
+        success for work that is still going. So both asyncio carriers, and anything
+        merely shaped like a future, answer False and keep the honest disclosure.
+        """
+        kept_going: list[str] = []
+
+        async def main() -> object:
+            async def suppress() -> str:
+                try:
+                    await asyncio.sleep(3)
+                except asyncio.CancelledError:
+                    kept_going.append("ran on past the cancel")
+                    await asyncio.sleep(0)
+                    return "finished anyway"
+                return "not cancelled"
+
+            task = asyncio.ensure_future(suppress())
+            await asyncio.sleep(0.05)
+            assert task.cancel() is True, "premise: asyncio reports the cancel taken"
+            return await task
+
+        assert asyncio.run(main()) == "finished anyway"
+        assert kept_going == ["ran on past the cancel"]
+
+        loop = asyncio.new_event_loop()
+        try:
+            unsettled = loop.create_future()
+            assert job_sdk._stop_returned_work(unsettled) is False
+            assert not unsettled.cancelled(), "an asyncio future was touched off-loop"
+            verdict = job_sdk._undriven_result(unsettled)
+            assert "may still be running" in verdict
+            assert "cannot overlap" not in verdict
+            unsettled.cancel()
+        finally:
+            loop.close()
+
+        class Lookalike:
+            def done(self) -> bool:
+                return False
+
+            def cancel(self) -> bool:
+                return True
+
+        assert job_sdk._stop_returned_work(Lookalike()) is False
+        assert "may still be running" in job_sdk._undriven_result(Lookalike())
 
 
 class TestForeignRecordFieldsAreCoerced:

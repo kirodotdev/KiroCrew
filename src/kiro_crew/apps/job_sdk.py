@@ -38,9 +38,13 @@ nothing. A runner cooperates in one of two ways: it may poll ``handle.cancelled`
 directly, or it may call ``handle.checkpoint``, which RAISES at a pending cancel
 so the runner unwinds AT that point. The second is the stronger form -- the
 ``cancelled`` record then names an observed stop rather than a set flag -- but
-neither can stop work the runner spawned onto a thread the SDK does not own; that
-remaining gap is #7814's execution-ownership half, out of scope here and disclosed
-on the unsettled-future reason string.
+neither reaches work the runner spawned onto a thread the SDK does not own. For
+that work there is exactly one instant where a stop is possible: if the runner
+hands the work back -- the reported #7814 case returns an unwaited
+``concurrent.futures.Future`` -- then ``_stop_returned_work`` asks it not to run,
+and the record states which of the two things happened. If nothing comes back,
+nothing can be asked; that residue is #7814's execution-ownership half, which needs
+the spawn to register itself and is out of scope here.
 
 **One writer per run file.** There is no lock helper beside ``atomic_write`` and
 concurrent read-modify-write of one document is last-writer-wins, so each run is
@@ -95,6 +99,7 @@ later pass revisits.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import json
 import logging
@@ -349,6 +354,103 @@ _SUSPENDABLE_KINDS: tuple[tuple[str, Any], ...] = (
 )
 
 
+#: The wording for an unsettled future this SDK could NOT stop. Kept verbatim from
+#: the string #7737 shipped, because for this branch every clause of it is still
+#: true and a consumer matching the old text must still find it.
+_UNSETTLED_NOT_STOPPED = (
+    "a future that is not settled, so the runner returned before its work "
+    "finished; that work may still be running somewhere this SDK does not "
+    "own and cannot stop, so a retry of this run can overlap it"
+)
+
+#: The wording for one this SDK DID stop, with the guarantee named. Only reachable
+#: when :func:`_stop_returned_work` answered ``True``, which is the one answer that
+#: means the work will never run.
+_UNSETTLED_STOPPED = (
+    "a future that is not settled, so the runner returned before its work "
+    "finished; that work had not started and this SDK stopped it before it "
+    "could, so a retry of this run cannot overlap it"
+)
+
+
+def _stop_returned_work(result: Any) -> bool:
+    """Ask work a runner handed back to not run. ``True`` ONLY when it is stopped.
+
+    This is the reachability half of #7814. The SDK cannot stop work a runner
+    spawned onto a thread it does not own -- unless the runner hands the work back,
+    which the reported case does: it submits to a pool and returns the unwaited
+    ``concurrent.futures.Future``. At that instant this process holds the only
+    reference to that work, so this is the one moment a stop is even possible.
+
+    The stop itself was ALREADY happening before this function existed, as
+    hygiene: :func:`_close_quietly` reaches for ``cancel`` on a future to stop it
+    warning about an unretrieved exception, and discarded the answer. So the
+    record said the work "may still be running ... and cannot stop" about work the
+    next line had just guaranteed would never run. This function makes that stop
+    deliberate, moves it BEFORE the verdict is worded, and reads what it returned.
+
+    **One answer, and it is one-sided on purpose.** ``True`` means the work is
+    stopped and will never run. Everything else is ``False``, which the caller
+    words as the unchanged disclosure -- the work may still be running and this SDK
+    cannot stop it. An earlier revision returned a third value to separate "already
+    executing" from "no guarantee available"; the two collapse to the same wording
+    and nothing read the difference, so by this module's own doctrine -- a
+    distinction stays out until the consumer that reads it exists -- there are two
+    answers, not three.
+
+    **Why the answer is keyed on the TYPE and not on having a ``cancel`` method.**
+    A truthy ``cancel()`` does not mean stopped in general. Measured identically on
+    3.10, 3.11 and 3.12: an ``asyncio.Task`` whose coroutine suppresses
+    ``CancelledError`` answers ``cancel()`` with ``True`` and then runs to
+    completion and returns a value. Treating that as a stop would report success
+    for work that is still going -- the exact defect this module exists to remove,
+    and worse than reporting failure, because the owner then believes the work is
+    over and proceeds.
+
+    ``concurrent.futures.Future`` is different, and its difference is documented
+    rather than inferred: ``cancel()`` returns ``False`` if the call is executing
+    or finished, and otherwise the call "will be cancelled" -- the executor's
+    ``_WorkItem.run`` asks ``set_running_or_notify_cancel()`` first and returns
+    without invoking the function when it is cancelled. So ``True`` from THAT type
+    means the work never ran. ``isinstance`` is the right test because the
+    guarantee belongs to the class's contract, and ``asyncio.Future`` is not a
+    subclass of it, so the two never blur.
+
+    **The stop runs app code on this thread, so it is fenced from BaseException.**
+    ``Future.cancel`` invokes the future's done callbacks inline, and
+    ``_invoke_callbacks`` catches only ``Exception`` -- measured on 3.10, 3.11 and
+    3.12, a callback raising ``SystemExit`` escapes ``cancel()`` while an ordinary
+    ``ValueError`` is swallowed and ``cancel()`` still answers ``True``. An escape
+    here is not a caller's problem to handle: it would pass ``_execute``'s
+    ``except JobCancelled`` and ``except Exception`` untouched, leave ``run.status``
+    at ``RUNNING``, and let the ``finally`` persist a ``running`` record while
+    dropping the live entry and the dedupe key -- a run reported active that nothing
+    owns, which no pass revisits until a restart makes its origin foreign. So the
+    stop is attempted inside a fence: a run must never be corrupted by app code
+    misbehaving inside this SDK's own hygiene.
+
+    The fence answers ``False``, which UNDER-claims -- the state transition happens
+    before the callbacks fire, so the work is in fact cancelled. Claiming it anyway
+    would rest on a control flow that was just violently interrupted, and the
+    hedged wording is true either way.
+    """
+    if not isinstance(result, concurrent.futures.Future):
+        return False
+    try:
+        if result.done():
+            return False
+        # ``is True`` rather than truthiness: only the documented answer counts, so
+        # a subclass returning some other truthy value cannot buy a guarantee.
+        return result.cancel() is True
+    except BaseException:  # noqa: BLE001 - see the fence paragraph above
+        logger.warning(
+            "a returned future raised while being asked to stop; recording that its "
+            "work was not stopped rather than losing the run's record",
+            exc_info=True,
+        )
+        return False
+
+
 def _undriven_result(result: Any) -> str:
     """Name why a runner's return value is not a completed unit of work, else ``""``.
 
@@ -404,15 +506,22 @@ def _undriven_result(result: Any) -> str:
     handing back something unfinished violates it -- ``failed`` is what this SDK
     observed about the RUN, not a guess about the work.
 
-    What this SDK cannot do is STOP that work. An unsettled
-    ``concurrent.futures.Future`` stands for a thread it does not own, and
-    terminalizing the run releases the dedupe key -- so an owner who retries gets a
-    second run overlapping work that never stopped. Relabelling the status would not
-    change that: the overlap is a consequence of the contract violation, not
-    something the record misstates. So the reason string SAYS the work may still be
-    running, because the owner reading that record is the only party who can judge
-    whether a retry is safe. The missing capability -- no way to stop work a runner
-    spawned outside this thread -- is filed rather than pretended away.
+    **Whether it can STOP that work is now asked rather than assumed.** An
+    unsettled ``concurrent.futures.Future`` stands for work in a pool this SDK does
+    not own -- but the runner handed the future back, so the reference is in hand
+    at this one instant, and :func:`_stop_returned_work` uses it. A ``True`` there
+    is a documented guarantee that the work never began and never will, so the
+    reason says the stop happened and a retry cannot overlap. Anything else keeps
+    the earlier disclosure verbatim: the work may still be running, this SDK cannot
+    stop it, and a retry can overlap it. Terminalizing still releases the dedupe
+    key either way; what changed is that the owner reading the record -- the only
+    party who can judge whether a retry is safe -- is told which of the two
+    situations they are in instead of always being told the worse one.
+
+    What remains missing is a stop for work whose handle never comes back at all: a
+    runner that spawns a thread and returns ``None`` leaves nothing to act on, and
+    no stopping logic can reach it. That half needs the spawn to register itself,
+    which changes the runner contract, and is filed rather than pretended away.
 
     **Why this is complete, which after nine review rounds is a fair thing to ask.**
     Not because cases stopped being found, but because the two carriers are now
@@ -436,11 +545,11 @@ def _undriven_result(result: Any) -> str:
     done = getattr(result, "done", None)
     if callable(done):
         if not done():
-            return (
-                "a future that is not settled, so the runner returned before its work "
-                "finished; that work may still be running somewhere this SDK does not "
-                "own and cannot stop, so a retry of this run can overlap it"
-            )
+            # The ONE side effect in this function, and it is here because the
+            # verdict depends on it: this is the only instant the SDK holds a
+            # reference to the spawned work, so the stop has to be attempted
+            # before the record can say what became of that work.
+            return _UNSETTLED_STOPPED if _stop_returned_work(result) else _UNSETTLED_NOT_STOPPED
         cancelled = getattr(result, "cancelled", None)
         if callable(cancelled) and cancelled():
             return "a cancelled future, so the work it stood for never completed"
@@ -481,6 +590,26 @@ def _close_quietly(result: Any) -> None:
     which is what stops it warning that its exception was never retrieved. An
     async generator's ``aclose`` is itself a coroutine needing a loop, so it is
     left to the interpreter rather than driven from this thread.
+
+    This ``cancel`` is HYGIENE, and it used to be the only one. Stopping the work a
+    future stands for is now :func:`_stop_returned_work`'s job, which runs earlier
+    and reads what the stop returned. The two are not duplicates: that one answers
+    a question the record needs, this one silences a warning, and by the time this
+    runs on a future the earlier call has usually already settled it -- a second
+    ``cancel`` on a cancelled or running future returns ``False`` and invokes no
+    callbacks, since those fire once, at the state transition. Anything that call
+    declined to touch still arrives here and is retired exactly as before.
+
+    ``except Exception`` here is narrower than the fence
+    :func:`_stop_returned_work` uses, and deliberately so rather than by oversight.
+    Both calls can run app code -- a done callback, a coroutine's ``finally`` -- and
+    a ``BaseException`` from either escapes ``_execute``'s handlers. The
+    consequences differ: this call site is reached only AFTER ``run.status`` and
+    ``run.error`` are set, so the ``finally`` still persists a correct terminal
+    record and the cost of an escape is one lost log line. The earlier call runs
+    while the status is still ``RUNNING``, where the same escape persists a
+    ``running`` record nothing owns. Widening this one would change pre-existing
+    behaviour to no end.
     """
     for method in ("close", "cancel"):
         handler = getattr(result, method, None)
