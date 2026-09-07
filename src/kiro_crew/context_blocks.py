@@ -30,6 +30,8 @@ UNCLASSIFIED_LABEL: Final = "unclassified"
 # up to the next marker's start, mirroring how the assembly concatenates them.
 # Labels are stable identifiers — the UI maps them to display names, so
 # renaming one here is a breaking change for stored rows.
+REPLY_FORMAT_LABEL: Final = "reply_format_rules"
+
 _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("critical_rules", r"\[CRITICAL RULES"),
     ("agent_instructions", r"\[AGENT SYSTEM PROMPT\]"),
@@ -62,6 +64,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("incognito", r"\[INCOGNITO SESSION\]"),
     ("temporary_session", r"\[TEMPORARY SESSION\]"),
     ("cancelled_turn", r"\[PREVIOUS TURN WAS CANCELLED"),
+    (REPLY_FORMAT_LABEL, r"\[REPLY FORMAT RULES\]"),
     ("request_header", r"\[CURRENT USER REQUEST"),
 )
 
@@ -133,8 +136,6 @@ _TRAILING_CONTRACTS: Final = re.compile(r"\n\n\((?:If |When )", re.MULTILINE)
 EVERY_TURN_LABELS: Final[frozenset[str]] = frozenset(
     {"surface", "working_folder", "request_header", "reply_format_rules", "user_display"}
 )
-
-REPLY_FORMAT_LABEL: Final = "reply_format_rules"
 
 PHASE_SESSION_START: Final = "session_start"
 PHASE_PER_TURN: Final = "per_turn"

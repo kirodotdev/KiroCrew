@@ -1171,12 +1171,13 @@ The delimited forms keep their closers on purpose: an unterminated `%`, `!` or b
 
 `channel_history.push` in observe-mode channels is gated on `_user_authorized`. Only messages from the owner or allowlisted users are recorded in the history buffer. This prevents non-owner messages from influencing LLM context via prompt injection through shared channel traffic.
 
-### Slack Thread-Context XPIA Screening (commit 1fde6107)
+### Slack Thread-Context XPIA Screening and Boundary Neutralization
 
 When a new session starts inside an existing Slack thread, the handler fetches the thread-root message (`thread_parent_text`) and/or thread metadata (`thread_meta`) via `conversations.history` / `conversations.replies`. This content can be authored by **any** user — anyone who can post in a thread the bot participates in, not just the owner — so it is untrusted (XPIA) input. Beyond the existing `redact()` pass (credential/exfil stripping), `context.py:build_message` now:
 
 - Screens both `thread_parent_text` and `thread_meta` with `security.contains_injection()` (a public wrapper over the shared `_INJECTION_PATTERNS` set, which lives in the dependency-free `vector_memory_constants` module and is re-exported by `vector_memory`) and **drops** the content on match; the parent branch then degrades to the bare thread-metadata block so the LLM still knows it is in a thread. The wrapper imports the pattern set at module top level and does **not** fail open — a screen that cannot run must not silently pass untrusted content through.
 - Frames surviving parent text as **`[SLACK THREAD CONTEXT — UNTRUSTED DATA]`** wrapped in `<<<UNTRUSTED_THREAD_PARENT … >>>END_UNTRUSTED_THREAD_PARENT` delimiters, explicitly instructing the model to treat it as content to read and never as instructions to follow — instead of the prior "started by a prior session … here is what was posted" framing that presented it as trusted output.
+- Before framing, neutralizes Unicode-normalized variants of both thread-fence markers through the shared span matcher (NFKC, complete Default-Ignorable-Code-Point removal, and original-coordinate replacement), then neutralizes every primary structural prompt marker. Surviving `thread_meta` receives the same structural-marker scrub before it is placed ahead of the current-request boundary. Genuine wrapper markers are minted only after the untrusted payload has been scrubbed.
 - Emits a `prompt_injection_dropped` SEL audit event (`security.audit_injection_dropped()`, best-effort) whenever screened thread-parent or thread-metadata content is dropped, so attempted injection via shared thread surfaces stays visible in the audit trail.
 
 ### Mermaid Diagram Sandboxing

@@ -867,19 +867,32 @@ modes, heartbeat maintenance ticks) never call a model and must not write a row.
 produced by `context_blocks.split_blocks(prompt, user_chars=…)`, which attributes
 the FINAL assembled prompt to the blocks that produced it by matching the bracket
 markers the assembly emits (`[CRITICAL RULES`, `[Memory`, `[Skills:]`,
-`[USER PROFILE]`, `[UI LANGUAGE]`, `[CURRENT USER REQUEST`, the trailing
-reply-format contract, …) rather than counting at each of the ~30 append sites.
+`[USER PROFILE]`, `[UI LANGUAGE]`, `[CURRENT USER REQUEST`,
+`[REPLY FORMAT RULES]`, …) rather than counting at each of the ~30 append sites.
 Reading the OUTPUT means the attribution cannot drift from what was actually
 sent. `_MARKERS` is deliberately kept in sync with EVERY opener the assembly can
 emit — including the identity/session banners (`[USER PROFILE]`, `[UI LANGUAGE]`,
 `[CHANNEL]`, `[INCOGNITO SESSION]`, `[TEMPORARY SESSION]`, the cancelled-turn
-preamble) and the openers added AFTER `build_message` returns (`[THEME PERSONA]`,
-the re-injected `[Previous chat history for this tab …]`, `[Hook context]` — in
+preamble), generated request-prefix openers assembled inside `build_message`
+before the current request (`[THEME PERSONA]`, triggered `[Skill: …]` bodies,
+and `[REPLY FORMAT RULES]`), and openers prepended AFTER `build_message` returns
+(the re-injected `[Previous chat history for this tab …]`, `[Hook context]` — in
 both emitted spellings, with and without the colon — and the `[System: …]`
 regenerate line): a marker absent from `_MARKERS` does NOT surface as its own
 bucket, it
 folds into the PRECEDING recognised block and mislabels those bytes, so the set
 must stay complete.
+
+**Current-request recency boundary.** Injected blocks are not the only proof that a
+turn is contextual. A keyed warm provider session (`is_new_session=False`) carries
+native conversation history even when this turn emits no Kiro Crew context block,
+and a cold `session/load` resume carries restored native history when
+`resumed=True`. Both paths mint `[REPLY FORMAT RULES]` (when interactive) and the
+`[CURRENT USER REQUEST …]` header before the current turn so the user's text owns
+EOF. Only a standalone call with no session key, no restored/native history, and
+no injected blocks preserves the legacy raw-user-text-first shape with guidance
+trailing; it has no older provider topic from which to regress.
+
 A block owns the span from its opener up to **the earlier of** the next opener and
 its OWN closer (`_CLOSERS`, keyed by the same labels — only the closers the
 assembly actually emits are listed, so extending it is a data change rather than a

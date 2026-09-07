@@ -104,20 +104,17 @@ _FENCE_MARKER_RE = re.compile(
     r"-{0,}\s*(?:UNTRUSTED FORWARDED CONTENT|CONTEXT ENTRY)\s+(?:BEGIN|END)\s*-{0,}",
     re.IGNORECASE,
 )
+_FENCE_MARKER_NEUTRALIZED = "[removed embedded fence marker]"
 
 
 def _neutralize_fence_markers(text: str) -> str:
-    """Strip any embedded quarantine/context fence markers from untrusted text.
+    """Neutralize Unicode-normalized forwarded/context fence variants."""
+    # Local import avoids the context -> Slack handler import cycle during
+    # module initialization; interaction handlers run only after startup.
+    from kiro_crew.context import _apply_marker_spans, _marker_spans
 
-    The forwarded body is authored by an arbitrary third party (possibly
-    external via Slack-Connect). If it contains a literal ``--- UNTRUSTED
-    FORWARDED CONTENT END ---`` (or a CONTEXT ENTRY marker), interpolating it
-    between the real fence markers would let the attacker's trailing text break
-    out of the quarantine and land in the trusted first-party region of the
-    prompt. Replace any such marker phrase with a defanged placeholder so the
-    boundary the model relies on cannot be forged from within the content.
-    """
-    return _FENCE_MARKER_RE.sub("[removed embedded fence marker]", text)
+    spans = _marker_spans(text, (_FENCE_MARKER_RE,))
+    return _apply_marker_spans(text, spans, _FENCE_MARKER_NEUTRALIZED)
 
 
 # Module-level orchestrator reference — set by ``init()``.

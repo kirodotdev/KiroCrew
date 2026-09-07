@@ -149,6 +149,31 @@ class TestReplyFormatCollapse:
         assert out[REPLY_FORMAT_LABEL] == len(contracts)
         assert sum(out.values()) == len(body + contracts)
 
+    def test_pre_request_contracts_use_the_stable_marker(self):
+        project = "[PROJECT] /workspace/example\n\n"
+        thread_meta = "[marker-removed]\nordinary fallback context\n"
+        contracts = (
+            "[REPLY FORMAT RULES]\n"
+            "\n\n(If presenting choices, end with options)"
+            "\n\n(If a decision is needed, ask once)"
+        )
+        header = "[CURRENT USER REQUEST -- respond]\n"
+        typed = "Which permission is missing?"
+        prompt = project + thread_meta + contracts + header + typed
+        assert prompt.count("[REPLY FORMAT RULES]") == 1
+        start = len(prompt) - len(typed)
+
+        out = split_blocks(prompt, user_span=(start, len(prompt)))
+
+        # Fallback metadata is another user's data. It stays outside the trusted
+        # reply-format block (and therefore remains with the preceding context
+        # bucket until it gains its own marker).
+        assert out["working_folder"] == len(project) + len(thread_meta)
+        assert out[REPLY_FORMAT_LABEL] == len(contracts)
+        assert out["request_header"] == len(header)
+        assert out[USER_LABEL] == len(typed)
+        assert sum(out.values()) == len(prompt)
+
 
 class TestForgedMarkersInUserText:
     """The user's own text is the one attacker-controlled span of the prompt."""
