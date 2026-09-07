@@ -56,6 +56,18 @@ def test_monitor_completion_contract_is_typed() -> None:
         )
 
 
+def test_oversized_completed_ts_raises_value_error() -> None:
+    """An int too large for float conversion must raise ValueError like every
+    sibling validator, not OverflowError no caller expects."""
+    with pytest.raises(ValueError, match="completed_ts"):
+        models.MonitorActionCompletion(
+            monitor_id="monitor1",
+            fingerprint="failure-a",
+            disposition=models.MonitorActionDisposition.SUCCESS,
+            completed_ts=10**400,
+        )
+
+
 @pytest.mark.asyncio
 async def test_dispatch_charges_nothing_until_the_action_turn_completes(tmp_path) -> None:
     """Moving completed-turn accounting into dispatch would spend budget early."""

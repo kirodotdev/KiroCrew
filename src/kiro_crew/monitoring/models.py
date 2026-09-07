@@ -181,12 +181,7 @@ class MonitorActionCompletion:
                 raise ValueError(f"{name} must be a non-empty string")
         if not isinstance(self.disposition, MonitorActionDisposition):
             raise ValueError("disposition must be a MonitorActionDisposition")
-        if (
-            isinstance(self.completed_ts, bool)
-            or not isinstance(self.completed_ts, (int, float))
-            or not math.isfinite(self.completed_ts)
-            or self.completed_ts < 0
-        ):
+        if not is_finite_non_negative_number(self.completed_ts):
             raise ValueError("completed_ts must be a finite non-negative number")
         for name in ("input_tokens", "output_tokens"):
             value = getattr(self, name)
