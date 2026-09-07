@@ -708,6 +708,8 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         "approval_stalled",
         "next_due_ts",
         "self_armed",
+        "terminal_notification_outcome",
+        "terminal_notification_stopped_at",
         # Mapped from the monitor's own accounting, not withheld -- withholding
         # them handed the component a default whose label reads "0 = infinity".
         "max_cycles",

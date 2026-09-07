@@ -842,6 +842,7 @@ async def authorize_and_add_nudge(
             return (
                 current is authorized_slot
                 and mode_ok
+                and not bool(getattr(authorized_slot, "_closing", False))
                 and str(getattr(current, "memory_mode", "persistent")) == "persistent"
             )
 

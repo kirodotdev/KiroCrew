@@ -562,8 +562,8 @@ async def test_busy_delivery_retry_is_bounded_by_monitor_runtime(tmp_path):
     first = await controller.tick(loop, now=110.0)
     expired = await controller.tick(loop, now=125.0)
 
-    assert first is MonitorDecision.WAKE_ACTIONABLE
-    assert expired is MonitorDecision.STOP_BUDGET
+    assert first.decision is MonitorDecision.WAKE_ACTIONABLE
+    assert expired.decision is MonitorDecision.STOP_BUDGET
     assert len(provider.previous) == 1
     assert dispatched.await_count == 1
     assert loop.monitor is not None
@@ -932,7 +932,7 @@ async def test_cadence_edits_during_busy_preserve_retry_and_runtime_bound(tmp_pa
 
     expired = await controller.tick(loop, now=retry_at)
 
-    assert expired is MonitorDecision.STOP_BUDGET
+    assert expired.decision is MonitorDecision.STOP_BUDGET
     assert len(provider.previous) == 1
     assert dispatched.await_count == 1
     assert not loop.active
@@ -962,9 +962,9 @@ async def test_busy_budget_stop_clears_late_acceptance_before_terminating(tmp_pa
         provider=_Provider(_result(MonitorObservationStatus.PENDING)),
     )
 
-    assert await controller.tick(loop, now=124.0) is MonitorDecision.NO_CHANGE
+    assert (await controller.tick(loop, now=124.0)).decision is MonitorDecision.NO_CHANGE
     retry_at = loop.next_due_ts
-    assert await controller.tick(loop, now=retry_at) is MonitorDecision.STOP_BUDGET
+    assert (await controller.tick(loop, now=retry_at)).decision is MonitorDecision.STOP_BUDGET
 
     assert loop.monitor is not None
     assert loop.monitor.outcome is MonitorOutcome.BUDGET

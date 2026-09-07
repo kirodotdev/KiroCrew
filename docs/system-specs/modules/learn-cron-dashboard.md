@@ -2251,10 +2251,15 @@ completion deadline and resumes its existing `next_due_ts` retry after restart.
 Before a spent BUSY claim becomes terminal, its settlement path also clears any
 late transport-acceptance marker, so an inactive budget record cannot retain an
 accepted turn that no completion timer owns.
-Terminal dashboard-notification delivery is a separate persisted bit on the
-monitor record. The service marks it only for the exact `(id, outcome, stopped_at)`
-generation still retained, so a delayed delivery acknowledgement cannot mark a
-new terminal generation or replacement monitor as notified.
+Terminal dashboard-notification delivery is recorded against the exact
+`(id, outcome, stopped_at)` generation on the stable outer loop record, with the
+current monitor-version bit retained for compatibility. The outer record lets a
+gateway persist the acknowledgement without rewriting an opaque future-version
+monitor payload. The gateway subscribes before startup can arm timers and then
+schedules retained-terminal replay as supervised background work, so notification
+persistence cannot delay gateway readiness and a transition during startup cannot
+escape both the live observer and replay. A delayed acknowledgement cannot mark a new
+terminal generation or replacement monitor as notified.
 Future versions also fail closed, are persisted inactive, and are never armed;
 their opaque monitor payload remains preserved for a newer gateway. Malformed
 current-version payloads load through a valid, inactive

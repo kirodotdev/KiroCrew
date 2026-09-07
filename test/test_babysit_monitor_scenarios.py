@@ -29,10 +29,9 @@ from kiro_crew.monitoring.models import (
 _SESSION_KEY = "dashboard:chat-1"
 _BINDING = "chat-1"
 _TARGET = "https://github.com/acme/widgets/pull/7"
-_BABYSIT_SKILL = (
-    Path(__file__).parents[1] / "src/kiro_crew/builtin_skills/kirocrew-dev/babysit/SKILL.md"
-)
-_SYSTEM_PROMPT = Path(__file__).parents[1] / "src/kiro_crew/config/prompt.md"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_BABYSIT_SKILL = _REPO_ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/babysit/SKILL.md"
+_SYSTEM_PROMPT = _REPO_ROOT / "src/kiro_crew/config/prompt.md"
 
 
 def test_babysit_is_reachable_and_the_system_prompt_prefers_structured_watch() -> None:
@@ -168,11 +167,11 @@ class _Provider:
     results: list[GitHubPullRequestProbeResult]
     probe_count: int = 0
 
-    def probe(self, target: str, *, previous_observation=None):
-        del target, previous_observation
+    def probe(self, subjects, *, previous_observations=None):
+        del previous_observations
         result = self.results[min(self.probe_count, len(self.results) - 1)]
         self.probe_count += 1
-        return result
+        return {subject: result for subject in subjects}
 
 
 def _state_and_slot():
@@ -297,8 +296,8 @@ async def test_babysit_unchanged_observations_probe_without_agent_turns(monitor_
     first = await controller.tick(loop, now=created + 10)
     second = await controller.tick(loop, now=created + 310)
 
-    assert first is MonitorDecision.RECORD_ONLY
-    assert second is MonitorDecision.NO_CHANGE
+    assert first.decision is MonitorDecision.RECORD_ONLY
+    assert second.decision is MonitorDecision.NO_CHANGE
     assert provider.probe_count == 2
     dispatch.assert_not_awaited()
     inspection = _inspection(monitor_service)["monitor"]
@@ -329,8 +328,8 @@ async def test_babysit_actionable_fingerprint_wakes_once_across_restart(monitor_
     first = await controller.tick(loop, now=now)
     second = await controller.tick(loop, now=now + 1)
 
-    assert first is MonitorDecision.WAKE_ACTIONABLE
-    assert second is MonitorDecision.NO_CHANGE
+    assert first.decision is MonitorDecision.WAKE_ACTIONABLE
+    assert second.decision is MonitorDecision.NO_CHANGE
     assert provider.probe_count == 1
     dispatch.assert_awaited_once()
     inspection = _inspection(monitor_service)["monitor"]
@@ -357,7 +356,7 @@ async def test_babysit_actionable_fingerprint_wakes_once_across_restart(monitor_
 
         decision = await restarted_controller.tick(restored, now=now + 2)
 
-        assert decision is MonitorDecision.NO_CHANGE
+        assert decision.decision is MonitorDecision.NO_CHANGE
         assert restarted_provider.probe_count == 0
         restarted_dispatch.assert_not_awaited()
         assert restored.monitor.wake_count == 1
@@ -383,7 +382,7 @@ async def test_babysit_success_stops_without_an_agent_turn(monitor_service):
 
     decision = await controller.tick(loop, now=loop.monitor.created_ts + 10)
 
-    assert decision is MonitorDecision.STOP_SUCCESS
+    assert decision.decision is MonitorDecision.STOP_SUCCESS
     dispatch.assert_not_awaited()
     inspection = _inspection(monitor_service)
     monitor = inspection["monitor"]
@@ -413,7 +412,7 @@ async def test_babysit_provider_block_is_safe_and_turn_free(monitor_service):
 
     decision = await controller.tick(loop, now=loop.monitor.created_ts + 10)
 
-    assert decision is MonitorDecision.STOP_BLOCKED
+    assert decision.decision is MonitorDecision.STOP_BLOCKED
     dispatch.assert_not_awaited()
     inspection = _inspection(monitor_service)["monitor"]
     assert isinstance(inspection, dict)
@@ -433,7 +432,7 @@ async def test_babysit_runtime_budget_stops_before_another_probe_or_turn(monitor
 
     decision = await controller.tick(loop, now=loop.monitor.created_ts + 60)
 
-    assert decision is MonitorDecision.STOP_BUDGET
+    assert decision.decision is MonitorDecision.STOP_BUDGET
     assert provider.probe_count == 0
     dispatch.assert_not_awaited()
     inspection = _inspection(monitor_service)["monitor"]
@@ -457,8 +456,8 @@ async def test_babysit_busy_retry_stops_at_runtime_without_another_action_attemp
     first = await controller.tick(loop, now=loop.monitor.created_ts + 10)
     expired = await controller.tick(loop, now=loop.monitor.created_ts + 25)
 
-    assert first is MonitorDecision.WAKE_ACTIONABLE
-    assert expired is MonitorDecision.STOP_BUDGET
+    assert first.decision is MonitorDecision.WAKE_ACTIONABLE
+    assert expired.decision is MonitorDecision.STOP_BUDGET
     assert provider.probe_count == 1
     dispatch.assert_awaited_once()
     inspection = _inspection(monitor_service)["monitor"]
@@ -493,5 +492,5 @@ async def test_babysit_user_stop_uses_real_tool_and_retains_terminal_state(monit
 
     decision = await controller.tick(loop, now=loop.monitor.stopped_at + 1)
 
-    assert decision is MonitorDecision.STOP_BLOCKED
+    assert decision.decision is MonitorDecision.STOP_BLOCKED
     dispatch.assert_not_awaited()

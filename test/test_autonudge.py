@@ -98,6 +98,42 @@ async def test_terminal_notification_delivery_is_persisted_for_exact_terminal(sv
 
 
 @pytest.mark.asyncio
+async def test_terminal_notification_delivery_survives_opaque_monitor_reload(svc):
+    monitor = _structured_monitor(
+        outcome=MonitorOutcome.SUCCESS,
+        stopped_at=1_250.0,
+    )
+    monitor.version = MONITOR_STATE_VERSION + 1
+    loop = NudgeLoop(
+        id="monitor-future",
+        slot_key="chat-1-123",
+        message="watch it",
+        active=False,
+        monitor=monitor,
+    )
+    svc._loops[loop.id] = loop
+    svc._save()
+    raw_monitor = json.loads(svc._path.read_text())["loops"][0]["monitor"]
+
+    first_reload = AutoNudgeService(base_dir=svc._base_dir)
+    first_reload._load()
+    assert await first_reload.mark_terminal_notification_delivered(
+        loop.id,
+        MonitorOutcome.BLOCKED,
+        0.0,
+    )
+    assert json.loads(svc._path.read_text())["loops"][0]["monitor"] == raw_monitor
+
+    second_reload = AutoNudgeService(base_dir=svc._base_dir)
+    second_reload._load()
+    assert not await second_reload.mark_terminal_notification_delivered(
+        loop.id,
+        MonitorOutcome.BLOCKED,
+        0.0,
+    )
+
+
+@pytest.mark.asyncio
 async def test_add_and_fire_on_idle(svc, monkeypatch):
     """Arming a timer and letting it elapse triggers the fire callback."""
     fired: list[NudgeLoop] = []

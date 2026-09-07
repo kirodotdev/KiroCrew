@@ -571,6 +571,12 @@ class NudgeLoop:
     # Optional observation/controller state. ``gate=True`` records belong to the
     # prompt path; controller-owned records carry state with ``gate=False``.
     monitor: MonitorState | None = None
+    # Durable delivery generation outside MonitorState. A future-version monitor
+    # is retained as an opaque payload, so mutating a field inside its local view
+    # cannot survive serialization. Keeping the exact terminal identity on the
+    # stable outer record preserves both the opaque bytes and restart dedupe.
+    terminal_notification_outcome: str = ""
+    terminal_notification_stopped_at: float = 0.0
     # Optional SHORT stand-in for ``message`` in the VISIBLE dashboard
     # transcript row. Empty (the default) means the row is byte-identical to
     # what it has always been, so no existing loop changes behaviour.
@@ -620,6 +626,21 @@ class NudgeLoop:
 def is_structured_monitor_loop(loop: NudgeLoop) -> bool:
     """Distinguish controller records from prompt loops carrying probe state."""
     return getattr(loop, "monitor", None) is not None and not getattr(loop, "gate", False)
+
+
+def terminal_notification_delivery_matches(
+    loop: NudgeLoop,
+    outcome: MonitorOutcome,
+    stopped_at: float,
+) -> bool:
+    """Whether this exact terminal generation has a durable delivery record."""
+    if loop.terminal_notification_outcome:
+        return (
+            loop.terminal_notification_outcome == outcome.value
+            and loop.terminal_notification_stopped_at == stopped_at
+        )
+    state = loop.monitor
+    return state is not None and state.terminal_notification_delivered
 
 
 class MonitorUpdateConflict(ValueError):
@@ -1002,6 +1023,37 @@ class AutoNudgeService:
                     loop.monitor.next_probe_at = loop.next_due_ts
                     self._store_dirty = True
                 if due_repaired or idle_repaired:
+                    self._store_dirty = True
+                notification_stopped_at, notification_time_repaired = _repair_number(
+                    loop.terminal_notification_stopped_at,
+                    lo=0.0,
+                    fallback=0.0,
+                )
+                loop.terminal_notification_stopped_at = notification_stopped_at
+                notification_outcome = loop.terminal_notification_outcome
+                valid_notification_outcomes = {item.value for item in MonitorOutcome}
+                if (
+                    not isinstance(notification_outcome, str)
+                    or notification_outcome not in valid_notification_outcomes
+                ):
+                    if (
+                        notification_outcome
+                        or notification_stopped_at
+                        or notification_time_repaired
+                    ):
+                        self._store_dirty = True
+                    loop.terminal_notification_outcome = ""
+                    loop.terminal_notification_stopped_at = 0.0
+                elif notification_time_repaired:
+                    self._store_dirty = True
+                if (
+                    loop.monitor is not None
+                    and loop.monitor.outcome is not None
+                    and loop.monitor.terminal_notification_delivered
+                    and not loop.terminal_notification_outcome
+                ):
+                    loop.terminal_notification_outcome = loop.monitor.outcome.value
+                    loop.terminal_notification_stopped_at = loop.monitor.stopped_at
                     self._store_dirty = True
                 # ``banner`` is display-only, but it is ``.strip()``ed on the
                 # fire path, so a non-string value there raises AttributeError
@@ -2592,13 +2644,15 @@ class AutoNudgeService:
                 or loop.active
                 or state.outcome is not outcome
                 or state.stopped_at != stopped_at
-                or state.terminal_notification_delivered
+                or terminal_notification_delivery_matches(loop, outcome, stopped_at)
             ):
                 return False
             staged = deepcopy(loop)
             staged_state = staged.monitor
             assert staged_state is not None
             staged_state.terminal_notification_delivered = True
+            staged.terminal_notification_outcome = outcome.value
+            staged.terminal_notification_stopped_at = stopped_at
             await self._persist_staged_monitor_locked(loop, staged)
         return True
 
