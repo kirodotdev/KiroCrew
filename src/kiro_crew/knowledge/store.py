@@ -950,14 +950,30 @@ class KnowledgeStore:
         Takes ``_graph_lock`` around the WHOLE rebuild, not just the first one.
         Holding it only at the first-touch call site was not enough: the six
         mutation-refresh sites acquire no lock of their own, so a first graph GET
-        racing a source DELETE put two threads through ``clear()`` + re-add at
-        once, and the loser's rows survived into a graph whose ``_graph_loaded``
-        was then set True -- a flag asserting "loaded" over data that is wrong,
-        which is worse than an unloaded graph because it never gets rescanned.
+        racing a source DELETE put two threads through the rebuild at once, and
+        the loser's rows survived into a graph whose ``_graph_loaded`` was then
+        set True -- a flag asserting "loaded" over data that is wrong, which is
+        worse than an unloaded graph because it never gets rescanned.
 
         Serializing the whole rebuild also fixes WHICH snapshot wins: the SELECTs
         below run after acquisition, so the rebuild that acquires last reads the
         freshest committed state rather than replaying rows it captured earlier.
+
+        **Build a fresh graph, then publish it with one reference assignment.**
+        The rebuild used to ``clear()`` the live ``self._graph`` and re-add row
+        by row, which serialization made stale-publish-safe but left the object a
+        reader could be iterating momentarily empty: a reader holding
+        ``self._graph`` between the ``clear()`` and the last insert saw a torn
+        (empty or truncated) graph, and a multi-step reader that re-read
+        ``self.graph`` across its own steps -- degree ranking, then per-node
+        attribute reads -- could miss a node that ``clear()`` had just removed
+        (#8692). Building into a NEW ``SimpleDiGraph`` and swapping the reference
+        under the lock closes that window: the old object is never mutated, so a
+        reader holding it sees a complete, consistent OLD graph until it drops the
+        reference, and the next read sees the complete NEW one. The multi-step
+        readers pin one reference for the duration of their read (see
+        ``get_entity_subgraph`` / ``get_neighbors`` and the graph handlers) so a
+        swap mid-read cannot mix old and new nodes.
 
         The lock is only ever taken here and in :meth:`ensure_graph_loaded`, and
         this method never takes SQLite's writer lock -- it is read-only, and all
@@ -967,19 +983,23 @@ class KnowledgeStore:
         rebuild acquires its lock and THEN a writer lock.)
         """
         with self._graph_lock:
-            self._graph.clear()
+            rebuilt = SimpleDiGraph()
             for row in self.db.execute("SELECT id, name, entity_type FROM entities"):
-                self._graph.add_node(row["id"], name=row["name"], entity_type=row["entity_type"])
+                rebuilt.add_node(row["id"], name=row["name"], entity_type=row["entity_type"])
             for row in self.db.execute(
                 "SELECT id, source_id, target_id, relation_type, weight FROM entity_relations"
             ):
-                self._graph.add_edge(
+                rebuilt.add_edge(
                     row["source_id"],
                     row["target_id"],
                     id=row["id"],
                     relation_type=row["relation_type"],
                     weight=row["weight"],
                 )
+            # Single-reference publish. A reader that captured the previous
+            # ``self._graph`` keeps iterating that complete object; readers after
+            # this point see ``rebuilt``. Neither ever observes a half-built graph.
+            self._graph = rebuilt
             # Truthful bookkeeping for the refresh call sites too: after any
             # rebuild the graph IS materialised, so a later first-touch must not
             # scan again. Set inside the lock, so no reader can observe the flag
@@ -1712,8 +1732,18 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             "INSERT INTO entities (id, name, entity_type, description, aliases, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (eid, name, entity_type, description, json.dumps(aliases or []), now, now))
-        self.graph.add_node(eid, name=name, entity_type=entity_type)
-        self.db.commit()
+        # Hold ``_graph_lock`` across BOTH the commit and the in-memory add, as one
+        # critical section (#8692). ``_load_graph`` -- which every delete / merge /
+        # import path runs after its own COMMIT -- takes this same lock for its whole
+        # rebuild-and-swap, so serializing commit+add here means a concurrent rebuild
+        # can never land BETWEEN this commit and this add. Without that, a source
+        # deletion that removes this entity's rows could rebuild and swap in the
+        # window, and this late add would re-inject the deleted entity into the
+        # published graph while SQLite no longer has it. Whichever of the two paths
+        # acquires last leaves the in-memory graph agreeing with the committed rows.
+        with self._graph_lock:
+            self.db.commit()
+            self._graph.add_node(eid, name=name, entity_type=entity_type)
         return eid
 
     def find_entity(self, name):
@@ -1753,8 +1783,13 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             "INSERT INTO entity_relations (id, source_id, target_id, relation_type, description, weight, source_item_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (rid, source_id, target_id, relation_type, description, weight, source_item_id, now))
-        self.graph.add_edge(source_id, target_id, id=rid, relation_type=relation_type, weight=weight)
-        self.db.commit()
+        # Hold ``_graph_lock`` across commit + add, one critical section -- see
+        # add_entity. This closes the delete-then-restore race: a source deletion
+        # whose rebuild+swap would otherwise land between this commit and this add
+        # cannot interleave, so this edge is never re-injected after its row is gone.
+        with self._graph_lock:
+            self.db.commit()
+            self._graph.add_edge(source_id, target_id, id=rid, relation_type=relation_type, weight=weight)
         return rid
 
     def add_mention(self, item_id, entity_id, context=None):
@@ -1914,15 +1949,21 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                         (new_source_id, item_id))
 
     def get_neighbors(self, entity_id, depth=1) -> list:
+        # Pin one graph reference for the whole traversal. ``_load_graph``
+        # publishes a rebuilt graph by swapping ``self._graph`` (#8692), so
+        # re-reading ``self.graph`` at each step could mix an old and a new graph
+        # across the successor/predecessor walk and the per-node attribute reads.
+        # Capturing it once means this read sees a single consistent snapshot.
+        graph = self.graph
         visited = set()
         frontier = {entity_id}
         for _ in range(depth):
             next_frontier = set()
             for nid in frontier:
-                for neighbor in self.graph.successors(nid):
+                for neighbor in graph.successors(nid):
                     if neighbor not in visited and neighbor != entity_id:
                         next_frontier.add(neighbor)
-                for neighbor in self.graph.predecessors(nid):
+                for neighbor in graph.predecessors(nid):
                     if neighbor not in visited and neighbor != entity_id:
                         next_frontier.add(neighbor)
             visited |= frontier
@@ -1931,29 +1972,41 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         visited.discard(entity_id)
         result = []
         for nid in visited:
-            data = self.graph.nodes.get(nid, {})
+            data = graph.nodes.get(nid, {})
             result.append({"id": nid, "name": data.get("name"), "entity_type": data.get("entity_type")})
         return result
 
-    def get_entity_subgraph(self, entity_id, depth=2) -> dict:
+    def get_entity_subgraph(self, entity_id, depth=2) -> dict | None:
+        """The D3-shaped subgraph around ``entity_id``, or ``None`` if absent.
+
+        Pins ONE graph reference for the whole read and does the existence check
+        against it, so the check and the traversal see the same snapshot -- a
+        rebuild swapping in a fresh graph between them cannot let an entity pass
+        the check on the old graph and be walked on the new one, returning a
+        degenerate ``name: None`` subgraph instead of ``None`` (#8692). The
+        ``get_entity_graph`` handler relies on this ``None`` to answer 404.
+        """
+        graph = self.graph
+        if not graph.has_node(entity_id):
+            return None
         visited = set()
         frontier = {entity_id}
         for _ in range(depth):
             next_frontier = set()
             for nid in frontier:
-                for neighbor in self.graph.successors(nid):
+                for neighbor in graph.successors(nid):
                     next_frontier.add(neighbor)
-                for neighbor in self.graph.predecessors(nid):
+                for neighbor in graph.predecessors(nid):
                     next_frontier.add(neighbor)
             visited |= frontier
             frontier = next_frontier - visited
         visited |= frontier
         nodes = []
         for nid in visited:
-            data = self.graph.nodes.get(nid, {})
+            data = graph.nodes.get(nid, {})
             nodes.append({"id": nid, "name": data.get("name"), "type": data.get("entity_type")})
         edges = []
-        for u, v, data in self.graph.edges(data=True):
+        for u, v, data in graph.edges(data=True):
             if u in visited and v in visited:
                 edges.append({"source": u, "target": v, "type": data.get("relation_type"), "weight": data.get("weight")})
         return {"nodes": nodes, "edges": edges}

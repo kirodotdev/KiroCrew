@@ -574,9 +574,14 @@ async def get_entity_graph(request: web.Request) -> web.Response:
     # to happen on a worker thread, the same way this module already offloads
     # the store's SQL.
     await asyncio.to_thread(store.ensure_graph_loaded)
-    if not store.graph.has_node(entity_id):
+    # get_entity_subgraph pins one graph reference internally and does the
+    # existence check against it, so the 404 decision and the walk read the SAME
+    # snapshot even if a worker-thread mutation swaps in a rebuilt graph (#8692);
+    # it returns None when the entity is absent.
+    result = store.get_entity_subgraph(entity_id, depth)
+    if result is None:
         return web.json_response({"error": "entity not found"}, status=404)
-    return web.json_response(store.get_entity_subgraph(entity_id, depth))
+    return web.json_response(result)
 
 
 async def get_entity_items(request: web.Request) -> web.Response:
@@ -661,6 +666,13 @@ async def get_full_graph(request: web.Request) -> web.Response:
     # while the graph was built during construction.
     await asyncio.to_thread(store.ensure_graph_loaded)
 
+    # Pin one graph reference for every read below. ``_load_graph`` publishes a
+    # rebuilt graph by swapping ``store._graph`` (#8692); re-reading
+    # ``store.graph`` at each step (degree ranking, then per-node attribute
+    # reads, then edges) could otherwise mix an old and a new graph and drop a
+    # node between steps. One capture means this response is a single snapshot.
+    graph = store.graph
+
     # Source filter: restrict to entities mentioned in items from specific sources
     source_id_param = request.query.get("source_id", "").strip()
     if source_id_param:
@@ -691,18 +703,18 @@ async def get_full_graph(request: web.Request) -> web.Response:
             return web.json_response({"nodes": [], "edges": []})
         # Rank allowed entities by degree, take top N
         nodes_by_degree = sorted(
-            allowed_entities, key=lambda n: store.graph.degree(n) if store.graph.has_node(n) else 0, reverse=True
+            allowed_entities, key=lambda n: graph.degree(n) if graph.has_node(n) else 0, reverse=True
         )[:limit]
     else:
-        nodes_by_degree = sorted(store.graph.nodes, key=lambda n: store.graph.degree(n), reverse=True)[:limit]
+        nodes_by_degree = sorted(graph.nodes, key=lambda n: graph.degree(n), reverse=True)[:limit]
 
     if not nodes_by_degree:
         return web.json_response({"nodes": [], "edges": []})
     node_set = set(nodes_by_degree)
-    nodes = [{"id": n, "name": store.graph.nodes[n].get("name"), "type": store.graph.nodes[n].get("entity_type")}
-             for n in node_set if store.graph.has_node(n)]
+    nodes = [{"id": n, "name": graph.nodes[n].get("name"), "type": graph.nodes[n].get("entity_type")}
+             for n in node_set if graph.has_node(n)]
     edges = [{"source": u, "target": v, "type": d.get("relation_type"), "weight": d.get("weight")}
-             for u, v, d in store.graph.edges(data=True) if u in node_set and v in node_set]
+             for u, v, d in graph.edges(data=True) if u in node_set and v in node_set]
     return web.json_response({"nodes": nodes, "edges": edges})
 
 

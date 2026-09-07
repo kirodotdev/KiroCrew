@@ -9,6 +9,7 @@ serialised, and the readers that run on the loop materialise it off-loop.
 
 import asyncio
 import threading
+import time
 
 import pytest
 
@@ -304,12 +305,21 @@ class TestLoopReadersMaterialiseOffLoop:
 
         src = inspect.getsource(getattr(handlers, handler_name))
         offload = src.index("asyncio.to_thread(store.ensure_graph_loaded)")
+        # The graph must be materialised off-loop BEFORE anything reads it.
+        # get_full_graph reads the graph directly (`graph = store.graph` and reads
+        # through that local); get_entity_graph delegates the read to
+        # store.get_entity_subgraph, which pins and reads the graph itself (#8692).
+        # Either way the touch that reaches the graph must follow the offload.
+        read_tokens = (
+            "store.graph.",
+            "store.graph,",
+            "store.graph)",
+            "store.graph\n",
+            "store.graph ",
+            "store.get_entity_subgraph(",
+        )
         first_read = min(
-            (
-                src.index(tok)
-                for tok in ("store.graph.", "store.graph,", "store.graph)")
-                if tok in src
-            ),
+            (src.index(tok) for tok in read_tokens if tok in src),
             default=None,
         )
         assert first_read is not None, "handler no longer reads store.graph"
@@ -333,3 +343,332 @@ class TestLoopReadersMaterialiseOffLoop:
             assert reader._graph.has_node(ids[0])
         finally:
             reader.close()
+
+
+class TestRebuildIsPublishedByReferenceSwap:
+    """A concurrent rebuild must never empty the graph a reader is holding.
+
+    Serialization (``TestRebuildsDoNotInterleave``) fixed WHICH rebuild wins and
+    that the flag is never True over stale data, but the rebuild still mutated
+    the live object in place: ``clear()`` then row-by-row re-add. A reader that
+    captured ``store.graph`` and iterated it -- or a multi-step reader that
+    re-read it across degree ranking then per-node attribute reads -- could
+    observe the window between ``clear()`` and the last insert and return an
+    empty or truncated graph (#8692, consequence 1).
+
+    The fix builds a fresh ``SimpleDiGraph`` and publishes it with a single
+    reference assignment, so the object a reader holds is never mutated. These
+    tests pin that: a held reference stays whole across a rebuild, and no reader
+    ever sees a node count drop to zero mid-rebuild.
+    """
+
+    def test_a_held_reference_is_never_mutated_by_a_rebuild(self, tmp_path):
+        path = str(tmp_path / "k.db")
+        writer = KnowledgeStore(path)
+        ids = _seed(writer, entities=5)
+        writer.close()
+
+        store = KnowledgeStore(path)
+        try:
+            store.ensure_graph_loaded()
+            # Capture the reference the way a reader does, then force a rebuild.
+            pinned = store.graph
+            before = {n for n in pinned.nodes}
+            assert before == set(ids)
+
+            store._load_graph()
+
+            # The pinned object must be untouched -- a swap leaves the old object
+            # alone; an in-place clear()+re-add would have mutated it.
+            after = {n for n in pinned.nodes}
+            assert after == before, (
+                "the rebuild mutated a reference a reader was holding; "
+                "it must build fresh and publish by assignment"
+            )
+            # And the store now serves the freshly-built graph.
+            assert store.graph is not pinned
+            for eid in ids:
+                assert store.graph.has_node(eid)
+        finally:
+            store.close()
+
+    def test_a_reader_never_observes_the_graph_emptied_mid_rebuild(self, tmp_path):
+        """The direct torn-read observation: sample the held reference while a
+        rebuild is paused partway through, and require it to stay whole.
+
+        With an in-place ``clear()`` + re-add the sample lands on an empty (or
+        truncated) graph. With build-fresh-then-swap the sampled reference is the
+        untouched old object, so it stays complete for the whole rebuild.
+        """
+        path = str(tmp_path / "k.db")
+        writer = KnowledgeStore(path)
+        ids = _seed(writer, entities=6)
+        writer.close()
+
+        store = KnowledgeStore(path)
+        original_count = len(ids)
+
+        rebuild_reached_midpoint = threading.Event()
+        sampler_has_read = threading.Event()
+        original_add_node = SimpleDiGraph.add_node
+        adds_during_rebuild: list[int] = []
+        min_seen = [original_count]
+
+        def traced_add_node(self, node_id, **attrs):
+            adds_during_rebuild.append(1)
+            # Pause once, partway through the rebuild, and let the sampler read
+            # the reference it pinned before the rebuild started.
+            if len(adds_during_rebuild) == 2 and not rebuild_reached_midpoint.is_set():
+                rebuild_reached_midpoint.set()
+                sampler_has_read.wait(timeout=10)
+            return original_add_node(self, node_id, **attrs)
+
+        try:
+            store.ensure_graph_loaded()
+            pinned = store.graph  # what a reader holds for the duration of a read
+
+            def rebuilder():
+                store._load_graph()
+
+            def sampler():
+                assert rebuild_reached_midpoint.wait(timeout=10), "rebuild never started adding"
+                # Read the pinned reference while the rebuild is paused midway.
+                min_seen[0] = min(min_seen[0], len({n for n in pinned.nodes}))
+                sampler_has_read.set()
+
+            SimpleDiGraph.add_node = traced_add_node  # type: ignore[method-assign]
+            threads = [
+                threading.Thread(target=rebuilder, name="rebuilder"),
+                threading.Thread(target=sampler, name="sampler"),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+                assert not t.is_alive(), "a thread deadlocked"
+        finally:
+            SimpleDiGraph.add_node = original_add_node  # type: ignore[method-assign]
+            store.close()
+
+        # The window really opened: the rebuild paused partway and the sampler
+        # read during that pause.
+        assert rebuild_reached_midpoint.is_set(), "the rebuild never paused midway"
+        assert sampler_has_read.is_set(), "the sampler never read"
+        # The held reference stayed whole throughout -- it was never cleared.
+        assert min_seen[0] == original_count, (
+            f"a reader saw {min_seen[0]} of {original_count} nodes mid-rebuild; "
+            "the held reference was emptied by an in-place clear()"
+        )
+
+
+class TestConcurrentIncrementalAddSurvivesARebuild:
+    """A committed incremental add must not be discarded by a concurrent swap.
+
+    ``add_entity`` / ``add_entity_relation`` write the row, commit, and apply an
+    incremental ``add_node`` / ``add_edge`` to the live graph. Publishing a
+    rebuild by swapping ``self._graph`` (#8692) means that in-memory add would be
+    LOST if it landed on the old object a rebuild was about to discard: the row is
+    in the database, but the in-memory graph misses it until the next full
+    rebuild, which in steady-state ingestion may never come. Both the add and the
+    rebuild take ``_graph_lock``, so the add lands on whichever graph is currently
+    published; this test forces the interleave and asserts the entity survives.
+    """
+
+    def test_an_add_entity_racing_a_rebuild_is_not_dropped(self, tmp_path):
+        path = str(tmp_path / "k.db")
+        writer = KnowledgeStore(path)
+        _seed(writer, entities=3)
+        writer.close()
+
+        store = KnowledgeStore(path)
+        # Force the rebuild to pause mid-scan so the add is guaranteed to
+        # interleave. The add takes ``_graph_lock``, which the paused rebuild
+        # holds, so it will block until the rebuild finishes and then apply to the
+        # swapped-in graph -- exactly the serialization being pinned.
+        rebuild_holding_lock = threading.Event()
+        adder_started = threading.Event()
+        original_add_node = SimpleDiGraph.add_node
+        new_id = [""]
+
+        def traced_add_node(self, node_id, **attrs):
+            if not rebuild_holding_lock.is_set() and threading.current_thread().name == "rebuilder":
+                rebuild_holding_lock.set()
+                # Hold the lock open only until the adder is running and about to
+                # contend for it. Do NOT wait on the add COMPLETING -- the add
+                # blocks on this very lock, so that would deadlock. A bounded wait
+                # plus a short settle gives the adder time to commit and reach the
+                # lock; the serialization we pin then does the rest.
+                adder_started.wait(timeout=10)
+                time.sleep(0.2)
+            return original_add_node(self, node_id, **attrs)
+
+        try:
+            store.ensure_graph_loaded()
+
+            def rebuilder():
+                store._load_graph()
+
+            def adder():
+                assert rebuild_holding_lock.wait(timeout=10), "rebuild never started"
+                adder_started.set()
+                new_id[0] = store.add_entity("LateComer", "concept")
+
+            SimpleDiGraph.add_node = traced_add_node  # type: ignore[method-assign]
+            threads = [
+                threading.Thread(target=rebuilder, name="rebuilder"),
+                threading.Thread(target=adder, name="adder"),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+                assert not t.is_alive(), "a thread deadlocked"
+        finally:
+            SimpleDiGraph.add_node = original_add_node  # type: ignore[method-assign]
+
+        try:
+            assert rebuild_holding_lock.is_set(), "the rebuild never ran"
+            assert adder_started.is_set(), "the add never started"
+            # The committed entity is present in the published in-memory graph --
+            # not merely on disk -- so it was not orphaned onto a discarded object.
+            assert new_id[0]
+            assert store.graph.has_node(
+                new_id[0]
+            ), "a committed incremental add was discarded by the rebuild swap"
+            db_ids = {r["id"] for r in store.db.execute("SELECT id FROM entities")}
+            assert new_id[0] in db_ids, "the add did not commit -- test proves nothing"
+        finally:
+            store.close()
+
+
+class TestEntitySubgraphSharesOnePinnedSnapshot:
+    """The 404 decision and the walk read one internally-pinned snapshot.
+
+    ``get_entity_subgraph`` captures ``self.graph`` ONCE, does the existence check
+    against that reference, and walks the same reference; it returns ``None`` when
+    the entity is absent, which ``get_entity_graph`` maps to 404. Because the check
+    and the walk share the one captured reference, a rebuild swapping in a fresh
+    graph between them cannot let an entity pass the check and then be walked on a
+    different graph (#8692).
+    """
+
+    def test_absent_entity_returns_none(self, tmp_path):
+        path = str(tmp_path / "k.db")
+        writer = KnowledgeStore(path)
+        _seed(writer, entities=2)
+        writer.close()
+
+        store = KnowledgeStore(path)
+        try:
+            store.ensure_graph_loaded()
+            assert store.get_entity_subgraph("does-not-exist", depth=2) is None
+        finally:
+            store.close()
+
+    def test_present_entity_yields_a_subgraph(self, tmp_path):
+        path = str(tmp_path / "k.db")
+        writer = KnowledgeStore(path)
+        ids = _seed(writer, entities=3)
+        writer.close()
+
+        store = KnowledgeStore(path)
+        try:
+            store.ensure_graph_loaded()
+            sg = store.get_entity_subgraph(ids[0], depth=2)
+            assert sg is not None
+            assert ids[0] in {n["id"] for n in sg["nodes"]}
+        finally:
+            store.close()
+
+
+class TestARebuildCannotRestoreAConcurrentlyDeletedWrite:
+    """The in-memory graph must agree with the committed rows after an add races
+    a rebuild that removes the same edge (#8692, GPT F1: delete-then-restore).
+
+    ``add_entity_relation`` commits its row and applies the in-memory ``add_edge``
+    as ONE ``_graph_lock`` critical section. A delete path (``delete_source_cascade``
+    etc.) removes rows and then rebuilds via ``_load_graph``, which takes the same
+    lock across its whole rebuild-and-swap. Because both are serialized on that
+    lock, a rebuild can never land BETWEEN the add's commit and its add_edge -- so
+    the add can never re-inject an edge whose row the delete just removed. The
+    invariant pinned here: whatever the interleave, the published graph's edges
+    equal the committed ``entity_relations`` rows, never a phantom.
+    """
+
+    def _committed_edges(self, store):
+        return {
+            (r["source_id"], r["target_id"])
+            for r in store.db.execute("SELECT source_id, target_id FROM entity_relations")
+        }
+
+    def _graph_edges(self, store):
+        return {(u, v) for u, v, _ in store.graph.edges(data=True)}
+
+    def test_add_edge_racing_a_rebuild_that_deletes_it_leaves_no_phantom(self, tmp_path):
+        path = str(tmp_path / "k.db")
+        writer = KnowledgeStore(path)
+        ids = _seed(writer, entities=3)
+        writer.close()
+
+        store = KnowledgeStore(path)
+        # A adds a fresh edge between two existing entities; B deletes that very
+        # edge's row and rebuilds. Force B to pause while holding the lock so A's
+        # commit+add is guaranteed to contend for it -- the atomic section is what
+        # keeps A's add from landing after B's swap.
+        src, tgt = ids[0], ids[2]
+        rebuild_holding_lock = threading.Event()
+        adder_started = threading.Event()
+        original_add_node = SimpleDiGraph.add_node
+
+        def traced_add_node(self, node_id, **attrs):
+            if not rebuild_holding_lock.is_set() and threading.current_thread().name == "rebuilder":
+                rebuild_holding_lock.set()
+                adder_started.wait(timeout=10)
+                time.sleep(0.2)
+            return original_add_node(self, node_id, **attrs)
+
+        try:
+            store.ensure_graph_loaded()
+
+            def rebuilder():
+                # Delete any edge between src and tgt at the DB, then rebuild --
+                # standing in for the delete-cascade's "remove rows then _load_graph".
+                store.db.execute(
+                    "DELETE FROM entity_relations WHERE source_id = ? AND target_id = ?",
+                    (src, tgt),
+                )
+                store.db.commit()
+                store._load_graph()
+
+            def adder():
+                assert rebuild_holding_lock.wait(timeout=10), "rebuild never started"
+                adder_started.set()
+                store.add_entity_relation(src, tgt, "calls")
+
+            SimpleDiGraph.add_node = traced_add_node  # type: ignore[method-assign]
+            threads = [
+                threading.Thread(target=rebuilder, name="rebuilder"),
+                threading.Thread(target=adder, name="adder"),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+                assert not t.is_alive(), "a thread deadlocked"
+        finally:
+            SimpleDiGraph.add_node = original_add_node  # type: ignore[method-assign]
+
+        try:
+            assert rebuild_holding_lock.is_set(), "the rebuild never ran"
+            assert adder_started.is_set(), "the add never started"
+            # The core invariant: no edge is present in memory that the committed
+            # rows do not have. A phantom (graph has (src,tgt), DB does not) is
+            # exactly the delete-then-restore defect.
+            graph_edges = self._graph_edges(store)
+            db_edges = self._committed_edges(store)
+            assert graph_edges == db_edges, (
+                f"in-memory graph disagrees with committed rows: "
+                f"phantom={graph_edges - db_edges}, missing={db_edges - graph_edges}"
+            )
+        finally:
+            store.close()
