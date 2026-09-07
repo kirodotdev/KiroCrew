@@ -22,11 +22,13 @@ from kiro_crew.acp.types import (
     AcpEvent,
     TurnUsage,
 )
+from kiro_crew.constants import split_trailing_protocol_suffix
 from kiro_crew.messaging import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
     TransportCapabilities,
     TurnDriver,
+    driver,
 )
 from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.monitoring.completion import MonitorCompletionHook
@@ -1019,3 +1021,189 @@ class TestPromptChoiceNamesItsOwnTool:
             ]
         )
         assert "AKIAIOSFODNN7EXAMPLE" not in prompts[0][3]
+
+
+def _drain_text(*chunks: str) -> tuple[str, list[str]]:
+    """Feed *chunks* through the marker filter and split what came out.
+
+    Returns the visible text and the steer payloads, so a test can assert on
+    both halves: nothing that keeps prose is worth anything if it also stops
+    consuming real markers.
+    """
+    parser = driver._SteeringMarkerFilter()
+    frames: list[tuple[str, str]] = []
+    for chunk in chunks:
+        frames.extend(parser.feed(chunk))
+    frames.extend(parser.flush())
+    return (
+        "".join(payload for kind, payload in frames if kind == "text"),
+        [payload for kind, payload in frames if kind == "steer"],
+    )
+
+
+class TestProseMentioningSteeringSurvives:
+    """Starting with the sentinel is not the same as being a marker.
+
+    `_SteeringMarkerFilter` held any tail that began `[STEERING` until it found
+    a `]`, and deleted it at flush if none arrived. That is a locate-by-substring
+    decision: the same sentence survived if the writer happened to type a `]`
+    later and vanished if they did not, so an agent explaining the steering
+    protocol lost the rest of its message on every channel the driver feeds
+    (Discord, Telegram, WhatsApp).
+
+    The tail is now judged by the GRAMMAR the marker actually has. A tail that can
+    still extend into `[STEERING steer-<id>]` is held, exactly as before; one that
+    has already diverged is prose and is handed on. This is the same rule
+    `constants.split_trailing_protocol_suffix` applies downstream — and it was
+    only reachable there because the driver upstream had already deleted the text.
+    """
+
+    PROSE = [
+        "Use the [STEERING protocol to redirect",
+        "see [STEERING acknowledgment format",
+        # The exact string `test_unfinished_marker_prefix_grammar.py` pins as
+        # visible at the renderer. The driver runs first, so that contract was
+        # being negated before the renderer ever saw the text.
+        "The [STEERING acknowledgment renders as a chip",
+    ]
+
+    @pytest.mark.parametrize("text", PROSE)
+    def test_an_unclosed_steering_tail_that_is_prose_is_left_visible(self, text):
+        visible, steer = _drain_text(text)
+        assert visible == text
+        assert steer == []
+
+    @pytest.mark.parametrize("text", PROSE)
+    def test_the_same_prose_already_survived_when_a_bracket_closed_it(self, text):
+        """The contrast that makes the defect a defect rather than a policy.
+
+        A closed frame that fails `_STEER_MARKER_RE` was already handed on as
+        prose. So the only thing separating "your sentence is delivered" from
+        "your sentence is deleted" was a `]` somewhere later in the stream —
+        which is not a property of the text's meaning.
+        """
+        closed = text + " ] and the rest"
+        visible, steer = _drain_text(closed)
+        assert visible == closed
+        assert steer == []
+
+    def test_prose_split_across_provider_chunks_still_survives(self):
+        """The hold happens mid-stream, so the split is where the bug lived."""
+        visible, steer = _drain_text("see [STEER", "ING acknowledgment format")
+        assert visible == "see [STEERING acknowledgment format"
+        assert steer == []
+
+
+class TestRealMarkersAreStillConsumed:
+    """Negative controls. A filter that kept prose by keeping everything would
+    leak control frames to the channel, which is the failure this class exists
+    to prevent — so each case below has to keep working unchanged."""
+
+    @pytest.mark.parametrize(
+        "chunks",
+        [
+            ("before [STEERING steer-4a2f: pause] after",),
+            # The recognizer is IGNORECASE, so the prefix probe beside it must be
+            # too: a probe that judged these prose would EMIT half a control frame.
+            ("before [STEERING STEER-4A2F: pause] after",),
+            ("before [steering steer-4a2f: pause] after",),
+            # Split inside the id: the classic reason the filter buffers at all.
+            ("before [STEERING steer-4a", "2f: pause] after"),
+        ],
+    )
+    def test_a_marker_is_consumed_and_never_reaches_the_text(self, chunks):
+        visible, steer = _drain_text(*chunks)
+        assert visible == "before  after"
+        assert steer == ["pause"]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "before [STEERING steer-4a2f",
+            "before [STEERING steer-",
+            "tail [STEE",
+            # Prose by intent, but every byte of it could still extend into a
+            # marker, so it is held and dropped -- correctly. The rule is about
+            # what the grammar admits, not about what the writer meant.
+            "id prefix, as in [STEERING steer",
+        ],
+    )
+    def test_a_marker_the_stream_was_cut_inside_is_still_dropped(self, text):
+        """Fail-closed is preserved: a tail that could still have become a marker
+        is dropped at flush rather than emitted. Half a control frame on a channel
+        is worse than a lost fragment, and unlike the prose above this text really
+        was on its way to being a marker."""
+        visible, steer = _drain_text(text)
+        assert visible == text.split("[")[0]
+        assert steer == []
+
+    def test_an_oversized_unterminated_marker_still_enters_drop_mode(self):
+        """The 16 KiB ceiling is checked before the grammar probe, so an
+        adversarial buffer cannot make the export re-scan a growing string."""
+        visible, steer = _drain_text("[STEERING steer-" + "a" * 20_000)
+        assert visible == ""
+        assert steer == []
+
+
+class TestTheTwoSpellingsOfTheGrammarAgree:
+    """The recognizer and the prefix probe are one grammar written once.
+
+    `_STEER_TAIL_PREFIX_RE` is compiled from `constants._STEERING_TAIL_PREFIX_RE`'s
+    pattern precisely so the marker grammar has a single source. This pins the
+    relationship that makes that safe, which a shared string alone does not: every
+    cut point of anything the recognizer accepts must be admitted by the probe.
+    Miss one and the filter emits half a real marker; admit too much and prose is
+    held. Requested in review on #9117, where the two spellings were noted as
+    already diverging on `IGNORECASE`.
+    """
+
+    ACCEPTED = [
+        "[STEERING steer-4a2f]",
+        "[STEERING steer-4a2f: pause]",
+        "[STEERING steer-4a2f-9b1c: stop and re-plan]",
+        "[STEERING STEER-4A2F: pause]",
+        "[steering steer-4a2f]",
+        "[STEERING  steer-4a2f  :  spaced  ]",
+    ]
+
+    @pytest.mark.parametrize("marker", ACCEPTED)
+    def test_no_chunk_split_of_an_accepted_marker_leaks(self, marker):
+        """The property in the form that actually matters: split an accepted
+        marker at every byte and no part of it may reach the text."""
+        assert (
+            driver._STEER_MARKER_RE.match(marker) is not None
+        ), "the corpus entry is not actually accepted, so it pins nothing"
+        for cut in range(len(marker) + 1):
+            visible, steer = _drain_text(marker[:cut], marker[cut:])
+            assert visible == "", f"a split at byte {cut} leaked {visible!r}"
+            assert len(steer) == 1, f"a split at byte {cut} lost the marker"
+
+    @pytest.mark.parametrize("marker", ACCEPTED)
+    def test_every_prefix_past_the_sentinel_is_admitted_by_the_probe(self, marker):
+        """The regex half of the same property, stated where the probe applies.
+
+        Cuts shorter than `[STEERING` never reach it -- the drain answers those
+        from its own partial-sentinel branch -- so asserting on them would pin a
+        contract this regex does not have. From the sentinel onward the probe is
+        the only thing standing between a buffered fragment and the channel.
+        """
+        for cut in range(len(driver._STEER_PREFIX), len(marker)):
+            prefix = marker[:cut]
+            assert (
+                driver._STEER_TAIL_PREFIX_RE.match(prefix) is not None
+            ), f"the probe would call {prefix!r} prose and emit part of a marker"
+
+    def test_the_probe_can_actually_refuse(self):
+        """Guard the guard: a probe that admitted everything would satisfy the
+        test above and restore the deletion this change removes."""
+        assert driver._STEER_TAIL_PREFIX_RE.match("[STEERING acknowledgment") is None
+
+    def test_the_driver_and_the_renderer_read_the_same_prose_the_same_way(self):
+        """Cross-layer pin. `split_trailing_protocol_suffix` decides the same
+        question downstream; a tail either layer calls prose must survive both,
+        or the visible contract depends on which one ran first — which is exactly
+        how this defect stayed hidden behind a passing renderer test."""
+        for text in TestProseMentioningSteeringSurvives.PROSE:
+            visible, suffix = split_trailing_protocol_suffix(text)
+            assert (visible, suffix) == (text, ""), "the renderer's own view changed"
+            assert _drain_text(text)[0] == text

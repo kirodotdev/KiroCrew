@@ -34,6 +34,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
 )
+from kiro_crew.constants import _STEERING_TAIL_PREFIX_RE
 from kiro_crew.messaging.renderer import (
     COMPACTION,
     DONE,
@@ -90,6 +91,20 @@ _STEER_MARKER_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _MAX_STEER_MARKER_CHARS = 16_384
+#: Prefix closure of the same grammar :data:`_STEER_MARKER_RE` completes, reused
+#: from ``constants`` rather than respelled: it answers "could this unterminated
+#: tail still become a marker?", which is the question the drain below has to ask
+#: before it holds text back. Sourcing the pattern from the one place the grammar
+#: is written keeps the two probes from drifting apart -- a divergence a reviewer
+#: flagged on #9117 and which ``test_the_two_spellings_of_the_grammar_agree``
+#: now pins.
+#:
+#: Recompiled with ``IGNORECASE`` because THIS module's recognizer carries it:
+#: ``constants``' copy is case-sensitive on purpose (it probes the exact
+#: sentinels a detach walk locates), but here a tail judged prose is EMITTED, so
+#: a probe stricter than the recognizer beside it would leak the very frames
+#: ``[steering steer-4a2f: ...]`` is accepted as.
+_STEER_TAIL_PREFIX_RE = re.compile(_STEERING_TAIL_PREFIX_RE.pattern, re.IGNORECASE | re.DOTALL)
 
 # These are KiroCrew-generated status prefixes, not model-authored prose. A
 # legacy dashboard transcript can contain the completed summary as an assistant
@@ -222,7 +237,25 @@ class _SteeringMarkerFilter:
                 if len(self._buffer) > _MAX_STEER_MARKER_CHARS:
                     self._buffer = ""
                     self._dropping_oversized = True
-                elif final:
+                    break
+                if _STEER_TAIL_PREFIX_RE.match(self._buffer) is None:
+                    # Starting with the sentinel is not the same as being a
+                    # marker. This tail cannot become one however the stream
+                    # continues -- the grammar has already diverged -- so it is
+                    # prose, and holding it back would end in deleting it at
+                    # flush. Handed on the same way a CLOSED frame that fails
+                    # `_STEER_MARKER_RE` already is, which is why "[STEERING
+                    # nonsense] tail" survives today and "[STEERING nonsense"
+                    # did not: the only difference between them was a "]" the
+                    # writer happened to type later.
+                    frames.append(("text", self._buffer[0]))
+                    self._buffer = self._buffer[1:]
+                    continue
+                # Still a viable prefix: hold it. At `final` it is a marker the
+                # stream was cut in the middle of, and that is dropped rather
+                # than emitted -- leaking half a control frame to a channel is
+                # the failure this class exists to prevent.
+                if final:
                     self._buffer = ""
                 break
 
