@@ -59,6 +59,13 @@ class TestParseSessions:
             "this_month": {"sessions": 0, "messages": 0, "tool_calls": 0},
             "avg_msgs_per_session": 0,
             "avg_tools_per_session": 0,
+            # An empty history is COMPLETE data, not incomplete: nothing was
+            # dropped, so the did-not-load total is a present zero rather than
+            # an absent key (#6733). Omitting it would make "complete" and
+            # "unknown" indistinguishable on the wire -- the adapter's
+            # ``s.refused_transcripts ?? 0`` would synthesise the promise of
+            # completeness the payload never made.
+            "refused_transcripts": 0,
         }
         assert sessions_dir.exists() == directory_exists
 
