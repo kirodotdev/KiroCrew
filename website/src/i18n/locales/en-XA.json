@@ -7949,6 +7949,12 @@
       "could_not_load": "[Çøùĺð ñøţ ĺøàð {{label}} ··············]",
       "loading": "[Ĺøàðìñğ {{label}}… ··············]",
       "dialog_label": "[{{label}} — {{appName}} ·····]"
+    },
+    "markdownCard": {
+      "formatted": "[Ƒøŕɱàţţèð ··············]",
+      "raw": "[Ŕàẁ ·····]",
+      "render_the_markdown_headings_lists_tables_links": "[Ŕèñðèŕ ţĥè ɱàŕķðøẁñ - ĥèàðìñğş, ĺìşţş, ţàƀĺèş, ĺìñķş ··················]",
+      "show_the_exact_markdown_source": "[Şĥøẁ ţĥè èẋàçţ ɱàŕķðøẁñ şøùŕçè ·····················]"
     }
   },
   "hooks": {

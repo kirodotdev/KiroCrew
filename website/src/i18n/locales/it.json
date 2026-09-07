@@ -8152,6 +8152,12 @@
       "could_not_load": "Impossibile caricare {{label}}",
       "loading": "Caricamento di {{label}}…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "Formattato",
+      "raw": "Grezzo",
+      "render_the_markdown_headings_lists_tables_links": "Visualizza il markdown - titoli, elenchi, tabelle, link",
+      "show_the_exact_markdown_source": "Mostra il sorgente markdown esatto"
     }
   },
   "hooks": {

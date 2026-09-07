@@ -8042,6 +8042,12 @@
       "could_not_load": "{{label}} লোড করা যায়নি",
       "loading": "{{label}} লোড হচ্ছে…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "ফরম্যাট করা",
+      "raw": "মূল",
+      "render_the_markdown_headings_lists_tables_links": "মার্কডাউন রেন্ডার করুন - শিরোনাম, তালিকা, টেবিল, লিঙ্ক",
+      "show_the_exact_markdown_source": "হুবহু মার্কডাউন সোর্স দেখান"
     }
   },
   "hooks": {

@@ -7932,6 +7932,12 @@
       "could_not_load": "{{label}}을(를) 로드할 수 없습니다",
       "loading": "{{label}} 로드 중…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "서식",
+      "raw": "원문",
+      "render_the_markdown_headings_lists_tables_links": "마크다운을 렌더링합니다 - 제목, 목록, 표, 링크",
+      "show_the_exact_markdown_source": "정확한 마크다운 원문을 표시합니다"
     }
   },
   "hooks": {

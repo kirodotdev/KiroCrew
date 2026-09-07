@@ -34,6 +34,7 @@ function spliceChildren(parent: HastParent, index: number, nodes: Array<HastElem
 }
 import '../utils/hljs'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
+import SegmentedControl from './SegmentedControl'
 import { usePathKind, type PathKind } from '../hooks/usePathKind'
 import { useGatewayPlatform, type GatewayPlatform } from '../hooks/useGatewayPlatform'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM } from '../hooks/usePinchZoom'
@@ -3733,6 +3734,65 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   return <LinkUnfurlCtx.Provider value={unfurlCtx}>{body}</LinkUnfurlCtx.Provider>
 })
 
+/** Languages whose fenced content IS markdown, so a rendered view is
+ *  meaningful. Kept in sync with `NESTABLE_LANGS` in useBlockAssembler for the
+ *  markup/doc subset a reader would want rendered — mdx is included because its
+ *  markdown structure still renders, its JSX just passes through as text. */
+const MARKDOWN_LANGS = new Set(['markdown', 'md', 'mdx'])
+function isMarkdownLang(lang?: string): boolean {
+  return lang != null && MARKDOWN_LANGS.has(lang.toLowerCase())
+}
+
+/** A markdown content card in the chat transcript: a ```markdown fence with a
+ *  Formatted | Raw view toggle in the upper right, matching the segmented
+ *  control tool detail cards carry (see pages/chat/ToolDetails.tsx). Formatted
+ *  renders through the same pipeline as agent prose; Raw is the verbatim source
+ *  with the edit affordance, which keeps editing Raw-only. Opens Formatted; the
+ *  control overrides per card. Only mounted for a COMPLETE fence — see the
+ *  caller in BlockRenderer. */
+const MarkdownContentCard = memo(function MarkdownContentCard(
+  { content, lang }: { content: string; lang?: string },
+) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const [view, setView] = useState<'formatted' | 'raw'>('formatted')
+
+  return (
+    <div className="my-2">
+      <div className="flex items-center justify-end mb-1">
+        <SegmentedControl<'formatted' | 'raw'>
+          segments={[
+            {
+              key: 'formatted',
+              label: i18nT('components.markdownCard.formatted'),
+              tooltip: i18nT('components.markdownCard.render_the_markdown_headings_lists_tables_links'),
+            },
+            {
+              key: 'raw',
+              label: i18nT('components.markdownCard.raw'),
+              tooltip: i18nT('components.markdownCard.show_the_exact_markdown_source'),
+            },
+          ]}
+          value={view}
+          onChange={setView}
+          layoutId="md-card-view"
+          collapse={false}
+        />
+      </div>
+      {/* Both views stay MOUNTED; the inactive one is hidden with `hidden`
+          rather than unmounted. EditableCodeBlock's Raw scratch editor holds
+          unsaved local edits in its own state, so unmounting it on a toggle to
+          Formatted would silently discard them. Keeping it mounted preserves
+          that state across any number of view switches. */}
+      <div className={view === 'formatted' ? undefined : 'hidden'}>
+        <MarkdownBlock content={content} />
+      </div>
+      <div className={view === 'raw' ? undefined : 'hidden'}>
+        <EditableCodeBlock code={content} lang={lang} complete={true} />
+      </div>
+    </div>
+  )
+})
+
 import WidgetFrame from './WidgetFrame'
 import WidgetPlaceholder from './WidgetPlaceholder'
 
@@ -3766,7 +3826,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
   return undefined
 }
 
-function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean }) {
+function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, widgetIndex, slotKey, glow, smooth, softBreaks, live, unfurl, collapseDiffs, mdCardToggle }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; widgetIndex?: number; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean }) {
   switch (block.type) {
     case 'diff': {
       const pathHint = prevBlock?.type === 'markdown'
@@ -3810,6 +3870,17 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
         <div className="my-2 p-3 bg-bg-elevated border border-border rounded-md text-muted text-[12px] italic animate-pulse">{i18nT('components.markdownRenderer.generating_diagram')}</div>
       )
     case 'code': {
+      // A ```markdown / ```md / ```mdx fence is the "markdown content card":
+      // today it renders verbatim source with an edit affordance. In the chat
+      // transcript (`mdCardToggle`) give it a Formatted | Raw segmented control
+      // like tool detail cards carry, so long docs can be read rendered. Raw is
+      // the pre-toggle EditableCodeBlock, so the edit affordance stays Raw-only.
+      // Only fenced content whose CLOSE has arrived is offered a rendered view:
+      // a half-streamed markdown source would flip structure as delimiters land.
+      if (mdCardToggle && block.complete && isMarkdownLang(block.language)) {
+        const mdNode = <MarkdownContentCard content={block.content} lang={block.language} />
+        return smooth ? <SmoothResize enabled={!block.complete}>{mdNode}</SmoothResize> : mdNode
+      }
       const node = <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} />
       // Height-grow only — streaming code renders as one plain <pre> text node
       // so per-line content animation isn't applied here.
@@ -3827,7 +3898,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, collapseDiffs = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false, collapseDiffs = false, mdCardToggle = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean; /** Chat transcript only: render a ```diff fence collapsed to a chip. Off everywhere else, where the patch IS the content rather than a retelling of it. */ collapseDiffs?: boolean; /** Chat transcript only: give a ```markdown content card a Formatted | Raw view toggle. Off everywhere else, where the fence IS the source being shown. */ mdCardToggle?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const blocks = useBlockAssembler(content, streaming)
 
@@ -3979,6 +4050,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             smooth={smooth}
             softBreaks={softBreaks}
             collapseDiffs={collapseDiffs}
+            mdCardToggle={mdCardToggle}
           />
         ))}
       </ImageVersionCtx.Provider>

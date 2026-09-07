@@ -8262,6 +8262,12 @@
       "could_not_load": "Не удалось загрузить {{label}}",
       "loading": "Загрузка {{label}}…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "Форматировано",
+      "raw": "Исходник",
+      "render_the_markdown_headings_lists_tables_links": "Отобразить markdown - заголовки, списки, таблицы, ссылки",
+      "show_the_exact_markdown_source": "Показать точный исходный markdown"
     }
   },
   "hooks": {

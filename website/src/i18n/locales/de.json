@@ -8042,6 +8042,12 @@
       "could_not_load": "{{label}} konnte nicht geladen werden",
       "loading": "{{label}} wird geladen…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "Formatiert",
+      "raw": "Roh",
+      "render_the_markdown_headings_lists_tables_links": "Markdown rendern - Überschriften, Listen, Tabellen, Links",
+      "show_the_exact_markdown_source": "Den exakten Markdown-Quelltext anzeigen"
     }
   },
   "hooks": {

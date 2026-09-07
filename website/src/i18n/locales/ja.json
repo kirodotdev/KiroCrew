@@ -7932,6 +7932,12 @@
       "could_not_load": "{{label}} を読み込めませんでした",
       "loading": "{{label}} を読み込み中…",
       "dialog_label": "{{label}} — {{appName}}"
+    },
+    "markdownCard": {
+      "formatted": "整形",
+      "raw": "生",
+      "render_the_markdown_headings_lists_tables_links": "マークダウンを描画します - 見出し、リスト、表、リンク",
+      "show_the_exact_markdown_source": "正確なマークダウンソースを表示します"
     }
   },
   "hooks": {
