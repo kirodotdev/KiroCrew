@@ -22,9 +22,10 @@ version:
   can't reach teardown/launch through the wrapper, mint+print a dashboard token
   via ``connect``/``tunnel``/``login``, nor sign its own box out via ``logout``).
   Only the read-only ``list``/``status``
-  verbs stay agent-accessible. (Note: ``security.py``'s ``BUILTIN_DENY_PATTERNS``
-  use underscored MCP-tool-name shapes, e.g. ``*terminate_instance*``, and do
-  NOT match these hyphenated CLI strings — the block lives in ``deniedCommands``.)
+  verbs stay agent-accessible. (The built-in deny catalog in
+  ``kiro_crew.security`` also refuses the hyphenated CLI verbs through its
+  ``aws-destructive`` rows; it carries no underscored SDK-method spellings such
+  as ``terminate_instance``, so a boto3 call is not refused by command text.)
 
 Module map:
 

@@ -390,7 +390,7 @@ the runtime boundary instead of relying only on prompt instructions.
 - **Sensitive data guards.** Kiro Crew blocks direct access to protected paths,
   strips sensitive environment variables, and redacts credential patterns from
   output before it reaches a chat surface.
-- **Denied operations.** 137 bundled deny patterns block destructive commands and
+- **Denied operations.** A bundled catalog of deny rules blocks destructive commands and
   common exfiltration paths even when a session has broad approval.
 - **Auditability.** Security events and tool activity are recorded for review.
   Use `kirocrew security events`, `audit`, and `verify` to inspect them.

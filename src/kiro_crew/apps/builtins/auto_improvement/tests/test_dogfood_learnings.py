@@ -2621,7 +2621,7 @@ class TestToolRequestsAreGated:
     def test_the_platform_governance_gate_is_consulted_before_approval(self) -> None:
         """The unattended runner's approval must route through the SAME `hooks.on_tool_call`
         chokepoint the dashboard/Slack paths use, so the enterprise ceiling, builtin denied
-        rules, and sensitive-path (~/.aws/~/.ssh) blocks apply here too. It previously had
+        rules, and the shell gate's IMDS / env-credential tiers apply here too. It previously had
         only an app-local gate and skipped the platform one — so an injected instruction in
         outsider-writable PR-comment text could drive an auto-approved call the central gate
         would deny. Raised by the Arbiter's long-term review of this branch."""
@@ -2632,8 +2632,8 @@ class TestToolRequestsAreGated:
         class _CredRead:
             tool_kind = "execute_bash"
             tool_purpose = ""
-            title = "cat ~/.aws/credentials"
-            raw_tool_params = {"command": "cat ~/.aws/credentials"}
+            title = "curl http://169.254.169.254/latest/meta-data/"
+            raw_tool_params = {"command": "curl http://169.254.169.254/latest/meta-data/"}
 
         reason = _governance_denial(
             _CredRead(), session_key="s1", agent="auto-improvement-discovery"

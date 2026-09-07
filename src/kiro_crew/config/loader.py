@@ -830,9 +830,8 @@ def computer_use_state_path() -> Path:
     grants full desktop observation plus input synthesis into the operator's real
     applications, which is a security ceiling, not a preference. Keeping it out
     of the agent-readable ``config.json`` is what makes it un-flippable by a
-    prompt-injected agent — ``is_sensitive_path`` blocks the tool path and
-    ``is_sensitive_bash_command`` blocks the shell forms (``cat``, ``>``,
-    ``tee``, archive extraction into the trust root).
+    prompt-injected agent — ``is_sensitive_path`` blocks the tool path and the
+    OS sandbox mounts the keystone read-only for the agent's shell.
 
     Holds ``{enabled, allowed_apps, extra_denied_apps}``; every read fails soft
     to DISABLED (see ``computer_use.enable_state``). The only writer is the
@@ -857,7 +856,7 @@ def oauth_endpoints_path() -> Path:
     ``_OAUTH_AUTHORIZATION_ENDPOINTS``), so an agent that could write this file
     could exempt an attacker-controlled host from the exfiltration heuristics —
     it is a trust boundary, not a preference. ``is_sensitive_path`` blocks the
-    tool path and ``is_sensitive_bash_command`` blocks the shell forms.
+    tool path and the OS sandbox mounts the keystone read-only for the shell.
 
     Holds ``{"additional_authorization_endpoints": [{"host": …, "path": …}]}``;
     every read fails soft to an EMPTY extension set (see
@@ -876,8 +875,8 @@ def aws_consent_path() -> Path:
     in ``config.json`` would leave it writable by any auto-approved agent shell,
     so a prompt-injected agent could mint the grant and consent, on the
     operator's behalf, to spending the operator's money in an account it picked.
-    ``is_sensitive_path`` blocks the tool path and ``is_sensitive_bash_command``
-    blocks the shell forms.
+    ``is_sensitive_path`` blocks the tool path and the OS sandbox mounts the
+    keystone read-only for the shell.
 
     Holds ``{"<service>": {profile, region, account, arn, granted_at}}``; every
     read fails soft to NO CONSENT (see ``aws_consent.read_grant``). The writers
@@ -899,7 +898,7 @@ def file_delivery_consent_path() -> Path:
     consent, on the owner's behalf, to shipping the owner's secrets -- the exact
     shape ``CredentialPolicy.exempt_exact_hosts`` refuses when it says such a set
     is "NEVER sourced from ``config.json``". ``is_sensitive_path`` blocks the tool
-    path and ``is_sensitive_bash_command`` blocks the shell forms.
+    path and the OS sandbox mounts the keystone read-only for the shell.
 
     Holds ``{"<destination_class>": {destination_class, granted_at}}``; every read
     fails soft to NO CONSENT (see ``file_delivery_consent.read_grant``). The only

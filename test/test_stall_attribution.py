@@ -155,7 +155,7 @@ class TestSurface:
         frames = parse_frames(CRON_STACK)
         assert frames[0].func == "is_sensitive_bash_command"
         assert frames[0].line == 7969
-        assert frames[0].short == "security.py:7969 is_sensitive_bash_command"
+        assert frames[0].short == "__init__.py:7969 is_sensitive_bash_command"
         assert len(frames) == len(CRON_STACK)
 
     def test_cron_wins_over_the_slack_gateway_module_it_passes_through(self) -> None:
@@ -195,7 +195,10 @@ class TestSurface:
             for func in funcs:
                 assert func in defs, f"{label}: no function named {func!r} in kiro_crew"
         for gate in stall_attribution._GATE_FILES:
-            assert (pkg / gate.removeprefix("/kiro_crew/")).is_file(), gate
+            # ``exists`` rather than ``is_file``: a gate entry names a module file or
+            # a package directory whose submodules all count, the same shape the
+            # surface fragments above are checked with.
+            assert (pkg / gate.removeprefix("/kiro_crew/")).exists(), gate
 
 
 class TestAttribution:
@@ -308,7 +311,7 @@ class TestAttribution:
         lines = describe(a)
         assert (
             lines[0]
-            == "stuck in the tool permission gate (security.py:7969 is_sensitive_bash_command)"
+            == "stuck in the tool permission gate (__init__.py:7969 is_sensitive_bash_command)"
         )
         assert "was executing cron job 'twb-refresh' (caeb441a)" in lines[1]
         assert lines[2] == "recommended: kirocrew cron pause caeb441a"
@@ -398,7 +401,7 @@ class TestAttribution:
         now = time.time()
         hostile = "\x1b[2Kok\rALL CLEAR 刷新"
         stack = [
-            '  File "/opt/venv/lib/python3.12/site-packages/kiro_crew/security.py\x07", '
+            '  File "/opt/venv/lib/python3.12/site-packages/kiro_crew/security/__init__.py\x07", '
             "line 1 in is_sensitive_bash_command",
         ] + CRON_STACK
         dump = write_dump(tmp_path / "dumps", 4_000_030, stack, mtime=now)
@@ -406,7 +409,7 @@ class TestAttribution:
         text = "\n".join(describe(attribute_dump(dump, tmp_path)))
         assert "\x1b" not in text and "\r" not in text and "\x07" not in text
         assert "\\x1b[2Kok\\rALL CLEAR 刷新" in text
-        assert "security.py\\x07:1" in text
+        assert "__init__.py\\x07:1" in text
 
     def test_record_is_kept_within_what_its_reader_accepts(
         self, tmp_path: Path, dead_pids: set[int]

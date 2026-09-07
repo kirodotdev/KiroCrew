@@ -155,7 +155,7 @@ jobs:
           # among them, in _CREW_SECRET_LEAVES) under every crew-home prefix
           # (_CREW_HOME_PREFIXES). Assert the leaf is in that list; the governance
           # boot tuple carries the resolved ".kiro/crew/denied_commands.json".
-          if ! grep -q '"denied_commands.json"' src/kiro_crew/security.py; then
+          if ! grep -qr '"denied_commands.json"' src/kiro_crew/security/; then
             echo "::error::denied_commands.json must be in security._SENSITIVE_HOME_DIRS (via _CREW_SECRET_LEAVES; agent must not read/write its own deny ceiling)"
             exit 1
           fi

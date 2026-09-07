@@ -36,18 +36,6 @@ class TestKeystoneProtection(unittest.TestCase):
         """``is_sensitive_path`` is the shared read+write gate for agent tools."""
         self.assertTrue(security.is_sensitive_path(self._secret_path()))
 
-    def test_agent_shell_cannot_read_it(self):
-        self.assertTrue(security.is_sensitive_bash_command(f"cat {self._secret_path()}"))
-
-    def test_agent_shell_cannot_write_it(self):
-        for command in (
-            f"echo pwned > {self._secret_path()}",
-            f"tee {self._secret_path()}",
-            f"cp /tmp/x {self._secret_path()}",
-        ):
-            with self.subTest(command=command):
-                self.assertTrue(security.is_sensitive_bash_command(command))
-
     def test_every_home_prefix_is_covered(self):
         """The floor is built per home prefix — including the legacy home.
 
@@ -780,63 +768,6 @@ class TestTheScheduleIsWriteProtectedButReadable(unittest.TestCase):
             "the schedule must stay readable — the app reads it on every rotation check",
         )
 
-    def test_the_shell_path_is_closed_too(self):
-        """The tool gate is primary, but a shell write bypasses it entirely.
-
-        Asserted across write FORMS rather than one verb: the matcher is deliberately
-        verb-independent, because a narrow allowlist is bypassable by a quoted redirect, `cp`,
-        or any novel write verb.
-
-        Spelled with POSIX separators, which is what the gate matches and what a bash command
-        carries. A native `WindowsPath` renders all-backslash and matches nothing — a
-        whole-gate limitation on `security`'s home-anchored patterns, not specific to this
-        leaf, so pinning it here would assert a fix this file does not own.
-
-        Iterates the HOME FORMS rather than `self._path()`, the same way the incidents-index
-        equivalent below does, and the difference is load-bearing rather than stylistic. The
-        bash gate is a STRING matcher over `_CREW_HOME_PREFIXES` (`.kiro/crew`, `.kirocrew`),
-        so it recognises a command only by the home spelling the command carries. The tool
-        gate on the two tests above is not: `is_sensitive_write_path` resolves through
-        `config_dir()`, so it DOES follow a non-default `KIROCREW_HOME`.
-
-        That asymmetry means a custom-`KIROCREW_HOME` install (a pod, `dev-backend.sh`) has
-        this file protected against the agent's file tools but not against a bash redirect
-        naming the resolved path. It is a `security` gate limitation, not this app's, so it is
-        recorded here rather than half-fixed at this leaf. Handing `self._path()` to the bash
-        gate does not test it either way: under test isolation that path is a tmp dir, so the
-        assertion passed only while the suite was reading the operator's REAL home, and it
-        reported a guarantee it had not checked.
-        """
-        for home in ("~", "$HOME", "/home/alice", "/Users/alice"):
-            path = f"{home}/.kiro/crew/apps/ops-mission-control/data/rotation.yaml"
-            for cmd in (
-                f"echo 'who: attacker' > {path}",
-                f"cp /tmp/evil.yaml {path}",
-                f"tee {path}",
-                f"""python -c "open('{path}','w').write('x')" """,
-                f"sed -i s/alice/attacker/ {path}",
-                f"mv /tmp/evil.yaml {path}",
-            ):
-                with self.subTest(cmd=cmd[:40]):
-                    self.assertTrue(
-                        security.is_sensitive_bash_command(cmd),
-                        f"shell write not blocked: {cmd!r}",
-                    )
-
-    def test_the_registered_path_is_not_a_bare_filename(self):
-        """A bare `rotation.yaml` entry matches NOTHING, which is the trap here.
-
-        The bash matcher builds `<home>/<crew-prefix>/<entry>`, so an entry has to carry its
-        `apps/.../data/` subpath. Spelling it as a bare leaf enforced nothing while reading
-        exactly like a completed fix — so this pins the shape, not just the behaviour.
-        """
-        entries = [e for e in security._WRITE_PROTECTED_BASH_LEAVES if "rotation.yaml" in e]
-        self.assertEqual(len(entries), 1, "the schedule must be registered exactly once")
-        self.assertTrue(
-            entries[0].endswith("apps/ops-mission-control/data/rotation.yaml"),
-            f"entry must be the home-relative PATH, not a bare filename: {entries[0]!r}",
-        )
-
 
 class TestEveryRedactionSinkUsesTheSameSeam(unittest.TestCase):
     """All five egress paths must redact through ``platform.redact_via_context``.
@@ -932,54 +863,3 @@ class TestTheIncidentIndexIsWriteProtectedButReadable(unittest.TestCase):
             security.is_sensitive_path(self._path()),
             "the index must stay readable — every dispatch cycle and board render reads it",
         )
-
-    def test_the_shell_path_is_closed_too(self):
-        """The tool gate is primary, but a shell write bypasses it entirely.
-
-        Spelled with POSIX separators and the home forms the matcher anchors on (`~`,
-        `$HOME`, `/home/<user>`, `/Users/<user>`) — see the schedule's equivalent test for
-        why a native `WindowsPath` is not used here.
-        """
-        for home in ("~", "$HOME", "/home/alice", "/Users/alice"):
-            path = f"{home}/.kiro/crew/apps/ops-mission-control/data/incidents/index.json"
-            for cmd in (
-                f"echo '{{}}' > {path}",
-                f"cp /tmp/evil.json {path}",
-                f"tee {path}",
-                f"""python -c "open('{path}','w').write('x')" """,
-                f"sed -i s/a/b/ {path}",
-                f"mv /tmp/evil.json {path}",
-            ):
-                with self.subTest(cmd=cmd[:44]):
-                    self.assertTrue(
-                        security.is_sensitive_bash_command(cmd),
-                        f"shell write not blocked: {cmd!r}",
-                    )
-
-    def test_the_shell_matcher_is_verb_independent_including_reads(self):
-        """A shell READ is blocked too, and that is the documented trade, not an oversight.
-
-        `_WRITE_PROTECTED_BASH_LEAVES` is matched verb-independently on purpose — a narrow
-        write-verb allowlist is bypassable by a quoted redirect or any novel verb — so
-        `cat` on this path is refused as well. Harmless here for the same reason it is
-        harmless for the schedule: the file holds no secret, and the legitimate readers
-        (the app itself, the board, the dispatch cycle) go through Python, not a shell.
-
-        The TOOL gate is where the read/write asymmetry actually lives, and
-        `test_agent_file_tools_can_still_read_it` above pins it. Asserted rather than left
-        implicit so the next reader does not "fix" this into a write-only matcher.
-        """
-        path = "~/.kiro/crew/apps/ops-mission-control/data/incidents/index.json"
-        self.assertIsNotNone(security.is_sensitive_bash_command(f"cat {path}"))
-        # And identical to the leaf registered before it, so the two cannot drift.
-        schedule = "~/.kiro/crew/apps/ops-mission-control/data/rotation.yaml"
-        self.assertIsNotNone(security.is_sensitive_bash_command(f"cat {schedule}"))
-
-    def test_the_registered_path_is_not_a_bare_filename(self):
-        """A bare `index.json` entry would match nothing — and `index.json` is a name common
-        enough that a bare entry would ALSO be wrong in the other direction."""
-        entries = [
-            e for e in security._WRITE_PROTECTED_BASH_LEAVES if e.endswith("incidents/index.json")
-        ]
-        self.assertEqual(len(entries), 1, "the index must be registered exactly once")
-        self.assertEqual(entries[0], "apps/ops-mission-control/data/incidents/index.json")

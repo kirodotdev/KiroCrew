@@ -352,19 +352,13 @@ class TestTheRoutingStoreIsOnTheKeystoneFloor:
         temp = Path.home() / ".kiro/crew" / STORE_DIRNAME / "tmpAb3Kd9Zq.tmp"
         assert is_sensitive_path(str(temp))
 
-    def test_a_shell_write_to_the_store_is_refused(self) -> None:
-        from kiro_crew.security import is_sensitive_bash_command
-        from kiro_crew.teams.service_urls import STORE_DIRNAME, STORE_FILENAME
+    def test_a_shell_write_to_the_store_is_masked_by_the_sandbox(self) -> None:
+        # The shell gate matches no paths in command text; the store directory is
+        # bind-masked in every sandbox mode, temp sibling included.
+        from kiro_crew import sandbox
+        from kiro_crew.teams.service_urls import STORE_DIRNAME
 
-        target = f"~/.kiro/crew/{STORE_DIRNAME}/{STORE_FILENAME}"
-        for command in (
-            f"cat {target}",
-            f"echo '{{}}' > {target}",
-            f"tee {target}",
-            # The temp sibling the rename would publish.
-            f"echo '{{}}' > ~/.kiro/crew/{STORE_DIRNAME}/tmpAb3Kd9Zq.tmp",
-        ):
-            assert is_sensitive_bash_command(command) is not None, command
+        assert STORE_DIRNAME in sandbox._CREW_HIDDEN_LEAVES
 
     @pytest.mark.asyncio
     async def test_the_store_itself_still_reads_and_writes(self, tmp_path) -> None:

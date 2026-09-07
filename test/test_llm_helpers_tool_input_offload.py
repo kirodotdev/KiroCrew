@@ -333,12 +333,15 @@ class TestTitleTierOffLoop:
 
     @pytest.mark.asyncio
     async def test_title_bash_denial_keeps_reason_and_mechanism(self) -> None:
-        approved, provider, rows = await _resolve("", title="cat ~/.aws/credentials")
+        approved, provider, rows = await _resolve("", title="env | grep AWS_SECRET")
         assert approved is False
         assert provider.rejected == ["r1"]
         outcome, error, mechanism = _decision(rows)
         assert outcome == "denied"
-        assert error == "Blocked: command accesses sensitive credential path"
+        assert (
+            error.splitlines()[0]
+            == "Blocked: command reads AWS credentials from environment variables"
+        )
         assert mechanism == "always_deny"
 
     @pytest.mark.asyncio

@@ -117,22 +117,15 @@ class TestGrantIsOnTheKeystoneFloor:
     """The agent must not be able to consent on the operator's behalf."""
 
     def test_leaf_is_fenced_for_read_and_write(self):
+        from kiro_crew import sandbox
         from kiro_crew.config.loader import aws_consent_path
-        from kiro_crew.security import (
-            _CREW_SECRET_LEAVES,
-            is_sensitive_bash_command,
-            is_sensitive_path,
-        )
+        from kiro_crew.security import _CREW_SECRET_LEAVES, is_sensitive_path
 
         assert "aws_service_consent.json" in _CREW_SECRET_LEAVES
         assert aws_consent_path().name == "aws_service_consent.json"
         assert is_sensitive_path("~/.kiro/crew/aws_service_consent.json") is True
-        for command in (
-            "cat ~/.kiro/crew/aws_service_consent.json",
-            "echo x > ~/.kiro/crew/aws_service_consent.json",
-            "tee ~/.kiro/crew/aws_service_consent.json",
-        ):
-            assert is_sensitive_bash_command(command)
+        # The shell plane is sealed by the sandbox, not matched by text.
+        assert "aws_service_consent.json" in sandbox._CREW_READONLY_LEAVES
 
     def test_file_is_owner_only(self, home):
         import stat

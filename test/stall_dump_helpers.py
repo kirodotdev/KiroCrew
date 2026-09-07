@@ -18,7 +18,7 @@ _SITE = "/opt/venv/lib/python3.12/site-packages/kiro_crew"
 
 # The field crash, frames innermost-first exactly as faulthandler prints them.
 CRON_STACK = [
-    f'  File "{_SITE}/security.py", line 7969 in is_sensitive_bash_command',
+    f'  File "{_SITE}/security/__init__.py", line 7969 in is_sensitive_bash_command',
     f'  File "{_SITE}/llm_helpers.py", line 2058 in _resolve_permission',
     f'  File "{_SITE}/llm_helpers.py", line 1596 in stream_and_collect',
     f'  File "{_SITE}/slack/gateway.py", line 1192 in _cron_stream_with_posttoken_resume',
@@ -30,7 +30,7 @@ CRON_STACK = [
     '  File "/usr/lib/python3.12/asyncio/base_events.py", line 1986 in _run_once',
 ]
 CHAT_STACK = [
-    f'  File "{_SITE}/security.py", line 7969 in is_sensitive_bash_command',
+    f'  File "{_SITE}/security/__init__.py", line 7969 in is_sensitive_bash_command',
     f'  File "{_SITE}/hooks.py", line 713 in on_tool_call',
     f'  File "{_SITE}/dashboard/chat_runner.py", line 7742 in _run_turn',
     '  File "/usr/lib/python3.12/asyncio/events.py", line 88 in _run',

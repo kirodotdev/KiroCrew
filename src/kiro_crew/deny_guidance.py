@@ -175,7 +175,7 @@ _CLASS_MATCHERS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
 )
 
 
-#: Built-in rule CATEGORY → the class its rules fall back to. Only the three
+#: Built-in rule CATEGORY → the class its rules fall back to. Only the two
 #: categories with a sanctioned path appear, and ``credential-exfil`` mapping to
 #: the outbound-transfer answer is what the ten AWS-named exfiltration rules
 #: receive: "not a spelling problem, do not re-spell it", rather than the
@@ -189,7 +189,6 @@ _CLASS_MATCHERS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
 #: bury the classes where the agent genuinely cannot infer the next step. That
 #: silence is ANSWERED, not merely missing — see :func:`_rule_class`.
 _CATEGORY_CLASSES: dict[str, str] = {
-    "sensitive-file-read": DENY_CLASS_SECRET_FILE,
     "credential-exfil": DENY_CLASS_EXFIL_SHAPE,
     "self-protection": DENY_CLASS_SELF_PROTECTION,
 }
@@ -224,26 +223,6 @@ _RULE_CLASSES: dict[str, str] = {
     # what to tell the caller.
     "credential-exfil-kirocrew-token": DENY_CLASS_SELF_PROTECTION,
     "credential-exfil-kirocrew-token-argv": DENY_CLASS_SELF_PROTECTION,
-    # Filed under the exfiltration category but refusing a READ of secret
-    # material, where the category default would describe an outbound transfer
-    # that is not what happened.
-    "legacy-get-secret": DENY_CLASS_SECRET_FILE,
-    "legacy-read-secret": DENY_CLASS_SECRET_FILE,
-    # An AWS profile has a local resolution the agent can drive itself, so it is
-    # a different answer from the rest of its category's key material — see the
-    # split documented on the class constants. Named here rather than left to the
-    # ``.aws`` anchor because a pattern word is not a statement of purpose: a rule
-    # added later whose regex happens to contain "sso" or "boto3" would draw a
-    # wrong-but-plausible class from the same mechanism with nothing going red.
-    "sensitive-file-read-cat-aws": DENY_CLASS_AWS_CREDENTIAL,
-    "sensitive-file-read-head-aws": DENY_CLASS_AWS_CREDENTIAL,
-    "sensitive-file-read-tail-aws": DENY_CLASS_AWS_CREDENTIAL,
-    "sensitive-file-read-less-aws": DENY_CLASS_AWS_CREDENTIAL,
-    "sensitive-file-read-more-aws": DENY_CLASS_AWS_CREDENTIAL,
-    "sensitive-file-read-strings-aws": DENY_CLASS_AWS_CREDENTIAL,
-    "sensitive-file-read-base64-aws": DENY_CLASS_AWS_CREDENTIAL,
-    "sensitive-file-read-cp-aws": DENY_CLASS_AWS_CREDENTIAL,
-    "sensitive-file-read-python-aws": DENY_CLASS_AWS_CREDENTIAL,
 }
 
 #: ``{rule identity: deny class}`` over the whole effective catalog, or ``None``

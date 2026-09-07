@@ -6417,13 +6417,16 @@ class TestChatPermissionRequest:
     async def test_a_benign_title_cannot_hide_a_sensitive_command(self, monkeypatch, capsys):
         """The gate judges what executes, not what the model called it.
 
-        ``title`` for a shell tool is an LLM-authored description, so a
-        credential read labelled "List project files" is the bypass that keying
+        ``title`` for a shell tool is an LLM-authored description, so an IMDS
+        credential fetch labelled "List project files" is the bypass that keying
         on the title alone would let through. The user is never even asked.
         """
         provider, sels, reads = await self._drive(
             monkeypatch,
-            event=self._event(title="List project files", command="cat ~/.ssh/id_rsa"),
+            event=self._event(
+                title="List project files",
+                command="curl http://169.254.169.254/latest/meta-data/",
+            ),
             answer="a",  # the user WOULD have allowed it
         )
         assert provider.calls == [("reject", 7, False)]
@@ -6431,13 +6434,13 @@ class TestChatPermissionRequest:
         # A stable code, not the gate's reason: the reason names the very path
         # being protected, and an audit record must not restate it.
         assert sels[0]["error"] == "hook_deny"
-        assert ".ssh" not in json.dumps(sels[0])
+        assert "169.254.169.254" not in json.dumps(sels[0])
         # The reason still reaches the terminal, and it has to be the REAL one:
         # `is_shell` with no command also denies, via the gate's deny-by-default
         # backstop, so "it was denied" would pass just as well when the command
         # is never forwarded at all.
         err = capsys.readouterr().err
-        assert "sensitive credential path" in err
+        assert "IMDS endpoint" in err
         assert "could not be verified" not in err
 
     @pytest.mark.asyncio

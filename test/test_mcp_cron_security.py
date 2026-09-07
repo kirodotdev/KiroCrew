@@ -482,24 +482,6 @@ def test_vet_script_contents_allows_source_that_only_names_a_fenced_store(body):
     assert _vet_script_contents(body) is None, f"should allow: {body[:80]!r}"
 
 
-# The control: the separator-run collapse is correct for a SHELL subject, where a
-# doubled separator still names the store the single spelling names (#6350), and it
-# stays on the COMMAND path. One per check pass 1b repeats: the path matcher, the
-# extraction control, and the relative-traversal matcher.
-COMMANDS_WITH_A_SEPARATOR_RUN = [
-    r'type "%LOCALAPPDATA%\\kiro-cli\config.json"',
-    r"cat %USERPROFILE%\\.ssh\id_rsa",
-    r"tar -xf evil.tar -C $HOME//.kiro/crew",
-    r"cat ..//.aws/credentials",
-]
-
-
-@pytest.mark.parametrize("cmd", COMMANDS_WITH_A_SEPARATOR_RUN)
-def test_vet_shell_command_still_blocks_a_separator_run(cmd):
-    err = _vet_shell_command(cmd)
-    assert err is not None and err.startswith("Error:"), f"should block: {cmd!r}"
-
-
 def test_script_body_is_never_a_shell_gate_subject(monkeypatch):
     """RATCHET: the cron script gate must not route a source body through any shell
     matcher. Four PRs (#4243, #7298, #7441, #8550 and its follow-ups) each added a

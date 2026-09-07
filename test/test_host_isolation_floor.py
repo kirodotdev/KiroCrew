@@ -593,13 +593,6 @@ class TestTheSharedKiroPathRatchet:
         # consumers import them by value.
         ("kiro_crew/service/macos.py", "PLIST_DIR"): "covered by _isolate_launchd_paths",
         ("kiro_crew/service/macos.py", "LOG_DIR"): "covered by _isolate_launchd_paths",
-        # NOT a data path -- a security MATCHER compiled from the real home. It exists
-        # to refuse `tar -C ~/.kiro/crew`, which can drop a `security_policy.json` or a
-        # `profiles/` entry into the governance trust root. Pointing it at a tmp dir
-        # would make every test that exercises it assert against a pattern that no
-        # longer matches the thing it protects -- weakening the guard to satisfy an
-        # isolation ratchet, which is backwards.
-        ("kiro_crew/security.py", "_EXTRACT_INTO_TRUST_ROOT_RE"): "security anchor: must name the REAL home",
         # The kiro-cli/amazon-q sqlite tuples that used to sit here as direct
         # ``Path.home()`` bindings are now PROJECTIONS over the canonical table in
         # ``kiro_crew/identity_stores.py`` (``sqlite_dbs(...)`` resolves the home

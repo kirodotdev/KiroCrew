@@ -97,11 +97,10 @@ _UNIT_SECS = {
 # sandbox (cron_script.run_command_sandboxed, mode="cc") is the only
 # sanctioned access path. We reuse security._SENSITIVE_HOME_DIRS (the canonical
 # list, kept DRY so it can't drift) and match the token ANYWHERE in the command
-# — not only after a known read command like the shared is_sensitive_bash_command
-# regex does — because tools such as ``curl -d @~/.aws/credentials`` or
+# -- the shared is_sensitive_bash_command matches no paths at all (the OS sandbox
+# is its path control) -- because tools such as ``curl -d @~/.aws/credentials`` or
 # ``wget --post-file=$HOME/.ssh/id_rsa`` read files via flags with no recognizable
-# read-command prefix, evading that regex (verified: the canonical exfil payload
-# slipped through the three stock guards).
+# read-command prefix.
 _CRON_CRED_PATH_RE = re.compile(
     r"(?:^|[\s'\"=@/~`]|\$\{?HOME\}?)"
     r"(?:" + "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS) + r")"
@@ -723,14 +722,22 @@ def _vet_shell_command(command: str) -> str | None:
     def _unquote(s: str) -> str:
         return s.replace('"', "").replace("'", "")
 
+    # sh also drops an escaping backslash during word expansion, so `~/.ss\h`
+    # names `.ssh` while the literal text keeps the name split. Unescaping runs
+    # AFTER unquoting: inside single quotes a backslash is literal, which the
+    # unquoted view no longer distinguishes, so this view over-approximates --
+    # a refusal on `'.ss\h'` is a false positive the vet accepts.
     resolved = _substitute_local_assignments(command)
     unquoted = _unquote(command)
+    unescaped = _BACKSLASH_ESCAPE_RE.sub(r"\1", unquoted)
     variants = (
         command,
         resolved,
         unquoted,
         _unquote(resolved),
         _substitute_local_assignments(unquoted),
+        unescaped,
+        _substitute_local_assignments(unescaped),
     )
     for variant in variants:
         if _CRON_CRED_PATH_RE.search(variant) or _glob_could_reach_credentials(variant):

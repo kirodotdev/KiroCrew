@@ -13,28 +13,21 @@ Covered:
   rebuilt the whole string per match (O(n^2) on credential-dense text). It is now
   a single ``_CREDENTIAL_PATTERNS.sub(...)``. The redacted text AND the
   ``warnings`` list (content *and* order) must be unchanged.
-* Mesh-3693 -- eleven branches of the sensitive-path regex were anchored
-  ``(?:^|.*[\\s'\\"=:,;])``. The leading ``.*`` is redundant under ``re.search``
-  (which retries at every offset) and made matching quadratic in the longest
-  line. The anchor is now ``(?:^|[\\s'\\"=:,;])``. This is a DENY surface, so the
-  verdict tests below replay positives and negatives to make it obvious that
-  nothing became more permissive.
+* Mesh-3693 -- the sensitive-path regex anchor rewrite. That regex is gone (the
+  shell gate no longer matches paths in command text; the OS sandbox and
+  ``is_sensitive_path`` hold the fence), so what remains of the differential is
+  the ``is_sensitive_path`` half, which pins that the path gate's verdicts did
+  not move.
 """
 
 from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable
 
 import pytest
 
-from kiro_crew.security import (
-    MAX_SCANNABLE_COMMAND_CHARS,
-    is_sensitive_bash_command,
-    is_sensitive_path,
-    redact_credentials,
-)
+from kiro_crew.security import is_sensitive_path, redact_credentials
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Mesh-3654: redact_credentials pass 1 -- single sub() must be byte-identical
@@ -185,67 +178,8 @@ def test_pass1_is_linear_on_credential_dense_text() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Mesh-3693: sensitive-path anchor -- zero verdict change (DENY surface)
+# Mesh-3693: sensitive-path verdicts -- zero change (DENY surface)
 # ─────────────────────────────────────────────────────────────────────────────
-
-# (command, expected_verdict) captured from the pre-change regex. Ordered so the
-# separator-boundary cases the character class exists for are explicit: the path
-# preceded by a space, a single quote, a double quote, `=`, `:`, `,`, `;`, and at
-# string start -- plus mid-token cases that must stay NEGATIVE.
-SENSITIVE_COMMAND_GOLDEN: list[tuple[str, bool]] = [
-    # ── separator boundaries: each must stay a HIT ──
-    ("cat ~/.aws/credentials", True),  # space
-    ("cat '~/.aws/credentials'", True),  # single quote
-    ('cat "~/.ssh/id_rsa"', True),  # double quote
-    ("FOO=~/.aws/credentials", True),  # `=` (VAR=path)
-    ("PATH=/x:~/.ssh/id_rsa", True),  # `:` (PATH-style list)
-    ("cmd --a=1,~/.aws/credentials", True),  # `,`
-    ("run;~/.aws/credentials", True),  # `;`
-    ("~/.aws/credentials", True),  # start-of-string (`^`)
-    ("echo x\n~/.aws/credentials", True),  # newline is in the class
-    # ── the same hits further into the line: `.*` was never what found these,
-    #    `re.search` retrying at every offset was ──
-    ("a b c d e f g h ~/.aws/credentials", True),
-    ("prefix text then FOO=bar:~/.aws/credentials suffix", True),
-    ("deploy --flag ~/.ssh/id_rsa", True),
-    ("a,~/.gnupg/secring.gpg", True),
-    # ── other spellings that route through the rewritten branches ──
-    ("cat $HOME/.aws/credentials", True),
-    ("type %USERPROFILE%\\.aws\\credentials", True),
-    ("type $env:USERPROFILE\\.ssh\\id_rsa", True),
-    ("cp ~/.kiro/agents/x.json /tmp/y", True),
-    # ── embedded MID-TOKEN: no separator immediately before the path, so the
-    #    anchor must NOT fire. These are the cases that would flip to True if
-    #    the character class were dropped along with the `.*`. ──
-    ("xyz~/.aws/credentials", False),
-    ("FOO=bar~/.aws/credentials", False),
-    ("VAR=x~/.gnupg/secring.gpg", False),
-    ("printf q~/.aws/credentials", False),
-    # ── ordinary commands: must stay allowed ──
-    ("ls -la", False),
-    ("echo hello world", False),
-    ("cat myfile.txt", False),
-    ("notaws/credentials", False),
-    ("python -c 'print(1)'", False),
-    ("grep -r pattern src/", False),
-    ("cat ./relative/notsensitive.json", False),
-    ("git status", False),
-    ("make build", False),
-]
-
-
-@pytest.mark.parametrize(("command", "expected"), SENSITIVE_COMMAND_GOLDEN)
-def test_sensitive_bash_verdicts_unchanged_by_anchor_rewrite(command: str, expected: bool) -> None:
-    """Differential for Mesh-3693 on ``is_sensitive_bash_command``.
-
-    Every verdict is pinned to what the pre-change regex returned. Dropping the
-    redundant ``.*`` cannot change any of them: the alternative is still ``^`` or
-    a single separator character, and ``re.search`` already retried at every
-    offset. A regression in EITHER direction fails here -- the negatives are what
-    make it obvious the gate did not become more permissive.
-    """
-    assert bool(is_sensitive_bash_command(command)) is expected
-
 
 SENSITIVE_PATH_GOLDEN: list[tuple[str, bool]] = [
     ("~/.aws/credentials", True),
@@ -264,168 +198,11 @@ def test_sensitive_path_verdicts_unchanged_by_anchor_rewrite(path: str, expected
     assert bool(is_sensitive_path(path)) is expected
 
 
-def test_sensitive_anchor_has_no_leading_wildcard() -> None:
-    """Source guard: the redundant ``.*`` must not come back.
-
-    ``_build_sensitive_regex`` is the only place these anchors are written. The
-    check is on the source text rather than the compiled pattern because the
-    compiled form interpolates the path alternations and is impractical to
-    assert against.
-    """
-    from kiro_crew import security as security_mod
-
-    source = inspect_source(security_mod._build_sensitive_regex)
-    assert r"""(?:^|.*[\s'\"=:,;])""" not in source, (
-        "a leading `.*` is back in the sensitive-path anchor -- it is redundant "
-        "under re.search and makes matching quadratic in the longest line"
-    )
-    # And the fixed form is still there, on every branch it was applied to.
-    # Count the BRANCH spelling (``rf"|`` prefix) so the explanatory comment in
-    # `_build_sensitive_regex`, which quotes the anchor in prose, is not counted.
-    branch_anchor = r"""rf"|(?:^|[\s'\"=:,;])"""
-    assert source.count(branch_anchor) == 11
-
-
 def inspect_source(func: object) -> str:
     """``inspect.getsource`` indirection kept local so the test module has one import."""
     import inspect
 
     return inspect.getsource(func)  # type: ignore[arg-type]
-
-
-def _best_of(fn: Callable[[str], object], arg: str, reps: int = 3) -> float:
-    """Return the MIN elapsed ``time.perf_counter()`` over ``reps`` calls.
-
-    Min-of-N cancels scheduler noise on a loaded runner far better than a single
-    sample or a mean: interference can only ADD time to a sample, so the minimum
-    is the closest observable to the code's intrinsic cost.
-    """
-    best = float("inf")
-    for _ in range(reps):
-        started = time.perf_counter()
-        fn(arg)
-        best = min(best, time.perf_counter() - started)
-    return best
-
-
-def test_long_nonshell_line_does_not_blow_up() -> None:
-    """Complexity-class guard for Mesh-3693 -- a calibrated ratio, not a wall clock.
-
-    A long newline-free non-shell string is the worst case for the old anchor:
-    eleven branches each retried a greedy ``.*`` from every offset. Earlier
-    versions of this test pinned an absolute ceiling (6 s, then 20 s) derived
-    from one dev box (~1.5-2.0 s fixed, ~27 s pre-fix -- history only). A loaded
-    16-worker CI shard then took 6.54 s down the FIXED path and failed a PR whose
-    diff could not touch the measured code: an absolute ceiling mis-attributes
-    runner slowness as a complexity regression (#8374).
-
-    A naive two-size ratio (the 20 KB timing over the 10 KB one) does NOT work
-    here, by measurement:
-    the anchor's per-separator work inside the large alternation makes even the
-    fixed form scale ~4x per input doubling on this blob shape, the same
-    doubling signature as the quadratic form -- only the CONSTANT separates them
-    (~14-20x at equal size). So the guard is the issue's other suggestion, a
-    same-run measured baseline: compile a deliberately quadratic REFERENCE from
-    the live pattern (the exact ``.*`` spelling Mesh-3693 removed) and require
-    the live pattern to beat it by a wide factor on the same input in the same
-    run. Live and reference samples are INTERLEAVED at equal repetitions and
-    compared min-to-min, so a contention burst lands on both sides instead of
-    biasing one; the runner's constant slowness multiplies both minima and
-    cancels out of the ratio. If the ``.*`` comes back, live == reference and
-    the ratio collapses to ~1x, far below the bar.
-
-    Scope, stated plainly: this ratio detects the leading-``.*`` regression
-    class specifically. A quadratic blowup of a DIFFERENT shape (say a nested
-    quantifier added elsewhere in the alternation) slows live and reference
-    together and can pass the ratio; such shapes are covered only by the
-    backstop below and by :func:`test_sensitive_anchor_has_no_leading_wildcard`,
-    which reads the anchor out of the source and cannot flake at all -- keep
-    that one primary.
-
-    The absolute backstop is SELF-CALIBRATING: the cap scales with the same-run
-    quadratic reference timing (never below 60 s), so a runner slow enough to
-    inflate the healthy path inflates the cap with it -- unlike the fixed
-    ceilings this test used to have. It detects, not prevents: it runs after the
-    measured call returns, so a truly unbounded hang is bounded by the CI job
-    timeout, not by this assert.
-
-    The blob is sized just UNDER ``MAX_SCANNABLE_COMMAND_CHARS``, because the gate
-    now refuses a longer command without scanning it: above the ceiling both the
-    verdict assertion and the backstop below would measure the refusal rather than
-    the anchor, and the guard would pass no matter what the pattern costs. The
-    refusal itself is pinned in ``test_security_gate_liveness.py``.
-    """
-    blob_ceiling = "abcdefgh " * 2200
-    assert 19_000 < len(blob_ceiling) <= MAX_SCANNABLE_COMMAND_CHARS
-    # Verdict unchanged: the blob is not a sensitive command. The first call
-    # also pays the one-time regex build so it is not billed to a sample.
-    assert bool(is_sensitive_bash_command(blob_ceiling)) is False
-
-    # ── Same-run calibrated baseline ──
-    from kiro_crew import security as security_mod
-
-    live = security_mod._get_sensitive_re()
-    fixed_anchor = r"""(?:^|[\s'\"=:,;])"""
-    quad_anchor = r"""(?:^|.*[\s'\"=:,;])"""
-    # Normalize first so that if the live pattern ALREADY carries the quadratic
-    # spelling, live and reference compile identically and the ratio assertion
-    # below is what fails (rather than a spelling assertion masking it).
-    base = live.pattern.replace(quad_anchor, fixed_anchor)
-    assert fixed_anchor in base, (
-        "sensitive-path anchor spelling changed -- update fixed_anchor/quad_anchor "
-        "here together with test_sensitive_anchor_has_no_leading_wildcard"
-    )
-    quad_ref = re.compile(base.replace(fixed_anchor, quad_anchor), live.flags)
-
-    # ~5.6 KB keeps the deliberately quadratic reference affordable (~2 s
-    # unloaded per sample) while the separation stays ~14-20x. Interleave the
-    # two patterns at EQUAL reps and take each side's min: a descheduling spike
-    # during any single sample is discarded by min(), and a sustained
-    # contention window covers adjacent live and reference samples alike, so
-    # neither side is systematically favored.
-    small = "abcdefgh " * 625
-    live.search(small)  # warm-up
-    t_live = float("inf")
-    t_ref = float("inf")
-    for _ in range(3):
-        started = time.perf_counter()
-        live.search(small)
-        t_live = min(t_live, time.perf_counter() - started)
-        started = time.perf_counter()
-        quad_ref.search(small)
-        t_ref = min(t_ref, time.perf_counter() - started)
-
-    # Floor guard: below ~20 ms a sample is timer granularity and cache noise.
-    # The skip window is 10x the floor because the ratio bar needs
-    # t_ref > 4 * floor to be clearable at all once t_live clamps to the floor;
-    # skipping below 10x leaves margin above that boundary instead of failing a
-    # healthy pattern on a machine merely fast enough to shrink the reference.
-    floor = 0.02
-    if t_ref < floor * 10:
-        return
-    ratio = t_ref / max(t_live, floor)
-    assert ratio > 4.0, (
-        f"the live sensitive-path pattern is only {ratio:.1f}x faster than a "
-        f"deliberately quadratic (leading `.*`) reference on the same input in "
-        f"the same run (t_live={t_live:.3f}s, t_ref={t_ref:.3f}s; healthy "
-        "separation is ~14-20x, a re-introduced `.*` gives ~1x). The same-run "
-        "reference cancels the runner's constant slowness factor, so this "
-        "failure indicates a real complexity regression, not a loaded runner."
-    )
-
-    # Backstop, NOT the guarded property: catches a catastrophic blowup of a
-    # shape the ratio cannot see (see the docstring). Self-calibrating -- the
-    # cap scales with the same-run reference timing so runner slowness raises
-    # the cap along with the measurement; 60 s remains as the unloaded floor.
-    t_ceiling = _best_of(is_sensitive_bash_command, blob_ceiling, reps=2)
-    cap = max(60.0, 20.0 * t_ref)
-    assert t_ceiling < cap, (
-        f"is_sensitive_bash_command took {t_ceiling:.2f}s on a "
-        f"{len(blob_ceiling)}-char line "
-        f"(self-calibrated cap {cap:.1f}s) -- this is the catastrophic-"
-        "regression backstop, not the complexity guard; the calibrated ratio "
-        "above is the guarded property"
-    )
 
 
 def test_credential_pattern_module_still_compiles_one_alternation() -> None:

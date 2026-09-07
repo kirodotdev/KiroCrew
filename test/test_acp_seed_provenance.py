@@ -780,18 +780,6 @@ class TestTheRecordIsOnEveryWriteFloor:
             assert security.is_sensitive_write_path(path) is True, path
             assert security.is_sensitive_path(path) is False, path
 
-    def test_the_shell_gate_refuses_every_spelling(self):
-        # Paired with the edit gate: protected on one path only is not protected. And
-        # bare-token matched, because for a DELETION grant a ``cd`` must not be the
-        # whole bypass -- the invariant is the filename, not the way to it.
-        for cmd in (
-            f"echo forged > ~/.kiro/crew/{self.LEAF}",
-            f"cd ~/.kiro/crew && echo forged > {self.LEAF}",
-            f"tee ./{self.LEAF}",
-            f"python -c \"open('{self.LEAF}','w')\"",
-        ):
-            assert security.is_sensitive_bash_command(cmd) is not None, cmd
-
     def test_the_sandbox_seals_it_readonly_even_when_absent(self):
         # The kernel floor under the deny rules, which a runtime-constructed spelling
         # (``$(printf ...)``) walks past. READONLY, not hidden -- the write is the

@@ -583,7 +583,7 @@ class TestInstalledContextPeeks:
     def test_scanner_finds_the_real_call_sites(self, peek_sites) -> None:
         """The scan must see the live tree, not an empty one."""
         assert peek_sites, "peek scanner found no installed_context() call site at all"
-        assert "security.py::_exempt_exact_hosts" in peek_sites, sorted(peek_sites)
+        assert "security/exfil.py::_exempt_exact_hosts" in peek_sites, sorted(peek_sites)
 
     def test_scanner_does_not_count_the_definition(self, peek_sites) -> None:
         """``def installed_context()`` is not a call — the accessor is not its own

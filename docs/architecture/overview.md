@@ -204,7 +204,7 @@ graph TB
 
     subgraph "Security"
         HOOKS[hooks.py<br/>PreToolUse gate]
-        SEC[security.py<br/>Deny rules + paths]
+        SEC[security/<br/>Deny rules + paths]
         PLAT[platform/<br/>Governance + CPP seam]
         SEL[sel.py<br/>Security event log]
     end
@@ -697,7 +697,7 @@ detail; this table is only an index.
 | Platform context (CPP seam) | `src/kiro_crew/platform/` | [platform-context.md](../system-specs/modules/platform-context.md) |
 | PPTX Maker app | `src/kiro_crew/apps/builtins/pptx_maker/` | [pptx-maker.md](../system-specs/modules/pptx-maker.md) |
 | Providers (LLMProvider ABC + ACP provider) | `src/kiro_crew/providers/` | [providers.md](../system-specs/modules/providers.md) |
-| Security controls (deny rules, paths, auth) | `src/kiro_crew/security.py` | [security.md](../system-specs/modules/security.md) |
+| Security controls (deny rules, paths, auth) | `src/kiro_crew/security/` | [security.md](../system-specs/modules/security.md) |
 | Security Event Log | `src/kiro_crew/sel.py` | [sel.md](../system-specs/modules/sel.md) |
 | Session manager (pool, expiry, compaction) | `src/kiro_crew/session.py` | [session.md](../system-specs/modules/session.md) |
 | Side conversations | `src/kiro_crew/dashboard/side_state.py` | [side.md](../system-specs/modules/side.md) |

@@ -695,7 +695,10 @@ class HookManager:
         # command from any of these gates. is_sensitive_path resolves the value
         # as a path: a real file-read title ("~/.aws/credentials") matches,
         # while a bash command ("cat ~/.aws/credentials") resolves to a
-        # non-sensitive path and is instead caught by is_sensitive_bash_command.
+        # non-sensitive path and is NOT matched on its text -- the OS sandbox is
+        # what keeps the credential stores and the governance keystone out of the
+        # shell's reach. is_sensitive_bash_command carries the size ceiling, the
+        # IMDS detector and the environment-credential detector.
         # The always-on gates below are keyed by rule id, so resolve the effective
         # regex set to ids ONCE here and thread it in. ``None`` means all enabled,
         # which is what the callers outside this gate (cron command vetting,
@@ -715,7 +718,8 @@ class HookManager:
         for target in security_targets:
             if is_sensitive_path(target):
                 return ToolHookResult.deny(f"Blocked: access to sensitive path: {target}")
-            # execute_bash (prefixed or bare) — check for reads of sensitive paths.
+            # execute_bash (prefixed or bare) — IMDS reach, env-credential leaks,
+            # and the scan-size ceiling.
             reason = is_sensitive_bash_command(target, enabled_ids=enabled_ids)
             if reason:
                 return ToolHookResult.deny(reason)
@@ -763,8 +767,8 @@ class HookManager:
         # on the ACP ``edit`` kind (the fs_write/code tool) so a plain read of
         # config is unaffected — the dashboard file viewer, ``cat``, and knowledge
         # indexing legitimately read config.json. Bash writes (``tee``/``>``/
-        # ``cp``-dest) are blocked separately by ``is_sensitive_bash_command``
-        # above; this branch covers the file-EDIT tool.
+        # ``cp``-dest) are not matched on command text; the OS sandbox is the
+        # shell-side control, and this branch covers the file-EDIT tool.
         #
         # Empty/unknown ``tool_kind`` (the ACP kind field is spec-optional; some
         # backends omit it) is DELIBERATELY not mirrored here.
@@ -776,7 +780,7 @@ class HookManager:
         # kind — regressing the read-allowance that is the whole point of the
         # write-only tier. Empty-kind edits are rare (the ACP fs_write tool sets
         # ``edit``); not hard-denying them keeps the two write-gates from drifting
-        # into a read regression, and the bash gate covers the shell surface.
+        # into a read regression, and the OS sandbox covers the shell surface.
         if tool_kind == _EDIT_TOOL_KIND and raw_params:
             # Same spelling coverage as the sensitive-path keystone above, for the
             # same reason: the write-protected tier is worthless if a config edit

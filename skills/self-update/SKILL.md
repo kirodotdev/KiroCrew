@@ -125,7 +125,7 @@ reintroduce one by cron on a layout that has no self-update engine.
 
 ### Limitations
 
-- BOTH `kirocrew restart` AND `kirocrew update` are blocked when run directly from an agent session, by the `self-protection-restart` and `self-protection-update` deny rules.
+- BOTH `kirocrew restart` AND `kirocrew update` are blocked when run directly from an agent session, by the self-protection argv floor (it reads the command's argv, so mentioning the words in a path or a grep pattern is not blocked, and there is no opt-out).
 - A policy-defined update provider, where configured, owns updating the host and there is no fallback: `kirocrew update` exits 1 if it fails. Report that failure rather than working around it.
 - Because the agent shell cannot run them, an update must be applied either by the user manually, or scheduled server-side (a cron job runs outside the shell-tool filter). After an update, restart via the gateway-restart skill.
 - After an update + restart, the resuming session runs the new code.

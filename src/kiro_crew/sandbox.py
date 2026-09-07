@@ -287,9 +287,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # Recorded consent to deliver a scanner-flagged file. Same class as
     # ``aws_service_consent.json``: a writable grant lets an auto-approved agent
     # consent, on the owner's behalf, to shipping the owner's secrets. This seal is
-    # the load-bearing half of that design -- ``is_sensitive_path`` and the shell
-    # deny tiers do cover the leaf, but as the READONLY note above says, those tiers
-    # can be evaded by runtime path construction and a kernel write denial cannot.
+    # the load-bearing half of that design -- ``is_sensitive_path`` covers the leaf
+    # on the file-tool path, but the shell gate matches no paths at all, and as the
+    # READONLY note above says a kernel write denial is what holds regardless of
+    # how a command spells the way there.
     "file_delivery_consent.json",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
@@ -3825,20 +3826,20 @@ def main():
         # that IS masked the credential inode has no reachable path, so no link
         # source exists. For a file left UNMASKED at a given level (~/.ssh under
         # cc; .aws/.ssh/_CC_FILES under standard) there is no privilege delta:
-        # it is already directly readable, so the command gate
-        # (security.is_sensitive_bash_command) is the control for BOTH reading
-        # and hardlinking it — the gate now resolves an agent-issued ln/link/cp
-        # source through is_sensitive_path(), refusing a link to a credential
-        # source at the same fidelity as a read (closing the "flatten onto a
-        # benign alias" bypass, GPT review PR #1339). npm's own fs.link() is a
-        # syscall and never transits that gate. seccomp cannot path-scope link
-        # (BPF cannot dereference the pathname pointer), so a syscall-layer form
-        # could only be all-or-nothing. NOTE: the Step-7 pre-exec nlink scan is
-        # NOT relied on here — it stats paths AFTER the masks, so it sees mask
-        # inodes, not real credential inodes. For AppSec (pre-existing / out of
-        # scope): that Step-7 gap; a hardlink alias is durable and symlink-
-        # resolution-invisible; and `mv` is not yet gate-covered. AppSec
-        # re-review required — this edits a pentest remediation.
+        # it is already directly readable, and no command-text matcher stands in
+        # for the mask -- security.is_sensitive_bash_command matches no paths, so
+        # a read, a hardlink and a copy of an unmasked store are all equally
+        # unrefused. That visibility is the tier's own trade (kiro-cli resolves
+        # its credentials from these stores), stated in the security spec rather
+        # than hidden behind a regex that refused one spelling and passed the
+        # next. npm's own fs.link() is a syscall in any case. seccomp cannot
+        # path-scope link (BPF cannot dereference the pathname pointer), so a
+        # syscall-layer form could only be all-or-nothing. NOTE: the Step-7
+        # pre-exec nlink scan is NOT relied on here — it stats paths AFTER the
+        # masks, so it sees mask inodes, not real credential inodes. For AppSec
+        # (pre-existing / out of scope): that Step-7 gap; a hardlink alias is
+        # durable and symlink-resolution-invisible. AppSec re-review required —
+        # this edits a pentest remediation.
         #
         # Additionally deny kill(-1, sig) — the signal BROADCAST that reaches
         # every same-uid process on the host (gateway, other sessions). This
@@ -4299,8 +4300,9 @@ def _build_seatbelt_profile(
     elif sandbox_level == "cc":
         # On macOS, don't hide .aws — credential_process and SSO token
         # caches live under .aws/ and Seatbelt can't do partial exposure
-        # as cleanly as Linux bind mounts. Deny patterns still block LLM
-        # tool reads of credential files. The .aws-exclusion is applied to the
+        # as cleanly as Linux bind mounts. ``is_sensitive_path`` still fences
+        # the file tools; a spawned shell read is unrefused there, the same
+        # trade the standard tier makes. The .aws-exclusion is applied to the
         # context-sourced list so a companion's extra cc dirs are still hidden.
         dirs = [d for d in _sandbox_policy().cc_dirs() if d != ".aws"]
     else:

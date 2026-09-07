@@ -12149,8 +12149,8 @@ def test_the_decision_ledger_is_not_in_the_agent_writable_index():
 def test_the_decision_ledger_is_on_the_security_keystone(path):
     """Read+write keystone, like the Notes vault registry and the Ops Mission
     Control policy: app-owned, not a secret, but forging or erasing it defeats the
-    app's safety property, so the agent must reach it through neither the file
-    tools nor a shell.
+    app's safety property, so the agent must not reach it through the file tools
+    (the shell is confined by the OS sandbox, not by a matcher over command text).
 
     The PARENT is gated too. Under this app's own state dir it was not: a directory
     below ``workspace/`` is not a sensitive path, so one ``ln -s`` naming it
@@ -12159,28 +12159,6 @@ def test_the_decision_ledger_is_on_the_security_keystone(path):
     from kiro_crew import security
 
     assert security.is_sensitive_path(path)
-    assert security.is_sensitive_bash_command(f"echo x > {path}") is not None
-    assert security.is_sensitive_bash_command(f"cat {path}") is not None
-
-
-@pytest.mark.parametrize(
-    "cmd",
-    [
-        "ln -s /tmp/evil ~/.kiro/crew/trust",
-        "ln -sf /tmp/evil ~/.kiro/crew/trust/spec-builder-decisions.json",
-        "mv ~/.kiro/crew/trust /tmp/x",
-        "mv /tmp/evil ~/.kiro/crew/trust/spec-builder-decisions.json",
-        "rm -rf ~/.kiro/crew/trust",
-        "cp /tmp/evil ~/.kiro/crew/trust/spec-builder-decisions.json",
-    ],
-)
-def test_the_ledger_directory_cannot_be_swapped_or_removed(cmd):
-    """The reported vector: replace the ledger's PARENT and the backend follows it.
-    Every verb that could repoint or destroy the directory (or plant a file in it)
-    has to be refused, not just a read or a redirect at the leaf."""
-    from kiro_crew import security
-
-    assert security.is_sensitive_bash_command(cmd) is not None, cmd
 
 
 def test_the_ledger_is_not_under_the_apps_own_state_dir(tmp_path, monkeypatch):

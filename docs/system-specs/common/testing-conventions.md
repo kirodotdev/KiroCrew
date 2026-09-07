@@ -278,9 +278,9 @@ which testpath asked for the workers.
 
      Two exclusions are excluded for **opposite** reasons, and the distinction
      matters: the launchd paths are excluded because another fixture already
-     redirects them, while `security._EXTRACT_INTO_TRUST_ROOT_RE` and
-     `kiro_usage_api._CLI_SQLITE_DBS` must **never** be redirected — they are
-     security anchors whose whole point is naming the real home. **Stub the reader,
+     redirects them, while the file browser's allow-list root
+     `file_explorer/server._HOME` must **never** be redirected — it is a
+     security anchor whose whole point is naming the real home. **Stub the reader,
      never move the anchor.** Redirecting a matcher so a test can pass makes it assert
      against a pattern that no longer matches the thing it protects.
 

@@ -717,8 +717,9 @@ def test_no_hardcoded_transcripts_dir():
 # obvious one; the string form ``".kiro/agents/..."`` (e.g. inside a ``glob()``)
 # slipped through the first version of this guard and was caught in review.
 _LITERAL_RE = re.compile(r'"\.kiro"\s*/\s*"agents"' r"|[\"']\.kiro/agents")
-# ``config/paths.py`` is the resolver that defines the default. ``security.py``
-# holds the sensitive-path denylist, whose entries are HOME-RELATIVE literals
+# ``config/paths.py`` is the resolver that defines the default.
+# ``security/paths.py`` holds the sensitive-path denylist, whose entries are
+# HOME-RELATIVE literals
 # (the matcher anchors ``$HOME``-relative strings; ``kiro_agents_dir()`` returns
 # an absolute path, so the resolver's value cannot be used here) and which is
 # kept literal on purpose to avoid a config->security import cycle — the same
@@ -727,7 +728,7 @@ _LITERAL_RE = re.compile(r'"\.kiro"\s*/\s*"agents"' r"|[\"']\.kiro/agents")
 # for that entry, so it cannot reintroduce the reader/writer split-brain this
 # guard exists to catch; ``TestKiroAgentsDirWriteProtection`` pins the literal to
 # ``kiro_agents_dir()`` so drift still fails loudly.
-_ALLOWED = {"config/paths.py", "security.py"}
+_ALLOWED = {"config/paths.py", "security/paths.py"}
 
 
 def test_no_new_hardcoded_global_agents_dir():

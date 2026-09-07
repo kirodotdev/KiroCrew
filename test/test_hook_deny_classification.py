@@ -14,6 +14,7 @@ leaves the shared-type half of the contract unpinned.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import pytest
 
@@ -68,8 +69,13 @@ def test_a_governance_ceiling_denial_is_not_a_security_deny() -> None:
 
 
 def test_a_sensitive_path_denial_is_a_security_deny() -> None:
-    """The unconditional keystone: the attempt itself is the problem."""
-    result = HookManager().on_tool_call("Reading /home/u/.ssh/id_rsa", session_key="cli_chat")
+    """The unconditional keystone: the attempt itself is the problem.
+
+    Spelled from the real home: ``is_sensitive_path`` resolves what it is given, so
+    a literal ``/home/u`` is only a credential path on a host whose home that is.
+    """
+    key = str(Path.home() / ".ssh" / "id_rsa")
+    result = HookManager().on_tool_call(f"Reading {key}", session_key="cli_chat")
 
     assert result.action == TOOL_DENY
     assert result.security_deny is True

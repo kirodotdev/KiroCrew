@@ -39,14 +39,13 @@ class TestWorkflowLibraryProtection:
         assert security.is_sensitive_path(path) is True
         assert security.is_sensitive_write_path(path) is True
 
-    def test_shell_reads_writes_and_extracts_are_blocked(self) -> None:
-        commands = (
-            "cat ~/.kiro/crew/workflow_library/wfd_example.json",
-            "echo '{}' > ~/.kiro/crew/workflow_library/wfd_example.json",
-            "tar -xf planted.tar -C ~/.kiro/crew/workflow_library",
-        )
+    def test_the_shell_plane_is_masked_by_the_sandbox(self) -> None:
+        # The shell gate matches no paths in command text; the library directory is
+        # bind-masked in every sandbox mode, so a shell read, write or ``tar -C``
+        # drop finds no such path.
+        from kiro_crew import sandbox
 
-        assert all(security.is_sensitive_bash_command(command) is not None for command in commands)
+        assert WORKFLOW_LIBRARY_DIR_NAME in sandbox._CREW_HIDDEN_LEAVES
 
 
 def test_create_round_trips_a_global_definition_with_lineage(tmp_path) -> None:

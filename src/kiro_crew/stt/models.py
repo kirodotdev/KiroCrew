@@ -19,23 +19,16 @@ to catch.
 The digest is the second line, not the first. Verifying and then handing a PATH to a
 native loader leaves a window in which the bytes can be swapped, and re-hashing
 cannot close it because the loader re-opens by name. What closes it is that
-``<data home>/models`` is WRITE-PROTECTED from the agent on both gates
-(``security._WRITE_PROTECTED_HOME_PATHS`` for the file tools,
-``_WRITE_PROTECTED_BASH_LEAVES`` for the shell), so the verified bytes are the
-loaded bytes.
-
-The shell half needs one thing more than a path entry, and it is worth stating here
-because this module is what depends on it: the weight FILENAME is fenced with no
-anchor at all (``security._WHISPER_WEIGHT_NAME``). A home-anchored directory pattern
-falls to a single ``cd`` -- ``cd <data home>/models; cp evil.bin ggml-base.bin`` names
-neither the home nor the directory -- and since the loader opens by name, that command
-decides what a C++ GGML parser reads. Adding a row to :data:`CATALOG` therefore needs
-no edit in ``security``: the pattern covers any ``ggml-*.bin``. Kiro Crew's own downloader writes here directly and does not route
-through those gates, so a first-run fetch and a re-download after a failed check both
-still work. That is a deliberate divergence from
-``embeddings.ModelDownloadManager``, which documents the same size-only trade for
-its own GGUF -- that reasoning weighed a corrupted download, not a writable
-directory and an agent with a shell.
+``<data home>/models`` is WRITE-PROTECTED from the agent
+(``security._WRITE_PROTECTED_HOME_PATHS`` for the file tools; the agent's shell is
+confined by the OS sandbox, not by a matcher over command text), so the verified
+bytes are the loaded bytes. Adding a row to :data:`CATALOG` therefore needs no edit
+in ``security``: the directory entry covers any file beneath it. Kiro Crew's own
+downloader writes here directly and does not route through the tool gate, so a
+first-run fetch and a re-download after a failed check both still work. That is a
+deliberate divergence from ``embeddings.ModelDownloadManager``, which documents the
+same size-only trade for its own GGUF -- that reasoning weighed a corrupted
+download, not a writable directory and an agent with a shell.
 
 This deliberately does not reuse that manager. It is bound to one pinned
 artifact through ``default_model_path()``, ``_GGUF_SHA256`` and the

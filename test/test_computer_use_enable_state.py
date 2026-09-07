@@ -7,10 +7,11 @@ Two properties, and both are security properties:
   hands out the operator's whole desktop. Modeled on
   ``hooks.load_denied_commands_state()``, which has the identical contract.
 * **The agent can neither read nor write it.** The leaf is on
-  ``security._CREW_SECRET_LEAVES``, so ``is_sensitive_path`` blocks the tool path
-  and ``is_sensitive_bash_command`` blocks every shell form. That is the single
-  mechanism that makes the enable un-flippable by a prompt-injected agent, so it is
-  asserted directly rather than assumed from the list membership.
+  ``security._CREW_SECRET_LEAVES``, so ``is_sensitive_path`` blocks the tool path,
+  and on ``sandbox._CREW_READONLY_LEAVES``, so the OS seals it against every shell
+  form (the shell gate matches no paths in command text). Those two are what make
+  the enable un-flippable by a prompt-injected agent, so both are asserted directly
+  rather than assumed from the list membership.
 
 The file deliberately lives OUTSIDE ``config.json``: that section carries
 display/limit knobs only and has no ``enabled`` field, precisely so there is exactly
@@ -305,31 +306,17 @@ class TestKeystoneProtection:
         assert security.is_sensitive_path(path) is True
         assert security.is_sensitive_write_path(path) is True
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "cat ~/.kiro/crew/computer_use.json",
-            "less ~/.kiro/crew/computer_use.json",
-            "echo '{\"enabled\":true}' > ~/.kiro/crew/computer_use.json",
-            "echo x >> ~/.kiro/crew/computer_use.json",
-            "tee ~/.kiro/crew/computer_use.json",
-            "cp /tmp/evil.json ~/.kiro/crew/computer_use.json",
-            "python -c \"open('~/.kiro/crew/computer_use.json','w')\"",
-        ],
-    )
-    def test_agent_cannot_reach_it_from_a_shell(self, command):
-        # The shell plane needs its own matcher: a bash body has no ``path`` param
-        # for the tool-path gate to inspect.
-        assert security.is_sensitive_bash_command(command), command
+    def test_the_shell_plane_is_sealed_by_the_sandbox(self):
+        # A bash body has no ``path`` param for the tool-path gate to inspect, and
+        # the shell gate deliberately matches no paths in command text -- so the
+        # control on a shell write (a redirect, ``tee``, ``cp``, a ``tar -C`` drop or
+        # a runtime-constructed spelling alike) is the kernel: the leaf is sealed
+        # read-only in every sandbox mode.
+        from kiro_crew import sandbox
 
-    def test_archive_extraction_into_the_trust_root_is_blocked(self):
-        # The ``tar -C`` / ``unzip -d`` drop would land a replacement file without
-        # ever naming it.
-        for command in (
-            "tar -xf payload.tar -C ~/.kiro/crew",
-            "unzip payload.zip -d ~/.kiro/crew",
-        ):
-            assert security.is_sensitive_bash_command(command), command
+        assert "computer_use.json" in sandbox._CREW_READONLY_LEAVES
+        assert "computer_use.json" in sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES
+        assert security.is_sensitive_bash_command("echo x > ~/.kiro/crew/computer_use.json") is None
 
     def test_the_enable_is_not_in_config_json(self):
         """The deliberate asymmetry, asserted so a refactor cannot "tidy" it away.

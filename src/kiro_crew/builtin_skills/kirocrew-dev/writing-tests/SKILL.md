@@ -112,8 +112,7 @@ Two shapes escape the env var:
 
   Some entries are excluded, and for two opposite reasons — already redirected
   elsewhere (the macOS launchd set, moved as one group by `_isolate_launchd_paths`),
-  or a **security anchor that must never move**:
-  `security._EXTRACT_INTO_TRUST_ROOT_RE` and the file browser's allow-list root
+  or a **security anchor that must never move**: the file browser's allow-list root
   `file_explorer/server._HOME`. **Stub the reader, never
   move the anchor.** Redirecting a matcher so a test can pass makes it assert against a
   pattern that no longer matches the thing it protects. An anchor that stops being an

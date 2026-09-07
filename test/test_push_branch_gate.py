@@ -338,7 +338,7 @@ class TestGitPushEnforcement:
     ) -> None:
         """A feature publish chained with a denied command is denied, and NO
         push_allowed audit fires (SEL reflects the FINAL outcome)."""
-        reason = is_denied(f"{PUSH} origin feat && aws delete_bucket my-bucket")
+        reason = is_denied(f"{PUSH} origin feat && aws s3 rb s3://my-bucket")
         assert reason is not None and reason.startswith("Blocked by security policy")
         assert not any(e.event_type == "push_allowed" for e in captured_sel_events)
 

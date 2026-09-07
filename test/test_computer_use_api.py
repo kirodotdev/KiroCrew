@@ -855,22 +855,15 @@ class TestConfigSection:
         assert "computer_use" in KiroCrewConfig.load().to_dict()
 
     def test_state_path_is_on_the_keystone_floor(self):
+        from kiro_crew import sandbox
         from kiro_crew.config.loader import computer_use_state_path
-        from kiro_crew.security import (
-            _CREW_SECRET_LEAVES,
-            is_sensitive_bash_command,
-            is_sensitive_path,
-        )
+        from kiro_crew.security import _CREW_SECRET_LEAVES, is_sensitive_path
 
         assert "computer_use.json" in _CREW_SECRET_LEAVES
         assert computer_use_state_path().name == "computer_use.json"
         assert is_sensitive_path("~/.kiro/crew/computer_use.json") is True
-        for command in (
-            "cat ~/.kiro/crew/computer_use.json",
-            "echo x > ~/.kiro/crew/computer_use.json",
-            "tee ~/.kiro/crew/computer_use.json",
-        ):
-            assert is_sensitive_bash_command(command)
+        # The shell plane is sealed by the sandbox, not matched by text.
+        assert "computer_use.json" in sandbox._CREW_READONLY_LEAVES
 
 
 # ── POST /api/computer-use/frame — the live-view (PiP) ingress ──

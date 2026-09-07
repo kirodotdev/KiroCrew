@@ -546,7 +546,7 @@ fetch('/api/chat?ws=1', {
 ## Installation Flow (User Perspective)
 
 1. `kirocrew app install /path/to/my-app` — the CLI verb takes a local directory containing `app.json`. A git-hosted app is installed from the App Store / registry, which is the path that clones.
-2. Gateway restart: `kirocrew restart` (`kirocrew gateway restart` is not a command — `gateway` has flags, not subcommands). An agent cannot run it: the shell layer blocks the spelling under `self-protection-restart`, so use the gateway-restart skill's scheduled-restart flow instead.
+2. Gateway restart: `kirocrew restart` (`kirocrew gateway restart` is not a command — `gateway` has flags, not subcommands). An agent cannot run it: the shell layer's self-protection argv floor refuses the invocation, so use the gateway-restart skill's scheduled-restart flow instead.
 3. App appears in sidebar immediately (if UI defined)
 4. First cron run (within `every` seconds) self-heals all setup
 5. UI transitions from "initializing" to functional
