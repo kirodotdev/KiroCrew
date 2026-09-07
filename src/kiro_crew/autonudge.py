@@ -1986,14 +1986,13 @@ class AutoNudgeService:
                     if loop.active:
                         loop.stopped_reason = ""
                         # Spent only by an actual REVIVAL, hence ``not
-                        # was_active``. A still-active loop also receives
-                        # ``active=True`` from an ordinary settings save (the
-                        # goal popover sends it on every edit), and treating
-                        # that as an answer would erase evidence recorded
-                        # moments earlier and let one more doomed cycle fire.
-                        # Keeping it costs at most a resumable stop the operator
-                        # can undo; dropping it costs a wasted cycle and the
-                        # silence this stop exists to end.
+                        # was_active``. A still-active loop may still receive
+                        # an idempotent ``active=True`` from API or app callers,
+                        # and treating that as an answer would erase evidence
+                        # recorded moments earlier and let one more doomed cycle
+                        # fire. Keeping it costs at most a resumable stop the
+                        # operator can undo; dropping it costs a wasted cycle and
+                        # the silence this stop exists to end.
                         if not was_active:
                             loop.approval_stalled = False
                     else:

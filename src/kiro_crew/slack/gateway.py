@@ -6478,6 +6478,7 @@ class GatewayOrchestrator:
                     "cycle_count": loop.cycle_count,
                     "active": loop.active,
                     "last_fire_ts": loop.last_fire_ts,
+                    "stopped_reason": loop.stopped_reason,
                 }
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
@@ -6485,7 +6486,6 @@ class GatewayOrchestrator:
                         monitor_state_public_dict(loop.monitor)
                     )
                     loop_payload["next_due_ts"] = loop.next_due_ts
-                    loop_payload["stopped_reason"] = loop.stopped_reason
                 broadcast = (
                     self.dashboard_state.broadcast_ws_owners
                     if is_structured_monitor_loop(loop)
