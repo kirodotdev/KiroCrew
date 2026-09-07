@@ -650,6 +650,56 @@ upstream's. Skipping is what makes it safe, and it costs an edition nothing —
 the only artifact this path could produce for it is a bundle it must never
 serve.
 
+**The frontend half is also suppressed on a backend-only sync — one whose
+incoming ref changes nothing under `website/`.** Both `npm ci` and `npm build +
+stage` are then work with no output: no new lockfile to install, no new source to
+build, and the staged bundle is already the current one. The decision is made by
+the `Verify dependencies` preflight, the one step that runs after `fetch` has
+pinned the incoming ref and before `merge` makes the worktree equal to it — the
+only point where "does the incoming ref touch the frontend?" has a correct answer.
+It cannot be decided when the step list is assembled, because the per-PID sync ref
+is not written until fetch runs; on a long-lived gateway's second sync it would
+still point at the prior tip. The preflight signals the verdict by exiting a
+reserved code (`EXIT_FRONTEND_SKIP`, 48) that the runner trusts ONLY from the
+preflight's own label — a worktree-run step exiting the same code is demoted to a
+plain failure, so it cannot forge a "skip the build". The runner then suppresses
+the two frontend steps whole, transaction included: a suppressed `npm ci` must not
+enter the `node_modules` transaction, whose move-aside-then-drop-backup on a no-op
+exit would delete the tree.
+
+The suppression fires only when ALL of these hold together, so the tree that
+produced the staged bundle and the tree now on disk are provably identical across
+tracked files, untracked files, and installed packages:
+
+1. the incoming ref changes nothing under `website/` (the tracked `git diff` the
+   probe skip already computes);
+2. the working subtree is clean INCLUDING untracked files (`git status
+   --porcelain --untracked-files=normal -- website` empty) — the same check the
+   fingerprint is STAMPED behind, re-checked before it is TRUSTED, so an untracked
+   `website/` file added between build and skip cannot ride through;
+3. `node_modules` is complete against the lockfile (`npm ls --all` exits 0), which
+   closes the partial-tree residual a bare "populated" check would leave;
+4. a build-source fingerprint — the git tree id of `website/` stamped beside the
+   staged bundle on the last successful build, and only when that build's tree was
+   clean — equals the incoming ref's `website/` tree.
+
+Any single failure, or any uncertainty (missing or failing `git`/`npm`, a
+timeout), returns "run", so the unknown case always rebuilds; the suppression
+cannot hold while a rebuild is owed.
+
+**Declared bound: this is a skip optimisation, so it has an inherent
+check-then-skip window.** The preflight decides before the merge, the runner
+suppresses after it, and the fingerprint is read right after the build; a tree
+changed by a concurrent writer in between yields a STALE build, never a wrong or
+corrupt one. This is the defining window of every build cache — closing it
+completely would need a lock held across the whole build, which destroys the
+~28 s the suppression saves. The worst outcome is a stale build on the operator's
+OWN checkout, rebuilt by re-running Pull + Build: no data lost, nothing corrupted,
+and whoever changed the tree mid-sync is who sees the result. The window is kept
+as narrow as it cheaply can be without a lock — the cleanliness check and the
+tree-id read run back-to-back under the staging lock, and the preflight runs
+immediately before the merge.
+
 The final **npm build + stage** step builds the frontend and copies `website/dist` into
 `src/kiro_crew/static/dist` under the Dev Fleet backend's OWN interpreter, with
 the target repo passed as an argument. Resolving the helper from the target
@@ -738,15 +788,14 @@ still probes. Anything the comparison cannot answer — a failing or missing `gi
 a timeout — probes as well: the unknown case costs an install rather than a
 guarantee.
 
-A populated tree is evidence, not a verified install, and the bound is worth
-stating: a prior frontend sync whose post-merge `npm ci` died partway can leave a
-partial tree beside the merged lockfile, and later backend-only syncs will skip on
-it, since from there on the subtree is unchanged and nothing re-examines it. The
-consequence is the same class as the dead-registry residual — the skip decides only
-whether this sync pays for a rehearsal, so a refusal lands one step later rather
-than never, and the transaction keeps the checkout consistent either way. Issue
-[#7132](https://github.com/kirodotdev/KiroCrew/issues/7132) tracks the stronger
-evidence check that would close it.
+A populated tree is evidence, not a verified install. On its own that would let a
+partial tree — a prior frontend sync whose post-merge `npm ci` died partway,
+leaving packages missing beside the merged lockfile — pass as "populated". For
+the PROBE skip that residual is benign (the skip decides only whether this sync
+pays for a rehearsal, so a refusal lands one step later rather than never, and the
+transaction keeps the checkout consistent either way). For the frontend-STEP
+suppression below it would not be benign, so that path does not rely on the
+populated check alone — see the build-currency preconditions there.
 
 The condition is the whole subtree rather than just `package-lock.json` /
 `package.json` / `.npmrc`, and the difference is load-bearing. With those three

@@ -1416,6 +1416,68 @@ def _venv_python(repo: str) -> Path | None:
     return None
 
 
+def _frontend_build_steps(
+    *,
+    npm_bin: str,
+    git_bin: str,
+    repo: str,
+) -> list[tuple[list[str], str, dict, str]]:
+    """The ``npm ci`` and ``npm build + stage`` steps, in order.
+
+    Returns both steps unconditionally. Whether they RUN is decided at run time
+    by the sync runner, which suppresses a step whose label is in its
+    frontend-skip set when the trusted preflight step exits the frontend-skip
+    verdict. That decision is made by the preflight -- the one point that runs
+    after ``fetch`` pinned the incoming ref and before ``merge`` -- so it is made
+    in the only window where "does the incoming ref touch the frontend?" has a
+    correct answer. Deciding it here at assembly time would read the per-PID sync
+    ref before fetch wrote it, so on a long-lived gateway's second sync it would
+    compare against the PRIOR tip and skip a rebuild an incoming frontend change
+    genuinely needed (#7132).
+
+    The two steps suppress together because the runner keys on their labels off
+    one preflight verdict, and they must: ``npm ci`` reifies the incoming
+    lockfile and ``npm build + stage`` compiles the source, sharing the one
+    precondition the verdict encodes.
+
+    ``git_bin`` is the sync's trusted-bin absolute git path; it is threaded into
+    ``build_and_stage`` so the read-only build-source fingerprint's git calls use
+    a trusted binary rather than a PATH search.
+    """
+    return [
+        ([npm_bin, "ci", "--prefix", "website"], "strict", runtime._build_env(), "npm ci"),
+        # Build and stage as ONE step, holding the staging lock across both.
+        # `npm run build` empties website/dist, so a peer flow (the dashboard's
+        # own update, pod provisioning) staging concurrently would copy a
+        # partially written tree — and a bundle's lazy chunks are not reachable
+        # from index.html, so no post-hoc inspection detects that reliably.
+        # Covering only the copy is not enough; the holder has to span the build.
+        #
+        # Run with THIS backend's interpreter, not the target checkout's: the
+        # logic is revision-independent, while resolving it from the target would
+        # make the step's very EXISTENCE contingent on the pulled revision
+        # carrying build_and_stage, turning an older target into an ImportError
+        # that fails the whole Pull+Build. The repo to build, npm's resolved
+        # trusted path, and git's trusted path are passed in rather than
+        # re-resolved.
+        (
+            [
+                sys.executable,
+                "-c",
+                "import sys;from kiro_crew.frontend import build_and_stage;"
+                "sys.exit(0 if build_and_stage(sys.argv[1], npm=sys.argv[2], "
+                "git=sys.argv[3]) else 1)",
+                repo,
+                npm_bin,
+                git_bin,
+            ],
+            "strict",
+            runtime._build_env(),
+            "npm build + stage",
+        ),
+    ]
+
+
 #: Trusted loader for the sync-runner snapshot. A FIXED literal — nothing is
 #: ever interpolated into it — so unlike the pre-extraction inline script it
 #: carries no program logic beyond verify-and-exec. It exists because a file
@@ -1729,6 +1791,14 @@ async def _sync_start_locked() -> dict:
                     str(repo),
                     "--ref",
                     sync_base_ref,
+                    # Asks this step to exit EXIT_FRONTEND_SKIP (a reserved code
+                    # trusted only from this step) when the incoming ref proves
+                    # the frontend install/build is already present, so the
+                    # runner suppresses the later npm ci and build+stage steps.
+                    # A flag, not a value -- the verdict travels as this step's
+                    # exit code and lives in runner state, never a file another
+                    # same-UID step could forge (#7132).
+                    "--emit-frontend-skip",
                 ],
                 "strict",
                 runtime._build_env(),
@@ -1798,37 +1868,18 @@ async def _sync_start_locked() -> dict:
             "edition; the shipped bundle is left in place"
         )
     else:
-        raw_steps += [
-            ([npm_bin, "ci", "--prefix", "website"], "strict", runtime._build_env(), "npm ci"),
-            # Build and stage as ONE step, holding the staging lock across both.
-            # `npm run build` empties website/dist, so a peer flow (the
-            # dashboard's own update, pod provisioning) staging concurrently
-            # would copy a partially written tree — and a bundle's lazy chunks
-            # are not reachable from index.html, so no post-hoc inspection of
-            # the copy detects that reliably. Covering only the copy is not
-            # enough; the holder has to span the build.
-            #
-            # Run with THIS backend's interpreter, not the target checkout's, for
-            # the same reason the staging step does: the logic is
-            # revision-independent, while resolving it from the target would make
-            # the step's very EXISTENCE contingent on the pulled revision
-            # carrying build_and_stage, turning an older target into an
-            # ImportError that fails the whole Pull+Build. The repo to build and
-            # npm's resolved trusted path are passed in rather than re-resolved.
-            (
-                [
-                    sys.executable,
-                    "-c",
-                    "import sys;from kiro_crew.frontend import build_and_stage;"
-                    "sys.exit(0 if build_and_stage(sys.argv[1], npm=sys.argv[2]) else 1)",
-                    repo,
-                    npm_bin,
-                ],
-                "strict",
-                runtime._build_env(),
-                "npm build + stage",
-            ),
-        ]
+        # Append the reinstall AND the rebuild. Whether they RUN is decided at
+        # run time by the sync runner: it suppresses these two labels when the
+        # preflight step (which runs after fetch pinned the incoming ref and
+        # before merge) exits the frontend-skip verdict -- the incoming ref
+        # changed nothing under website/ and node_modules is populated. A
+        # backend-only sync -- the common case, since most syncs move only
+        # Python -- otherwise pays a full `npm ci` (which DELETES node_modules
+        # before reinstalling from an unchanged lockfile) and a full vite build
+        # that reproduces a byte-identical bundle. The decision is made
+        # post-fetch, carried by the preflight's trusted exit code rather than
+        # in-process here where the ref is not yet fetched (#7132).
+        raw_steps += _frontend_build_steps(npm_bin=npm_bin, git_bin=git_bin, repo=str(repo))
     cleanups: list[str] = []
     # The preflight's snapshot is removed with the run's other temporaries. It is
     # registered here rather than left behind: a leaked mkdtemp per sync is how
@@ -1939,6 +1990,14 @@ async def _sync_start_locked() -> dict:
         str(npm_preflight.EXIT_TREE_AMBIGUOUS),
         "--exit-restore-failed",
         str(npm_preflight.EXIT_RESTORE_FAILED),
+        "--exit-frontend-skip",
+        str(npm_preflight.EXIT_FRONTEND_SKIP),
+        # The two labels the runner suppresses when the preflight asserts the
+        # frontend-skip verdict. They MATCH the labels _frontend_build_steps
+        # gives those steps; kept literal here rather than derived so the runner
+        # (which imports nothing from kiro_crew) is told exactly what to skip.
+        "--frontend-labels",
+        "npm ci,npm build + stage",
         "--steps-sha256",
         steps_sha256,
     ]

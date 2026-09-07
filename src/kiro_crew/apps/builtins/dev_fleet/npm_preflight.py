@@ -100,6 +100,17 @@ EXIT_NO_SPACE = 45
 EXIT_TREE_AMBIGUOUS = 46
 #: The runner could not put a stashed dependency tree back after a failed step.
 EXIT_RESTORE_FAILED = 47
+#: The incoming ref proved the frontend install and build are already on disk
+#: (whole ``website/`` subtree unchanged AND ``node_modules`` populated), so the
+#: reinstall and rebuild are not owed. This is a SUCCESS verdict, not a failure
+#: -- it carries no ``_EXPLAIN`` sentence -- but it is RESERVED so the runner
+#: trusts it only from the preflight step's own label. A later worktree-run step
+#: (a pip lifecycle script) exiting 48 is DEMOTED to a plain failure by
+#: :func:`sync_runner.demote_reserved`, which is what stops an untrusted step
+#: from forging a "skip the build" verdict and shipping stale assets. The
+#: verdict travels as this exit code and lives in the runner's own state, never
+#: as a file any same-UID step could create.
+EXIT_FRONTEND_SKIP = 48
 
 #: The checkout subdirectory holding the frontend half. A ``probe()`` parameter
 #: once carried this, but only ``main()`` ever called it and it never passed one
@@ -193,7 +204,11 @@ def classify(output: str) -> int:
 #: number it likes, and a forged 41 would make the dashboard assert a registry
 #: credential failure -- with a remedy -- for what was actually a build error. So
 #: the runner remaps a reserved code coming from any step other than the probe.
-RESERVED_EXIT_CODES = frozenset(_EXPLAIN)
+#: EXIT_FRONTEND_SKIP is added explicitly: it is a SUCCESS verdict with no
+#: _EXPLAIN sentence, but it must be reserved so a worktree-run step cannot forge
+#: it to skip the frontend build (its whole point is that only the trusted
+#: preflight step may assert it).
+RESERVED_EXIT_CODES = frozenset(_EXPLAIN) | {EXIT_FRONTEND_SKIP}
 
 
 def explain_exit(rc: int) -> str:
@@ -344,6 +359,157 @@ def _install_already_proven(git: str, repo: str, ref: str) -> str | None:
     )
 
 
+#: File (under ``static/dist``) holding the git tree id of ``website/`` the
+#: staged bundle was built from. Written by :func:`frontend._write_build_source_fingerprint`.
+_BUILD_SOURCE_FINGERPRINT = "kirocrew-build-source.txt"
+#: Where the staged bundle lives relative to the repo root.
+_STATIC_DIST = ("src", "kiro_crew", "static", "dist")
+
+
+def _frontend_worktree_clean(git: str, repo: str) -> bool:
+    """True only when ``website/`` has NO uncommitted change, untracked included.
+
+    ``git status --porcelain --untracked-files=normal -- website`` lists tracked
+    modifications AND new untracked files (as ``?? path``); an empty result means
+    the working subtree equals the committed one. Non-empty, a non-zero exit, a
+    missing git, or a timeout all return False, so the skip is refused on any
+    doubt -- the build then runs, the safe direction. This mirrors the stamp-time
+    guard: the fingerprint is only WRITTEN when this holds, and here it is
+    re-checked before the fingerprint is TRUSTED, so an untracked file added
+    between build and skip cannot ride through.
+    """
+    try:
+        proc = subprocess.run(  # nosec B603 - argv list, no shell
+            [
+                git,
+                "-C",
+                repo,
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+                "--",
+                _FRONTEND_SUBDIR,
+            ],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return proc.returncode == 0 and not (proc.stdout or b"").strip()
+
+
+def _frontend_tree_complete(npm: str, repo: str) -> bool:
+    """True only when ``website/node_modules`` fully satisfies the lockfile.
+
+    ``_install_already_proven``'s "populated" test is a NON-EMPTY directory,
+    which a partial tree passes. Skipping the real ``npm ci`` on a partial tree
+    would leave the sync succeeding on incomplete dependencies, so the build-skip
+    needs a completeness check that a bare-populated one cannot give.
+
+    ``npm ls --all`` walks the installed tree against the lockfile and exits
+    non-zero (``ELSPROBLEMS``, "missing: ...") when any package is absent or
+    invalid; it exits 0 only when the tree is complete. It runs no lifecycle
+    scripts, writes nothing, and needs no network -- measured ~1s. Anything other
+    than a clean exit 0 (a non-zero code, a missing npm, a timeout) returns
+    False, so the unknown case rebuilds rather than trusting the tree.
+    """
+    try:
+        proc = subprocess.run(  # nosec B603 - argv list, no shell
+            [npm, "ls", "--all"],
+            cwd=str(Path(repo) / _FRONTEND_SUBDIR),
+            capture_output=True,
+            timeout=120,
+            check=False,
+            env={**os.environ, "npm_config_update_notifier": "false"},
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return proc.returncode == 0
+
+
+def _frontend_build_already_current(git: str, npm: str, repo: str, ref: str) -> str | None:
+    """Reason to SKIP the frontend reinstall AND rebuild, or ``None`` to run them.
+
+    STRICTLY STRONGER than :func:`_install_already_proven`, and it must be: that
+    predicate governs whether the pre-merge PROBE pays for a rehearsal, where a
+    stale-but-populated tree is benign because a refusal merely lands one step
+    later. Skipping the real ``npm ci`` AND ``npm run build`` is not benign in
+    the same way -- a wrongly skipped build leaves ``static/dist`` holding a
+    bundle that was never built from the current source, which surfaces days
+    later as a stale-frontend bug. So this requires everything
+    :func:`_install_already_proven` does, PLUS two proofs it does not: that the
+    installed tree is COMPLETE (:func:`_frontend_tree_complete`, closing the
+    partial-``node_modules`` gap), and that the staged bundle was built from the
+    source the sync will end up with (the fingerprint below).
+
+    The extra proof closes the concrete hole (#7132): a prior FRONTEND sync can
+    merge new ``website/`` source and then have its ``npm ci`` fail, at which
+    point the runner's transaction restores the OLD ``node_modules``. From then
+    on the subtree stops changing, so ``_install_already_proven`` would skip --
+    but ``static/dist`` was built from the OLD source and the merge landed the
+    NEW one. The fingerprint distinguishes them: it records the git tree id of
+    ``website/`` the staged bundle was built from, and this requires it to equal
+    the incoming ref's ``website/`` tree. In that failed-sync case the two differ
+    (old built tree vs new merged tree), so the skip is refused and the build
+    runs. Any uncertainty -- no fingerprint, an unreadable one, a git that cannot
+    resolve the ref's tree -- returns ``None`` and the build runs, the safe
+    direction.
+    """
+    base = _install_already_proven(git, repo, ref)
+    if base is None:
+        return None
+    # The install-proven check compares only TRACKED files (`git diff`), so an
+    # untracked website/ file added since the last build -- one the staged bundle
+    # cannot contain -- would not move the comparison. Require the working tree
+    # to be clean INCLUDING untracked files before skipping, mirroring the
+    # stamp-time guard in frontend._write_build_source_fingerprint: the two
+    # together mean a skip implies the tree that produced the bundle and the tree
+    # now on disk are the same, tracked and untracked alike (#7132).
+    if not _frontend_worktree_clean(git, repo):
+        return None
+    # The install-proven check only requires node_modules to be NON-EMPTY. A
+    # partial tree (an interrupted install) passes that, so verify completeness
+    # against the lockfile before skipping the real npm ci -- otherwise the sync
+    # could succeed on incomplete dependencies (#7132).
+    if not _frontend_tree_complete(npm, repo):
+        return None
+    fingerprint_path = Path(repo).joinpath(*_STATIC_DIST) / _BUILD_SOURCE_FINGERPRINT
+    try:
+        built_tree = fingerprint_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        # No fingerprint (a bundle built before this feature, or a stamp that
+        # failed to write) proves nothing about what the dist was built from, so
+        # rebuild rather than trust a populated tree alone.
+        return None
+    if not built_tree:
+        return None
+    try:
+        proc = subprocess.run(  # nosec B603 - argv list, no shell
+            [git, "-C", repo, "rev-parse", f"{ref}:{_FRONTEND_SUBDIR}"],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    incoming_tree = (proc.stdout or b"").decode(errors="replace").strip()
+    if not incoming_tree or incoming_tree != built_tree:
+        # The staged bundle was built from a DIFFERENT website/ tree than the one
+        # the sync will end up with -- the stale-after-failed-frontend-sync case.
+        # Rebuild.
+        return None
+    return (
+        f"skipped the frontend reinstall and rebuild: the incoming ref changes "
+        f"nothing under {_FRONTEND_SUBDIR}/, its node_modules is populated and "
+        "complete against the lockfile, and the staged bundle was built from this "
+        "exact source tree, so no new resolution is arriving and no new bundle is "
+        "owed"
+    )
+
+
 def probe(
     *,
     git: str,
@@ -434,10 +600,32 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--npm", required=True)
     ap.add_argument("--repo", required=True)
     ap.add_argument("--ref", required=True)
+    # When set, and only when the incoming ref proves the frontend install is
+    # already on disk, exit EXIT_FRONTEND_SKIP instead of EXIT_OK. The runner
+    # reads that verdict off THIS step's exit code -- a channel it already trusts
+    # only from this step's label -- and skips the later npm ci and build+stage
+    # steps. It is a flag, not a value: the verdict cannot be smuggled in from
+    # outside, and a worktree-run step exiting 48 is demoted to a plain failure.
+    # This is the same window the probe uses (after fetch pinned --ref, before
+    # merge), which is the only point where "does the incoming ref touch the
+    # frontend?" has a correct answer (#7132).
+    ap.add_argument("--emit-frontend-skip", action="store_true")
     # --subdir and --timeout were CLI flags no caller passed. The subdir is now
     # _FRONTEND_SUBDIR and the timeout is probe()'s own default, so the surface
     # matches the one real invocation.
     args = ap.parse_args(argv)
+    if args.emit_frontend_skip:
+        # Asked with the SAME (git, repo, ref) the probe uses. This is the
+        # STRONGER predicate: it requires the unchanged subtree and populated
+        # node_modules the install-skip needs, PLUS proof (a build fingerprint)
+        # that the staged bundle was built from the source the sync ends up with
+        # -- so it cannot skip the rebuild on a tree left stale by a prior
+        # failed frontend sync. Any uncertainty returns None, so the frontend
+        # steps run: the unknown case pays the rebuild.
+        proven = _frontend_build_already_current(args.git, args.npm, args.repo, args.ref)
+        if proven is not None:
+            print(f"{DETAIL_PREFIX}{proven}", flush=True)
+            return EXIT_FRONTEND_SKIP
     code, detail = probe(
         git=args.git,
         npm=args.npm,

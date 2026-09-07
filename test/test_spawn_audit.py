@@ -773,6 +773,40 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/dev_fleet/npm_preflight.py::_extract",
         "apps/builtins/dev_fleet/npm_preflight.py::_install_already_proven",
         "apps/builtins/dev_fleet/npm_preflight.py::probe",
+        # _frontend_build_already_current is the STRONGER build-skip predicate
+        # that wraps _install_already_proven (listed directly above) and adds one
+        # read-only spawn: `<git> -C <repo> rev-parse <ref>:website`. Same three
+        # sources as its wrapped sibling -- the binary is the sync's _trusted_bin
+        # git (never a PATH search), the repo is the operator-configured checkout,
+        # and <ref> is the sync's own per-PID base ref, never agent-supplied. It
+        # is fixed list-argv, shell-free, and only READS (it resolves a tree id to
+        # compare against the staged bundle's fingerprint); nothing is written.
+        # Consistent with npm_preflight.py::_install_already_proven / ::_extract
+        # above and git_divergence.py::count_divergence below -- and refusing it
+        # while the function it wraps is listed would make the same subprocess
+        # benign when called directly and forbidden through a one-line wrapper.
+        "apps/builtins/dev_fleet/npm_preflight.py::_frontend_build_already_current",
+        # _frontend_worktree_clean is one of that predicate's two guards. One
+        # read-only spawn: `<git> -C <repo> status --porcelain
+        # --untracked-files=normal -- website`. Fixed list-argv, shell-free, no
+        # agent-supplied component -- the binary is the sync's _trusted_bin git
+        # (threaded in via _frontend_build_already_current, never a PATH search),
+        # the repo is the operator-configured checkout, and the subcommand,
+        # flags and pathspec are literals. It only READS the working-tree status
+        # (writes nothing). Same class as
+        # npm_preflight.py::_install_already_proven / ::_extract above and
+        # git_divergence.py::count_divergence below.
+        "apps/builtins/dev_fleet/npm_preflight.py::_frontend_worktree_clean",
+        # _frontend_tree_complete is the predicate's other guard: the on-disk
+        # node_modules completeness check. One read-only spawn: `<npm> ls --all`
+        # with cwd set to <repo>/website. Fixed list-argv, shell-free, no
+        # agent-supplied component -- the binary is the sync's _trusted_bin npm
+        # (the same npm probe() uses), the cwd is the operator-configured
+        # checkout's website subtree, and the args are literals. `npm ls` only
+        # WALKS the installed tree against the lockfile (writes nothing, runs no
+        # lifecycle scripts). Same class as npm_preflight.py::probe, whose npm
+        # spawn is listed above.
+        "apps/builtins/dev_fleet/npm_preflight.py::_frontend_tree_complete",
         # Foreground last-resort restart (Make Live on hosts with no drivable
         # service manager): a detached `kirocrew restart --port <marker port>`,
         # fixed argv whose binary is validated (basenamed kirocrew, absolute,
@@ -1042,6 +1076,20 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "frontend.py::_npm_build_and_stage_locked",
         "frontend.py::build_frontend_async",
         "frontend.py::build_frontend_sync",
+        # _write_build_source_fingerprint stamps the built bundle's source
+        # identity beside static/dist, with two read-only spawns:
+        # `<git> -C <root> status --porcelain -- website` and
+        # `<git> -C <root> rev-parse HEAD:website`. Fixed list-argv, shell-free,
+        # no agent-supplied component: <root> is the operator's own registered
+        # checkout, the subcommands and pathspec are literals, and neither call
+        # writes anything (only the resulting tree id is written to a file, by
+        # Python, not by git). The git binary is the sync's _trusted_bin absolute
+        # path when Dev Fleet calls build_and_stage (git= is threaded through);
+        # the standalone callers fall back to a PATH `git`, the same resolution
+        # the sibling frontend.py::_npm_build_and_stage_locked already uses for
+        # npm. Same trust class as npm_preflight.py::_install_already_proven and
+        # git_divergence.py::count_divergence.
+        "frontend.py::_write_build_source_fingerprint",
         # The shared ahead/behind divergence count: a read-only ``git rev-list
         # --count --left-right HEAD...<upstream>`` fixed list-argv (no shell)
         # run against the install's own checkout. Callers pass the repo path
