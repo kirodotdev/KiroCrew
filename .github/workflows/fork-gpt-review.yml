@@ -75,7 +75,7 @@ jobs:
       # VERIFY before merge that this SHA resolves to the intended harden-runner
       # release (authoring host had no network to confirm it).
       #
-      # us-east-1 is GPT (both review passes); us-west-2 is the Opus ADJUDICATION
+      # us-east-1 is GPT (both review passes); us-west-2 is the Fable ADJUDICATION
       # pass at the end of the job -- a different role in a different region,
       # reached only when pass 2 emitted [BLOCK-MERGE]. Those three endpoints
       # mirror fork-opus-review.yml's allowlist. Comments cannot live inside the
@@ -893,7 +893,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Opus 4.8 adjudication (blocking findings only)
+      - name: Fable 5.1 adjudication (blocking findings only)
         id: adjudicate
         if: >-
           (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
@@ -908,7 +908,7 @@ jobs:
           allowed_non_write_users: "*"
           # No Bash: everything this stage needs is already on disk as data.
           claude_args: |
-            --model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-fable-5-1
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -1083,7 +1083,7 @@ jobs:
               # never from the adjudication prose.
               if [ "${ADJ_DECISION:-}" = "cleared" ]; then
                 kind="clear"; verdict="✅ no blocking findings (all downgraded on adjudication)"
-                note="Opus 4.8 adjudication downgraded every blocking finding to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
+                note="Fable 5.1 adjudication downgraded every blocking finding to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
               else
                 kind="blocked"; verdict="🔴 changes requested (blocking)"
                 note="${ADJ_NOTE:-}"
@@ -1121,7 +1121,7 @@ jobs:
             if [ -s codex-adjudication.md ]; then
               echo
               echo "<details>"
-              echo "<summary>Adjudication (Opus 4.8) — is blocking on each finding proportionate?</summary>"
+              echo "<summary>Adjudication (Fable 5.1) — is blocking on each finding proportionate?</summary>"
               echo
               cat codex-adjudication.md
               echo

@@ -198,7 +198,7 @@ def _step_env(workflow_name: str, step_name: str) -> dict[str, str]:
 
 # The three steps of the blocking-finding adjudication stage, in both GPT lanes.
 ADJ_EXTRACT = "Extract blocking findings for adjudication"
-ADJ_MODEL = "Opus 4.8 adjudication (blocking findings only)"
+ADJ_MODEL = "Fable 5.1 adjudication (blocking findings only)"
 ADJ_GATE = "Adjudicate the blocking verdict (script arithmetic, fail closed)"
 
 
@@ -897,9 +897,9 @@ class TestFirstPrinciplesReview:
             workflow = _workflow(name)
             # Each lane parses that header and pins the model.
             assert "grep -iE '^First-Principles-Verdict:'" in workflow
-            # Fable 5 with the same Opus overload fallback as the sibling
+            # Fable 5.1 with the same Opus overload fallback as the sibling
             # advisory lanes; a bare/`global.` profile id would be rejected.
-            assert "--model us.anthropic.claude-fable-5" in workflow
+            assert "--model us.anthropic.claude-fable-5-1" in workflow
             assert "--fallback-model us.anthropic.claude-opus-4-8" in workflow
 
     def test_intent_then_inventory_then_per_item_judgement(self) -> None:
@@ -1973,8 +1973,8 @@ class TestUxScopeGateSurvivesAWideDiff:
         assert "printf" not in gate, f"{lane}: writer is back in the pipeline"
 
 
-UX_BLIND_STEP = "Blind read of the committed screenshots (Fable 5)"
-UX_REVIEW_STEP = "UX review (Fable 5)"
+UX_BLIND_STEP = "Blind read of the committed screenshots (Fable 5.1)"
+UX_REVIEW_STEP = "UX review (Fable 5.1)"
 UX_EVIDENCE_STEP = "Collect blind-read evidence"
 UX_CAPTURE_STEP = "Capture the blind-read report"
 
@@ -4141,7 +4141,7 @@ class TestBlockAdjudicationContract:
             # Read-only tools, and no `gh`: this stage must not be able to post
             # its own verdict anywhere, only return text the script parses.
             assert '--allowedTools "Read,Grep,Glob"' in with_["claude_args"], lane
-            assert "us.anthropic.claude-opus-4-8" in with_["claude_args"], lane
+            assert "us.anthropic.claude-fable-5-1" in with_["claude_args"], lane
             assert "Bash" not in with_["claude_args"], lane
 
     def test_the_fork_lane_tells_the_adjudicator_the_head_is_not_on_disk(self) -> None:
@@ -4189,7 +4189,7 @@ class TestBlockAdjudicationContract:
             assert "all downgraded on adjudication" in comment, lane
             # Downgraded findings are still SHOWN. The signal was real; only its
             # authority to block the merge was removed.
-            assert "Adjudication (Opus 4.8)" in comment, lane
+            assert "Adjudication (Fable 5.1)" in comment, lane
             assert "codex-adjudication.md" in comment, lane
 
     def test_the_adjudication_step_never_fails_the_job_open(self) -> None:

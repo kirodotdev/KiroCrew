@@ -461,9 +461,9 @@ design axis is **what each is allowed to read** (its prompt-injection surface) a
 |---|---|---|---|---|---|
 | Opus 4.8 | `Opus 4.8 Review` | Agentic, `--max-turns 120` per stage, **two real invocations** (discovery -> validation) | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
 | GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two** invocations (discovery, then authoritative falsification), `reasoning_effort: medium` | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
-| Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
-| UX Review | `UX Review` | Agentic Fable 5, with the same fallback; **two real invocations** on same-repo PRs (blind read -> reconcile) | Pass 1: the committed screenshot PNGs **only**; pass 2: code, PR text, and pass 1's report | Can a first-time user who has read nothing tell what each new element is and does, and do state changes stay one continuous element? | Advisory; red only on a genuine `BLOCK` |
-| First Principles | `First Principles Review` | Agentic Fable 5, same fallback, `--max-turns 120` (inventorying and counting is grep-heavy) | Code, the whole repository, and `gh pr view` | What is the author trying to do, and does each thing this ships *deserve to exist*, already exist, or only patch a symptom? | Advisory; red only on a genuine `BLOCK` |
+| Design Review | `Design Review` | Agentic Fable 5.1, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
+| UX Review | `UX Review` | Agentic Fable 5.1, with the same fallback; **two real invocations** on same-repo PRs (blind read -> reconcile) | Pass 1: the committed screenshot PNGs **only**; pass 2: code, PR text, and pass 1's report | Can a first-time user who has read nothing tell what each new element is and does, and do state changes stay one continuous element? | Advisory; red only on a genuine `BLOCK` |
+| First Principles | `First Principles Review` | Agentic Fable 5.1, same fallback, `--max-turns 120` (inventorying and counting is grep-heavy) | Code, the whole repository, and `gh pr view` | What is the author trying to do, and does each thing this ships *deserve to exist*, already exist, or only patch a symptom? | Advisory; red only on a genuine `BLOCK` |
 
 ### Why a first-principles lane is not a second Design Review
 
@@ -535,7 +535,7 @@ Three constraints keep it honest:
 It runs whenever a diff touches product or CI surface — **including a plain bug
 fix**, which is where the root-cause lens earns the most. Only a change that ships
 no capability at all (docs, tests, screenshots, generated files) skips, so the
-2x-rate-card Fable 5 spend goes to diffs that can actually produce a finding.
+2x-rate-card Fable 5.1 spend goes to diffs that can actually produce a finding.
 
 It is advisory in `pr-readiness.yml` (UX-style, not Design-style): a `BLOCK` here is
 a judgment about whether a feature should exist, and a model does not get to wedge a
@@ -1182,7 +1182,7 @@ exact-match exception behavior without network access.
 
 The command grammar and the marker contract are in [Human override](#human-override); this section states the authorization and freshness rules the handler enforces.
 
-Human judgment is the final authority over the Fable 5 and GPT 5.6
+Human judgment is the final authority over the Opus 4.8 and GPT 5.6
 AI-review results. A repository member with `write`, `maintain`, or `admin`
 permission can record a false-positive, not-applicable, or accepted-risk
 decision with:
@@ -1215,7 +1215,7 @@ turn a gate green. The handler has only review-control permissions
 on a pull request; `issues:write` alone does not make that write reliable for a
 GitHub Actions installation token.
 
-For Fable 5 and GPT 5.6, the handler re-runs the existing PR workflow. The
+For Opus 4.8 and GPT 5.6, the handler re-runs the existing PR workflow. The
 re-run resolves the trusted marker before acquiring AWS credentials, skips the
 model invocation, updates the existing summary with a human-override banner,
 and exits its original gate successfully. Either event ordering — an override

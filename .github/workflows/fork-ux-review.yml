@@ -1,7 +1,7 @@
 name: Fork UX Review
 
 # STAGE 2 (privileged) of the fork AI-review pipeline — the ADVISORY UX
-# reviewer (Fable 5 via Amazon Bedrock). Triggered by the completion of
+# reviewer (Fable 5.1 via Amazon Bedrock). Triggered by the completion of
 # "Fork AI Review (collect)" (Stage 1). Runs from the DEFAULT branch with
 # OIDC. It NEVER checks out or executes the fork's code.
 #
@@ -20,7 +20,7 @@ name: Fork UX Review
 #   - harden-runner egress-block + OIDC short-lived Bedrock-only creds bound
 #     the blast radius of any prompt-injection.
 #
-# Mirrors ux-review.yml's contract (Fable 5 model, UX-Verdict/[UX-REVIEWED]
+# Mirrors ux-review.yml's contract (Fable 5.1 model, UX-Verdict/[UX-REVIEWED]
 # markers, UI-scope gate, ADVISORY: fail only on a genuine BLOCK) with ONE
 # deliberate difference: ux-review.yml runs a BLIND-READ first pass over the
 # screenshots the PR commits, and this lane does not, because those files are
@@ -304,7 +304,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: UX review (Fable 5)
+      - name: UX review (Fable 5.1)
         id: review
         # No continue-on-error: if the model call fails, this step fails and the
         # always()-run finalize below emits a NEUTRAL "UX Review" check (an
@@ -335,7 +335,7 @@ jobs:
           # isolation, which covers this lane's Bash(git diff/gh pr) grants.
           allowed_non_write_users: "*"
           claude_args: |
-            --model us.anthropic.claude-fable-5
+            --model us.anthropic.claude-fable-5-1
             --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 60
             --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
@@ -870,7 +870,7 @@ jobs:
             if [ -n "$existing" ] && [ "$existing" != "null" ]; then
               {
                 echo "$MARKER"
-                echo "## UX Review (Fable 5, fork) — ⏭️ skipped"
+                echo "## UX Review (Fable 5.1, fork) — ⏭️ skipped"
                 echo
                 echo "_Revision \`$HEAD\` touches no user-facing surface (no changes under \`website/\` or committed screenshots), so the UX review was skipped. Advisory — does not block merge._"
               } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"
@@ -924,7 +924,7 @@ jobs:
             # Valid verdict → post the review body (redacted below).
             {
               echo "$MARKER"
-              echo "## UX Review (Fable 5, fork) — $badge"
+              echo "## UX Review (Fable 5.1, fork) — $badge"
               echo
               echo "_UX-level review of \`$HEAD\` via the fork AI-review pipeline — updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
@@ -950,7 +950,7 @@ jobs:
             esac
             {
               echo "$MARKER"
-              echo "## UX Review (Fable 5, fork) — ⚠️ could not complete"
+              echo "## UX Review (Fable 5.1, fork) — ⚠️ could not complete"
               echo
               echo "_The UX review did not produce a verdict for \`$HEAD\` ($why). See the Fork UX Review job logs. Advisory — does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"

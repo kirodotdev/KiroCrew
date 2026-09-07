@@ -1,6 +1,6 @@
 name: First Principles Review
 
-# ADVISORY premise-level AI review using the "Fable 5" model via Amazon Bedrock.
+# ADVISORY premise-level AI review using the "Fable 5.1" model via Amazon Bedrock.
 # Fifth reviewer lane. The other four all accept the change's REASON FOR
 # EXISTING and argue about the change: the two line reviewers ask "is this code
 # correct", Design Review asks "given the stated problem, is this the right
@@ -28,7 +28,7 @@ name: First Principles Review
 # genuine BLOCK verdict, which fails this check and blocks PR readiness
 # (override-able by a human via `/ai-review override`). Same auth path as
 # design-review.yml: OIDC ->
-# Amazon Bedrock; Fable 5 runs through anthropics/claude-code-action with
+# Amazon Bedrock; Fable 5.1 runs through anthropics/claude-code-action with
 # use_bedrock.
 
 on:
@@ -309,7 +309,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: First-principles review (Fable 5)
+      - name: First-principles review (Fable 5.1)
         id: review
         # No continue-on-error: if the model call fails, this step fails and the
         # check goes RED -- an honest signal the review did not run. It stays
@@ -343,7 +343,7 @@ jobs:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |
-            --model us.anthropic.claude-fable-5
+            --model us.anthropic.claude-fable-5-1
             --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 120
             --allowedTools "Read,Grep,Glob"
@@ -403,7 +403,7 @@ jobs:
             OV_MARKER="<!-- first-principles-review -->"
             {
               echo "$OV_MARKER"
-              echo "## First Principles Review (Fable 5) — ✅ human override accepted"
+              echo "## First Principles Review (Fable 5.1) — ✅ human override accepted"
               echo
               echo "_@$OVERRIDE_ACTOR overrode this lane for \`$HEAD\` via \`/ai-review override\` (this commit only)._"
             } > /tmp/ai-override-note.md
@@ -441,7 +441,7 @@ jobs:
             echo "verdict=NO_CONTRACT" >> "$GITHUB_OUTPUT"
             {
               echo "$MARKER"
-              echo "## First Principles Review (Fable 5) — ⏭️ no contract on the base commit"
+              echo "## First Principles Review (Fable 5.1) — ⏭️ no contract on the base commit"
               echo
               echo "_\`.github/review-prompts/first-principles.md\` does not exist on this PR's base commit, so there is no trusted contract to review \`$HEAD\` against. The contract is deliberately read from the base and never from the head, so a change cannot edit the reviewer that judges it — which also means this lane cannot review the pull request that introduces or moves the contract. Advisory — does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
@@ -461,7 +461,7 @@ jobs:
             if [ -n "$existing" ] && [ "$existing" != "null" ]; then
               {
                 echo "$MARKER"
-                echo "## First Principles Review (Fable 5) — ⏭️ skipped"
+                echo "## First Principles Review (Fable 5.1) — ⏭️ skipped"
                 echo
                 echo "_Revision \`$HEAD\` ships no reviewable capability (docs, tests or generated files only), so there is nothing to inventory. Advisory — does not block merge._"
               } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
@@ -508,7 +508,7 @@ jobs:
             # Valid verdict → post the review body (redacted below).
             {
               echo "$MARKER"
-              echo "## First Principles Review (Fable 5) — $badge"
+              echo "## First Principles Review (Fable 5.1) — $badge"
               echo
               echo "_Premise-level review of \`$HEAD\` — why this exists and whether the shipped surface is the smallest honest version. Updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
@@ -533,7 +533,7 @@ jobs:
             esac
             {
               echo "$MARKER"
-              echo "## First Principles Review (Fable 5) — ⚠️ could not complete"
+              echo "## First Principles Review (Fable 5.1) — ⚠️ could not complete"
               echo
               echo "_The first-principles review did not produce a verdict for \`$HEAD\` ($why). See the First Principles Review job logs. Advisory — does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
@@ -558,7 +558,7 @@ jobs:
             echo "verdict=UNKNOWN" >> "$GITHUB_OUTPUT"
             {
               echo "$MARKER"
-              echo "## First Principles Review (Fable 5) — ⚠️ output withheld"
+              echo "## First Principles Review (Fable 5.1) — ⚠️ output withheld"
               echo
               echo "_The review of \`$HEAD\` produced text that still matched a credential shape after redaction, so the body was withheld and no verdict is reported. See the job logs. Advisory — does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"

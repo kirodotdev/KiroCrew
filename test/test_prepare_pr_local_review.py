@@ -514,12 +514,12 @@ def test_model_pins_agree_with_the_bundled_profile():
 
 
 def test_the_gpt_pin_is_the_reviewers_not_its_adjudicators():
-    """The GPT lane embeds a claude-code-action for the Opus stage that
+    """The GPT lane embeds a claude-code-action for the Fable stage that
     adjudicates its blocking verdict. Reading THAT pin as the reviewer's would
-    make every local brief report drift and claim the GPT lane runs on Opus."""
+    make every local brief report drift and claim the GPT lane runs on Fable."""
     text = _gpt_text()
     scalars = local_review.block_scalars(text)
-    assert "us.anthropic.claude-opus-4-8" in text
+    assert "us.anthropic.claude-fable-5-1" in text
     assert local_review._extract_ci_model(text, scalars, prefer="cli") == "openai.gpt-5.6-sol"
 
 

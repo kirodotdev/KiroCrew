@@ -5,7 +5,7 @@
 # (same contract as ship-report.yml). `.github/scripts/fix_loop_metrics.py`
 # computes volume, the SZZ culprit trace (git blame of each fix's removed
 # lines), deferred-finding discipline, and Pattern-harvest adoption. The model
-# (Fable 5 via Bedrock, same invocation shape as ux-review.yml) then reads the
+# (Fable 5.1 via Bedrock, same invocation shape as ux-review.yml) then reads the
 # window's fix-commit bodies in the checkout, classifies them against the
 # closed root-cause / detection-gap rubrics, compares against the 2026-08
 # full-coverage baseline, and narrates. The report is filed as a GitHub issue
@@ -90,7 +90,7 @@ jobs:
           role-to-assume: ${{ secrets.SHIP_REPORT_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Classify and narrate (Fable 5)
+      - name: Classify and narrate (Fable 5.1)
         id: narrate
         continue-on-error: true # the issue is still filed from the numbers
         uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
@@ -102,7 +102,7 @@ jobs:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |
-            --model us.anthropic.claude-fable-5
+            --model us.anthropic.claude-fable-5-1
             --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 80
             --allowedTools "Read,Grep,Glob,Write"
@@ -251,7 +251,7 @@ jobs:
       - name: Re-raise a missing analysis
         if: always() && steps.file_issue.outputs.analysis_ok == '0'
         run: |
-          echo "::error::The Fable 5 analysis step produced no report; the weekly" \
+          echo "::error::The Fable 5.1 analysis step produced no report; the weekly" \
             "issue was filed with the deterministic metrics only. A failure that" \
             "assumes the Bedrock role successfully but reports num_turns 1 and zero" \
             "cost is an IAM action mismatch, not a model or credential problem:" \

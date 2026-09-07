@@ -71,7 +71,7 @@ jobs:
     # pass timeout, is what kills pass 2, and the job is cancelled with no
     # verdict and no diagnostic. 2 x 55m + ~20m of setup/posting = 130, plus a
     # 30m allowance for the adjudication pass below, which runs ONLY when pass 2
-    # emitted [BLOCK-MERGE] and drives Opus through `claude-code-action` -- that
+    # emitted [BLOCK-MERGE] and drives Fable through `claude-code-action` -- that
     # action cannot be wrapped in `timeout`, so it has no pass wall of its own
     # and this is the only thing bounding it. Still well under GitHub's 360-min
     # job default.
@@ -268,7 +268,7 @@ jobs:
             fi
           done
 
-          # gpt-block-adjudication.md is the contract for the Opus adjudication
+          # gpt-block-adjudication.md is the contract for the Fable adjudication
           # pass at the end of this job, NOT part of GPT's own instruction set,
           # so it is deliberately NOT concatenated here. It is also the ONE block
           # loaded from the base with NO checkout fallback: unlike the review
@@ -729,14 +729,14 @@ jobs:
       # [BLOCK-MERGE]. Every GPT blocking finding here already passed a
       # three-part reachability bar twice (discovery, then falsification), so
       # this stage does NOT re-review the code or re-litigate reachability --
-      # Opus reviews GPT'S JUDGEMENT and asks one question per finding: is
+      # Fable reviews GPT'S JUDGEMENT and asks one question per finding: is
       # blocking the merge on it PROPORTIONATE to what the fix would cost,
       # including the maintenance load the new machinery leaves behind forever.
       # That question was previously asked NOWHERE: the FIX BAR is a shape test
       # (does the fix touch untouched code?), never a cost/harm weighing.
       #
       # Three properties keep this from becoming a bypass surface:
-      #   - it can only ever WIDEN the gate. Opus may UPHOLD or DOWNGRADE; it
+      #   - it can only ever WIDEN the gate. Fable may UPHOLD or DOWNGRADE; it
       #     cannot add a finding, raise an advisory, or alter a claim. A stage
       #     that can only turn red into amber cannot invent a new red.
       #   - security-class findings carry no downgrade eligibility. The
@@ -748,7 +748,7 @@ jobs:
       #     pre-draft the human override rationale, and nothing it writes can
       #     change the gate (#8693). The prompt ALSO treats unbounded harm as
       #     unweighable; these are two independent layers on purpose.
-      #   - the gate reads ARITHMETIC over markers, never Opus's prose. Any
+      #   - the gate reads ARITHMETIC over markers, never Fable's prose. Any
       #     missing marker, malformed footer, or count that fails to reconcile
       #     leaves GPT's verdict exactly as it was. There is no path where a
       #     degraded adjudication turns a red gate green.
@@ -766,7 +766,7 @@ jobs:
           # these is withheld from DOWNGRADE adjudication and keeps blocking, no
           # matter what would have been ruled: for this class the harm has no
           # ceiling for a remedy cost to be weighed against, so there is nothing
-          # to weigh. It still enters Opus's input, in a separate ANNOTATE-ONLY
+          # to weigh. It still enters Fable's input, in a separate ANNOTATE-ONLY
           # section that cannot affect the gate (#8693).
           # It covers BOTH unbounded rungs the contract names -- the security
           # vocabulary AND silent data corruption / irreversible data loss -- so
@@ -796,7 +796,7 @@ jobs:
           # "Write review prompt" step). If it is absent there -- the bootstrap
           # PR that introduces it, or any run where base lacks it -- there is no
           # trusted judge, so nothing is adjudicable and GPT's verdict stands.
-          # Emitting adjudicable=0 skips the Opus call and routes the gate to its
+          # Emitting adjudicable=0 skips the Fable call and routes the gate to its
           # "no blocking finding was adjudicable" branch. Fail closed; never read
           # a PR-supplied contract.
           if [ ! -s .review-prompts-gpt/gpt-block-adjudication.md ]; then
@@ -831,7 +831,7 @@ jobs:
           # F<n> ids are assigned HERE, by script, in emission order. They are
           # what lets the gate pair a per-finding verdict back to the finding it
           # ruled on; a footer that only says "3 of 4" cannot be reconciled.
-          # Fenced findings still consume their id, so the ids Opus sees can have
+          # Fenced findings still consume their id, so the ids Fable sees can have
           # gaps -- it is told to echo them unchanged, and the gate compares the
           # exact set.
           nonce="$(openssl rand -hex 16)"
@@ -944,7 +944,7 @@ jobs:
             } >> .review-adjudication/findings.md
           fi
 
-          # Opus gets the extracted blocks and nothing else -- not GPT's
+          # Fable gets the extracted blocks and nothing else -- not GPT's
           # narrative, not its preamble, not the PR body. GPT's vocabulary in
           # surrounding prose has historically pulled a downstream lane toward
           # agreeing with it, and this stage exists to judge that lane, not to
@@ -982,7 +982,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Opus 4.8 adjudication (blocking findings only)
+      - name: Fable 5.1 adjudication (blocking findings only)
         id: adjudicate
         if: >-
           github.event.pull_request.head.repo.full_name == github.repository
@@ -999,7 +999,7 @@ jobs:
           # enter an agentic reviewer's context, and this stage in particular
           # must not be able to post its own verdict anywhere.
           claude_args: |
-            --model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-fable-5-1
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -1224,7 +1224,7 @@ jobs:
               if [ "${ADJ_DECISION:-}" = "cleared" ]; then
                 kind="clear"
                 verdict="✅ no blocking findings (all downgraded on adjudication)"
-                sentence="GPT 5.6 flagged blocking issues on \`$HEAD\`; Opus 4.8 adjudication downgraded every one of them to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
+                sentence="GPT 5.6 flagged blocking issues on \`$HEAD\`; Fable 5.1 adjudication downgraded every one of them to advisory. ${ADJ_NOTE:-} Read them as advice, not as merge conditions."
               else
                 kind="blocked"
                 verdict="🔴 changes requested (blocking)"
@@ -1269,7 +1269,7 @@ jobs:
             if [ -s codex-adjudication.md ]; then
               echo
               echo "<details>"
-              echo "<summary>Adjudication (Opus 4.8) — is blocking on each finding proportionate?</summary>"
+              echo "<summary>Adjudication (Fable 5.1) — is blocking on each finding proportionate?</summary>"
               echo
               cat codex-adjudication.md
               echo
@@ -1446,7 +1446,7 @@ jobs:
           # finding, any upheld finding) leaves it at "uphold" and this gate red.
           if grep -Fq "$blocked" codex-review-output.md; then
             if [ "${ADJ_DECISION:-}" = "cleared" ]; then
-              echo "::warning::GPT 5.6 flagged blocking findings on $HEAD; Opus 4.8 adjudication downgraded all of them to advisory. ${ADJ_NOTE:-} They remain in the PR comment as advice."
+              echo "::warning::GPT 5.6 flagged blocking findings on $HEAD; Fable 5.1 adjudication downgraded all of them to advisory. ${ADJ_NOTE:-} They remain in the PR comment as advice."
             else
               echo "::error::GPT 5.6 review flagged a blocking issue on $HEAD — see PR comment. ${ADJ_NOTE:-}"
               exit 1

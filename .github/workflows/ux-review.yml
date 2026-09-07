@@ -1,6 +1,6 @@
 name: UX Review
 
-# ADVISORY UX-level AI review using the "Fable 5" model via Amazon Bedrock.
+# ADVISORY UX-level AI review using the "Fable 5.1" model via Amazon Bedrock.
 # Fourth reviewer lane, complementing the two line-level reviewers
 # (claude-review.yml, codex-review.yml) and the design gate
 # (design-review.yml). Its lens is the USER-FACING SURFACE of the change:
@@ -12,7 +12,7 @@ name: UX Review
 # upserts a verdict comment and is NON-BLOCKING except on a genuine BLOCK
 # verdict (and even that red is override-able by a human, since it is not a
 # required status check). Same auth path as design-review.yml: OIDC →
-# Amazon Bedrock; Fable 5 runs through anthropics/claude-code-action with
+# Amazon Bedrock; Fable 5.1 runs through anthropics/claude-code-action with
 # use_bedrock.
 #
 # TWO PASSES, ONE WALL. The review is two model calls with a context wall
@@ -297,7 +297,7 @@ jobs:
       # deliberate: a failed blind read degrades to an evidence gap in pass 2
       # (the verdict is then capped below PASS), it must not turn the whole
       # lane red.
-      - name: Blind read of the committed screenshots (Fable 5)
+      - name: Blind read of the committed screenshots (Fable 5.1)
         id: blind
         continue-on-error: true
         if: >-
@@ -311,7 +311,7 @@ jobs:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |
-            --model us.anthropic.claude-fable-5
+            --model us.anthropic.claude-fable-5-1
             --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 50
             --setting-sources user
@@ -429,7 +429,7 @@ jobs:
 
       # PASS 2 -- RECONCILE AND REVIEW. This is the pass whose verdict the
       # lane publishes (id: review is what the posting step reads).
-      - name: UX review (Fable 5)
+      - name: UX review (Fable 5.1)
         id: review
         # No continue-on-error: if the model call fails, this step fails and
         # the "UX Review" check goes RED — an honest signal the review did not
@@ -455,7 +455,7 @@ jobs:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: |
-            --model us.anthropic.claude-fable-5
+            --model us.anthropic.claude-fable-5-1
             --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 60
             --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
@@ -980,7 +980,7 @@ jobs:
             OV_MARKER="<!-- ux-review -->"
             {
               echo "$OV_MARKER"
-              echo "## UX Review (Fable 5) — ✅ human override accepted"
+              echo "## UX Review (Fable 5.1) — ✅ human override accepted"
               echo
               echo "_@$OVERRIDE_ACTOR overrode this lane for \`$HEAD\` via \`/ai-review override\` (this commit only)._"
             } > /tmp/ai-override-note.md
@@ -1011,7 +1011,7 @@ jobs:
             if [ -n "$existing" ] && [ "$existing" != "null" ]; then
               {
                 echo "$MARKER"
-                echo "## UX Review (Fable 5) — ⏭️ skipped"
+                echo "## UX Review (Fable 5.1) — ⏭️ skipped"
                 echo
                 echo "_Revision \`$HEAD\` touches no user-facing surface (no changes under \`website/\` or committed screenshots), so the UX review was skipped. Advisory — does not block merge._"
               } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"
@@ -1065,7 +1065,7 @@ jobs:
             # Valid verdict → post the review body (redacted below).
             {
               echo "$MARKER"
-              echo "## UX Review (Fable 5) — $badge"
+              echo "## UX Review (Fable 5.1) — $badge"
               echo
               echo "_UX-level review of \`$HEAD\` — updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
@@ -1091,7 +1091,7 @@ jobs:
             esac
             {
               echo "$MARKER"
-              echo "## UX Review (Fable 5) — ⚠️ could not complete"
+              echo "## UX Review (Fable 5.1) — ⚠️ could not complete"
               echo
               echo "_The UX review did not produce a verdict for \`$HEAD\` ($why). See the UX Review job logs. Advisory — does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"

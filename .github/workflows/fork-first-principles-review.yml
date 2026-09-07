@@ -1,7 +1,7 @@
 name: Fork First Principles Review
 
 # STAGE 2 (privileged) of the fork AI-review pipeline — the ADVISORY
-# FIRST-PRINCIPLES reviewer (Fable 5 via Amazon Bedrock). Triggered by the
+# FIRST-PRINCIPLES reviewer (Fable 5.1 via Amazon Bedrock). Triggered by the
 # completion of "Fork AI Review (collect)" (Stage 1). Runs from the DEFAULT
 # branch with secrets + OIDC. It NEVER checks out or executes the fork's code.
 #
@@ -18,7 +18,7 @@ name: Fork First Principles Review
 #   - harden-runner egress-block + OIDC short-lived Bedrock-only creds bound the
 #     blast radius of any prompt-injection.
 #
-# Mirrors first-principles-review.yml's contract (Fable 5 model,
+# Mirrors first-principles-review.yml's contract (Fable 5.1 model,
 # First-Principles-Verdict header, [FIRST-PRINCIPLES-REVIEWED] marker, the
 # surface-scope gate, advisory/non-blocking except on BLOCK).
 # first-principles-review.yml is UNCHANGED and owns same-repo PRs. The fork
@@ -413,7 +413,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: First-principles review (Fable 5)
+      - name: First-principles review (Fable 5.1)
         id: review
         # We deliberately do NOT set continue-on-error, but this reviewer is
         # ADVISORY: the finalize step below resolves an errored/incomplete run to
@@ -446,7 +446,7 @@ jobs:
           # bubblewrap isolation. See issue #6116.
           allowed_non_write_users: "*"
           claude_args: |
-            --model us.anthropic.claude-fable-5
+            --model us.anthropic.claude-fable-5-1
             --fallback-model us.anthropic.claude-opus-4-8
             --max-turns 120
             --allowedTools "Read,Grep,Glob"
@@ -718,7 +718,7 @@ jobs:
             # body was discarded upstream. Say that plainly and report no verdict.
             {
               echo "$MARKER"
-              echo "## First Principles Review (Fable 5, fork) — ⚠️ output withheld"
+              echo "## First Principles Review (Fable 5.1, fork) — ⚠️ output withheld"
               echo
               echo "_The review of \`$HEAD\` produced text that still matched a credential shape after redaction, so the body was withheld and no verdict is reported. See the Fork First Principles Review job logs. Advisory — does not block merge._"
             } > "$RUNNER_TEMP/fp-comment.md"
@@ -744,7 +744,7 @@ jobs:
             if [ -n "$existing" ] && [ "$existing" != "null" ]; then
               {
                 echo "$MARKER"
-                echo "## First Principles Review (Fable 5, fork) — $heading"
+                echo "## First Principles Review (Fable 5.1, fork) — $heading"
                 echo
                 echo "$body"
               } > "$RUNNER_TEMP/fp-comment.md"
@@ -764,7 +764,7 @@ jobs:
             # Valid verdict → post the (redacted) review body.
             {
               echo "$MARKER"
-              echo "## First Principles Review (Fable 5, fork) — $badge"
+              echo "## First Principles Review (Fable 5.1, fork) — $badge"
               echo
               echo "_Premise-level review of \`$HEAD\` via the fork AI-review pipeline — why this exists and whether the shipped surface is the smallest honest version. Updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
@@ -787,7 +787,7 @@ jobs:
             esac
             {
               echo "$MARKER"
-              echo "## First Principles Review (Fable 5, fork) — ⚠️ could not complete"
+              echo "## First Principles Review (Fable 5.1, fork) — ⚠️ could not complete"
               echo
               echo "_The first-principles review did not produce a verdict for \`$HEAD\` ($why). See the Fork First Principles Review job logs. Advisory — does not block merge._"
             } > "$RUNNER_TEMP/fp-comment.md"
