@@ -674,6 +674,20 @@ and restarts the gateway; neither path consumes the channel feed.
 ## Client auto-update
 
 The desktop updater is `electron-updater` in `website/electron/auto-update.js`.
+
+**Raising the `electron-updater` version is a deliberate re-verification event.**
+The updater's error attribution compares error *objects* — it tells a check's own
+failure apart from an install's by identity — and that works only because
+`AppUpdater.checkForUpdates()` hands the SAME object to the `error` event and to
+its own rejection. Nothing in the library documents that pairing, so
+`website/electron/test/electron-updater-error-identity.test.js` asserts it against
+the installed source rather than a mock. If that test fails after a bump, it is
+not flaky and it is not the test's problem: the library rewrapped the error, and
+the attribution scheme in `auto-update.js` — not one line of it — needs re-reading
+before the bump lands. The version range stays a caret on purpose: `npm ci` builds
+from `package-lock.json`, so resolution is already exact in CI, and the canary is
+the general guard for the premise rather than a frozen version number.
+
 It runs in packaged macOS, Linux and Windows builds: `SUPPORTED_PLATFORMS` is
 exactly `{darwin, linux, win32}`.
 On macOS electron-updater's `MacUpdater` downloads the archive itself and serves
@@ -795,6 +809,36 @@ platform — on macOS that flag stages eagerly, which arms ShipIt to swap the
 bundle on ANY exit (including exits that skip the gateway teardown) and cannot
 be un-armed, so it would also defeat release retraction.
 
+**A stage is re-verified against the feed before it installs, so an install
+always applies the NEWEST build.** A download can sit staged for hours while
+newer releases publish, and installing it then applies a superseded build the
+user must immediately update again. Both install paths — the About panel's
+explicit install and the deferred install on quit — therefore call
+`verifyStageIsLatest` (`website/electron/auto-update.js`) first. It drives an
+ordinary `checkForUpdates` and reads the verdict back out of the existing
+handlers, so the direction gate and the retraction path make the decision rather
+than a second copy of that rule. Three outcomes:
+
+- `latest` — the feed still serves the staged version, so the install proceeds.
+- `superseded` — a newer build published, or the release was retracted. The
+  install is REFUSED and the newer build pursued instead; the user is told why
+  rather than getting a silent no-op.
+- `unknown` — **fail open.** The feed was unreachable, answered nothing within
+  8s, or a check was already in flight. Bytes the user already downloaded must
+  not become uninstallable because the network went away, so the stage installs.
+  This is deliberately the pre-gate behaviour.
+
+Two consequences worth knowing when reading a bug report. The quit path verifies
+`quiet`, so a newer build discovered as the app exits is *not* auto-downloaded —
+that would be a ~350MB fetch seconds before the process ends; it is offered on
+the next launch instead. And a refusal on the quit path still quits, with a
+native notification explaining why — separate copy for a withdrawn stage versus
+one deferred by a straddling check, because only the first is a retraction and
+the second re-offers the same build next launch. The dashboard's arm endpoint
+(`api_update_arm` in `src/kiro_crew/dashboard/handlers/updates.py`) re-checks the
+feed the same way, and awaits an already-running check rather than arming its
+cached verdict.
+
 Turning the preference off keeps bytes already fetched but **disarms the
 install-on-quit for a stage that was downloaded automatically**, so the update a
 user just declined does not land on their next quit; a stage they explicitly
@@ -835,7 +879,10 @@ The specific to Kiro Crew part is install ordering: the app supervises a bundled
 Python gateway child, so before `quitAndInstall` the client stops it gracefully
 (`POST /api/shutdown`, then SIGTERM, then SIGKILL) and disarms the liveness
 watchdog that would otherwise resurrect it mid-swap. Choosing "Later" defers to
-natural quit through a `before-quit` hook in the same stop-gateway-first order.
+natural quit through a `before-quit` hook in the same stop-gateway-first order,
+after the same `verifyStageIsLatest` re-check described above — so a "Later" that
+has been sitting for hours installs the newest build, or refuses and says why,
+rather than applying whatever was staged at the time.
 
 ## Windows
 
