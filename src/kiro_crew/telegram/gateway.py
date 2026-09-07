@@ -18,6 +18,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.spawn_approval_delivery import (
+    register_channel_delivery,
+    unregister_channel_delivery,
+)
 from kiro_crew.telegram.client import TelegramAuthError, TelegramClient
 from kiro_crew.telegram.commands import bot_command_payload
 from kiro_crew.telegram.transport import TelegramTransport
@@ -101,6 +105,15 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
         # set_message_handler avoids the client<->transport construction cycle.
         client.set_message_handler(transport.receive)
         dispatcher.client = client
+
+        # Channel-side spawn-approval delivery (issue #2381 item 1). Register this
+        # dispatcher's in-channel Approve/Deny/Trust prompt as the "telegram"
+        # surface the host spawn gate consults before its Slack-DM/dashboard
+        # fallback, and retire it when the client shuts down so the gate stops
+        # routing to a dispatcher that is going away. Idempotent: a restart
+        # replaces this channel's own hook.
+        register_channel_delivery("telegram", dispatcher.deliver_spawn_approval)
+        client.on_close = lambda: unregister_channel_delivery("telegram")
 
         # Prove the token with an authenticated call BEFORE reporting the
         # channel as connected — transport.connect() only schedules the

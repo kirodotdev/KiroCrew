@@ -838,6 +838,17 @@ class TelegramApprovalDecider:
         """Record the nonce for the buttons the renderer is about to post."""
         cls._NONCES[key] = nonce
 
+    @classmethod
+    def retire(cls, key: str) -> None:
+        """Drop an armed nonce whose prompt never went out (idempotent).
+
+        ``__call__`` retires the nonce with the prompt it waited on, but a caller
+        that ARMS then fails to post (a spawn-approval prompt Telegram rejected)
+        has no wait to run that ``finally`` — without this the stale nonce would
+        outlive the prompt that never existed.
+        """
+        cls._NONCES.pop(key, None)
+
     async def __call__(self, event: Any) -> bool:
         k = self.key(self._session_key, getattr(event, "request_id", ""))
         fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()

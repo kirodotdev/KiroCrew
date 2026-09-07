@@ -74,6 +74,25 @@ Spawn flow:
    approval with a 2-minute timeout. Timeout or rejection frees the
    concurrency slot.
 
+**Channel-side approval delivery (issue #2381 item 1).** The single host-wide
+`on_spawn_approval` callback (built in `slack/gateway.py`) consults a
+channel-neutral delivery seam (`messaging/spawn_approval_delivery.py`) FIRST,
+given the spawn's `parent_session_key`. A channel dispatcher registers a delivery
+hook keyed by its channel namespace (`register_channel_delivery("telegram", …)`);
+the seam resolves the hook whose channel owns the parent session
+(`messaging.link.channel_namespace_of`). A hook that returns `True`/`False` is the
+user's in-channel decision; `None` (no hook registered for that channel, or the
+hook could not surface the prompt) falls through to the pre-existing
+Slack-DM/dashboard gate, which still raises `SpawnApprovalUnreachable` when no
+surface is attached. Telegram implements the hook over its existing
+Approve/Deny/Trust inline keyboard (`TelegramDispatcher.deliver_spawn_approval`):
+the press resolves through the same `on_callback` `a:` path as a tool approval, so
+**Trust** grants parent-session trust via `add_trusted_session` and a later spawn
+from that session is auto-approved by the parent-trusted rung. The seam is
+in-memory only (dies with the process); the hook is registered on Telegram startup
+and unregistered on client shutdown. The per-agent `auto_approve_spawn` rung
+(issue #2381 item 2) is deferred to #4751/#4693 and is NOT added here.
+
 ### Tool Approval Cascade
 
 When a subagent's tool call triggers `EVENT_PERMISSION_REQUEST`, approval
