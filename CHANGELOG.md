@@ -15,6 +15,17 @@ that tell the agent what it may do instead. Python 3.12 is the new floor.
 - **Python 3.12 is now the floor**: a host on 3.10 or 3.11 must move up before
   installing or updating, and every installer provisions 3.12 itself when the
   system package manager has none.
+- **The installer now brings its own Python**: `curl -fsSL
+  https://download.crew.kiro.dev/cli.sh | sh` provisions a pinned CPython
+  rather than using the system one, so pass `--system-python` if you
+  deliberately build against yours.
+- **The command gate no longer fences credential paths by reading the command
+  text**: the sandbox's bind masks are the fence now, so check that
+  `agent.sandbox` in `config.json` is not `off` if you were relying on that
+  text gate.
+- **An unattended auto-run plan now stops after two hours**: raise it with
+  `orchestrator.max_plan_duration_seconds` in `config.json`, or set 0 to
+  remove the ceiling; a stage-gated plan is never cut.
 
 ### Pick the harness that runs your sessions (Preview)
 
@@ -31,10 +42,10 @@ that tell the agent what it may do instead. Python 3.12 is the new floor.
 ### Remote crews become one dashboard (Preview)
 
 - **Run a chat on another crew you are connected to**: set `instances.enabled`
-  in `config.json` and turn on Developer → Feature Previews → Chat on a crew
-  (both off by default), then pick the peer under New chat on crew in the
-  sidebar's new-chat menu; the transcript stays local while every turn runs on
-  that crew.
+  in `config.json` and turn on Settings → Developer → Feature Previews → Chat
+  on a crew (both off by default), then pick the peer under New chat on crew in
+  the sidebar's new-chat menu; the transcript stays local while every turn runs
+  on that crew.
 - **A session that runs elsewhere carries a server badge and the crew's name
   in your sidebar**, so remote work is openable from the list you already read.
 - **Crews connect themselves** on app load and on tab focus, on by default and
@@ -43,14 +54,15 @@ that tell the agent what it may do instead. Python 3.12 is the new floor.
 ### Chat that stays out of the way
 
 - **Diffs start folded** as a chip naming the file and its +N/-M counts, and
-  Settings → Display → Plain diffs (off by default) renders patches as plain
+  Settings → Chat → Plain diffs (off by default) renders patches as plain
   monospace text instead.
 - **A sketch pad and a share action**: the composer's + menu gains a Sketch row
   that draws an image and attaches it, and an assistant reply's Share as image
   action exports a branded PNG or prefills an X or LinkedIn post.
-- **The composer says where you are and when it will compact**: its footer
-  shows the project's branch and uncommitted file count, and the context
-  popover's threshold slider sets compaction for this session alone.
+- **The composer says where you are, and gets out of the way**: its footer
+  shows the project's branch and uncommitted file count, the context popover's
+  threshold slider sets compaction for this session alone, and the + menu's
+  Collapse the message input hands the room back to the transcript.
 
 ### Sessions you can find, file and leave open
 
@@ -74,43 +86,65 @@ that tell the agent what it may do instead. Python 3.12 is the new floor.
 - **Session control is on by default**; set `agent.session_control` to false
   in `config.json` to withdraw it from every agent at once.
 
+### Work that runs for hours, not minutes
+
+- **A chat turn now runs up to four hours**: `agent.chat_turn_timeout_secs` in
+  `config.json` rises from 7200 to 14400 seconds, and a genuinely thinking
+  model on macOS is attested instead of probed and cancelled at ninety
+  seconds.
+- **A sub-agent gets three hours and up to 1000 tool calls**:
+  `agent.subagent_timeout_secs` rises from 1800 to 10800 and
+  `agent.subagent_max_turns` now reaches 1000, where the ceiling was 200.
+- **A monitor loop shows its cycle cap** on the composer's goal chip, reading
+  `23/24` as the backstop approaches, re-arms after stopping on an unanswered
+  approval, and now actually arms on the KAS backend.
+
 ### Crew members get faces (Preview)
 
-- **Give a crew a face**: build its ghost avatar trait by trait or upload a
-  picture at Agent Capabilities → Agents → Avatar → Customize.
-- **The member drawer shows recent activity and the schedules and webhooks
-  that can wake it** when you pick a member on the Crew Members page, and the
-  desktop-only Crew Companion app, enabled from Apps → Library, shows one
-  avatar across all displays.
+- **Give a crew a face that reacts**: build its ghost avatar trait by trait or
+  upload a picture at Agent Capabilities → Agents → Avatar → Customize, then
+  set per-state eyes, mouth and a sound cue for working, done and failed on
+  its Expressions pane.
+- **The member drawer shows recent activity, its auto patrol, and the
+  schedules and webhooks that can wake it** when you pick a member on the Crew
+  Members page, where you can also star a crew and filter the roster to
+  Starred, Mine, Built-in or From packages; the desktop-only Crew Companion
+  app, enabled from Apps → Library, shows one avatar across all displays.
 - **Crew is a preview opt-in**: turn on Developer Mode in Settings →
-  Developer, then Developer → Feature Previews → Crew, to get the Crew Members
-  entry and the new-crew-chat entry back.
+  Developer, then Settings → Developer → Feature Previews → Crew, to get the
+  Crew Members entry and the new-crew-chat entry back.
 
 ### Apps get a Launchpad
 
 - **Installed apps show as a Launchpad grid** under Apps → Library, each an
   icon tile with a pin badge for the sidebar, an Open button and a menu for
-  Details, Update, Disable and Uninstall.
-- **An app can own background work, Command Bar rows and an embedded chat**:
-  its manifest declares `permissions.jobs` for server-side runs that continue
-  when you navigate away and `contributes.commands` for rows in the Cmd+K
-  Command Bar, and its page can embed the conversation without the sessions
-  rail.
+  Details, Update, Disable and Uninstall, and Create Folders From Project is
+  new there: point it at a project and it makes one nested sidebar folder per
+  package you tick.
+- **An app can own background work, Command Bar rows, an embedded chat and
+  chips beside the composer**: its manifest declares `permissions.jobs` for
+  server-side runs that continue when you navigate away,
+  `contributes.commands` for rows in the Cmd+K Command Bar, and
+  `contributes.sessionControls` for up to two live controls next to the agent
+  and project chips.
 - **Dev mode for a UI folder outside an app's install now needs the terminal**:
   the dashboard and the API refuse it, and only
   `kirocrew app dev <name> --confirm-out-of-install-root` grants it.
 
 ### Your cloud drive, inside the app
 
-- **AWS Control navigates by Files, Library, Backup and Access**, each with its
-  own URL, with Accounts & credentials and Usage & costs at the rail's foot;
-  the app ships off, so enable it from Apps → Library first.
-- **The Files pane lists what is actually in the bucket**, with real
-  thumbnails, drag to move, drop to upload and delete behind an inline confirm,
-  and a storage meter sits on the Usage & costs pane.
-- **A running backup survives leaving the page**: coming back to Backup shows
-  it still going, and a run orphaned by a gateway that is gone reads as
-  interrupted instead of running forever.
+- **AWS Control opens on an Overview** naming accounts, key health, drive use,
+  month-to-date spend, live links and the backup schedule, then navigates by
+  Files, Library, Backup and Access, each with its own URL; the app ships off,
+  so enable it from Apps → Library first.
+- **The Files pane previews and renames in place**: images, video, audio, PDFs
+  and text open inline, a pencil renames a file, a search box finds one by name
+  across the whole section, and drag to move, drop to upload and delete behind
+  an inline confirm all still work.
+- **A backup survives leaving the page, and an account can be taken back
+  out**: coming back to Backup shows it still going, and an account registered
+  by mistake is removed from its row's overflow menu, which drops only the
+  local registry entry and its consent grants, never anything in AWS.
 
 ### Meetings, Jira and the Changes panel
 
@@ -137,10 +171,11 @@ that tell the agent what it may do instead. Python 3.12 is the new floor.
 - **A blocked tool call now explains the way forward**, so the agent stops
   retrying the same blocked shape, and `kirocrew doctor` prints a Credentials
   section that lists your AWS profiles without opening a secret.
-- **Deny rules survive re-spelling**: quoting, escapes, command substitution,
-  line continuations, `find` and `grep -r` traversals and wildcard-spelled
-  program names all reach the rule they used to dodge, and a recursive content
-  read rooted at the crew data home is refused.
+- **Deny rules survive re-spelling, and ordinary work stops being refused**:
+  quoting, escapes, command substitution and wildcard-spelled program names
+  still reach the rule they used to dodge, while a recursive `grep` over a
+  worktree, a `cd` followed by a pipe and a heredoc carrying backticks now run
+  instead of being blocked.
 - **A host that cannot sandbox refuses to run the agent**: armv7l, riscv64,
   ppc64le and s390x Linux, a libc without `prctl`, and Windows with Kiro CLI's
   internal sandbox off all fail closed unless you set `agent.sandbox` to `off`
@@ -203,6 +238,32 @@ that tell the agent what it may do instead. Python 3.12 is the new floor.
 - **Automatic knowledge folders are gone**: a folder enters the Library only
   when you add and confirm it, and a folder an older install registered by
   itself is held pending until you do.
+
+### Failures you can see
+
+- **Every page, settings panel and app view names a failure**: a failed read
+  or save renders one notice with Retry and an Ask the agent hand-off, instead
+  of grey text, a toast that vanishes, or a false empty state.
+- **A switch reports what really happened**: changing the agent, reasoning
+  effort, project or workspace on a chat now says when it failed, rather than
+  reporting success and quietly keeping the old value.
+- **A tool the host declined says who declined it**: an approval that timed
+  out, an exhausted turn budget or a failed Slack delivery no longer reaches
+  the agent as "the user denied this".
+
+### Voice input, publishing and your saved settings
+
+- **Dictation works on a macOS desktop install again**, where every attempt
+  used to fail at audio decode, and a source install can fetch a verified
+  decoder from Settings → Voice → Download decoder instead of installing
+  ffmpeg by hand.
+- **An artifact can be published to a public HTTPS URL in your own AWS
+  account** from its Publish menu, which needs an AWS profile plus
+  `capabilities.publish` and `publish.allowed_destinations`, and is never the
+  default destination.
+- **Dashboard settings survive an upgrade**: chat preferences, diff and
+  file-viewer toggles, artifact view and app nav order are mirrored on the
+  host, so a port change or a channel switch no longer resets them.
 
 ### Notable fixes
 
