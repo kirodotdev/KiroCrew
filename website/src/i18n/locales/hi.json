@@ -6764,6 +6764,28 @@
       "system_default": "सिस्टम डिफ़ॉल्ट",
       "unnamed_input": "अनामित इनपुट"
     },
+    "moveToCrew": {
+      "error_target_required": "लक्षित crew देना आवश्यक है।",
+      "error_no_plan": "Crew ने कोई योजना नहीं लौटाई।",
+      "heading": "पूर्वावलोकन: {{unitKind}} <0>{{unitId}}</0> को दूसरे crew में ले जाना",
+      "menu_label": "दूसरे crew में ले जाने का पूर्वावलोकन…",
+      "more_actions": "और कार्रवाइयाँ",
+      "target_crew_label": "लक्षित crew",
+      "target_crew_placeholder": "क्रू आईडी",
+      "planning": "योजना बन रही है…",
+      "plan_move": "पूर्वावलोकन करें",
+      "cancel": "रद्द करें",
+      "handoff_id": "हैंडऑफ़ ID",
+      "bundle": "बंडल",
+      "fields_shipped": "वे फ़ील्ड जो ले जाए जाएँगे",
+      "completed_kept": "पूर्ण कार्य जो बने रहेंगे (दोबारा नहीं चलेंगे)",
+      "requirements_heading": "लक्ष्य को पूरा करना होगा",
+      "findings_heading": "साथ नहीं जाएगा",
+      "plan_only_note_prefix": "कुछ भी नहीं ले जाया गया।",
+      "plan_only_note_emphasis": "यह पूर्वावलोकन है",
+      "plan_only_note_suffix": "— काम को स्वयं ले जाना अभी उपलब्ध नहीं है।",
+      "error_suggestions_unavailable": "crew सुझाव लोड नहीं हो सके। crew ID सीधे टाइप किया जा सकता है।"
+    },
     "migrationBanner": {
       "install_app_from_apps": "इंस्टॉल करें \"{{app}}\" को Apps से, अगले {{productName}} अपडेट से पहले, ताकि इसका उपयोग जारी रह सके।",
       "install_from_apps": "Apps से इंस्टॉल करें",
@@ -11923,6 +11945,7 @@
       "failed_to_update_task": "कार्य अपडेट नहीं हो सका"
     },
     "projectsPage": {
+      "optimize_plan_prompt": "आइए इस योजना को बेहतर बनाएँ:\n\n{{context}}",
       "agent": "एजेंट:",
       "analyzing_task_and_building_step_by_step_plan": "कार्य का विश्लेषण और चरण-दर-चरण प्लान तैयार किया जा रहा है",
       "auto_approve": "स्वतः स्वीकृति",

@@ -4700,6 +4700,28 @@
       "close_editor": "Close editor",
       "edit_code_block": "Edit code block"
     },
+    "moveToCrew": {
+      "error_target_required": "A target crew is required.",
+      "error_no_plan": "The crew did not return a plan.",
+      "heading": "Preview moving {{unitKind}} <0>{{unitId}}</0> to another crew",
+      "menu_label": "Preview a move to crew…",
+      "more_actions": "More actions",
+      "target_crew_label": "Target crew",
+      "target_crew_placeholder": "crew id",
+      "planning": "Planning…",
+      "plan_move": "Preview move",
+      "cancel": "Cancel",
+      "handoff_id": "Handoff id",
+      "bundle": "Bundle",
+      "fields_shipped": "Fields that would move",
+      "completed_kept": "Completed tasks that would be kept (not re-run)",
+      "requirements_heading": "The target would have to satisfy",
+      "findings_heading": "Would not come along",
+      "plan_only_note_prefix": "Nothing has moved.",
+      "plan_only_note_emphasis": "This is a preview",
+      "plan_only_note_suffix": "— moving the work itself is not available yet.",
+      "error_suggestions_unavailable": "Could not load crew suggestions. You can still type a crew ID."
+    },
     "notifications": {
       "notificationDetailPanel": {
         "approve": "Approve",
@@ -7589,6 +7611,7 @@
       "the_dag_view_will_appear_once_the_plan_is_ready": "The DAG view will appear once the plan is ready"
     },
     "projectsPage": {
+      "optimize_plan_prompt": "Let's optimize this plan:\n\n{{context}}",
       "agent": "Agent:",
       "analyzing_task_and_building_step_by_step_plan": "Analyzing task and building step-by-step plan",
       "auto_approve": "Auto-approve",

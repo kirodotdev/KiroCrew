@@ -6662,6 +6662,28 @@
       "system_default": "시스템 기본값",
       "unnamed_input": "이름 없는 입력"
     },
+    "moveToCrew": {
+      "error_target_required": "대상 crew를 지정해야 합니다.",
+      "error_no_plan": "Crew가 계획을 반환하지 않았습니다.",
+      "heading": "{{unitKind}} <0>{{unitId}}</0>을(를) 다른 crew로 이동 미리 보기",
+      "menu_label": "다른 crew로 이동 미리 보기…",
+      "more_actions": "추가 작업",
+      "target_crew_label": "대상 crew",
+      "target_crew_placeholder": "crew 식별자",
+      "planning": "계획 중…",
+      "plan_move": "이동 미리 보기",
+      "cancel": "취소",
+      "handoff_id": "인계 ID",
+      "bundle": "번들",
+      "fields_shipped": "이동할 필드",
+      "completed_kept": "유지될 완료 작업(재실행 안 함)",
+      "requirements_heading": "대상이 충족해야 하는 항목",
+      "findings_heading": "함께 이동하지 않음",
+      "plan_only_note_prefix": "아무것도 이동하지 않았습니다.",
+      "plan_only_note_emphasis": "이것은 미리 보기입니다",
+      "plan_only_note_suffix": "— 작업 자체의 이동은 아직 지원되지 않습니다.",
+      "error_suggestions_unavailable": "crew 제안을 불러올 수 없습니다. crew ID를 직접 입력할 수 있습니다."
+    },
     "migrationBanner": {
       "install_app_from_apps": "계속 사용하려면 다음 {{productName}} 업데이트 전에 Apps에서 ‘{{app}}’을(를) 설치하세요.",
       "install_from_apps": "Apps에서 설치",
@@ -11757,6 +11779,7 @@
       "failed_to_update_task": "작업을 업데이트하지 못했습니다"
     },
     "projectsPage": {
+      "optimize_plan_prompt": "이 계획을 최적화해 보겠습니다:\n\n{{context}}",
       "agent": "에이전트:",
       "analyzing_task_and_building_step_by_step_plan": "작업을 분석해 단계별 플랜을 구성하는 중",
       "auto_approve": "자동 승인",

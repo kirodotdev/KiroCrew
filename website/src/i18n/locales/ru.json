@@ -6968,6 +6968,28 @@
       "system_default": "Системный по умолчанию",
       "unnamed_input": "Безымянное устройство ввода"
     },
+    "moveToCrew": {
+      "error_target_required": "Необходимо указать целевую команду.",
+      "error_no_plan": "Команда не вернула план.",
+      "heading": "Предпросмотр: перенести {{unitKind}} <0>{{unitId}}</0> в другую команду",
+      "menu_label": "Предпросмотр переноса в другую команду…",
+      "more_actions": "Другие действия",
+      "target_crew_label": "Целевая команда",
+      "target_crew_placeholder": "ID команды",
+      "planning": "Планирование…",
+      "plan_move": "Предпросмотр переноса",
+      "cancel": "Отмена",
+      "handoff_id": "ID передачи",
+      "bundle": "Пакет",
+      "fields_shipped": "Поля, которые были бы перенесены",
+      "completed_kept": "Завершённые задачи, которые сохранились бы (без повторного запуска)",
+      "requirements_heading": "Цель должна была бы удовлетворять",
+      "findings_heading": "Не перенесётся",
+      "plan_only_note_prefix": "Ничего не перенесено.",
+      "plan_only_note_emphasis": "Это предпросмотр",
+      "plan_only_note_suffix": "— перенос самой работы пока недоступен.",
+      "error_suggestions_unavailable": "Не удалось загрузить список команд. Вы всё равно можете ввести ID команды."
+    },
     "migrationBanner": {
       "install_app_from_apps": "Установите «{{app}}» из «Приложений» до следующего обновления {{productName}}, чтобы продолжить им пользоваться.",
       "install_from_apps": "Установить из «Приложений»",
@@ -12255,6 +12277,7 @@
       "failed_to_update_task": "Не удалось обновить задачу"
     },
     "projectsPage": {
+      "optimize_plan_prompt": "Давайте улучшим этот план:\n\n{{context}}",
       "agent": "Агент:",
       "analyzing_task_and_building_step_by_step_plan": "Анализ задачи и построение пошагового плана",
       "auto_approve": "Автоподтверждение",

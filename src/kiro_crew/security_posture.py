@@ -139,6 +139,35 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "the backend.",
     ),
     (
+        "CLI migration-plan requirements",
+        "migration/move_plan.py",
+        "The host requirements every `kirocrew ... move` verb prints for a "
+        "migration plan. A requirement's identity quotes operator-authored text "
+        "verbatim -- a cron job's `command` -- so it can carry an inline "
+        "credential or a credential-bearing URL, and a terminal's scrollback and "
+        "shell history outlive the process. `safe_requirement_identity` runs the "
+        "shared credential + exfiltration-URL chain, and C0/C1 controls are "
+        "REPLACED (not removed, so removal cannot splice two separated fragments "
+        "into one token) because a control sequence survives redaction untouched "
+        "and would otherwise drive the terminal rather than be read by it. The "
+        "sanitizer lives at this shared renderer rather than in each verb: a "
+        "per-verb copy is what let the task-run verb keep printing raw "
+        "identities after the cron verb was fixed.",
+    ),
+    (
+        "Crew-migration plan requirements",
+        "dashboard/handlers/migration.py",
+        "The host requirements a migration plan reports to the browser. A "
+        "requirement's identity is the thing it names on the host -- a cron "
+        "job's `command`, a task run's remote -- so it quotes operator-authored "
+        "text verbatim and can carry an inline credential or a "
+        "credential-bearing URL. The plan is rendered in the move dialog, so it "
+        "is a human-facing boundary: every requirement identity runs the shared "
+        "credential + exfiltration-URL chain before serialization. The "
+        "unredacted identity stays in the internal migration bundle, which the "
+        "target checks and which never reaches the browser.",
+    ),
+    (
         "Project-scan warning reasons",
         "project_scan.py",
         "The per-file warning strings the folder scanner returns "
@@ -1614,6 +1643,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "instances/token_mint.py",
         "instances/ssm_token_mint.py",
         "publish_sync.py",
+        # Orchestration, not the redaction itself: the cron-preview path applies
+        # `redact` to the tool-args diagnostic it prints, and the migration plan
+        # verbs delegate identity scrubbing to `migration/move_plan.py`'s
+        # `safe_requirement_identity`, which is the registered sink. Same shape
+        # as `snapshot.py` above.
         "cli_commands.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
         "slack/events.py",
