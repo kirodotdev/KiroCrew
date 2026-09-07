@@ -886,6 +886,7 @@ def build_permission_event(
     mcp_server_name_cache: dict[str, str] | None = None,
     tool_name_cache: dict[str, str] | None = None,
     cache_scope: str = "",
+    diff_path_cache: dict[str, str] | None = None,
 ) -> tuple[AcpEvent, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
 
@@ -1095,6 +1096,18 @@ def build_permission_event(
     # AcpEvent.child_mcp_identity_trusted.
     _mcp_identity_trusted = _cached_server is not None and _cached_tool is not None
 
+    # The path the preceding tool_call's diff CONTENT BLOCK named, cached by the
+    # same scoped toolCallId as the params. An edit backend may stream trusted
+    # ``rawInput`` with no path key at all and name the target only in the
+    # ``{"type": "diff", "path": ...}`` block; without this the permission
+    # event's target set is empty and the edit gate (llm_helpers.
+    # _edit_target_denial) would have nothing to judge. Same .get() lifecycle
+    # as the sibling caches; "" on a miss, which that gate treats as "no
+    # proven target" and denies.
+    _diff_path = (
+        (diff_path_cache.get(_ck) or "") if (diff_path_cache is not None and tool_call_id) else ""
+    )
+
     event = AcpEvent(
         kind=EVENT_PERMISSION_REQUEST,
         request_id=request_id,
@@ -1111,6 +1124,7 @@ def build_permission_event(
         mcp_server_name=_mcp_server_name,
         tool_name=_tool_name,
         mcp_identity_trusted=_mcp_identity_trusted,
+        diff_path=_diff_path,
     )
     return event, recorded
 
@@ -1124,6 +1138,7 @@ def _build_tool_call_event(
     tool_name_cache: dict[str, str] | None = None,
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
+    diff_path_cache: dict[str, str] | None = None,
 ) -> AcpEvent:
     """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
     title = update.get("title", "unknown")
@@ -1217,6 +1232,11 @@ def _build_tool_call_event(
                     input_str = diff_str
                     found_diff = True
                 break
+    # Cache the content block's path for the permission event (see
+    # build_permission_event). Written only when a diff block NAMED a path, so
+    # a later frame without one cannot clobber a real target with "".
+    if tool_call_id and _diff_path and diff_path_cache is not None:
+        diff_path_cache[_ck] = _diff_path
     # Fallback when no diff content block was present: derive from the edit
     # args themselves (strReplace pair, create/insert content). Gated on the
     # EDIT kind — "content"-shaped args exist on many non-edit tools, and a
@@ -1796,6 +1816,7 @@ def _build_tool_refinement_event(
     raw_params_cache: dict[str, dict] | None = None,
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
+    diff_path_cache: dict[str, str] | None = None,
 ) -> AcpEvent | None:
     """Build an ``EVENT_TOOL_CALL_UPDATE`` (refined title/kind/input) for a tool.
 
@@ -1837,6 +1858,10 @@ def _build_tool_refinement_event(
                 if diff_str:
                     input_str = diff_str
                 break
+    # Same diff-block path cache as the initial tool_call (the refinement is
+    # where claude-agent-acp first carries the content block).
+    if _diff_path and diff_path_cache is not None:
+        diff_path_cache[_rk] = _diff_path
     input_redacted = False
     if input_str:
         safe_input = _redact(input_str)
@@ -1908,6 +1933,7 @@ def parse_session_update(
     tool_name_cache: dict[str, str] | None = None,
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
+    diff_path_cache: dict[str, str] | None = None,
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -1945,6 +1971,7 @@ def parse_session_update(
                 tool_name_cache,
                 cache_scope=cache_scope,
                 tool_input_redacted_cache=tool_input_redacted_cache,
+                diff_path_cache=diff_path_cache,
             )
         )
         return events
@@ -1959,6 +1986,7 @@ def parse_session_update(
             raw_params_cache,
             cache_scope=cache_scope,
             tool_input_redacted_cache=tool_input_redacted_cache,
+            diff_path_cache=diff_path_cache,
         )
         if refine is not None:
             events.append(refine)

@@ -616,6 +616,10 @@ class AcpSessionHandle:
         # raw_tool_params for the governance keystone (sensitive-path /
         # write-protected-config) checks. Mirrors AcpClient's _tool_call_params.
         self._tool_call_raw_params: dict[str, dict] = {}
+        # toolCallId -> path named by the tool_call's diff content block, so the
+        # permission event can carry diff_path for the edit gate when the
+        # params themselves carry no path key. Same lifecycle as the caches above.
+        self._tool_call_diff_path: dict[str, str] = {}
         # toolCallId -> trusted MCP server name (_meta.kiro.mcpServerName) cached
         # from the tool_call notification so the later permission_request event
         # can carry mcp_server_name (empty on the permission payload). This is
@@ -883,6 +887,7 @@ class AcpSessionHandle:
         self._tool_call_input_redacted.clear()
         self._tool_call_is_shell.clear()
         self._tool_call_raw_params.clear()
+        self._tool_call_diff_path.clear()
         self._tool_call_mcp_server.clear()
         self._tool_call_tool_name.clear()
         self._permission_options.clear()
@@ -3262,6 +3267,7 @@ class AcpSessionHandle:
             tool_input_redacted_cache=self._tool_call_input_redacted,
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
+            diff_path_cache=self._tool_call_diff_path,
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
             # ORIGIN-BOUND provenance: cache entries are keyed by the
@@ -3574,6 +3580,7 @@ class AcpSessionHandle:
                 tool_input_redacted_cache=self._tool_call_input_redacted,
                 shell_cache=self._tool_call_is_shell,
                 raw_params_cache=self._tool_call_raw_params,
+                diff_path_cache=self._tool_call_diff_path,
                 mcp_server_name_cache=self._tool_call_mcp_server,
                 tool_name_cache=self._tool_call_tool_name,
                 cache_scope=frame_sid,
@@ -3676,6 +3683,7 @@ class AcpSessionHandle:
                         tool_input_redacted_cache=self._tool_call_input_redacted,
                         shell_cache=self._tool_call_is_shell,
                         raw_params_cache=self._tool_call_raw_params,
+                        diff_path_cache=self._tool_call_diff_path,
                         mcp_server_name_cache=self._tool_call_mcp_server,
                         tool_name_cache=self._tool_call_tool_name,
                         cache_scope=self._session_id,
@@ -3698,6 +3706,7 @@ class AcpSessionHandle:
             tool_input_redacted_cache=self._tool_call_input_redacted,
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
+            diff_path_cache=self._tool_call_diff_path,
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
             cache_scope=self._session_id,

@@ -2887,6 +2887,10 @@ class AcpClient:
         # which carries only a truncated title — can recover the real path/url
         # the governance gate needs (filesystem.write / network.egress scopes).
         self._tool_call_params: dict[str, dict] = {}
+        # toolCallId -> path named by the tool_call's diff content block, so the
+        # permission event can carry diff_path for the edit gate when the params
+        # themselves carry no path key. Mirrors AcpSessionHandle's cache.
+        self._tool_call_diff_path: dict[str, str] = {}
         # Map JSON-RPC request id → {"once": optionId, "always": optionId} so
         # the host can echo back the exact optionIds the agent advertised.
         # kiro-cli uses "allow_once"/"allow_always"; claude-agent-acp uses
@@ -6665,6 +6669,7 @@ class AcpClient:
         self._tool_call_mcp_server.clear()
         self._tool_call_tool_name.clear()
         self._tool_call_params.clear()
+        self._tool_call_diff_path.clear()
         # Reset the per-turn observed-tool-call bookkeeping (see __init__).
         self._observed_tool_calls.clear()
         # Clear stale permission options so an aborted/cancelled request from
@@ -7818,6 +7823,8 @@ class AcpClient:
                         old = cb.get("oldText") or ""
                         new = cb.get("newText") or ""
                         path = cb.get("path", "")
+                        if tool_call_id and path:
+                            self._tool_call_diff_path[tool_call_id] = path
                         diff_str = _make_unified_diff(old, new, path)
                         if diff_str:
                             input_str = diff_str
@@ -8073,6 +8080,8 @@ class AcpClient:
                     old = cb.get("oldText") or ""
                     new = cb.get("newText") or ""
                     path = cb.get("path", "")
+                    if path:
+                        self._tool_call_diff_path[tool_use_id] = path
                     diff_str = _make_unified_diff(old, new, path)
                     if diff_str:
                         input_str = diff_str
@@ -8218,6 +8227,8 @@ class AcpClient:
             tool_input_redacted_cache=getattr(self, "_tool_call_input_redacted", None),
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_params,
+            # Same compatibility shape as the redaction map above.
+            diff_path_cache=getattr(self, "_tool_call_diff_path", None),
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
         )
