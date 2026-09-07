@@ -518,6 +518,23 @@ interface ChatInputProps {
   voicePendingCaretRef?: React.MutableRefObject<number | null>
   /** Chat-level controls in input bar */
   agentName?: string
+  /**
+   * Display label for the agent chip when it must differ from the raw alias.
+   * The chip shows this; everything else keyed on the agent (the skills query,
+   * the `agent` prop, the switch title) keeps using `agentName`, the real
+   * alias. It carries the inherited-default marker (`kirocrew · default`) so an
+   * agent-less slot that resolves to the current default is distinguishable
+   * from one explicitly pinned to that same alias (#8770). Falls back to
+   * `agentName` when unset. */
+  agentLabel?: string
+  /**
+   * True when the agent chip shows an INHERITED default (agent-less slot
+   * resolving to the current default), not an explicit pin. Drives an
+   * explanatory tooltip on the chip -- reachable on hover (`title`) and on
+   * keyboard focus / screen readers (`aria-label`) -- because the ` . default`
+   * marker alone reads as opaque (#8770 UX review). Only the inherited case
+   * gets it; a pinned chip has nothing to explain. */
+  agentIsInheritedDefault?: boolean
   agentSource?: string
   modelName?: string
   onAgentClick?: (rect: DOMRect) => void
@@ -919,6 +936,8 @@ function ChatInput({
   voicePendingCaretRef,
   onClearVoiceError,
   agentName,
+  agentLabel,
+  agentIsInheritedDefault,
   agentSource,
   modelName,
   onAgentClick,
@@ -4424,11 +4443,24 @@ function ChatInput({
               className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
               onClick={e => onAgentClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
-              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : i18nT('components.chatInput.agent', { name: agentName })}
-              aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents') : i18nT('components.chatInput.agent', { name: agentName })}
+              // Inherited default: explain what the ` . default` marker means, on
+              // hover (title) AND keyboard focus / screen readers (aria-label),
+              // because the marker alone reads as opaque (#8770 UX). No glyph, no
+              // layout change -- text on demand. A pinned chip keeps the plain
+              // switch hint; it has nothing to explain.
+              title={isRunning
+                ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents')
+                : agentIsInheritedDefault
+                  ? i18nT('components.chatInput.agent_inherited_default', { name: agentName })
+                  : i18nT('components.chatInput.agent', { name: agentName })}
+              aria-label={isRunning
+                ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents')
+                : agentIsInheritedDefault
+                  ? i18nT('components.chatInput.agent_inherited_default', { name: agentName })
+                  : i18nT('components.chatInput.agent', { name: agentName })}
             >
               <Bot size={13} className="shrink-0 opacity-70" />
-              {!shelfCompact && <span className="truncate max-w-[160px]">{agentName}</span>}
+              {!shelfCompact && <span className="truncate max-w-[160px]">{agentLabel ?? agentName}</span>}
             </button>
           )}
           {onProjectClick && (

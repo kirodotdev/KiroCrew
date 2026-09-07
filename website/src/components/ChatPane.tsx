@@ -19,6 +19,8 @@ import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter from '../pages/chat/ChatFooter'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
+import { agentOrDefaultLabel } from '../utils/agentLabel'
+import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
 import ModelDropdownList from './ModelDropdownList'
 import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
@@ -236,6 +238,15 @@ export default function ChatPane({
   // the configured default (matching what dispatch runs) before the literal
   // 'default' placeholder.
   const paneAgentName = paneSlot?.agent || defaultAgent || 'default'
+  // A remote (peer-bound) pane resolves the PEER's default, never this machine's:
+  // feeding the local `defaultAgent` into the inherited-default label would mark
+  // a peer's agent-less session with the wrong roster's default (#8770 GPT
+  // review). Mirrors ChatPage's `effectiveDefaultAgent`; '' for a peer whose
+  // capabilities have not loaded, which yields no false marker.
+  const paneRemoteCrew = useRemoteCapabilities(paneSlot)
+  const paneEffectiveDefaultAgent = paneRemoteCrew.isRemote
+    ? (paneRemoteCrew.capabilities?.default_agent || '')
+    : defaultAgent
   const navigate = useNavigate()
   const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
   // Same contract as ChatPage: set-only, clearing lives on the Templates page.
@@ -812,6 +823,13 @@ export default function ChatPane({
           onStop={onStop}
           autoFocusKey={slotKey}
           agentName={paneAgentName}
+          // The chip shows the inherited-default marker; `agentName` stays the
+          // raw resolved alias for the skills query and switch title. Uses the
+          // SLOT's stored agent (not `paneAgentName`, which has already
+          // collapsed empty->default) so an agent-less slot reads
+          // `<default> · default` and a pinned one reads the bare alias (#8770).
+          agentLabel={agentOrDefaultLabel(paneSlot?.agent, paneEffectiveDefaultAgent)}
+          agentIsInheritedDefault={!paneSlot?.agent && !!paneEffectiveDefaultAgent}
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
           modelName={shownModel}
           contextPct={contextPct}

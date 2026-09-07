@@ -5735,7 +5735,8 @@
       "more_actions": "और कार्रवाइयां",
       "session_control_needs_attention": "ध्यान देने की ज़रूरत",
       "session_control_ready": "तैयार",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "यह सत्र डिफ़ॉल्ट एजेंट ({{name}}) का अनुसरण करता है। इसका अपना कोई एजेंट नहीं है, इसलिए डिफ़ॉल्ट बदलने पर यह भी बदल जाता है। पिन करने के लिए क्लिक करें।"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",

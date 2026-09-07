@@ -5828,7 +5828,8 @@
       "more_actions": "Plus d'actions",
       "session_control_needs_attention": "Attention requise",
       "session_control_ready": "Prêt",
-      "session_control_chip_label": "{{label}} — {{detail}}"
+      "session_control_chip_label": "{{label}} — {{detail}}",
+      "agent_inherited_default": "Cette session suit l’agent par défaut ({{name}}). Elle n’a pas d’agent propre, elle change donc si le défaut change. Cliquez pour en épingler un."
     },
     "chatPane": {
       "agent_list": "Liste des agents",
