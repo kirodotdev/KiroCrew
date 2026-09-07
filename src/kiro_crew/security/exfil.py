@@ -964,6 +964,32 @@ def _exfil_url_warning(
         heuristic_query = query
 
     if heuristic_query:
+        # NO per-shape waiver on this gate, deliberately, and the same reasoning
+        # forbids adding one. Two were tried for the prefilled GitHub issue link of
+        # #7820 — one keyed to the validated SHAPE, one additionally pinned to this
+        # project's own tracker — and both are exfiltration primitives, because what
+        # reaches this function is MODEL-AUTHORED text:
+        #
+        #   Injected content steers the model into emitting a prefill URL whose
+        #   ``body`` carries percent-encoded private context. The waiver skips this
+        #   check, the link renders as the familiar "file an issue" affordance, the
+        #   user submits it — and the issue is PUBLIC, so the attacker reads it.
+        #
+        # Pinning the repository does not help: this project's tracker is
+        # world-readable by design. A URL's shape says nothing about who authored
+        # it, and a marker placed IN the text travels in the channel the injection
+        # already controls, so provenance has to come from a different channel.
+        # It already does: ``diagnostics._issue_url`` builds the prefill link from
+        # STRUCTURED fields and the dashboard renders its own anchor from
+        # ``BundleResult.github_issue_url``, a JSON field no redactor scans
+        # (Settings -> Report a Problem, the feedback pill). A link that never
+        # enters model prose never needs a waiver, and ``terminal_issue_url`` is the
+        # bounded variant for paths that DO get relayed through prose.
+        #
+        # To make a long legitimate URL render, narrow or replace this heuristic for
+        # EVERY host on its own merits (#7820 also reports monitorportal.amazon.com)
+        # — do not reintroduce a per-shape escape hatch. Pinned by
+        # test_redaction_mirror_parity.py::TestPrefilledIssueCarveOutParity.
         if len(heuristic_query) >= _EXFIL_QUERY_MIN_LEN:
             trace("exfil_query_length")
             return (

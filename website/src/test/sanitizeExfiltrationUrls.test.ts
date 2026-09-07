@@ -39,61 +39,63 @@ function expectRedacted(url: string): void {
   expect(out).not.toContain(url)
 }
 
-describe('sanitizeExfiltrationUrls: the reported false positive', () => {
-  it('keeps a long prefilled GitHub issue link', () => {
+describe('sanitizeExfiltrationUrls: no shape waives redaction of model-authored text', () => {
+  it('redacts a long prefilled GitHub issue link to this project own tracker', () => {
+    // This block used to assert the opposite. Two waivers were tried (#7824 on
+    // shape, then pinned to this repository) and both are exfiltration primitives:
+    // what this function sanitizes is MODEL-AUTHORED text, so injected content can
+    // steer the model into emitting a prefill URL whose `body` carries encoded
+    // private context. The user submits it and the issue is PUBLIC, so pinning the
+    // repository changes who reads the payload from the attacker to everyone,
+    // including the attacker. The feature is served by the backend's structured
+    // `github_issue_url` field instead, which no redactor scans.
     expect(LONG_BENIGN_QUERY.length).toBeGreaterThanOrEqual(200)
-    expectKept(ISSUE_URL)
+    expectRedacted(ISSUE_URL)
   })
 
-  it('keeps it when the host case differs', () => {
-    // RFC 4343: DNS host case is not significant, so `GitHub.com` is the same
-    // destination and must be validated the same way.
-    expectKept(`https://GitHub.com/kirodotdev/KiroCrew/issues/new?${LONG_BENIGN_QUERY}`)
+  it('redacts it when the host case differs', () => {
+    // RFC 4343 leaves DNS host case insignificant; with no waiver it changes nothing.
+    expectRedacted(`https://GitHub.com/kirodotdev/KiroCrew/issues/new?${LONG_BENIGN_QUERY}`)
   })
 
-  it('keeps a short query at any host, as before the narrowing', () => {
+  it('keeps a short query at any host, so only the length signal moved', () => {
     expectKept('https://example.com/page?ref=chat&tab=1')
   })
 
-  it('keeps it for a dot-leading repository name', () => {
-    // `.github` is an ordinary repository, so refusing a leading dot outright
-    // (while still refusing `..`) would carve out less than the shape allows.
-    expectKept(`https://github.com/kirodotdev/.github/issues/new?${LONG_BENIGN_QUERY}`)
+  it('redacts a prefill link to an attacker-owned repository', () => {
+    expectRedacted(`https://github.com/attacker/exfil-sink/issues/new?${LONG_BENIGN_QUERY}`)
+  })
+
+  it('redacts the other long-query host the same report names', () => {
+    // #7820 reports monitorportal.amazon.com alongside the prefill link. Both stay
+    // redacted: narrowing this heuristic is a per-host decision on its own merits,
+    // not a per-shape escape hatch.
+    expectRedacted(
+      'https://monitorportal.amazon.com/metrics?namespace=AWS/SageMaker' +
+        '&metricName=Invocations&dimensions=EndpointName%3Dmy-endpoint' +
+        '&startTime=2026-09-01T00%3A00%3A00Z&period=300&stat=Sum&region=us-west-2' +
+        '&accountId=123456789012&view=timeSeries&label=long+enough+to+pass+two+hundred',
+    )
   })
 })
 
-describe('sanitizeExfiltrationUrls: every span of the validated shape is load-bearing', () => {
-  it('redacts an unvalidated path at the same host', () => {
+describe('sanitizeExfiltrationUrls: the length signal applies to every host', () => {
+  // These used to prove each span of a validated exempt SHAPE was load-bearing.
+  // With no exempt shape they prove the simpler and stronger property: a >=200-char
+  // query is redacted wherever it appears, with no path, port or scheme exception.
+  it('redacts a long query at this project own repository', () => {
     expectRedacted(`https://github.com/kirodotdev/KiroCrew/settings?${LONG_BENIGN_QUERY}`)
   })
 
-  it('redacts a deeper path that merely ends in issues/new', () => {
-    expectRedacted(`https://github.com/a/b/c/issues/new?${LONG_BENIGN_QUERY}`)
-  })
-
-  it('redacts an unknown query parameter smuggled alongside the known ones', () => {
-    expectRedacted(`https://github.com/o/r/issues/new?${LONG_BENIGN_QUERY}&leak=${'x'.repeat(8)}`)
-  })
-
-  it('redacts a parameter whose key is empty', () => {
-    expectRedacted(`https://github.com/o/r/issues/new?${LONG_BENIGN_QUERY}&=payload`)
-  })
-
-  it('redacts an owner/repo segment spelled as a `..` traversal', () => {
-    // A browser normalises `..` away before sending, so this names a path
-    // github.com never served — an unaccounted-for component like any other.
-    expectRedacted(`https://github.com/../../issues/new?${LONG_BENIGN_QUERY}`)
-  })
-
-  it('redacts an explicit port on the exempt host', () => {
+  it('redacts an explicit port on github.com', () => {
     expectRedacted(`https://github.com:8080/o/r/issues/new?${LONG_BENIGN_QUERY}`)
   })
 
-  it('redacts the plaintext-http spelling of the exempt shape', () => {
+  it('redacts the plaintext-http spelling', () => {
     expectRedacted(`http://github.com/o/r/issues/new?${LONG_BENIGN_QUERY}`)
   })
 
-  it('does NOT treat a suffix look-alike host as the exempt host', () => {
+  it('does NOT treat a suffix look-alike host as github.com', () => {
     const url = `https://github.com.evil.example/o/r/issues/new?${LONG_BENIGN_QUERY}`
     const out = sanitizeExfiltrationUrls(`leak: ${url}`)
     expect(out).not.toContain(url)
@@ -109,10 +111,9 @@ describe('sanitizeExfiltrationUrls: every span of the validated shape is load-be
 })
 
 describe('sanitizeExfiltrationUrls: no pattern signal is waived', () => {
-  // The carve-out waives the aggregate-length signal alone. Each case below puts
-  // a pattern signal inside the fully validated exempt shape and asserts it still
-  // redacts, which is what bounds the narrowing: an unbounded payload cannot ride
-  // through on a validated destination.
+  // These predate the carve-out and outlive it. Each puts a pattern signal in a
+  // prefill-shaped URL to this project's own tracker and asserts it still redacts,
+  // independent of the length signal.
   const validPrefix = 'https://github.com/kirodotdev/KiroCrew/issues/new?body='
 
   it('redacts a base64 blob inside the validated shape', () => {
@@ -156,34 +157,41 @@ describe('sanitizeExfiltrationUrls: no pattern signal is waived', () => {
   })
 })
 
-describe('sanitizeExfiltrationUrls: the `+`-encoded prose body is still redacted', () => {
+describe('sanitizeExfiltrationUrls: both spellings of a prose body are redacted', () => {
+  // The two cases below are the same logical prefilled issue link spelled two ways,
+  // and they are redacted by DIFFERENT signals — which is why the pair is worth
+  // keeping now that nothing is waived.
+  //
   // `+` is the form-encoded spelling of a space — what `URLSearchParams` emits —
   // and it is inside EXFIL_B64_RE's class, so ~7 words of unpunctuated prose in a
-  // `+`-encoded `body=` are one 40+ char run and the URL is redacted before
-  // isPrefilledIssueUrl() is ever consulted. This is DELIBERATE, not an oversight:
-  // the two ways to stop it — dropping `+` from the class, or splitting the query
-  // on `+` before testing — both let an attacker `+`-chunk a 40+ char secret
-  // straight past the signal, and a chunking bypass costs more than a placeholder
-  // on a prose link. So the carve-out covers the `%20` spelling of a prefilled
-  // issue link and not the `+` spelling, and these tests pin that boundary so it
-  // is a documented limit rather than a surprise.
+  // `+`-encoded `body=` are one 40+ char run. That fires regardless of length, and
+  // it is DELIBERATE: the two ways to stop it — dropping `+` from the class, or
+  // splitting the query on `+` before testing — both let an attacker `+`-chunk a
+  // 40+ char secret straight past the signal.
+  //
+  // The `%20` spelling breaks that run, so it reaches the aggregate-length signal
+  // instead and is redacted there. It used to be KEPT, by the withdrawn
+  // `isPrefilledIssueUrl` waiver; a validated shape no longer earns an exception,
+  // because the shape of a URL says nothing about who authored it.
   const PLUS_PROSE_URL =
     'https://github.com/kirodotdev/KiroCrew/issues/new?title=Dashboard+chat+drops+long+links' +
     '&body=The+dashboard+chat+redaction+fires+on+ordinary+prefilled+issue+links+and+replaces' +
     '+them+with+a+placeholder&labels=bug'
 
-  it('redacts it even though the query is UNDER the length threshold', () => {
-    // Proof the base64 signal, not the length signal, is what fires: waiving
-    // length could not have changed this verdict.
+  it('redacts the `+` spelling even though the query is UNDER the length threshold', () => {
+    // Proof the base64 signal, not the length signal, is what fires here.
     const query = PLUS_PROSE_URL.slice(PLUS_PROSE_URL.indexOf('?') + 1)
     expect(query.length).toBeLessThan(200)
     expectRedacted(PLUS_PROSE_URL)
   })
 
-  it('keeps the same link once its spaces are `%20`, which breaks the run', () => {
-    // The other side of the boundary, and the shape a realistic prefilled link
-    // has once any parameter carries a percent-escape (see the `%20`/`%2C` mix in
-    // MarkdownRenderer.longUrlLinkify's fixture).
-    expectKept(ISSUE_URL)
+  it('redacts the `%20` spelling on length once the base64 run is broken', () => {
+    // The other side of the boundary: no 40+ char run in `[A-Za-z0-9+/=]`, so this
+    // one is caught by aggregate query length alone. Asserting both properties
+    // keeps it from passing for the wrong reason if the fixture ever changes.
+    const query = ISSUE_URL.slice(ISSUE_URL.indexOf('?') + 1)
+    expect(query.length).toBeGreaterThanOrEqual(200)
+    expect(/[A-Za-z0-9+/=]{40,}/.test(query)).toBe(false)
+    expectRedacted(ISSUE_URL)
   })
 })
