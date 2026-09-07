@@ -247,15 +247,21 @@ Related but separate: `issue_radar_crew_read` / `issue_radar_crew_record` are th
 [issue-radar.md](issue-radar.md). The pipeline conductor does not mount them and
 is not granted them; its durable state is the session work ledger
 ([session-work-ledger.md](session-work-ledger.md)) plus
-`conductor-status/v1`. A work-ledger tool family generalized from the Issue
-Radar one is proposed in
-[`../../request-for-change/rfc-conductor-work-ledger.md`](../../request-for-change/rfc-conductor-work-ledger.md)
-and is unbuilt.
+`conductor-status/v1`. The work-ledger tool family generalized from the Issue
+Radar one, proposed in
+[`../../request-for-change/rfc-conductor-work-ledger.md`](../../request-for-change/rfc-conductor-work-ledger.md),
+is now built through Phase 2 — but this conductor does **not** mount it. It was
+mounted here briefly and the mount was retracted: the ledger flow inverts the
+dispatch order and replaces the patrol cycle, so it is a different procedure
+rather than two extra tools, and it lives on its own agent. See that RFC's
+rollout note for the criteria under which the two fold back together.
 
-The goal conductor (`kirocrew-conductor`, the `goal-conductor` skill) is a
-different agent with a different charter: it decomposes a free-form goal, where
-this one supervises a repository pipeline. The two installers deliberately share
-mechanics and nothing else.
+Two sibling agents share this one's installer mechanics and nothing else:
+`kirocrew-conductor` (the `goal-conductor` skill) decomposes a free-form goal,
+and `kirocrew-ledger-conductor` (the `goal-ledger-conductor` skill) does the same
+while tracking items in the work ledger. All three narrow `mcpServers`, withhold
+every file-writing tool, grant verb by verb and derive `permissions` from the
+filtered list; only the third mounts `kirocrew-work`.
 
 ## Tests that pin this
 

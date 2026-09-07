@@ -15,6 +15,7 @@ import pytest
 from kiro_crew import agent
 from kiro_crew.agent_files import (
     CONDUCTOR_AGENT_FILENAME,
+    LEDGER_CONDUCTOR_AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
     PIPELINE_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
@@ -23,17 +24,19 @@ from kiro_crew.agent_files import (
 
 @pytest.fixture()
 def specs(tmp_path, monkeypatch) -> dict[str, dict[str, Any]]:
-    """Install the three specs into a throwaway agents dir and read them back."""
+    """Install the four related specs into a throwaway agents dir and read them back."""
     monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
     agent._install_worker_agent()
     agent._install_conductor_agent()
     agent._install_pipeline_conductor_agent()
+    agent._install_ledger_conductor_agent()
     return {
         name: json.loads((tmp_path / name).read_text(encoding="utf-8"))
         for name in (
             WORKER_AGENT_FILENAME,
             CONDUCTOR_AGENT_FILENAME,
             PIPELINE_CONDUCTOR_AGENT_FILENAME,
+            LEDGER_CONDUCTOR_AGENT_FILENAME,
         )
     }
 
@@ -204,15 +207,14 @@ def test_every_boot_re_filters_the_worker_grants_through_the_ceiling(tmp_path, m
     assert "@kirocrew-work" in regranted["tools"]
 
 
-# ── both conductors mount it, per tool ────────────────────────────────────
+# ── exactly ONE conductor mounts it, per tool ─────────────────────────────
 
 
-@pytest.mark.parametrize("filename", [CONDUCTOR_AGENT_FILENAME, PIPELINE_CONDUCTOR_AGENT_FILENAME])
-def test_a_conductor_mounts_the_server_and_grants_only_its_own_half(specs, filename):
+def test_the_ledger_conductor_mounts_the_server_and_grants_only_its_own_half(specs):
     """Per tool rather than whole-server, because the worker half is mounted on the
     same server. Missing these is not an error but a silent approval prompt on every
     patrol cycle, which is why they are asserted."""
-    spec = specs[filename]
+    spec = specs[LEDGER_CONDUCTOR_AGENT_FILENAME]
     assert "@kirocrew-work" in spec["tools"]
     entry = spec["mcpServers"]["kirocrew-work"]
     assert entry["args"][-1] == "mcp-work"
@@ -220,39 +222,72 @@ def test_a_conductor_mounts_the_server_and_grants_only_its_own_half(specs, filen
     allowed = spec["allowedTools"]
     assert "@kirocrew-work/work_ledger_read" in allowed
     assert "@kirocrew-work/work_ledger_record" in allowed
-    assert "@kirocrew-work/work_brief" not in allowed
+    # The one worker verb a conductor may hold: a read of its OWN bound item, and a
+    # nested conductor's mandated first call. The write stays gated.
+    assert "@kirocrew-work/work_brief" in allowed
     assert "@kirocrew-work/work_report" not in allowed
-    # Whole-server auto-approve would grant the worker half by the back door.
+    # Whole-server auto-approve would grant the write by the back door.
     assert "@kirocrew-work" not in allowed
 
 
 @pytest.mark.parametrize("filename", [CONDUCTOR_AGENT_FILENAME, PIPELINE_CONDUCTOR_AGENT_FILENAME])
+def test_a_shipped_conductor_does_not_mount_the_server(specs, filename):
+    """The two shipped conductors mounted this server briefly, and the mount is
+    retracted.
+
+    The tools alone do not describe the change they came with: the ledger flow
+    inverts the dispatch order (bind before seed) and replaces the patrol cycle (a
+    ledger read instead of a transcript read), so mounting them on an agent that
+    ships a different procedure hands its users a procedure they did not choose.
+    Asserted negatively, on every surface a mount can survive on, so it cannot
+    return unnoticed — the KAS rule especially, since nothing reads
+    ``allowedTools`` on that backend.
+    """
+    spec = specs[filename]
+    assert "@kirocrew-work" not in spec["tools"]
+    assert "kirocrew-work" not in spec["mcpServers"]
+    assert not [ref for ref in spec["allowedTools"] if "kirocrew-work" in ref]
+    assert not [m for m in spec["permissions"]["rules"][0]["match"] if "kirocrew-work" in m]
+    for token in ("work_ledger", "work_brief", "work_report", "kirocrew-work"):
+        assert token not in spec["prompt"], token
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [CONDUCTOR_AGENT_FILENAME, PIPELINE_CONDUCTOR_AGENT_FILENAME, LEDGER_CONDUCTOR_AGENT_FILENAME],
+)
 def test_a_conductor_still_has_no_file_writing_tool(specs, filename):
     """The property the conductor installers' docstrings argue for, re-asserted here
-    because this change edits their ``tools`` lists: mounting the work server must
-    not have smuggled a write tool in beside it."""
+    because this change edits their ``tools`` lists: neither mounting the work server
+    nor copying an installer may smuggle a write tool in beside it."""
     tools = specs[filename]["tools"]
     assert "fs_write" not in tools
     assert "code" not in tools
 
 
-def test_the_grant_tuples_name_the_halves_exactly():
-    assert agent._CONDUCTOR_WORK_GRANTS == (
+def test_the_grant_tuples_cover_the_server_and_share_only_the_read():
+    assert agent._LEDGER_CONDUCTOR_WORK_GRANTS == (
         "@kirocrew-work/work_ledger_read",
         "@kirocrew-work/work_ledger_record",
+        "@kirocrew-work/work_brief",
     )
     assert agent._WORKER_WORK_GRANTS == (
         "@kirocrew-work/work_brief",
         "@kirocrew-work/work_report",
     )
-    # Together they cover the server's whole surface and overlap nowhere.
+    # Together they cover the server's whole surface. The one overlap is the
+    # read-only ``work_brief``: a nested conductor is also a worker, and its first
+    # mandated call must not be an approval stall. The write is never shared.
     from kiro_crew import mcp_work
 
     granted = {
-        ref.split("/", 1)[1] for ref in agent._CONDUCTOR_WORK_GRANTS + agent._WORKER_WORK_GRANTS
+        ref.split("/", 1)[1]
+        for ref in agent._LEDGER_CONDUCTOR_WORK_GRANTS + agent._WORKER_WORK_GRANTS
     }
     assert granted == set(mcp_work.WORK_TOOLS)
-    assert not set(agent._CONDUCTOR_WORK_GRANTS) & set(agent._WORKER_WORK_GRANTS)
+    assert set(agent._LEDGER_CONDUCTOR_WORK_GRANTS) & set(agent._WORKER_WORK_GRANTS) == {
+        "@kirocrew-work/work_brief"
+    }
 
 
 def test_the_hand_built_entry_carries_the_registry_and_home_pins(monkeypatch):

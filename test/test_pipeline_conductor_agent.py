@@ -150,17 +150,37 @@ class TestPipelineConductorInstaller:
         assert "@kirocrew-core" in data["tools"]
 
     def test_mcp_servers_are_narrowed(self, tmp_path, monkeypatch):
-        """Only kirocrew-core and the two hand-built opt-in entries ship;
-        inherited third-party servers are dropped from this spec."""
+        """Only kirocrew-core and the one hand-built opt-in entry ship; inherited
+        third-party servers are dropped from this spec.
+
+        ``kirocrew-work`` is NOT among them. It was mounted here briefly and the
+        mount is retracted, because the work-ledger flow is a different dispatch
+        and patrol procedure and this agent ships its own — see
+        ``kirocrew-ledger-conductor``. Negative rather than deleted so the mount
+        cannot return unnoticed.
+        """
         data = self._install(tmp_path, monkeypatch)
         assert set(data["mcpServers"]) == {
             "kirocrew-core",
             "kirocrew-dashboard",
-            "kirocrew-work",
         }
         assert data["mcpServers"]["kirocrew-dashboard"]["args"] == ["mcp-dashboard"]
-        assert data["mcpServers"]["kirocrew-work"]["args"] == ["mcp-work"]
-        assert "autoApprove" not in data["mcpServers"]["kirocrew-work"]
+        assert "kirocrew-work" not in data["mcpServers"]
+
+    def test_no_work_ledger_surface_anywhere_in_the_spec(self, tmp_path, monkeypatch):
+        """The retraction has to hold on all four surfaces, not just ``mcpServers``.
+
+        A mount left in ``tools``, a grant left in ``allowedTools``, a rule left in
+        the derived KAS block, or a procedure left in the prompt would each
+        re-introduce the flow on its own — the KAS one silently, on the backend
+        where nothing reads ``allowedTools``.
+        """
+        data = self._install(tmp_path, monkeypatch)
+        assert "@kirocrew-work" not in data["tools"]
+        assert not [ref for ref in data["allowedTools"] if "kirocrew-work" in ref]
+        assert not [m for m in data["permissions"]["rules"][0]["match"] if "kirocrew-work" in m]
+        for token in ("work_ledger", "work_brief", "work_report", "kirocrew-work"):
+            assert token not in data["prompt"], token
 
     def test_governed_host_withholds_and_audits(self, tmp_path, monkeypatch):
         """A ceiling that strips a grant must leave an audit record naming THIS

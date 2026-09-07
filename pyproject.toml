@@ -122,7 +122,14 @@ pretty = true
 ignore_missing_imports = true
 # Vendored third-party code (llama-cpp-python) — never type-check it. The
 # exclude matches _vendor anywhere (src/ and build output trees alike).
-exclude = ['/_vendor/']
+#
+# goal-ledger-conductor/scripts/accept_eval.py is a byte-identical copy of
+# goal-conductor/scripts/accept_eval.py (the builtin-skill scope gate refuses a
+# symlink), and two top-level modules named ``accept_eval`` make mypy stop with
+# "Duplicate module named" before checking anything. The copy is excluded and the
+# original is checked; test_ledger_conductor_agent.py pins the two byte-identical,
+# so nothing type-checked is lost.
+exclude = ['/_vendor/', 'goal-ledger-conductor/scripts/accept_eval[.]py$']
 
 [[tool.mypy.overrides]]
 # _vendor has no __init__.py (it is a sys.path root), so mypy may resolve the

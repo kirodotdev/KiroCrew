@@ -333,26 +333,34 @@ class TestConductorInstaller:
         for writer in ("fs_write", "code"):
             assert writer not in data["tools"], writer
 
-    def test_mcp_surface_is_narrowed_to_core_plus_dashboard_plus_work(self, tmp_path, monkeypatch):
+    def test_mcp_surface_is_narrowed_to_core_plus_dashboard(self, tmp_path, monkeypatch):
         """Inherited servers the conductor has no charter for are dropped.
 
-        Three now: ``kirocrew-work`` joined because a conductor reads its fleet's
-        status from that ledger. It is ``opt_in``, so neither spec-writing loop
-        emits it and this installer hand-builds the entry — which IS the explicit
-        per-agent assignment such a set requires.
+        Exactly two, and ``kirocrew-work`` is NOT one of them. It was mounted here
+        briefly and the mount is retracted: the work-ledger flow inverts this
+        agent's dispatch order and replaces its patrol cycle, so mounting the
+        tools here moved every existing conductor user onto a procedure they had
+        not chosen. The flow lives on ``kirocrew-ledger-conductor`` instead, and
+        this assertion is negative rather than deleted so the mount cannot come
+        back without someone deciding to bring it back.
         """
         data = self._install(tmp_path, monkeypatch)
-        assert set(data["mcpServers"]) == {
-            "kirocrew-core",
-            "kirocrew-dashboard",
-            "kirocrew-work",
-        }
+        assert set(data["mcpServers"]) == {"kirocrew-core", "kirocrew-dashboard"}
         assert data["mcpServers"]["kirocrew-dashboard"]["args"] == ["mcp-dashboard"]
-        assert data["mcpServers"]["kirocrew-work"]["args"] == ["mcp-work"]
-        # No autoApprove on either hand-built entry: an autoApproved MCP tool never
-        # reaches hooks.on_tool_call, so the deny floor and the governance ceiling
-        # would be bypassed for it.
-        assert "autoApprove" not in data["mcpServers"]["kirocrew-work"]
+        assert "kirocrew-work" not in data["mcpServers"]
+        assert "@kirocrew-work" not in data["tools"]
+
+    def test_prompt_carries_no_work_ledger_procedure(self, tmp_path, monkeypatch):
+        """The shipped conductor's charter must not name the ledger it cannot reach.
+
+        A prompt that describes ``work_ledger_record`` on a spec with no
+        ``kirocrew-work`` mount is worse than silent: the agent would try the call
+        and get a tool that does not exist. Pinned as the prompt-side half of the
+        retraction above.
+        """
+        prompt = self._install(tmp_path, monkeypatch)["prompt"]
+        for token in ("work_ledger", "work_brief", "work_report", "kirocrew-work"):
+            assert token not in prompt, token
 
     def test_dashboard_entry_omits_managed_metadata_on_a_default_install(
         self, tmp_path, monkeypatch
@@ -427,8 +435,6 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
-            "@kirocrew-work/work_ledger_read",
-            "@kirocrew-work/work_ledger_record",
         ]
 
     def test_kas_permissions_are_derived_from_the_filtered_grants(self, tmp_path, monkeypatch):
@@ -465,28 +471,21 @@ class TestConductorInstaller:
             "kirocrew-dashboard/session_create",
             "kirocrew-dashboard/session_read_message",
         ]
-        # The conductor half only. A ``kirocrew-work/*`` wildcard here would
-        # re-grant the two WORKER tools this spec deliberately withholds, which is
-        # the same property the two lists above pin for their own servers.
-        work_resources = [
-            "kirocrew-work/work_ledger_read",
-            "kirocrew-work/work_ledger_record",
-        ]
         data = self._install(tmp_path, monkeypatch)
         assert data["permissions"] == {
             "rules": [
                 {
                     "capability": "mcp",
-                    "match": [*core_resources, *dashboard_resources, *work_resources],
+                    "match": [*core_resources, *dashboard_resources],
                     "effect": "allow",
                 }
             ]
         }
         assert "kirocrew-core/*" not in data["permissions"]["rules"][0]["match"]
         assert "kirocrew-dashboard/*" not in data["permissions"]["rules"][0]["match"]
-        assert "kirocrew-work/*" not in data["permissions"]["rules"][0]["match"]
-        assert "kirocrew-work/work_brief" not in data["permissions"]["rules"][0]["match"]
-        assert "kirocrew-work/work_report" not in data["permissions"]["rules"][0]["match"]
+        # No work-ledger resource at all, in any form. The retracted mount must not
+        # survive as a KAS rule on the backend where nobody reads ``allowedTools``.
+        assert not [m for m in data["permissions"]["rules"][0]["match"] if "kirocrew-work" in m]
 
         governed = self._install(
             tmp_path,
@@ -500,7 +499,6 @@ class TestConductorInstaller:
                     "match": [
                         *(r for r in core_resources if r != "kirocrew-core/monitor_start"),
                         *dashboard_resources,
-                        *work_resources,
                     ],
                     "effect": "allow",
                 }
@@ -590,8 +588,6 @@ class TestConductorInstaller:
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/session_create",
             "@kirocrew-dashboard/session_read_message",
-            "@kirocrew-work/work_ledger_read",
-            "@kirocrew-work/work_ledger_record",
         ]
 
     def test_skill_gates_the_plan_once_instead_of_interrogating(self):

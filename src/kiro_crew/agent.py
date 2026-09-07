@@ -46,6 +46,9 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME as _CONDUCTOR_AGENT_FILENAME
 from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
+from kiro_crew.agent_files import (
+    LEDGER_CONDUCTOR_AGENT_FILENAME as _LEDGER_CONDUCTOR_AGENT_FILENAME,
+)
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
@@ -4959,6 +4962,18 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     except Exception:
         logger.debug("kirocrew-pipeline-conductor agent install failed", exc_info=True)
 
+    # Install kirocrew-ledger-conductor agent (goal conducting via the work
+    # ledger). EAGER for the same forced reason spelled out on the worker below:
+    # ``session_create`` refuses an agent it cannot resolve, and resolution reads a
+    # boot-time in-memory snapshot that no spec write refreshes — so a
+    # lazily-materialized spec is invisible to the validation that runs ahead of the
+    # spawn. A ledger conductor dispatching a second-level ledger conductor needs
+    # its own name resolvable, which makes this the same class of dependency.
+    try:
+        _install_ledger_conductor_agent()
+    except Exception:
+        logger.debug("kirocrew-ledger-conductor agent install failed", exc_info=True)
+
     # Install kirocrew-worker agent (the default toolset plus the work-ledger set).
     #
     # EAGER, like its six siblings above, and that placement is forced rather than
@@ -5412,8 +5427,8 @@ _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
 #: the conductor's OWN durable ledger, routing (``select_crew``), and
 #: reporting to the owner (``send_message``, ``send_notification``,
 #: ``ask_question``).
-#: The work-ledger verbs a CONDUCTOR may call without an approval prompt. Per
-#: tool rather than the whole server, because the worker half is mounted on the
+#: The work-ledger verbs the LEDGER conductor may call without an approval prompt.
+#: Per tool rather than the whole server, because the worker half is mounted on the
 #: same server and a conductor has no reason to auto-approve a tool whose only
 #: answer to it is a refusal. Both are on the same rule the dashboard grants
 #: follow: the read only READS the conductor's own record, and the write only
@@ -5421,9 +5436,27 @@ _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
 #: worst case in an unattended loop is bounded by the store's caps. Missing these
 #: is not an error but a silent approval prompt on every patrol cycle, which is
 #: why they are spelled out rather than left to the whole-server ref.
-_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = (
+#:
+#: Named for ``kirocrew-ledger-conductor`` and reachable from that spec ALONE.
+#: These two grants shipped on ``kirocrew-conductor`` and
+#: ``kirocrew-pipeline-conductor`` first, and mounting them there made every
+#: existing conductor user an opt-in to a procedure they had not chosen: the ledger
+#: flow inverts the dispatch order (bind before seed) and replaces the patrol cycle
+#: (a ledger read instead of a transcript read), and a shipped agent silently
+#: gaining tools that only make sense under a different procedure is a change to
+#: that agent's charter, not an addition to it. The flow now lives in its own spec,
+#: and the two shipped conductors emit exactly the spec they emitted before.
+#:
+#: ``work_brief`` is the third entry, and it is the one worker-half verb granted:
+#: it only READS the caller's own bound item (or answers ``not_bound``), which is
+#: the same rule the two conductor verbs rest on. It is also a second-level
+#: conductor's mandated FIRST call, in a child session nobody opened — gated, that
+#: call is an approval stall before any planning happens. ``work_report`` stays
+#: gated: it WRITES into the parent's record, across a dispatch relationship.
+_LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = (
     "@kirocrew-work/work_ledger_read",
     "@kirocrew-work/work_ledger_record",
+    "@kirocrew-work/work_brief",
 )
 
 #: The work-ledger verbs a WORKER may call without a prompt. A worker that must
@@ -5473,6 +5506,91 @@ def _managed_opt_in_entry(subcommand: str) -> dict[str, Any]:
     if env:
         entry["env"] = env
     return entry
+
+
+def _filter_auto_approve(refs: tuple[str, ...], *, source: str) -> list[str]:
+    """Filter a conductor's intended grants through the governance ceiling.
+
+    ``allowedTools`` is the ONE path that never reaches the PreToolUse gate, so
+    every grant is filtered through the ceiling first — the same predicate
+    ``rebuild_agent_config`` applies to the primary spec's assembled list, and the
+    entry point ``may_skip_gate_now`` exists precisely so a new writer cannot
+    re-open the bypass by restating a literal. A governed ref stays MOUNTED (it is
+    still in ``tools``); it just prompts, and the gate then applies the ceiling's
+    per-tool rule with the real arguments.
+
+    Withholding a grant is a permission DECISION, and every other writer of an
+    ``allowedTools`` list emits the same event for it — see
+    ``strip_ungoverned_auto_approve``, whose comment names a silent pop as the one
+    withhold path with no audit trail. Filtering silently here would make this the
+    same path: on a governed host a ref loses its grant and the operator has no
+    record of why the conductor now prompts. Same operation name so every
+    installer's withholds land in one feed, and the audit must never break an
+    install.
+
+    A helper rather than three copies because the copies are what drift: the
+    per-installer difference is ``source`` alone, and the three conductor specs'
+    tests pin that the emitted list is unchanged by the extraction.
+    """
+    granted: list[str] = []
+    withheld: list[str] = []
+    for ref in refs:
+        (granted if _may_auto_approve(ref) else withheld).append(ref)
+    if withheld:
+        try:
+            sel().log_api_access(
+                caller="system",
+                operation="mcp_auto_approve_withheld",
+                outcome="ok",
+                source=source,
+                resources=(
+                    f"{', '.join(withheld)} mounted without auto-approve "
+                    "(governance ceiling); calls go through the approval gate"
+                ),
+            )
+        except Exception:  # noqa: BLE001 — the audit must not break the install
+            logger.debug("SEL audit unavailable for withheld auto-approve", exc_info=True)
+    return granted
+
+
+def _conductor_mcp_servers(config: dict[str, Any], *, work: bool = False) -> dict[str, Any]:
+    """The narrowed ``mcpServers`` map every conductor spec carries.
+
+    ``kirocrew-core`` is inherited from ``build_agent_config``; ``kirocrew-dashboard``
+    is hand-built here because it is the opt-in per-agent set (folder +
+    session-control tools) that neither spec-writing loop emits, and a conductor
+    granting it IS the explicit per-agent assignment that set requires.
+
+    The two fields that are easy to forget are why this is a helper rather than
+    three copies: without ``"type": "registry"`` a registry-mode client silently
+    DROPS the entry, so the granted session-control tools never launch and the
+    conductor's whole dispatch/patrol purpose is dead with no local error; and
+    without the ``KIROCREW_HOME`` pin the shim reads the DEFAULT data home while the
+    gateway runs under an override, so session control would act on a different
+    session store than the one it reports on. Both helpers return empty on a
+    default install, so the emitted spec is unchanged there.
+
+    ``work`` mounts ``kirocrew-work``, and only ``kirocrew-ledger-conductor`` passes
+    it. It is a parameter rather than an unconditional entry because that is the
+    whole isolation this spec family rests on: the two shipped conductors must emit
+    the map they emitted before the work ledger existed.
+    """
+    mcp = config.get("mcpServers", {}) or {}
+    core_entry = mcp.get("kirocrew-core")
+    narrowed: dict[str, Any] = {}
+    if core_entry:
+        narrowed["kirocrew-core"] = core_entry
+    dash_cmd, dash_args = _kirocrew_mcp_invocation("mcp-dashboard")
+    dash_entry: dict[str, Any] = {"command": dash_cmd, "args": dash_args}
+    if _mcp_registry_mode():
+        dash_entry["type"] = _MCP_REGISTRY_TYPE
+    dash_env = _managed_mcp_env()
+    if dash_env:
+        dash_entry["env"] = dash_env
+    narrowed["kirocrew-dashboard"] = dash_entry
+    if work:
+        narrowed["kirocrew-work"] = _managed_opt_in_entry("mcp-work")
+    return narrowed
 
 
 def _install_conductor_agent() -> None:
@@ -5551,9 +5669,6 @@ def _install_conductor_agent() -> None:
         "tool_search",
         "@kirocrew-core",
         "@kirocrew-dashboard",
-        # Mounted whole, auto-approved verb by verb below: the worker half lives on
-        # this server too and answers a conductor only with a refusal.
-        "@kirocrew-work",
     ]
     # ``allowedTools`` is the ONE path that never reaches the PreToolUse gate, so
     # every grant is filtered through the governance ceiling first — the same
@@ -5562,8 +5677,6 @@ def _install_conductor_agent() -> None:
     # writer cannot re-open the bypass by restating a literal. A governed ref
     # stays MOUNTED (it is still in ``tools``); it just prompts, and the gate
     # then applies the ceiling's per-tool rule with the real arguments.
-    granted: list[str] = []
-    withheld: list[str] = []
     # ``tool_search`` is granted on the same rule as the dashboard verbs below:
     # it only READS a tool spec into context — it cannot act, touch workspace
     # state, or reach the machine — and it is bounded by the mounted catalog.
@@ -5573,63 +5686,17 @@ def _install_conductor_agent() -> None:
     # the reason recorded above it: ``allowedTools`` has no argument matching,
     # so trusting the two bundled scripts cannot be told apart from trusting
     # arbitrary shell.
-    for ref in (
-        "session",
-        "report",
-        "tool_search",
-        *_CONDUCTOR_CORE_GRANTS,
-        *_CONDUCTOR_DASHBOARD_GRANTS,
-        *_CONDUCTOR_WORK_GRANTS,
-    ):
-        (granted if _may_auto_approve(ref) else withheld).append(ref)
-    config["allowedTools"] = granted
-    if withheld:
-        # Withholding a grant is a permission DECISION, and every other writer of
-        # an ``allowedTools`` list emits this same event for it — see
-        # ``strip_ungoverned_auto_approve``, whose comment names a silent pop as
-        # the one withhold path with no audit trail. Filtering silently here would
-        # make this installer exactly that path: on a governed host a ref loses its
-        # grant and the operator has no record of why the conductor now prompts.
-        # Same operation name so it lands in one feed, and the audit must never
-        # break the install.
-        try:
-            sel().log_api_access(
-                caller="system",
-                operation="mcp_auto_approve_withheld",
-                outcome="ok",
-                source="_install_conductor_agent",
-                resources=(
-                    f"{', '.join(withheld)} mounted without auto-approve "
-                    "(governance ceiling); calls go through the approval gate"
-                ),
-            )
-        except Exception:  # noqa: BLE001 — the audit must not break the install
-            logger.debug("SEL audit unavailable for withheld auto-approve", exc_info=True)
-    mcp = config.get("mcpServers", {}) or {}
-    core_entry = mcp.get("kirocrew-core")
-    narrowed: dict = {}
-    if core_entry:
-        narrowed["kirocrew-core"] = core_entry
-    dash_cmd, dash_args = _kirocrew_mcp_invocation("mcp-dashboard")
-    dash_entry: dict[str, Any] = {"command": dash_cmd, "args": dash_args}
-    # Same managed-server metadata `build_agent_config` stamps on every entry it
-    # emits, and the reason this entry needs it spelled out is that it is the one
-    # server hand-built here rather than inherited: without `"type": "registry"`
-    # a registry-mode client silently DROPS the entry, so the conductor's
-    # session-control tools never launch and its whole dispatch/patrol purpose is
-    # dead with no local error; without the `KIROCREW_HOME` pin the shim reads the
-    # DEFAULT data home while the gateway runs under an override, so session
-    # control would act on a different session store than the one it reports on.
-    # Both helpers return empty on a default install, so the emitted spec is
-    # unchanged there.
-    if _mcp_registry_mode():
-        dash_entry["type"] = _MCP_REGISTRY_TYPE
-    dash_env = _managed_mcp_env()
-    if dash_env:
-        dash_entry["env"] = dash_env
-    narrowed["kirocrew-dashboard"] = dash_entry
-    narrowed["kirocrew-work"] = _managed_opt_in_entry("mcp-work")
-    config["mcpServers"] = narrowed
+    config["allowedTools"] = _filter_auto_approve(
+        (
+            "session",
+            "report",
+            "tool_search",
+            *_CONDUCTOR_CORE_GRANTS,
+            *_CONDUCTOR_DASHBOARD_GRANTS,
+        ),
+        source="_install_conductor_agent",
+    )
+    config["mcpServers"] = _conductor_mcp_servers(config)
     # Derive the KAS policy from the FILTERED grant list instead of restating it
     # as a literal: the rules come out byte-identical, a later edit to
     # ``allowedTools`` carries through, and a ceiling that strips a grant strips
@@ -5649,6 +5716,241 @@ def _install_conductor_agent() -> None:
     path = kiro_agents_dir_path() / _CONDUCTOR_AGENT_FILENAME
     _atomic_json_write(path, config)
     logger.info("Installed conductor agent config: %s", path)
+
+
+_LEDGER_CONDUCTOR_SYSTEM_PROMPT = """# Kiro Crew Ledger Conductor
+
+You are `kirocrew-ledger-conductor`. You own a long-horizon goal: you decompose it
+into work items, dispatch one top-level session per item, verify their results,
+and decide each next round until the goal is met or a stop condition fires.
+
+You differ from `kirocrew-conductor` in ONE thing, and everything below follows
+from it: **your workers report to you as structured data, not as a transcript you
+read.** The work ledger holds one record per item; a worker writes a
+schema-bounded status against the one item it was bound to, and you read that
+record.
+
+**You never do a work item's work yourself.** A file to write, a build to run, a
+fix to make — each one is a work item for a child session. You have no
+file-writing tool, and a work item never goes to `spawn_run`,
+`spawn_sub_agents`, `workflow_run` or `task_run`: it goes to a session you can
+dispatch, verify and report on.
+
+**Acceptance is the evaluator's verdict, never a worker's claim and never your
+reading of a transcript.** Shell access exists to run the
+`goal-ledger-conductor` skill's one bundled script, `scripts/accept_eval.py`.
+
+## Dispatch, in this order
+
+Per item, and the order is not a preference:
+
+1. `work_ledger_record` `action=create` with the item's `title` and its
+   `acceptance` condition. It returns the `item_id`.
+2. `session_create` with a title saying what the item is FOR, `folder` set to the
+   goal's folder, and **`agent` set explicitly**. It returns the worker's session
+   key.
+3. `work_ledger_record` `action=bind` with that `item_id` and
+   `worker_session_key`.
+4. `session_send` the seed prompt.
+
+**Bind before you seed.** A worker whose first call is `work_brief` while unbound
+gets `not_bound` and cannot tell an early call from a broken one. A bound item
+with no seed is visible in your own ledger and you can seed it next cycle; an
+unbound running worker is neither visible nor recoverable.
+
+### Which agent
+
+| the item | `agent` |
+|---|---|
+| a leaf — one assertable acceptance condition | `kirocrew-worker` |
+| decomposes into two or more independently acceptable sub-items | `kirocrew-ledger-conductor`, and only while `depth` allows it (capped at 2, so your children may conduct and your grandchildren may not) |
+| `select_crew` names a specialist crew that fits | that crew |
+
+A specialist crew that does not mount `@kirocrew-work` cannot report to the
+ledger. Dispatch it anyway when it is the right crew, and fall back to
+`session_read_message` for that one item — never for all of them.
+
+**Never leave `agent` unset.** An omitted `agent` inherits YOUR agent, not a
+global default — so the child comes up as a second ledger conductor, with no
+`fs_write`, and the item looks stalled rather than misconfigured. `select_crew`
+does not wire itself to `session_create` either: it returns a name and you pass
+it.
+
+## Patrol
+
+Arm a loop on your own session with `monitor_start`, carrying the cycle
+instructions AND the exit condition, then end the turn. A reply saying
+*requested* is success — do not retry it. If arming is refused outright, say no
+loop is running and drive that one round with `wait`. Call `autonudge_stop` when
+you stop. (The loop is on a timer today. When `monitor_start` accepts a
+`watch: "work-ledger"` field, gate on that instead and the quiet cycles stop
+costing a turn.)
+
+Each cycle, `work_ledger_read` FIRST. It returns every item, the derived
+`orphaned` and `stale` flags, the newest events, and a ready-to-pipe
+`accept_batch`. Then act by status, and only on three of them:
+
+- **`done`** — a CLAIM, never an acceptance. Filter the returned
+  `accept_batch` down to the items whose status is `done`, pipe THAT into
+  `accept_eval.py`, and record its answer with `work_ledger_record`
+  `action=verdict`. The batch carries every open item with a concrete
+  acceptance, `progress` ones included, and a stub that already exists is a
+  genuine `pass` on unfinished work — so the unfiltered batch would let you
+  close an item under its worker. Nothing a worker can write reaches
+  `verdict`; that is the point of asking.
+- **`blocked`** — an external dependency stopped the work. Yours to clear or to
+  re-plan around.
+- **`question`** — the worker needs a decision only you can make. Answer it with
+  `session_send`, and read the reply with `session_read_message`.
+- **`progress`** — informational. Do nothing.
+
+**A claimed `pr` is not an acceptance condition.** When a worker reports a pull
+request while the item's stored `acceptance` still holds a placeholder, the batch
+deliberately leaves that item out rather than reading the claim as the bar.
+Promote it yourself with `work_ledger_record` `action=accept`, then verify. A
+worker that could fill in its own acceptance could point it at anybody's green
+pull request.
+
+Use `session_read_message` for detail the record does not carry — a question's
+substance, a stall's shape. Never for a verdict.
+
+## Close
+
+`work_ledger_record` `action=close` with the item's `state` is what ends an item.
+Do not encode items into `session_ledger` artifacts: the ledger is the item
+store now, and `session_ledger_read` / `session_ledger_record` are for YOUR own
+`goal`, `phase` and `next`.
+
+## If a conductor dispatched you
+
+You may be a second-level conductor: a parent ledger conductor created an item
+for a goal that decomposes, and dispatched you onto it. Then you are also that
+item's WORKER, and your parent learns nothing from your ledger — it reads its own.
+So, in addition to everything above: call `work_brief` before you plan (its
+`title` and `acceptance` are your goal's definition of done, and its `decision`
+field is your parent's instruction); `work_report` `status: progress` when you
+dispatch or close a round; `question` when a decision is your parent's, not
+yours; `blocked` when an external dependency stops the whole goal; and `done`
+only when your own ledger shows every item accepted — with the evidence in
+`artifacts`. `work_brief` never prompts; `work_report` does, deliberately, so
+report at round boundaries, not on a timer, and the cost stays small. A root
+conductor gets `not_bound` from `work_brief` and knows it has no parent.
+
+Your tools:
+
+- The work ledger — `work_ledger_read` for your whole fleet as data,
+  `work_ledger_record` for the fields you own (`create`, `bind`, `decide`,
+  `accept`, `verdict`, `close`, `goal`); `work_brief` / `work_report` for your
+  OWN item when a parent conductor dispatched you.
+- Child sessions — `session_create`, `session_send`, `session_read_message`,
+  `session_stop`, `list_sessions`.
+- Keeping the goal's sessions together — `chat_folder_tree`,
+  `chat_folder_create`.
+- Your own state across rounds — `session_ledger_read`, `session_ledger_record`.
+- Patrol — `monitor_start`, `monitor_update`, `autonudge_stop`, `wait`.
+- Capacity, before standing up several sessions at once — `resource_status`.
+- Talking to the person — `ask_question` puts a decision that is not yours to
+  make to them as a card, after which you END your turn and their answer
+  arrives as the next message; `send_message` / `send_notification` to report.
+- Naming the right skill in a seed message — `skill_search`, `skill_fetch`.
+- Reading — `fs_read`, `web_fetch`.
+- `tool_search` loads a tool that is not in your list yet.
+
+The `goal-ledger-conductor` skill carries the operating procedure — the work-item
+tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
+acting on a goal. The user can message you at any time: apply goal changes at the
+round boundary, except a message that invalidates an in-flight item, which you
+handle immediately.
+
+{{VERBOSITY_BLOCK}}
+"""
+
+
+def _install_ledger_conductor_agent() -> None:
+    """Generate and install the kirocrew-ledger-conductor agent config.
+
+    ``_install_conductor_agent`` above with ONE addition — the ``kirocrew-work``
+    mount and the two conductor-half grants — and a prompt written for the
+    procedure that mount implies. Every property that installer's docstring
+    argues for is kept and is the reason this is a copy of it rather than of
+    anything else: derived from the kirocrew agent, **no file-writing tool at
+    all** (neither ``fs_write`` nor ``code``, which governance classes under
+    ``filesystem.write``), ``@kirocrew-core`` and ``@kirocrew-dashboard`` mounted
+    whole but auto-approved verb by verb, ``execute_bash`` mounted and never
+    auto-approved, and the KAS policy derived from the FILTERED grant list.
+
+    **Why this is a separate spec and not two lines on ``kirocrew-conductor``.**
+    The two grants shipped there first, and that made every existing conductor
+    user an opt-in to a procedure nobody asked them about: the ledger flow
+    inverts the dispatch order (bind before seed, where the shipped skill seeds
+    before it records) and replaces the patrol cycle (a ledger read instead of a
+    transcript read). A shipped agent silently gaining tools that only make
+    sense under a different procedure is a change to its charter. So the flow
+    lives here, ``kirocrew-conductor`` emits the spec it emitted before, and
+    whether the two ever merge is a decision to make after this one has run end
+    to end — see the rollout note in the work-ledger RFC.
+
+    The worker half of ``kirocrew-work`` is mounted (it is one server), and of
+    its two verbs only ``work_brief`` is granted — it reads the caller's own item
+    or answers ``not_bound``, and it is a second-level conductor's mandated first
+    call. ``work_report`` is NOT granted: it writes into the parent's record across
+    a dispatch relationship, and the approval gate is the correct cost for that.
+    """
+    config = build_agent_config()
+    config["name"] = "kirocrew-ledger-conductor"
+    config["description"] = (
+        "Owns a long-horizon goal and tracks it in the work ledger: decomposes "
+        "it into items, dispatches one session per item, reads their reported "
+        "status as data rather than as a transcript, verifies claims with the "
+        "acceptance evaluator, and decides each next round. Never does the work "
+        "itself."
+    )
+    config["prompt"] = _LEDGER_CONDUCTOR_SYSTEM_PROMPT
+    config["tools"] = [
+        "execute_bash",
+        "fs_read",
+        # Same set, and the same omissions, as ``_install_conductor_agent``:
+        # no ``web_search``, no ``grep``/``glob``, and above all no ``code`` —
+        # governance classes it under ``filesystem.write``, so mounting it would
+        # make this spec's whole no-write property false.
+        "web_fetch",
+        "session",
+        "report",
+        "tool_search",
+        "@kirocrew-core",
+        "@kirocrew-dashboard",
+        # Mounted whole, auto-approved verb by verb below: the worker half lives
+        # on this server too and answers a conductor only with a refusal.
+        "@kirocrew-work",
+    ]
+    config["allowedTools"] = _filter_auto_approve(
+        (
+            "session",
+            "report",
+            "tool_search",
+            *_CONDUCTOR_CORE_GRANTS,
+            *_CONDUCTOR_DASHBOARD_GRANTS,
+            *_LEDGER_CONDUCTOR_WORK_GRANTS,
+        ),
+        source="_install_ledger_conductor_agent",
+    )
+    config["mcpServers"] = _conductor_mcp_servers(config, work=True)
+    # Derived from the FILTERED grant list, like both siblings, so a ceiling that
+    # strips a grant strips its KAS rule with it. Routed through the agent-sdk
+    # boundary: ``drivers.acp`` is the one layer permitted to import
+    # ``kiro_crew.acp``, and agent.py's direct-import count is a shrink-only
+    # baseline that must not grow.
+    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
+        derived_agent_permissions,
+    )
+
+    config["permissions"] = derived_agent_permissions(
+        config["allowedTools"], _LEDGER_CONDUCTOR_AGENT_FILENAME
+    )
+    kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = kiro_agents_dir_path() / _LEDGER_CONDUCTOR_AGENT_FILENAME
+    _atomic_json_write(path, config)
+    logger.info("Installed ledger-conductor agent config: %s", path)
 
 
 _PIPELINE_CONDUCTOR_SYSTEM_PROMPT = """# Kiro Crew Pipeline Conductor
@@ -5949,58 +6251,18 @@ def _install_pipeline_conductor_agent() -> None:
         "tool_search",
         "@kirocrew-core",
         "@kirocrew-dashboard",
-        "@kirocrew-work",
     ]
-    granted: list[str] = []
-    withheld: list[str] = []
-    for ref in (
-        "session",
-        "report",
-        "tool_search",
-        *_PIPELINE_CONDUCTOR_CORE_GRANTS,
-        *_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS,
-        # Same two per-tool grants as the goal conductor, in the same per-tool
-        # style this installer already uses: missing them is a silent approval
-        # prompt on every patrol cycle rather than an error.
-        *_CONDUCTOR_WORK_GRANTS,
-    ):
-        (granted if _may_auto_approve(ref) else withheld).append(ref)
-    config["allowedTools"] = granted
-    if withheld:
-        # Same audit contract as every other ``allowedTools`` writer: a
-        # withheld grant is a permission decision and must leave a record.
-        try:
-            sel().log_api_access(
-                caller="system",
-                operation="mcp_auto_approve_withheld",
-                outcome="ok",
-                source="_install_pipeline_conductor_agent",
-                resources=(
-                    f"{', '.join(withheld)} mounted without auto-approve "
-                    "(governance ceiling); calls go through the approval gate"
-                ),
-            )
-        except Exception:  # noqa: BLE001 — the audit must not break the install
-            logger.debug("SEL audit unavailable for withheld auto-approve", exc_info=True)
-    mcp = config.get("mcpServers", {}) or {}
-    core_entry = mcp.get("kirocrew-core")
-    narrowed: dict = {}
-    if core_entry:
-        narrowed["kirocrew-core"] = core_entry
-    dash_cmd, dash_args = _kirocrew_mcp_invocation("mcp-dashboard")
-    dash_entry: dict[str, Any] = {"command": dash_cmd, "args": dash_args}
-    # Same managed-server metadata as the conductor's hand-built entry, for the
-    # same two failure modes: a registry-mode client silently DROPS an entry
-    # with no ``type``, and without the data-home pin the shim reads the
-    # DEFAULT home while the gateway runs under an override.
-    if _mcp_registry_mode():
-        dash_entry["type"] = _MCP_REGISTRY_TYPE
-    dash_env = _managed_mcp_env()
-    if dash_env:
-        dash_entry["env"] = dash_env
-    narrowed["kirocrew-dashboard"] = dash_entry
-    narrowed["kirocrew-work"] = _managed_opt_in_entry("mcp-work")
-    config["mcpServers"] = narrowed
+    config["allowedTools"] = _filter_auto_approve(
+        (
+            "session",
+            "report",
+            "tool_search",
+            *_PIPELINE_CONDUCTOR_CORE_GRANTS,
+            *_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS,
+        ),
+        source="_install_pipeline_conductor_agent",
+    )
+    config["mcpServers"] = _conductor_mcp_servers(config)
     # Same derive-don't-restate rationale as the conductor above, but routed
     # through the agent-sdk boundary: ``drivers.acp`` is the one layer permitted
     # to import ``kiro_crew.acp``, and agent.py's direct-import count is a

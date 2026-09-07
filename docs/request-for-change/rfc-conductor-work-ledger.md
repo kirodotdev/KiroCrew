@@ -1,7 +1,7 @@
 ---
 title: Conductor work ledger — workers report structured data, not prompts
 status: draft
-revision: v2
+revision: v2.1
 author: kirocrew agent session, directed by zejiangg
 created: 2026-09-05
 last-audited: 2026-09-06
@@ -514,6 +514,55 @@ The one breaking step is Phase 4's deletion of `ledger_entry.py`, and it breaks 
 **Poll harder.** A shorter interval. Rejected: it multiplies the per-cycle turn cost by exactly the factor it divides the latency by, and it does not make a stalled worker distinguishable.
 
 **Let the worker write files directly.** Rejected: it puts path construction in the model's hands, loses the server-side identity resolution that makes impersonation impossible, and gives the Crew page no endpoint to read.
+
+## Rollout note (v2.1)
+
+Phase 2 landed the four tools, the routes and the `kirocrew-worker` spec, and it also
+mounted `kirocrew-work` on `kirocrew-conductor` and `kirocrew-pipeline-conductor` as
+§Agent spec changes above specifies. **That part is retracted.** Both shipped
+conductors emit the spec they emitted before Phase 2, and the flow lives on a new
+`kirocrew-ledger-conductor` spec with its own `goal-ledger-conductor` skill.
+
+The reason is not a defect in the tools. It is that the two grants alone do not
+describe the change: the ledger flow **inverts the dispatch order** (`create` →
+`session_create` → `bind` → seed, where `goal-conductor/SKILL.md` seeds before it
+records) and **replaces the patrol cycle** (one `work_ledger_read` instead of a
+per-item transcript read with a stored cursor). Mounting the tools on a shipped
+agent therefore hands its users a different procedure under the same name — an
+opt-in nobody chose, on the agent most likely to be mid-goal when it is upgraded.
+An agent's tool surface is part of its charter, not an additive detail.
+
+What isolation costs, stated plainly: one more spec in the roster, one more skill in
+the tree, and `goal-conductor` frozen against the improvements the ledger makes
+possible. What it buys is that Phase 3 and Phase 4 can land without any existing
+conductor session changing behaviour, and that a defect in the flow is contained to
+users who asked for it.
+
+**Merge criteria.** The two agents fold back into one — `kirocrew-ledger-conductor`
+retired, `kirocrew-work` restored on `kirocrew-conductor`, `goal-conductor/SKILL.md`
+rewritten to the ledger procedure and `ledger_entry.py` deleted — when BOTH hold:
+
+1. A real multi-item goal has run end to end on `kirocrew-ledger-conductor`: items
+   created, bound, seeded, reported, verified through `accept_eval.py` and closed,
+   including at least one `blocked` or `question` and one second-level conductor.
+2. Phase 3's `watch: "work-ledger"` gate is merged, so the patrol loop no longer
+   pays a turn per quiet interval. Until it is, the ledger conductor's cycle cost is
+   the timer's, which is the one respect in which it is not yet better than the
+   agent it would replace.
+
+**What "retired" means for the name.** `kirocrew-ledger-conductor` is a public,
+user-referenceable agent name the moment it ships — in `session_create`'s `agent`,
+in cron jobs, in crew bindings. Retiring it does not delete it: the fold-back keeps
+`kirocrew-ledger-conductor.json` installed as an alias spec whose prompt and grants
+are identical to the merged `kirocrew-conductor`, for at least one minor release,
+with a deprecation line in the release notes and a `kirocrew doctor` notice for any
+config that still names it. Deleting the alias is a separate, later change with its
+own notes. A conductor dispatching onto the old name during that window gets the
+merged agent, not a `Mode not found` failure.
+
+Until then Phase 4's `goal-conductor/SKILL.md` rewrite and its deletion of
+`ledger_entry.py` are **out of scope**: that skill and that codec stay exactly as
+they are, because they are what the un-migrated conductor runs on.
 
 ## Open questions
 
