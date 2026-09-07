@@ -996,6 +996,10 @@ class _GitStub:
             return subprocess.CompletedProcess(argv, self.rc.get("reset", 0), "", "dirty")
         if argv[0] == "kiro-cli":
             return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[1:] == ["-I", "-X", "utf8", "-c", "import kiro_crew"]:
+            # The full-reinstall success contract probes the target interpreter
+            # in isolation from the caller's CWD and PYTHONPATH.
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
         if "pip" in argv:
             # BYTES, like the real call: the install captures without text=True so
             # a non-UTF-8 console cannot make pip's own error message undecodable.
@@ -1036,6 +1040,12 @@ def git_checkout(monkeypatch, tmp_path):
     # they assert. `kirocrew update`'s own substitute behaviour is covered in
     # test/test_dep_sync.py.
     monkeypatch.setattr(cli_server.dep_sync, "locked_console_scripts", lambda target: [])
+    # A successful fake pip install must satisfy the shared artifact postcondition.
+    # The test interpreter is a real executable on every supported platform;
+    # dep_sync's own tests cover the path calculation and missing-script failure.
+    monkeypatch.setattr(
+        cli_server.dep_sync, "console_script_path", lambda target: Path(sys.executable)
+    )
     # And the foreign-venv guard, which now runs before either install branch.
     # Its probe RUNS the target interpreter, which _GitStub intercepts into an
     # empty answer — read as "cannot be shown to serve this checkout" and refused.

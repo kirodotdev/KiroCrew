@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -810,6 +811,50 @@ class TestShutdown:
         assert task.cancelled()
 
     @pytest.mark.asyncio
+    async def test_shutdown_cancels_and_reaps_console_script_repair(self, tmp_path):
+        """Shutdown owns the repair task, not only its direct cancellation path."""
+        (tmp_path / ".install-method").write_text("pip")
+        venv_py = gw.dep_sync.project_venv_python(tmp_path)
+        venv_py.parent.mkdir(parents=True)
+        started = asyncio.Event()
+        never = asyncio.Event()
+        proc = _fake_async_proc()
+
+        async def _communicate():
+            started.set()
+            await never.wait()
+            return b"", b""
+
+        proc.communicate = AsyncMock(side_effect=_communicate)
+        orch = _make_orchestrator()
+
+        async def fake_prepare(cmd, **kwargs):
+            return list(cmd), {}, None
+
+        with (
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False),
+            patch.object(gw, "sandboxed_spawn_argv_async", side_effect=fake_prepare),
+            patch.object(
+                gw,
+                "create_subprocess_limited",
+                new_callable=AsyncMock,
+                return_value=proc,
+            ),
+            patch.object(orch, "_kill_startup_child", new_callable=AsyncMock) as kill,
+            patch.object(orch, "_reap_startup_child", new_callable=AsyncMock) as reap,
+        ):
+            repair_task = orch._schedule_console_script_repair()
+            await asyncio.wait_for(started.wait(), timeout=1)
+            await orch._shutdown()
+            await asyncio.sleep(0)
+
+        assert repair_task.cancelled()
+        kill.assert_awaited_once_with(proc)
+        reap.assert_awaited_once_with(proc)
+        assert orch._console_script_repair_task is None
+        assert repair_task not in orch._background_tasks
+
+    @pytest.mark.asyncio
     async def test_shutdown_disarms_watchdog_before_reaping(self):
         # The loop-stall watchdog's armed dump-then-exit timer MUST be cancelled
         # at the very start of shutdown — before close_all()/cancel_all() trigger
@@ -1065,6 +1110,272 @@ class TestBrazilInstallAndDeps:
                     GatewayOrchestrator, "_is_brazil_install", return_value=True
                 ):
                     asyncio.run(orch._check_missing_deps())  # should not raise, skips pip
+
+    # --- _check_console_script -------------------------------------------------
+
+    def test_check_console_script_skips_when_no_project_dir(self):
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": ""}, clear=False):
+            with patch.object(gw, "sandboxed_spawn_argv_async", new_callable=AsyncMock) as spawn:
+                asyncio.run(orch._check_console_script())
+        spawn.assert_not_awaited()
+
+    def test_check_console_script_skips_brazil(self, tmp_path):
+        (tmp_path / ".install-method").write_text("brazil")
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch.object(gw, "sandboxed_spawn_argv_async", new_callable=AsyncMock) as spawn:
+                asyncio.run(orch._check_console_script())
+        spawn.assert_not_awaited()
+
+    def test_check_console_script_skips_non_pip(self, tmp_path):
+        # No .install-method (or a non-pip one) means this is not a pip install.
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch.object(GatewayOrchestrator, "_is_brazil_install", return_value=False):
+                with patch.object(gw, "sandboxed_spawn_argv_async", new_callable=AsyncMock) as spawn:
+                    asyncio.run(orch._check_console_script())
+        spawn.assert_not_awaited()
+
+    def test_check_console_script_skips_when_script_present_and_executable(self, tmp_path):
+        (tmp_path / ".install-method").write_text("pip")
+        venv_py = gw.dep_sync.project_venv_python(tmp_path)
+        script = gw.dep_sync.console_script_path(venv_py)
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+        orch = _make_orchestrator()
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch.object(gw, "sandboxed_spawn_argv_async", new_callable=AsyncMock) as spawn:
+                asyncio.run(orch._check_console_script())
+        spawn.assert_not_awaited()
+
+    def test_check_console_script_reinstalls_when_missing(self, tmp_path):
+        (tmp_path / ".install-method").write_text("pip")
+        venv_py = gw.dep_sync.project_venv_python(tmp_path)
+        # The interpreter directory exists but the entry point is absent.
+        venv_py.parent.mkdir(parents=True)
+        proc = _fake_async_proc()
+        orch = _make_orchestrator()
+        seen = {}
+
+        async def fake_prepare(cmd, **kwargs):
+            seen["argv"] = list(cmd)
+            seen["kwargs"] = kwargs
+            return list(cmd), {"SCRUBBED": "1"}, None
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch.object(gw, "sandboxed_spawn_argv_async", side_effect=fake_prepare):
+                with patch.object(
+                    gw,
+                    "create_subprocess_limited",
+                    new_callable=AsyncMock,
+                    return_value=proc,
+                ) as spawn:
+                    asyncio.run(orch._check_console_script())
+
+        # The dep_sync argv is asserted at the sandbox seam's input, which is
+        # where it is now composed.
+        assert seen["argv"] == [
+            sys.executable,
+            str(Path(gw.dep_sync.__file__).resolve()),
+            "--repair-missing-package",
+            str(tmp_path),
+            str(venv_py),
+        ]
+        spawn.assert_awaited_once()
+        assert spawn.await_args.args == tuple(seen["argv"])
+        assert spawn.await_args.kwargs["cwd"] == str(tmp_path)
+        assert spawn.await_args.kwargs["env"] == {"SCRUBBED": "1"}
+        assert spawn.await_args.kwargs["start_new_session"] is gw.platform_compat.IS_POSIX
+
+    def test_check_console_script_reinstalls_on_dangling_symlink(self, tmp_path):
+        (tmp_path / ".install-method").write_text("pip")
+        venv_py = gw.dep_sync.project_venv_python(tmp_path)
+        script = gw.dep_sync.console_script_path(venv_py)
+        script.parent.mkdir(parents=True)
+        # Dangling symlink: exists() is False, so the reinstall must fire.
+        try:
+            script.symlink_to(tmp_path / "does-not-exist")
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+        proc = _fake_async_proc()
+        orch = _make_orchestrator()
+
+        async def fake_prepare(cmd, **kwargs):
+            return list(cmd), {}, None
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch.object(gw, "sandboxed_spawn_argv_async", side_effect=fake_prepare):
+                with patch.object(
+                    gw,
+                    "create_subprocess_limited",
+                    new_callable=AsyncMock,
+                    return_value=proc,
+                ) as spawn:
+                    asyncio.run(orch._check_console_script())
+        spawn.assert_awaited_once()
+
+    def test_check_console_script_skipped_when_sandbox_unavailable(self, tmp_path):
+        """Fail CLOSED: no sandbox backend means the repair does NOT run.
+
+        Running the project's own venv interpreter unsandboxed is the exposure
+        the routing removes, so an unavailable sandbox must skip the repair
+        rather than fall back to a bare spawn.
+        """
+        (tmp_path / ".install-method").write_text("pip")
+        venv_py = gw.dep_sync.project_venv_python(tmp_path)
+        venv_py.parent.mkdir(parents=True)
+        orch = _make_orchestrator()
+        unavailable = gw.SandboxUnavailableError(
+            "no sandbox backend",
+            "no_backend",
+            "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)",
+        )
+
+        with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False):
+            with patch.object(
+                gw,
+                "sandboxed_spawn_argv_async",
+                side_effect=unavailable,
+            ):
+                with patch.object(
+                    gw, "create_subprocess_limited", new_callable=AsyncMock
+                ) as spawn:
+                    with patch.object(gw.logger, "error") as log_error:
+                        asyncio.run(orch._check_console_script())
+
+        spawn.assert_not_awaited()
+        # The skip must name the machine-readable reason, not just that it
+        # skipped -- an undiagnosable failure is the class #8409 is about.
+        logged = log_error.call_args.args
+        assert "no_backend" in logged
+        assert any("EPERM" in str(part) for part in logged)
+
+    @pytest.mark.asyncio
+    async def test_check_console_script_cancellation_kills_and_reaps_child(self, tmp_path):
+        """Gateway shutdown must not leave dep_sync or its pip descendants running."""
+        (tmp_path / ".install-method").write_text("pip")
+        venv_py = gw.dep_sync.project_venv_python(tmp_path)
+        venv_py.parent.mkdir(parents=True)
+        started = asyncio.Event()
+        never = asyncio.Event()
+        proc = _fake_async_proc()
+
+        async def _communicate():
+            started.set()
+            await never.wait()
+            return b"", b""
+
+        proc.communicate = AsyncMock(side_effect=_communicate)
+        orch = _make_orchestrator()
+        cleanup = tmp_path / "launcher-profile"
+        cleanup.write_text("")
+
+        async def fake_prepare(cmd, **kwargs):
+            return list(cmd), {}, str(cleanup)
+
+        with (
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False),
+            patch.object(gw, "sandboxed_spawn_argv_async", side_effect=fake_prepare),
+            patch.object(
+                gw,
+                "create_subprocess_limited",
+                new_callable=AsyncMock,
+                return_value=proc,
+            ),
+            patch.object(orch, "_kill_startup_child", new_callable=AsyncMock) as kill,
+            patch.object(orch, "_reap_startup_child", new_callable=AsyncMock) as reap,
+        ):
+            task = asyncio.create_task(orch._check_console_script())
+            await asyncio.wait_for(started.wait(), timeout=1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        kill.assert_awaited_once_with(proc)
+        reap.assert_awaited_once_with(proc)
+        # The sandbox launcher temp file must not leak, even on cancellation.
+        assert not cleanup.exists()
+
+    @pytest.mark.asyncio
+    async def test_check_console_script_is_sandbox_routed_and_limited(self, tmp_path):
+        """The repair spawn MUST route through the sandbox chokepoint.
+
+        The child EXECUTES the project's own venv interpreter (dep_sync probes
+        it), so it must get OS isolation, a scrubbed env, and the kernel
+        resource ceiling. Reverting to a bare ``asyncio.create_subprocess_exec``
+        fails this two ways: the seams below are never awaited, and the poisoned
+        ``create_subprocess_exec`` raises the moment the old path touches it.
+        """
+        (tmp_path / ".install-method").write_text("pip")
+        venv_py = gw.dep_sync.project_venv_python(tmp_path)
+        venv_py.parent.mkdir(parents=True)
+        proc = _fake_async_proc()
+        orch = _make_orchestrator()
+        prepared = {}
+
+        async def fake_prepare(cmd, **kwargs):
+            prepared["argv"] = list(cmd)
+            prepared["kwargs"] = kwargs
+            return list(cmd), {"SCRUBBED": "1"}, None
+
+        def _boom(*args, **kwargs):  # a revert to the bare exec path lands here
+            raise AssertionError("bare asyncio.create_subprocess_exec is forbidden")
+
+        with (
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": str(tmp_path)}, clear=False),
+            patch.object(gw, "sandboxed_spawn_argv_async", side_effect=fake_prepare) as prep,
+            patch.object(
+                gw,
+                "create_subprocess_limited",
+                new_callable=AsyncMock,
+                return_value=proc,
+            ) as limited,
+            patch("asyncio.create_subprocess_exec", side_effect=_boom),
+        ):
+            await orch._check_console_script()
+
+        # Routed through the chokepoint, with the real synchronous preparer.
+        prep.assert_awaited_once()
+        assert prepared["kwargs"]["_prepare"] is gw.sandboxed_spawn_argv
+        # Keeps the project/venv writable so pip can rewrite the entry point,
+        # and refuses to leak our interpreter paths into the child's probe.
+        assert prepared["kwargs"]["mode"] == "strict"
+        assert prepared["kwargs"]["strip_python_env"] is True
+        # Spawned via the resource-limited launcher with the scrubbed env.
+        limited.assert_awaited_once()
+        assert limited.await_args.kwargs["env"] == {"SCRUBBED": "1"}
+        assert limited.await_args.kwargs["start_new_session"] is gw.platform_compat.IS_POSIX
+
+    @pytest.mark.asyncio
+    async def test_console_script_repair_task_is_tracked_without_blocking(self):
+        orch = _make_orchestrator()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _repair():
+            started.set()
+            await release.wait()
+
+        with patch.object(orch, "_check_console_script", side_effect=_repair):
+            task = orch._schedule_console_script_repair()
+            await asyncio.wait_for(started.wait(), timeout=1)
+            assert task in orch._background_tasks
+            assert not task.done()
+            release.set()
+            await task
+            await asyncio.sleep(0)
+
+        assert task not in orch._background_tasks
+        assert orch._console_script_repair_task is None
+
+    def test_console_script_repair_is_scheduled_only_after_http_bind(self):
+        """The potentially 300-second repair must never gate socket readiness."""
+        source = inspect.getsource(GatewayOrchestrator.run)
+        scheduled = source.index("self._schedule_console_script_repair()")
+        assert source.index("await self._init_dashboard()") < scheduled
+        assert source.index("await self._init_api_server()") < scheduled
 
 
 # ═══════════════════════════════════════════════════════════════════════════

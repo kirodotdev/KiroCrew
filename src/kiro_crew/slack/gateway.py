@@ -262,7 +262,14 @@ from kiro_crew.platform.update_governance import (
 )
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
-from kiro_crew.sandbox import ensure_agents_slice_limits, warm_backend
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    create_subprocess_limited,
+    ensure_agents_slice_limits,
+    sandboxed_spawn_argv,
+    sandboxed_spawn_argv_async,
+    warm_backend,
+)
 from kiro_crew.security import (
     redact,
     redact_and_truncate,
@@ -1743,6 +1750,10 @@ class GatewayOrchestrator:
         self.channel_history: ChannelHistory | None = None
         self.dashboard_state: DashboardState | None = None
         self._background_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
+        # Dedicated ownership for the repair's dep_sync/pip process tree. The
+        # general set only prevents task GC; shutdown must cancel and await this
+        # task so _check_console_script can kill and reap its child group.
+        self._console_script_repair_task: "asyncio.Task[None] | None" = None
         self._marker_write_task: "asyncio.Task[None] | None" = None
         # Set by the shutdown path when the marker write is still in flight:
         # tells the writer thread to self-clear after publishing, closing the
@@ -2493,6 +2504,163 @@ class GatewayOrchestrator:
             dep_err, _ = redact_exfiltration_urls(dep_err)
             dep_err, _ = redact_credentials(dep_err)
             logger.error("Dep repair failed: %s", dep_err[:500])
+
+    async def _check_console_script(self) -> None:
+        """Repair a venv whose ``kirocrew`` console script went missing.
+
+        ``_check_missing_deps`` catches a git-reset-without-pip-install that left
+        an import missing, but not the failure mode where an interrupted venv
+        rebuild (e.g. a Python-version bump that reran ``python -m venv`` + a
+        killed ``pip install -e``) leaves a venv with a working interpreter but
+        no ``kirocrew`` entry point — the gateway then dies later with an
+        exit-127 "binary not found". This closes that gap at startup: if the
+        recorded pip install has no executable console script, run the same
+        in-place editable reinstall ``dep_sync`` uses, which is the one operation
+        that rewrites the entry point.
+
+        Scoped to pip installs of a real project dir: a Brazil install owns its
+        own entry point, and an empty ``KIROCREW_PROJECT_DIR`` means there is no
+        checkout to reinstall from.
+        """
+        proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+        if not proj or self._is_brazil_install(proj):
+            return
+        method_file = Path(proj) / ".install-method"
+        if not (method_file.is_file() and method_file.read_text().strip() == "pip"):
+            return
+        # The venv interpreter under the project, platform-aware (Scripts on
+        # Windows, bin on POSIX), shared with dep_sync's ownership exception.
+        venv_py = dep_sync.project_venv_python(Path(proj))
+        script = dep_sync.console_script_path(venv_py)
+        if script.exists() and os.access(script, os.X_OK):
+            return
+
+        logger.warning(
+            "kirocrew console script missing/not executable at %s — reinstalling", script
+        )
+        print("👻 Repairing kirocrew install (console script missing)…")
+        # Run the stdlib-only module by absolute file path: the target venv may
+        # not currently contain an importable kiro_crew package. A dedicated
+        # child session lets cancellation own pip and its build descendants.
+        dep_sync_file = dep_sync.__file__
+        if dep_sync_file is None:
+            raise RuntimeError("dep_sync module has no source path")
+        # Route through the sandbox chokepoint: this child EXECUTES
+        # ``venv_py`` (dep_sync probes the target interpreter via
+        # ``installed_package_origin``), and that interpreter lives in the
+        # project checkout, so its bytes are not ours to trust. The sandbox
+        # gives the whole repair subtree filesystem isolation plus a
+        # credential-scrubbed env, and ``create_subprocess_limited`` adds the
+        # kernel resource ceiling. ``mode="strict"`` hides the credential dirs
+        # AND ``.ssh`` while the untrusted interpreter runs -- the tightest
+        # tier, chosen because the child executes bytes we do not trust. It
+        # still leaves the project and its venv writable (pip must rewrite the
+        # entry point) and the network open (pip must reach the index);
+        # ``scrub_env`` is mode-independent, so ``PIP_INDEX_URL`` / proxy / SSL
+        # vars survive. ``strip_python_env`` stops an inherited PYTHONPATH from
+        # satisfying the child's import probe from outside the venv. No
+        # ``extra_writable_dirs``: the project is already writable, and a
+        # carve-out outside the sealed runtime parent would be refused anyway.
+        try:
+            argv, env, cleanup = await sandboxed_spawn_argv_async(
+                [
+                    sys.executable,
+                    str(Path(dep_sync_file).resolve()),
+                    "--repair-missing-package",
+                    str(proj),
+                    str(venv_py),
+                ],
+                mode="strict",
+                env=os.environ.copy(),
+                strip_python_env=True,
+                _prepare=sandboxed_spawn_argv,
+            )
+        except SandboxUnavailableError as exc:
+            # Fail CLOSED. Running an untrusted interpreter unsandboxed is the
+            # exposure this routing exists to remove, so a host with no sandbox
+            # backend does not get the repair -- it gets a named reason instead
+            # of a silent no-op, leaving the pre-existing manual path. The typed
+            # ``kind``/``detail`` are logged rather than an inferred English
+            # guess: this PR exists to make this failure class diagnosable.
+            print("❌ kirocrew reinstall skipped (no sandbox available) — run: kirocrew update")
+            logger.error(
+                "Console-script repair skipped: sandbox unavailable (kind=%s): %s — "
+                "refusing to run the project venv interpreter unsandboxed",
+                exc.kind,
+                exc.detail,
+            )
+            return
+        try:
+            proc = await create_subprocess_limited(
+                *argv,
+                cwd=proj,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=platform_compat.IS_POSIX,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=self._DEP_INSTALL_TIMEOUT_SECS
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                await self._kill_startup_child(proc)
+                await self._reap_startup_child(proc)
+                print("❌ kirocrew reinstall timed out — run manually: kirocrew update")
+                logger.error(
+                    "Console-script reinstall timed out after %.0fs",
+                    self._DEP_INSTALL_TIMEOUT_SECS,
+                )
+                return
+            except asyncio.CancelledError:
+                await self._kill_startup_child(proc)
+                await self._reap_startup_child(proc)
+                raise
+        finally:
+            if cleanup:
+                Path(cleanup).unlink(missing_ok=True)
+
+        if proc.returncode != 0:
+            detail = b"\n".join(part for part in (stdout, stderr) if part).decode(
+                "utf-8", errors="replace"
+            )
+            detail, _ = redact_exfiltration_urls(detail)
+            detail, _ = redact_credentials(detail)
+            print("❌ kirocrew reinstall failed — run manually: kirocrew update")
+            logger.error("Console-script reinstall failed: %s", detail[:500])
+        else:
+            print("✅ kirocrew console script restored")
+
+    def _schedule_console_script_repair(self) -> asyncio.Task[None]:
+        """Run the console-script repair after the HTTP socket has bound.
+
+        The healthy path is a few filesystem probes, but repair can spend the
+        full pip timeout in its owned child process. Keep a strong reference so
+        the task is observable and shutdown cancellation reaches that child.
+        """
+        existing = self._console_script_repair_task
+        if existing is not None and not existing.done():
+            return existing
+
+        async def _repair() -> None:
+            try:
+                await self._check_console_script()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Console-script check failed", exc_info=True)
+
+        task = asyncio.create_task(_repair())
+        self._console_script_repair_task = task
+        self._background_tasks.add(task)
+
+        def _clear(done: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done)
+            if self._console_script_repair_task is done:
+                self._console_script_repair_task = None
+
+        task.add_done_callback(_clear)
+        return task
 
     # ------------------------------------------------------------------
     # Service initialisation
@@ -9327,6 +9495,15 @@ class GatewayOrchestrator:
                 logger.debug("Dashboard slot save before shutdown failed", exc_info=True)
             self.dashboard_state.file_indexes.stop_all()
 
+        # The general _background_tasks set is retention, not lifecycle ownership.
+        # This task can own a dep_sync child plus pip/build descendants, so cancel
+        # and await it explicitly while _check_console_script still has a live loop
+        # on which to kill the process tree and perform its bounded reap.
+        repair_task = self._console_script_repair_task
+        if repair_task is not None and not repair_task.done():
+            repair_task.cancel()
+            await asyncio.gather(repair_task, return_exceptions=True)
+
         # Cancel in-flight handler tasks
         for t in list(self._handler_tasks):
             t.cancel()
@@ -10965,6 +11142,12 @@ class GatewayOrchestrator:
             self._init_crew()
         else:
             await self._init_api_server()
+
+        # The dashboard/API socket is bound now. A missing wrapper can take the
+        # full pip timeout to repair, so track that work without delaying READY.
+        # The task itself catches and logs failures; startup remains available.
+        self._schedule_console_script_repair()
+
         # Record this gateway's own kirocrew launcher, keyed by the port it
         # serves, so a remote token-mint execs THIS install's venv instead of
         # a stale ~/.local/bin/kirocrew that may point at an uninstalled
