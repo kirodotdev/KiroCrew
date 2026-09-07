@@ -5142,40 +5142,95 @@ class TestIsSensitiveBashCommand:
         assert is_sensitive_bash_command("cd ~ && cat .aws/credentials") is not None
 
     def test_chained_cd_expansions_do_not_blow_up_the_gate(self) -> None:
-        """A chain of `cd ${D:-x}` segments must not grow the tracked base set
-        without bound -- each segment can multiply it, so the gate would hang.
+        """A chain of `cd ${D:-x}` segments must not multiply the gate's work.
 
-        This used to assert ``elapsed < 30s`` around the real gate. That couples
-        an algorithmic-boundedness property to filesystem I/O: every base the
-        chain produces is probed by ``is_sensitive_path`` /
-        ``_dir_holds_sensitive_leaf`` / ``_resolved_forms_bounded``, and at the
-        cap that is ~50 probes per segment, ~1000 for this chain. On a loaded
-        Windows runner those probes took 144s and pytest-timeout killed the xdist
-        worker (conventions doc, "5. Absolute time budgets"). With the probes
-        stubbed the same chain runs in ~50ms, so the time was never the
-        algorithm. Assert the property directly instead: the number of DISTINCT
-        bases the gate resolves per segment is capped, so probe counts grow
-        LINEARLY with the chain length rather than doubling per segment.
+        Two earlier shapes of this test are gone, each for its own reason. The
+        first asserted ``elapsed < 30s`` around the real gate, which couples an
+        algorithmic property to filesystem I/O: on a loaded Windows runner those
+        probes took 144s and pytest-timeout killed the xdist worker (conventions
+        doc, "5. Absolute time budgets"). The second replaced the clock with a
+        CAP on a tracked base-directory set -- the gate WALKED the chain, each
+        ``${D:-x}`` had two readings so the set doubled per segment, and every
+        base was probed by ``_dir_holds_sensitive_leaf``. #9089 removed the walk
+        and with it ``_dir_holds_sensitive_leaf``, ``_remember_bases`` and
+        ``_MAX_TRACKED_BASES``, so that shape mock-patched a deleted attribute
+        and errored: there is no longer a set to cap.
+
+        Asserted here against the mechanism that SURVIVED, which is
+        `_check_native_home_entry_then_fenced_read` -- one linear scan of the
+        command's words for a home entry, then one per-word leaf decision
+        (``_fenced_relative_prefix``) after it. Nothing deleted is mocked, and
+        the spies below WRAP the real functions, so every verdict asserted is the
+        real one and no clock and no filesystem probe is involved. Three
+        properties:
+
+        1. the same chained-cd inputs read clean at every chain length, and the
+           mechanism still DECIDES through that chain -- a fenced leaf named
+           after a home entry is still refused;
+        2. the pass-level matchers run ONCE PER SUBJECT, identically for a
+           10-segment and a 200-segment chain, so no per-segment path resolution
+           survives that could blow up;
+        3. the per-word leaf decision grows LINEARLY in the segment count rather
+           than doubling per segment.
         """
         from kiro_crew import security
 
         def chain(n: int) -> str:
             return "D=bar; " + "; ".join(["cd ${D:-foo}"] * n) + "; cat notes.txt"
 
-        def probes(n: int) -> int:
+        def home_chain(n: int, leaf: str) -> str:
+            # Same chain, but entered from the home directory so the surviving
+            # pass gets past its entry check and its per-word loop actually runs.
+            return "cd ~; " + "; ".join(["cd ${D:-foo}"] * n) + f"; cat {leaf}"
+
+        # 1. Real verdicts, nothing patched. The chain terminates and reads clean
+        #    at 200 segments, and the surviving pass is still live on that exact
+        #    shape -- so this is not an "everything is allowed now" tautology.
+        for length in (1, 10, 20, 200):
+            assert is_sensitive_bash_command(chain(length)) is None, length
+            assert is_sensitive_bash_command(home_chain(length, "notes.txt")) is None, length
+            assert is_sensitive_bash_command(home_chain(length, ".aws/credentials")) is not None
+
+        # 2. The doubling came from resolving a base SET per segment. Every
+        #    surviving matcher is invoked once for the whole subject, and the
+        #    count is identical at 10 and 200 segments -- a reinstated
+        #    per-segment resolver would show up here as a growing count.
+        def pass_counts(n: int) -> tuple[int, int, int]:
             with (
-                mock.patch.object(security, "_resolved_forms_bounded", return_value=set()),
-                mock.patch.object(security, "_dir_holds_sensitive_leaf", return_value=False),
-                mock.patch.object(security, "is_sensitive_path", return_value=False) as isp,
+                mock.patch.object(
+                    security, "_sensitive_pattern_hit", wraps=security._sensitive_pattern_hit
+                ) as fence,
+                mock.patch.object(
+                    security, "_fence_hit_in_collapsed", wraps=security._fence_hit_in_collapsed
+                ) as collapsed,
+                mock.patch.object(security, "_native_words", wraps=security._native_words) as words,
             ):
                 assert is_sensitive_bash_command(chain(n)) is None
-                return isp.call_count
+                return fence.call_count, collapsed.call_count, words.call_count
 
-        # Unbounded, each segment doubles the base set (2 readings x every
-        # existing base), so probes(20) / probes(10) would be ~2**10. Capped at
-        # _MAX_TRACKED_BASES it is at most ~2x: linear in the segment count.
-        ten, twenty = probes(10), probes(20)
-        assert twenty <= 2 * ten + 2 * security._MAX_TRACKED_BASES, (ten, twenty)
+        assert pass_counts(10) == (1, 1, 1)
+        assert pass_counts(200) == (1, 1, 1)
+
+        # 3. The per-word leaf decision is the only thing that scales with the
+        #    chain, and it scales with the WORD COUNT: doubling the segments
+        #    doubles it, where the removed walk would have squared it.
+        def leaf_decisions(n: int) -> int:
+            with mock.patch.object(
+                security, "_fenced_relative_prefix", wraps=security._fenced_relative_prefix
+            ) as leaf:
+                assert is_sensitive_bash_command(home_chain(n, "notes.txt")) is None
+                return leaf.call_count
+
+        ten, twenty = leaf_decisions(10), leaf_decisions(20)
+        assert 0 < ten < twenty <= 2 * ten + 4, (ten, twenty)
+        assert leaf_decisions(200) <= 20 * ten + 4, ten
+
+        # The walk that could blow up is absent BY NAME, so reinstating a
+        # per-segment base tracker fails loudly here instead of quietly
+        # reintroducing the doubling under the behavioural assertions above --
+        # the same reason TestTraversalSimulationIsGone pins names.
+        for name in ("_dir_holds_sensitive_leaf", "_remember_bases", "_MAX_TRACKED_BASES"):
+            assert not hasattr(security, name), name
 
     def test_a_wrapped_cd_is_still_a_cd(self) -> None:
         """`builtin` and `command` run the builtin, so the command word moves.
