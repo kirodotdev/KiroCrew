@@ -3,25 +3,44 @@ name: Internal Content Scan Gate
 # This repository's caller for the shared gate. Onboarding another repo is this
 # file, unchanged.
 #
-# TRIGGERS, STATED HONESTLY. `merge_group` fires only when a merge queue exists,
-# and this repository has none configured -- so today it fires ZERO times, and the
-# only trigger that actually runs is `push` to main, which reports AFTER the
-# content has landed. Nothing here gates a pull request.
+# TRIGGERS.
 #
-# It is kept rather than dropped because it is the trigger a queue would use, and
-# it costs nothing while idle. Do NOT read it as pre-merge coverage.
+# `pull_request` is the one that gates: a same-repo PR receives an OIDC token, so
+# the scan reaches a real verdict BEFORE the change can land. It carries the same
+# `branches:` filter as `ci.yml` and `fast-gate.yml`, so a stacked PR (one whose
+# base is another feature branch) never starts it -- `pr-readiness.yml` marks the
+# lane ineligible in that case, exactly as it does for CI, Fast Gate and CodeQL.
 #
-# Closing that gap means adding `pull_request` (a same-repo PR DOES receive an
-# OIDC token; only a fork does not, and the callee's credential preflight gives a
-# fork a red check with a stated reason rather than a false pass) or adopting a
-# merge queue. See docs/system-specs/oss-fork-boundaries.md.
+# `push` to main stays as the backstop for anything that reaches the branch
+# without a pull request.
+#
+# `merge_group` fires only when a merge queue exists, and this repository has none
+# configured, so today it fires zero times. It is kept because it is the trigger a
+# queue would use and costs nothing idle -- do NOT read it as coverage.
+#
+# A FORK PR is not scanned by THIS file: GitHub issues no OIDC token to a fork
+# head, so the job would fail at role assumption every time. The job-level `if`
+# below skips it rather than failing it, and `fork-internal-content-scan.yml`
+# covers those PRs instead -- Stage 2, privileged, running from the default
+# branch and posting a check-run under the same "Internal Content Scan" name, the
+# same pattern the `fork-*-review.yml` lanes use. Fork PRs are therefore gated
+# too; `pr-readiness.yml` reads whichever of the two paths produced the verdict.
+# See docs/system-specs/oss-fork-boundaries.md.
 on:
   merge_group:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
 
 jobs:
   scan:
+    # Same-repo events only. A fork PR has no OIDC token, so scanning it is
+    # impossible rather than merely inconvenient; skipping is honest, and failing
+    # would be a permanent block on every fork contribution.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/internal-content-scan.yml
     # These have to be granted HERE. A reusable workflow's token permissions are
     # capped by the calling job and the callee cannot elevate them, so a caller

@@ -52,16 +52,24 @@ jobs:
 
       - name: Compute the diff
         env:
-          # merge_group and push carry different shapes; neither is interpolated
-          # into the script body.
+          # merge_group, pull_request and push carry different shapes; none is
+          # interpolated into the script body.
           MG_BASE: ${{ github.event.merge_group.base_sha }}
           MG_HEAD: ${{ github.event.merge_group.head_sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_HEAD: ${{ github.sha }}
         run: |
           set -euo pipefail
           if [ -n "${MG_BASE:-}" ]; then
             BASE="$MG_BASE"; HEAD="$MG_HEAD"
+          elif [ -n "${PR_BASE:-}" ]; then
+            # On a pull_request event `github.sha` is the MERGE commit, so the
+            # range is stated explicitly here rather than left to the `HEAD^`
+            # fallback below. That fallback happens to resolve to the same thing
+            # today (a merge commit's first parent IS the base tip), and relying
+            # on a coincidence is how a future edit breaks the scope silently.
+            BASE="$PR_BASE"; HEAD="$PUSH_HEAD"
           else
             BASE="$PUSH_BEFORE"; HEAD="$PUSH_HEAD"
           fi

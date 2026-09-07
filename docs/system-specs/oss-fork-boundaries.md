@@ -121,9 +121,31 @@ moved:
 - Its wordlists lived in the public repo they were meant to police. Anyone could
   read them to learn precisely what not to write down.
 
-**Known gap while the replacement is not yet blocking.** The new check does not
-run on `pull_request` (a fork PR gets no OIDC token) and there is no merge queue,
-so `merge_group` never fires. Until it is wired to report on pull requests and
-registered as a required status check, nothing gates internal content *before*
-merge; the `push` to `main` run reports it afterwards. This window is deliberate
-and temporary — it is not a reason to reintroduce a repo-local wordlist.
+**How it blocks, and on which path.** The check is blocking: `PR Readiness` — the
+one required status on `main` — reads it as a named lane, so an added internal
+marker fails readiness and the PR cannot merge. It is deliberately *not* in the
+branch-protection required-checks list; that list would need the reusable
+workflow's composed check name (`scan / internal-content-scan`), and routing
+through `PR Readiness` is how this repo already handles `Fast Gate`.
+
+Two paths produce that one verdict, because a fork head receives no OIDC token:
+
+| Pull request from | Workflow | Why |
+|---|---|---|
+| this repository | `internal-content-scan-gate.yml` on `pull_request` | a same-repo PR does get an OIDC token |
+| a fork | `fork-internal-content-scan.yml`, Stage 2 | runs privileged from the default branch after `Fast Gate`, never checks out or executes fork code, and posts a check-run under the same `Internal Content Scan` name |
+
+`push` to `main` stays as the backstop for anything reaching the branch without a
+pull request. `merge_group` is declared but fires zero times — this repository has
+no merge queue — and is kept only because it is the trigger a queue would use.
+
+Two lanes are marked ineligible rather than pending, the same treatment CodeQL
+gets: a **stacked** PR (base is another feature branch) never starts the
+`branches:`-filtered workflow, and a fork PR's same-repo lane is skipped in favour
+of the Stage-2 one above.
+
+**This was fixed the hard way.** The gate shipped without a `pull_request` trigger,
+and within hours the `push` run caught real internal content — an internal ticket
+id and an internal workplace path — that had already reached public `main` in a
+merged PR. Post-push detection on a public repository is post-disclosure. That
+window is what the trigger above closes.

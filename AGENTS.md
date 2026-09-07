@@ -23,8 +23,8 @@ JSON-RPC) plus MCP tools.
 Full map: [overview](docs/architecture/overview.md). This repo is the de-Amazoned
 public fork of an internal package; what must never come back is
 [oss-fork-boundaries](docs/system-specs/oss-fork-boundaries.md), gated by
-the `internal-content-scan` check (which today reports on pushes to main, not on
-pull requests -- see oss-fork-boundaries.md) and the
+the `internal-content-scan` check (blocking on pull requests, forks included) and
+the
 `no-new-builtin-apps` rule in `AUTOSDE.yaml`.
 
 ## Read before you touch

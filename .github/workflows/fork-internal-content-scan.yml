@@ -1,0 +1,404 @@
+name: Fork Internal Content Scan
+
+# STAGE 2 (privileged) of the internal-content gate, for FORK pull requests.
+# Triggered by "Fast Gate" completing, runs from the DEFAULT branch with OIDC, and
+# posts a check-run named exactly "Internal Content Scan" -- the same name the
+# same-repo lane reports under, so one status surfaces on either path.
+#
+# WHY THIS FILE EXISTS. `internal-content-scan-gate.yml` cannot scan a fork PR:
+# GitHub issues no OIDC token to a fork head, so it could not fetch the ruleset.
+# Skipping forks there and stopping would mean external contributions are the ONE
+# path with no pre-merge coverage -- exactly the contributions we know least about.
+#
+# TRUST MODEL. This lane is SAFER than the AI-review lanes it copies, because no
+# model and no fork-authored instruction is involved:
+#   - `workflow_run` ALWAYS runs the definition from the DEFAULT branch, so a fork
+#     editing this file in its PR changes nothing about what executes.
+#   - The only inputs taken from the trigger are the head coordinates GitHub sets
+#     itself: `head_sha`, `head_repository.full_name` and `head_branch`. All three
+#     are needed to identify the PR, because a head SHA alone can match more than
+#     one open PR. The PR number and base SHA are then re-resolved from the API,
+#     and an ambiguous match fails rather than guessing.
+#   - The fork's code is never checked out, built or executed. Its diff is fetched
+#     as a DATA FILE and handed to the scanner as bytes.
+#   - The scanner itself comes from the sha256-verified ruleset bundle in our own
+#     bucket, not from the tree, so the fork cannot influence the rules that judge
+#     it either.
+#
+# BLOCKING, unlike the advisory review lanes. An incomplete run finalizes as
+# FAILURE, never `neutral`: "the scan did not reach a verdict" must never read as
+# "the scan found nothing", which is the fail-open this whole gate replaced.
+
+on:
+  # Fast Gate, not CI: this lane may not start until a trusted workflow has
+  # vouched for the head commit, and Fast Gate carries the cheap blocking gates
+  # and finishes in about a minute. The trust boundary does not depend on it --
+  # the steps below never materialize fork code -- so waiting for the full CI
+  # matrix would only delay the verdict.
+  workflow_run:
+    workflows: ["Fast Gate"]
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: fork-internal-content-scan-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  fork-internal-content-scan:
+    name: Fork Internal Content Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only a SUCCESSFUL Stage 1 run that was itself a FORK pull request.
+    if: >-
+      github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_repository.full_name != github.repository
+    steps:
+      # MUST be first. STS + S3 for the ruleset, GitHub for the diff and the
+      # check-run, PyPI for the engine's single dependency. Nothing else.
+      - name: Harden runner (egress allowlist)
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40
+        with:
+          disable-telemetry: true
+          egress-policy: block
+          allowed-endpoints: >-
+            sts.amazonaws.com:443
+            sts.us-west-2.amazonaws.com:443
+            s3.us-west-2.amazonaws.com:443
+            *.s3.us-west-2.amazonaws.com:443
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            codeload.github.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+
+      - name: Resolve and validate PR (authoritative from GitHub)
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -uo pipefail
+          head_sha="$WR_HEAD_SHA"
+          if [ -z "$head_sha" ]; then echo "::error::no workflow_run head_sha"; exit 1; fi
+
+          # Bounded retry: a single-shot `gh api` aborts on a transient TLS/5xx
+          # and this lane would then report "no such PR" -- the wrong cause, on a
+          # PR that exists. Same convention as the other fork lanes.
+          gh_read() {
+            local attempt rc=1 out
+            for attempt in 1 2 3; do
+              if out="$("$@")"; then
+                printf '%s' "$out"
+                return 0
+              else
+                rc=$?
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "resolver query attempt $attempt failed; retrying" >&2
+                sleep $((attempt * 5))
+              fi
+            done
+            return "$rc"
+          }
+
+          # workflow_run.pull_requests is empty for forks, so the PR must be
+          # found by matching. Match on ALL THREE of the trigger's authoritative
+          # head coordinates -- SHA, head repository, head branch -- not the SHA
+          # alone: two open PRs CAN share a head SHA (the same fork branch opened
+          # against two different bases, or the same commit present in two forks),
+          # and picking one arbitrarily would scan `base...head` for the WRONG
+          # base. A base that already contains a marker-adding commit yields a
+          # smaller diff, so the marker is not in the added lines and the shared
+          # check-run publishes "clean" for a PR that really does add it. This
+          # lane's own finalize step already names that hazard for check-runs;
+          # the resolver has to defend against it too.
+          #
+          # The values are compared as SHELL STRINGS, never interpolated into the
+          # jq program: a fork controls its own branch name, and this lane runs
+          # privileged.
+          if ! rows="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+                        --jq '.[] | [.number, .head.sha, .head.repo.full_name // "", .head.ref] | @tsv')"; then
+            echo "::error::could not list open PRs; the query itself failed on all 3 attempts"
+            exit 1
+          fi
+          matches=""
+          n=0
+          while IFS="$(printf '\t')" read -r num sha repo ref; do
+            [ -n "$num" ] || continue
+            if [ "$sha" = "$head_sha" ] \
+               && [ "$repo" = "$WR_HEAD_REPO" ] \
+               && [ "$ref" = "$WR_HEAD_BRANCH" ]; then
+              matches="$matches $num"
+              n=$((n + 1))
+            fi
+          done <<ROWS
+          $rows
+          ROWS
+          if [ "$n" -eq 0 ]; then
+            echo "::error::no open PR matches head $head_sha on \
+          $WR_HEAD_REPO branch $WR_HEAD_BRANCH; failing closed"
+            exit 1
+          fi
+          if [ "$n" -gt 1 ]; then
+            # Deliberately NOT a pick-one: the trigger carries no PR number, so
+            # nothing here can tell which of these the run belongs to, and the
+            # two have different bases and therefore different added lines.
+            # Guessing would publish one PR's verdict on the other. "No verdict"
+            # is a failure in this lane, so say so and name the remedy.
+            echo "::error title=internal-content-scan reached no verdict::\
+          Head $head_sha on $WR_HEAD_REPO branch $WR_HEAD_BRANCH matches more \
+          than one open PR ($matches). Their bases differ, so their added lines \
+          differ and this lane cannot tell which one it was triggered for. \
+          Close or retarget the duplicate, or push the branches separately."
+            exit 1
+          fi
+          pr="${matches# }"
+          if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
+            echo "::error::could not read base.sha for PR #$pr"
+            exit 1
+          fi
+          if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
+            echo "::error::PR #$pr reported an empty base.sha; failing closed"
+            exit 1
+          fi
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR #$pr  base=$base_sha  head=$head_sha"
+
+      # Opened as early as possible, keyed to head_sha, so the status surfaces
+      # even if a later step dies. external_id carries the PR number AND the
+      # triggering run + attempt, which is what binds this verdict to ONE pull
+      # request and ONE scan attempt:
+      #   - the PR number, because a check-run of this name on this head can
+      #     belong to ANOTHER pull request (two PRs may share a commit), and
+      #     completing that one would publish a verdict computed from a
+      #     different diff;
+      #   - the run id AND attempt, because a rerun on an UNCHANGED head leaves
+      #     the previous completed row in place. The ruleset lives outside this
+      #     repo and can gain a marker between attempts, so a reader that
+      #     accepts any PR-scoped row would answer with a verdict computed
+      #     against the OLD ruleset -- and answer it in the window before this
+      #     run opens its own row, which is the ordinary order of events, not a
+      #     narrow race. A rerun keeps the run id and bumps the attempt, so the
+      #     attempt is the part that actually distinguishes them.
+      - name: Open check-run (in progress)
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD: ${{ steps.pr.outputs.head_sha }}
+          PR: ${{ steps.pr.outputs.pr }}
+          WR_RUN_ID: ${{ github.event.workflow_run.id }}
+          WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -uo pipefail
+          id="$(gh api --method POST "repos/$REPO/check-runs" \
+            -f name="Internal Content Scan" -f head_sha="$HEAD" -f status="in_progress" \
+            -f external_id="internal-content-scan-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT" \
+            -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
+            --jq '.id')"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      # The TRUSTED base tree. The fork's files are never materialized.
+      #
+      # `ref` and `fetch-depth: 0` are both load-bearing, and matching
+      # fork-opus-review.yml is not cosmetic. Without `ref` this checks out the
+      # DEFAULT BRANCH TIP rather than the PR's base, so `base_sha` is not even in
+      # the object store once main has advanced; without `fetch-depth: 0` the
+      # clone is depth-1 and the three-dot `base...head` has no reachable
+      # merge-base. Either way `git diff` fails, the patch is empty, and this
+      # blocking lane reports "no verdict" on every ordinary fork PR -- turning
+      # the gate into a permanent block on external contributions, which is the
+      # exact outcome the same-repo caller's fork skip exists to avoid.
+      - name: Checkout base (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch authentic diff (data only — never applied to the tree)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.pr }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PATCH: ${{ runner.temp }}/authentic.patch
+        run: |
+          set -uo pipefail
+          # git, NOT the compare API: the compare endpoint truncates very large
+          # diffs, which would let a big fork PR slip an added marker past the cap
+          # and still pass. Fetch the head history as OBJECTS only -- never
+          # checked out, so no fork file or symlink is materialized.
+          auth_b64="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth_b64"
+          git -c http.extraheader="AUTHORIZATION: basic $auth_b64" \
+            fetch --no-tags --quiet origin "refs/pull/$PR/head" \
+            || { echo "::error::could not fetch PR head history for #$PR"; exit 1; }
+          # Pin to the exact head SHA Fast Gate vouched for; fail closed if the
+          # fork rewrote history out from under it.
+          if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::head SHA $HEAD_SHA not present after fetch; failing closed."
+            exit 1
+          fi
+          # Assert the base commit is really in the object store. Without this the
+          # `git diff` below just fails and the empty-patch guard reports "empty
+          # diff" -- the wrong cause, which sends the next reader after the wrong
+          # bug. The `if !` forms below are what make these messages reachable:
+          # the default runner shell is `bash -eo pipefail`, so a bare failing
+          # command would abort the step with no explanation at all.
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::base SHA $BASE_SHA not present after checkout; failing closed."
+            exit 1
+          fi
+          # --unified=0 to match what the engine's added-line parser expects.
+          if ! git diff --no-color --unified=0 "$BASE_SHA...$HEAD_SHA" > "$PATCH"; then
+            echo "::error::could not diff $BASE_SHA...$HEAD_SHA; failing closed."
+            exit 1
+          fi
+          if [ ! -s "$PATCH" ]; then
+            echo "::error::empty diff for $BASE_SHA...$HEAD_SHA; failing closed."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the engine's only dependency
+        run: pip install --disable-pip-version-check 'pyyaml==6.0.2'
+
+      - name: Require credentials before claiming a verdict
+        env:
+          ROLE: ${{ secrets.KIRO_RELEASE_GATE_ROLE_ARN }}
+          BUCKET: ${{ secrets.KIRO_RELEASE_GATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          # Same rule as the same-repo callee: absent credentials mean no verdict
+          # was reached, and that must never be read as a clean scan.
+          if [ -z "${ROLE:-}" ] || [ -z "${BUCKET:-}" ]; then
+            echo "::error title=internal-content-scan reached no verdict::\
+          This repository is missing KIRO_RELEASE_GATE_ROLE_ARN / \
+          KIRO_RELEASE_GATE_BUCKET, so the fork's added lines were NOT scanned."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ secrets.KIRO_RELEASE_GATE_ROLE_ARN }}
+          aws-region: us-west-2
+          role-session-name: fork-internal-content-scan-${{ github.run_id }}
+
+      - name: Fetch and verify the ruleset
+        env:
+          BUCKET: ${{ secrets.KIRO_RELEASE_GATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          GATE="$RUNNER_TEMP/release-gate"
+          mkdir -p "$GATE/bundle"
+          cd "$GATE"
+          aws s3 cp "s3://$BUCKET/ruleset/ruleset.tar.gz" ruleset.tar.gz --no-progress
+          aws s3 cp "s3://$BUCKET/ruleset/ruleset.sha256" ruleset.sha256 --no-progress
+          # Verify BEFORE extracting.
+          sha256sum --check ruleset.sha256
+          tar xzf ruleset.tar.gz -C bundle
+
+      - name: Scan
+        id: scan
+        env:
+          PATCH: ${{ runner.temp }}/authentic.patch
+        run: |
+          set -uo pipefail
+          # 0 clean, 1 an added line carries a marker, 2 no verdict reached.
+          #
+          # `set +e` around the run is load-bearing. The default runner shell is
+          # `bash -eo pipefail`, so `-e` is INHERITED here -- `set -uo pipefail`
+          # adds `-u` without clearing it. Under `-e` the pipeline's non-zero exit
+          # aborts this step BEFORE `rc` is captured, leaving
+          # `steps.scan.outputs.rc` empty; the finalize `case` then falls to `*)`
+          # and reports a genuine marker hit as "the scan did not run to
+          # completion", with the `1)` and `2)` arms dead. The merge still blocks,
+          # but the maintainer is told the wrong reason -- and telling those two
+          # apart is the whole point of this gate.
+          set +e
+          python3 "$RUNNER_TEMP/release-gate/bundle/scrub_engine.py" \
+            --rules "$RUNNER_TEMP/release-gate/bundle" \
+            --diff "$PATCH" | tee "$RUNNER_TEMP/scan.out"
+          rc="${PIPESTATUS[0]}"
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - name: Drop the ruleset
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/release-gate"
+
+      - name: Finalize check-run (blocking)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD: ${{ steps.pr.outputs.head_sha || github.event.workflow_run.head_sha }}
+          CHECK_ID: ${{ steps.check.outputs.id }}
+          PR: ${{ steps.pr.outputs.pr }}
+          RC: ${{ steps.scan.outputs.rc }}
+          WR_RUN_ID: ${{ github.event.workflow_run.id }}
+          WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -uo pipefail
+          # BLOCKING lane: anything that is not a clean scan is a failure. An
+          # empty RC means the scan step never produced one -- the run died
+          # earlier -- and that is "no verdict", which fails.
+          case "${RC:-}" in
+            0) conclusion="success"; title="clean — no internal marker in the added lines" ;;
+            1) conclusion="failure"; title="internal marker(s) in added lines" ;;
+            2) conclusion="failure"; title="NO VERDICT — the scan could not conclude" ;;
+            *) conclusion="failure"; title="NO VERDICT — the scan did not run to completion" ;;
+          esac
+          summary="Fork internal-content scan for $HEAD. Findings, if any, are in the job log: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          complete() {
+            for attempt in 1 2; do
+              if gh api --method PATCH "repos/$REPO/check-runs/$1" \
+                -f status="completed" -f conclusion="$2" \
+                -f "output[title]=Internal Content Scan — $3" \
+                -f "output[summary]=$summary" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "::warning::could not complete check-run $1 for $HEAD"
+            return 1
+          }
+          if [ -n "${CHECK_ID:-}" ]; then
+            complete "$CHECK_ID" "$conclusion" "$title" || true
+          elif [ -n "${HEAD:-}" ]; then
+            # The opening POST never happened (the resolver died). Publish a
+            # failing check-run so the PR shows the block rather than nothing.
+            # Stamp the same PR + run + attempt id as the opening POST, and only
+            # when the PR is known (PR can be empty in exactly this branch --
+            # HEAD has a workflow_run fallback, PR does not). With no id
+            # readiness cannot attribute the row and reads the lane as pending,
+            # which still holds the merge: the miss fails closed, not open.
+            ext_args=()
+            if [ -n "${PR:-}" ]; then
+              ext_args=(-f external_id="internal-content-scan-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT")
+            fi
+            gh api --method POST "repos/$REPO/check-runs" \
+              -f name="Internal Content Scan" -f head_sha="$HEAD" \
+              -f status="completed" -f conclusion="failure" "${ext_args[@]}" \
+              -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
+              -f "output[title]=Internal Content Scan — could not run" \
+              -f "output[summary]=$summary" >/dev/null 2>&1 || true
+          fi

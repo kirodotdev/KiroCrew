@@ -40,6 +40,10 @@ on:
       - Fork Design Review
       - Fork UX Review
       - Fork First Principles Review
+      # Without these two, a finished scan never re-triggers readiness and the
+      # lane sits at "(not started)" with no event able to clear it.
+      - Internal Content Scan Gate
+      - Fork Internal Content Scan
     # `completed` publishes the real verdict. `in_progress` is kept as a merge
     # guard, and `requested` is deliberately absent.
     #
@@ -552,6 +556,19 @@ jobs:
             # of being forced to a maintainer-review verdict.
             skipped+=("CodeQL (fork PR)")
             workflow_specs+=(
+              # The scan reaches a fork through the same Stage-2 pattern: a fork
+              # head gets no OIDC token, so fork-internal-content-scan.yml runs
+              # privileged from the default branch and posts a check-run named
+              # exactly like the same-repo lane. Read it here so a fork PR is
+              # gated too -- external contributions are the LAST place to leave
+              # without pre-merge coverage. The third field binds the verdict to
+              # THIS pull request AND this scan attempt via the external_id the
+              # lane stamps: without it a sibling fork PR on the same head SHA,
+              # or a stale row from a previous rerun attempt, could answer for
+              # this one. The fourth field is the workflow whose completion
+              # triggers the lane -- its newest run + attempt is what "current"
+              # means here.
+              "checkrun:Internal Content Scan|Internal Content Scan|internal-content-scan-pr-|fast-gate.yml"
               "checkrun:Opus 4.8 Review|Opus 4.8 Review"
               "checkrun:GPT 5.6 Review|GPT 5.6 Review"
               "checkrun:Design Review|Design Review"
@@ -561,8 +578,14 @@ jobs:
           else
             if [ "$stacked" = "true" ]; then
               skipped+=("CodeQL (only runs on PRs to $DEFAULT_BRANCH)")
+              skipped+=("Internal Content Scan (only runs on PRs to $DEFAULT_BRANCH)")
             else
               workflow_specs+=("dynamic/github-code-scanning/codeql|CodeQL")
+              # Blocking lane: an added line carrying an Amazon-internal marker
+              # fails this and therefore fails readiness. Resolved by workflow
+              # FILE, so the awkward reusable-workflow check name
+              # ("scan / internal-content-scan") is not restated here.
+              workflow_specs+=("internal-content-scan-gate.yml|Internal Content Scan")
             fi
             workflow_specs+=(
               "claude-review.yml|Opus 4.8 Review"
@@ -582,8 +605,11 @@ jobs:
           awaiting_approval=()
 
           for spec in "${workflow_specs[@]}"; do
-            file="${spec%%|*}"
-            label="${spec#*|}"
+            # Four fields: <workflow file or checkrun:NAME>|<label>|<external_id
+            # prefix>|<triggering workflow file>. The last two are OPTIONAL and
+            # only a checkrun: spec uses them -- see the binding note in that
+            # branch. Split on `|` alone so a label keeps its spaces.
+            IFS='|' read -r file label extid trigfile <<<"$spec"
             if [[ "$file" == checkrun:* ]]; then
               # Fork AI-review lane: the verdict lives in the head SHA's
               # check-runs, not a PR-bound workflow run (the fork reviewer runs
@@ -605,6 +631,66 @@ jobs:
                 transport_failed=true
                 break
               }
+              # Bind the verdict to THIS pull request AND THIS scan attempt when
+              # the lane stamps an external_id.
+              #
+              # Two open PRs can share a head SHA -- the same fork branch opened
+              # against two bases, or the same commit in two forks -- and each
+              # posts a check-run under this SAME NAME on that SHA. And a RERUN on
+              # an unchanged head leaves the previous completed row in place while
+              # the new attempt is still starting up. Reading by name alone loses
+              # both ways: a sibling's clean row, or a stale clean row from the
+              # previous attempt, answers for a scan that has not reported. The
+              # ruleset lives outside this repo and can gain a marker between
+              # attempts, so a stale clean verdict is not merely old, it can be
+              # WRONG.
+              #
+              # The fourth spec field names the workflow whose completion triggers
+              # the lane. Its newest run for this head, plus that run's attempt,
+              # is what "the current attempt" means -- so the expected id is
+              # <prefix><pr>-<run id>-<attempt> and nothing else matches. When the
+              # expected row is not there yet, total=0 -> pending, which holds the
+              # merge instead of borrowing an answer.
+              #
+              # Run id AND attempt: a rerun keeps the id and bumps the attempt, so
+              # the id alone would still accept the stale row.
+              if [ -n "${extid:-}" ]; then
+                want="$extid$PR"
+                if [ -n "${trigfile:-}" ]; then
+                  trg="$(gh_retry gh api --method GET \
+                    "repos/$REPO/actions/workflows/$trigfile/runs?event=pull_request&head_sha=$SHA&per_page=100")" || {
+                    rc=$?
+                    if [ "$rc" -eq 22 ]; then exit 1; fi
+                    transport_failed=true
+                    break
+                  }
+                  # Bind the trigger run to THIS PR by (head repository, head
+                  # branch) before picking the newest, for the same reason the
+                  # workflow-run branch below does it: the query is pinned to the
+                  # head SHA, but two open PRs can share that SHA, so an unfiltered
+                  # `max_by(.id)` can select the SIBLING's trigger run. The
+                  # expected external_id would then name a run this PR's lane never
+                  # saw, nothing would ever match, and the lane would sit pending
+                  # forever -- the exact opposite failure to the stale-verdict one
+                  # the binding exists to prevent, and just as bad.
+                  trun="$(jq -c --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" '
+                    [.workflow_runs[]
+                     | select((.head_repository.full_name // "") == $repo
+                              and (.head_branch // "") == $ref)]
+                    | max_by(.id) // empty
+                  ' <<<"$trg")"
+                  if [ -z "$trun" ]; then
+                    # The trigger has not run for this head yet, so no scan is
+                    # owed and none can have reported. Pending, not passed.
+                    pending+=("$label (not started)")
+                    continue
+                  fi
+                  want="$want-$(jq -r '.id' <<<"$trun")-$(jq -r '.run_attempt // 1' <<<"$trun")"
+                fi
+                cruns="$(jq -c --arg x "$want" \
+                  '{check_runs: [.check_runs[] | select(.external_id == $x)]}' \
+                  <<<"$cruns")"
+              fi
               total="$(jq '.check_runs | length' <<<"$cruns")"
               incomplete="$(jq '[.check_runs[]
                 | select(.status != "completed")] | length' <<<"$cruns")"
