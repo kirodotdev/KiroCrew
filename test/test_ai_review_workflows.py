@@ -4636,6 +4636,242 @@ class TestBlockAdjudicationArithmetic:
         assert "contract is absent on the base commit" in parsed["note"]
         assert "/ai-review override" in parsed["note"]
 
+    @pytest.mark.parametrize("lane", LANES)
+    def test_an_api_error_with_fenced_findings_reports_a_failed_stage_not_a_ruling(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        """#9216: the adjudicator returned an API 400 on every PR (the runner's
+        Claude Code sat below the model's version floor), and the fenced branch
+        still rendered "withheld from adjudication, so the blocking verdict
+        stands" -- words that read like an adjudication ran and declined to
+        overturn. A stage whose output carries no adjudication marker at all
+        must be reported as one that FAILED TO RUN, whatever the fence held
+        back, and the verdict must still stand (fail closed)."""
+        api_error = (
+            "API Error: 400 Claude Code 2.1.240 does not support this model; "
+            "version 2.1.255 or newer is required. Run 'claude update', or "
+            "update the Claude desktop app, then try again."
+        )
+        decision, note = self._run(
+            tmp_path,
+            lane,
+            api_error,
+            count=2,
+            adjudicable=1,
+            fenced=1,
+            ids="F1",
+            fenced_ids="F2",
+        )
+        assert decision == "uphold"
+        assert "FAILED TO RUN" in note
+        assert "stands unreviewed" in note
+        assert "withheld" not in note
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_a_crashed_annotate_only_pass_is_reported_as_failed(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        """Same defect, fenced-only population: every blocking finding was
+        security-class, so only the annotate-only pass was requested -- and it
+        produced nothing. The old chain's fenced branch masked that entirely."""
+        decision, note = self._run(
+            tmp_path,
+            lane,
+            None,
+            count=1,
+            adjudicable=0,
+            fenced=1,
+            ids="",
+            fenced_ids="F2",
+        )
+        assert decision == "uphold"
+        assert "FAILED TO RUN" in note
+        assert "withheld" not in note
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_a_completed_ruling_with_fenced_findings_keeps_the_withheld_wording(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        """The mirror case: when the stage DID produce a ruling, the fenced
+        sentence is an accurate statement about the gate and stays."""
+        output = _adjudication(
+            "[ADJUDICATION] deadbeef total=1 uphold=0 downgrade=1",
+            DOWN.format(fid="F1"),
+            MARKER,
+            FFOOTER.format(n=1, k=0),
+            UPFENCED.format(fid="F2"),
+            FMARKER,
+        )
+        decision, note = self._run(
+            tmp_path,
+            lane,
+            output,
+            count=2,
+            adjudicable=1,
+            fenced=1,
+            ids="F1",
+            fenced_ids="F2",
+        )
+        assert decision == "uphold"
+        assert "withheld from adjudication" in note
+
+
+class TestAdjudicatorVersionFloor:
+    """#9216: the adjudicator model requires a minimum Claude Code version, and
+    the action's bundled installer can lag it -- which made every adjudication
+    call 400 while the check-run concluded normally. The floor is now asserted
+    at CONFIGURATION time, against a CLI installed from the committed
+    review-cli lockfile, so a model bump that outruns the pin fails one visible
+    step instead of failing once per PR forever."""
+
+    LANES = ("codex-review.yml", "fork-gpt-review.yml")
+    FLOOR_STEP = "Assert the adjudicator's Claude Code version floor"
+
+    @staticmethod
+    def _ver(version: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in version.split("."))
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_the_model_call_uses_the_floor_asserted_executable(self, lane: str) -> None:
+        """The floor step gates the model call: same trigger condition, and the
+        adjudicate step consumes ITS executable, skipping the action's own
+        installer (whose bundled version is what fell behind). A floor breach
+        fails the assert step, the model step is skipped by its implicit
+        success() dependency, and the verdict step reports an adjudication that
+        did not run."""
+        floor_step = _step(lane, self.FLOOR_STEP)
+        model_step = _step(lane, ADJ_MODEL)
+        assert floor_step["if"] == model_step["if"], lane
+        assert (
+            model_step["with"]["path_to_claude_code_executable"]
+            == "${{ steps.adj_cli.outputs.path }}"
+        ), lane
+        script = _step_script(_workflow(lane), self.FLOOR_STEP)
+        # The comparison is a version sort, not a string compare, and every
+        # degraded path (no binary, unreadable version, floor unmet) exits
+        # nonzero rather than letting the model call proceed and 400.
+        assert "sort -V" in script, lane
+        assert "exit 1" in script, lane
+
+    def test_the_lanes_agree_on_the_floor(self) -> None:
+        floors = {
+            lane: _step_env(lane, self.FLOOR_STEP)["ADJ_CLAUDE_CODE_FLOOR"] for lane in self.LANES
+        }
+        assert len(set(floors.values())) == 1, floors
+
+    def test_the_committed_pin_satisfies_the_floor(self) -> None:
+        """The configuration-time assertion, mirrored where it is cheapest: a
+        floor bump without a manifest bump (or a manifest downgrade below the
+        floor) reds this test before any workflow run pays for it. The lockfile
+        must agree with the manifest, or `npm ci` installs something other than
+        the version this test just approved."""
+        floor = _step_env("codex-review.yml", self.FLOOR_STEP)["ADJ_CLAUDE_CODE_FLOOR"]
+        manifest = json.loads(
+            (ROOT / ".github" / "review-cli" / "package.json").read_text(encoding="utf-8")
+        )
+        pin = manifest["dependencies"]["@anthropic-ai/claude-code"]
+        assert re.fullmatch(
+            r"\d+\.\d+\.\d+", pin
+        ), f"the adjudicator CLI must be an exact pin, got {pin!r}"
+        assert self._ver(pin) >= self._ver(
+            floor
+        ), f"@anthropic-ai/claude-code pin {pin} is below the adjudicator floor {floor}"
+        lock = json.loads(
+            (ROOT / ".github" / "review-cli" / "package-lock.json").read_text(encoding="utf-8")
+        )
+        locked = lock["packages"]["node_modules/@anthropic-ai/claude-code"]["version"]
+        assert locked == pin, f"lockfile holds {locked}, manifest pins {pin}"
+
+    def _run_floor(
+        self, tmp_path: Path, lane: str, claude_body: str | None
+    ) -> tuple[int, str, dict[str, str]]:
+        """Execute the ACTUAL floor-step script with a fake `claude` binary.
+
+        ``claude_body`` is the fake binary's shell source; ``None`` installs no
+        binary at all (the review-cli manifest predating the pin).
+        """
+        if os.name == "nt":
+            pytest.skip("the floor step runs only on the Linux CI runner; skip on Windows")
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the floor step executes only under Bash")
+        script = _step_script(_workflow(lane), self.FLOOR_STEP)
+        bin_dir = tmp_path / "review-cli" / "node_modules" / ".bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        if claude_body is not None:
+            fake = bin_dir / "claude"
+            fake.write_text(f"#!/bin/sh\n{claude_body}\n", encoding="utf-8")
+            fake.chmod(0o755)
+        outputs = tmp_path / "github-output"
+        outputs.touch()
+        env = dict(os.environ)
+        env.update(_step_env(lane, self.FLOOR_STEP))
+        env.update(RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(outputs))
+        result = subprocess.run(
+            [bash, "-c", script],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        parsed = dict(
+            line.split("=", 1)
+            for line in outputs.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        return result.returncode, result.stdout + result.stderr, parsed
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_a_version_above_the_floor_passes_and_exports_the_path(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        rc, out, parsed = self._run_floor(tmp_path, lane, 'echo "9.9.9 (Claude Code)"')
+        assert rc == 0, out
+        assert parsed["path"].endswith("node_modules/.bin/claude")
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_a_version_equal_to_the_floor_passes(self, tmp_path: Path, lane: str) -> None:
+        floor = _step_env(lane, self.FLOOR_STEP)["ADJ_CLAUDE_CODE_FLOOR"]
+        rc, out, _ = self._run_floor(tmp_path, lane, f'echo "{floor} (Claude Code)"')
+        assert rc == 0, out
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_a_version_below_the_floor_fails_naming_the_pin(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        """The #9216 shape itself: the installed CLI sits below the adjudicator
+        model's minimum. The step must fail (skipping the model call) and the
+        error must point at the pin to raise, not at the PR under review."""
+        rc, out, parsed = self._run_floor(tmp_path, lane, 'echo "2.1.240 (Claude Code)"')
+        assert rc != 0
+        assert "does not meet the adjudicator model's minimum" in out
+        assert "path" not in parsed
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_a_crashing_version_command_still_names_the_cause(
+        self, tmp_path: Path, lane: str
+    ) -> None:
+        """`set -e` must not kill the step before the empty-value check can emit
+        its diagnosis -- the extraction pipeline is `|| true`-guarded so the
+        friendly ::error:: is what a maintainer sees, not a bare nonzero exit."""
+        rc, out, _ = self._run_floor(tmp_path, lane, "exit 1")
+        assert rc != 0
+        assert "could not read the installed Claude Code version" in out
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_a_version_less_output_still_names_the_cause(self, tmp_path: Path, lane: str) -> None:
+        rc, out, _ = self._run_floor(tmp_path, lane, 'echo "no semver here"')
+        assert rc != 0
+        assert "could not read the installed Claude Code version" in out
+
+    @pytest.mark.parametrize("lane", LANES)
+    def test_a_missing_binary_points_at_the_manifest(self, tmp_path: Path, lane: str) -> None:
+        rc, out, _ = self._run_floor(tmp_path, lane, None)
+        assert rc != 0
+        assert "not in the review CLI install" in out
+
 
 class TestBlockAdjudicationExtraction:
     """What reaches the adjudicator is exactly the BLOCKING findings, one per id,

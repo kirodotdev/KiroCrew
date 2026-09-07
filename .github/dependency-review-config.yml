@@ -71,7 +71,27 @@ allow-dependencies-licenses:
   - pkg:npm/%40pierre/theme        # Apache-2.0 — https://github.com/pierrecomputer/pierre/blob/main/packages/theme/LICENSE
   - pkg:npm/%40pierre/theming      # Apache-2.0 — https://github.com/pierrecomputer/pierre/blob/main/packages/theming/LICENSE.md
   - pkg:npm/%40pierre/trees        # Apache-2.0 — https://github.com/pierrecomputer/pierre/blob/main/packages/trees/LICENSE.md
- 
+
+  # @anthropic-ai/claude-code and its platform binaries declare
+  # "SEE LICENSE IN README.md" (Anthropic's commercial terms), which is not an
+  # SPDX identifier, so the gate fails on license VALIDITY. These are CI-ONLY
+  # tools in .github/review-cli — installed on review runners for the AI-review
+  # adjudication stage (#9216), never shipped, linked, or distributed with the
+  # Apache-2.0 product. CI already runs this exact CLI via
+  # anthropics/claude-code-action's bundled installer; the lockfile pin only
+  # makes the version auditable and floor-checkable. Evidence:
+  # https://www.npmjs.com/package/@anthropic-ai/claude-code (README: Terms of
+  # Service link). Remove these if the adjudicator stops using Claude Code.
+  - pkg:npm/%40anthropic-ai/claude-code                    # Anthropic commercial terms — CI-only, not distributed
+  - pkg:npm/%40anthropic-ai/claude-code-darwin-arm64       # same — platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-code-darwin-x64         # same — platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-code-linux-arm64        # same — platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-code-linux-arm64-musl   # same — platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-code-linux-x64          # same — platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-code-linux-x64-musl     # same — platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-code-win32-arm64        # same — platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-code-win32-x64          # same — platform binary of the above
+
 
 # License gate only — vulnerability scanning is covered separately by the
 # nightly/release Dependency Audit and the Semgrep / CodeQL jobs, so we don't duplicate it here.

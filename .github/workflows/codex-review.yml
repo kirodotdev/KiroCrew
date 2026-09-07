@@ -982,6 +982,55 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
+      # The adjudicator model carries a MINIMUM Claude Code version, and the
+      # action's own bundled installer can lag it (#9216: the runner shipped
+      # 2.1.240 against Opus 4.8's 2.1.255 floor, so every adjudication call
+      # returned an API 400 and the stage silently never ran, once per PR
+      # forever). Resolve the CLI from the review-cli install -- the committed
+      # lockfile staged from the BASE commit, the same supply-chain posture as
+      # the codex binary -- and assert the floor HERE, at configuration time:
+      # a model bump that outruns the pin fails THIS step visibly, the
+      # adjudicate step below is skipped, and the verdict step reports an
+      # adjudication that did not run instead of one that declined to overturn.
+      # KEEP IN SYNC with fork-gpt-review.yml.
+      - name: Assert the adjudicator's Claude Code version floor
+        id: adj_cli
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
+          || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
+          )
+        env:
+          # The minimum Claude Code the selected adjudicator model accepts
+          # (below it the API 400s the call). Bump this alongside any
+          # adjudicator model bump, and raise the @anthropic-ai/claude-code pin
+          # in .github/review-cli/package.json to satisfy it -- the assertion
+          # below is what turns a floor/pin mismatch into a configuration-time
+          # failure instead of a silent per-PR one.
+          ADJ_CLAUDE_CODE_FLOOR: "2.1.255"
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/review-cli/node_modules/.bin/claude"
+          if [ ! -x "$bin" ]; then
+            echo "::error::Claude Code is not in the review CLI install; add @anthropic-ai/claude-code to .github/review-cli/package.json (staged from the base commit). The adjudication stage cannot run."
+            exit 1
+          fi
+          # `|| true` keeps a failed or version-less `--version` from killing
+          # the step under `set -e` BEFORE the empty-value check below can name
+          # the real problem; every degraded path still exits 1.
+          installed="$("$bin" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+          if [ -z "$installed" ]; then
+            echo "::error::could not read the installed Claude Code version; the adjudication stage cannot run."
+            exit 1
+          fi
+          if [ "$(printf '%s\n%s\n' "$ADJ_CLAUDE_CODE_FLOOR" "$installed" | sort -V | head -n1)" != "$ADJ_CLAUDE_CODE_FLOOR" ]; then
+            echo "::error::Claude Code $installed does not meet the adjudicator model's minimum $ADJ_CLAUDE_CODE_FLOOR; raise the @anthropic-ai/claude-code pin in .github/review-cli/package.json."
+            exit 1
+          fi
+          echo "Claude Code $installed satisfies the adjudicator's floor $ADJ_CLAUDE_CODE_FLOOR"
+          echo "path=$bin" >> "$GITHUB_OUTPUT"
+
       - name: Opus 4.8 adjudication (blocking findings only)
         id: adjudicate
         if: >-
@@ -994,6 +1043,10 @@ jobs:
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # The floor-asserted CLI from the step above; handing it over skips
+          # the action's own installer, whose bundled version is what fell
+          # behind the adjudicator model's minimum (#9216).
+          path_to_claude_code_executable: ${{ steps.adj_cli.outputs.path }}
           # Read the repo, return text. No `gh` anything: the PR body and comment
           # threads are attacker-controllable on a public repo and must never
           # enter an agentic reviewer's context, and this stage in particular
@@ -1083,10 +1136,21 @@ jobs:
             # /ai-review override; every later PR adjudicates normally once the
             # contract is on the base.
             note="The adjudication contract is absent on the base commit, so the blocking-finding adjudication pass was disabled and GPT's verdict stands. (Expected on the PR that introduces the contract; merging it requires a maintainer /ai-review override.)"
-          elif [ "$fenced" -gt 0 ]; then
-            note="$fenced of $count blocking finding(s) are security-class and were withheld from adjudication, so the blocking verdict stands."
           elif [ "$count" -eq 0 ]; then
             note="GPT emitted [BLOCK-MERGE] but no parseable BLOCKING finding, so there was nothing to adjudicate and the blocking verdict stands."
+          elif ! grep -Fq "[GPT-ADJUDICATED] $HEAD" "$parse" \
+            && ! grep -Fq "[GPT-ADJUDICATED-FENCED] $HEAD" "$parse"; then
+            # The stage was asked to rule (count > 0) but its output carries NO
+            # adjudication marker at all: it never ran to completion -- an API
+            # error, a skipped model step, or a crash, not a ruling. This branch
+            # sits ABOVE the fenced/uphold wording on purpose (#9216): those
+            # sentences describe a verdict, and rendering one for a stage that
+            # produced none reads like an adjudication that ran and declined to
+            # overturn. Surface the failure where the conclusion is read instead.
+            note="Adjudication produced no [GPT-ADJUDICATED] marker for $HEAD: the adjudication stage FAILED TO RUN (its raw output is in the Adjudication details block -- typically an API or setup error), so no proportionality review took place and GPT's blocking verdict stands unreviewed."
+            echo "::error::the Opus 4.8 adjudication stage produced no verdict for $HEAD -- inspect the 'Opus 4.8 adjudication' step output; GPT's blocking verdict stands unreviewed."
+          elif [ "$fenced" -gt 0 ]; then
+            note="$fenced of $count blocking finding(s) are security-class and were withheld from adjudication, so the blocking verdict stands."
           elif [ "$adjudicable" -eq 0 ]; then
             note="No blocking finding was adjudicable, so the blocking verdict stands."
           elif ! grep -Fq "[GPT-ADJUDICATED] $HEAD" "$parse"; then
