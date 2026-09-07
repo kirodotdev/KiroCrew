@@ -1,0 +1,37 @@
+name: Internal Content Scan Gate
+
+# This repository's caller for the shared gate. Onboarding another repo is this
+# file, unchanged.
+#
+# TRIGGERS, STATED HONESTLY. `merge_group` fires only when a merge queue exists,
+# and this repository has none configured -- so today it fires ZERO times, and the
+# only trigger that actually runs is `push` to main, which reports AFTER the
+# content has landed. Nothing here gates a pull request.
+#
+# It is kept rather than dropped because it is the trigger a queue would use, and
+# it costs nothing while idle. Do NOT read it as pre-merge coverage.
+#
+# Closing that gap means adding `pull_request` (a same-repo PR DOES receive an
+# OIDC token; only a fork does not, and the callee's credential preflight gives a
+# fork a red check with a stated reason rather than a false pass) or adopting a
+# merge queue. See docs/system-specs/oss-fork-boundaries.md.
+on:
+  merge_group:
+  push:
+    branches: [main]
+
+jobs:
+  scan:
+    uses: ./.github/workflows/internal-content-scan.yml
+    # These have to be granted HERE. A reusable workflow's token permissions are
+    # capped by the calling job and the callee cannot elevate them, so a caller
+    # with `permissions: {}` issues no OIDC token and the role assumption fails.
+    permissions:
+      contents: read
+      id-token: write
+    # Named explicitly rather than `secrets: inherit`, which would hand the scan
+    # every secret this repository holds — signing roles, webhooks — when it needs
+    # two identifiers. Neither of these is a credential.
+    secrets:
+      KIRO_RELEASE_GATE_ROLE_ARN: ${{ secrets.KIRO_RELEASE_GATE_ROLE_ARN }}
+      KIRO_RELEASE_GATE_BUCKET: ${{ secrets.KIRO_RELEASE_GATE_BUCKET }}

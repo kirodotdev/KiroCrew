@@ -15,7 +15,7 @@ is [CONTRIBUTING.md](../../CONTRIBUTING.md).
 ## Shape
 
 CI is a **fan-out of independent workflows that one aggregator folds into a single
-verdict**, with exactly one ordering edge inside it: the eleven cheap blocking
+verdict**, with exactly one ordering edge inside it: the ten cheap blocking
 gates run in their own workflow, and both the expensive matrix and the fork
 reviewers wait for its verdict rather than racing it.
 
@@ -44,7 +44,7 @@ pull_request
 
 Three structural facts explain most of the rest:
 
-- **The cheap gates decide whether the expensive ones get to run.** The eleven
+- **The cheap gates decide whether the expensive ones get to run.** The ten
   gates in `Fast Gate` cost 198 job-seconds between them, about 70% of which is
   runner acquisition and checkout, and they finish in ~44 seconds because they run
   in parallel. A median CI run is 240 job-minutes and 54 minutes of wall clock, and
@@ -199,7 +199,7 @@ Widening that is a separate decision from moving the gates.
 
 | Job | What it enforces |
 |---|---|
-| `scrub-lint` | `scripts/scrub-lint.sh --no-history`. Fails on any internal marker in this public tree, so a sync cannot reintroduce a coupling |
+| `internal-content-scan` | Checks the lines a change ADDS against a marker list held outside this repo, fetched per run over OIDC. Its own workflow, not `fast-gate.yml`, because it needs credentials. **Reports on `push` to `main`, NOT on pull requests** — it does not gate a PR today. See [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md) |
 | `vendor-manifest` | `scripts/verify_vendor_manifest.py`. Hashes every file under `src/kiro_crew/_vendor` against the committed `scripts/vendor_manifest.sha256` — the tree is excluded from semgrep and the AI reviewers' diff, so this checksum is its only content review. Hashing the ~26MB tree takes seconds, so it is always-on like the rest of this workflow |
 | `brand-lint` | `scripts/check_brand_name.py`, self-test first. Fails on a newly added line that joins the two words of the product name. Diff-scoped: the tree still carries thousands of pre-convention prose lines, so a whole-tree gate would charge that backlog to whoever pushed next; the whole-tree count is still printed as a non-failing report |
 | `focus-cue-lint` | `scripts/check_focus_cue.py`, self-test first. Fails when a change writes the `className` of an element that then has no visible focus cue. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |

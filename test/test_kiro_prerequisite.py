@@ -5686,7 +5686,7 @@ class TestAgentSpecRepair:
         from kiro_crew import agent as agent_module
 
         self._agents_dir(tmp_path, monkeypatch)
-        # Assembled at runtime so the literal never sits in the file for scrub-lint.
+        # Assembled at runtime so the literal never sits in the file for the scan.
         secret = "ghp_" + "A" * 36
 
         def _rebuild() -> Path:

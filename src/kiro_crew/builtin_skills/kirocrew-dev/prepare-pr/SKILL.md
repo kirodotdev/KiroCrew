@@ -223,7 +223,7 @@ blocker. Use a token with Checks read access.
 
 **Platform:** GitHub — uses `gh` and GitHub Actions.
 
-**`Fast Gate`** runs eleven cheap blocking gates in ~44s, split out of `ci.yml`.
+**`Fast Gate`** runs ten cheap blocking gates in ~44s, split out of `ci.yml`.
 Two things wait on it. `ci.yml`'s `await-fast-gate` job does, so a red Fast Gate
 **skips the heavy matrix instead of racing it** — a `20` with Fast Gate red
 therefore shows far fewer reds than the diff really has, and re-reading the

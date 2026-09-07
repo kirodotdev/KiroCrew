@@ -1932,7 +1932,7 @@ class TestPreToolUseHookBlockRecovery:
         # fires on credential-SHAPED input (a plain sentinel passes through
         # untouched, so this test would prove nothing), but a real key shape
         # sitting in the source trips the source-text scanners --
-        # `scripts/scrub-lint.sh` and Semgrep's
+        # internal-content-scan and Semgrep's
         # `detected-aws-access-key-id-value`. Splitting satisfies both, and
         # matches the existing sentinels in code_review_sage's tests.
         secret = "AKIA" + "1234567890ABCDEF"
@@ -2068,7 +2068,7 @@ class TestDenyRowTitleRedaction:
 
     # Assembled at runtime, never as one literal: the redactor only fires on
     # credential-SHAPED input, and a real key shape in the source trips the
-    # source-text scanners (`scripts/scrub-lint.sh`, Semgrep).
+    # source-text scanners (internal-content-scan, Semgrep).
     _SECRET = "AKIA" + "1234567890ABCDEF"
 
     def _invalid_title(self) -> str:

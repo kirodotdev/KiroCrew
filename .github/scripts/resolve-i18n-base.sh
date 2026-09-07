@@ -8,7 +8,7 @@
 # ## Why `.github/scripts/` and not the repo-root `scripts/`
 #
 # Root `scripts/` holds product and dev tooling that a contributor runs by hand
-# (`scrub-lint.sh`, `clean.sh`, `check_npm_audit.py`). This one is workflow-only glue:
+# (`clean.sh`, `check_npm_audit.py`). This one is workflow-only glue:
 # it reads `github.event.*` values that exist nowhere else and is invoked through
 # `$GITHUB_WORKSPACE` by three ci.yml steps. It lives next to the workflows that are
 # its only caller. Note the repo has no shellcheck step, so a `.sh` is unlinted under

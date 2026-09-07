@@ -1,0 +1,144 @@
+name: Internal Content Scan
+
+# Shared internal-content gate for the Kiro org. Any repository in the org can
+# call this workflow; onboarding costs the owning team no AWS access and no
+# repo-specific configuration.
+#
+# What it does: assumes a read-only role by OIDC, fetches a private ruleset
+# bundle from S3, verifies its digest, and checks the ADDED lines of this
+# change's diff against it. Pass or fail.
+#
+# Diff-only on purpose. Scanning the whole tree means every pre-existing line
+# has to be judged and exempted before the gate can block anything, which is how
+# scripts/scrub-lint.sh ended up passing on every run. Existing content is out
+# of scope; the job is to stop NEW internal content from being added.
+#
+# The marker list is not in this file and never appears in the log. The bundle
+# unpacks outside the workspace, so it cannot be committed or uploaded as an
+# artifact. Findings print the added line — already public in the contributor's
+# own diff — plus the rule id, never the pattern that matched.
+
+on:
+  workflow_call:
+    secrets:
+      KIRO_RELEASE_GATE_ROLE_ARN:
+        description: Read-only role to assume. Pass it explicitly from the caller, not via secrets:inherit.
+        # Deliberately NOT `required: true`. A required secret fails the
+        # workflow CALL before any job starts, so the run has no log, no check
+        # annotation and no stated reason -- it just never happens. Optional
+        # lets the job start and say why it cannot reach a verdict. See the
+        # credential preflight below: absent credentials FAIL, they never pass.
+        required: false
+      KIRO_RELEASE_GATE_BUCKET:
+        description: Bucket holding the ruleset. Org-level secret, so the account id stays out of public YAML.
+        required: false
+
+permissions: {}
+
+jobs:
+  scan:
+    name: internal-content-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # AWS OIDC; no long-lived keys exist for this role
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Both ends of the range have to be present to diff them.
+          fetch-depth: 0
+
+      - name: Compute the diff
+        env:
+          # merge_group and push carry different shapes; neither is interpolated
+          # into the script body.
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MG_BASE:-}" ]; then
+            BASE="$MG_BASE"; HEAD="$MG_HEAD"
+          else
+            BASE="$PUSH_BEFORE"; HEAD="$PUSH_HEAD"
+          fi
+          # A branch's first push reports an all-zero "before"; fall back to the
+          # parent so the range is a real one rather than the whole history.
+          case "$BASE" in
+            0000000000000000000000000000000000000000|'') BASE="$HEAD^" ;;
+          esac
+          echo "range $BASE...$HEAD"
+          git diff --unified=0 "$BASE" "$HEAD" > "$RUNNER_TEMP/change.diff"
+          wc -l < "$RUNNER_TEMP/change.diff" | xargs echo "diff lines:"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the engine's only dependency
+        run: pip install --disable-pip-version-check 'pyyaml==6.0.2'
+
+      - name: Require credentials before claiming a verdict
+        env:
+          ROLE: ${{ secrets.KIRO_RELEASE_GATE_ROLE_ARN }}
+          BUCKET: ${{ secrets.KIRO_RELEASE_GATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          # The secrets are declared optional so this job can START without them
+          # and tell you why. It must not therefore PASS without them: "no
+          # credentials" is the same class as the engine's exit 2 -- no verdict
+          # was reached -- and a scan that reaches no conclusion must never be
+          # read as a clean one. That is the exact fail-open this gate replaced.
+          #
+          # A caller with no credentials is a fork PR, or a repo that was
+          # onboarded without its two secrets set. Both need a red check with a
+          # reason, not a green one that scanned nothing.
+          if [ -z "${ROLE:-}" ] || [ -z "${BUCKET:-}" ]; then
+            echo "::error title=internal-content-scan reached no verdict::\
+          This run has no credentials for the ruleset, so the added lines were \
+          NOT scanned. A fork PR cannot receive them: run the scan from the base \
+          repository instead. If this is not a fork, the calling repository is \
+          missing KIRO_RELEASE_GATE_ROLE_ARN / KIRO_RELEASE_GATE_BUCKET."
+            exit 1
+          fi
+          echo "credentials present; proceeding to scan"
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ secrets.KIRO_RELEASE_GATE_ROLE_ARN }}
+          aws-region: us-west-2
+          role-session-name: internal-content-scan-${{ github.run_id }}
+
+      - name: Fetch and verify the ruleset
+        env:
+          BUCKET: ${{ secrets.KIRO_RELEASE_GATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          # $RUNNER_TEMP, never the workspace: nothing here can be committed or
+          # swept into an artifact upload.
+          GATE="$RUNNER_TEMP/release-gate"
+          mkdir -p "$GATE/bundle"
+          cd "$GATE"
+          aws s3 cp "s3://$BUCKET/ruleset/ruleset.tar.gz" ruleset.tar.gz --no-progress
+          aws s3 cp "s3://$BUCKET/ruleset/ruleset.sha256" ruleset.sha256 --no-progress
+          # Verify BEFORE extracting. A bundle that does not match its published
+          # digest is not unpacked at all.
+          sha256sum --check ruleset.sha256
+          tar xzf ruleset.tar.gz -C bundle
+
+      - name: Scan
+        run: |
+          set -euo pipefail
+          # 0 clean, 1 an added line carries an internal marker, 2 the ruleset
+          # itself is broken. 2 fails like 1 does: a silently broken scan is the
+          # fail-open this gate exists to remove.
+          python3 "$RUNNER_TEMP/release-gate/bundle/scrub_engine.py" \
+            --rules "$RUNNER_TEMP/release-gate/bundle" \
+            --diff "$RUNNER_TEMP/change.diff"
+
+      - name: Drop the ruleset
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/release-gate"

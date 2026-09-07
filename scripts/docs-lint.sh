@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # docs-lint — make "every doc is indexed, every link resolves" a real rule.
 #
-# Thin wrapper so CI and humans invoke this the same way scrub-lint.sh is invoked.
+# Thin wrapper so CI and humans invoke this the same way.
 # Run from anywhere: --test self-tests the checks, no args lints the trees.
 # Exit 0 = clean, 1 = findings, 2 = usage/environment error.
 set -eu

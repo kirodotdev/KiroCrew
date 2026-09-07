@@ -346,7 +346,7 @@ describe('ArtifactDeployPage — profile registry mutations', () => {
     await profilesLoaded()
     fireEvent.click(screen.getAllByRole('button', { name: /Verify/ })[0])
     // Built from the mock rather than inlined: the literal "account <12
-    // digits>" string is the shape scripts/scrub-lint.sh rejects.
+    // digits>" string is the shape the internal-content scan rejects.
     const account = (PROFILES[0] as { account: string }).account
     expect(
       await screen.findByText(new RegExp(`access reachable \\(account ${account}\\)`)),

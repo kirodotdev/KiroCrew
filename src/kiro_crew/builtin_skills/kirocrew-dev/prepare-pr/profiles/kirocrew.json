@@ -40,7 +40,6 @@
     "./scripts/docs-lint.sh",
     "python3 scripts/check_per_file_coverage.py --test",
     "python3 scripts/verify_vendor_manifest.py",
-    "./scripts/scrub-lint.sh --no-history",
     "uv tool run --quiet --from \"cfn-lint==1.22.3\" cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml",
     "npm --prefix website run build",
     "(cd website && npx tsc -b)",

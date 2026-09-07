@@ -3106,7 +3106,8 @@ These are warnings, not errors, and `eslint` reports 0 errors for this file.
 Adapters for ticketing / on-call / pipeline systems that are not public products can
 live in a **separate companion package**, developed out of tree, reaching the core only
 through the ADD-only registry. This repo contains no reference to any such package
-beyond the neutral extension point; `scripts/scrub-lint.sh` gates the public tree.
+beyond the neutral extension point; the `internal-content-scan` check gates the
+public tree.
 
 ### The discovery seam (`backend/companion.py`)
 

@@ -42,7 +42,7 @@ extension seams, never by editing core. The full list — build and infra, ident
 telemetry, the removed product surfaces, and the Channels / Board divergences an
 upstream sync must not restore — is
 [oss-fork-boundaries](../docs/system-specs/oss-fork-boundaries.md), gated by
-`scripts/scrub-lint.sh`.
+the `internal-content-scan` check.
 
 > **`AUTOSDE.yaml` in this directory is live and authoritative.** The frontend
 > review rules it declares are read by the `claude-review`, `codex-review`,

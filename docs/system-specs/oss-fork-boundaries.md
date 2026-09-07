@@ -71,15 +71,59 @@ disk.
 
 ## The gate
 
-`scripts/scrub-lint.sh`'s internal-marker pass scans `src/`, `website/src/`,
-`website/docs/`, `docs/`, `skills/`, `scripts/`, `config/`, `packaging/` and the
-top-level markdown. It deliberately skips `test/`, where the pattern hits hundreds of
-legitimate lines; narrower ARCC and review-id passes cover that tree instead, and a
-separate identity pass (personal paths and employee emails) does include it. Run the
-script before pushing a sync.
+`.github/workflows/internal-content-scan.yml` runs on `merge_group` and on pushes
+to `main`. It checks **only the lines a change adds**, against a marker list that
+is deliberately **not in this repo** — it lives in a private bucket and is fetched
+per run over GitHub's OIDC identity, with no long-lived AWS keys anywhere.
 
-The allowlist (`scripts/scrub-allowlist.txt`) carries the lines that must name a
-removed system in order to forbid it. Most entries are scoped to one file and one
-pattern, so a marker that escapes into a third file is still caught — but **`^docs/` is
-a whole-tree exemption**, so this doc's own list passes and no internal marker anywhere
-under `docs/` is gated. Keeping `docs/` clean is therefore a convention, not a gate.
+Three things follow from that, and they are the point rather than side effects:
+
+- **Pre-existing content is out of scope.** You are never asked to clean up
+  someone else's line to land yours, and adopting the gate needed no repo-wide
+  cleanup first.
+- **A list kept outside the repo it polices cannot be read off to find out what to
+  avoid writing.** The gate this replaced hardcoded its wordlists here, which is
+  also how they drifted for months without anyone noticing. Do not add wordlists
+  back to `scripts/`.
+- **A false positive is fixed by fixing the rule**, not by adding yourself to an
+  exemption file — there isn't one. The rule lives in a private package; say so on
+  the PR and it gets fixed at the source.
+
+Reading a failure:
+
+```
+docs/foo.md:42:15: [internal-domain-amazon] see https://<internal-wiki-host>/SomePage
+```
+
+Path, line, column, the rule id, and your own added line. The real output shows
+the host verbatim; it is redacted here so this file does not carry the thing it
+warns about.
+
+Exit 1 means remove the marker from your change. Exit 2 means the gate could not
+reach a verdict — a broken ruleset, or a diff that was not intact. That is not
+your change's fault and not something to retry past. It fails the build on
+purpose: a scan that reaches no conclusion must never be read as a pass.
+
+### What it replaced, and why that one did not work
+
+The two files that gate used to live in — scripts/scrub-lint.sh and its
+allowlist — **no longer exist in this repo**. Their names are written here without
+backticks on purpose: the docs linter reads a backticked repo path as a citation of
+live code and rightly fails on one that resolves to nothing. That gate was vacuous
+in three independent ways, and the third is why the wordlists could not simply be
+moved:
+
+- Its alias pass read `scripts/.scrub-aliases.txt`, a file deliberately never
+  committed, so in CI it printed `skipped` — and a skip counted as a **PASS on
+  every run since the check was written**.
+- CI invoked it with `--no-history` on a `fetch-depth: 1` checkout, where
+  `git log --all` sees one commit, so the history pass was a no-op.
+- Its wordlists lived in the public repo they were meant to police. Anyone could
+  read them to learn precisely what not to write down.
+
+**Known gap while the replacement is not yet blocking.** The new check does not
+run on `pull_request` (a fork PR gets no OIDC token) and there is no merge queue,
+so `merge_group` never fires. Until it is wired to report on pull requests and
+registered as a required status check, nothing gates internal content *before*
+merge; the `push` to `main` run reports it afterwards. This window is deliberate
+and temporary — it is not a reason to reintroduce a repo-local wordlist.

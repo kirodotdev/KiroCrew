@@ -146,9 +146,6 @@ docs/APP_DEVELOPER_GUIDE.md
 runs.json
 .review/
 
-# Scrub-lint alias list (internal, not published)
-scripts/.scrub-aliases.txt
-
 # Local session summary (working notes, not part of the PR)
 SESSION_SUMMARY.md
 

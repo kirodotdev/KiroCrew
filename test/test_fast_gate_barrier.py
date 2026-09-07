@@ -1,6 +1,6 @@
 """The Fast Gate barrier: what `await-fast-gate` must guarantee for the split to be safe.
 
-The eleven cheap blocking gates live in ``.github/workflows/fast-gate.yml`` so that
+The cheap blocking gates live in ``.github/workflows/fast-gate.yml`` so that
 two consumers can key on them before the expensive work starts: ci.yml's heavy jobs
 wait through ``await-fast-gate``, and the five fork reviewers trigger on the
 workflow's completion. A ``needs:`` edge cannot cross a workflow file, so that
@@ -42,10 +42,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CI = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _FAST_GATE = _REPO_ROOT / ".github" / "workflows" / "fast-gate.yml"
 
-# The eleven gates the split moved. Named explicitly rather than derived from the
-# file, so a gate silently DROPPED during a future edit fails here.
+# The gates the split moved. Named explicitly rather than derived from the
+# file, so a gate silently DROPPED during a future edit fails here. scrub-lint is
+# gone: its replacement is the internal-content-scan check, which runs in its own
+# workflow because it needs OIDC and a private ruleset, not a repo script.
 _GATE_JOBS = (
-    "scrub-lint",
     "vendor-manifest",
     "brand-lint",
     "focus-cue-lint",
@@ -115,7 +116,7 @@ def barrier_step(ci: dict) -> dict:
 
 
 class TestTheGatesLiveInTheGateWorkflow:
-    def test_all_eleven_gates_are_in_fast_gate_and_none_left_in_ci(
+    def test_all_gates_are_in_fast_gate_and_none_left_in_ci(
         self, ci: dict, fast_gate: dict
     ) -> None:
         missing = [job for job in _GATE_JOBS if job not in fast_gate["jobs"]]

@@ -19,7 +19,7 @@ not a code-writing system that happens to measure."*
 | Req | Decision |
 |---|---|
 | 1. GitHub as native code host | `gh pr create --draft` replaces `cr --new-review`. The source's own `spine/profile.py` names this exact substitution as the intended external-host path, so the seam already exists. PR status/checks come from Kiro Crew's existing `source_providers.fetch_pull_request{,_checks}` — no new API client. |
-| 2. Remove all host-specific internals | Delete/replace: the internal review service + its cookie auth, the internal review CLI prompt block, internal SSH remote construction, the internal build-tool gates, the internal build config and setup shim, internal skill/toolchain discovery, and hardcoded internal model ids and hosts. Verified by the repo's `scripts/scrub-lint.sh`. |
+| 2. Remove all host-specific internals | Delete/replace: the internal review service + its cookie auth, the internal review CLI prompt block, internal SSH remote construction, the internal build-tool gates, the internal build config and setup shim, internal skill/toolchain discovery, and hardcoded internal model ids and hosts. Verified by the repo's `internal-content-scan` check. |
 | 3. Integrate with chats + more chats | Three tiers (see below) — upstream had one fire-and-forget launcher. |
 | 4. Focus on PRs not CRs | Whole vocabulary renamed CR→PR: `pr_recipe`, `pr_watchers`, `pr_checks`, `pr_queue/`, ledger `pr` field. Watchers track PR mergeability and CI, not the upstream review service's analyzers. |
 
