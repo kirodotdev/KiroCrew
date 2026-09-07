@@ -106,7 +106,12 @@ def add_pending(params: dict[str, Any]) -> dict[str, Any]:
     # required=True: a deploy store that cannot obtain cross-process exclusion
     # must fail loudly rather than risk a double-deploy / lost write. flock_compat
     # is a Windows no-op, so this uses platform_compat's real msvcrt lock.
-    with open(lock_path, "w") as fd:
+    # touch + "r+": writable (msvcrt.locking needs it) but NON-TRUNCATING — a
+    # truncating "w" open of a lock file whose first byte another holder already
+    # locked raises a sharing violation on Windows instead of waiting. Full
+    # rationale: work_ledger._open_lock.
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with file_lock(fd.fileno(), exclusive=True, required=True):
             entries = _prune_expired(_load_raw())
             entries.append(entry)
@@ -127,7 +132,10 @@ def remove_pending(entry_id: str) -> bool:
     """Remove an entry (confirm or dismiss). Returns True if found."""
     lock_path = _store_path().with_suffix(".lock")
     _store_path().parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as fd:
+    # touch + "r+": writable but non-truncating; see add_pending above and
+    # work_ledger._open_lock for the Windows sharing-violation rationale.
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with file_lock(fd.fileno(), exclusive=True, required=True):
             entries = _prune_expired(_load_raw())
             before = len(entries)
@@ -145,7 +153,10 @@ def claim_pending(entry_id: str) -> dict[str, Any] | None:
     """
     lock_path = _store_path().with_suffix(".lock")
     _store_path().parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as fd:
+    # touch + "r+": writable but non-truncating; see add_pending above and
+    # work_ledger._open_lock for the Windows sharing-violation rationale.
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with file_lock(fd.fileno(), exclusive=True, required=True):
             entries = _prune_expired(_load_raw())
             claimed = None

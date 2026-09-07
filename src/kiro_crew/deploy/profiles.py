@@ -123,7 +123,12 @@ def locked_registry() -> Generator[dict[str, Any], None, None]:
     # required=True: a lost profile write is silent data loss, so refuse to
     # proceed without cross-process exclusion. flock_compat is a Windows no-op,
     # so this uses platform_compat's real msvcrt lock.
-    with open(lock_path, "w") as fd:
+    # touch + "r+": writable (msvcrt.locking needs it) but NON-TRUNCATING — a
+    # truncating "w" open of a lock file whose first byte another holder already
+    # locked raises a sharing violation on Windows instead of waiting. Full
+    # rationale: work_ledger._open_lock.
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with file_lock(fd.fileno(), exclusive=True, required=True):
             reg = load_registry()
             yield reg
@@ -217,7 +222,10 @@ def load_registry() -> dict[str, Any]:
 def save_registry(reg: dict[str, Any]) -> dict[str, Any]:
     _data_dir().mkdir(parents=True, exist_ok=True)
     lock_path = _registry_path().with_suffix(".lock")
-    with open(lock_path, "w") as fd:
+    # touch + "r+": writable but non-truncating; see locked_registry above and
+    # work_ledger._open_lock for the Windows sharing-violation rationale.
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
         with file_lock(fd.fileno(), exclusive=True, required=True):
             tmp_fd = tempfile.NamedTemporaryFile(
                 mode="w", dir=str(_data_dir()), suffix=".json.tmp",
