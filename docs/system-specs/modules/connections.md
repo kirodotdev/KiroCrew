@@ -49,9 +49,11 @@ left literal for kiro-cli parity. So a header that authenticates in a session
 authenticates in the probe. A still-unresolved reference is **not a supplied
 credential**: a 401 against it reports `needs_auth` rather than a
 rejected-credential error whose remediation advice would be to delete a working
-header. Probe-error redaction keys on the values the probe actually sent, so an
-error echoing a *resolved* secret is scrubbed by the exact-value layer, not
-left to the generic credential-shaped scanners alone.
+header. Probe-error redaction keys on the values the probe actually sent —
+including each individually resolved placeholder value, since a partially
+expanded header (`${TOKEN}${MISSING}`) sends a value a server can echo only a
+fragment of — so an error echoing a *resolved* secret is scrubbed by the
+exact-value layer, not left to the generic credential-shaped scanners alone.
 
 `GET /api/connections/status` answers the authorization axis only. It reports
 `grantPresent` — a local, network-free stat of kiro-cli's OAuth artifact

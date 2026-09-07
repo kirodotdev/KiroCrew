@@ -4487,6 +4487,79 @@ class TestProbeHeaderReferenceExpansion:
         assert secret not in cached.error
         assert MCP_REDACTED_HEADER_VALUE in cached.error
 
+    @pytest.mark.asyncio
+    async def test_a_partially_expanded_header_still_scrubs_the_resolved_fragment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`${TOKEN}${MISSING}` expands to `<resolved>${MISSING}`: the FULL sent
+        value and the Authorization suffix both carry the literal tail, so a
+        server echoing only the resolved token would slip past a scrub set
+        keyed on whole values. Each individually resolved placeholder value
+        must be in the scrub set on its own."""
+        secret = "kc-9206-resolved-token"
+        monkeypatch.setenv("KC_PROBE_TEST_TOKEN", secret)
+        monkeypatch.delenv("KC_PROBE_MISSING", raising=False)
+        server = McpServerInfo(
+            name="remote",
+            url="https://example.com/mcp",
+            headers={"Authorization": "Bearer ${env:KC_PROBE_TEST_TOKEN}${env:KC_PROBE_MISSING}"},
+        )
+
+        init_resp = self._resp(
+            200,
+            body={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"message": f"upstream rejected {secret} as expired"},
+            },
+        )
+        mock_session = self._session_returning(init_resp)
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "error"
+        serialized = result.to_dict()["error"]
+        assert secret not in serialized
+        assert MCP_REDACTED_HEADER_VALUE in serialized
+        cached = probe_metadata("remote")
+        assert cached is not None
+        assert secret not in cached.error
+
+    @pytest.mark.asyncio
+    async def test_a_tiny_resolved_fragment_does_not_corrupt_ordinary_prose(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resolved placeholder value below the credential minimum length
+        must NOT join the scrub set as a bare substring: no boundary rule
+        separates a one- or two-character value from prose words, and masking
+        it would corrupt unrelated error text."""
+        monkeypatch.setenv("KC_PROBE_TINY", "ab")
+        server = McpServerInfo(
+            name="remote",
+            url="https://example.com/mcp",
+            headers={"X-Key": "x-${env:KC_PROBE_TINY}-y"},
+        )
+
+        init_resp = self._resp(
+            200,
+            body={
+                "jsonrpc": "2.0",
+                "id": 1,
+                # "ab" appears both STANDALONE (a boundary-anchored pattern
+                # would mask it — the case only the minimum-length skip
+                # protects) and embedded in a longer word.
+                "error": {"message": "got ab grade abnormal response"},
+            },
+        )
+        mock_session = self._session_returning(init_resp)
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession", return_value=mock_session):
+            result = await _probe_remote(server)
+
+        assert result.status == "error"
+        serialized = result.to_dict()["error"]
+        assert "got ab grade" in serialized
+        assert "abnormal" in serialized
+
     def test_needs_authorization_ignores_an_unresolved_reference(self) -> None:
         """An Authorization value still carrying ``${VAR}`` is not a supplied
         credential: the premise behind "any auth key present means a credential

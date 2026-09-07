@@ -22,7 +22,7 @@ import shutil
 import signal
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -444,7 +444,9 @@ def _cache_probe(server: McpServerInfo) -> None:
     _probe_cache[server.name] = _ProbeResult(
         status=server.status,
         tools=list(server.tools),
-        error=redact_mcp_error(server.error, server.redaction_headers),
+        error=redact_mcp_error(
+            server.error, server.redaction_headers, server.resolved_header_values or ()
+        ),
         probed_at=time.monotonic(),
         capabilities=(dict(server.capabilities) if isinstance(server.capabilities, dict) else None),
         protocol_version=server.protocol_version,
@@ -515,7 +517,7 @@ def redact_mcp_headers(headers: object) -> dict[str, str]:
     return {name: MCP_REDACTED_HEADER_VALUE for name in headers if isinstance(name, str)}
 
 
-def redact_mcp_error(error: object, headers: object) -> str:
+def redact_mcp_error(error: object, headers: object, extra_values: Iterable[str] = ()) -> str:
     """Scrub credential material from a probe error before it leaves the backend.
 
     Two layers, so every consumer (``to_dict``, the probe cache, the probe
@@ -556,6 +558,20 @@ def redact_mcp_error(error: object, headers: object) -> str:
             if len(credential) >= _MCP_CREDENTIAL_SUFFIX_MIN_LENGTH:
                 needs_boundary = len(credential) < _MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH
                 values.setdefault(credential, needs_boundary)
+
+    # Individually resolved placeholder values (see _expand_header_placeholders):
+    # a PARTIALLY expanded header sends `<resolved>${MISSING}`, so neither the
+    # full sent value nor the Authorization suffix matches a server echoing only
+    # the resolved fragment. Same length regimes as credential suffixes: below
+    # the minimum no boundary rule separates the value from prose words, so it
+    # is skipped rather than corrupting unrelated text.
+    for raw_extra in extra_values:
+        if not isinstance(raw_extra, str):
+            continue
+        extra = raw_extra.strip()
+        if len(extra) < _MCP_CREDENTIAL_SUFFIX_MIN_LENGTH:
+            continue
+        values.setdefault(extra, len(extra) < _MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH)
 
     if not values:
         return error
@@ -599,6 +615,11 @@ class McpServerInfo:
     # serialized: ``to_dict``'s headers block goes through ``redact_mcp_headers``,
     # which is name-keyed and value-independent.
     sent_headers: dict[str, str] | None = None
+    # Every placeholder value the probe's expansion resolved, individually —
+    # the extra_values leg of the redact_mcp_error scrub set. A partially
+    # expanded header's sent value would not match a server echoing only the
+    # resolved fragment. Never serialized.
+    resolved_header_values: list[str] | None = None
     # Remote-only OAuth hints carried verbatim to the runtime, which owns the
     # authorization exchange. Kiro Crew never enforces scopes and never registers
     # a client — it only refuses to lose these fields while syncing.
@@ -686,7 +707,9 @@ class McpServerInfo:
             "args": self.args or [],
             "status": self.status,
             "tools": self.tools,
-            "error": redact_mcp_error(self.error, self.redaction_headers),
+            "error": redact_mcp_error(
+                self.error, self.redaction_headers, self.resolved_header_values or ()
+            ),
             "source": self.source,
             "presence": dict(self.presence),
             "probeMode": self.probe_mode,
@@ -1389,7 +1412,9 @@ async def _read_jsonrpc_response(resp: aiohttp.ClientResponse) -> dict:
     return await resp.json()
 
 
-def _expand_header_placeholders(headers: Mapping[str, str]) -> dict[str, str]:
+def _expand_header_placeholders(
+    headers: Mapping[str, str],
+) -> tuple[dict[str, str], list[str]]:
     """Resolve ``${VAR}`` / ``${env:VAR}`` references in remote-probe header values.
 
     A static header whose value carries a runtime reference is a documented
@@ -1407,17 +1432,36 @@ def _expand_header_placeholders(headers: Mapping[str, str]) -> dict[str, str]:
     function-local because ``mcp_gateway.preflight`` / ``evaluate`` import this
     module at module scope; keeping the rewriter off this module's import graph
     avoids handing every consumer that never probes the rewriter's imports.
+
+    Returns ``(expanded_headers, resolved_values)``. The second element is
+    every placeholder value that actually resolved, INDIVIDUALLY: a partially
+    expanded value like ``${TOKEN}${MISSING}`` sends ``<resolved>${MISSING}``,
+    so a scrub set keyed on whole sent values would miss a server echoing only
+    the resolved fragment. Each resolved value therefore joins the
+    ``redact_mcp_error`` scrub set on its own (see its ``extra_values``).
     """
     from kiro_crew.mcp_gateway.rewriter import (
+        _ENV_VAR_PLACEHOLDER,
         _expand_env_placeholders,
         _placeholder_source_env,
     )
 
     source = _placeholder_source_env()
-    return {
-        name: (_expand_env_placeholders(value, source=source) if isinstance(value, str) else value)
-        for name, value in headers.items()
-    }
+    expanded: dict[str, str] = {}
+    resolved: list[str] = []
+    for name, value in headers.items():
+        if isinstance(value, str):
+            for match in _ENV_VAR_PLACEHOLDER.finditer(value):
+                # The same lookup _expand_env_placeholders performs against the
+                # same source view; a miss stays literal and contributes no
+                # scrub entry (the literal is not a secret).
+                hit = source.get(match.group(1))
+                if hit is not None:
+                    resolved.append(hit)
+            expanded[name] = _expand_env_placeholders(value, source=source)
+        else:
+            expanded[name] = value
+    return expanded, resolved
 
 
 def _header_reference_unresolved(value: object) -> bool:
@@ -1572,7 +1616,9 @@ async def _probe_remote(server: McpServerInfo) -> McpServerInfo:
         # presents the same credential the session runtime presents. Stored on
         # the row because redaction must key on the values that actually left
         # the process (see McpServerInfo.redaction_headers).
-        server.sent_headers = _expand_header_placeholders(server.headers)
+        server.sent_headers, server.resolved_header_values = _expand_header_placeholders(
+            server.headers
+        )
         hdrs = {
             **server.sent_headers,
             "Content-Type": "application/json",
