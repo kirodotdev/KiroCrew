@@ -4,7 +4,7 @@ import { readSource } from './readSource'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { OverflowMenu, breadcrumbSegments } from '../components/MarkdownPanel'
+import { OverflowMenu, breadcrumbSegments, FileHeaderBreadcrumb } from '../components/MarkdownPanel'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 
@@ -407,6 +407,70 @@ describe('breadcrumbSegments', () => {
   it('handles a bare filename as a single file segment', () => {
     const crumbs = breadcrumbSegments('/README.md')
     expect(crumbs).toEqual([{ seg: 'README.md', path: '/README.md', isFile: true }])
+  })
+})
+
+describe('FileHeaderBreadcrumb accessibility (#7900)', () => {
+  const path = '/home/user/project/src/PackageName/src/PackageName/index.ts'
+
+  it('shows the full path on pointer hover via title', () => {
+    // The breadcrumb only renders the last three segments, so a same-named file
+    // deep in a nested tree is ambiguous; the full path is the tooltip value.
+    render(<FileHeaderBreadcrumb filePath={path} />, { wrapper })
+    const group = screen.getByRole('group')
+    expect(group).toHaveAttribute('title', path)
+    // Only the tail three segments are visible text.
+    expect(group).toHaveTextContent('PackageName')
+    expect(group).not.toHaveTextContent('/home/user/project')
+  })
+
+  it('exposes the full path to keyboard and screen-reader users, not only pointer', () => {
+    // A native title is pointer-only. The regression this guards: without the
+    // aria-label + tabIndex the full path is unreachable without a mouse.
+    render(<FileHeaderBreadcrumb filePath={path} />, { wrapper })
+    const group = screen.getByRole('group')
+    // Named with the full path, so a screen reader announces it on focus.
+    expect(group).toHaveAttribute('aria-label', path)
+    // In the tab order, so a keyboard user can move focus onto it.
+    expect(group).toHaveAttribute('tabindex', '0')
+    // The path is genuinely reachable by focus, not merely present in the DOM.
+    ;(group as HTMLElement).focus()
+    expect(group).toHaveFocus()
+    // The accessible name a screen reader would read equals the full path.
+    expect(screen.getByRole('group', { name: path })).toBe(group)
+  })
+
+  it('shows the full path on screen while focused, for a sighted keyboard user', () => {
+    // A screen reader hears the aria-label, but a sighted keyboard-only user
+    // hears nothing and a native title does not open on focus. So the full path
+    // is also printed on screen while the breadcrumb holds focus, and not
+    // before (it would otherwise clutter the header for everyone).
+    render(<FileHeaderBreadcrumb filePath={path} />, { wrapper })
+    const group = screen.getByRole('group')
+    expect(screen.queryByTestId('file-header-full-path')).not.toBeInTheDocument()
+    fireEvent.focus(group)
+    const readout = screen.getByTestId('file-header-full-path')
+    expect(readout).toHaveTextContent(path)
+    // aria-hidden so the screen reader is not told the path twice.
+    expect(readout).toHaveAttribute('aria-hidden', 'true')
+    // Bound to BOTH edges of the header bar (its px-3 padding), so its right
+    // edge is the panel's inner edge and a long path wraps inside a narrow
+    // panel instead of running off it (the case the readout exists for).
+    expect(readout.className).toContain('left-3')
+    expect(readout.className).toContain('right-3')
+    expect(readout.className).toContain('break-all')
+    fireEvent.blur(group)
+    expect(screen.queryByTestId('file-header-full-path')).not.toBeInTheDocument()
+  })
+
+  it('distinguishes two same-named files in different directories by accessible name', () => {
+    const a = '/repo/alpha/index.ts'
+    const b = '/repo/beta/index.ts'
+    const { unmount } = render(<FileHeaderBreadcrumb filePath={a} />, { wrapper })
+    expect(screen.getByRole('group')).toHaveAttribute('aria-label', a)
+    unmount()
+    render(<FileHeaderBreadcrumb filePath={b} />, { wrapper })
+    expect(screen.getByRole('group')).toHaveAttribute('aria-label', b)
   })
 })
 

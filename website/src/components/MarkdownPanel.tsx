@@ -83,6 +83,77 @@ export function breadcrumbSegments(filePath: string): BreadcrumbSegment[] {
   })
 }
 
+/**
+ * The file-viewer header's path display. Only the last three segments are shown
+ * (see breadcrumbSegments), so the full path lives in the hover affordance.
+ *
+ * Three routes to the full path, one per user:
+ * - `title` shows it on POINTER hover.
+ * - `role="group"` + `aria-label={filePath}` name the focused element with the
+ *   full path, so a SCREEN READER announces it on focus.
+ * - a small readout below the breadcrumb, shown only while it has keyboard
+ *   focus, prints the full path for a SIGHTED KEYBOARD-only user, who hears no
+ *   aria-label and to whom a native `title` does not open on focus.
+ *
+ * `tabIndex={0}` is what puts the element in the tab order in the first place.
+ * The label and the readout both ARE the path (runtime data), so no localized
+ * string is added. Right-click still opens the FilePathMenu.
+ *
+ * Exported so the accessibility contract is unit-testable without mounting the
+ * whole panel (which drags in the Pierre editor tree).
+ */
+export function FileHeaderBreadcrumb({ filePath }: { filePath: string }) {
+  const crumbs = breadcrumbSegments(filePath)
+  const [focused, setFocused] = useState(false)
+  return (
+    // Content-sized (NOT flex-1), so the header keeps its original order:
+    // breadcrumb, then the diff-stats badge beside the filename, then the
+    // spacer, then the actions. The focus readout below is anchored to the
+    // header BAR (its relative ancestor), not to this row, so its width is the
+    // panel's, not the compressed breadcrumb's -- see the readout comment.
+    <>
+      <FilePathMenu filePath={filePath}>
+        {/* Focusable so a keyboard user can read the full path: a screen reader
+            from the accessible name, a sighted keyboard user from the readout
+            below. Same focusable-region pattern as CodeBlock / FileRenderers. */}
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+        <div
+          className="flex items-center min-w-0 outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-sm"
+          title={filePath}
+          role="group"
+          aria-label={filePath}
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+          tabIndex={0}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+        >
+          {crumbs.map((c, i) => (
+            <span key={i} className="flex items-center min-w-0 text-[12px]">
+              {i > 0 && <ChevronRight size={14} className="text-muted opacity-60 shrink-0 mx-0.5" />}
+              <span className={`truncate ${c.isFile ? 'text-text-strong font-medium' : 'text-muted'}`}>{c.seg}</span>
+            </span>
+          ))}
+        </div>
+      </FilePathMenu>
+      {focused && (
+        // The visible half of the keyboard route: the full path on screen for a
+        // sighted keyboard user. aria-hidden because the group's aria-label
+        // already carries it, so a screen reader would otherwise hear it twice.
+        // Anchored left-3 right-3 to the header BAR (its relative ancestor, with
+        // matching px-3), so its right edge is the panel's inner edge: the path
+        // wraps (break-all) inside the panel and the box grows downward, never
+        // past the edge, at any panel width -- and the header's own layout
+        // (diff badge included) is left exactly as it was.
+        <span
+          aria-hidden="true"
+          data-testid="file-header-full-path"
+          className="absolute left-3 right-3 top-full mt-1 z-10 px-2 py-1 rounded-md border border-border bg-bg-elevated text-[11px] font-mono text-text-strong break-all shadow-sm"
+        >{filePath}</span>
+      )}
+    </>
+  )
+}
+
 export function findCoords(content: string, selected: string): { line: number; column: number } | undefined {
   if (!selected) return undefined
   const idx = content.indexOf(selected)
@@ -1751,8 +1822,6 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     )}
   </>)
 
-  // Breadcrumb: last two directories + filename (full path in tooltip/copy).
-  const crumbs = breadcrumbSegments(filePath)
   // Diff-mode +N/-N stats over the same original/modified pair the diff view shows.
   const diffStats = useMemo(() => countLines(originalContent, content), [originalContent, content])
   // Snapshot (⋯ menu): capture current content as a new artifact version;
@@ -1782,18 +1851,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
            height auto) with the editor options and Save / Cancel so the
            main bar never crowds. */
         <div className="shrink-0 border-b border-border">
-          <div className="flex items-center gap-2 h-[38px] px-3">
+          <div className="relative flex items-center gap-2 h-[38px] px-3">
             <FileText size={14} className="text-muted shrink-0" />
-            <FilePathMenu filePath={filePath}>
-            <span className="flex items-center min-w-0" title={filePath}>
-              {crumbs.map((c, i) => (
-                <span key={i} className="flex items-center min-w-0 text-[12px]">
-                  {i > 0 && <ChevronRight size={14} className="text-muted opacity-60 shrink-0 mx-0.5" />}
-                  <span className={`truncate ${c.isFile ? 'text-text-strong font-medium' : 'text-muted'}`}>{c.seg}</span>
-                </span>
-              ))}
-            </span>
-            </FilePathMenu>
+            <FileHeaderBreadcrumb filePath={filePath} />
             {diffMode && !diffUnavailable && (diffStats.added > 0 || diffStats.removed > 0) && (
               <span className="text-[11px] font-mono font-semibold shrink-0">
                 {diffStats.added > 0 && <span className="text-ok">+{diffStats.added}</span>}
