@@ -7,7 +7,7 @@
  * streaming).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import { setTerminalEnabledFlag } from '../utils/terminalRegistry'
 
 const hoisted = vi.hoisted(() => ({ files: [] as { name: string; contents: string }[] }))
@@ -31,14 +31,17 @@ vi.mock('../pierre', async importOriginal => ({
 }))
 
 // The rendered block is a separate component with its own tests; here it only
-// has to be distinguishable from the editor and to host the header actions.
+// has to be distinguishable from the editor and to host the header/footer
+// actions -- kept in separately-labelled wrappers so a test can tell which
+// row a given action landed in.
 vi.mock('../components/CodeBlock', () => ({
-  CodeBlock: ({ code, lang, headerActions }: {
-    code: string; lang?: string; headerActions?: React.ReactNode
+  CodeBlock: ({ code, lang, headerActions, footerActions }: {
+    code: string; lang?: string; headerActions?: React.ReactNode; footerActions?: React.ReactNode
   }) => (
     <div data-testid="rendered-block" data-lang={lang ?? ''}>
       <span data-testid="rendered-code">{code}</span>
-      {headerActions}
+      <div data-testid="header-actions">{headerActions}</div>
+      <div data-testid="footer-actions">{footerActions}</div>
     </div>
   ),
 }))
@@ -48,7 +51,13 @@ vi.mock('../utils/clipboard', () => ({ copyCode: vi.fn(() => Promise.resolve()) 
 import { copyCode } from '../utils/clipboard'
 import EditableCodeBlock from '../components/EditableCodeBlock'
 
-const openEditor = () => fireEvent.click(screen.getByLabelText('Edit code block'))
+/** The mock always renders both rows regardless of height (the real CodeBlock
+ *  only renders the footer once tall), so tests that don't care which row
+ *  drive from the header's copy -- scope to it rather than a bare
+ *  `getByLabelText`, which would now match both. */
+const headerActions = () => within(screen.getByTestId('header-actions'))
+const footerActionsRow = () => within(screen.getByTestId('footer-actions'))
+const openEditor = () => fireEvent.click(headerActions().getByLabelText('Edit code block'))
 const editorFile = () => hoisted.files[hoisted.files.length - 1]
 /** The editor header holds exactly the close and copy buttons; copy is the one
  *  the catalog does not name, so identify it by elimination rather than pinning
@@ -151,7 +160,7 @@ describe('EditableCodeBlock run-in-terminal action', () => {
     setTerminalEnabledFlag(true)
     render(<EditableCodeBlock code="const a = 1" lang="ts" complete />)
     expect(screen.queryByLabelText('Run in terminal')).toBeNull()
-    expect(screen.getByLabelText('Edit code block')).toBeInTheDocument()
+    expect(headerActions().getByLabelText('Edit code block')).toBeInTheDocument()
   })
 
   it('withholds it for a snippet carrying no language at all', () => {
@@ -179,5 +188,64 @@ describe('EditableCodeBlock run-in-terminal action', () => {
     } finally {
       window.removeEventListener('mc:run-in-terminal', onReq)
     }
+  })
+
+  it('keeps Run out of the footer row even when the header carries it', () => {
+    // max-two-buttons-per-row (AUTOSDE, blocking): the header's Run + Edit is
+    // pre-existing and holds legacy status, but the footer is a row this component
+    // adds -- mirroring the header there would put 3 siblings (Run, Edit,
+    // Copy) in a NEW row and violate the cap. The footer stays Edit-only.
+    setTerminalEnabledFlag(true)
+    render(<EditableCodeBlock code="ls -la" lang="bash" complete />)
+    expect(headerActions().getByLabelText('Run in terminal')).toBeInTheDocument()
+    expect(headerActions().getByLabelText('Edit code block')).toBeInTheDocument()
+    expect(footerActionsRow().queryByLabelText('Run in terminal')).toBeNull()
+    expect(footerActionsRow().getByLabelText('Edit code block')).toBeInTheDocument()
+  })
+})
+
+describe('EditableCodeBlock edit re-anchors the block only when its top has scrolled off', () => {
+  const rafCbs: FrameRequestCallback[] = []
+  const flushRaf = () => { rafCbs.forEach(cb => cb(0)); rafCbs.length = 0 }
+  const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect
+
+  // wrapperRef only exists on the EDITING-mode root (className "code-block ..."),
+  // which mounts fresh the instant the click flips `editing` -- there is no
+  // element to grab a handle on beforehand, so the stub is keyed off that
+  // class the same way CodeBlock.tallFooter.test.tsx keys off `.pierre-surface`.
+  function stubWrapperTop(top: number) {
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const t = this.classList.contains('code-block') ? top : 0
+      return { top: t } as DOMRect
+    }
+  }
+
+  beforeEach(() => {
+    // happy-dom does not implement scrollIntoView.
+    Element.prototype.scrollIntoView = vi.fn()
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { rafCbs.push(cb); return rafCbs.length })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect
+  })
+
+  it('scrolls when the wrapper top is above the viewport (the tall-block/footer case)', () => {
+    stubWrapperTop(-400)
+    render(<EditableCodeBlock code="const a = 1" lang="ts" complete />)
+    fireEvent.click(footerActionsRow().getByLabelText('Edit code block'))
+    flushRaf()
+
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' })
+  })
+
+  it('does not scroll when the wrapper is already fully visible (a mid-viewport header edit)', () => {
+    stubWrapperTop(200)
+    render(<EditableCodeBlock code="const a = 1" lang="ts" complete />)
+    fireEvent.click(headerActions().getByLabelText('Edit code block'))
+    flushRaf()
+
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled()
   })
 })
