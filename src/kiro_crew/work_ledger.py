@@ -535,9 +535,21 @@ def _open_lock(path: Path) -> Iterator[None]:
     ``file_lock`` takes an already-open descriptor and fails CLOSED — it raises
     rather than entering the critical section unserialised — which is why nothing
     here has a lock-less fallback.
+
+    The lock file is created with ``touch`` and opened ``"r+"`` — WRITABLE, and
+    crucially WITHOUT truncation. ``msvcrt.locking`` needs a writable handle, so
+    ``"r"`` is not an option; but ``"w"`` TRUNCATES on open, and on Windows a
+    truncating open of a file whose first byte another thread or process already
+    holds under ``msvcrt.locking`` raises a sharing violation (``PermissionError``)
+    rather than waiting for the lock — so a second, contending acquirer crashes
+    before it ever reaches ``file_lock``, defeating the serialisation this lock
+    exists to provide. POSIX ``flock`` tolerates the truncate, which is why the bug
+    is Windows-only. Same reasoning, same fix as ``dashboard/handlers/mcp.py``'s
+    ``_McpFileLock``.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as handle:
+    path.touch(exist_ok=True)
+    with open(path, "r+") as handle:
         with file_lock(handle.fileno(), exclusive=True):
             yield
 

@@ -1375,6 +1375,35 @@ def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
         assert (item.worker_session_key == WORKER) == ((key, item_id) == binding)
 
 
+def test_acquiring_a_lock_does_not_truncate_the_lock_file():
+    """The lock-file open must be WRITABLE but MUST NOT truncate.
+
+    This is the property whose absence made
+    ``test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding``
+    fail on Windows only. ``msvcrt.locking`` needs a writable handle, so the fd
+    cannot be opened ``"r"``; but ``"w"`` truncates on open, and on Windows a
+    truncating open of a lock file whose first byte another holder already locked
+    raises a sharing violation instead of waiting — so the second, contending
+    acquirer crashes with a bare ``OSError`` before it reaches ``file_lock`` and
+    the bind it was serialising is never mutually excluded. POSIX ``flock``
+    tolerates the truncate, which is why the defect was invisible on Linux.
+
+    Truncation is the direct, platform-independent observable: seed the lock file
+    with bytes, acquire and release the lock, and assert the bytes survived. Under
+    the old ``open(path, "w")`` this test fails on every platform (the file is
+    emptied); under the ``touch`` + ``"r+"`` open it passes, and the same
+    non-truncating open is what stops the Windows sharing violation.
+    """
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    lock_path = wl.conductor_dir(CONDUCTOR) / wl._LOCK_FILE
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    sentinel = b"held by a prior acquirer\n"
+    lock_path.write_bytes(sentinel)
+    with wl.conductor_lock(CONDUCTOR):
+        pass
+    assert lock_path.read_bytes() == sentinel
+
+
 # ── revertability ─────────────────────────────────────────────────────────
 
 
