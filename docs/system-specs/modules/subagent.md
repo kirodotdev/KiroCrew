@@ -93,6 +93,39 @@ in-memory only (dies with the process); the hook is registered on Telegram start
 and unregistered on client shutdown. The per-agent `auto_approve_spawn` rung
 (issue #2381 item 2) is deferred to #4751/#4693 and is NOT added here.
 
+**Delivery order.** A spawn-approval prompt that reaches `_spawn_with_approval`
+is offered to surfaces in this fixed order, and the search stops at the first one
+that answers:
+
+1. **Originating channel hook** — the channel-neutral seam above. A `True`/`False`
+   return is the user's in-channel decision and is used verbatim; `None` (no hook
+   for that channel, or it could not surface the prompt) falls through.
+2. **Slack owner DM / dashboard fallback** — the pre-existing gate in
+   `slack/gateway.py` (`_interactive_approval`), which races a Slack owner DM
+   against an attached dashboard client. A configured-but-unpostable Slack DM and
+   an unattached dashboard both count as "no surface".
+3. **`#8914` fast-fail backstop** — reached only when neither a channel hook nor a
+   Slack/dashboard surface could show the prompt. Rather than park the run at
+   turn 0 until the reaper's ~30-minute deadline, the gate (`raise_when_unreachable=True`)
+   raises `SpawnApprovalUnreachable`, and `subagent_manager/admission.py`
+   turns it into an immediate refusal audited with `reason="no_approval_surface"`.
+
+The backstop keeps two audiences apart on purpose (Design Review r3, PR #8914).
+The **operator** WARNING log names every auto-approve rung that would have let the
+spawn through (`approval_mode="auto"`, parent-session **Trust**,
+`hooks.auto_approve_subagent_spawn`, `hooks.auto_approve_sources`). The
+**agent-facing** `info.error` names none of them: two of those rungs are
+`config.json` edits, and `config.json` is writable by any auto-approved agent
+shell, so a bypass recipe in the completion event would hand an unattended or
+prompt-injected agent the steps to remove its own gate. The agent error stays
+terse ("ask the operator to open the dashboard and spawn again, or to enable spawn
+auto-approval"). Because the channel hook and the Slack/dashboard gate own the
+"which surface was missing" half while the backstop owns the rung list, the
+refusal wording stays truthful as channels learn to deliver the prompt: the gate
+never names a surface it does not know about, and the fast-fail sentence ("no
+surface could show the approval prompt") is only ever emitted once every surface
+above has genuinely declined to carry it.
+
 ### Tool Approval Cascade
 
 When a subagent's tool call triggers `EVENT_PERMISSION_REQUEST`, approval
