@@ -45,7 +45,7 @@ const {
   isPortInUse,
 } = require("./gateway-wait");
 const { describeSandboxProfileNeed } = require("./sandbox-profile");
-const { createLivenessMonitor } = require("./gateway-liveness");
+const { createLivenessMonitor, createBackendProbe } = require("./gateway-liveness");
 const {
   chooseRecoveryStrategy,
   classifyAdoptedGateway,
@@ -991,16 +991,16 @@ function createGatewaySupervisor({
     });
   }
 
+  // How long the BOOT poll waits for one answer. The poll runs every
+  // POLL_INTERVAL_MS, so a slow answer here only means "poll again" — unlike
+  // the post-handoff liveness probe, whose three misses force-kill the gateway
+  // and which therefore carries its own, wider LIVENESS_PROBE_TIMEOUT_MS.
+  const BOOT_PROBE_TIMEOUT_MS = 2000;
+
   function checkBackend(healthUrl = HEALTH_URL) {
-    return new Promise((resolve, reject) => {
-      const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
-        res.resume();
-        if (res.statusCode < 500) resolve();
-        else reject();
-      });
-      req.on("error", reject);
-      req.on("timeout", () => { req.destroy(); reject(); });
-    });
+    // Same request shape as the liveness probe, built by the same factory so
+    // the two never drift; only the budget differs.
+    return createBackendProbe({ httpMod: http, url: healthUrl, timeoutMs: BOOT_PROBE_TIMEOUT_MS })();
   }
 
   function waitForBackend(targetWindow, healthUrl = HEALTH_URL, { watchSpawn = false } = {}) {
@@ -1260,7 +1260,9 @@ function createGatewaySupervisor({
       livenessMonitor = null;
     }
     livenessMonitor = createLivenessMonitor({
-      probe: () => checkBackend(HEALTH_URL),
+      // Not checkBackend(): that is the boot poll's 2s probe. The post-handoff
+      // probe has its own, wider budget — see LIVENESS_PROBE_TIMEOUT_MS.
+      probe: createBackendProbe({ httpMod: http, url: HEALTH_URL }),
       isWindowAlive: () => !!window && !window.isDestroyed(),
       onUnresponsive: () => {
         if (livenessMonitor) {

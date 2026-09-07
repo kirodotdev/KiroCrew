@@ -1002,6 +1002,13 @@ def parse_slash_command(command: str) -> tuple[str, dict]:
 
 # Timeouts for session initialization steps
 _INIT_TIMEOUT = 240.0  # 4 min — MCP servers can be slow to initialize
+# The enforced-adapter preflight (sandbox-backend probe + credential-mask
+# resolution) is blocking filesystem work run off the loop; this bounds the
+# wait for it. Sized for a cold sandbox probe (its own subprocess budget is
+# 20 s) plus canonical resolution of the home and override roots on a slow
+# disk, with headroom. On expiry the adapter is REFUSED, never started with
+# its mask missing.
+_SANDBOX_PREFLIGHT_TIMEOUT = 60.0
 # set_mode/set_model: fire-and-forget.  kiro-cli accepts these commands
 # but usually never sends a JSON-RPC response — MCP servers load
 # asynchronously.  Any late responses land in _buffer and are harmlessly
@@ -2647,6 +2654,37 @@ def _sandbox_preflight(backend: str, mode: str) -> tuple[str, ...]:
         # cleanup every other refusal path runs. ``from None`` because the
         # wrapper carries the whole actionable message already.
         raise AcpToolGateUnroutable(str(exc)) from None
+
+
+async def _run_preflight_bounded(
+    preflight: Callable[[str, str], tuple[str, ...]], backend: str, mode: str
+) -> tuple[str, ...]:
+    """Run *preflight* off the loop and give up after ``_SANDBOX_PREFLIGHT_TIMEOUT``.
+
+    The mask half of the preflight canonicalizes the home and every override root
+    on disk, and on a stalled mount that wait has no natural end: nothing else on
+    the spawn path bounds it (``ensure_ready`` times the ACP handshake, which comes
+    AFTER the spawn), so without this the only backstop was the subagent startup
+    watchdog. Expiry raises :class:`AcpError`, the retryable kind: a stall is a
+    transient fact about the disk, not a configuration fact like
+    :class:`AcpToolGateUnroutable`, so the one retry ``ensure_ready`` grants is
+    the right shape. The adapter is never started without its mask.
+
+    Takes the preflight as a parameter so the deadline is testable without a
+    spawn; ``_spawn`` passes :func:`_sandbox_preflight`.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(preflight, backend, mode), timeout=_SANDBOX_PREFLIGHT_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        raise AcpError(
+            f"Could not start the {backend} adapter: computing its sandbox credential "
+            "mask needs the home and credential roots resolved on disk, and that did "
+            f"not finish within {_SANDBOX_PREFLIGHT_TIMEOUT:.0f} s (a stalled or very "
+            "slow filesystem). The adapter is not started without its mask; retry "
+            "once the disk responds."
+        ) from None
 
 
 class AcpClient:
@@ -4422,8 +4460,10 @@ class AcpClient:
             # OFF-LOOP: both halves touch the filesystem -- the refusal probes for
             # a sandbox backend (a cold probe shells out via subprocess.run) and
             # the mask resolves the home plus every env-override root -- so they
-            # run in ONE worker thread rather than blocking the gateway loop.
-            adapter_hidden_dirs = await asyncio.to_thread(
+            # run in ONE worker thread rather than blocking the gateway loop, and
+            # the wait is bounded (a stalled mount otherwise held the spawn open
+            # until the startup watchdog; found in review).
+            adapter_hidden_dirs = await _run_preflight_bounded(
                 _sandbox_preflight, self.backend, self._sandbox_mode
             )
         else:

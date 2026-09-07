@@ -748,6 +748,47 @@ class TestEnsureReady:
             acp_client._sandbox_preflight("codex", "standard")
 
     @pytest.mark.asyncio
+    async def test_sandbox_preflight_is_bounded_on_a_stalled_disk(self, monkeypatch):
+        """A preflight that never returns must not hold the spawn open.
+
+        The mask half canonicalizes the home and override roots on disk, and on a
+        stalled mount that wait has no end of its own; nothing else on the spawn
+        path bounds it (``ensure_ready`` times the handshake AFTER the spawn). The
+        deadline turns that into a retryable ``AcpError`` naming the slow disk, and
+        the adapter is not started without its mask.
+
+        Revert-verified: dropping the ``wait_for`` makes this test hang on the
+        stalled worker instead of raising.
+        """
+        import threading
+
+        monkeypatch.setattr(acp_client, "_SANDBOX_PREFLIGHT_TIMEOUT", 0.05)
+        release = threading.Event()
+
+        def _stalled(backend, mode):
+            release.wait(5.0)
+            return ()
+
+        try:
+            with pytest.raises(AcpError, match="did not finish within 0 s"):
+                await acp_client._run_preflight_bounded(_stalled, "codex", "standard")
+        finally:
+            release.set()  # let the worker thread go; the test must not leak it
+
+    @pytest.mark.asyncio
+    async def test_sandbox_preflight_within_budget_returns_the_mask(self):
+        calls = []
+
+        def _quick(backend, mode):
+            calls.append((backend, mode))
+            return ("/home/u/.aws",)
+
+        assert await acp_client._run_preflight_bounded(_quick, "codex", "standard") == (
+            "/home/u/.aws",
+        )
+        assert calls == [("codex", "standard")]
+
+    @pytest.mark.asyncio
     async def test_shutdown_kills_and_resets(self, tmp_path):
         client = _client(tmp_path)
         client._kill_process = AsyncMock()
