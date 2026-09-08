@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import runpy
 import textwrap
@@ -132,8 +133,87 @@ class TestBuildLauncherScriptCcMode:
         script = _build_launcher_script("standard")
         assert "EXPOSE_FILES = []" in script
 
+    def test_extra_expose_files_are_embedded_with_their_basename(self):
+        """The enforced-adapter mask's Linux half rides the cc expose primitive.
+
+        ``acp_tool_gate.adapter_expose_files`` hands absolute paths here; each
+        must land in EXPOSE_FILES as a ``(source, basename)`` pair so the
+        launcher restores a read-only copy inside the hidden parent. Standard
+        tier, because that is the tier the codex adapter actually runs under.
+        """
+        script = _build_launcher_script("standard", extra_expose_files=("/h/u/.aws/config",))
+        assert '["/h/u/.aws/config", "config"]' in script
+
+    def test_cc_expose_files_survive_extra_entries(self):
+        script = _build_launcher_script("cc", extra_expose_files=("/h/u/.aws/config",))
+        assert ".aws/config" in script
+        assert '["/h/u/.aws/config", "config"]' in script
+
+    def test_an_extra_expose_file_already_in_the_tier_list_appears_once(self):
+        """cc + codex both name ``~/.aws/config``; EXPOSE_FILES must carry it once.
+
+        The restore loop writes each entry's destination then chmods it 0444, so
+        a duplicate entry's second open-for-write raises PermissionError inside
+        the launcher and the spawn dies. Revert-verified: without the dedupe the
+        pair appears twice.
+        """
+        cfg = os.path.join(str(Path.home()), ".aws", "config")
+        script = _build_launcher_script("cc", extra_expose_files=(cfg,))
+        pair = json.dumps([cfg, "config"])
+        assert script.count(pair) == 1, script.count(pair)
+
 
 class TestBuildSeatbeltProfileCcMode:
+    def test_extra_expose_file_carves_read_only_out_of_an_extra_hidden_dir(self):
+        """The enforced adapter's ``~/.aws/config`` on macOS.
+
+        Read deny becomes ``require-all (subpath) (require-not (literal))`` --
+        the same shape the strict tier uses for ``.ssh/known_hosts`` -- while the
+        write and hardlink denies stay blanket over the subpath, so the child
+        can read its ``credential_process`` entry and nothing else, and cannot
+        rewrite or hardlink the file it is allowed to read.
+        """
+        profile = _build_seatbelt_profile(
+            "standard",
+            extra_hidden_dirs=("/h/u/.aws",),
+            extra_expose_files=("/h/u/.aws/config",),
+        )
+        assert (
+            '(deny file-read* (require-all (subpath "/h/u/.aws")'
+            ' (require-not (literal "/h/u/.aws/config"))))'
+        ) in profile
+        assert '(deny file-read* (subpath "/h/u/.aws"))' not in profile
+        assert '(deny file-write* (subpath "/h/u/.aws"))' in profile
+        assert '(deny file-link (subpath "/h/u/.aws"))' in profile
+
+    def test_extra_expose_file_is_carved_when_the_tier_already_hides_the_dir(self):
+        """strict already lists ``.aws``; the tier loop must carry the carve-out too.
+
+        Seatbelt cannot cancel an earlier blanket deny with a later narrower one,
+        so if only the extra-hidden loop carved the file out, a strict-tier codex
+        would still fail auth. Both loops must emit the ``require-not`` shape and
+        neither may emit the bare subpath read deny for that dir.
+        """
+        home = str(Path.home())
+        aws = os.path.join(home, ".aws")
+        cfg = os.path.join(aws, "config")
+        profile = _build_seatbelt_profile(
+            "strict", extra_hidden_dirs=(aws,), extra_expose_files=(cfg,)
+        )
+        assert f'(deny file-read* (subpath "{aws}"))' not in profile
+        assert f'(require-not (literal "{cfg}"))' in profile
+        assert f'(deny file-write* (subpath "{aws}"))' in profile
+
+    def test_extra_expose_file_outside_any_hidden_dir_emits_nothing(self):
+        """No deny to carve out of means no rule at all -- never a bare allow."""
+        profile = _build_seatbelt_profile(
+            "standard",
+            extra_hidden_dirs=("/h/u/.kube",),
+            extra_expose_files=("/h/u/.aws/config",),
+        )
+        assert ".aws/config" not in profile
+        assert '(deny file-read* (subpath "/h/u/.kube"))' in profile
+
     def test_extra_hidden_directory_denies_reads_and_writes(self):
         profile = _build_seatbelt_profile(
             "strict",

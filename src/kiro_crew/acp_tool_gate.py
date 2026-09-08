@@ -36,6 +36,7 @@ means implementing a mechanism, not editing an allowlist.
 from __future__ import annotations
 
 import logging
+import os
 from enum import Enum
 
 from kiro_crew.acp_backends import (
@@ -79,6 +80,47 @@ _LABELS: dict = {
 #: the floor and the mask never had it to exclude.
 ADAPTER_OWN_CREDENTIAL_LEAVES: dict = {
     ACP_BACKEND_CODEX: (".codex/auth.json",),
+}
+
+#: Files re-exposed READ-ONLY inside a directory the mask hides, home-relative.
+#:
+#: A codex whose model provider is Bedrock AUTHENTICATES through ``~/.aws``: it
+#: reads ``~/.aws/config`` to find the ``credential_process``. With the whole
+#: directory masked every session fails at start with ``failed to load AWS
+#: credentials`` -- surfaced to the operator as an opaque ``Authentication
+#: required``. Re-exposing exactly this file is the cc tier's own Linux posture
+#: (``_CC_EXPOSE_FILES``), applied here on BOTH platforms rather than excluding
+#: the leaf: ``~/.aws/credentials`` and ``~/.aws/sso/cache`` stay hidden from a
+#: child whose passive reads never reach the gate. Each backend carries the
+#: primitive already -- the Linux launcher restores a 0444 copy of the file into
+#: the empty bind mount, and the Seatbelt builder emits a ``require-not
+#: (literal ...)`` exception on the subpath deny (the shape it uses for
+#: ``.ssh/known_hosts``). The read gate still fences ``.aws`` for the agent's
+#: own file tools.
+#:
+#: A leaf here must sit UNDER a masked directory: the mask is what makes the
+#: re-exposure a narrowing rather than a no-op, and ``test_acp_tool_gate``
+#: pins that containment.
+#:
+#: Accepted residual, carried knowingly: the AWS CLI also honours
+#: ``aws_access_key_id`` / ``aws_secret_access_key`` written directly into a
+#: ``[profile]`` block of ``~/.aws/config``. An operator with that layout hands
+#: those static keys to the child through this carve-out, exactly as the cc
+#: tier's ``_CC_EXPOSE_FILES`` already does for Claude Code. The mask cannot
+#: tell a ``credential_process`` line from a key line without parsing the file,
+#: and the Seatbelt carve-out exposes the real inode, so no per-line redaction
+#: is possible there; the Linux copy is deliberately kept byte-identical so the
+#: two platforms carry the SAME residual rather than a silent asymmetry. The
+#: launcher reads the source with the plain ``open()`` the cc tier has always
+#: used, so a symlink, hardlink or bind alias the OPERATOR plants at
+#: ``~/.aws/config`` is followed, exactly as for Claude Code today: the child
+#: cannot plant one (``~/.aws`` is bind-masked in its session and the agent's
+#: file tools are fenced from it), so this is operator self-exposure of the
+#: operator's own store, not a boundary the child can cross. Operators who
+#: keep static keys in ``config`` should move them to ``credentials``, which
+#: stays masked.
+ADAPTER_EXPOSED_CREDENTIAL_LEAVES: dict = {
+    ACP_BACKEND_CODEX: (".aws/config",),
 }
 
 
@@ -159,6 +201,31 @@ def adapter_hidden_credential_dirs(backend: str) -> tuple:
     # readable. ``sandbox_credential_targets`` owns the same anchor rules as the read
     # gate, so this mask cannot drift from the floor it compensates for.
     return sandbox_credential_targets(tuple(ADAPTER_OWN_CREDENTIAL_LEAVES.get(backend, ())))
+
+
+def adapter_expose_files(backend: str) -> tuple:
+    """Absolute files to re-expose READ-ONLY inside *backend*'s masked dirs.
+
+    The companion to :func:`adapter_hidden_credential_dirs`: that mask hides a
+    whole credential directory, and this names the one file inside it the
+    adapter must still read to authenticate. Both sandbox backends carry the
+    primitive -- the Linux launcher restores a 0444 copy into the empty bind
+    mount, the Seatbelt profile carves a ``require-not (literal ...)`` out of
+    the subpath deny -- so the posture is the same on every platform:
+    ``~/.aws/config`` readable, ``~/.aws/credentials`` and the SSO cache not.
+
+    Empty for a harness this core does not enforce, so the first-class path and
+    every unenforced harness keep byte-identical sandbox arguments. Pure path
+    projection under the home -- no disk access -- so it is safe to call inline
+    on the spawn path.
+    """
+    if not is_enforced(backend):
+        return ()
+    home = os.path.expanduser("~")
+    return tuple(
+        os.path.join(home, *leaf.split("/"))
+        for leaf in ADAPTER_EXPOSED_CREDENTIAL_LEAVES.get(backend, ())
+    )
 
 
 def enforce_sandbox_floor(backend: str, mode: str) -> None:
@@ -367,11 +434,13 @@ def enforce_runtime_routing(
 
 
 __all__ = [
+    "ADAPTER_EXPOSED_CREDENTIAL_LEAVES",
     "ADAPTER_OWN_CREDENTIAL_LEAVES",
     "ENFORCED_ROUTINGS",
     "UNENFORCED_CONTROLS",
     "ToolGateUnroutable",
     "Verdict",
+    "adapter_expose_files",
     "adapter_hidden_credential_dirs",
     "enforce_runtime_routing",
     "enforce_sandbox_floor",

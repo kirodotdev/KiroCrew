@@ -4804,6 +4804,7 @@ class AcpClient:
         # kiro construction path gains no conditional, no awaited step and no new
         # failure point in service of an adapter (harness-parity H13).
         adapter_hidden_dirs: tuple[str, ...] = ()
+        adapter_expose: tuple[str, ...] = ()
 
         if self._is_claude:
             # Fold the requested model onto the exact spelling claude-agent-acp
@@ -4909,6 +4910,11 @@ class AcpClient:
             adapter_hidden_dirs = await _run_preflight_bounded(
                 _sandbox_preflight, self.backend, self._sandbox_mode
             )
+            # The other half of the Bedrock trade: ``.aws`` stays in the mask
+            # above and only ``.aws/config`` comes back read-only, through each
+            # backend's own carve-out primitive. Empty for every unenforced
+            # harness. Pure path projection, no disk access, so no thread hop.
+            adapter_expose = acp_tool_gate.adapter_expose_files(self.backend)
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -4971,6 +4977,7 @@ class AcpClient:
             # that an enforced adapter has no claim on. Empty for every harness
             # this core does not enforce, so their spawn arguments are unchanged.
             extra_hidden_dirs=adapter_hidden_dirs,
+            extra_expose_files=adapter_expose,
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
         )

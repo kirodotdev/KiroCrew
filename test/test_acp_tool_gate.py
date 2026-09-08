@@ -210,6 +210,47 @@ def test_named_credential_leaves_are_masked(leaf) -> None:
     assert os.path.join(home, *leaf.split("/")) in masked
 
 
+def test_aws_stays_masked_with_only_config_reexposed() -> None:
+    """The cc tier's Bedrock posture, on every platform.
+
+    A codex configured for Bedrock resolves its credentials through
+    ``~/.aws/config`` (``credential_process``). Masking the directory made every
+    session fail at start with ``failed to load AWS credentials``, surfaced as
+    ``Authentication required``. The fix re-exposes exactly that file, the way
+    ``_CC_EXPOSE_FILES`` does for Claude Code, and keeps ``~/.aws/credentials``
+    and ``~/.aws/sso/cache`` hidden. Revert-verified: dropping the expose leaf
+    fails the second assertion; excluding ``.aws`` from the mask fails the first.
+    """
+    masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
+    home = os.path.expanduser("~")
+    assert os.path.join(home, ".aws") in masked, (
+        "the whole-directory hide is what keeps ~/.aws/credentials and the SSO "
+        "cache away from the self-approving child"
+    )
+    assert gate.adapter_expose_files(ACP_BACKEND_CODEX) == (os.path.join(home, ".aws", "config"),)
+    assert (
+        ".aws" in sensitive_home_dirs()
+    ), "the agent's own file tools must still be fenced from ~/.aws"
+
+
+def test_every_exposed_leaf_sits_under_a_masked_dir() -> None:
+    """A re-exposure that is not inside the mask is a grant, not a narrowing.
+
+    The Seatbelt builder ignores such a file (nothing to carve it out of), so
+    the auth path would silently fail on macOS; the Linux launcher would copy a
+    file over its own live source. Pin containment at the table.
+    """
+    masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
+    for exposed in gate.adapter_expose_files(ACP_BACKEND_CODEX):
+        assert any(exposed.startswith(m + os.sep) for m in masked), exposed
+
+
+@pytest.mark.parametrize("backend", (*AGENT_SPEC_BACKENDS, ACP_BACKEND_CLAUDE))
+def test_unenforced_harness_gets_no_expose_files(backend) -> None:
+    """The first-class path keeps byte-identical sandbox arguments here too."""
+    assert gate.adapter_expose_files(backend) == ()
+
+
 def test_the_harness_keeps_its_own_token_readable() -> None:
     """The adapter must read its own credential to authenticate.
 

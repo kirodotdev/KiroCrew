@@ -3287,6 +3287,7 @@ def _build_launcher_script(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
 ) -> str:
     """Build a Python launcher script for the Linux namespace sandbox.
 
@@ -3424,7 +3425,22 @@ def _build_launcher_script(
     files_json = json.dumps(
         list(dict.fromkeys([os.path.join(home, f) for f in files] + hidden_dirs))
     )
-    expose_json = json.dumps([(os.path.join(home, f), f.split("/")[-1]) for f in expose_files])
+    expose_pairs = [(os.path.join(home, f), f.split("/")[-1]) for f in expose_files]
+    # Caller-supplied read-only re-exposures (absolute paths), same primitive
+    # the cc tier uses for ``.aws/config``: pre-read the content, hide the
+    # parent, restore a 0444 copy inside the empty mount. A COPY, never the
+    # inode -- strictly weaker than ``extra_visible_dirs``, which un-hides the
+    # real tree. The enforced-adapter mask uses this to keep a Bedrock
+    # ``credential_process`` resolvable while the rest of ``~/.aws`` stays
+    # hidden (``acp_tool_gate.adapter_expose_files``).
+    expose_pairs += [(os.path.abspath(p), os.path.basename(p)) for p in extra_expose_files]
+    # Dedupe by source path. cc mode already lists ``.aws/config`` and the
+    # enforced adapter hands the same file through ``extra_expose_files``; the
+    # restore loop opens each entry's destination for WRITE after the first
+    # pass chmod'ed it 0444, so a repeated entry raises PermissionError inside
+    # the launcher and kills the spawn (found in review).
+    expose_pairs = list(dict.fromkeys(expose_pairs))
+    expose_json = json.dumps(expose_pairs)
     env_prefixes_json = json.dumps(env_prefixes)
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
     ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
@@ -4307,6 +4323,7 @@ def namespace_argv(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
 ) -> list[str]:
     """Wrap *argv* via the Python namespace launcher.
 
@@ -4338,6 +4355,7 @@ def namespace_argv(
         extra_hidden_dirs=extra_hidden_dirs,
         extra_visible_dirs=extra_visible_dirs,
         extra_writable_dirs=extra_writable_dirs,
+        extra_expose_files=extra_expose_files,
     )
     run_dir = _ensure_run_dir()
     fd, path = tempfile.mkstemp(
@@ -4467,6 +4485,7 @@ def _build_seatbelt_profile(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
 ) -> str:
     """Build a Seatbelt .sb profile denying reads of sensitive dirs."""
     home = str(Path.home())
@@ -4487,6 +4506,16 @@ def _build_seatbelt_profile(
     files = _CC_FILES if sandbox_level in ("cc", "strict") else []
     expose_files = _CC_EXPOSE_FILES if sandbox_level == "cc" else []
     expose_abs = {os.path.join(home, f) for f in expose_files}
+    # Caller-supplied read-only carve-outs (the enforced adapter's
+    # ``~/.aws/config``). Folded into the SAME set the tier loop reads, not only
+    # the extra-hidden loop below: under ``strict`` the tier list already
+    # carries ``.aws``, so the first loop emits a blanket read deny for it, and a
+    # narrower deny emitted later cannot cancel an earlier one -- Seatbelt is
+    # deny-wins across deny rules, last-match-wins only between allow and deny.
+    # Without this the child authenticates under ``standard``/``cc`` and fails
+    # under ``strict`` with the same opaque error the mask itself produced.
+    extra_expose_abs = {os.path.abspath(p) for p in extra_expose_files}
+    expose_abs |= extra_expose_abs
     crew_hidden = _crew_hidden_sandbox_targets()
     rules: list[str] = []
     # Every masked target below doubles as a guard for the write carve-outs
@@ -4585,11 +4614,26 @@ def _build_seatbelt_profile(
         # Also deny hardlinking the protected file (see above).
         rules.append(f'(deny file-link (literal "{escaped}"))')
     extra_hidden_targets = list(dict.fromkeys(os.path.abspath(path) for path in extra_hidden_dirs))
+    # Read-only carve-outs inside an extra-hidden dir (the enforced adapter's
+    # ``~/.aws/config``). READ only: the write and hardlink denies below stay
+    # blanket over the subpath, exactly as the ``.ssh/known_hosts`` carve-out
+    # further down. A file that sits under no hidden target is ignored -- there
+    # is nothing to carve it out of, and emitting an allow for it would be an
+    # allow with no deny, which last-match-wins Seatbelt turns into a grant.
+    # ``extra_expose_abs`` was built above so the tier loop applies the same
+    # carve-out when the tier itself already hides the parent (strict + .aws).
     for target in extra_hidden_targets:
         if _hidden_path_contains_visible_path(target, extra_visible_dirs):
             continue
         escaped = target.replace('"', '\\"')
-        rules.append(f'(deny file-read* (subpath "{escaped}"))')
+        carved = sorted(f for f in extra_expose_abs if f.startswith(target + os.sep))
+        if carved:
+            exceptions = " ".join(
+                f'(require-not (literal "{f.replace(chr(34), chr(92) + chr(34))}"))' for f in carved
+            )
+            rules.append(f'(deny file-read* (require-all (subpath "{escaped}") {exceptions}))')
+        else:
+            rules.append(f'(deny file-read* (subpath "{escaped}"))')
         rules.append(f'(deny file-write* (subpath "{escaped}"))')
         rules.append(f'(deny file-link (subpath "{escaped}"))')
         # BOTH shapes, because most of this list is plain FILES, not directories:
@@ -4829,6 +4873,7 @@ def sandbox_exec_argv(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
 ) -> tuple[list[str], str | None]:
     """Wrap *argv* with ``sandbox-exec -f <profile>``.
 
@@ -4847,6 +4892,7 @@ def sandbox_exec_argv(
         extra_hidden_dirs=extra_hidden_dirs,
         extra_visible_dirs=extra_visible_dirs,
         extra_writable_dirs=extra_writable_dirs,
+        extra_expose_files=extra_expose_files,
     )
     run_dir = _ensure_run_dir()
     fd, path = tempfile.mkstemp(
@@ -6807,6 +6853,7 @@ def wrap_argv(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
 ) -> tuple[list[str], str | None]:
@@ -6820,6 +6867,13 @@ def wrap_argv(
         extra_hidden_dirs: Additional absolute directory trees to deny.
         extra_visible_dirs: Trusted paths that must remain visible when an
             otherwise-hidden parent contains them.
+        extra_expose_files: Absolute files to keep READABLE inside dirs that
+            ``extra_hidden_dirs`` hides. Linux restores a read-only COPY via
+            the launcher's ``EXPOSE_FILES`` primitive (cc mode's mechanism
+            for ``.aws/config``); Seatbelt carves a ``require-not (literal)``
+            exception out of the hidden dir's read deny (the shape it uses
+            for ``.ssh/known_hosts``). Writes and hardlinks stay denied on
+            both.
         extra_writable_dirs: Self-derived scratch directories INSIDE the sealed
             runtime parent (``<data home>/run``) that the child must be able to
             write — e.g. the MCP probe's private ``TMPDIR`` (#8653). Validated
@@ -7094,7 +7148,7 @@ def wrap_argv(
         sys.platform == "darwin" and kiro_spawn and kiro_internal_sandbox_enabled()
     ) or (sys.platform == "win32" and is_kiro_cli is True)
     if delegate_to_kiro:
-        if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs:
+        if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs or extra_expose_files:
             # A delegated sandbox cannot enforce KiroCrew-specific path hides.
             # macOS keeps the outer seatbelt. Windows falls through to its
             # no-backend policy and fail-closes unless explicitly opted in.
@@ -7106,6 +7160,7 @@ def wrap_argv(
                     extra_hidden_dirs=extra_hidden_dirs,
                     extra_visible_dirs=extra_visible_dirs,
                     extra_writable_dirs=extra_writable_dirs,
+                    extra_expose_files=extra_expose_files,
                 )
         else:
             delegated = _delegate_to_kiro_internal_sandbox(
@@ -7121,7 +7176,7 @@ def wrap_argv(
     backend = detect_backend(config_mode=mode)
 
     if backend == "namespace":
-        if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs:
+        if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs or extra_expose_files:
             wrapped = namespace_argv(
                 argv,
                 sandbox_level,
@@ -7129,6 +7184,7 @@ def wrap_argv(
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
                 extra_writable_dirs=extra_writable_dirs,
+                extra_expose_files=extra_expose_files,
             )
         else:
             wrapped = namespace_argv(
@@ -7142,7 +7198,7 @@ def wrap_argv(
         # hands the caller a flag to unlink) the moment that list changes.
         return wrapped, _launcher_script_of(wrapped)
     if backend == "sandbox-exec":
-        if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs:
+        if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs or extra_expose_files:
             return sandbox_exec_argv(
                 argv,
                 sandbox_level,
@@ -7150,6 +7206,7 @@ def wrap_argv(
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
                 extra_writable_dirs=extra_writable_dirs,
+                extra_expose_files=extra_expose_files,
             )
         return sandbox_exec_argv(
             argv,
@@ -7358,6 +7415,7 @@ async def wrap_argv_async(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
+    extra_expose_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
     _prepare: Callable[..., tuple[list[str], str | None]] | None = None,
@@ -7381,6 +7439,8 @@ async def wrap_argv_async(
         options["extra_visible_dirs"] = extra_visible_dirs
     if extra_writable_dirs:
         options["extra_writable_dirs"] = extra_writable_dirs
+    if extra_expose_files:
+        options["extra_expose_files"] = extra_expose_files
     if is_kiro_cli is not None:
         options["is_kiro_cli"] = is_kiro_cli
     if first_party_fixed_argv:
