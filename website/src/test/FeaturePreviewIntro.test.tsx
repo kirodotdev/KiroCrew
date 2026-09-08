@@ -111,7 +111,7 @@ describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
   it('offers the button for the previews that have real captures, and not for the one that does not', () => {
     renderSection()
     expect(screen.getByRole('button', { name: 'See what Webhooks looks like' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'See what Crew Members and Crew Mode looks like' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'See what Crew Members looks like' })).toBeInTheDocument()
     // "Chat on a crew" only appears with a live tunnel to a second machine, which
     // has no honest single-instance capture — so no button rather than an empty dialog.
     expect(screen.queryByRole('button', { name: 'See what Chat on a crew looks like' })).not.toBeInTheDocument()

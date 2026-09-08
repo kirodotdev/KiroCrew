@@ -157,10 +157,11 @@ either direction, keyed on `effective_session_key(slot)` so a channel-linked
 slot is checked under the key its spawns actually ran on. The busy check runs
 inside the state-wide slot-metadata transaction lock and fails closed.
 
-The mode is preview-gated in the UI: `PREVIEW_CREW` (Settings → Developer →
-Feature Previews) gates both doors, the Crew Members rail item and the sidebar's
-"New Crew Mode chat" entry. The gate is on ingress only, so a session already in
-crew mode keeps running when the flag goes off.
+The mode no longer has a UI ingress. The sidebar create-menu entry that used to
+create a crew-mode session is now a "Crew Members" door: it opens `/members`
+when `PREVIEW_CREW` (Settings → Developer → Feature Previews) is on and lands on
+that flag's card when it is off. A session already in crew mode keeps running;
+the runtime below is slated for removal with it.
 
 ## Crew Mode data flow
 

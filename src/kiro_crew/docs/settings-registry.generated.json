@@ -790,11 +790,11 @@
       "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane."
     },
     {
-      "id": "developer.crew-members-and-crew-mode",
-      "label": "Crew Members and Crew Mode",
+      "id": "developer.crew-members",
+      "label": "Crew Members",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.crew-members-and-crew-mode",
-      "description": "The Crew Members page and Crew Mode chats. Both are still being built, so neither is offered until you turn this on."
+      "route": "/settings/developer?highlight=developer.crew-members",
+      "description": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
     },
     {
       "id": "developer.developer-mode",

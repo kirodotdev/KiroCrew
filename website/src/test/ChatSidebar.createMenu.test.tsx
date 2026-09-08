@@ -18,9 +18,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
+import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
+import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import type { RootState } from '../store'
 
 // Render framer-motion elements as plain DOM because jsdom cannot run projection.
@@ -82,6 +84,13 @@ import ChatSidebar from '../pages/ChatSidebar'
 // on is the same write the Settings > Developer > Feature Previews toggle performs.
 import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 
+/** Where the router is: the "Crew Members" entry navigates rather than creates,
+ *  so its tests read the destination back instead of a create call. */
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="location">{loc.pathname}{loc.search}</div>
+}
+
 function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string } = {}) {
   const store = createTestStore({
     dashboard: {
@@ -107,6 +116,7 @@ function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: st
               slots={[]} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent={opts.defaultAgent ?? ''} installedAgents={[]}
             />
+            <LocationProbe />
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -139,20 +149,18 @@ describe('create-button caret menu', () => {
     expect(screen.getByText('New autopilot chat')).toBeTruthy()
   })
 
-  it('explains what each engineered mode does, at the point of choice', async () => {
-    // The moment a user cannot tell Autopilot from Crew Mode is the moment this
-    // menu opens. Before this, the only explanation was a native title= on the
-    // sidebar badge — i.e. visible only after the session already existed.
-    //
-    // Crew is preview-gated, so the flag is part of the fixture: the contrast
-    // this test is about only exists once both modes are on offer.
+  it('explains the engineered entries, at the point of choice', async () => {
+    // The moment a user cannot tell Autopilot from Crew Members is the moment
+    // this menu opens. Before this, the only explanation was a native title= on
+    // the sidebar badge — i.e. visible only after the session already existed.
+    // The Members page is on, so the crew gloss describes the page itself.
     localStorage.setItem(PREVIEW_CREW, '1')
     renderSidebar()
     openCreateMenu()
     await screen.findByText('New autopilot chat')
-    // The contrast that matters: one job in stages vs several at once.
+    // The contrast that matters: one job in stages vs standing agents you talk to.
     expect(screen.getByText(/One job, done in steps/)).toBeTruthy()
-    expect(screen.getByText(/Several jobs at once/)).toBeTruthy()
+    expect(screen.getByText(/Opens the Crew Members page/)).toBeTruthy()
   })
 
   it('leaves the plain entries single-line', async () => {
@@ -191,47 +199,64 @@ describe('create-button caret menu', () => {
     expect(mocks.createChatSlot.mock.calls.some(c => c.includes('orchestrator'))).toBe(true)
   })
 
-  it('hides the Crew Mode entry until the preview flag is on', async () => {
-    // Crew is unreleased, so the create menu must not offer it by default —
-    // a user who never opted in should not be able to reach the mode at all.
+  // "Crew Members" — Crew Mode retired, and the entry that used to create a
+  // `mode: 'crew'` session is now the door to the Members page. It is NOT
+  // preview-gated: the flag only decides where the click lands.
+  it('lists Crew Members whatever the preview flag says, and never creates a session', async () => {
     // Asserted on a plain `localStorage.clear()` (the beforeEach), which is the
-    // state a fresh install is in.
+    // state a fresh install is in — the state the old entry was hidden in.
     renderSidebar()
     openCreateMenu()
     // Anchor on a sibling entry first: an empty query below would also pass if
     // the menu simply failed to open.
     await screen.findByText('New autopilot chat')
+    const item = screen.getByTestId('open-crew-members')
+    expect(item.textContent).toContain('Crew Members')
+    // The retired ingress and its experimental tag are gone, not merely hidden.
     expect(screen.queryByTestId('new-crew-chat')).toBeNull()
     expect(screen.queryByText('New Crew Mode chat')).toBeNull()
+    expect(item.querySelector('[data-testid="crew-experimental-tag"]')).toBeNull()
+    fireEvent.click(item)
+    await waitFor(() => expect(screen.getByTestId('location').textContent).not.toBe('/'))
+    expect(mocks.createChatSlot).not.toHaveBeenCalled()
   })
 
-  it('tags Crew Mode experimental where the mode is chosen, and only there', async () => {
-    // Crew Mode dispatches every message to a sub-session and relays a summary
-    // rather than the reply, so it does not yet read like a conversation. Until
-    // that is fixed the mode has to announce itself, and the only moment that
-    // helps is BEFORE the click — a warning on the resulting session's badge is
-    // read once the session already exists.
-    //
-    // The entry is preview-gated, so the flag is part of the fixture: without it
-    // there is no row to carry the tag.
+  it('opens the Members page when the preview flag is on', async () => {
     localStorage.setItem(PREVIEW_CREW, '1')
     renderSidebar()
     openCreateMenu()
-    const crewItem = (await screen.findByText('New Crew Mode chat')).closest('[role="menuitem"]')
-    expect(crewItem).not.toBeNull()
-    // Scoped to the crew item, not the menu: asserting the word merely appears
-    // somewhere would still pass if the tag drifted onto a sibling entry.
-    const tag = crewItem?.querySelector('[data-testid="crew-experimental-tag"]')
-    expect(tag?.textContent).toBe('Experimental')
-    // The neighbouring mode is NOT experimental; a tag that leaks onto it turns
-    // a targeted caution into noise on a shipped feature.
-    const autopilotItem = screen.getByText('New autopilot chat').closest('[role="menuitem"]')
-    expect(autopilotItem?.querySelector('[data-testid="crew-experimental-tag"]')).toBeNull()
+    fireEvent.click(await screen.findByTestId('open-crew-members'))
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/members'))
+  })
+
+  it('opens the Feature Previews card that turns the page on when the flag is off', async () => {
+    // Not a toast telling the user to go and find the switch: the click lands
+    // ON the switch, ringed, via the same `?highlight=` deep link Settings
+    // search uses.
+    renderSidebar()
+    openCreateMenu()
+    const item = await screen.findByTestId('open-crew-members')
+    // The gloss discloses the detour BEFORE the click, instead of promising the
+    // page and then landing somewhere else (UX review on #9519).
+    expect(item.textContent).toMatch(/Opens Settings first/)
+    expect(item.textContent).not.toMatch(/Opens the Crew Members page/)
+    fireEvent.click(item)
+    await waitFor(() => expect(screen.getByTestId('location').textContent)
+      .toBe(`/settings/developer?highlight=${SETTINGS_CREW_MEMBERS_PREVIEW_ID}`))
+  })
+
+  it('deep-links to an id the settings registry still knows', () => {
+    // Registry ids derive from the card's LABEL, so a relabel silently breaks
+    // an inlined string — this pins the constant to a live entry on the
+    // developer tab, the same guard `SETTINGS_DEFAULT_MODEL_ID` carries.
+    const entry = SETTINGS_REGISTRY.find(e => e.id === SETTINGS_CREW_MEMBERS_PREVIEW_ID)
+    expect(entry, `no registry entry for ${SETTINGS_CREW_MEMBERS_PREVIEW_ID}`).toBeDefined()
+    expect(entry?.tab).toBe('developer')
   })
 
   // "New chat on crew" — creating a session that runs on a connected peer. The
   // row mirrors "New chat in folder": a dynamic list behind one submenu. It is
-  // preview-gated on its OWN flag (not Crew Mode's), so both conditions have to
+  // preview-gated on its OWN flag (not the Crew Members page's), so both conditions have to
   // hold: a warm peer AND the opt-in.
   it('offers no crew entry when no peer holds a live tunnel', async () => {
     // Absent, not disabled. A disabled row on a single-machine install

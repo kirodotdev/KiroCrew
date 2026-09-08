@@ -59,9 +59,11 @@ registerBuiltinSurface({
 // for themselves — the rail and Search Everywhere both read
 // `getAdvertisedSurfaces()` — and the third, the browser-tab attention count,
 // applies it inside `selectAllSurfacesAttention`, because that sum reads the
-// registry directly rather than the advertised list. The other door into crew
-// (the sidebar's "New Crew Mode chat" entry) reads PREVIEW_CREW directly, since
-// a create-menu item is not a surface at all.
+// registry directly rather than the advertised list. The sidebar create menu's
+// "Crew Members" entry is not gated by this flag at all — it reads PREVIEW_CREW
+// only to decide whether it lands on `/members` or on the Settings card that
+// turns the page on (`ChatSidebar.openCrewMembers`); a create-menu item is not
+// a surface.
 registerBuiltinSurface({
   navId: 'members',
   route: '/members',

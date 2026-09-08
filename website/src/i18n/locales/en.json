@@ -6452,7 +6452,6 @@
       "needs_approval": "Needs approval",
       "needs_your_answer": "Needs your answer",
       "new_autopilot_chat": "New autopilot chat",
-      "new_crew_chat": "New Crew Mode chat",
       "new_ephemeral_chat": "New ephemeral chat",
       "new_chat_in_folder": "New chat in folder",
       "new_chat_in_name": "New chat in {{name}}",
@@ -6510,8 +6509,7 @@
       "within": "Within",
       "crew_mode": "Crew Mode — topics run in parallel sub-sessions",
       "crew": "Crew",
-      "autopilot_desc": "One job, done in steps — it plans first, you approve, then it runs stage by stage.",
-      "crew_desc": "Several jobs at once — each topic runs in its own sub-session and answers when it lands."
+      "autopilot_desc": "One job, done in steps — it plans first, you approve, then it runs stage by stage."
     },
     "contextBreakdown": {
       "axis_bar": "bar length ∝ √chars · segments = that turn's composition",
@@ -6678,10 +6676,8 @@
         "scroll_inspector": "Scroll inspector"
       },
       "featurePreviewsTab": {
-        "crew": "Crew Members and Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
         "open_webhooks": "Open Webhooks",
-        "the_crew_members_page_and_crew_mode_chats_both_a": "The Crew Members page and Crew Mode chats. Both are still being built, so neither is offered until you turn this on.",
         "webhooks": "Webhooks"
       }
     },

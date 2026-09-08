@@ -3999,7 +3999,10 @@
       "folders_load_failed": "Could not load folders",
       "columns_load_failed": "Could not load board columns",
       "folder_update_failed": "Folder update failed",
-      "board_update_failed": "Board update failed"
+      "board_update_failed": "Board update failed",
+      "open_crew_members": "Crew Members",
+      "open_crew_members_desc": "Opens the Crew Members page — each member is a standing agent with its own thread.",
+      "open_crew_members_gated_desc": "Opens Settings first, to turn this preview on — the page is not available until you do."
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
@@ -5985,11 +5988,12 @@
           "webhooks_summary": "Another system can start your agent for you — CI, a review bot, a deploy pipeline — by sending a message with an access token you create on the Webhooks page.",
           "webhooks_where": "A new Webhooks page opens from the “Open Webhooks” link that appears on this card in Settings once this is on; it stays out of the sidebar until the page is finished. Turning it off only hides the page again; tokens you created are kept.",
           "webhooks_media_page": "The Webhooks page: token list on the left, the “Let an outside system wake up your agent” setup on the right.",
-          "crew_summary": "Crew Members is a page that lists every agent you have and what each is driving right now; a Crew Mode chat runs several jobs at once, each topic in its own session, and answers when they land. Not related to the “Chat on a crew” preview below, which is about another machine.",
-          "crew_where": "“Crew Members” appears in the sidebar under Sessions, and “New Crew Mode chat” appears in the New button’s menu, both as soon as this is on.",
-          "crew_media_members": "The Crew Members page, with one member selected and its activity panel open.",
-          "crew_media_menu": "The New button’s menu with “New Crew Mode chat” added. Its Experimental badge is the menu’s tag for this same preview."
-        }
+          "crew_summary": "Crew Members lists every agent you have and what each is driving now, with a thread per member. Unrelated to “Chat on a crew” below, which is about another machine.",
+          "crew_where": "“Crew Members” appears in the sidebar under Sessions once this is on; the New menu’s entry opens it, or this card while off.",
+          "crew_media_members": "The Crew Members page, with one member selected and its activity panel open."
+        },
+        "crew_members": "Crew Members",
+        "crew_members_desc": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
       }
     },
     "appPage": {

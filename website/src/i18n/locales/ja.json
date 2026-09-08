@@ -10057,10 +10057,8 @@
       "yesterday": "昨日",
       "crew": "Crew",
       "crew_mode": "Crew Mode — トピックごとに並列のサブセッションで実行",
-      "new_crew_chat": "新しい Crew Mode チャット",
       "new_ephemeral_chat": "新しいエフェメラルチャット",
       "autopilot_desc": "1 つの作業を段階的に — まず計画を示し、承認後に段階ごとに実行します。",
-      "crew_desc": "複数の作業を同時に — トピックごとに別のサブセッションで進み、終わり次第返答します。",
       "collapse_source_links": "表示を減らす",
       "source_links_expand_failed": "残りを読み込めませんでした。クリックして再試行してください。",
       "lane_needs_approval": "承認が必要",
@@ -10079,7 +10077,10 @@
       "folders_load_failed": "フォルダーを読み込めませんでした",
       "columns_load_failed": "ボードの列を読み込めませんでした",
       "folder_update_failed": "フォルダーの更新に失敗しました",
-      "board_update_failed": "ボードの更新に失敗しました"
+      "board_update_failed": "ボードの更新に失敗しました",
+      "open_crew_members": "クルーメンバー",
+      "open_crew_members_desc": "クルーメンバーのページを開きます。各メンバーは常駐エージェントで、自分のスレッドを持ちます。",
+      "open_crew_members_gated_desc": "まず設定を開いてこのプレビューをオンにします。オンにするまでページは使えません。"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -10457,20 +10458,19 @@
       "featurePreviewsTab": {
         "chat_on_a_crew": "crew 上でチャット",
         "chat_on_a_crew_desc": "作成メニューに「New chat on crew」を追加します。リモートインスタンス（「設定 > リモートインスタンス」で接続した別のマシン）上でセッションを開始します。未完成です: セッションはそのインスタンス自身のペインで開き、このダッシュボードのセッション一覧にはまだ表示されません。後で戻るには、そのインスタンスのペインに切り替えてください。",
-        "crew": "クルーメンバーと Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "受信 Webhook のトークン、登録済みコンテキスト、実行履歴。API は動作しますが、ページは未完成です。",
         "open_webhooks": "Webhooks を開く",
-        "the_crew_members_page_and_crew_mode_chats_both_a": "クルーメンバーのページと Crew Mode チャット。どちらもまだ開発中のため、これをオンにするまで表示されません。",
         "webhooks": "Webhooks",
         "intro": {
           "webhooks_summary": "別のシステム（CI、レビューボット、デプロイパイプライン）が、Webhooks ページで作成したアクセストークン付きでメッセージを送るだけで、あなたの代わりにエージェントを動かせます。",
           "webhooks_where": "オンにすると、設定のこのカードに「Webhooks を開く」リンクが現れ、新しい Webhooks ページはそこから開きます。ページが完成するまでサイドバーには表示されません。オフにしてもページが再び隠れるだけで、作成したトークンは残ります。",
           "webhooks_media_page": "Webhooks ページ：左にトークン一覧、右に「外部システムからエージェントを起こす」設定。",
-          "crew_summary": "Crew Members は、そのエージェント全員と、それぞれが今動かしているものを一覧するページです。Crew Mode チャットは複数の仕事を同時に進め、トピックごとに独立したセッションを持ち、終わり次第まとめて答えます。下の「crew 上でチャット」プレビューとは無関係です。そちらは別のマシンの話です。",
-          "crew_where": "オンにするとすぐ、サイドバーの Sessions の下に「Crew Members」が、「新規」ボタンのメニューに「新しい Crew Mode チャット」が現れます。",
-          "crew_media_members": "Crew Members ページ。メンバーを 1 人選び、アクティビティパネルを開いた状態。",
-          "crew_media_menu": "「新規」ボタンのメニューに「新しい Crew Mode チャット」が追加された状態。付いている Experimental の印は、この同じプレビューを指すメニュー側のタグです。"
-        }
+          "crew_summary": "Crew Members は、すべてのエージェントと各自の進行中の作業を一覧し、メンバーごとにスレッドがあります。下の「クルー上でチャット」とは無関係で、別のマシンの話です。",
+          "crew_where": "オンにすると「Crew Members」がサイドバーの Sessions の下に現れます。「新規」メニューの項目はオンならページ、オフならこのカードを開きます。",
+          "crew_media_members": "Crew Members ページ。メンバーを 1 人選び、アクティビティパネルを開いた状態。"
+        },
+        "crew_members": "クルーメンバー",
+        "crew_members_desc": "Crew Members ページ。あなたのすべてのエージェントが、それぞれ自分のスレッドを持って並びます。まだ開発中のため、オンにするまで表示されません。"
       }
     },
     "developerPage": {

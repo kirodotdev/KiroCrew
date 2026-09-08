@@ -13,7 +13,10 @@ import { DndContext, closestCenter, pointerWithin, useDroppable, DragOverlay, Me
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { shallowEqual } from 'react-redux'
+import { settingsPath } from '../components/settingsPath'
+import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
@@ -5160,26 +5163,30 @@ function ChatSidebar({
     onError: onNewChatError,
   })
 
-  // Crew Mode: multi-topic chat — the agent runs only in sub-sessions
-  // (topics); the session itself is an engineered routing pipeline.
+  // Crew Members: the create menu's crew entry no longer creates anything. Crew
+  // Mode (a `mode: 'crew'` session fanning topics out to sub-sessions) is
+  // retired in favour of the Crew Members page, where each member is a
+  // standing agent with its own DM thread — so the entry is a DOOR to that
+  // page, kept in this menu because this is where people learned to look
+  // for "crew".
   //
-  // Preview-gated: the create-menu entry below only renders once the operator
-  // opts in at Settings > Developer > Feature Previews. `usePreviewFlag` rather than a bare
-  // read because the sidebar does not remount when that toggle flips.
+  // Always rendered, even while the page is still preview-gated: the flag
+  // only decides WHERE the click lands. On, it opens `/members`. Off, it
+  // opens Settings > Developer > Feature Previews with the crew card scrolled
+  // into view and ringed (`useSettingHighlight`), so the user turns the page
+  // on from the very switch that holds it instead of reading a toast about
+  // one. `usePreviewFlag` rather than a bare read because the sidebar does
+  // not remount when that toggle flips.
   const crewPreview = usePreviewFlag(PREVIEW_CREW)
+  const navigate = useNavigate()
+  const openCrewMembers = () => {
+    navigate(crewPreview ? '/members' : settingsPath({ tab: 'developer', highlight: SETTINGS_CREW_MEMBERS_PREVIEW_ID }))
+  }
   // Separate flag, separate feature: this one holds "New chat on crew", which
   // dispatches a session to another MACHINE. Its toggle is in Settings > Remote
   // crews rather than Settings > Developer > Feature Previews, because it only means
   // anything to someone who already has a crew connected.
   const remoteCrewChatPreview = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
-  const createCrewMutation = useMutation({
-    mutationFn: () => {
-      setNewChatError('')
-      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'crew' })).unwrap()
-    },
-    onSuccess: focusComposer,
-    onError: onNewChatError,
-  })
 
   // Create default chat session mutation
   const createChatMutation = useMutation({
@@ -6158,34 +6165,6 @@ function ChatSidebar({
                     <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.autopilot_desc')}</span>
                   </span>
                 </DropdownMenuItem>
-                {/* Crew Mode is preview-gated (`utils/previewFlags.ts`): the mode
-                 *  is not released, so the menu does not offer it unless the
-                 *  operator opted in at Settings > Developer > Feature Previews. The
-                 *  mutation above stays wired either way, so a session already in
-                 *  crew mode is unaffected — only this ingress disappears.
-                 *
-                 *  CAPTURED: the Feature Previews "See what it looks like" dialog
-                 *  shows a GIF of this menu opening with this entry. A visible
-                 *  change to the menu or the entry makes that picture stale —
-                 *  re-shoot with `scripts/capture-feature-previews.mjs`. */}
-                {crewPreview && (
-                <DropdownMenuItem className="items-start" data-testid="new-crew-chat" onClick={() => { createCrewMutation.mutate() }}>
-                  <Users size={14} className="text-muted mt-[3px] shrink-0" />
-                  <span className="flex min-w-0 flex-col gap-px">
-                    {/* The tag rides the TITLE row, not the gloss below it: this menu
-                     *  is the only point at which the mode is chosen, so a caution
-                     *  placed in the description is read after the click rather than
-                     *  before it. `flex-wrap` so a longer localised label drops the
-                     *  tag onto its own line instead of widening the row past the
-                     *  menu's max-w-[264px] and clipping whichever renders last. */}
-                    <span className="flex flex-wrap items-center gap-x-1.5">
-                      <span>{i18nT('pages.chatSidebar.new_crew_chat')}</span>
-                      <Badge variant="warn" className="px-1 py-0 text-[10px] rounded font-sans" data-testid="crew-experimental-tag">{i18nT('pages.chatSidebar.experimental')}</Badge>
-                    </span>
-                    <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.crew_desc')}</span>
-                  </span>
-                </DropdownMenuItem>
-                )}
                 {/* Ephemeral session types are grouped one level down: they are two
                  *  spellings of one choice (a session that leaves no lasting memory),
                  *  so listing both at the top level would double the session-type rows
@@ -6237,6 +6216,36 @@ function ChatSidebar({
                   </DropdownMenuSub>
                   )
                 })()}
+                {/* Crew Members is a DOOR, not a create action: it navigates to the
+                 *  Members page (or, while that page is preview-gated, to the
+                 *  Settings card that turns it on — see `openCrewMembers`). It sits
+                 *  among the create entries because this menu is where "crew" was
+                 *  offered until Crew Mode retired, so it is where a returning user
+                 *  looks. Not disabled by `creatingSlot`: it creates nothing.
+                 *
+                 *  CAPTURED: the Feature Previews "See what it looks like" dialog
+                 *  shows the Members page this entry opens. A visible change to
+                 *  that page makes the picture stale — re-shoot with
+                 *  `scripts/capture-feature-previews.mjs`.
+                 *
+                 *  Separators on BOTH sides: every other row here creates something and is
+                 *  named "New …"; this one navigates and is not. Without the rule a
+                 *  reader parsed it as an unnamed create action on every menu open
+                 *  (UX review on #9519). It sits between the session rows and the
+                 *  folder rows, in a group of its own. */}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="items-start" data-testid="open-crew-members" onClick={openCrewMembers}>
+                  <Users size={14} className="text-muted mt-[3px] shrink-0" />
+                  <span className="flex min-w-0 flex-col gap-px">
+                    <span>{i18nT('pages.chatSidebar.open_crew_members')}</span>
+                    {/* The gloss tells the truth about where the click lands. While
+                     *  the page is preview-gated the entry detours to the Settings
+                     *  card that turns it on, and a gloss that still promised the
+                     *  page read as "offered and hidden at once" (UX review on
+                     *  #9519) — so it discloses the detour instead. */}
+                    <span className="whitespace-normal text-[11px] leading-snug text-muted">{crewPreview ? i18nT('pages.chatSidebar.open_crew_members_desc') : i18nT('pages.chatSidebar.open_crew_members_gated_desc')}</span>
+                  </span>
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}>
                   <FolderPlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_folder')}

@@ -10365,12 +10365,10 @@
       "will_be_moved_to_older_sessions": "seront déplacées vers les anciennes sessions.",
       "within": "Dans",
       "yesterday": "Hier",
-      "new_crew_chat": "Nouveau chat Crew Mode",
       "new_ephemeral_chat": "Nouveau chat éphémère",
       "crew_mode": "Crew Mode — les sujets avancent en sous-sessions parallèles",
       "crew": "Crew",
       "autopilot_desc": "Une tâche, par étapes — il planifie d'abord, vous validez, puis il exécute étape par étape.",
-      "crew_desc": "Plusieurs tâches à la fois — chaque sujet avance dans sa propre sous-session et répond dès qu'il aboutit.",
       "lane_needs_approval": "Approbation requise",
       "lane_waiting": "Vous attend",
       "lane_working": "En cours",
@@ -10389,7 +10387,10 @@
       "folders_load_failed": "Impossible de charger les dossiers",
       "columns_load_failed": "Impossible de charger les colonnes du tableau",
       "folder_update_failed": "Échec de la mise à jour du dossier",
-      "board_update_failed": "Échec de la mise à jour du tableau"
+      "board_update_failed": "Échec de la mise à jour du tableau",
+      "open_crew_members": "Membres de l’équipe",
+      "open_crew_members_desc": "Ouvre la page Membres de l’équipe : chaque membre est un agent permanent avec son propre fil.",
+      "open_crew_members_gated_desc": "Ouvre d’abord les Réglages pour activer cet aperçu : la page n’est pas disponible avant cela."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
@@ -10769,20 +10770,19 @@
       "featurePreviewsTab": {
         "chat_on_a_crew": "Discuter sur un Crew",
         "chat_on_a_crew_desc": "Ajoute « New chat on crew » au menu de création, qui démarre une session sur une instance distante, c’est-à-dire une autre machine que tu as connectée dans Paramètres > Instances distantes. Inachevé : la session s’ouvre dans le panneau propre à cette instance et n’apparaît pas encore dans la liste des sessions de ce tableau de bord ; pour y revenir plus tard, passe au panneau de cette instance.",
-        "crew": "Membres de l’équipe et Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "Jetons de webhooks entrants, contextes enregistrés et historique des exécutions. L'API fonctionne, mais la page n'est pas terminée.",
         "open_webhooks": "Ouvrir Webhooks",
-        "the_crew_members_page_and_crew_mode_chats_both_a": "La page Membres de l'équipe et les chats Crew Mode. Les deux sont encore en construction : rien n'est proposé tant que cette option n'est pas activée.",
         "webhooks": "Webhooks",
         "intro": {
           "webhooks_summary": "Un autre système (CI, bot de revue, pipeline de déploiement) peut lancer ton agent à ta place en envoyant un message avec un jeton d’accès que tu crées sur la page Webhooks.",
           "webhooks_where": "Une fois activé, le lien « Ouvrir Webhooks » apparaît sur cette carte dans les Réglages ; c’est de là que s’ouvre la nouvelle page Webhooks. Elle n’apparaît pas dans la barre latérale tant qu’elle n’est pas terminée. Le désactiver ne fait que masquer la page à nouveau ; les jetons que tu as créés sont conservés.",
           "webhooks_media_page": "La page Webhooks : la liste des jetons à gauche, la configuration « Laisser un système externe réveiller ton agent » à droite.",
-          "crew_summary": "Crew Members est une page qui liste chacun de tes agents et ce qu’il pilote en ce moment ; une discussion en Crew Mode mène plusieurs tâches à la fois, chaque sujet dans sa propre session, et répond quand elles aboutissent. Sans rapport avec l’aperçu « Discuter sur un Crew » ci-dessous, qui concerne une autre machine.",
-          "crew_where": "« Crew Members » apparaît dans la barre latérale sous Sessions et « Nouvelle discussion Crew Mode » dans le menu du bouton Nouveau, tous deux dès que ceci est activé.",
-          "crew_media_members": "La page Crew Members, avec un membre sélectionné et son panneau d’activité ouvert.",
-          "crew_media_menu": "Le menu du bouton Nouveau avec « Nouvelle discussion Crew Mode » ajouté. Son badge Expérimental est l’étiquette du menu pour ce même aperçu."
-        }
+          "crew_summary": "Crew Members liste tous vos agents et ce que chacun pilote, avec un fil par membre. Sans rapport avec « Discussion sur une équipe » ci-dessous, qui concerne une autre machine.",
+          "crew_where": "« Crew Members » apparaît dans la barre latérale sous Sessions quand ceci est activé ; l’entrée du menu Nouveau l’ouvre, ou cette carte sinon.",
+          "crew_media_members": "La page Crew Members, avec un membre sélectionné et son panneau d’activité ouvert."
+        },
+        "crew_members": "Membres de l’équipe",
+        "crew_members_desc": "La page Crew Members : tous vos agents, chacun avec son propre fil. Encore en construction, donc non proposée tant que ceci n’est pas activé."
       }
     },
     "developerPage": {

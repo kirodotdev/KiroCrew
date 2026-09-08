@@ -10057,12 +10057,10 @@
       "will_be_moved_to_older_sessions": "将被移至较早的会话。",
       "within": "范围内",
       "yesterday": "昨天",
-      "new_crew_chat": "新建 Crew Mode 聊天",
       "new_ephemeral_chat": "新建无痕聊天",
       "crew_mode": "Crew Mode — 多话题并行子会话",
       "crew": "Crew",
       "autopilot_desc": "一件事分步做完 —— 先给计划，你批准后逐阶段执行。",
-      "crew_desc": "多件事同时推进 —— 每个话题各跑一个子会话，完成一个就回一条。",
       "lane_needs_approval": "待审批",
       "lane_waiting": "等你回应",
       "lane_working": "进行中",
@@ -10079,7 +10077,10 @@
       "folders_load_failed": "无法加载文件夹",
       "columns_load_failed": "无法加载看板列",
       "folder_update_failed": "文件夹更新失败",
-      "board_update_failed": "看板更新失败"
+      "board_update_failed": "看板更新失败",
+      "open_crew_members": "团队成员",
+      "open_crew_members_desc": "打开团队成员页面——每个成员都是一个常驻代理，各有自己的话题。",
+      "open_crew_members_gated_desc": "会先打开设置以开启此预览——开启之前该页面不可用。"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -10457,20 +10458,19 @@
       "featurePreviewsTab": {
         "chat_on_a_crew": "在 crew 上聊天",
         "chat_on_a_crew_desc": "在新建菜单里加入“New chat on crew”，用它创建的会话运行在远程实例上，也就是你在“设置 > 远程实例”里连接的另一台机器。尚未完善：会话会在该实例自己的面板中打开，且暂不会出现在本仪表板的会话列表里；之后要回到它，请切换到该实例的面板。",
-        "crew": "团队成员与 Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
-        "the_crew_members_page_and_crew_mode_chats_both_a": "团队成员页面和 Crew Mode 聊天。两者仍在开发中，开启后才会显示。",
         "webhooks": "Webhook",
         "intro": {
           "webhooks_summary": "让另一个系统替你启动代理——CI、评审机器人、部署流水线——只需用你在 Webhooks 页面创建的访问令牌发送一条消息。",
           "webhooks_where": "开启后，这张卡片在“设置”里会出现“打开 Webhooks”链接，新的 Webhooks 页面从那里进入；页面完成之前不会出现在侧边栏里。关闭后只是重新隐藏这个页面；你创建的 token 会保留。",
           "webhooks_media_page": "Webhooks 页面：左侧是 token 列表，右侧是“让外部系统唤醒你的代理”的设置。",
-          "crew_summary": "Crew Members 是一个页面，列出你拥有的每个代理以及它当前在驱动什么；Crew Mode 聊天同时跑多个任务，每个主题各占一个会话，完成后再汇总回答。与下方的“在 crew 上聊天”预览无关，那个说的是另一台机器。",
-          "crew_where": "开启后，“Crew Members”会出现在侧边栏的 Sessions 下方，“新建 Crew Mode 聊天”会出现在“新建”按钮的菜单里。",
-          "crew_media_members": "Crew Members 页面，选中了一个成员并打开了它的活动面板。",
-          "crew_media_menu": "“新建”按钮的菜单里多出“新建 Crew Mode 聊天”。它上面的“实验性”标记，指的就是这同一个预览。"
-        }
+          "crew_summary": "Crew Members 列出你拥有的每个代理及其当前进展，每个成员各有一个话题。与下方的“在 crew 上聊天”无关，那个说的是另一台机器。",
+          "crew_where": "开启后，“Crew Members”出现在侧边栏 Sessions 下方；“新建”菜单里的一项开启时打开它，关闭时打开这张卡片。",
+          "crew_media_members": "Crew Members 页面，选中了一个成员并打开了它的活动面板。"
+        },
+        "crew_members": "团队成员",
+        "crew_members_desc": "团队成员（Crew Members）页面：列出你拥有的每个代理，各有自己的话题。仍在建设中，开启后才会提供。"
       }
     },
     "developerPage": {

@@ -55,19 +55,19 @@ export interface PreviewFlagChange {
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 
 /**
- * Crew: the Crew Members page (`/members`) and the "New Crew Mode chat" entry in
- * the sidebar's create menu.
+ * Crew Members: the Crew Members page (`/members`) and its rail item.
  *
- * ONE flag over both, not one each: they are two doors into the same unfinished
- * feature, and a user who reaches crew through the door that was left open hits
- * the same rough edges either way — so a per-door flag would only let the
- * feature half-ship. The two surfaces stay separate code; the flag is what says
- * "crew is not released yet".
+ * This flag used to hold a second door too — the "New Crew Mode chat" entry in
+ * the sidebar's create menu. Crew Mode retired in favour of the Members page,
+ * and that menu entry is now "Crew Members": rendered whatever this flag says,
+ * it opens `/members` when the flag is on and, when off, the Settings card that
+ * turns it on (`ChatSidebar.openCrewMembers`). The flag therefore gates only the
+ * page and where the entry lands, never whether the entry exists — a user who
+ * has not opted in still finds the door and is walked to the switch.
  *
- * Gating the INGRESS only. A session already created in crew mode keeps working,
- * keeps its `Crew` row badge, and its route stays registered, so turning the
- * flag off does not orphan existing work — it stops advertising the feature to
- * someone who has not opted in.
+ * Gating the INGRESS only. Turning the flag off hides the rail item and reroutes
+ * the menu entry; it does not orphan existing work — it stops advertising the
+ * page to someone who has not opted in.
  */
 export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
 
@@ -76,11 +76,10 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
  * entry in the sidebar's create menu.
  *
  * Its own flag, deliberately NOT {@link PREVIEW_CREW}. The word "crew" carries
- * two unrelated meanings here: `PREVIEW_CREW` holds Crew Mode (parallel
- * sub-sessions) and the Crew Members page, while this holds sessions dispatched
- * to another MACHINE over the instances tunnel. Sharing one key would release or
- * hold both at once, which is the same half-ship failure `PREVIEW_CREW`'s own
- * one-flag-two-doors reasoning exists to prevent — in the opposite direction.
+ * two unrelated meanings here: `PREVIEW_CREW` holds the Crew Members page, while
+ * this holds sessions dispatched to another MACHINE over the instances tunnel.
+ * Sharing one key would release or hold both at once, which is the same
+ * half-ship failure a per-feature flag exists to prevent.
  *
  * Held because the LANDING is unfinished, not the dispatch: the session really is
  * created on the peer, but there is no native remote chat view yet, so it opens

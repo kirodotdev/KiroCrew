@@ -10365,12 +10365,10 @@
       "will_be_moved_to_older_sessions": "verranno spostate tra le sessioni più vecchie.",
       "within": "Entro",
       "yesterday": "Ieri",
-      "new_crew_chat": "Nuova chat Crew Mode",
       "new_ephemeral_chat": "Nuova chat effimera",
       "crew_mode": "Crew Mode — gli argomenti procedono in sottosessioni parallele",
       "crew": "Crew",
       "autopilot_desc": "Un lavoro, a fasi: prima pianifica, tu approvi e poi procede fase per fase.",
-      "crew_desc": "Più lavori insieme: ogni argomento avanza in una sotto-sessione e risponde appena finisce.",
       "lane_needs_approval": "Richiede approvazione",
       "lane_waiting": "In attesa di te",
       "lane_working": "Al lavoro",
@@ -10389,7 +10387,10 @@
       "folders_load_failed": "Impossibile caricare le cartelle",
       "columns_load_failed": "Impossibile caricare le colonne della board",
       "folder_update_failed": "Aggiornamento della cartella non riuscito",
-      "board_update_failed": "Aggiornamento della board non riuscito"
+      "board_update_failed": "Aggiornamento della board non riuscito",
+      "open_crew_members": "Membri della crew",
+      "open_crew_members_desc": "Apre la pagina Membri della crew: ogni membro è un agente permanente con il proprio thread.",
+      "open_crew_members_gated_desc": "Apre prima le Impostazioni per attivare questa anteprima: la pagina non è disponibile finché non lo fai."
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",
@@ -10769,20 +10770,19 @@
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chatta su un Crew",
         "chat_on_a_crew_desc": "Aggiunge “New chat on crew” al menu di creazione, che avvia una sessione su un’istanza remota, cioè un altro computer che hai connesso in Impostazioni > Istanze remote. Incompleto: la sessione si apre nel pannello di quell’istanza e non compare ancora nell’elenco delle sessioni di questa dashboard; per tornarci più tardi, passa al pannello di quell’istanza.",
-        "crew": "Membri della crew e Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "Token dei webhook in ingresso, contesti registrati e cronologia delle esecuzioni. L’API funziona, ma la pagina non è finita.",
         "open_webhooks": "Apri Webhooks",
-        "the_crew_members_page_and_crew_mode_chats_both_a": "La pagina Membri della crew e le chat Crew Mode. Entrambi sono ancora in sviluppo, quindi non vengono proposti finché non si attiva questa opzione.",
         "webhooks": "Webhooks",
         "intro": {
           "webhooks_summary": "Un altro sistema (CI, un bot di revisione, una pipeline di deploy) può avviare il tuo agente per te inviando un messaggio con un token di accesso che crei nella pagina Webhooks.",
           "webhooks_where": "Una volta attivo, su questa scheda nelle Impostazioni compare il link «Apri Webhooks», da cui si apre la nuova pagina Webhooks; non compare nella barra laterale finché non è finita. Disattivarlo nasconde di nuovo la pagina e nulla più; i token che hai creato restano.",
           "webhooks_media_page": "La pagina Webhooks: a sinistra l’elenco dei token, a destra la configurazione «Lascia che un sistema esterno svegli il tuo agente».",
-          "crew_summary": "Crew Members è una pagina che elenca ogni agente che hai e cosa sta guidando in questo momento; una chat in Crew Mode esegue più lavori insieme, ogni argomento nella sua sessione, e risponde quando finiscono. Non ha a che fare con l’anteprima «Chatta su un Crew» qui sotto, che riguarda un’altra macchina.",
-          "crew_where": "«Crew Members» compare nella barra laterale sotto Sessioni e «Nuova chat Crew Mode» nel menu del pulsante Nuovo, entrambi appena attivi questo.",
-          "crew_media_members": "La pagina Crew Members con un membro selezionato e il suo pannello attività aperto.",
-          "crew_media_menu": "Il menu del pulsante Nuovo con «Nuova chat Crew Mode» aggiunta. Il suo badge Sperimentale è l’etichetta del menu per questa stessa anteprima."
-        }
+          "crew_summary": "Crew Members elenca tutti i tuoi agenti e cosa sta facendo ciascuno, con un thread per membro. Nessun legame con «Chat su una crew» qui sotto, che riguarda un’altra macchina.",
+          "crew_where": "«Crew Members» compare nella barra laterale sotto Sessioni quando questo è attivo; la voce del menu Nuovo la apre, o questa scheda se disattivo.",
+          "crew_media_members": "La pagina Crew Members con un membro selezionato e il suo pannello attività aperto."
+        },
+        "crew_members": "Membri della crew",
+        "crew_members_desc": "La pagina Crew Members: tutti i tuoi agenti, ognuno con il proprio thread. Ancora in costruzione, quindi non viene offerta finché non attivi questo."
       }
     },
     "developerPage": {

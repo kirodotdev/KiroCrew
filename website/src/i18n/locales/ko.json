@@ -10059,10 +10059,8 @@
       "yesterday": "어제",
       "crew": "Crew",
       "crew_mode": "Crew Mode — 주제별로 병렬 하위 세션에서 실행",
-      "new_crew_chat": "새 Crew Mode 채팅",
       "new_ephemeral_chat": "새 일회성 채팅",
       "autopilot_desc": "한 가지 작업을 단계별로 — 먼저 계획을 제시하고, 승인하면 단계별로 실행합니다.",
-      "crew_desc": "여러 작업을 동시에 — 주제마다 별도 하위 세션에서 진행하고 끝나는 대로 답변합니다.",
       "lane_needs_approval": "승인 필요",
       "lane_waiting": "응답 대기",
       "lane_working": "작업 중",
@@ -10079,7 +10077,10 @@
       "folders_load_failed": "폴더를 불러올 수 없습니다",
       "columns_load_failed": "보드 열을 불러올 수 없습니다",
       "folder_update_failed": "폴더 업데이트 실패",
-      "board_update_failed": "보드 업데이트 실패"
+      "board_update_failed": "보드 업데이트 실패",
+      "open_crew_members": "크루 멤버",
+      "open_crew_members_desc": "크루 멤버 페이지를 엽니다. 각 멤버는 자기 스레드를 가진 상주 에이전트입니다.",
+      "open_crew_members_gated_desc": "먼저 설정을 열어 이 미리보기를 켭니다. 켜기 전까지 페이지를 사용할 수 없습니다."
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
@@ -10457,20 +10458,19 @@
       "featurePreviewsTab": {
         "chat_on_a_crew": "crew에서 채팅",
         "chat_on_a_crew_desc": "만들기 메뉴에 “New chat on crew”를 추가합니다. 원격 인스턴스, 즉 설정 > 원격 인스턴스에서 연결한 다른 컴퓨터에서 세션을 시작합니다. 미완성입니다: 세션은 해당 인스턴스의 자체 창에서 열리며 이 대시보드의 세션 목록에는 아직 표시되지 않으므로, 나중에 돌아가려면 해당 인스턴스의 창으로 전환하세요.",
-        "crew": "크루 멤버 및 Crew Mode",
         "inbound_webhook_tokens_registered_contexts_and_r": "수신 웹훅 토큰, 등록된 컨텍스트, 실행 기록입니다. API는 동작하지만 페이지는 아직 완성되지 않았습니다.",
         "open_webhooks": "Webhooks 열기",
-        "the_crew_members_page_and_crew_mode_chats_both_a": "크루 멤버 페이지와 Crew Mode 채팅입니다. 둘 다 아직 개발 중이므로 이 옵션을 켜기 전에는 표시되지 않습니다.",
         "webhooks": "Webhooks",
         "intro": {
           "webhooks_summary": "다른 시스템(CI, 리뷰 봇, 배포 파이프라인)이 Webhooks 페이지에서 만든 액세스 토큰으로 메시지를 보내 대신 에이전트를 실행할 수 있습니다.",
           "webhooks_where": "켜면 설정의 이 카드에 “Webhooks 열기” 링크가 나타나고, 새 Webhooks 페이지는 거기서 열립니다. 페이지가 완성될 때까지 사이드바에는 나타나지 않습니다.끄면 페이지가 다시 숨겨질 뿐이며, 만든 토큰은 그대로 유지됩니다.",
           "webhooks_media_page": "Webhooks 페이지: 왼쪽은 토큰 목록, 오른쪽은 “외부 시스템이 에이전트를 깨우게 하기” 설정입니다.",
-          "crew_summary": "Crew Members는 그 에이전트 전부와 각각이 지금 무엇을 이끌고 있는지 보여 주는 페이지이며, Crew Mode 채팅은 여러 작업을 동시에 진행하고 주제마다 별도 세션을 두고 끝나면 모아서 답합니다. 아래의 “crew에서 채팅” 미리보기와는 무관합니다. 그것은 다른 머신에 관한 것입니다.",
-          "crew_where": "켜는 즉시 사이드바의 Sessions 아래에 “Crew Members”가, 새로 만들기 버튼 메뉴에 “새 Crew Mode 채팅”이 나타납니다.",
-          "crew_media_members": "멤버 하나를 선택해 활동 패널을 연 Crew Members 페이지입니다.",
-          "crew_media_menu": "새로 만들기 버튼 메뉴에 “새 Crew Mode 채팅”이 추가된 모습입니다. 붙어 있는 Experimental 표시는 이 동일한 미리보기를 가리키는 메뉴 쪽 태그입니다."
-        }
+          "crew_summary": "Crew Members는 모든 에이전트와 각각의 진행 상황을 나열하며 멤버마다 스레드가 있습니다. 아래 “크루에서 채팅”과는 무관하며, 그것은 다른 머신 이야기입니다.",
+          "crew_where": "켜면 “Crew Members”가 사이드바의 Sessions 아래에 나타납니다. 새로 만들기 메뉴 항목은 켜져 있으면 페이지, 꺼져 있으면 이 카드를 엽니다.",
+          "crew_media_members": "멤버 하나를 선택해 활동 패널을 연 Crew Members 페이지입니다."
+        },
+        "crew_members": "크루 멤버",
+        "crew_members_desc": "Crew Members 페이지: 보유한 모든 에이전트가 각자 스레드를 가지고 나열됩니다. 아직 만드는 중이라 켜기 전까지는 제공되지 않습니다."
       }
     },
     "developerPage": {
