@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.knowledge.llm_pool import (
     DEFAULT_IDLE_TTL_SECS,
     WORKER_RECYCLE_CALLS,
@@ -721,10 +722,18 @@ class TestAcpWorker:
 def _mock_effort_client(
     levels: list[str], *, supports: bool = True, claude: bool = False
 ) -> AsyncMock:
+    """An AcpClient double whose BACKEND decides the effort channel.
+
+    ``_apply_effort`` asks ``SessionCapabilities.effort_via_config_option`` off
+    ``client.backend`` rather than reading the private ``_is_claude``, so the
+    double sets the public backend string and the capability answers for it. The
+    ``claude`` keyword stays, because that is what the callers are asserting
+    about.
+    """
     client = AsyncMock()
     client.is_ready = True
     client._pid = None
-    client._is_claude = claude
+    client.backend = ACP_BACKEND_CLAUDE if claude else ACP_BACKEND_KIRO
     client.is_process_alive = lambda: True
     client.supports_config_option = MagicMock(return_value=supports)
     client.get_valid_effort_levels = MagicMock(return_value=levels)

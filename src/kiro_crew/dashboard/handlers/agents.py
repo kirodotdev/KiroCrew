@@ -38,6 +38,7 @@ from kiro_crew.agent_discovery import (
     spec_model,
     spec_str,
 )
+from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.apps.bridges import _mcp_lock as _agent_file_lock
@@ -1780,6 +1781,12 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
     verbatim: it is the wire value sent back on selection, and the adapter
     only accepts ids it advertised. Returns ``[]`` when no session has
     initialized or the backend advertised nothing.
+
+    Selects the session by CAPABILITY --
+    ``SessionCapabilities.resolves_model_from_advertised_list`` -- rather than by
+    asking which harness it is. That is the property this list depends on: a
+    backend whose served spelling differs from the stored one is exactly the
+    backend whose advertised list has to be read back.
     """
     try:
         state: DashboardState = request.app["state"]
@@ -1787,7 +1794,7 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
     except (KeyError, AttributeError):
         return []
     for provider in providers:
-        if provider.is_claude_backend:
+        if capabilities_of(provider).resolves_model_from_advertised_list:
             getter = getattr(provider, "available_models", None)
             if not callable(getter):
                 continue

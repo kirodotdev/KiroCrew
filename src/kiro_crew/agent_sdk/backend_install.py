@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
 
-from kiro_crew.acp_backends import (
+from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,

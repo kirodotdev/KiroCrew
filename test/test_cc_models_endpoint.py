@@ -38,11 +38,22 @@ def _request_with_providers(providers: dict) -> MagicMock:
     return req
 
 
-def _FakeProvider(models):
+def _FakeProvider(models, *, backend=None):
+    """A provider double carrying a REAL capability record, not an identity flag.
+
+    ``_advertised_cc_models`` selects a session by
+    ``SessionCapabilities.resolves_model_from_advertised_list``, and
+    ``capabilities_of`` requires a genuine record: a ``MagicMock(spec=...)``'s
+    attributes are all truthy, so an attribute-shaped assertion would let this
+    double claim every capability at once. Setting the real record is what makes
+    the double describe a backend that exists.
+    """
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
     from kiro_crew.providers.acp import AcpProvider
 
     provider = MagicMock(spec=AcpProvider)
-    provider.is_claude_backend = True
+    provider.capabilities = capabilities_for(ACP_BACKEND_CLAUDE if backend is None else backend)
     provider.available_models.return_value = models
     return provider
 
@@ -88,8 +99,10 @@ class TestAdvertisedCcModels:
         assert out == []
 
     def test_skips_non_claude_providers(self):
-        prov = _FakeProvider([{"modelId": "claude-opus-5", "name": "Opus 5", "description": ""}])
-        prov.is_claude_backend = False
+        prov = _FakeProvider(
+            [{"modelId": "claude-opus-5", "name": "Opus 5", "description": ""}],
+            backend="",
+        )
         out = _advertised_cc_models(_request_with_providers({"s": prov}))
         assert out == []
 

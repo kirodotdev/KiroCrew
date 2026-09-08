@@ -42,6 +42,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
 from kiro_crew.agent_discovery import warm_project_agent_names
+from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
 from kiro_crew.autonudge_authz import normalize_banner
@@ -245,7 +246,6 @@ from kiro_crew.name_grant import (
     shell_command_for_event,
 )
 from kiro_crew.platform import redact_via_context
-from kiro_crew.providers.acp import is_claude_backend
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -1084,7 +1084,7 @@ def _pinned_model_verdict(client: Any, model: str, provider: str) -> bool | None
     A pin can carry a stale ``<namespace>::<bare-id>`` qualifier from the
     catalog that advertised it when it was stored, while the session being
     judged advertises the BARE id (#8521) -- the same class of namespace
-    mismatch the ``claude_code`` exemption above acknowledges, except here the
+    mismatch the advertised-list capability above acknowledges, except here the
     two spellings ARE comparable once the qualifier is peeled. So a literal
     miss is retried through :func:`resolve_pin_spelling` (full id first, then
     one peeled qualifier): the retry can only clear a false withhold, never
@@ -1098,7 +1098,7 @@ def _pinned_model_verdict(client: Any, model: str, provider: str) -> bool | None
     """
     if not model or model == "auto" or is_claude_code(provider):
         return None
-    if getattr(client, "is_claude_backend", False):
+    if capabilities_of(client).resolves_model_from_advertised_list:
         return None
     getter = getattr(client, "available_models", None)
     if not callable(getter):
@@ -6685,7 +6685,7 @@ async def _run_chat(
         # `cfg.agent.provider` afterwards would raise UnboundLocalError and kill
         # the turn. "" is the honest value for "config unreadable": it is not
         # "claude_code", so the model helpers fall through to their live-client
-        # guards (`is_claude_backend`, the advertised list) rather than trusting a
+        # guards (the advertised-list capability, the advertised ids) rather than trusting a
         # provider name that could not be read.
         provider_name = ""
         # Canonical crew identity for watchdog overrides — same seeding rule
@@ -10096,22 +10096,21 @@ async def _run_chat(
                 # dashboard turn "acp" — a claude_code turn included — which makes
                 # a provider split answer nothing.
                 #
-                # Resolved with `is_claude_backend`, which this module ALREADY
-                # imports, rather than `providers.acp.provider_label`. Not a
-                # preference: `scripts/check_agent_sdk_boundary.py` rejects an
-                # ACP-layer import on any line a change touches, baselined file or
-                # not ("the baseline covers only pre-existing lines"), so adding
-                # `provider_label` — even onto the existing import line — is a hard
-                # gate failure. This expression is also exactly what
-                # `subagent_manager/run.py` already writes for the same question,
-                # so the two surfaces agree by construction.
+                # Read as `SessionCapabilities.provider_seam`, the label the
+                # agent-SDK boundary now exposes for this question. It replaced an
+                # `is_claude_backend(client)` ternary that had to be spelled that
+                # way because `providers.acp.provider_label` is behind a forbidden
+                # root: `scripts/check_agent_sdk_boundary.py` rejects an ACP-layer
+                # import on any line a change touches, baselined file or not, so
+                # reaching the real label helper was a hard gate failure. Asking
+                # the SDK is the sanctioned route the old comment here pointed at.
                 #
-                # Known residue: this cannot name the KAS backend, which only
-                # `provider_label`'s ACP constants distinguish, so a KAS turn still
-                # labels "acp". That is the same limit `subagent_manager` has today,
-                # and closing it means exposing the label through
-                # `kiro_crew.agent_sdk` — the boundary's sanctioned surface, and an
-                # RFC-governed addition rather than a telemetry change.
+                # Known residue, deliberately UNCHANGED by that move: this still
+                # cannot name the KAS backend, so a KAS turn labels "acp". Only the
+                # ACP layer's own `PROVIDER_LABEL_*` constants distinguish it, and
+                # promoting that distinction would change what every KAS turn
+                # records — a telemetry change, not a refactor, so it belongs in
+                # its own commit with its own reason.
                 #
                 # A fallback model serving the turn records the model that RAN,
                 # not the one the user pinned: billing a model that never
@@ -10140,7 +10139,7 @@ async def _run_chat(
                 # An unreadable provider still yields `""` and falls through to
                 # the `model_source` walk exactly as before — no worse than the
                 # blank it would have written anyway.
-                _provider_name = "claude_code" if is_claude_backend(client) else "acp"
+                _provider_name = capabilities_of(client).provider_seam
                 _record_model = slot.model
                 if slot._active_fallback_model:
                     _record_model = provider_active_model(client)
@@ -10570,7 +10569,13 @@ async def _run_chat(
             # summary (e.g. via EVENT_COMPLETE payload growing a `summary`
             # field), pipe it through redact_credentials + redact_exfiltration_urls
             # before interpolation — matching the kiro-cli path below.
-            if is_claude_backend(client):
+            #
+            # Gated on `SessionCapabilities.compacts_inline` -- does this backend
+            # finish the compaction inside the prompt turn? -- rather than on which
+            # harness it is. The two arms are not interchangeable: acknowledging a
+            # backend that reports asynchronously loses the notice, and awaiting one
+            # that already finished strands the waiter for its whole timeout.
+            if capabilities_of(client).compacts_inline:
                 msg = "✅ Conversation compacted."
                 _append_compaction_notice(state, slot, msg)
                 state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))

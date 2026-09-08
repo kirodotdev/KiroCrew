@@ -1944,13 +1944,33 @@ class TestGetParentRuntime:
 
 
 class TestIsCcProvider:
-    def test_delegates_to_backend_probe(self) -> None:
-        with patch("kiro_crew.providers.acp.is_claude_backend", return_value=True):
-            assert SubagentManager._is_cc_provider(object()) is True
+    """Which HOME tree a session's files live in, asked as a capability.
 
-    def test_non_claude_backend(self) -> None:
-        with patch("kiro_crew.providers.acp.is_claude_backend", return_value=False):
-            assert SubagentManager._is_cc_provider(object()) is False
+    ``_is_cc_provider`` reads ``SessionCapabilities.provider_seam`` through
+    ``capabilities_of``, so these tests hand it a provider carrying a real
+    capability record instead of patching a module-level predicate. The third case
+    is the one a bare attribute read gets wrong: a shape that is not a provider
+    must answer False, which is what the ``isinstance`` gate in ``capabilities_of``
+    buys.
+    """
+
+    @staticmethod
+    def _provider(backend: str) -> SimpleNamespace:
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+
+        return SimpleNamespace(capabilities=capabilities_for(backend))
+
+    def test_claude_seam_routes_to_the_claude_home(self) -> None:
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+
+        assert SubagentManager._is_cc_provider(self._provider(ACP_BACKEND_CLAUDE)) is True
+
+    @pytest.mark.parametrize("backend", ["", "kas", "codex"])
+    def test_non_claude_backend(self, backend: str) -> None:
+        assert SubagentManager._is_cc_provider(self._provider(backend)) is False
+
+    def test_a_shape_that_is_not_a_provider_answers_false(self) -> None:
+        assert SubagentManager._is_cc_provider(object()) is False
 
 
 # ── Manager: intentional cancel contract ──────────────────────────────────

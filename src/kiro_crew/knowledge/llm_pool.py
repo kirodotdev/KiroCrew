@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
@@ -323,14 +324,30 @@ class AcpWorker(Worker):
         logger.info("AcpWorker: ready (agent=%s, pid=%s)", AGENT_NAME, getattr(self._client, '_pid', 'unknown'))
 
     async def _apply_effort(self) -> None:
-        """Apply the requested effort without breaking provider-default fallback."""
+        """Apply the requested effort without breaking provider-default fallback.
+
+        Which channel carries the change is a CAPABILITY question --
+        ``SessionCapabilities.effort_via_config_option`` -- asked off the client's
+        own public ``backend`` string. It replaced a read of the private
+        ``AcpClient._is_claude``, which was both the sharpest boundary violation in
+        the tree (application code reaching an underscore attribute of the ACP
+        client) and an identity branch: it sent every non-claude harness down the
+        ``/effort`` slash command, including one that has no such command.
+
+        This pool constructs its client with the DEFAULT backend and never passes
+        ``acp_backend``, so the answer here is the kiro one and both spellings
+        agree on it; ``test_agent_sdk_capabilities`` pins that, so a future pool
+        that does select a backend gets the capability answer rather than an
+        identity guess.
+        """
         client = self._client
         requested = self._effort
         if client is None or requested is None:
             return
         try:
-            is_claude = bool(getattr(client, "_is_claude", False))
-            if is_claude and not client.supports_config_option("effort"):
+            backend = getattr(client, "backend", "")
+            via_config_option = capabilities_for(backend).effort_via_config_option
+            if via_config_option and not client.supports_config_option("effort"):
                 logger.warning(
                     "AcpWorker: effort=%s unsupported; using provider default",
                     requested,
@@ -347,7 +364,7 @@ class AcpWorker(Worker):
                     requested,
                 )
                 return
-            if is_claude:
+            if via_config_option:
                 await client.set_config_option("effort", effective)
             else:
                 await client.send_command("/effort", args={"level": effective})

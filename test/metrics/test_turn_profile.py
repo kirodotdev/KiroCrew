@@ -403,13 +403,18 @@ class TestServedBackendAttribution:
         Scoped to the assignment: `_run_chat` legitimately reads
         `cfg.agent.provider` elsewhere, for the separate `provider_name` local the
         model-resolution branches use.
+
+        The expression is now a capability read. It replaced a
+        `"claude_code" if is_claude_backend(client) else "acp"` ternary, whose
+        literals `provider_seam` returns unchanged -- so the value this emits, KAS
+        residue included, is the same one.
         """
         import inspect
 
         from kiro_crew.dashboard import chat_runner
 
         src = inspect.getsource(chat_runner._run_chat)
-        assert '_provider_name = "claude_code" if is_claude_backend(client) else "acp"' in src
+        assert "_provider_name = capabilities_of(client).provider_seam" in src
         assert "_provider_name = cfg.agent.provider" not in src
 
     def test_chat_runner_does_not_import_provider_label(self):
@@ -440,12 +445,15 @@ class TestServedBackendAttribution:
                 imported.update(alias.name for alias in node.names)
         assert "provider_label" not in imported, (
             "chat_runner imports provider_label again; the boundary gate fails on "
-            "an ACP-layer import on any touched line. Resolve the backend with the "
-            "already-imported is_claude_backend, or expose the label through "
-            "kiro_crew.agent_sdk."
+            "an ACP-layer import on any touched line. Read the label from "
+            "SessionCapabilities.provider_seam, which is how kiro_crew.agent_sdk "
+            "exposes it."
         )
-        # Guard the guard: the harvest must actually see this module's imports.
-        assert "is_claude_backend" in imported
+        # The sanctioned route, which is also the guard-the-guard: the harvest must
+        # actually see this module's imports.
+        assert "capabilities_of" in imported
+        # And it must not reach the ACP-layer predicate at all.
+        assert "is_claude_backend" not in imported
 
     def test_the_metric_model_prefers_the_served_id(self):
         """A fallback-served turn is attributed, not dropped from the split.

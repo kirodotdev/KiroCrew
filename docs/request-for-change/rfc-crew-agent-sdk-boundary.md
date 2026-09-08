@@ -1010,6 +1010,17 @@ out of the boundary entirely as a policy module above it. Pick one and record it
 the current state, where a policy module reads a leaf's id tables and neither is
 inside the boundary, is not a resting place.
 
+**Decision: option 1 — the tables moved into `agent_sdk`** (landed in PR 3a,
+below). Option 2 was rejected on a property options 1 and 3 do not share: a table
+left outside the boundary keeps its old import path reachable, and a reachable old
+path is the one a new consumer finds, so the SDK would be an alternative rather
+than the way. Option 3 was rejected because it inverts the dependency it claims to
+simplify — a policy module above the boundary would still have to read the id
+tables, so the id key survives and the module that owns the security verdict ends
+up outside the surface every consumer is told to use. The per-driver declaration
+half of option 1 is deferred: the tables are now inside, still keyed on id, and
+moving the key onto each driver waits for PR 4, where the drivers get an owner.
+
 It also lands the two promoted host-contract contracts: a declared per-session
 `mcp_servers` extension point on `SessionRequest`, replacing the
 `_session_mcp_servers()` override hole (the core now implements that method for
@@ -1027,6 +1038,53 @@ with `#6921` and later splits, so PR 3 re-derives them rather than working from 
 line list. Rewriting them to stop *dispatching* on the answer is PR 4's move; PR 3
 only changes where the answer comes from, which is why the exits record those files
 as carried rather than clean.
+
+#### PR 3a LANDED — the tables moved, and the six identity checks are gone
+
+Shipped as a single `refactor:` commit with no behaviour change: every routing
+verdict, permission config, membership answer and capability field is pinned to a
+literal copied from a clean `main` checkout, for every backend id and for an
+unknown one.
+
+What moved:
+
+- `acp_backends.py` → `agent_sdk/backends.py`, and `acp_tool_gate.py` →
+  `agent_sdk/tool_gate.py`. Both top-level modules survive as pure re-export
+  shims, so no existing call site changed in the same commit as the move; a test
+  asserts each shim defines nothing, because a definition left in a shim is a
+  definition reachable without crossing the boundary. The private registry pair is
+  deliberately NOT re-exported — a second binding to a mutable set is how two
+  views of one registry start disagreeing — so the two tests that mutate it now
+  reach `agent_sdk.backends` directly.
+- `agent_sdk/capabilities.py` is new: `SessionCapabilities`, a frozen record with
+  one field per question a consumer outside the boundary actually asks, plus
+  `capabilities_for(backend)` and `capabilities_of(provider)`. Every field is a
+  translation of a table that already existed, so no membership changed.
+  `AcpProvider.capabilities` is where a live session's record comes from.
+- Each of the six identity checks now reads a field: the model-id namespace
+  (`config/loader.py`, `dashboard/chat_handlers.py`), whether the backend's own
+  advertised list must be read back (`dashboard/handlers/agents.py`,
+  `dashboard/chat_runner.py`'s pinned-model verdict), which provider seam serves
+  the session (`dashboard/chat_runner.py`'s billing label, `subagent.py`'s
+  session-file cleanup), whether compaction finishes inline
+  (`dashboard/chat_runner.py`), and which channel carries an effort change
+  (`knowledge/llm_pool.py`, which had been reading `AcpClient`'s private
+  `_is_claude`).
+- One capability set is new, `ACP_BACKENDS_INLINE_COMPACTION`, because the
+  compaction branch was the one question with no table behind it. Its membership is
+  exactly what the identity check it replaced answered, and it is a strict subset of
+  `ACP_BACKENDS_COMPACT`.
+- The boundary baseline SHRANK: `dashboard/chat_runner.py` 5 → 4 and `subagent.py`
+  8 → 7, because both stopped importing `providers.acp`.
+
+What PR 3a did NOT do, so the rest of PR 3 still has a job: the role protocols of
+§5.3, the `SessionRequest.mcp_servers` extension point, `writes_own_transcripts` +
+`AgentSupervisor.cleanup_session`, and `spawnable_multiplexed_selections()`. One
+identity read also stays, in `dashboard/handlers/agents.py`'s `api_models`: it asks
+whether the backend has a `--list-models` catalog to shell out to, which is a
+pre-session question whose capability answer would have to be DECIDED for KAS and
+Codex rather than translated. It is pinned by enclosing function in
+`test_agent_sdk_capabilities`, so a seventh read cannot appear beside it.
 
 - Exit: `ACP_BACKEND_*` constants and `ACP_BACKENDS_*` sets are read only inside
   `agent_sdk/` and whichever module PR 3's decision leaves owning the tables.

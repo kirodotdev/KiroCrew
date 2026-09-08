@@ -46,7 +46,7 @@ keeps it. ``agent_sdk`` sits ABOVE ``kiro_crew.acp``, so having the client impor
 this module would invert that layering and pull the SDK package -- and the
 backend-install registry its ``__init__`` builds -- into every client import.
 A one-line comparison against a constant both modules already read from
-``acp_backends`` is the cheaper duplicate.
+``agent_sdk.backends`` is the cheaper duplicate.
 
 Only ``claude`` is here
 -----------------------
@@ -60,7 +60,7 @@ either one when a real second reader appears, not before.
 
 from __future__ import annotations
 
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE
 
 __all__ = ["ACP_BACKEND_CLAUDE", "is_claude_backend_name"]
 
