@@ -25,7 +25,6 @@ import re
 import socket
 from base64 import b64encode
 from dataclasses import dataclass
-from html import unescape
 from html.parser import HTMLParser
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -429,8 +428,8 @@ def normalize_cache_key(url: str) -> str:
 
 
 def clean_text(value: str, cap: int) -> str:
-    """Unescape entities, collapse whitespace runs, trim, and hard-cap length."""
-    collapsed = _WHITESPACE_RUN.sub(" ", unescape(value)).strip()
+    """Normalize already-decoded HTMLParser text and hard-cap its length."""
+    collapsed = _WHITESPACE_RUN.sub(" ", value).strip()
     return collapsed[:cap]
 
 
@@ -489,8 +488,8 @@ class _HeadParser(HTMLParser):
     for tags that cannot appear in it.
 
     ``convert_charrefs`` is left at its default (True) so entity decoding
-    happens in the parser; :func:`clean_text` unescapes again, which is a no-op
-    on already-decoded text and covers the attribute path.
+    happens once in the parser for both text and attributes. Downstream helpers
+    preserve any literal entity spellings that remain after that decoding.
     """
 
     def __init__(self) -> None:
@@ -669,7 +668,7 @@ def _absolutize(href: str, base_url: str) -> str:
     ``data:image/svg+xml`` hole the allowlist exists to close.
     """
     try:
-        resolved = urljoin(base_url, unescape(href).strip())
+        resolved = urljoin(base_url, href.strip())
     except ValueError:
         return ""
     return resolved if urlsplit(resolved).scheme in ALLOWED_SCHEMES else ""

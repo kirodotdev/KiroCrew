@@ -1828,3 +1828,29 @@ def test_the_replaced_category_flag_list_would_have_approved_these(address: str)
     )
     assert old_verdict is False, "the old check already caught this; premise is wrong"
     assert lu.address_is_not_public(address) is True
+
+
+@pytest.mark.parametrize("title_source", ["title", "og:title"])
+def test_endpoint_decodes_html_entities_once(monkeypatch, title_source):
+    escaped = "How to spell &amp;lt; and &amp;#65;"
+    title = f"<title>{escaped}</title>" if title_source == "title" else (
+        f'<meta property="og:title" content="{escaped}">'
+    )
+    html = (
+        f"<head>{title}"
+        f'<meta name="description" content="{escaped}">'
+        f'<meta property="og:site_name" content="{escaped}">'
+        '<link rel="icon" href="/icon.png?name=one&amp;amp;two">'
+        "</head>"
+    ).encode()
+    expected_icon = "https://example.com/icon.png?name=one&amp;two"
+    transport = _install(monkeypatch, {
+        "https://example.com/": (200, _HTML_HEADERS, html),
+        expected_icon: (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+    })
+    status, body = _run(_call("https://example.com/"))
+    assert status == 200
+    for field in ("title", "description", "site_name"):
+        assert body[field] == "How to spell &lt; and &#65;"
+    assert body["icon"].startswith("data:image/png;base64,")
+    assert transport.fetch_count == 2
