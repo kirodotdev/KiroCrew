@@ -728,7 +728,14 @@ _LITERAL_RE = re.compile(r'"\.kiro"\s*/\s*"agents"' r"|[\"']\.kiro/agents")
 # for that entry, so it cannot reintroduce the reader/writer split-brain this
 # guard exists to catch; ``TestKiroAgentsDirWriteProtection`` pins the literal to
 # ``kiro_agents_dir()`` so drift still fails loudly.
-_ALLOWED = {"config/paths.py", "security/paths.py"}
+# string it refuses to ship in a curated bundle. It only matches path components
+# and never reads or writes the agents dir, and the packager runs in a standalone
+# deployment venv where ``config.paths`` is not importable, so it cannot route
+# through ``kiro_agents_dir()`` even in principle.
+_ALLOWED = {
+    "config/paths.py",
+    "security/paths.py",
+}
 
 
 def test_no_new_hardcoded_global_agents_dir():
