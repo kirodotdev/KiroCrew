@@ -38,9 +38,10 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.identity import channel_inbound_permitted
-from kiro_crew.messaging.renderer import credential_redaction_notice
+from kiro_crew.messaging.renderer import credential_redaction_notice, redaction_notice
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
@@ -3265,10 +3266,11 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
     # the draft is already public, so raising here would lose the warning and the
     # approve's remaining teardown too.
     _cred_redactions = sum(draft.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-    if _cred_redactions > 0:
+    _url_redactions = draft.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+    if _cred_redactions > 0 or _url_redactions > 0:
         try:
             await _orch.slack.post_message(
-                channel, credential_redaction_notice(_cred_redactions), thread_ts
+                channel, redaction_notice(_cred_redactions, _url_redactions), thread_ts
             )
         except Exception:
             logger.debug("Failed to post review-approve redaction notice", exc_info=True)

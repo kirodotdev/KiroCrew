@@ -7191,6 +7191,59 @@ class TestGluedShellCommandPayloadExtraction:
         assert is_denied(glued) is not None
 
 
+def test_glued_payload_reaches_the_regex_tier_views(self) -> None:
+        """Consumer: the deny-view pass judges the glued payload's own text."""
+        from kiro_crew.security import is_denied
+
+        spaced = "bash -c 'dd \"if=/dev/zero\" of=/dev/sda'"
+        glued = "bash -c'dd \"if=/dev/zero\" of=/dev/sda'"
+        assert is_denied(spaced) is not None
+        assert is_denied(glued) is not None
+
+
+class TestShellTokensLineContinuation:
+    """POSIX line continuations (backslash-newline) must be folded before
+    tokenization so they do not act as separators.  The shell removes
+    backslash-newline pairs during reading, before tokenization."""
+
+    def test_line_continuation_is_folded_in_shell_tokens(self) -> None:
+        from kiro_crew.security import _shell_tokens
+
+        # Backslash-newline inside a token should be folded, not treated as
+        # a separator.  The command "ca" + "\n" + "se x" becomes "case x".
+        tokens = _shell_tokens("ca\\\nse x in x")
+        assert tokens == ["case", "x", "in", "x"], tokens
+
+        # Multiple continuations in one command
+        tokens = _shell_tokens("ech\\\no h\\\nello world")
+        assert tokens == ["echo", "hello", "world"], tokens
+
+    def test_line_continuation_in_quoted_string(self) -> None:
+        from kiro_crew.security import _shell_tokens
+
+        # Continuation inside double quotes is folded
+        tokens = _shell_tokens('echo "hello \\\nworld"')
+        assert tokens == ["echo", "hello world"], tokens
+
+        # Continuation inside single quotes is folded
+        tokens = _shell_tokens("echo 'hello \\\nworld'")
+        assert tokens == ["echo", "hello world"], tokens
+
+    def test_line_continuation_with_escaped_newline_not_folded(self) -> None:
+        from kiro_crew.security import _shell_tokens
+
+        # A backslash followed by a literal newline (not a continuation)
+        # should still be handled - but in POSIX, \newline is ALWAYS a
+        # continuation. There's no way to escape it.
+        tokens = _shell_tokens("echo hello\\\nworld")
+        # The continuation is folded, so "hello" and "world" become one word
+        # Wait - in POSIX, \newline IS a continuation. Let's verify:
+        # "echo hello\\\nworld" -> the \ at end of "hello" continues to "world"
+        # so it becomes "echo helloworld"
+        tokens = _shell_tokens("echo hello\\\nworld")
+        assert tokens == ["echo", "helloworld"], tokens
+
+
 class TestImdsMixedBaseEncodings:
     """The IMDS gate must fold every base in every octet position.
 
