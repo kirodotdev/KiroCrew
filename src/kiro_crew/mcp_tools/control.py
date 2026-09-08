@@ -44,6 +44,10 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
     MIN_MONITOR_CADENCE_SECS,
 )
+from kiro_crew.monitoring.registry import (
+    publicly_armable_kinds,
+    publicly_armable_objectives,
+)
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -276,9 +280,9 @@ def schemas() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "kind": {"type": "string", "enum": ["github_pull_request"]},
+                    "kind": {"type": "string", "enum": sorted(publicly_armable_kinds())},
                     "target": {"type": "string", "description": "Public GitHub PR URL"},
-                    "objective": {"type": "string", "enum": ["review_ready"]},
+                    "objective": {"type": "string", "enum": sorted(publicly_armable_objectives())},
                     "interval_secs": {
                         "type": "integer",
                         "minimum": MIN_MONITOR_CADENCE_SECS,
@@ -509,7 +513,7 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "New GitHub PR URL for a structured monitor",
                     },
-                    "objective": {"type": "string", "enum": ["review_ready"]},
+                    "objective": {"type": "string", "enum": sorted(publicly_armable_objectives())},
                     "max_agent_turns": {
                         "type": "integer",
                         "minimum": 1,
