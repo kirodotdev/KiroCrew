@@ -4906,6 +4906,8 @@
         "add_accounts_title": "アカウントを追加",
         "add_accounts_summary": "このマシンの AWS プロファイルをさらに登録する",
         "add_accounts_intro": "これらのローカル AWS プロファイルはまだ登録されていません。追加したものは、それぞれのアカウントのキーになります。",
+        "add_accounts_search_placeholder": "プロファイルを検索",
+        "add_accounts_search_keeps_selected": "選択したプロファイルは、検索に一致しなくても一覧に残ります。",
         "add_accounts_none": "ローカルプロファイルはすべて登録済みです。",
         "add_accounts_unsupported": "Windows では AWS Control はこのマシンの AWS プロファイルにアクセスできません。AWS へのアクセスには Linux または macOS のシェルが必要です。WSL (Windows Subsystem for Linux) で {{productName}} のゲートウェイを実行し、そこで設定したプロファイルを登録してください。",
         "add_accounts_count_other": "{{max}} 件のうち {{count}} 件を登録済み",

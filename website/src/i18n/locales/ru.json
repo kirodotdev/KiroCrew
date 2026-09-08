@@ -5153,6 +5153,8 @@
         "add_accounts_title": "Добавить аккаунты",
         "add_accounts_summary": "Зарегистрировать больше профилей AWS с этого компьютера",
         "add_accounts_intro": "Эти локальные AWS-профили ещё не зарегистрированы. Каждый добавленный профиль становится ключом своего аккаунта.",
+        "add_accounts_search_placeholder": "Поиск профилей",
+        "add_accounts_search_keeps_selected": "Выбранные профили остаются в списке, даже если они не соответствуют фильтру.",
         "add_accounts_none": "Все локальные профили уже зарегистрированы.",
         "add_accounts_unsupported": "В Windows AWS Control не может обратиться к профилям AWS этого компьютера: для доступа к AWS нужна оболочка Linux или macOS. Запустите шлюз {{productName}} в WSL (Windows Subsystem for Linux) и зарегистрируйте настроенные там профили.",
         "add_accounts_count_one": "{{count}} из {{max}} зарегистрирован",

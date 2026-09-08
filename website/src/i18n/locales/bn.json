@@ -4991,6 +4991,8 @@
         "add_accounts_title": "অ্যাকাউন্ট যোগ করুন",
         "add_accounts_summary": "এই মেশিনের আরও AWS প্রোফাইল নিবন্ধন করুন",
         "add_accounts_intro": "এই লোকাল AWS প্রোফাইলগুলি এখনও নিবন্ধিত নয়। আপনি যেগুলি যোগ করবেন, প্রতিটি তার অ্যাকাউন্টের অধীনে একটি কী হয়ে যাবে।",
+        "add_accounts_search_placeholder": "প্রোফাইল খুঁজুন",
+        "add_accounts_search_keeps_selected": "তুমি যে প্রোফাইলগুলো বেছে নিয়েছ, সেগুলো মিল না থাকলেও তালিকায় থেকে যায়।",
         "add_accounts_none": "সব লোকাল প্রোফাইল ইতিমধ্যেই নিবন্ধিত।",
         "add_accounts_unsupported": "Windows-এ AWS Control এই মেশিনের AWS প্রোফাইলে পৌঁছাতে পারে না: AWS অ্যাকসেসের জন্য Linux বা macOS শেল দরকার। WSL (Windows Subsystem for Linux)-এ {{productName}} গেটওয়ে চালান, তারপর সেখানে সেট করা প্রোফাইলগুলো রেজিস্টার করুন।",
         "add_accounts_count_one": "{{max}}টির মধ্যে {{count}}টি নিবন্ধিত",

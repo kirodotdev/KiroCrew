@@ -4991,6 +4991,8 @@
         "add_accounts_title": "खाते जोड़ें",
         "add_accounts_summary": "इस मशीन के और AWS प्रोफ़ाइल पंजीकृत करें",
         "add_accounts_intro": "ये स्थानीय AWS प्रोफ़ाइल अभी पंजीकृत नहीं हैं। जो भी जोड़ोगे वह उसके अकाउंट के अंतर्गत एक कुंजी बन जाएगी।",
+        "add_accounts_search_placeholder": "प्रोफ़ाइल खोजो",
+        "add_accounts_search_keeps_selected": "तुमने जो प्रोफ़ाइल चुनी हैं, वे मेल न खाने पर फी सूची में बनी रहती हैं।",
         "add_accounts_none": "सभी स्थानीय प्रोफ़ाइल पहले से पंजीकृत हैं।",
         "add_accounts_unsupported": "Windows पर AWS Control इस मशीन के AWS प्रोफ़ाइल तक नहीं पहुँच सकता: AWS ऐक्सेस के लिए Linux या macOS शेल चाहिए। {{productName}} गेटवे को WSL (Windows Subsystem for Linux) में चलाएँ, फिर वहाँ सेट किए प्रोफ़ाइल रजिस्टर करें।",
         "add_accounts_count_one": "{{max}} में से {{count}} पंजीकृत",

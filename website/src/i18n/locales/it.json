@@ -5072,6 +5072,8 @@
         "add_accounts_title": "Aggiungi account",
         "add_accounts_summary": "Registra altri profili AWS di questa macchina",
         "add_accounts_intro": "Questi profili AWS locali non sono ancora registrati. Ognuno che aggiungi diventa una chiave del suo account.",
+        "add_accounts_search_placeholder": "Cerca profili",
+        "add_accounts_search_keeps_selected": "I profili che hai selezionato restano nell’elenco anche se non corrispondono.",
         "add_accounts_none": "Tutti i profili locali sono già registrati.",
         "add_accounts_unsupported": "Su Windows AWS Control non riesce a raggiungere i profili AWS di questa macchina: il suo accesso ad AWS richiede una shell Linux o macOS. Esegui il gateway {{productName}} in WSL (Windows Subsystem for Linux), poi registra lì i profili configurati.",
         "add_accounts_count_one": "{{count}} su {{max}} registrato",

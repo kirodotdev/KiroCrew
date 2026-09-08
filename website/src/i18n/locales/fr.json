@@ -5072,6 +5072,8 @@
         "add_accounts_title": "Ajouter des comptes",
         "add_accounts_summary": "Enregistrer d'autres profils AWS de cette machine",
         "add_accounts_intro": "Ces profils AWS locaux ne sont pas encore enregistrés. Chacun de ceux que tu ajoutes devient une clé de son compte.",
+        "add_accounts_search_placeholder": "Rechercher des profils",
+        "add_accounts_search_keeps_selected": "Les profils que tu as sélectionnés restent affichés même s’ils ne correspondent pas.",
         "add_accounts_none": "Tous les profils locaux sont déjà enregistrés.",
         "add_accounts_unsupported": "AWS Control n'accède pas aux profils AWS de cette machine sous Windows : son accès AWS exige un shell Linux ou macOS. Lance la passerelle {{productName}} sous WSL (Windows Subsystem for Linux), puis enregistre les profils configurés là-bas.",
         "add_accounts_count_one": "{{count}} sur {{max}} enregistré",

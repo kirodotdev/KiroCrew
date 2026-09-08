@@ -4906,6 +4906,8 @@
         "add_accounts_title": "계정 추가",
         "add_accounts_summary": "이 컴퓨터의 AWS 프로필을 더 등록",
         "add_accounts_intro": "이 로컬 AWS 프로필은 아직 등록되지 않았습니다. 추가하는 각 프로필은 해당 계정의 키가 됩니다.",
+        "add_accounts_search_placeholder": "프로필 검색",
+        "add_accounts_search_keeps_selected": "선택한 프로필은 검색어와 일치하지 않아도 목록에 남습니다.",
         "add_accounts_none": "모든 로컬 프로필이 이미 등록되어 있습니다.",
         "add_accounts_unsupported": "Windows에서는 AWS Control이 이 컴퓨터의 AWS 프로필에 접근할 수 없습니다. AWS 접근에는 Linux 또는 macOS 쉘이 필요합니다. WSL (Windows Subsystem for Linux)에서 {{productName}} 게이트웨이를 실행한 뒤 그곳에서 설정한 프로필을 등록하세요.",
         "add_accounts_count_other": "{{max}}개 중 {{count}}개 등록됨",

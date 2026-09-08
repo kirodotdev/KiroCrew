@@ -4906,6 +4906,8 @@
         "add_accounts_title": "添加账户",
         "add_accounts_summary": "注册本机更多的 AWS 配置文件",
         "add_accounts_intro": "这些本地 AWS 配置文件尚未注册。你添加的每一个都会成为其账户下的一个密钥。",
+        "add_accounts_search_placeholder": "搜索配置文件",
+        "add_accounts_search_keeps_selected": "你选中的配置文件即使不匹配也会留在列表里。",
         "add_accounts_none": "所有本地配置文件都已注册。",
         "add_accounts_unsupported": "在 Windows 上，AWS Control 无法访问本机的 AWS 配置文件：访问 AWS 需要 Linux 或 macOS shell。请在 WSL (Windows Subsystem for Linux) 中运行 {{productName}} 网关，然后注册你在其中配置的 AWS 配置文件。",
         "add_accounts_count_other": "已注册 {{count}} / {{max}}",
