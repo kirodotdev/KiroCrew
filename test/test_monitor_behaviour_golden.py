@@ -243,9 +243,9 @@ def _rows() -> list[dict[str, object]]:
             runner=_MatrixRunner(primary, threads),
         )
         result = provider.probe(
-            TARGET_URL,
-            previous_observation={"head_revision": PREVIOUS_HEAD},
-        )
+            (TARGET_URL,),
+            previous_observations={TARGET_URL: {"head_revision": PREVIOUS_HEAD}},
+        )[TARGET_URL]
         observation = result.observation
         rows.append(
             {
