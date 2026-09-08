@@ -770,10 +770,29 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
                 bigram = run[i : i + 2]
                 extras.setdefault(bigram, SearchNeedle(bigram, 1.0, False, adjacency=True))
     # A spelling that is already REQUIRED must not also score as a ranking hint:
-    # a query naming the same item twice ("#4411 4411") would count its hits
-    # twice over.
+    # a query naming the same item twice — the bare number and then its GitHub
+    # sigil form — would count its hits twice over. The by-key sweep catches the
+    # SAME-FAMILY repeat, where the hint's own key is the required spelling.
     for text in [t for t in ranking if t in required]:
         del ranking[text]
+    # A CROSS-FAMILY repeat ("4411 !4411") slips past that sweep: the sigil
+    # gates the GitLab spelling while the bare number's hint stays keyed on the
+    # GitHub form, so the required spelling survives inside the hint's ALTS and
+    # one mention would be scored by the required needle AND the hint. Required
+    # needles carry alts of their own (count_needle scores every spelling), so
+    # the purge covers those too, not only the keys. A hint whose every
+    # spelling is already required contributes nothing and is dropped whole —
+    # built-in spellings alone cannot get there (the hint's canonical form is
+    # only ever a required KEY, which the by-key sweep already handled), but a
+    # provider's alts can blanket the rest. A hint that keeps any spelling
+    # still ranks on what survives.
+    required_spellings = {s for n in required.values() for s in (n.text, *n.alts)}
+    for key, needle in list(ranking.items()):
+        spellings = tuple(s for s in (needle.text, *needle.alts) if s not in required_spellings)
+        if not spellings:
+            del ranking[key]
+        elif spellings != (needle.text, *needle.alts):
+            ranking[key] = needle._replace(text=spellings[0], alts=spellings[1:])
     needles = list(required.values())[:SEARCH_MAX_TOKENS]
     needles.extend(list(extras.values())[:_SEARCH_MAX_SCORING_EXTRAS])
     needles.extend(ranking.values())
