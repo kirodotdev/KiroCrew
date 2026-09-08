@@ -104,12 +104,20 @@ class Provider(_RequiredProviderFields, total=False):
     :mod:`kiro_crew.connections.tool_aliases`), so declaring one does not rename
     anything on its own. Optional because a provider whose tool names are already
     unique across the launch set needs none.
+
+    ``category`` is the gallery grouping the provider belongs to, drawn from the
+    closed ``PROVIDER_CATEGORIES`` vocabulary so two spellings of one bucket
+    cannot split it. It is metadata for the catalog and the coverage report
+    (which categories the registry covers against the ChatGPT / Claude connector
+    directories), not a behavioural switch: nothing mints, mounts or gates on
+    it. Optional so an entry predating the field stays a valid shape.
     """
 
     client_id: str
     prerequisite_copy: str
     revoke_manual_path: str
     tool_aliases: dict[str, str]
+    category: str
 
 
 class RegistryValidationError(ValueError):
@@ -174,7 +182,30 @@ _L0_EXPECTATION_FIELDS = {"authorization_server", "dcr", "pkce", "verified_on"}
 # until the Kiro app is registered, so absence must remain a valid entry shape.
 # ``tool_aliases`` is optional for the same class of reason: a provider whose
 # tool names do not collide with any other mounted provider declares none.
-_OPTIONAL_PROVIDER_FIELDS = {"client_id", "prerequisite_copy", "revoke_manual_path", "tool_aliases"}
+_OPTIONAL_PROVIDER_FIELDS = {
+    "client_id",
+    "prerequisite_copy",
+    "revoke_manual_path",
+    "tool_aliases",
+    "category",
+}
+# Closed vocabulary for ``Provider.category``. Mirrors the buckets the ChatGPT
+# and Claude connector directories group by, so the coverage report can diff the
+# registry against them bucket-for-bucket. Add a bucket here, never inline in
+# the JSON, so a typo cannot mint a one-provider category.
+PROVIDER_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "collaboration-docs",
+        "project-management",
+        "developer-tools",
+        "design",
+        "file-storage",
+        "data-analytics",
+        "payments-finance",
+        "calendar-email",
+        "crm-sales",
+    }
+)
 
 
 def _validation_error(index: int, message: str) -> RegistryValidationError:
@@ -315,6 +346,10 @@ def _validate_provider(raw: object, index: int) -> Provider:
                 raise _validation_error(
                     index, f"{optional} must be a non-empty string when present"
                 )
+    if "category" in raw and raw["category"] not in PROVIDER_CATEGORIES:
+        raise _validation_error(
+            index, "category must be one of " + ", ".join(sorted(PROVIDER_CATEGORIES))
+        )
 
     # Bound before the ``tool_aliases`` block below, which validates each alias
     # against this provider's own slug prefix.

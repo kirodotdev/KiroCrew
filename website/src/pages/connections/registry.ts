@@ -22,6 +22,9 @@ export interface ConnectionProvider {
   }
   launch_gate_passed: boolean
   vendor_approval_pending: boolean
+  /** Gallery bucket from the backend's closed `PROVIDER_CATEGORIES` vocabulary;
+   *  catalog metadata only, nothing renders or gates on it yet. */
+  category?: string
 }
 
 const registry = registryJson as ConnectionProvider[]

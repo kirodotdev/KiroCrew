@@ -533,7 +533,7 @@
     "src/kiro_crew/security/__init__.py": 5,
     "src/kiro_crew/security/argv_floor.py": 59,
     "src/kiro_crew/security/denied_rules.py": 16,
-    "src/kiro_crew/security/exfil.py": 4,
+    "src/kiro_crew/security/exfil.py": 3,
     "src/kiro_crew/security/helpers.py": 2,
     "src/kiro_crew/security/paths.py": 10,
     "src/kiro_crew/security/redaction.py": 3,

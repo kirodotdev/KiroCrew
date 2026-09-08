@@ -6,6 +6,14 @@ import atlassianLogoUrl from './logos/atlassian.svg'
 import stripeLogoUrl from './logos/stripe.svg'
 import vercelLogoUrl from './logos/vercel.svg'
 import gitlabLogoUrl from './logos/gitlab.svg'
+import sentryLogoUrl from './logos/sentry.svg'
+import supabaseLogoUrl from './logos/supabase.svg'
+import airtableLogoUrl from './logos/airtable.svg'
+import paypalLogoUrl from './logos/paypal.svg'
+import asanaLogoUrl from './logos/asana.svg'
+import figmaLogoUrl from './logos/figma.svg'
+import canvaLogoUrl from './logos/canva.svg'
+import dropboxLogoUrl from './logos/dropbox.svg'
 
 /** Official provider brand marks for the Connections cards.
  *
@@ -15,11 +23,14 @@ import gitlabLogoUrl from './logos/gitlab.svg'
  *  marks, so these qualify under the rule's brand-mark exception).
  *
  *  Render follows the mark, per the exception's condition 2:
- *   - MONOCHROME marks (Notion, GitHub, Vercel) sit inline among lucide glyphs
- *     and are painted as a CSS mask over `currentColor` via the shared
- *     `BrandGlyph` helper, so they inherit the card's text colour and stay
- *     legible in every theme (their brand art is near-black, which would
- *     disappear on a dark card).
+ *   - MONOCHROME marks (Notion, GitHub, Vercel, and the industry-baseline
+ *     batch-1 set) sit inline among lucide glyphs and are painted as a CSS mask
+ *     over `currentColor` via the shared `BrandGlyph` helper, so they inherit
+ *     the card's text colour and stay legible in every theme (their brand art
+ *     is near-black, which would disappear on a dark card). The batch-1 marks
+ *     are the single-path 24×24 glyphs from the CC0 simple-icons set, the same
+ *     source as notion.svg; the marks themselves remain each vendor's trademark
+ *     and are used only to indicate compatibility.
  *   - FULL-COLOUR marks (Linear, Atlassian, Stripe) carry their identity in
  *     their own hues, so they render as a plain `<img>` and are never flattened
  *     to `currentColor`.
@@ -30,6 +41,14 @@ const MASKED: Record<string, string> = {
   notion: notionLogoUrl,
   github: githubLogoUrl,
   vercel: vercelLogoUrl,
+  sentry: sentryLogoUrl,
+  supabase: supabaseLogoUrl,
+  airtable: airtableLogoUrl,
+  paypal: paypalLogoUrl,
+  asana: asanaLogoUrl,
+  figma: figmaLogoUrl,
+  canva: canvaLogoUrl,
+  dropbox: dropboxLogoUrl,
 }
 
 /** Full-colour marks — plain `<img>`, colours preserved. */

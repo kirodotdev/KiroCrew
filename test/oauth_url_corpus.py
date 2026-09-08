@@ -182,6 +182,86 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         "&code_challenge_method=S256",
     ),
+    # Industry-baseline batch 1 (Connections registry, launch-gated). Every
+    # endpoint below is the ``authorization_endpoint`` from the issuer's RFC 8414
+    # document, reached via RFC 9728 discovery from the registry ``mcp_url`` by
+    # the L0 probe. Same kiro-cli-minted PKCE shape as above.
+    (
+        "sentry-mcp",
+        "https://mcp.sentry.dev/oauth/authorize"
+        "?client_id=sentry_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=org%3Aread"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Kp7mQ2xR" * 12),
+    ),
+    (
+        "supabase-mcp",
+        "https://api.supabase.com/v1/oauth/authorize"
+        "?client_id=9c2b1f0e-4d3a-4b6c-8e7f-0a1b2c3d4e5f"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("a1B2c3D4" * 16),
+    ),
+    (
+        "airtable-mcp",
+        "https://airtable.com/oauth2/v1/authorize"
+        "?client_id=1f3a5c7e-9b1d-4f2a-8c6e-0d2f4a6c8e0b"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=schema.bases%3Aread%20data.records%3Aread"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Zx9yW8vU" * 12),
+    ),
+    (
+        "paypal-mcp",
+        "https://mcp.paypal.com/authorize"
+        "?client_id=pp_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=openid%20email%20profile"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Kp7mQ2xR" * 12),
+    ),
+    (
+        "figma-mcp",
+        "https://www.figma.com/oauth/mcp"
+        "?client_id=figma_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=mcp%3Aconnect"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("a1B2c3D4" * 16),
+    ),
+    (
+        "canva-mcp",
+        "https://mcp.canva.com/authorize"
+        "?client_id=OC-AZ0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=profile%3Aread%20design%3Ameta%3Aread"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Zx9yW8vU" * 12),
+    ),
+    (
+        "dropbox-mcp",
+        "https://www.dropbox.com/oauth2/authorize"
+        "?client_id=dbx_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=account_info.read%20files.metadata.read"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Kp7mQ2xR" * 12),
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate

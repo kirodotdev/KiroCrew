@@ -285,15 +285,31 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("gitlab.com", "/oauth/authorize"),
         ("mcp.auth.mail.superhuman.com", "/oauth2/authorize"),
         ("mcp.linear.app", "/authorize"),
-        # Maintainer-verified 2026-09-01 via RFC 8414 metadata at
-        # https://mcp.miro.com/.well-known/oauth-authorization-server
-        # (authorization_endpoint: https://mcp.miro.com/authorize), matching the
-        # reporter's independent RFC 8414 read in issue #7578. Not (yet) a
-        # Connections registry entry; the fail-closed banner blocked every
-        # attempt to connect the Miro remote MCP server.
+        # Miro's authorization_endpoint per its RFC 8414 metadata at
+        # https://mcp.miro.com/.well-known/oauth-authorization-server. Not a
+        # Connections registry entry; without this pair the fail-closed banner
+        # blocks every attempt to connect the Miro remote MCP server.
         ("mcp.miro.com", "/authorize"),
         ("mcp.notion.com", "/authorize"),
         ("vercel.com", "/oauth/authorize"),
+        # Industry-baseline batch 1 (registry entries, all launch-gated). Each
+        # pair is the ``authorization_endpoint`` from the issuer's RFC 8414
+        # document, the issuer itself reached via RFC 9728 discovery from the
+        # registry ``mcp_url`` by the L0 probe. The kiro-cli-minted
+        # corroboration the launch set carries lands with each provider's
+        # manual launch-gate check.
+        ("airtable.com", "/oauth2/v1/authorize"),
+        ("api.supabase.com", "/v1/oauth/authorize"),
+        ("mcp.canva.com", "/authorize"),
+        ("mcp.paypal.com", "/authorize"),
+        ("mcp.sentry.dev", "/oauth/authorize"),
+        ("www.dropbox.com", "/oauth2/authorize"),
+        # Figma's MCP authorization server (issuer api.figma.com) advertises a
+        # consent page on www.figma.com, so the registry issuer host and the
+        # consent host differ; both are listed -- the banner gate keys on the
+        # consent URL while the registry test keys on the issuer host.
+        ("api.figma.com", "/oauth/mcp"),
+        ("www.figma.com", "/oauth/mcp"),
     }
 )
 

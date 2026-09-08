@@ -886,3 +886,64 @@ governed, audited agent path.
 `python3 -m kiro_crew.connections.l1_smoke --report /tmp/l1.json` (under a
 pipx/venv install, use that environment's interpreter). `--min-exercised 1`
 reproduces the lane's gate; `--concurrency`/`--timeout` are in `--help`.
+
+## The registry roster
+
+Every entry in `src/kiro_crew/connections/registry.json`, what stands between it
+and the Connect grid, and the category it fills. `category` is a closed
+vocabulary (`registry.PROVIDER_CATEGORIES`) so the coverage diff against the
+ChatGPT and Claude connector directories is bucket-for-bucket; nothing mints,
+mounts or gates on it.
+
+| Provider | Category | Tier | Auth (DCR / PKCE) | Read-only shape | Grid | What the gate still needs |
+|---|---|---|---|---|---|---|
+| Notion | collaboration-docs | 1 | yes / yes | none (one combined grant) | shown | — |
+| Linear | project-management | 1 | yes / yes | dedicated `/mcp/readonly` endpoint | shown | — |
+| Atlassian (Jira, Confluence) | project-management | 1 | yes / yes | trim on the consent page | shown | — |
+| Stripe | payments-finance | 1 | yes / yes | tool-level | shown | — |
+| Vercel | developer-tools | 1 | yes / yes | none | shown | — |
+| GitLab | developer-tools | 1 | yes / yes | none (single `mcp` scope) | shown | — |
+| GitHub | developer-tools | 2 | **no** / yes | read-only server variant | gated | Kiro OAuth app registration, then `client_id` |
+| Superhuman Mail | calendar-email | 1 | yes / yes | none | gated | logged-in revoke-surface check |
+| Sentry | developer-tools | 2 | yes / yes | grant only the `inspect` + `docs` skills | gated | manual launch-gate check (L2 SOP) |
+| Supabase | developer-tools | 2 | yes / yes | installs `?read_only=true` | gated | manual launch-gate check |
+| Airtable | data-analytics | 2 | yes / yes | decline the `*:write` scopes at consent | gated | manual launch-gate check |
+| PayPal | payments-finance | 2 | yes / yes | none — live endpoint moves money | gated | manual launch-gate check; sandbox first |
+| Asana | project-management | 2 | **no** / yes | none (single `default` scope) | gated | Kiro MCP-app registration in Asana's developer console, then `client_id` |
+| Figma | design | 3 | yes / yes | Dev seat is read-only outside drafts | hidden | Figma admits clients from its MCP Catalog waitlist |
+| Canva | design | 3 | yes / yes | none | hidden | Canva allow-lists the redirect URI per client |
+| Dropbox | file-storage | 3 | yes / yes | `/dash` search server (Dash plan) | hidden | Dropbox honours DCR only for its trusted-client list |
+
+Tier is provider *categorization* (see the tiers note above), never mint
+latency: tier 3 means the vendor gates clients by allowlist or waitlist, so
+`vendor_approval_pending` is true and the loader refuses `launch_gate_passed`
+for it; the entry exists so the nightly L0 probe watches the metadata and the
+banner allowlist stays registry-derived while the admission is pursued.
+
+### How an entry gets in, and what each rung buys
+
+1. **Industry baseline.** The candidate is listed by both the ChatGPT and the
+   Claude connector directories, or fills a category the registry has none of.
+   The comparison lives in the research note
+   `research/connectors-industry-baseline.md` in the operator workspace, not in
+   this tree; this section records only the outcome.
+2. **Public remote MCP with OAuth discovery.** The vendor hosts the server and
+   publishes RFC 9728 protected-resource metadata naming an RFC 8414 issuer.
+   Without that the L0 probe has nothing to assert and the entry cannot exist.
+   Google Workspace, Microsoft 365, Snowflake and Databricks all fail this rung
+   today (pre-registered client, tenant-scoped URL, or no fixed endpoint) and
+   would need a Kiro-built connector, which is a different product decision.
+3. **L0 green in record mode, then strict mode.** `l0_probe --record` captures
+   DCR, PKCE and the issuer; a strict run must then pass with those values
+   committed. Trailing-slash issuer disagreements between a vendor's PRM and
+   its AS document (Calendly, Box, Google in the 2026-09-08 survey) fail here
+   by design — RFC 8414 §2 compares issuers as exact strings.
+4. **Banner allowlist.** The issuer's `authorization_endpoint` is added to
+   `security.exfil._OAUTH_AUTHORIZATION_ENDPOINTS` and the consent-URL corpus,
+   or the fail-closed banner blocks every connect.
+5. **Manual launch gate (L2).** A human walks Connect → consent → Connected →
+   Test → Disconnect on a pod and records the revoke surface; only then does
+   `launch_gate_passed` flip and the card ship.
+
+Rungs 1–4 are what this roster's gated entries have; rung 5 is what they wait
+on.
