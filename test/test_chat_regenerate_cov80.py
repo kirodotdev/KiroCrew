@@ -195,8 +195,8 @@ async def test_regenerate_survives_a_history_write_failure(state, caplog) -> Non
 
     with (
         patch(
-            "kiro_crew.dashboard.chat_regenerate._save_slot_to_history",
-            side_effect=OSError("disk full"),
+            "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+            new=AsyncMock(side_effect=OSError("disk full")),
         ),
         patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()),
     ):
@@ -357,8 +357,8 @@ async def test_switch_variant_survives_a_persist_failure(state, caplog) -> None:
     slot.messages[-1]["variants"] = [{"content": "v1", "ts": "t1"}, {"content": "v2"}]
 
     with patch(
-        "kiro_crew.dashboard.chat_regenerate._save_slot_to_history",
-        side_effect=OSError("disk full"),
+        "kiro_crew.dashboard.chat_regenerate.save_slot_off_loop",
+        new=AsyncMock(side_effect=OSError("disk full")),
     ):
         with caplog.at_level("WARNING"):
             async with _client(state) as client:
@@ -367,6 +367,61 @@ async def test_switch_variant_survives_a_persist_failure(state, caplog) -> None:
     assert resp.status == 200
     assert "switch-variant: failed to persist" in caplog.text
     assert slot.messages[-1]["content"] == "v1"
+
+
+# ── recreate-race slot-identity guard ──
+#
+# Both truncating saves run under slot._lock but dispatch the write to a worker
+# thread; the event loop is free across that one await, and a same-name
+# close-and-recreate is NOT serialized against this lock (the cleanup pops
+# state._slots[name] and get_or_create_slot re-inserts, neither taking the
+# original lock). Without a pin the rewrite resolves its target file from the
+# slot object it was handed and lands the truncation on the replacement's
+# transcript. The fix passes expected_history_key = slot_history_key(slot),
+# captured BEFORE the await, so _save_slot_to_history refuses (returns False,
+# nothing written) when the routing has moved -- the same guard edit-resend
+# already carries. These tests assert the pin reaches the write and names the
+# transcript the slot was authorized against; the disk-side refusal itself is
+# covered by _save_slot_to_history's own expected_history_key tests.
+
+
+@pytest.mark.asyncio
+async def test_regenerate_pins_the_truncating_write_to_its_transcript(state) -> None:
+    slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
+    slot.append("user", "hi")
+    slot.append("assistant", "keep-me")
+    slot.drain()
+
+    saved = AsyncMock(return_value=True)
+    with (
+        patch("kiro_crew.dashboard.chat_regenerate.save_slot_off_loop", new=saved),
+        patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()),
+    ):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/regenerate")
+            assert resp.status == 200
+            await asyncio.sleep(0)
+
+    # The write carried the slot's own transcript as its authorization pin.
+    assert saved.await_count == 1
+    assert saved.await_args.kwargs["expected_history_key"] == "orig:key"
+
+
+@pytest.mark.asyncio
+async def test_switch_variant_pins_the_persist_to_its_transcript(state) -> None:
+    slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
+    slot.append("assistant", "v2")
+    slot.messages[-1]["variants"] = [{"content": "v1", "ts": "t1"}, {"content": "v2", "ts": "t2"}]
+    slot.drain()
+
+    saved = AsyncMock(return_value=True)
+    with patch("kiro_crew.dashboard.chat_regenerate.save_slot_off_loop", new=saved):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+            assert resp.status == 200
+
+    assert saved.await_count == 1
+    assert saved.await_args.kwargs["expected_history_key"] == "orig:key"
 
 
 # ── edit-resend ──

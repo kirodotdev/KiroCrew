@@ -8,7 +8,7 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history, save_slot_off_loop
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
@@ -133,9 +133,30 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         slot._pending_rewrite = True
         slot._pending_variants = variants
 
+        # The transcript this truncation was authorized against. Captured
+        # BEFORE the write's await: that await frees the event loop while the
+        # worker thread runs, and a same-name close-and-recreate is NOT
+        # serialized against this slot._lock (the cleanup pops state._slots[name]
+        # and get_or_create_slot re-inserts, neither taking the original lock).
+        # Without the pin the truncating rewrite would resolve its file from the
+        # object it was handed -- the original slot -- and land on the
+        # replacement's transcript. save_slot_off_loop refuses (returns False,
+        # nothing written) when the routing no longer resolves to this key,
+        # exactly the guard edit-resend below already carries. On refusal the
+        # original slot is being torn down and its regeneration has no future,
+        # so nothing that would otherwise persist is lost; the refusal is
+        # recorded in the save's own "routing moved" log line. best_effort keeps
+        # the site fire-and-forget: a genuine transient failure re-arms _dirty
+        # (and _pending_rewrite is already set) so the periodic flush retries.
+        expected_history_key = slot_history_key(slot)
         try:
             msgs_snapshot = list(slot.messages)
-            await asyncio.to_thread(_save_slot_to_history, state, slot, msgs_snapshot)
+            await save_slot_off_loop(
+                state,
+                slot,
+                msgs_snapshot,
+                expected_history_key=expected_history_key,
+            )
         except Exception:
             logger.warning("Regenerate: failed to rewrite session history", exc_info=True)
 
@@ -235,9 +256,24 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         target_dict["variant_idx"] = idx
         slot._dirty = True
         slot._resumed_count = 0
+        # Same slot-identity pin as regenerate above and edit-resend below: a
+        # same-name close-and-recreate can swap state._slots[name] while this
+        # save is parked in its worker thread (the recreate does not take this
+        # slot._lock), and _save_slot_to_history resolves its target file from
+        # the object it was handed. Pin the transcript this switch was
+        # authorized against so the write refuses (False, nothing written)
+        # rather than rewriting the replacement's transcript. Captured before
+        # the await. best_effort re-arms _dirty on a transient failure so the
+        # periodic flush retries the write.
+        expected_history_key = slot_history_key(slot)
         try:
             msgs_snapshot = list(slot.messages)
-            await asyncio.to_thread(_save_slot_to_history, state, slot, msgs_snapshot)
+            await save_slot_off_loop(
+                state,
+                slot,
+                msgs_snapshot,
+                expected_history_key=expected_history_key,
+            )
         except Exception:
             logger.warning("switch-variant: failed to persist", exc_info=True)
         sel().log_api_access(
