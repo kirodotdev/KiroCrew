@@ -168,6 +168,18 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // desktop shell's menu item handles Ctrl+, itself on Windows/Linux.
   { id: 'open-settings', group: 'actions', dispatch: 'registry',
     defaults: both({ key: ',', mod: true }), aliases: alias({ key: ',', alt: true }) },
+  // Route-history Back/Forward (#8258) — ⌘←/⌘→ on macOS, Ctrl+←/→ elsewhere,
+  // matching browser convention (⌘[/⌘] being taken by session cycling above).
+  // Registry-dispatched, so the P3 rebind UI covers them for free. The handler
+  // adds gates the matcher cannot know. Text fields UNCLAIM the hit (the field
+  // consumes ⌘←/→ as caret line-start/line-end on macOS, Ctrl+←/→ as word-jump
+  // elsewhere; no navigation can result), and terminals keep the PTY. A narrow
+  // viewport — where the top-bar arrows are hidden — is different: the chord is
+  // CLAIMED and does nothing. On macOS an unclaimed ⌘← is the browser's own
+  // Back, which would pop past an unarmed draft trap; claiming-as-no-op is what
+  // keeps the two affordances agreeing without opening that hole.
+  { id: 'history-back', group: 'actions', dispatch: 'registry', defaults: both({ key: 'ArrowLeft', mod: true }) },
+  { id: 'history-forward', group: 'actions', dispatch: 'registry', defaults: both({ key: 'ArrowRight', mod: true }) },
   { id: 'cycle-agent', group: 'actions', dispatch: 'registry', defaults: both({ key: 'a', alt: true, shift: true }) },
   { id: 'cycle-prev-agent', group: 'actions', dispatch: 'registry', defaults: both({ key: 'z', alt: true, shift: true }) },
   { id: 'cycle-reasoning', group: 'actions', dispatch: 'registry', defaults: both({ key: 'd', alt: true, shift: true }) },

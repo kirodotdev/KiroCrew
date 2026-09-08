@@ -1976,6 +1976,14 @@ file-tree-container{
    and a display:none row measures as zero-width chips at offset zero -- read as
    "on screen", which would silently swallow their unread. */
 @container (max-width:152px){ .tb-left .tb-drop-crew-name{display:none} }
+/* The route-history arrows drop before either chip rung fires: they are the one
+   redundant control in the group (⌘/Ctrl+←/→, the mouse buttons and browser
+   chrome all reach the same history), while the crew chips are the identity of
+   the tab. Two 28px buttons = 56px on top of the 139px chip cluster the 152px
+   rung protects, so this rung fires 56px above it. Under a plain browser
+   dashboard with no remote instances the group holds only the arrows and never
+   comes near the rung. */
+@container (max-width:208px){ .tb-left .tb-drop-navhistory{display:none} }
 /* Terminal rung for the identity group, the counterpart of the capsule's
    dot-only one: below this the active-crew chip goes too and the group keeps just
    the nav button and the dropdown -- which still names the crew on screen, with a

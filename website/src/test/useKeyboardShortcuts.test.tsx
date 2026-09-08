@@ -1,7 +1,11 @@
+import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, screen, act } from '@testing-library/react'
+import { fireEvent, screen, act, render } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
+import { Provider } from 'react-redux'
 import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex, isAgentMonitorChord, RESERVED_PANEL_CODES, orderSlotsBySidebar, useDigitModifierHeld, jumpLetters, jumpLabelFor, jumpIndexForCode } from '../hooks/useKeyboardShortcuts'
 import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
+import { matchShortcutEvent, resolveShortcuts } from '../lib/shortcutRegistry'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
 import chatReducer from '../store/chatSlice'
@@ -302,6 +306,124 @@ describe('sessionCycleStep', () => {
   it('returns 0 for any other key', () => {
     expect(sessionCycleStep(ev({ code: 'KeyP', metaKey: true }), true)).toBe(0)
     expect(sessionCycleStep(ev({ code: 'Backslash', metaKey: true }), true)).toBe(0)
+  })
+})
+
+describe('history-back / history-forward registry entries', () => {
+  const ev = (code: string, o: Partial<Record<'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey', boolean>> = {}) =>
+    ({ code, key: code === 'ArrowLeft' ? 'ArrowLeft' : 'ArrowRight', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...o })
+
+  it('matches ⌘←/⌘→ on macOS and Ctrl+←/→ elsewhere', () => {
+    expect(matchShortcutEvent(ev('ArrowLeft', { metaKey: true }), resolveShortcuts({}, 'mac'), 'mac')).toBe('history-back')
+    expect(matchShortcutEvent(ev('ArrowRight', { metaKey: true }), resolveShortcuts({}, 'mac'), 'mac')).toBe('history-forward')
+    expect(matchShortcutEvent(ev('ArrowLeft', { ctrlKey: true }), resolveShortcuts({}, 'other'), 'other')).toBe('history-back')
+    expect(matchShortcutEvent(ev('ArrowRight', { ctrlKey: true }), resolveShortcuts({}, 'other'), 'other')).toBe('history-forward')
+  })
+
+  it('rejects the wrong primary modifier and extra modifiers — ⌘⇧← is select-to-line-start, Alt pairs are chat prev/next', () => {
+    expect(matchShortcutEvent(ev('ArrowLeft', { ctrlKey: true }), resolveShortcuts({}, 'mac'), 'mac')).toBeNull()
+    expect(matchShortcutEvent(ev('ArrowLeft', { metaKey: true, shiftKey: true }), resolveShortcuts({}, 'mac'), 'mac')).toBeNull()
+    expect(matchShortcutEvent(ev('ArrowLeft', { metaKey: true, altKey: true }), resolveShortcuts({}, 'mac'), 'mac')).toBeNull()
+  })
+})
+
+describe('useKeyboardShortcuts — route-history chord', () => {
+  // The predicate is platform-injected everywhere else; the HANDLER reads the
+  // live platform, so these fix it to non-Mac (Ctrl+arrow) explicitly.
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true })
+    window.history.replaceState(null, '', '/')
+  })
+
+  function Probe() {
+    useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn() })
+    const loc = useLocation()
+    return <div data-testid="hist-loc">{loc.pathname}</div>
+  }
+
+  const setupAt = (entries: string[]) => {
+    const store = createTestStore({
+      dashboard: { slots: [] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: null, slotHistory: [] } as unknown as RootState['chat'],
+    })
+    render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
+          <Probe />
+        </MemoryRouter>
+      </Provider>,
+    )
+  }
+
+  it('Ctrl+← navigates back when history has somewhere to go', () => {
+    setupAt(['/chat', '/settings'])
+    // The store reads the platform stack for "back exists"; a real BrowserRouter
+    // writes idx — stand in for it here, since MemoryRouter never touches it.
+    window.history.replaceState({ idx: 1 }, '', '/settings')
+    const event = new KeyboardEvent('keydown', { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, cancelable: true, bubbles: true })
+    act(() => { document.dispatchEvent(event) })
+    expect(event.defaultPrevented).toBe(true)
+    expect(screen.getByTestId('hist-loc').textContent).toBe('/chat')
+  })
+
+  it('claims the chord even at the bottom of the stack, so the two affordances agree', () => {
+    setupAt(['/chat'])
+    window.history.replaceState({ idx: 0 }, '', '/chat')
+    const event = new KeyboardEvent('keydown', { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, cancelable: true, bubbles: true })
+    document.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(screen.getByTestId('hist-loc').textContent).toBe('/chat')
+  })
+
+  it('leaves the chord to the text field — Ctrl+← is word-jump inside one', () => {
+    setupAt(['/chat', '/settings'])
+    window.history.replaceState({ idx: 1 }, '', '/settings')
+    const ta = document.createElement('textarea')
+    document.body.appendChild(ta)
+    const event = new KeyboardEvent('keydown', { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, cancelable: true, bubbles: true })
+    ta.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(screen.getByTestId('hist-loc').textContent).toBe('/settings')
+    ta.remove()
+  })
+
+  it('stays out of the PTY inside an embedded terminal', () => {
+    setupAt(['/chat', '/settings'])
+    window.history.replaceState({ idx: 1 }, '', '/settings')
+    const term = document.createElement('div')
+    term.className = 'xterm'
+    const inner = document.createElement('div')
+    term.appendChild(inner)
+    document.body.appendChild(term)
+    const event = new KeyboardEvent('keydown', { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, cancelable: true, bubbles: true })
+    inner.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(screen.getByTestId('hist-loc').textContent).toBe('/settings')
+    term.remove()
+  })
+
+  it('claims the chord as a no-op on a narrow viewport, where the arrows are hidden', () => {
+    // The arrows' mobile exclusion (drill-ins navigate by component state, so
+    // a stack walk moves history the visible UI does not reflect) gates the
+    // chord too — but by CLAIMING it and doing nothing, never by unclaiming:
+    // on macOS an unclaimed ⌘← is the browser's own Back, which would pop
+    // past the draft guard whenever its trap is unarmed (post-reload) and
+    // unmount a dirty editor (the GPT round-4 blocker).
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) =>
+      ({ matches: true, media: query, addEventListener: () => {}, removeEventListener: () => {} })) as unknown as typeof window.matchMedia
+    try {
+      setupAt(['/chat', '/settings'])
+      window.history.replaceState({ idx: 1 }, '', '/settings')
+      const event = new KeyboardEvent('keydown', { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, cancelable: true, bubbles: true })
+      document.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(true)
+      expect(screen.getByTestId('hist-loc').textContent).toBe('/settings')
+    } finally {
+      // RESTORE the environment's own polyfill (ThemeProvider reads it), never
+      // delete it — a deleted matchMedia crashes every later render in the file.
+      window.matchMedia = original
+    }
   })
 })
 

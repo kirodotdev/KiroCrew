@@ -16,6 +16,7 @@ import { ThemeProvider } from './hooks/useTheme'
 import { UIModeProvider } from './hooks/useUIMode'
 import ThemeExperienceLayer from './components/ThemeExperienceLayer'
 import { NavigationLeaveGuardProvider, NavigationBackGuard } from './components/NavigationLeaveGuard'
+import { RouteHistoryTracker } from './components/NavHistoryArrows'
 import { initRum } from './rum'
 import { isEmbeddedPane } from './lib/embedded'
 // i18n must initialize before the first render — a component rendering ahead of
@@ -166,6 +167,11 @@ const appTree = (
                         and stays out of the history stack entirely until a page
                         publishes work at stake. */}
                     <NavigationBackGuard />
+                    {/* Same placement contract as the guard above: inside the
+                        router so it sees every navigation, outside the routes so
+                        no route change unmounts it. Feeds the position store the
+                        top-bar arrows and the ⌘/Ctrl+←/→ chords read. */}
+                    <RouteHistoryTracker />
                     <Routes>
                       <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
                       <Route
