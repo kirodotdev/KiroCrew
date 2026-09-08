@@ -46,6 +46,7 @@ const {
   OVERLAY_BACKGROUND: WINDOWS_TITLEBAR_BACKGROUND,
 } = require("./windows-titlebar");
 const { attachFrameLoadLogging } = require("./frame-load-log");
+const { attachPaneAssetJournal } = require("./pane-asset-journal");
 const { createMemoryWatchLog } = require("./memory-watch-log");
 const { createCageTrace } = require("./cage-trace");
 const { profilingEnabled } = require("./perf-metrics");
@@ -958,6 +959,11 @@ function createWindowLifecycle(options) {
     // enough on its own, because a pane can navigate the top-level window to a
     // remote document and inherit that position.
     attachFrameLoadLogging(mainWindow.webContents, glog, backendUrl);
+    // The pane's module graph is the one load stage no renderer-side line can
+    // report: a stalled hashed-chunk fetch leaves the entry module unevaluated,
+    // so nothing of ours runs in that frame to say so. The main process sees the
+    // request either way. See pane-asset-journal.js.
+    attachPaneAssetJournal(mainWindow.webContents.session, glog, backendUrl);
 
     const rendererRecovery = createRendererRecovery({
       isQuitting,

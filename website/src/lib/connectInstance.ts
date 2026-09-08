@@ -42,18 +42,48 @@ import type { AppDispatch } from '../store'
  */
 export type ConnectVia = 'select' | 'auto-connect' | 'auto-warm' | 'retry'
 
-export async function connectInstanceInto(dispatch: AppDispatch, id: string, via: ConnectVia = 'select') {
+/**
+ * `rebuild` asks the gateway to tear the existing tunnel down and spawn a fresh
+ * forwarder on a different local port (the freed one is excluded from the
+ * allocation) before answering, instead of the idempotent
+ * "already connected, here is its status". Only Retry sets it, and only after a
+ * load watchdog fired on a document that DID navigate — the case where every
+ * probe says the tunnel is healthy yet the pane never finishes loading its
+ * module graph (one stalled stream). The journal carries the flag so a later
+ * `warm` line can be read as "new tunnel" rather than "same tunnel again".
+ *
+ * `onlyIfConnected` is the mirror image, for auto-warm: answer an already-up
+ * tunnel exactly like a plain connect, but never bring one up and never touch
+ * the connect intent. The gateway decides under its own manager lock, so an
+ * auto-warm racing an explicit disconnect cannot re-open the tunnel the user
+ * just closed; a tunnel that is not up comes back as a non-connected status,
+ * which this step journals as `warm-declined` and leaves the pane alone.
+ */
+export async function connectInstanceInto(
+  dispatch: AppDispatch,
+  id: string,
+  via: ConnectVia = 'select',
+  opts: { rebuild?: boolean; onlyIfConnected?: boolean } = {},
+) {
+  const rebuild = !!opts.rebuild
+  const onlyIfConnected = !!opts.onlyIfConnected
   let st
   try {
-    st = await api.connectInstance(id)
+    // The options object is passed only when set, so the plain call keeps the
+    // signature every existing caller and test spies on.
+    st = await (rebuild
+      ? api.connectInstance(id, { rebuild: true })
+      : onlyIfConnected
+        ? api.connectInstance(id, { onlyIfConnected: true })
+        : api.connectInstance(id))
   } catch (err) {
-    paneLog('warm-failed', { id, via, error: (err as Error)?.message || 'unknown' })
+    paneLog('warm-failed', { id, via, rebuild: rebuild || undefined, error: (err as Error)?.message || 'unknown' })
     throw err
   }
   if (st.state === 'connected' && st.local_port && st.token) {
     const conn: WarmConn = { port: st.local_port, token: st.token }
     dispatch(setWarm({ id, conn }))
-    paneLog('warm', { id, port: st.local_port, via })
+    paneLog('warm', { id, port: st.local_port, via, rebuild: rebuild || undefined })
   } else {
     // Same shape as the viewport's own `warm-declined`: the response says
     // something other than "connected with a port and a token", and whatever

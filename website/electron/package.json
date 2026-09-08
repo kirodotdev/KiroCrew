@@ -176,6 +176,7 @@
       "disable-gpu.js",
       "memory-watch-log.js",
       "frame-load-log.js",
+      "pane-asset-journal.js",
       "cage-trace.js",
       "pyspy-dump.js",
       "perf-metrics.js",

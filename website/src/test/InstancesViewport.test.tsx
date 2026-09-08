@@ -83,7 +83,9 @@ describe('InstancesViewport', () => {
     // Default mock has cd-1 connected. On load we pre-mount its iframe (hidden,
     // since we land on Local) so it's instantly usable without a click.
     const { store } = renderWithProviders(<InstancesViewport />)
-    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
+    // Auto-warm is connected-only: it pre-mounts a tunnel that is already up
+    // and never asks the gateway to bring one up.
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1', { onlyIfConnected: true }))
     await waitFor(() => expect(store.getState().instances.warm['cd-1']).toBeDefined())
     // Landed on Local (activeId null) -> the warmed iframe is mounted but hidden.
     expect(store.getState().instances.activeId).toBeNull()
@@ -1239,6 +1241,112 @@ describe('InstancesViewport', () => {
     } finally {
       info.mockRestore()
     }
+  })
+
+  it('every auto-warm is connected-only, so one that fires after a disconnect is declined and warms nothing', async () => {
+    // Two connected crews: cd-1 warms at once, cd-2 is scheduled 1.5 s later.
+    const two = {
+      instances: [
+        { id: 'cd-1', name: 'One', ssh_host: 'a', remote_port: 7777, local_port: 7778, ttl: '20h', remote_bin: '',
+          status: { instance_id: 'cd-1', state: 'connected', local_port: 7778, remote_port: 7777 } },
+        { id: 'cd-2', name: 'Two', ssh_host: 'b', remote_port: 7777, local_port: 7779, ttl: '20h', remote_bin: '',
+          status: { instance_id: 'cd-2', state: 'connected', local_port: 7779, remote_port: 7777 } },
+      ],
+      warm_set_cap: 5,
+    }
+    vi.mocked(api.listInstances).mockResolvedValue(two as never)
+    // The gateway is the arbiter: cd-1 is up; cd-2 was disconnected before its
+    // warm arrived, so the connected-only connect declines it (200, state
+    // disconnected, no token) instead of re-opening the tunnel.
+    vi.mocked(api.connectInstance).mockImplementation(async (id: string, opts?: { onlyIfConnected?: boolean }) => {
+      expect(opts).toEqual({ onlyIfConnected: true })
+      return id === 'cd-1'
+        ? ({ state: 'connected', local_port: 7778, token: 'tok' } as never)
+        : ({ state: 'disconnected', local_port: 0, remote_port: 7777, code: 'instance_not_connected' } as never)
+    })
+    const { store } = renderWithProviders(<InstancesViewport />)
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1', { onlyIfConnected: true }))
+    expect(api.connectInstance).not.toHaveBeenCalledWith('cd-2', expect.anything())
+    // The stagger timer was armed under real timers at render; let it fire.
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-2', { onlyIfConnected: true }), { timeout: 4_000 })
+    await new Promise(r => setTimeout(r, 20))
+    expect(store.getState().instances.warm['cd-1']).toBeDefined()
+    expect(store.getState().instances.warm['cd-2']).toBeUndefined()
+  })
+
+  it('a staggered auto-warm skips a crew something else already warmed in the meantime', async () => {
+    const two = {
+      instances: [
+        { id: 'cd-1', name: 'One', ssh_host: 'a', remote_port: 7777, local_port: 7778, ttl: '20h', remote_bin: '',
+          status: { instance_id: 'cd-1', state: 'connected', local_port: 7778, remote_port: 7777 } },
+        { id: 'cd-2', name: 'Two', ssh_host: 'b', remote_port: 7777, local_port: 7779, ttl: '20h', remote_bin: '',
+          status: { instance_id: 'cd-2', state: 'connected', local_port: 7779, remote_port: 7777 } },
+      ],
+      warm_set_cap: 5,
+    }
+    vi.mocked(api.listInstances).mockResolvedValue(two as never)
+    vi.mocked(api.connectInstance).mockImplementation(async (id: string) => ({
+      state: 'connected', local_port: id === 'cd-1' ? 7778 : 7779, token: 'tok',
+    }) as never)
+    const { store } = renderWithProviders(<InstancesViewport />)
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1', { onlyIfConnected: true }))
+    // A click (or the fan-out) warms cd-2 before its stagger slot.
+    act(() => { store.dispatch(setWarm({ id: 'cd-2', conn: { port: 7779, token: 'tok' } })) })
+    await new Promise(r => setTimeout(r, 1_800))
+    expect(api.connectInstance).not.toHaveBeenCalledWith('cd-2', expect.anything())
+  })
+
+  it('Retry after a watchdog verdict on a navigated frame asks the gateway to rebuild the tunnel', async () => {
+    mockConnectedCd1()
+    vi.mocked(api.connectInstance).mockResolvedValue({ state: 'connected', local_port: 7778, token: 'tok' })
+    vi.useFakeTimers()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await act(async () => {
+      vi.advanceTimersByTime(15_000)
+    })
+    expect(screen.getByText(/Pane failed to load/i)).toBeInTheDocument()
+    vi.useRealTimers()
+    // happy-dom's disabled-iframe load leaves the frame a same-origin blank
+    // document; make it read as navigated (cross-origin), the one case rebuild
+    // is meant for.
+    const frame = document.querySelector('iframe') as HTMLIFrameElement
+    Object.defineProperty(frame, 'contentWindow', {
+      get: () => ({ get location() { throw new DOMException('blocked', 'SecurityError') } }),
+    })
+
+    const u = userEvent.setup()
+    await u.click(screen.getByRole('button', { name: /Retry/i }))
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1', { rebuild: true }))
+  })
+
+  it("Retry's own failure surfaces on the active pane's panel (variables keyed by id)", async () => {
+    // Stale warm: an iframe is mounted but the backend says the tunnel is down,
+    // so the panel is up and shows the LIST's error. Retry then fails with a
+    // NEWER reason; the mutation's error for THIS crew must win.
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [
+        {
+          id: 'cd-1', name: 'Cloud One', ssh_host: 'cd-1-alias', remote_port: 7777, local_port: 0, ttl: '20h', remote_bin: '',
+          was_connected: true,
+          status: { instance_id: 'cd-1', state: 'error', error: 'ssh unreachable', remote_port: 7777 },
+        },
+      ],
+      warm_set_cap: 5,
+    })
+    vi.mocked(api.connectInstance).mockRejectedValue(new Error('rebuild refused: EPERM'))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    expect(await screen.findByText(/ssh unreachable/i)).toBeInTheDocument()
+    const u = userEvent.setup()
+    await u.click(screen.getByRole('button', { name: /Retry/i }))
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
+    expect(await screen.findByText(/rebuild refused: EPERM/i)).toBeInTheDocument()
+    expect(screen.queryByText(/ssh unreachable/i)).toBeNull()
   })
 
 })

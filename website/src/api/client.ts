@@ -2412,10 +2412,13 @@ export const api = {
   removeInstance: (id: string) => del('/api/instances/' + encodeURIComponent(id)).then(j),
   instanceStatus: (id: string, diagnose = false) =>
     get('/api/instances/' + encodeURIComponent(id) + '/status' + (diagnose ? '?diagnose=1' : '')).then(j) as Promise<InstanceTunnelStatus>,
-  connectInstance: (id: string) =>
-    post('/api/instances/' + encodeURIComponent(id) + '/connect').then(j) as Promise<
-      InstanceTunnelStatus & { token?: string }
-    >,
+  connectInstance: (id: string, opts?: { rebuild?: boolean; onlyIfConnected?: boolean }) =>
+    post(
+      '/api/instances/' +
+        encodeURIComponent(id) +
+        '/connect' +
+        (opts?.rebuild ? '?rebuild=1' : opts?.onlyIfConnected ? '?only_if_connected=1' : ''),
+    ).then(j) as Promise<InstanceTunnelStatus & { token?: string }>,
   refreshInstanceToken: (id: string) =>
     post('/api/instances/' + encodeURIComponent(id) + '/refresh-token').then(j) as Promise<
       InstanceTunnelStatus & { token?: string }

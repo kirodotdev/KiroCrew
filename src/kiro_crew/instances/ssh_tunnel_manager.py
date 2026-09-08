@@ -1403,7 +1403,9 @@ class SshTunnelManager:
             timeout_secs=self._mint_timeout_for(params.method),
         )
 
-    async def connect(self, instance_id: str) -> TunnelStatus:
+    async def connect(
+        self, instance_id: str, *, rebuild: bool = False, only_if_connected: bool = False
+    ) -> TunnelStatus:
         """Open a tunnel + mint a token for *instance_id*; return its status.
 
         Idempotent: connecting an already-connected instance returns its current
@@ -1411,13 +1413,96 @@ class SshTunnelManager:
         validation / mint / spawn error via the returned status (state ERROR).
         Works for either ``connection_method`` — the transport is resolved by
         :meth:`_resolve_transport`.
+
+        ``rebuild=True`` breaks the idempotence on purpose: a CONNECTED tunnel is
+        torn down first (``keep_intent`` — the user is asking for the crew, not
+        turning it off) and a fresh forwarder is spawned on a DIFFERENT local
+        port: the port just freed is excluded from the allocation, so both a
+        stalled stream on the old forwarder and a cause bound to the old port
+        itself are escaped by one Retry. This is the pane's Retry after a load watchdog
+        fired on a document that DID navigate: the transport is up by every
+        probe the manager runs (``/api/health`` answers, the credential
+        validates), yet one stream inside it stalled and the pane's module
+        graph will wait on it forever. Nothing short of a new TCP path clears
+        that, and the plain connect — which sees CONNECTED and returns — would
+        hand the same stalled tunnel back.
+
+        A teardown that fails (the stop raises) is reported as an ERROR status,
+        the same way every other connect failure is: the live tunnel is left
+        exactly as :meth:`_teardown_locked` leaves it (intact — nothing is
+        removed unless the stop succeeded), the reason is retained for
+        :meth:`last_error`, and the caller gets a 502 with a message instead of
+        a propagated exception turned into an unexplained 500.
+
+        ``only_if_connected=True`` is the opposite restriction: answer a
+        CONNECTED tunnel exactly like the plain connect (its status, its cached
+        token) but, when the tunnel is not up, spawn nothing and touch nothing
+        -- return a DISCONNECTED status and leave ``was_connected`` as the user
+        last set it. This is the viewport's auto-warm, whose job is to pre-mount
+        panes for tunnels that are ALREADY up, never to bring one up. The check
+        runs under the manager lock, the same lock :meth:`disconnect` holds
+        while it stops a tunnel, so an auto-warm racing a disconnect either sees
+        the tunnel still CONNECTED (and warms a pane the disconnect's
+        ``removeWarm`` then drops) or sees it gone and stands down; it can never
+        re-open a tunnel the user just closed, which a probe-then-connect from
+        the browser could.
         """
+        if rebuild and only_if_connected:
+            raise ValueError("rebuild and only_if_connected are mutually exclusive")
         async with self._lock:
             inst = await asyncio.to_thread(self._registry.get, instance_id)
             if inst is None:
                 raise KeyError(f"no instance with id {instance_id!r}")
 
             existing = self._tunnels.get(instance_id)
+            # The port a rebuild tears down. Kept out of the allocation below so
+            # the new forwarder lands on a DIFFERENT local port: the field
+            # evidence has every stall on the first allocated port, so a cause
+            # bound to the port itself (a stale listener, a local firewall or
+            # proxy rule) is a live hypothesis alongside the stalled stream. A
+            # first-free allocator would hand the just-freed port straight back
+            # and Retry could loop on it forever with no in-product escape.
+            rebuild_freed_port: int | None = None
+            if only_if_connected and (
+                existing is None or existing.status.state != TunnelState.CONNECTED
+            ):
+                logger.info(
+                    "Connected-only connect for %s declined: tunnel is %s",
+                    instance_id,
+                    existing.status.state.value if existing is not None else "absent",
+                )
+                return TunnelStatus(
+                    instance_id=inst.id,
+                    state=TunnelState.DISCONNECTED,
+                    local_port=inst.local_port,
+                    remote_port=inst.remote_port,
+                )
+            if rebuild and existing is not None:
+                logger.info(
+                    "Rebuilding tunnel for %s on request (was %s on 127.0.0.1:%s)",
+                    instance_id,
+                    existing.status.state.value,
+                    existing.status.local_port,
+                )
+                try:
+                    await self._teardown_locked(instance_id, keep_intent=True)
+                except Exception as e:  # noqa: BLE001 - reported, not swallowed
+                    logger.warning(
+                        "Rebuild of %s could not stop the old tunnel: %s", instance_id, e
+                    )
+                    return self._error_status(
+                        inst,
+                        f"could not stop the existing tunnel to rebuild it: {e}. "
+                        f"Disconnect and connect again, or retry.",
+                    )
+                if existing.status.local_port:
+                    rebuild_freed_port = existing.status.local_port
+                existing = None
+                # The registry row was just rewritten (local_port reset); re-read
+                # so the allocation below skips nothing stale and records fresh.
+                inst = await asyncio.to_thread(self._registry.get, instance_id)
+                if inst is None:
+                    raise KeyError(f"no instance with id {instance_id!r}")
             if existing is not None and existing.status.state == TunnelState.CONNECTED:
                 return existing.status
             if existing is not None:
@@ -1519,6 +1604,8 @@ class SshTunnelManager:
             # stall unrelated requests and heartbeats. This matches how the rest
             # of the module already reaches the registry (``asyncio.to_thread``).
             reserved = await asyncio.to_thread(self._reserved_ports)
+            if rebuild_freed_port is not None:
+                reserved = set(reserved) | {rebuild_freed_port}
             try:
                 local_port = await asyncio.to_thread(self._allocator.allocate, exclude=reserved)
             except RuntimeError as e:

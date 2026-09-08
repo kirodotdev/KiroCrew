@@ -37,6 +37,35 @@ describe('connectInstanceInto pane journal', () => {
     ])
   })
 
+  it('passes `rebuild` through to the API and stamps it on the warm line', async () => {
+    const lines = captureInfo()
+    const dispatch = vi.fn()
+    connectInstance.mockResolvedValue({ state: 'connected', local_port: 7783, token: 't' })
+    await connectInstanceInto(dispatch as never, 'shizuka', 'retry', { rebuild: true })
+    expect(connectInstance).toHaveBeenCalledWith('shizuka', { rebuild: true })
+    expect(lines).toEqual(['[pane] warm id=shizuka port=7783 via=retry rebuild=true'])
+  })
+
+  it('passes `onlyIfConnected` through to the API (auto-warm) and a declined answer is `warm-declined`', async () => {
+    const lines = captureInfo()
+    const dispatch = vi.fn()
+    connectInstance.mockResolvedValue({ state: 'disconnected', local_port: 0, remote_port: 7777 })
+    await connectInstanceInto(dispatch as never, 'shizuka', 'auto-warm', { onlyIfConnected: true })
+    expect(connectInstance).toHaveBeenCalledWith('shizuka', { onlyIfConnected: true })
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(lines).toEqual([
+      '[pane] warm-declined id=shizuka via=auto-warm state=disconnected hasPort=false hasToken=false',
+    ])
+  })
+
+  it('a plain connect asks for no rebuild and the warm line carries no flag', async () => {
+    const lines = captureInfo()
+    connectInstance.mockResolvedValue({ state: 'connected', local_port: 7781, token: 't' })
+    await connectInstanceInto(vi.fn() as never, 'shizuka', 'retry')
+    expect(connectInstance).toHaveBeenCalledWith('shizuka')
+    expect(lines).toEqual(['[pane] warm id=shizuka port=7781 via=retry'])
+  })
+
   it('journals a rejection as `warm-failed` and re-throws it unchanged', async () => {
     const lines = captureInfo()
     const err = new Error('502 tunnel down')

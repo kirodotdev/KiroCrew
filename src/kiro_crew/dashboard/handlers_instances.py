@@ -609,12 +609,59 @@ async def api_instances_connect(request: web.Request) -> web.Response:
             {"error": "instances manager not running", "code": "instances_manager_unavailable"},
             status=503,
         )
+    # `?rebuild=1` is the pane's Retry after a load watchdog fired on a document
+    # that DID navigate: every probe says the tunnel is fine, yet one stream in it
+    # stalled and the pane will wait on it forever. Only a fresh forwarder on a
+    # different local port clears that; the
+    # idempotent connect would hand
+    # the same stalled tunnel straight back. Opt-in and explicit so the
+    # auto-connect fan-out and plain tab clicks keep their no-op-when-up cost.
+    rebuild = request.query.get("rebuild") in ("1", "true")
+    # `?only_if_connected=1` is the viewport's auto-warm: pre-mount a pane for a
+    # tunnel that is ALREADY up, never bring one up. Evaluated atomically under
+    # the manager lock, so an auto-warm racing an explicit disconnect can never
+    # re-open the tunnel (or re-persist the intent) the user just closed.
+    only_if_connected = request.query.get("only_if_connected") in ("1", "true")
+    if rebuild and only_if_connected:
+        # A refusal, so it leaves the same `denied` SEL line as every other
+        # early exit here: the audit trail must see an owner hand-crafting a
+        # pair the frontend never sends, not just the connects that went through.
+        _audit(
+            "connect",
+            "denied",
+            request_id=instance_id,
+            error="rebuild and only_if_connected are mutually exclusive",
+        )
+        return web.json_response(
+            {
+                "error": "rebuild and only_if_connected are mutually exclusive",
+                "code": "bad_request",
+            },
+            status=400,
+        )
     try:
-        status = await mgr.connect(instance_id)
+        # Keyword only when asked: the default call keeps the manager's existing
+        # positional contract (and every fake that implements it).
+        if rebuild:
+            status = await mgr.connect(instance_id, rebuild=True)
+        elif only_if_connected:
+            status = await mgr.connect(instance_id, only_if_connected=True)
+        else:
+            status = await mgr.connect(instance_id)
     except KeyError:
         _audit("connect", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)
+    if rebuild:
+        _audit("connect", "rebuild", request_id=instance_id)
     body = status.to_dict()
+    if only_if_connected and status.state.value != "connected":
+        # Declined, not failed: the tunnel is simply not up, which is the one
+        # answer a connected-only caller asked to be given without side effects.
+        # 200 with a non-connected state is what the shared connect step reads
+        # as `warm-declined`.
+        _audit("connect", "declined", request_id=instance_id, error="not connected")
+        body["code"] = "instance_not_connected"
+        return web.json_response(body)
     if status.state.value == "connected":
         token = mgr.get_token(instance_id)
         # Validate the stored token before handing it to the browser. connect()
