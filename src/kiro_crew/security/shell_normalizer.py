@@ -1049,6 +1049,15 @@ def _substitution_bodies(text: str) -> "list[str]":
     and ``is_denied`` returned None for a command bash executes. An UNPROVEN span
     yields the whole remainder, which is the fail-closed direction -- scanning
     text that is not really in the body can only add findings.
+
+    Quoting was not the whole of it. That span helper counted a ``)`` that shell
+    COMMAND GRAMMAR also puts there as an ordinary character, and two such
+    spellings were measured allowing a payload this module still refuses (#8150):
+    a ``#`` comment (``$(: # )`` closes on a later line) and a ``case`` pattern
+    (``$(case x in x) printf token;; esac)``). Both truncated the body before the
+    verb, so the value assembled from it was never recognised. The closer for the
+    BACKTICK form reads the same state machine now too, so the two spellings
+    cannot disagree.
     """
     bodies: list[str] = []
     i = 0
@@ -1062,9 +1071,9 @@ def _substitution_bodies(text: str) -> "list[str]":
             i = end
             continue
         if text[i] == "`":
-            j = text.find("`", i + 1)
-            bodies.append(text[i + 1 : j if j != -1 else len(text)])
-            i = len(text) if j == -1 else j + 1
+            end, proven = _matching_close_backtick(text, i + 1)
+            bodies.append(text[i + 1 : end - 1] if proven else text[i + 1 :])
+            i = end
         else:
             i += 1
     return bodies
@@ -1546,6 +1555,99 @@ def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterato
         i += 1
 
 
+# Where one shell WORD ends and the next begins, for the reserved words and the
+# comment marker the span walk has to recognise. Bash reads ``case`` / ``esac`` as
+# reserved only when they stand alone, so ``lowercase)`` must not arm the pattern
+# rule, and ``a#b`` must not open a comment.
+_SHELL_WORD_BREAK = frozenset(" \t\n;&|()<>")
+
+
+def _skip_continuations(text: str, index: int) -> int:
+    """*index* advanced past any backslash-newline pairs sitting at it.
+
+    The shell removes a line continuation while READING, before it recognises
+    words at all, so one may sit between any two characters of a reserved word.
+    """
+    while text.startswith("\\\n", index):
+        index += 2
+    return index
+
+
+def _word_at(text: str, index: int, word: str) -> bool:
+    """True if *word* stands alone at *index* rather than sitting inside a longer word.
+
+    Continuation-aware, because the shell folds ``\\`` + newline away before it
+    reads a word: ``ca\\`` + newline + ``se`` IS the reserved word ``case``, and
+    bash was measured running it as one. Matching byte-literally missed that
+    spelling, and an unrecognised ``case`` leaves the pattern's ``)`` to close the
+    body early -- reopening the very truncation this rule exists to stop, for the
+    cost of two characters (found in review).
+    """
+    j = index
+    for expected in word:
+        j = _skip_continuations(text, j)
+        if j >= len(text) or text[j] != expected:
+            return False
+        j += 1
+    after_index = _skip_continuations(text, j)
+    before = text[index - 1] if index else " "
+    after = text[after_index] if after_index < len(text) else " "
+    return before in _SHELL_WORD_BREAK and after in _SHELL_WORD_BREAK
+
+
+def _opens_comment(text: str, index: int) -> bool:
+    """True if the ``#`` at *index* starts a COMMENT rather than sitting in a word.
+
+    A ``#`` comments only at the start of a word, so ``a#b`` is one ordinary word.
+    The preceding character is read the way the shell reads it, which means the
+    folds are stepped OVER and then the character in front of them is tested --
+    what matters is what the fold leaves adjacent, not that a fold is there:
+
+    * ``a\\`` + newline + ``#b`` folds to the single word ``a#b`` -- no comment;
+    * ``:`` + space + ``\\`` + newline + ``#`` folds to ``: #`` -- a real comment,
+      because a word BREAK ends up in front of the ``#``.
+
+    Treating any preceding fold as "not a comment" got the second case wrong in
+    the fail-OPEN direction: the comment was missed, so the walk read the ``)`` it
+    hides as the closer and truncated the body before the payload -- reopening the
+    bypass this rule exists to close, for the folded spelling (found in review).
+
+    Offset 0 counts as a word start, since the text handed here begins just inside
+    the opener.
+    """
+    j = index
+    while text.endswith("\\\n", 0, j):
+        j -= 2
+    return j == 0 or text[j - 1] in _SHELL_WORD_BREAK
+
+
+def _in_command_position(text: str, index: int) -> bool:
+    """True if a command could START at *index* -- the previous real character separates.
+
+    Used to tell the reserved word ``esac`` from the ordinary string ``esac``, which
+    a command may pass as an argument.
+
+    A backslash-newline is a line CONTINUATION, not a separator: ``echo \\`` then a
+    newline then ``esac`` is the single command ``echo esac``, so that ``esac`` is an
+    argument and must not disarm the pattern rule. Parity matters -- ``\\\\`` then a
+    newline is a literal backslash followed by a real newline, which does separate.
+    """
+    k = index - 1
+    while k >= 0:
+        if text[k] in " \t":
+            k -= 1
+            continue
+        if text[k] == "\n":
+            slashes = 0
+            while k - 1 - slashes >= 0 and text[k - 1 - slashes] == "\\":
+                slashes += 1
+            if slashes % 2 == 1:
+                k -= slashes + 1
+                continue
+        break
+    return k < 0 or text[k] in ";&|(\n"
+
+
 def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     """``(index just past the matching ``)``, proven)`` for a paren opened before
     *open_end*, walked QUOTE-AWARELY through :func:`_iter_shell_chars`.
@@ -1558,21 +1660,99 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     payload came back as ``X='`` and the nested publish of a protected branch was
     never scanned at all -- ``is_denied`` allowed a command bash runs.
 
+    Quoting is not the only way a ``)`` reaches this walk as an ordinary
+    character. Two COMMAND-GRAMMAR constructs put one there too, and each was
+    measured allowing a payload this module still refuses (#8150):
+
+    * a ``#`` COMMENT runs to the end of its line, so the ``)`` in
+      ``$(: # )`` is commented out and the substitution closes on a LATER line.
+      Counting it closed the body at ``: # ``, and the ``printf`` behind it that
+      computed the credential-minting verb was never scanned.
+    * a ``case`` PATTERN is terminated by ``)``. In
+      ``$(case x in x) printf token;; esac)`` the pattern's ``)`` is not the
+      substitution's, and reading it as one truncated the body to ``case x in x``.
+
+    Between ``case`` and its ``esac`` both parens are therefore ignored, which
+    keeps a ``(x|y)`` pattern balanced-neutral as well. ARMING is generous and
+    DISARMING is strict on purpose: missing a real ``case`` closes the body EARLY,
+    which is the bypass, while missing a real ``esac`` only runs it long, which is
+    imprecision. So ``case`` arms on any standalone word and ``esac`` disarms only
+    in command position -- an ``esac`` passed to a command as an ARGUMENT would
+    otherwise end the rule early and let the next paren close.
+
     ``proven`` is False when the parens never balance before the text ends. The
     caller must fail CLOSED on that: for an extractor the safe reading is the
-    whole remainder (scan more, never less).
+    whole remainder (scan more, never less). All three call sites are extractors,
+    so a span that reaches too far only feeds them text to inspect.
     """
     depth = 1
-    for step in _iter_shell_chars(text, 0, False):
-        if step.offset < open_end:
-            continue
-        if step.active:
-            if step.char == "(":
+    cases = 0
+    pos = 0
+    state = 0
+    ansi = False
+    while pos <= len(text):
+        jumped = False
+        for step in _iter_shell_chars(text[pos:], state, ansi):
+            off = pos + step.offset
+            if off < open_end:
+                continue
+            if not step.active:
+                continue
+            ch = step.char
+            # A ``#`` opens a comment only at the START of a word, and the
+            # character before it is read as the shell reads it -- a folded
+            # continuation leaves ``a\`` + newline + ``#b`` one ordinary word.
+            if ch == "#" and _opens_comment(text, off):
+                newline = text.find("\n", off)
+                if newline == -1:
+                    return (len(text), False)
+                pos = newline + 1
+                state, ansi = 0, False
+                jumped = True
+                break
+            if _word_at(text, off, "case"):
+                cases += 1
+                continue
+            if _word_at(text, off, "esac") and _in_command_position(text, off):
+                cases = max(0, cases - 1)
+                continue
+            if cases and ch in "()":
+                continue
+            if ch == "(":
                 depth += 1
-            elif step.char == ")":
+            elif ch == ")":
                 depth -= 1
                 if depth == 0:
-                    return (step.offset + len(step.text), True)
+                    return (off + len(step.text), True)
+        if not jumped:
+            break
+    return (len(text), False)
+
+
+def _matching_close_backtick(text: str, start: int) -> "tuple[int, bool]":
+    """``(index just past the closing backtick, proven)`` for a body at *start*.
+
+    The paren walk above got quote awareness; the BACKTICK form was still taken
+    pairwise with a plain ``find``, so a backtick the shell reads as a literal --
+    ``` `A='`'; ...` ``` -- was counted as the closer and truncated the body there.
+    One state machine now answers both spellings, which is what keeps them from
+    drifting apart again.
+
+    A backtick inside DOUBLE quotes really is a closer (``"`cmd`"`` runs ``cmd``),
+    so only single-quoted and escaped ones are data. Read through the same
+    ``in_single`` idiom the argv walk uses, rather than a second reading of the
+    state.
+
+    HARDENING, not a patched hole: no payload this module refuses was reachable
+    through the pairwise version -- the strings it mis-read are ones bash itself
+    rejects, because backticks do not nest unescaped. It is fixed so the two
+    closers cannot disagree, not because a bypass was measured.
+    """
+    for step in _iter_shell_chars(text[start:]):
+        escaped = len(step.text) == 2
+        in_single = step.state == 1 and not (step.char == "'" and step.active)
+        if not escaped and not in_single and step.char == "`":
+            return (start + step.offset + len(step.text), True)
     return (len(text), False)
 
 

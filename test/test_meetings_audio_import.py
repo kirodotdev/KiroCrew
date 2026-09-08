@@ -88,6 +88,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, **over: Any) -> dict[str, list]:
         "snapshot_files": [],
         "ready_config": [],
         "cap_config": [],
+        "split_calls": [],
     }
 
     def _vet(raw: str) -> "tuple[str, tuple[int, int] | None, str]":
@@ -119,9 +120,22 @@ def _patch(monkeypatch: pytest.MonkeyPatch, **over: Any) -> dict[str, list]:
         log["transcribed"].append((os.path.realpath(path), a[0] if a else kw.get("stt_config")))
         return over.get("transcript", "we decided to ship on Friday")
 
+    async def _split(path: str, cap_secs: int, segment_dir: str, cfg: Any) -> str | None:
+        # The route hands the pinned descriptor path; realpath it so the assertion
+        # matches the snapshot the same way ``_transcribe`` does.
+        log["split_calls"].append((os.path.realpath(path), cap_secs, segment_dir))
+        if "split_transcript" in over:
+            return over["split_transcript"]
+        return over.get("transcript", "we decided to ship on Friday")
+
     def _cap(cfg: Any = None) -> int | None:
         log["cap_config"].append(cfg)
         return over.get("cap", 3600)
+
+    def _splits(cfg: Any = None) -> bool:
+        # Default: the active provider splits (local). The Apple/AWS case overrides
+        # to False, which makes an over-cap import refuse with 413 instead.
+        return over.get("splits", True)
 
     async def _exceeds(path: str, max_secs: int, **kw: Any) -> bool | None:
         log["probed"].append((os.path.realpath(path), max_secs))
@@ -138,7 +152,9 @@ def _patch(monkeypatch: pytest.MonkeyPatch, **over: Any) -> dict[str, list]:
     monkeypatch.setattr(ai, "supports_pinned_walk", lambda: True)
     monkeypatch.setattr(transcribe_mod, "load_stt_config", _load_config)
     monkeypatch.setattr(transcribe_mod, "transcribe_audio", _transcribe)
+    monkeypatch.setattr(transcribe_mod, "transcribe_oversized_in_segments", _split)
     monkeypatch.setattr(transcribe_mod, "batch_duration_cap_secs", _cap)
+    monkeypatch.setattr(transcribe_mod, "provider_splits_oversized", _splits)
     monkeypatch.setattr(transcribe_mod, "audio_exceeds_secs", _exceeds)
     return log
 
@@ -555,13 +571,117 @@ class TestRefusals:
         assert log["transcribed"] == []
 
     @pytest.mark.asyncio
-    async def test_a_recording_over_the_decoder_cap_is_413_not_a_truncated_200(
+    async def test_a_recording_over_the_decoder_cap_is_split_not_refused(
         self, app, fake_sessions, monkeypatch
     ):
-        """GPT review: the local decoder stops reading at its ceiling WITHOUT
-        saying so, so a recording over the cap must be refused whole before
-        transcription — never transcribed-truncated and dispatched as a 200."""
-        log = _patch(monkeypatch, exceeds=True)
+        """The local decoder stops reading at its ceiling WITHOUT saying so, so an
+        over-cap recording is not decoded whole. Instead of the old 413 refusal it
+        is split into cap-sized segments, transcribed, and stitched — a transparent
+        200, the same way an oversized pasted image is auto-resized."""
+        log = _patch(
+            monkeypatch,
+            exceeds=True,
+            split_transcript="segment one text\nsegment two text",
+        )
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.post(
+                f"{BASE}/meetings/standup/import", json={"audio_path": "/tmp/marathon.webm"}
+            )
+            assert resp.status == 200
+            body = await resp.json()
+            # Two stitched lines dispatched, seams are ordinary line breaks.
+            assert body["lines"] == 2
+        # The probe and the split BOTH consumed the PINNED snapshot, never the
+        # user-writable original name; the whole-file transcriber was NOT called.
+        assert log["probed"] == [(os.path.realpath(log["snapshot_files"][0]), 3600)]
+        assert len(log["split_calls"]) == 1
+        split_path, split_cap, _seg_dir = log["split_calls"][0]
+        assert split_path == os.path.realpath(log["snapshot_files"][0])
+        assert split_cap == 3600
+        assert log["transcribed"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_successful_split_audits_allowed_not_rejected(
+        self, app, fake_sessions, monkeypatch
+    ):
+        """Opus review: the split path succeeds (a 200), so it records the split as
+        an ALLOWED permission decision the incident trail wants to see. It must NOT
+        also emit a ``rejected`` record — a single over-cap import would otherwise
+        write two contradictory SEL records for one outcome."""
+        _patch(monkeypatch, exceeds=True, split_transcript="one\ntwo")
+        records: list[tuple[str, str, str]] = []
+        monkeypatch.setattr(
+            ai,
+            "audit",
+            lambda op, res, *, outcome, error="": records.append((op, res, outcome)),
+        )
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.post(
+                f"{BASE}/meetings/standup/import", json={"audio_path": "/tmp/marathon.webm"}
+            )
+            assert resp.status == 200
+        split_records = [(r, o) for _op, r, o in records if "split:" in r]
+        assert split_records == [("standup split:over-60min", "allowed")]
+        # No rejection was recorded for this successful import.
+        assert all(o != "rejected" for _op, _r, o in records)
+
+    @pytest.mark.asyncio
+    async def test_an_over_cap_recording_on_a_loud_fail_provider_is_413_not_split(
+        self, app, fake_sessions, monkeypatch
+    ):
+        """Apple has the ceiling but FAILS LOUDLY at it, and its Swift helper's
+        strict sandbox masks the voice-runtime root the segments stage under, so a
+        split would 502 every time. An over-cap recording on such a provider is
+        refused whole with 413 (as before this feature) and never split (GPT
+        review)."""
+        log = _patch(monkeypatch, exceeds=True, splits=False)
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.post(
+                f"{BASE}/meetings/standup/import", json={"audio_path": "/tmp/long.m4a"}
+            )
+            assert resp.status == 413
+            assert (await resp.json())["code"] == "recording_too_long"
+            session = _common.ACTIVE.get("standup")
+            assert session is not None
+            assert all(len(q.queue) == 0 for q in session.agents.values())
+        # Neither the split nor the whole-file transcriber ran.
+        assert log["split_calls"] == []
+        assert log["transcribed"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_split_refuses_the_whole_import(self, app, fake_sessions, monkeypatch):
+        """A segment that cannot be decoded or transcribed means the stitched
+        transcript would be missing a span. The split returns None and the route
+        answers 502 — one clean failure, never a partial import that returns 200
+        with the middle of the recording silently absent."""
+        _patch(monkeypatch, exceeds=True, split_transcript=None)
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.post(
+                f"{BASE}/meetings/standup/import", json={"audio_path": "/tmp/marathon.webm"}
+            )
+            assert resp.status == 502
+            assert (await resp.json())["code"] == "transcription_failed"
+            session = _common.ACTIVE.get("standup")
+            assert session is not None
+            assert all(len(q.queue) == 0 for q in session.agents.values())
+
+    @pytest.mark.asyncio
+    async def test_a_split_result_over_the_line_budget_is_still_413(
+        self, app, fake_sessions, monkeypatch
+    ):
+        """Splitting must not become a way around the total-size ceiling. The
+        stitched transcript still passes through ``split_transcript``, so a result
+        past ``MAX_IMPORT_LINES`` is refused whole with 413 — nothing dispatched."""
+        _patch(
+            monkeypatch,
+            exceeds=True,
+            split_transcript="\n".join(f"line {i}" for i in range(10)),
+        )
+        monkeypatch.setattr(k, "MAX_IMPORT_LINES", 5)
         async with client_for(app) as client:
             await _start(client)
             resp = await client.post(
@@ -569,10 +689,27 @@ class TestRefusals:
             )
             assert resp.status == 413
             assert (await resp.json())["code"] == "recording_too_long"
-        # The probe consumed the PINNED snapshot (call-time realpath), not the
-        # user-writable original name.
-        assert log["probed"] == [(os.path.realpath(log["snapshot_files"][0]), 3600)]
-        assert log["transcribed"] == []
+            session = _common.ACTIVE.get("standup")
+            assert session is not None
+            assert all(len(q.queue) == 0 for q in session.agents.values())
+
+    @pytest.mark.asyncio
+    async def test_the_split_segments_are_staged_under_the_snapshot_dir(
+        self, app, fake_sessions, monkeypatch
+    ):
+        """The split writes its segment WAVs into the request's own snapshot dir —
+        the 0700 directory under the agent-denied voice-runtime root that the
+        sensitive-path guard exempts — so they are removed with it on every exit."""
+        log = _patch(monkeypatch, exceeds=True, split_transcript="ok")
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.post(
+                f"{BASE}/meetings/standup/import", json={"audio_path": "/tmp/marathon.webm"}
+            )
+            assert resp.status == 200
+        _split_path, _cap, seg_dir = log["split_calls"][0]
+        # The segment dir is exactly the dir the snapshot lives in.
+        assert seg_dir == os.path.dirname(log["snapshot_files"][0])
 
     @pytest.mark.asyncio
     async def test_the_probe_gets_the_transcodes_own_time_budget(

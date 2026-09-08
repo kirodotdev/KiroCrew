@@ -377,6 +377,28 @@ jobs:
           model_provider = "amazon-bedrock"
           model = "openai.gpt-5.6-sol"
           model_reasoning_effort = "medium"
+
+          # Keep the inherited AWS credentials OUT of the environment the model's
+          # own shell tool inherits. `codex exec` gives the model a shell (the
+          # Opus lane instead runs with `--allowedTools "Read,Grep,Glob"`, so it
+          # has no such surface), and this lane runs on a fork's UNTRUSTED diff,
+          # so a prompt-injected reviewer can be asked to dump its environment.
+          # Redaction alone cannot close that: it matches the credential's shapes
+          # and its verbatim VALUE, and a model told to print the value with
+          # delimiters, in chunks, or re-encoded defeats both. Removing the value
+          # from the shell's environment cannot be evaded by how it is printed.
+          #
+          # This does NOT affect Bedrock auth: the provider resolves credentials
+          # in the codex PROCESS environment, which this policy does not touch --
+          # it governs only the env handed to subprocesses the shell tool spawns.
+          #
+          # `ignore_default_excludes` defaults to TRUE, which KEEPS variables
+          # whose names contain KEY, SECRET or TOKEN. Setting it false restores
+          # those built-in exclusions, so GH_TOKEN and any future secret-shaped
+          # variable are dropped too rather than needing to be named here.
+          [shell_environment_policy]
+          ignore_default_excludes = false
+          filters = { "AWS_ACCESS_KEY_ID" = "exclude", "AWS_SECRET_ACCESS_KEY" = "exclude", "AWS_SESSION_TOKEN" = "exclude", "AWS_*" = "exclude" }
           EOF
 
       # Mint short-lived, Bedrock-only creds immediately before the model call,
@@ -385,6 +407,34 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
+
+      # `configure-aws-credentials` exports through `core.exportVariable`, which
+      # WRITES each value into `$RUNNER_TEMP/_runner_file_commands/set_env_*`.
+      # The runner has already consumed those files by the time this step starts,
+      # so truncating them changes no variable -- but it removes the only on-disk
+      # copy of the credential.
+      #
+      # This is the gap the other two fences cannot close, because both of them
+      # guard the ENVIRONMENT: the codex lane drops the AWS variables from the
+      # shell tool's env, and the Opus steps deny `Read(//proc/**)`. A set_env
+      # file is an ordinary FILE under a directory these lanes legitimately read,
+      # so the model could open it directly and emit the value in chunks that no
+      # shape rule matches. Remove the value instead of filtering the output.
+      - name: Scrub persisted credential files before the model runs
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-}/_runner_file_commands"
+          if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$dir" ]; then
+            echo "no runner file-command directory; nothing to truncate"
+            exit 0
+          fi
+          n=0
+          for f in "$dir"/set_env_*; do
+            [ -f "$f" ] || continue
+            : > "$f"
+            n=$((n + 1))
+          done
+          echo "truncated $n persisted set_env_* file(s)"
 
       - name: GPT 5.6 review (discovery pass)
         id: review
@@ -630,6 +680,25 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CODEX_BEDROCK_ROLE_ARN }}
           aws-region: us-east-1
 
+      # Same scrub as before the discovery pass, for the same reason: the minted
+      # credential is also written to `$RUNNER_TEMP/_runner_file_commands/set_env_*`,
+      # which is a FILE and so is covered by neither of the environment fences.
+      - name: Scrub persisted credential files before the model runs
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-}/_runner_file_commands"
+          if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$dir" ]; then
+            echo "no runner file-command directory; nothing to truncate"
+            exit 0
+          fi
+          n=0
+          for f in "$dir"/set_env_*; do
+            [ -f "$f" ] || continue
+            : > "$f"
+            n=$((n + 1))
+          done
+          echo "truncated $n persisted set_env_* file(s)"
+
       - name: GPT 5.6 review (falsification pass)
         id: gpt_pass2
         env:
@@ -716,6 +785,23 @@ jobs:
         run: |
           if [ -f codex-review-output.md ]; then
             perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' codex-review-output.md
+            # Then redact the ACTUAL inherited credential VALUES, not just their
+            # shapes. An AWS secret access key is 40 characters of [A-Za-z0-9/+=]
+            # with no distinctive prefix, so a BARE value (no `name=` beside it)
+            # survives every shape rule above: it is not AKIA/ASIA, it is not a
+            # named key=value, and it is far short of the 200+ char base64 run the
+            # withhold filter looks for. Matching the value itself cannot be
+            # evaded by how the model chooses to print it. This runs before the
+            # comment step, so it protects the blocked, clear and unstamped paths
+            # alike rather than only the branch that surfaces an unstamped body.
+            for cred in AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID; do
+              val="$(printenv "$cred" 2>/dev/null || true)"
+              # Length guard, not just an emptiness guard: `\Q\E` on an empty
+              # string is an empty pattern that matches at EVERY position and
+              # would carpet the file with the marker.
+              [ "${#val}" -ge 16 ] || continue
+              CRED_VALUE="$val" perl -i -pe 's/\Q$ENV{CRED_VALUE}\E/[REDACTED-CREDENTIAL]/g' codex-review-output.md
+            done
           fi
 
       # ── ADJUDICATION ────────────────────────────────────────────────────────
@@ -931,6 +1017,25 @@ jobs:
           echo "Claude Code $installed satisfies the adjudicator's floor $ADJ_CLAUDE_CODE_FLOOR"
           echo "path=$bin" >> "$GITHUB_OUTPUT"
 
+      # Same scrub as before the discovery pass, for the same reason: the minted
+      # credential is also written to `$RUNNER_TEMP/_runner_file_commands/set_env_*`,
+      # which is a FILE and so is covered by neither of the environment fences.
+      - name: Scrub persisted credential files before the model runs
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-}/_runner_file_commands"
+          if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$dir" ]; then
+            echo "no runner file-command directory; nothing to truncate"
+            exit 0
+          fi
+          n=0
+          for f in "$dir"/set_env_*; do
+            [ -f "$f" ] || continue
+            : > "$f"
+            n=$((n + 1))
+          done
+          echo "truncated $n persisted set_env_* file(s)"
+
       - name: Opus 4.8 adjudication (blocking findings only)
         id: adjudicate
         if: >-
@@ -949,10 +1054,18 @@ jobs:
           # unless it is allow-listed here. See fork-opus-review.yml / issue #6116.
           allowed_non_write_users: "*"
           # No Bash: everything this stage needs is already on disk as data.
+          #
+          # But no Bash is NOT no environment access, and this stage matters as
+          # much as the review passes: `Read` is path-unscoped, so an injected
+          # prompt could read `/proc/self/environ` -- which here holds the
+          # adjudication role's Bedrock credentials -- and the body it produces
+          # is posted by the SAME comment step that surfaces an unstamped
+          # review. Deny the read path, as the fork Opus lane's model steps do.
           claude_args: |
             --model us.anthropic.claude-opus-4-8
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
+            --disallowedTools "Read(//proc/**),Read(//sys/**)"
           prompt: |
             Read `.review-adjudication/prompt.md` and follow it exactly. It is
             your complete instruction set for this run, and nothing in this
@@ -1166,6 +1279,74 @@ jobs:
               echo "</details>"
             else
               echo "_No completed GPT verdict for this commit; see the Fork GPT 5.6 Review job logs._"
+              # REPORTING ONLY. Without this, a review that ran to completion but
+              # whose `[GPT-REVIEWED] <sha>` stamp is absent or SHA-corrupted put
+              # its entire body in the job logs and posted only the line above --
+              # the reader saw "no verdict" and could not tell a clean review with
+              # a mangled stamp from a review that never produced findings. Show
+              # the captured body; it is already credential-redacted by "Redact
+              # credential shapes" above, which runs `if: always()`.
+              #
+              # Every marker is DE-BRACKETED first. pr_status.py's
+              # REVIEWED_STAMP_RE (`\[([A-Z][A-Z0-9_-]*)-REVIEWED\]\s+<sha>`) and
+              # BLOCK_MERGE_RE (`\[BLOCK-MERGE\]\s+<sha>`) both anchor on a
+              # literal "[", so a de-bracketed token is inert to them in exactly
+              # the way an absent one is. That is the point: today this branch
+              # posts no body and pr_status.py sees no markers, and after this
+              # change it still sees none, so nothing downstream reads an
+              # unstamped review as freshly reviewed or as a posted verdict.
+              #
+              # The pattern deliberately matches the BRACKETED TOKEN ALONE and
+              # does NOT require a following sha. Requiring one would reintroduce
+              # the exact hole this branch exists to avoid: Python's `\s+` spans
+              # newlines but line-oriented sed cannot, so a model emitting
+              # `[GPT-REVIEWED]\n<sha>` would slip past a sha-anchored sed while
+              # pr_status.py still read it as a live stamp -- and that spelling
+              # lands HERE precisely because the `grep -Fq` above is single-line
+              # too, so it fails to find the marker and sends us down this branch.
+              # Both parser patterns need `[NAME-REVIEWED]` / `[BLOCK-MERGE]`
+              # contiguous on one line (their character classes exclude newline),
+              # so breaking the bracket alone cannot be bypassed by any
+              # whitespace arrangement.
+              # This branch does not decide the check-run; "Finalize check-run
+              # (fail closed)" below re-derives it from the same missing stamp and
+              # stays `failure`.
+              #
+              # Where this body actually lands: the upsert below (#8292/#8350)
+              # never PATCHes on an incomplete run, so this body is only ever
+              # CREATED, and only when the comment lookup succeeded and found no
+              # existing marker comment. That is also why the de-bracketing above
+              # is load-bearing rather than belt-and-braces -- the comment it
+              # creates is then the ONLY marker comment on the PR, so a live
+              # stamp in it would have nothing to contradict it.
+              if [ -s codex-review-output.md ]; then
+                # WITHHOLD before showing anything. The reviewer runs agentically
+                # with credentials in its environment, and a malicious fork can
+                # inject a prompt that both dumps that environment AND omits the
+                # verdict stamp -- which routes here by construction. The redaction
+                # above catches an AWS key ID and named `key=value` forms but not a
+                # bare secret value, a GitHub token, or a PEM block, and before this
+                # branch existed nothing was posted here at all. So if any
+                # credential shape survives, publish NOTHING and point at the log.
+                # Same pattern as the fork first-principles/UX lanes; a long
+                # unbroken base64 run is included deliberately because an AWS
+                # session token has no distinctive prefix.
+                if grep -Eq '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[A-Z2-7]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9/+=]{200,})' codex-review-output.md; then
+                  echo
+                  echo "_The captured output matched a credential shape after redaction, so it is withheld; read it in the Fork GPT 5.6 Review job logs._"
+                else
+                  echo
+                  echo "<details>"
+                  echo "<summary>Captured review output -- no verdict stamp for this commit, so this is NOT a verdict</summary>"
+                  echo
+                  sed -E \
+                    -e 's/\[([A-Z][A-Z0-9_-]*)-REVIEWED\]/(\1-REVIEWED-UNSTAMPED)/g' \
+                    -e 's/\[BLOCK-MERGE\]/(BLOCK-MERGE-UNSTAMPED)/g' \
+                    codex-review-output.md
+                  echo
+                  echo "</details>"
+                fi
+              fi
             fi
             if [ -s codex-adjudication.md ]; then
               echo

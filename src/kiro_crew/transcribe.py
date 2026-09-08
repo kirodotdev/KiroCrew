@@ -1822,6 +1822,30 @@ def batch_duration_cap_secs(stt_config=None) -> int | None:  # type: ignore[no-u
     return _MAX_AUDIO_SECS
 
 
+def provider_splits_oversized(stt_config) -> bool:  # type: ignore[no-untyped-def]
+    """Whether an over-cap recording should be SPLIT rather than refused.
+
+    Only the local recogniser both HAS a ceiling and TRUNCATES SILENTLY past it
+    (both decode paths stop at ``_MAX_AUDIO_SECS`` and say nothing), so it is the
+    one provider where auto-splitting turns silent data loss into a transparent
+    success. The Apple lane also has the ceiling but FAILS LOUDLY at it
+    (``_to_native_audio`` raises ``RecordingTooLongError``), so it needs no split
+    and must not get one: its Swift helper runs in the ``mode="strict"`` sandbox,
+    which masks the ``run/voice-runtime`` leaf the import stages its segments
+    under (``sandbox.py``), so a segment WAV handed to the helper by name is
+    unreadable and every over-cap Apple import would 502. AWS Transcribe has no
+    silent ceiling at all (``batch_duration_cap_secs`` is None for it). So the
+    split is local-only, which is also what issue #8272 intends: "segmentation
+    only ever triggers where the ceiling exists (AWS/Apple providers fail loudly
+    and need no split)". Takes the caller's config snapshot as a REQUIRED
+    argument (the one production caller always has it in hand, from the same
+    snapshot the readiness/cap/transcribe calls share); it never reads config
+    itself, so there is no window for the three answers to describe different
+    providers.
+    """
+    return stt_config.provider not in ("transcribe", "apple")
+
+
 def _wav_duration_secs(audio_path: str) -> float | None:
     """Exact duration from a WAV header, or None when it is not a readable WAV.
 
@@ -1937,6 +1961,493 @@ async def audio_exceeds_secs(
             ffmpeg_bin,
             preserve_active_exception=sys.exc_info()[1] is not None,
         )
+
+
+# ---------------------------------------------------------------------------
+# Splitting an over-cap recording into transcribable segments
+# ---------------------------------------------------------------------------
+
+#: How far back from a target cut a silence is allowed to sit and still be
+#: used. A recording is cut at the last silence BEFORE each cap multiple, but
+#: only if that silence is within this window — otherwise the segment would be
+#: far shorter than the cap and the split would need many more passes than the
+#: recording's length warrants. 30s at a 3600s cap means a segment is at worst
+#: 0.8% shorter than the cap; a recording whose only silence sits further back
+#: than this is cut hard at the cap instead (see ``_choose_segment_cuts``).
+_SILENCE_SEARCH_WINDOW_SECS = 30
+
+#: ``silencedetect`` threshold. -30 dBFS for at least 0.3s is quiet enough to be
+#: a real pause between utterances rather than a breath, and short enough to
+#: catch the gaps a meeting recording actually has. These are the boundary rule,
+#: not a tuning knob a caller passes, so they live here as constants.
+_SILENCE_NOISE_DBFS = "-30dB"
+_SILENCE_MIN_SECS = 0.3
+
+_SILENCE_END_RE = re.compile(rb"silence_end:\s*([0-9]+(?:\.[0-9]+)?)")
+
+#: Hard ceiling on how many silence points the scan retains. A cut is chosen per
+#: cap-sized window, so even a many-hour recording needs only a handful; a few
+#: thousand covers any recording a human would import with margin to spare. The
+#: ceiling exists to bound MEMORY, not to shape the split: ffmpeg's stderr is read
+#: incrementally (not buffered whole by ``communicate``) and only the parsed
+#: ``silence_end`` floats are kept, so a pathological low-bitrate, pause-dense file
+#: -- ~149h at ~8 kbps would emit ~1.5M events -- cannot buffer hundreds of MiB and
+#: OOM/hard-exit the gateway (GPT review, security-class). Crossing the ceiling
+#: means the input is pathological, so the scan refuses (returns None) and the
+#: import is refused rather than risking the crash.
+_MAX_SILENCE_POINTS = 100_000
+
+#: Hard ceiling on how many segments one recording may be split into. A real
+#: recording under the import size cap cannot exceed a knowable duration, so a
+#: decoded duration implying more than this many cap-sized segments is not a real
+#: recording -- it is a crafted container whose terminal PTS (ffmpeg
+#: ``out_time_us``) was authored far into the future. ``_choose_segment_cuts``
+#: appends one cut per cap-sized window in a single synchronous loop, so an
+#: unbounded duration would allocate billions of cuts and freeze/OOM the gateway
+#: before any caller check runs (GPT review, security-class). The caller refuses
+#: (returns None) rather than build the cuts when the duration crosses this
+#: ceiling. 512 covers ~21 days at the 1-hour cap -- far past any real meeting,
+#: and far past what the 512 MiB import size cap can hold at any real bitrate.
+_MAX_SEGMENTS = 512
+
+
+async def _drain_progress_and_silence(
+    proc: Any, *, timeout_secs: int
+) -> "tuple[list[float], float] | None":
+    """Read ffmpeg's stdout (-progress) and stderr (silencedetect) INCREMENTALLY.
+
+    ``communicate()`` buffers both whole streams in memory; a pathological
+    pause-dense recording could make stderr hundreds of MiB and OOM the gateway
+    (GPT review, security-class). This reads both streams line by line and keeps
+    only the parsed data -- the latest ``out_time_us`` and up to
+    :data:`_MAX_SILENCE_POINTS` ``silence_end`` floats -- so memory is bounded by
+    the ceiling, not by the input. Returns ``(silence_ends, duration)``, or None
+    when the duration is unreadable or the silence ceiling is crossed (a
+    pathological input the caller must refuse rather than risk crashing on).
+    Reaps nothing itself: the caller owns kill/close on timeout and cancellation.
+    """
+    silence_ends: list[float] = []
+    last_out_time: int | None = None
+    overflowed = False
+
+    #: Bytes kept across chunk reads so a token split by a chunk boundary is not
+    #: missed. Longer than any ``out_time_us=<digits>`` or ``silence_end: <float>``
+    #: token ffmpeg emits. Reading with ``read(n)`` instead of ``readline()`` is the
+    #: point: ``StreamReader.readline`` raises ``ValueError`` on a line past its
+    #: 64 KiB limit (GPT review, security-class -- a >64 KiB no-newline stderr line
+    #: would otherwise escape as an unhandled 500), while ``read`` has no
+    #: line-length limit. A partial trailing fragment longer than this carry cannot
+    #: contain a whole token that also straddles the boundary, so trimming to it is
+    #: safe and keeps memory bounded against a pathological no-newline line.
+    _CARRY = 256
+
+    async def _read_stream(reader: Any, on_match: Any, pattern: Any) -> None:
+        if reader is None:
+            return
+        pending = b""  # the trailing partial line carried to the next chunk
+        while True:
+            chunk = await reader.read(65536)
+            if not chunk:
+                break
+            data = pending + chunk
+            # Scan complete lines; keep only the trailing partial for next time so a
+            # token split across a chunk boundary is still matched whole. Each line
+            # is scanned exactly once, so an appending consumer never double-counts.
+            newline = data.rfind(b"\n")
+            if newline == -1:
+                # No line terminator yet: keep only a bounded tail. A fragment
+                # longer than the carry cannot hold a token that will still be
+                # completed by later bytes, so discarding its head is lossless and
+                # caps memory against a giant no-newline line.
+                pending = data[-_CARRY:] if len(data) > _CARRY else data
+                continue
+            for m in pattern.finditer(data[: newline + 1]):
+                on_match(m)
+            pending = data[newline + 1 :]
+            if len(pending) > _CARRY:
+                pending = pending[-_CARRY:]
+        if pending:
+            for m in pattern.finditer(pending):
+                on_match(m)
+
+    def _on_silence(m: Any) -> None:
+        nonlocal overflowed
+        if len(silence_ends) >= _MAX_SILENCE_POINTS:
+            overflowed = True
+            return
+        silence_ends.append(float(m.group(1)))
+
+    def _on_progress(m: Any) -> None:
+        nonlocal last_out_time
+        last_out_time = int(m.group(1))
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            _read_stream(proc.stdout, _on_progress, _PROGRESS_OUT_TIME_RE),
+            _read_stream(proc.stderr, _on_silence, _SILENCE_END_RE),
+        ),
+        timeout=timeout_secs,
+    )
+    await proc.wait()
+    if proc.returncode != 0:
+        return None
+    if last_out_time is None:
+        return None
+    if overflowed:
+        logger.error(
+            "ffmpeg silence scan produced more than %d points; refusing", _MAX_SILENCE_POINTS
+        )
+        return None
+    return silence_ends, last_out_time / 1_000_000
+
+
+#: Bytes of ffmpeg stderr retained for an error message. Only a short tail is
+#: logged, so the reader keeps at most this much and discards the rest -- ffmpeg
+#: can emit a per-frame warning line, so reading the whole stream with
+#: ``communicate()`` would buffer unbounded memory on a long/pathological input
+#: (GPT review, security-class: same class as the silence scan).
+_STDERR_TAIL_BYTES = 8192
+
+
+async def _drain_stderr_tail(proc: Any, *, timeout_secs: int) -> bytes:
+    """Drain ffmpeg's stderr INCREMENTALLY, retaining only the last
+    :data:`_STDERR_TAIL_BYTES`, then reap the child.
+
+    ``communicate()`` buffers all of stderr; a segment extract of a long input
+    could make that hundreds of MiB and OOM the gateway. This keeps a bounded
+    tail (all the error log needs) and discards the rest as it arrives, so the
+    pipe never blocks the child and memory stays bounded. Returns the tail;
+    the caller reads ``proc.returncode`` after this returns.
+    """
+    tail = bytearray()
+    if proc.stderr is not None:
+
+        async def _read() -> None:
+            while True:
+                chunk = await proc.stderr.read(65536)
+                if not chunk:
+                    break
+                tail.extend(chunk)
+                if len(tail) > _STDERR_TAIL_BYTES:
+                    del tail[: len(tail) - _STDERR_TAIL_BYTES]
+
+        await asyncio.wait_for(_read(), timeout=timeout_secs)
+    await proc.wait()
+    return bytes(tail)
+
+
+def _choose_segment_cuts(
+    duration_secs: float, cap_secs: int, silence_ends: "list[float]"
+) -> "list[float]":
+    """Where to cut a *duration_secs* recording into segments each <= *cap_secs*.
+
+    Returns the INTERIOR cut points in seconds, ascending — the segment
+    boundaries between 0 and *duration_secs*, excluding both ends. A recording
+    already within the cap returns ``[]`` (one segment, no split).
+
+    Each cut is placed at the last ``silence_end`` at or before the running
+    target (``previous_cut + cap_secs``) and no earlier than the target minus
+    :data:`_SILENCE_SEARCH_WINDOW_SECS`, so a word straddling the target is not
+    split — the cut lands in the pause after the previous utterance. When the
+    window holds no silence (continuous speech across the whole window), the cut
+    falls HARD on the target: a rare, documented seam that may split one word,
+    which is still strictly better than refusing the whole import. The target
+    always advances by a real amount, so the loop always terminates and every
+    segment is <= *cap_secs*.
+
+    Pure function, no IO: the boundary rules are the interesting part and are
+    unit-tested directly, the way ``audio.split_transcript`` is.
+    """
+    cuts: list[float] = []
+    ordered = sorted(silence_ends)
+    start = 0.0
+    while duration_secs - start > cap_secs:
+        target = start + cap_secs
+        floor = target - _SILENCE_SEARCH_WINDOW_SECS
+        # The last silence in ``(floor, target]``. A silence exactly at the
+        # target counts; one at or before ``start`` never does (it would make a
+        # zero-length or backwards segment).
+        candidates = [s for s in ordered if floor < s <= target and s > start]
+        cut = candidates[-1] if candidates else target
+        cuts.append(cut)
+        start = cut
+    return cuts
+
+
+async def _detect_silence_ends(
+    audio_path: str, *, timeout_secs: int
+) -> "tuple[list[float], float] | None":
+    """Silence-end timestamps and the decoded duration, or None when unknown.
+
+    One decode pass through ffmpeg's ``silencedetect`` filter, reading
+    ``silence_end`` events from stderr and the final decoded timestamp from the
+    ``-progress`` stream. Both streams are drained INCREMENTALLY
+    (:func:`_drain_progress_and_silence`), never buffered whole, so a
+    pause-dense recording cannot make stderr hundreds of MiB and OOM the gateway
+    (GPT review, security-class); only the parsed floats are kept, capped at
+    :data:`_MAX_SILENCE_POINTS`. None on any failure the caller must treat as
+    "cannot split safely" -- an undecodable file, a decoder that is unavailable,
+    a timeout, a nonzero exit, or a pathological input past the silence ceiling
+    -- so the caller refuses the import rather than proceeding to a truncating
+    decode. Mirrors the spawn shape of :func:`audio_exceeds_secs`: forced
+    demuxer, local-protocol pin (inherited from :func:`_create_ffmpeg_subprocess`),
+    authenticated-handle lifetime, kill-and-reap on timeout and cancellation.
+    """
+    try:
+        demux_args = _forced_demuxer_args(audio_path)
+    except OSError:
+        logger.exception("Could not resolve a demuxer to scan %s for silence", audio_path)
+        return None
+    ffmpeg_bin = await _resolve_ffmpeg_for_execution()
+    if not ffmpeg_bin:
+        return None
+    try:
+        try:
+            proc = await _create_ffmpeg_subprocess(
+                ffmpeg_bin,
+                "-nostdin",
+                # -hide_banner drops ffmpeg's input-metadata dump from stderr, so a
+                # crafted container's oversized tag value cannot appear there;
+                # silencedetect logs at info level, which is kept. Defence in depth
+                # for the bounded reader below, not the primary guard.
+                "-hide_banner",
+                "-progress",
+                "pipe:1",
+                *demux_args,
+                "-i",
+                audio_path,
+                "-vn",
+                "-af",
+                f"silencedetect=noise={_SILENCE_NOISE_DBFS}:d={_SILENCE_MIN_SECS}",
+                "-f",
+                "null",
+                "-",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError:
+            logger.exception("Could not run ffmpeg (%s) to scan %s", ffmpeg_bin, audio_path)
+            return None
+        try:
+            result = await _drain_progress_and_silence(proc, timeout_secs=timeout_secs)
+        except asyncio.TimeoutError:
+            await _kill_and_reap(proc)
+            logger.error("ffmpeg silence scan of %s timed out after %ds", audio_path, timeout_secs)
+            return None
+        except BaseException:
+            await _kill_and_reap(proc)
+            raise
+        return result
+    finally:
+        await _close_ffmpeg_for_execution(
+            ffmpeg_bin,
+            preserve_active_exception=sys.exc_info()[1] is not None,
+        )
+
+
+async def _extract_segment(
+    audio_path: str,
+    start_secs: float,
+    end_secs: "float | None",
+    out_path: str,
+    *,
+    timeout_secs: int,
+) -> bool:
+    """Decode ``[start_secs, end_secs)`` of *audio_path* to a 16 kHz mono WAV.
+
+    ``end_secs`` of None means "to the end of the recording" (the last segment).
+    Returns True on a clean extraction, False on any failure — the caller turns
+    a False into a whole-import refusal, never a partial transcript.
+
+    ``-ss`` before ``-i`` is an INPUT seek (ffmpeg skips to the start without
+    decoding the skipped span), so extracting the k-th segment costs one
+    segment's worth of decode, not k. The output targets the recogniser's own
+    format (16 kHz mono ``pcm_s16le``) exactly as :func:`_pcm_via_ffmpeg` does,
+    so each segment file is a plain WAV the transcriber's fast path reads with no
+    second transcode.
+    """
+    try:
+        demux_args = _forced_demuxer_args(audio_path)
+    except OSError:
+        logger.exception("Could not resolve a demuxer to extract a segment of %s", audio_path)
+        return False
+    ffmpeg_bin = await _resolve_ffmpeg_for_execution()
+    if not ffmpeg_bin:
+        return False
+    # ``-ss`` is an INPUT option (before ``-i``) so the skip is not decoded;
+    # ``-t`` bounds the segment length. A None end means the final segment,
+    # which runs to end-of-file with no ``-t``.
+    seek_args = ("-ss", f"{start_secs:.3f}")
+    length_args = () if end_secs is None else ("-t", f"{end_secs - start_secs:.3f}")
+    try:
+        try:
+            proc = await _create_ffmpeg_subprocess(
+                ffmpeg_bin,
+                "-y",
+                "-nostdin",
+                *seek_args,
+                *demux_args,
+                "-i",
+                audio_path,
+                *length_args,
+                "-ar",
+                str(stt.SAMPLE_RATE_HZ),
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                out_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError:
+            logger.exception(
+                "Could not run ffmpeg (%s) to extract a segment of %s", ffmpeg_bin, audio_path
+            )
+            return False
+        try:
+            stderr_tail = await _drain_stderr_tail(proc, timeout_secs=timeout_secs)
+        except asyncio.TimeoutError:
+            await _kill_and_reap(proc)
+            logger.error(
+                "ffmpeg segment extract of %s timed out after %ds", audio_path, timeout_secs
+            )
+            return False
+        except BaseException:
+            await _kill_and_reap(proc)
+            raise
+        if proc.returncode != 0:
+            tail = stderr_tail.decode(errors="replace").strip()[-500:] if stderr_tail else ""
+            logger.error(
+                "ffmpeg %s extracting a segment of %s",
+                _describe_ffmpeg_exit(proc.returncode, tail),
+                audio_path,
+            )
+            return False
+        return True
+    finally:
+        await _close_ffmpeg_for_execution(
+            ffmpeg_bin,
+            preserve_active_exception=sys.exc_info()[1] is not None,
+        )
+
+
+async def transcribe_oversized_in_segments(
+    audio_path: str,
+    cap_secs: int,
+    segment_dir: str,
+    stt_config,  # type: ignore[no-untyped-def]
+) -> "str | None":
+    """Transcribe a recording longer than *cap_secs* by splitting it first.
+
+    Returns the stitched transcript, or None when the recording cannot be split
+    or any segment fails to decode or transcribe — the same None-means-failure
+    contract as :func:`transcribe_audio`, so the caller reports one clean failure
+    rather than a partial import.
+
+    The split is on the AUDIO, not the transcript: one ffmpeg pass locates the
+    pauses (:func:`_detect_silence_ends`), a pure function picks a cut at the
+    last pause before each cap multiple (:func:`_choose_segment_cuts`), and each
+    segment is decoded to its own WAV (:func:`_extract_segment`) and transcribed
+    through the ordinary :func:`transcribe_audio` — so every segment gets the same
+    provider dispatch, sensitive-path guard and redaction a whole recording does.
+    Segments are NON-OVERLAPPING (cut in the silence between utterances), so the
+    stitch is a plain space join with nothing to de-duplicate; the joined text is
+    one paragraph, so the meetings import route's ``split_transcript`` sentence-
+    splits it into utterances exactly as it does for a whole recording, and the
+    seams are invisible.
+
+    *segment_dir* is a caller-owned directory the segment WAVs are written into;
+    the caller removes it. It must be a trusted directory the transcriber is
+    allowed to read (the meetings route stages it under the voice-runtime root,
+    which ``transcribe_audio``'s sensitive-path guard exempts).
+
+    This does NOT re-check the stitched result against any total-size ceiling:
+    that stays the caller's job (the import route's ``split_transcript`` still
+    enforces ``MAX_IMPORT_LINES``/``MAX_TRANSCRIPT_CHARS``), so splitting is never
+    a way around the total-size refusal.
+    """
+    scanned = await _detect_silence_ends(audio_path, timeout_secs=stt_config.timeout_secs)
+    if scanned is None:
+        logger.error("Could not scan %s for split boundaries", audio_path)
+        return None
+    silence_ends, duration = scanned
+    # Bound the segment count BEFORE building cuts. ``duration`` is ffmpeg's
+    # decoded terminal PTS, which a crafted container can author far into the
+    # future; ``_choose_segment_cuts`` appends one cut per cap-sized window in a
+    # single synchronous loop, so an unbounded duration would allocate billions of
+    # cuts and freeze/OOM the gateway before any later check runs (GPT review,
+    # security-class). A real recording under the import size cap cannot span more
+    # than ``_MAX_SEGMENTS`` cap-sized windows, so a duration past that ceiling is
+    # not a real recording -- refuse rather than build the cuts.
+    if duration <= 0 or duration > _MAX_SEGMENTS * cap_secs:
+        logger.error(
+            "%s reports an implausible duration (%.1fs > %d segments x %ds); refusing",
+            audio_path,
+            duration,
+            _MAX_SEGMENTS,
+            cap_secs,
+        )
+        return None
+    cuts = _choose_segment_cuts(duration, cap_secs, silence_ends)
+    # Boundaries as [start, end) pairs, end=None on the last (runs to EOF).
+    bounds: list[tuple[float, float | None]] = []
+    prev = 0.0
+    for cut in cuts:
+        bounds.append((prev, cut))
+        prev = cut
+    bounds.append((prev, None))
+
+    transcripts: list[str] = []
+    for index, (seg_start, seg_end) in enumerate(bounds):
+        seg_path = os.path.join(segment_dir, f"segment-{index:03d}.wav")
+        ok = await _extract_segment(
+            audio_path, seg_start, seg_end, seg_path, timeout_secs=stt_config.timeout_secs
+        )
+        if not ok:
+            logger.error(
+                "Could not extract segment %d of %s; refusing the whole import", index, audio_path
+            )
+            return None
+        try:
+            text = await transcribe_audio(seg_path, stt_config)
+        finally:
+            await asyncio.to_thread(_unlink_if_exists, seg_path)
+        if not text:
+            # A falsy result refuses the WHOLE import (GPT + Opus review, both
+            # BLOCKING). transcribe_audio returns None for a genuine recogniser
+            # failure -- a per-segment decode error, a timeout, the shared
+            # recogniser singleton being swapped mid-import -- as well as for a
+            # legitimately silent segment, and the two are INDISTINGUISHABLE here
+            # (``return text or None``). _extract_segment returning True only
+            # proves ffmpeg carved the WAV, not that the recogniser succeeded on
+            # it. So skipping a falsy segment would silently drop a real spoken
+            # span and still answer 200 -- the exact silent-partial data loss this
+            # feature exists to prevent, one level down. Refusing the whole import
+            # is the safe answer: distinguishing decoded-empty from
+            # recogniser-failure would require a new failure flag on
+            # transcribe_audio's contract (8 callers), which is out of scope for
+            # this route-level change. A recording with a genuinely silent
+            # cap-sized stretch is refused loudly rather than imported with a gap.
+            logger.error(
+                "Segment %d of %s produced no transcript; refusing the whole import",
+                index,
+                audio_path,
+            )
+            return None
+        transcripts.append(text)
+    # Join with a SPACE, not a newline (GPT review): a segment transcript from the
+    # local/Apple recognisers is one whitespace-joined paragraph with no internal
+    # newlines (``stt/engine.py`` joins whisper segments with " "). A newline join
+    # would hand ``split_transcript`` N>1 lines, which makes it treat each whole
+    # segment as ONE line (tier 1) and only hard-wrap it at ``max_chars`` -- so a
+    # segment would dispatch as 4000-char chunks instead of utterances, worse line
+    # structure than the un-split path produces. A space join keeps the stitched
+    # text as one paragraph, so ``split_transcript`` sentence-splits it into
+    # utterances (tier 2) exactly as it does for a whole recording; any internal
+    # newline a segment DOES carry (a future recogniser with its own line
+    # structure) is preserved across the join and still read as tier-1 structure.
+    return " ".join(transcripts)
 
 
 def _whisper_language(language_code: str) -> str:

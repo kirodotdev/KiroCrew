@@ -233,6 +233,62 @@ describe('evaluateAutoPin — the race-proof core', () => {
     expect(r).toEqual({ pin: false, stick: false, target: 600 })
   })
 
+  describe('readerMovedSinceWrite — who opened the gap', () => {
+    // The idle rule above releases because a gap while idle USUALLY means the
+    // reader scrolled. When the caller can say that nothing but layout has
+    // happened since we last placed them (no hardware input, no unexplained
+    // scroll), the gap is content settling under a still reader, and the same
+    // geometry means the opposite: carry them back. WebKit has no native scroll
+    // anchoring, so this is the only thing standing between an entry pin and a
+    // transcript that opens a viewport above its end.
+    const up = { scrollTop: 480, scrollHeight: 1000, clientHeight: 400 }
+
+    it('IDLE + no reader movement: the gap is ours, so the reader is carried back', () => {
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false, readerMovedSinceWrite: false })
+      expect(r).toEqual({ pin: true, stick: true, target: 600 })
+    })
+
+    it('IDLE + reader moved: unchanged, released', () => {
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false, readerMovedSinceWrite: true })
+      expect(r).toEqual({ pin: false, stick: false, target: 600 })
+    })
+
+    it('no input but scrollTop has LEFT our last write: not ours to close (a reveal in flight)', () => {
+      // scrollTop below our last write AND away from the bottom is the
+      // user-scroll-up signature. With no hardware input it can still be a
+      // programmatic reveal -- a search hit, a pinned prompt, find-in-page --
+      // whose scroll event has not dispatched yet when a height commit lands.
+      // Position and input must BOTH say "the reader never moved"; here the
+      // position says otherwise, so the existing release stands.
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 600, runActive: true, readerMovedSinceWrite: false })
+      expect(r).toEqual({ pin: false, stick: false, target: 600 })
+    })
+
+    it('resting on a clamp-rebaselined write counts as resting', () => {
+      // The clamp branch re-baselines lastWriteTop onto the clamped scrollTop;
+      // the regrowth then opens the gap with scrollTop unchanged. That is the
+      // entry shape on a phone, and it is carried.
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false, readerMovedSinceWrite: false })
+      expect(r).toEqual({ pin: true, stick: true, target: 600 })
+    })
+
+    it('at the bottom with no movement: still following, nothing to write', () => {
+      const r = evaluateAutoPin({ stick: true, geom: tall, lastWriteTop: 600, runActive: false, readerMovedSinceWrite: false })
+      expect(r).toEqual({ pin: false, stick: true, target: 600 })
+    })
+
+    it('never overrides a released stick or an owning restore', () => {
+      expect(evaluateAutoPin({ stick: false, geom: up, lastWriteTop: 480, readerMovedSinceWrite: false }).pin).toBe(false)
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, restoreGate: true, readerMovedSinceWrite: false })
+      expect(r).toEqual({ pin: false, stick: false, target: 600 })
+    })
+
+    it('omitted = assume the reader may have moved (legacy, release-leaning)', () => {
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false })
+      expect(r.stick).toBe(false)
+    })
+  })
+
 
   it('IDLE: a reader ALREADY at the bottom keeps following', () => {
     // Rows settling under a reader parked at the very bottom must still keep them

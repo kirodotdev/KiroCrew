@@ -1691,6 +1691,58 @@ def _authz_session_key() -> str:
     return require_strict_session_key("cron ownership authorization")[0]
 
 
+def _deny_channel_agent_cron(tool_name: str) -> str | None:
+    """Deny ``cron_add`` / ``cron_update`` to a channel agent, else ``None``.
+
+    Channel agents (session keys ``channel:<channel_id>:<agent_id>``) are
+    confined to channel-post communication -- ``CHANNEL_AGENT_BLOCKED_TOOLS``
+    holds back ``send_*`` and every ``session_*`` verb for exactly that reason.
+    Scheduling a cron job is the same shape made durable: ``cron_add`` takes an
+    ``agent`` and ``approval_mode`` that flow straight to ``add_job``, so a
+    channel agent could schedule ``agent="kirocrew", approval_mode="auto"`` and
+    have a full-tool agent run on the gateway host on a timer -- an escalation
+    past its own confinement that outlives both the turn and the channel.
+    ``cron_update`` maps ``agent`` onto ``agent_id``, so it re-targets the agent
+    of a job the calling session already owns.
+
+    The interactive guard in ``channel.py`` rejects blocked tools at the
+    permission-request event, but an AUTO-APPROVED call fires no such event: an
+    ``@kirocrew-cron/cron_add`` entry in a channel agent's ``allowedTools`` is
+    translated to a KAS auto-approve permission (``acp/kas_permissions.py``;
+    MCP tools are not in ``WITHHELD_FROM_AUTO_APPROVE``), and auto-approval is
+    the ABSENCE of a permission request -- so ``_blocked_tool_named`` never runs.
+    The containment therefore has to hold HERE, at MCP dispatch, keyed on the
+    verified caller identity (the strict resolver refuses forgeable sources).
+    Mirrors ``mcp_core._deny_channel_agent_messaging``.
+
+    Only the ``channel:`` orchestrator-agent namespace is confined; a
+    ``slack:``/``discord:`` session is an allow-listed HUMAN participant
+    scheduling their own recurring work, which is the legitimate flow the issue
+    is careful not to break. Best-effort SEL audit mirrors channel.py's
+    ``rejected_blocked_tool`` outcome; an audit failure never unblocks the deny.
+    """
+    caller_session = _authz_session_key()
+    if not caller_session.startswith("channel:"):
+        return None
+    try:
+        sel().log_tool_invocation(
+            session_key=caller_session,
+            source="mcp",
+            tool_name=tool_name,
+            tool_kind="kirocrew-cron",
+            outcome="rejected_blocked_tool",
+        )
+    except Exception:
+        # File-backed SEL write; stdio-silent (no logger -- stderr would corrupt
+        # the JSON-RPC stream). The deny below still holds.
+        pass
+    return (
+        f"Error: {tool_name} is not available to channel agents -- a channel "
+        "agent is confined to channel posts and may not schedule a job that "
+        "runs as another agent."
+    )
+
+
 #: A job with no recorded owner. Written by every creation path that has no
 #: session to name: ``kirocrew cron add`` from the CLI (``cli_commands``, which
 #: drives ``CronService`` directly and never routes through this server), the
@@ -2078,6 +2130,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return _render_cron_list_compact(jobs)
 
     if name == "cron_add":
+        # Channel-agent containment FIRST: a channel agent may not schedule a
+        # durable job (which can run as another, more privileged agent). Keyed
+        # on the verified caller identity so an auto-approved call -- which fires
+        # no permission event for channel.py's guard to catch -- is still denied.
+        chan_err = _deny_channel_agent_cron("cron_add")
+        if chan_err:
+            return chan_err
         # Capability gate FIRST: if the calling surface's policy/profile disables
         # the cron capability, no job may be authored at all (command, script, or
         # message). This is the on/off gate, distinct from the per-command body
@@ -2254,6 +2313,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
 
     if name == "cron_update":
+        # Channel-agent containment FIRST (see cron_add): cron_update maps
+        # ``agent`` onto ``agent_id`` on an existing job, so it re-targets a
+        # job's agent -- the same escalation, reachable without creating a job.
+        chan_err = _deny_channel_agent_cron("cron_update")
+        if chan_err:
+            return chan_err
         jid = args["job_id"]
         # Ownership check
         own_err = _check_cron_job_ownership(svc, jid)

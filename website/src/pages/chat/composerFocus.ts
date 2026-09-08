@@ -39,11 +39,12 @@ import { isTouchDevice } from '../../utils/isTouchDevice'
  * only and focus silently no-ops in the other eleven languages. The `data-`
  * attribute is invisible to assistive tech and never translated, which leaves
  * the label free to localize.
+ *
+ * Steps 1 and 2 are `focusedPane()` below, shared with the pending-approval
+ * lookup so both chords agree about which pane they are in.
  */
 export function queryComposer(): HTMLTextAreaElement | null {
-  const pane =
-    document.activeElement?.closest('[data-chat-pane]') ??
-    document.querySelector('[data-chat-pane="focused"]')
+  const pane = focusedPane()
   const scoped = pane?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
   if (scoped) return scoped
   /**
@@ -137,6 +138,63 @@ export function queryComposerOrExpand(then: (ta: HTMLTextAreaElement) => void): 
     const revealed = queryComposer()
     if (revealed) then(revealed)
   })
+}
+
+/**
+ * Steps 1 and 2 of the resolution order documented on `queryComposer` — the pane
+ * a global chord should act inside.
+ *
+ * ONE function rather than the same two selectors written out at each lookup:
+ * every global chord that reaches into a pane has to agree about WHICH pane, and
+ * two copies of that rule are two things to keep in step the next time the grid
+ * changes how it marks the focused cell.
+ */
+function focusedPane(): Element | null {
+  return document.activeElement?.closest('[data-chat-pane]') ??
+    document.querySelector('[data-chat-pane="focused"]')
+}
+
+/**
+ * The control a keyboard chord should land on when a tool call is waiting for a
+ * decision, or null when nothing is waiting in the pane the user is working in.
+ *
+ * Returns the FIRST ENABLED button of the approval bar's own action row, so this
+ * encodes no opinion about which decision is the default one: it lands where the
+ * row already puts its first control, which is where a user tabbing backwards
+ * from the composer arrives today. The chord removes keystrokes from a path that
+ * already exists; it does not choose a verb.
+ *
+ * NOTHING IS RESOLVED BY LOOKING THIS UP. The caller focuses the element and
+ * stops, so the keystroke cannot answer a prompt the reader has not read — the
+ * decision still costs a second, deliberate press on a control that is now
+ * visibly focused. That is the whole reason this is a focus lookup and not an
+ * approve/reject action.
+ *
+ * Absence is the visibility guarantee, and it is structural rather than
+ * enforced: the bar is only in the DOM while its slot holds an unresolved
+ * approval, and a surface that renders no approval chrome (`SideChat` passes
+ * `slotApprovalChrome={false}`) has no action row for this to find. No bar, no
+ * element, and the chord is a no-op.
+ *
+ * NO CROSS-PANE FALLBACK, and this is where the contract departs from
+ * `queryComposer`'s. That one may fall through to a document-wide match because
+ * a pane without a composer is a case that does not arise; a pane without a
+ * pending approval is the NORMAL case, and falling through there would focus a
+ * control belonging to a session the user is not looking at. So the document-wide
+ * branch is reached only when NO pane is resolved at all, which is the single-pane
+ * page -- it mounts no `[data-chat-pane]`.
+ *
+ * Probed by `data-approval-actions`, not by button text or aria-label, for the
+ * reason spelled out on `queryComposer`: every catalog translates those, so a
+ * text-based selector would work in English and silently no-op in the other
+ * eleven languages.
+ */
+export function queryPendingApprovalAction(): HTMLElement | null {
+  const sel = '[data-approval-actions] button:not([disabled])'
+  const pane = focusedPane()
+  return pane
+    ? pane.querySelector<HTMLElement>(sel)
+    : document.querySelector<HTMLElement>(sel)
 }
 
 /**

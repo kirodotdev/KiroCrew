@@ -57,6 +57,7 @@
         "session_start_timeout_secs": 90,
         "tool_approval_timeout_secs": 600,
         "session_control": true,
+        "member_dispatch": true,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
@@ -773,6 +774,20 @@
       "tags": [],
       "label": "Session Control",
       "help": "Let one chat session open a new session, and stop, read or send to another session of yours. Reading returns a transcript tail, stopping cancels an in-flight turn, a created session starts empty for you to type into, and a send runs text as the target's next turn. On by default, because the grant that decides who can do this is the agent config: the tools come from the kirocrew-dashboard MCP server, so an agent that does not mount it never has them, exactly like any other MCP server. Turn this off to withdraw the capability from every agent at once without editing each spec. Sessions can only reach peers in the same workspace; incognito, app-scoped and scheduled sessions are never addressable, and a crew member or a scheduled run reaches only sessions it created itself.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "agent.member_dispatch",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Member Dispatch",
+      "help": "Let a crew member's DM session open and drive worker sessions it creates, even when Session Control is off. On by default, because dispatching work into workers is the crew-member operating model, not an opt-in: this is the zero-configuration contract. Turn this off to put member callers back under the Session Control switch, so an operator who withdrew session control keeps member DM threads chat-only without disabling the member. When on, a member's reach is still bounded to sessions it created itself (creator ownership), the same fence that binds it when Session Control is on.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

@@ -2585,6 +2585,19 @@ class KiroCrewConfig:
                 data["resource_limits"] = asdict(
                     ResourceLimitsConfig.from_raw(data["resource_limits"])
                 )
+            # Same fail-closed-before-validation reason for the member-dispatch
+            # ceiling. `agent.member_dispatch` gates whether a crew member
+            # bypasses `session_control`; its safe direction is FALSE (bypass
+            # off). Schema validation pops a present-but-malformed value and the
+            # missing-field default is TRUE, so a quoted `"false"` — a routine
+            # operator quoting mistake — would silently ride that default back
+            # to an authorized bypass. Coerce a present non-bool to False HERE,
+            # so validation sees a valid bool and keeps it; a genuinely absent
+            # key is left absent and still defaults to true (today's behaviour).
+            _agent_section = data.get("agent")
+            if isinstance(_agent_section, dict) and "member_dispatch" in _agent_section:
+                if not isinstance(_agent_section["member_dispatch"], bool):
+                    _agent_section["member_dispatch"] = False
             # Validate against JSON Schema (advisory — never fatal)
             _validate_config_data(data)
             # Clamp security-relevant resource-limit knobs to their API ceilings
@@ -2885,6 +2898,14 @@ class KiroCrewConfig:
                 # `bool("false")` is `True`, and `_safe_bool` is what keeps a
                 # quoted opt-out from loading as enabled.
                 session_control=_safe_bool(agent_data.get("session_control", True), True),
+                # Default true preserves the zero-configuration member-dispatch
+                # grant (today's behaviour) for a MISSING key. A present-but-
+                # malformed value was already coerced to False upstream, BEFORE
+                # schema validation, so it cannot ride the missing-field default
+                # back to true — see the `member_dispatch` normalization above
+                # the `_validate_config_data` call. `_safe_bool` here is the
+                # final guard for a real bool.
+                member_dispatch=_safe_bool(agent_data.get("member_dispatch", True), True),
                 subagent_cost_gb=_safe_float(agent_data.get("subagent_cost_gb", 0.5), 0.5),
                 subagent_cpu_cost_cores=_safe_float(
                     agent_data.get("subagent_cpu_cost_cores", 1.0), 1.0

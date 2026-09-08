@@ -549,15 +549,24 @@ the four where `rewind` does not yet, so nobody reads them as already shared:
   forward, so an arrived row can never be stamped *earlier* than the edited one —
   but it can be stamped **identically**, because on a coarse clock (Windows ticks
   in ~15.6 ms steps) both appends read the same instant, and list order is what
-  separates that tie. Its question map is intersected rather than adopted, so a card retired
-  by either the edit or an arrived row stays retired. A carried row reaches disk
+  separates that tie. Its question map is **retired in place** rather than adopted or
+  intersected: the commit deletes exactly the ids the edit retired, so a card answered
+  during the boundary stays retired (the answer pops it from the live dict) and a card
+  raised during the boundary survives (an intersection against the frozen copy would
+  erase it). A carried row reaches disk
   the ordinary way — the commit sets `_dirty`, so the next periodic flush writes
   the merged window — and deliberately **not** through a second guarded save
   after the commit: no await may sit between the commit and the dispatch release
   (see the next bullet), so that write is not available without paying a worse
-  failure. **`rewind` still replaces wholesale**, so the same injected-row loss is
-  open there and on the other rewrite-save callers (`regenerate`, `fork`); closing
-  it belongs with the shared boundary contract rather than one endpoint.
+  failure. **`rewind` now applies the same delta commit**: it carries arrived rows in
+  both the window and the pending queue, drops a row the client already drained rather
+  than requeueing it, and retires question ids in place. The identity sets keep the
+  pre-await rows RETAINED, because an `id()` is only an identity while something holds
+  a reference and a cap trim would otherwise let a freed row's address be reused by an
+  arrival. The other rewrite-save callers (`regenerate`, `fork`) are **deliberately
+  still open** to the injected-row loss; closing them belongs with the shared boundary
+  contract rather than one endpoint, and the fixed subset is exactly `rewind` and
+  `edit-resend`.
 - **The commit and the dispatch release are separated by no await.** Once the
   live slot has adopted the truncated window, the reserved dispatch is armed and
   only `dispatch_ready.set()` in the handler's `finally` is left to run. An await

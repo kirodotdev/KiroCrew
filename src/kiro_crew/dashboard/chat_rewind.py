@@ -41,6 +41,17 @@ from kiro_crew.session_map import _kiro_sessions_dir
 
 logger = logging.getLogger(__name__)
 
+# How many times the cancellation path re-shields the in-flight native discard
+# before giving up on learning its outcome. Each retry absorbs ONE further
+# cancellation (a gateway shutdown landing on a handler already unwinding from a
+# client disconnect), so this bounds a cancel storm rather than a duration -- the
+# teardown itself always runs to completion. A single ``await`` on the task is
+# defeated by exactly one more cancellation, which would leave an irreversible
+# teardown unrecorded; giving up after the bound records the outcome as
+# undetermined rather than assuming one. ``chat_regenerate`` carries the same
+# reasoning for its history-rewrite drain (``_SAVE_DRAIN_ATTEMPTS``).
+_DISCARD_DRAIN_ATTEMPTS = 8
+
 
 async def _delete_orphan_kiro_session(session_id: str) -> None:
     """Delete the orphaned kiro-cli session JSONL file, best-effort.
@@ -281,6 +292,31 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # refuses a valid cursor (``since < base``) or repeats rows. The save has
         # no contract on this one, so it travels only to the commit.
         pre_await_disk_older_durable_count = slot._disk_older_durable_count
+        # Row identities on the LIVE slot at the boundary. A workflow or cron
+        # completion appends WITHOUT taking ``slot._lock`` (``workflow_inject``
+        # calls ``append_and_surface`` straight on the event loop), so a
+        # wholesale replace at the commit drops the injected row -- and the
+        # rewrite cannot put it back, because a rewrite deliberately skips the
+        # cross-process-append scan (``collect_foreign=not rewrite`` in
+        # ``chat_persistence``). Keeping it in the window is what makes the next
+        # ORDINARY flush re-persist it. Identity rather than a length: an
+        # ``append`` at the window cap trims the front, so a positional slice
+        # would either re-adopt trimmed rows or miss the arrived one.
+        # RETAINED lists, not just the id sets. An ``id()`` is an integer that
+        # says nothing about the object's lifetime, and nothing else here keeps
+        # the pre-await rows alive: the window trims at the cap
+        # (``_MAX_SLOT_MESSAGES``) and a low-index edit pins nothing ahead of
+        # ``index`` (at index 0 the prospective copy is empty), so a leading row
+        # can be freed while the awaits below run and CPython can hand its id to a
+        # newly appended arrival. The commit would then read that arrival as "not
+        # new" and drop it -- the exact loss this snapshot exists to prevent.
+        # Holding the rows keeps every id unique to the object that minted it.
+        # ``meta.mid`` is not an alternative identity: ``append`` skips it for
+        # restored rows (``mint_mid=False``) and for the wire-only roles.
+        pre_await_rows = list(slot.messages)
+        pre_await_row_ids = {id(row) for row in pre_await_rows}
+        pre_await_pending = list(slot._pending)
+        pre_await_pending_ids = {id(row) for row in pre_await_pending}
         retired_question_ids = [
             question_id
             for question_id in slot._question_pending
@@ -332,26 +368,139 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
 
         task.add_done_callback(_on_done)
 
+        def _sel_native_destroyed(reason: str, *, native_cleared: str = "1") -> None:
+            """Record a destroyed native context that never reached a commit.
+
+            ``discard_conversation`` plus ``aflush`` are irreversible: past that
+            point the provider-side conversation is gone whether or not this
+            request goes on to succeed. SEL already carries this endpoint's
+            denials and its successful commits, so without this record the ONE
+            outcome that destroyed context WITHOUT committing anything is the
+            only one missing from the audit trail -- and it is the only one that
+            cannot be reconstructed from the others, because in the trail it is
+            indistinguishable from a denial that touched nothing.
+
+            ``native_cleared`` is a THREE-valued field, not a flag, because the
+            teardown has three outcomes and only two of them are facts: it
+            happened, it did not, or the check that would have told us raised.
+            ``"unknown"`` is what the third writes. A boolean here forced the one
+            case the audit exists for to be spelled as one of the other two, and
+            an audit that goes quiet on the outcome it could not determine is
+            worse than none: its silence reads as nothing to report.
+            """
+            sel().log_api_access(
+                caller=request_app or "dashboard",
+                operation="chat.rewind",
+                outcome="error",
+                source="dashboard",
+                resources=f"slot={slot.key},native_cleared={native_cleared}",
+                error=reason,
+            )
+
         # Durably clear the native resume sid before committing the edited
         # history. A failure leaves the original branch intact and dispatches
         # no replacement turn.
         try:
             if state.sessions is not None:
-                try:
+                # Shielded and drained for the same reason the history save below
+                # is: ``discard_conversation`` pops the session and calls
+                # ``clear_sid`` BEFORE its own remaining awaits
+                # (``to_thread(unlink)``, ``provider.shutdown()``,
+                # ``release_subagent_runtime``), so the destruction is already
+                # true while those run. A client disconnect landing there would
+                # otherwise propagate past every handler below with the context
+                # gone and nothing recorded. The shield does not make the teardown
+                # slower -- it was always going to run to completion -- it only
+                # keeps this handler alive long enough to learn the outcome.
+                discard_task = asyncio.ensure_future(
                     # ``skip_if_busy``: an inbound channel turn (a Slack reply
                     # on the linked session) holds the session semaphore while
                     # ``slot.running`` reads False, so the idle check above
                     # cannot see it -- an unconditional discard would tear
                     # down its provider mid-reply. The refusal is atomic with
                     # the busy probe inside the lifecycle service.
-                    discarded = await state.sessions.discard_conversation(
-                        session_key, skip_if_busy=True
-                    )
+                    state.sessions.discard_conversation(session_key, skip_if_busy=True)
+                )
+                try:
+                    discarded = await asyncio.shield(discard_task)
+                except asyncio.CancelledError:
+                    # Drain to learn whether the teardown actually happened. The
+                    # outcome is THREE-valued and the code says so: it destroyed
+                    # (record it), it refused because the session was busy and
+                    # destroyed nothing (record nothing), or we could not find out
+                    # (record the unknown). Collapsing the third into
+                    # ``destroyed = False`` asserted a fact this branch does not
+                    # have, and suppressed the audit event on the one path most
+                    # likely to need it.
+                    #
+                    # Bounded re-shield rather than a single ``await``: this await
+                    # is itself a cancellation point, so one further cancel -- a
+                    # gateway shutdown reaching a handler already unwinding from a
+                    # client disconnect -- would abandon the drain and lose the
+                    # record. Each pass absorbs one more.
+                    for _ in range(_DISCARD_DRAIN_ATTEMPTS):
+                        if discard_task.done():
+                            break
+                        try:
+                            await asyncio.shield(discard_task)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break
+                    if discard_task.done() and not discard_task.cancelled():
+                        discard_exc = discard_task.exception()
+                        if discard_exc is not None:
+                            # Recorded, not swallowed: the trail gets the
+                            # undetermined outcome and the log gets the cause. The
+                            # catch above stays broad on purpose --
+                            # ``provider.shutdown()`` is provider transport and its
+                            # failure modes are not enumerable from here, and
+                            # letting an arbitrary error out of a
+                            # ``CancelledError`` handler would REPLACE the client's
+                            # cancellation with an unrelated exception. It narrows
+                            # where it matters: ``Exception`` leaves
+                            # ``CancelledError``, ``KeyboardInterrupt`` and
+                            # ``SystemExit`` free to surface.
+                            logger.warning(
+                                "rewind: the discard for %s raised while draining a "
+                                "cancellation, so whether the native context was "
+                                "torn down is undetermined",
+                                session_key,
+                                exc_info=discard_exc,
+                            )
+                            _sel_native_destroyed(
+                                "discard_cancelled_outcome_unknown", native_cleared="unknown"
+                            )
+                        elif discard_task.result():
+                            _sel_native_destroyed("discard_cancelled")
+                    else:
+                        logger.warning(
+                            "rewind: the discard for %s did not settle within %d "
+                            "cancellation(s), so whether the native context was torn "
+                            "down is undetermined",
+                            session_key,
+                            _DISCARD_DRAIN_ATTEMPTS,
+                        )
+                        _sel_native_destroyed(
+                            "discard_cancelled_outcome_unknown", native_cleared="unknown"
+                        )
+                    raise
                 except Exception:
                     logger.warning(
                         "rewind: failed to discard ACP conversation for %s",
                         session_key,
                         exc_info=True,
+                    )
+                    # The raise can land on either side of this teardown's own
+                    # destruction point: ``discard_conversation`` pops the session
+                    # and calls ``clear_sid`` before its remaining awaits, so a
+                    # failure inside it proves nothing either way. Record the
+                    # undetermined outcome rather than nothing -- a silent exit
+                    # here is indistinguishable in the trail from a refusal that
+                    # touched no state, which is exactly the confusion the audit
+                    # exists to remove.
+                    _sel_native_destroyed(
+                        "discard_failed_outcome_unknown", native_cleared="unknown"
                     )
                     state.push_slots_update()
                     return web.json_response(
@@ -379,12 +528,25 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     # semantics for its other callers (chat_runner, channel
                     # handlers), which tolerate the debounce.
                     await state.sessions.aflush()
+                except asyncio.CancelledError:
+                    # ``discarded`` is already True here, so the native context
+                    # IS gone -- and ``CancelledError`` derives from
+                    # BaseException, so the handler below cannot absorb it. A
+                    # client disconnect landing on this await would otherwise
+                    # leave the destruction with no record at all, which is the
+                    # one outcome this audit exists for. Record, then let the
+                    # cancellation propagate untouched.
+                    _sel_native_destroyed("sid_flush_cancelled")
+                    raise
                 except Exception:
                     logger.warning(
                         "rewind: failed to flush the cleared resume sid for %s",
                         session_key,
                         exc_info=True,
                     )
+                    # The in-memory discard already happened, so the native
+                    # context is gone even though its sid clear is not durable.
+                    _sel_native_destroyed("sid_flush_failed")
                     state.push_slots_update()
                     return web.json_response(
                         {
@@ -402,15 +564,63 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 is the only thing that keeps live state matching it. No await
                 inside, so it is atomic on the event loop.
                 """
-                slot.messages = prospective_slot.messages
+                # Carry the rows that landed on the LIVE slot while the
+                # boundaries were pending -- see ``pre_await_row_ids``. Appending
+                # them AFTER the prospective window is the correct order and not
+                # merely a convenient one: ``monotonic_transcript_ts`` only ever
+                # moves a row forward, so an arrived row can never be stamped
+                # EARLIER than the edited one. It can be stamped IDENTICALLY --
+                # on a coarse clock (Windows ticks in ~15.6 ms steps) both
+                # appends read the same instant -- and list order is what
+                # separates that tie, which is why the merge order matters rather
+                # than a re-sort.
+                arrived_rows = [row for row in slot.messages if id(row) not in pre_await_row_ids]
+                arrived_pending = [
+                    row for row in slot._pending if id(row) not in pre_await_pending_ids
+                ]
+                # The question set is RETIRED IN PLACE rather than replaced with
+                # the frozen copy, and the difference is the whole fix. Answering
+                # a card mutates the live dict -- ``clear_pending`` pops the id
+                # from ``slot._question_pending`` on the slot it resolved from
+                # ``state._slots``. Assigning the prospective copy here would
+                # swap out the very dict that pop wrote to, so a BLOCKING card
+                # answered inside the awaits above came back with its answer
+                # channel already gone: a card rendered as awaiting input against
+                # a round-trip that has completed. Deleting exactly the ids the
+                # edit retired leaves every other in-place write standing, which
+                # makes the answer authoritative by construction -- nothing here
+                # carries a competing copy of the container, so no later edit to
+                # this commit can forget to reconcile it. ``mark_pending`` is the
+                # only writer that adds an id, so a card that ARRIVED during the
+                # boundary survives too. Announce only the ids actually removed.
+                announce_retired = [
+                    question_id
+                    for question_id in retired_question_ids
+                    if slot._question_pending.pop(question_id, None) is not None
+                ]
+                slot.messages = prospective_slot.messages + arrived_rows
                 # Remove only the entries captured in the pre-await snapshot:
                 # an entry queued while the boundaries were pending belongs to
                 # the NEW timeline and must survive for the teardown drain.
                 slot._queue[:] = [
                     entry for entry in slot._queue if entry["id"] not in discarded_queue_ids
                 ]
-                slot._pending = prospective_slot._pending
-                slot._question_pending = prospective_slot._question_pending
+                # ``_pending`` is edited in place for the same reason the question
+                # set is: ``drain()`` does ``slot._pending.clear()``, so a client
+                # that drains mid-boundary has already DELIVERED those rows.
+                # ``prospective_slot._pending`` was frozen before the awaits and
+                # still holds them, so replacing the list would queue delivered
+                # rows for re-delivery. A pre-await row therefore survives only
+                # if it is still live; the edit's own row and anything that
+                # arrived are kept unconditionally. Order is unchanged --
+                # pre-await rows, then the edit, then arrivals -- which is the
+                # same monotonic argument as the window above.
+                delivered_pending_ids = pre_await_pending_ids - {id(row) for row in slot._pending}
+                slot._pending[:] = [
+                    row
+                    for row in prospective_slot._pending + arrived_pending
+                    if id(row) not in delivered_pending_ids
+                ]
                 slot.invalidate_source_links()
                 slot._dirty = True
                 slot._resumed_count = 0
@@ -458,9 +668,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     slot.event.set()
                 else:
                     slot.event.clear()
-                if retired_question_ids and callable(slot._on_question_retired):
+                if announce_retired and callable(slot._on_question_retired):
                     try:
-                        slot._on_question_retired(slot.key, retired_question_ids)  # type: ignore[operator]
+                        slot._on_question_retired(slot.key, announce_retired)  # type: ignore[operator]
                     except Exception:
                         logger.debug(
                             "rewind: question-retirement announcement failed for slot %s",
@@ -517,9 +727,19 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                         "committed live state and dispatching the edited prompt",
                         slot.key,
                     )
+                else:
+                    # The native context is already gone and nothing was
+                    # committed against it: either the rewrite did not land, or
+                    # it landed on a slot that moved. This is the same
+                    # destroyed-without-a-commit outcome as the 503 paths below,
+                    # and it is the one exit where the client is not even told --
+                    # the cancellation propagates instead of a response, so the
+                    # SEL record is the ONLY place it can be attributed from.
+                    _sel_native_destroyed("request_cancelled")
                 raise
             except Exception:
                 logger.warning("rewind: failed to persist truncated history", exc_info=True)
+                _sel_native_destroyed("history_save_exception")
                 state.push_slots_update()
                 return web.json_response(
                     {
@@ -538,6 +758,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     "rewind: history save refused for %s (concurrent delete or rebind)",
                     slot.key,
                 )
+                _sel_native_destroyed("history_save_refused")
                 state.push_slots_update()
                 return web.json_response(
                     {
@@ -562,6 +783,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     "persistence; refusing the commit",
                     slot.key,
                 )
+                _sel_native_destroyed("commit_target_moved")
                 state.push_slots_update()
                 return web.json_response(
                     {

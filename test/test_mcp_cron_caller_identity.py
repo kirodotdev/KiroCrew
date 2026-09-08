@@ -583,3 +583,97 @@ def test_the_tool_description_warns_that_the_list_is_scoped() -> None:
 
     assert "SCOPED TO THE CALLING SESSION" in desc
     assert "not that none are scheduled" in desc
+
+
+# --- 7: channel-agent confinement ------------------------------------------
+#
+# A channel agent (session key ``channel:<channel_id>:<agent_id>``) is confined
+# to channel posts. cron_add/cron_update let it schedule a durable job that runs
+# as a MORE privileged agent, so both are denied here at MCP dispatch -- keyed on
+# the verified caller identity, because an auto-approved call (cron in the
+# agent's allowedTools) fires no permission event for channel.py's guard to see.
+
+
+def test_channel_agent_cannot_create_cron() -> None:
+    """A channel agent's ``cron_add`` is refused and mints no job."""
+    _as_session("channel:C123:reviewer")
+
+    result = _call_tool_inner(
+        "cron_add",
+        {
+            "name": f"esc-{uuid.uuid4().hex[:8]}",
+            "message": "go",
+            "agent": "kirocrew",
+            "approval_mode": "auto",
+            "every": 60,
+        },
+    )
+
+    assert "not available to channel agents" in result
+    assert CronService(base_dir=mcp_cron.config_dir()).list_jobs(include_disabled=True) == []
+
+
+def test_channel_agent_cannot_update_cron() -> None:
+    """A channel agent's ``cron_update`` is refused before it can re-point an
+    existing job's ``agent_id`` -- and the refusal precedes the ownership check,
+    so it does not even reveal whether the job exists."""
+    _as_session("channel:C123:reviewer")
+
+    result = _call_tool_inner("cron_update", {"job_id": "any-job-id", "agent": "kirocrew"})
+
+    assert "not available to channel agents" in result
+
+
+def test_channel_agent_cron_denied_needs_no_permission_event() -> None:
+    """The denial is at MCP dispatch, not the permission-request event.
+
+    ``_call_tool_inner`` is the dispatch path a call reaches AFTER approval (an
+    auto-approved MCP tool emits no permission event at all), so a refusal here
+    proves the boundary holds even when channel.py's interactive guard never
+    ran. Even with no ``agent`` override -- a plain self-scoped schedule -- the
+    channel agent is contained, matching how ``send_*`` / ``session_*`` are
+    treated (all-or-nothing, not argument-conditional)."""
+    _as_session("channel:C123:reviewer")
+
+    result = _call_tool_inner(
+        "cron_add", {"name": f"self-{uuid.uuid4().hex[:8]}", "message": "remind", "every": 60}
+    )
+
+    assert "not available to channel agents" in result
+
+
+def test_slack_human_session_may_still_schedule_cron() -> None:
+    """Only the ``channel:`` orchestrator-agent namespace is confined.
+
+    A ``slack:``/``discord:`` session is an allow-listed HUMAN participant, not a
+    contained agent, so its own recurring scheduling is the legitimate flow the
+    fix must not break. This is what keeps the denial from being the over-broad
+    'restrict every caller to its own agent' model that would break scheduling
+    for a different crew."""
+    _as_session("slack:1785370133.085469")
+
+    result = _call_tool_inner(
+        "cron_add", {"name": f"human-{uuid.uuid4().hex[:8]}", "message": "go", "every": 120}
+    )
+
+    assert "Added job" in result
+    assert "not available to channel agents" not in result
+
+
+def test_dashboard_session_may_schedule_for_another_crew() -> None:
+    """The dashboard flow the issue is careful to preserve: a chat session
+    scheduling a job that runs as a DIFFERENT crew is allowed -- the confinement
+    keys on the channel-agent namespace, not on the ``agent`` argument."""
+    _as_session("dashboard:owner")
+
+    result = _call_tool_inner(
+        "cron_add",
+        {
+            "name": f"crew-{uuid.uuid4().hex[:8]}",
+            "message": "go",
+            "agent": "kirocrew-conductor",
+            "every": 120,
+        },
+    )
+
+    assert "Added job" in result

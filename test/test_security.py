@@ -8112,3 +8112,145 @@ class TestTrustedIssueLinkChannel:
         cleaned, warnings = redact_exfiltration_urls(f"file it here: {url}")
         assert url in cleaned, cleaned
         assert warnings == []
+
+
+class TestSubstitutionCloserReadsCommandGrammar:
+    """A ``)`` that shell COMMAND GRAMMAR makes ordinary must not end a body (#8150).
+
+    ``_substitution_bodies`` is the shared answer to "what text does this command
+    run as a shell", so a body that stops early is not one pass's problem: every
+    consumer inherits the blindness. Quoting was already handled -- the span walk
+    reads ``_iter_shell_chars`` -- but two constructs put a literal ``)`` in front
+    of that walk without quoting it, and each hid a payload this module refuses.
+
+    The verb and the product name are assembled rather than spelled, because a
+    literal pair of them in source order is itself matched by the regex tier and
+    would mask what these cases are actually testing.
+
+    Both directions are asserted. The scan may not stop early (the anchors), and
+    it may not start refusing shapes it used to allow -- a scanner made stricter
+    in the wrong place is how a gate becomes unusable.
+    """
+
+    VERB = "tok" + "en"
+    NAME = "kiro" + "crew"
+
+    def test_a_comment_hides_the_closer_from_the_paren_count(self) -> None:
+        """``$(: # )`` closes on the NEXT line, so the ``)`` after ``#`` is inert.
+
+        The body came back as ``: # `` and the ``printf`` behind it -- which
+        computes the credential-minting verb -- was never scanned, so the value
+        assembled from it was not recognised and the command was allowed.
+        """
+        command = f"T=$(: # )\nprintf {self.VERB}); {self.NAME} $T"
+        (body,) = security._substitution_bodies(command)
+        assert f"printf {self.VERB}" in body, body
+        assert security.is_denied(command) is not None
+
+    def test_a_case_pattern_closer_is_not_the_substitutions(self) -> None:
+        """In ``case x in x)`` the ``)`` terminates the PATTERN, not the body."""
+        command = f"T=$(case x in x) printf {self.VERB};; esac); {self.NAME} $T"
+        (body,) = security._substitution_bodies(command)
+        assert f"printf {self.VERB}" in body, body
+        assert security.is_denied(command) is not None
+
+    def test_a_case_pattern_no_longer_truncates_a_self_kill_lookup(self) -> None:
+        """The BODY is recovered for the self-kill spelling too.
+
+        Only the body is asserted here. The verdict on this one does NOT flip,
+        because the self-kill pass never attributes a substitution that sits in an
+        ASSIGNMENT ahead of the ``kill`` -- a separate gap in that pass's
+        attribution, which this span fix neither causes nor closes.
+        """
+        command = f"P=$(case x in x) pgrep -f {self.NAME};; esac); kill $P"
+        (body,) = security._substitution_bodies(command)
+        assert f"pgrep -f {self.NAME}" in body, body
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # ``a#b`` is one ordinary word -- a ``#`` mid-word opens no comment.
+            "echo $(printf a#b)",
+            # ``esac`` handed to a command is an argument, not the reserved word.
+            "echo $(printf esac) done",
+            # ``lowercase`` merely ENDS in ``case``; it must not arm the rule.
+            "echo $(printf lowercase)",
+            # A ``(a|b)`` pattern is balanced-neutral inside the case.
+            "echo $(case x in (a|b) printf hi;; esac)",
+            "T=$(case x in x) printf hi;; esac); echo $T",
+            "T=$(: # )\nprintf hi); echo $T",
+        ],
+    )
+    def test_the_new_grammar_does_not_start_refusing_benign_shapes(self, command: str) -> None:
+        assert security.is_denied(command) is None
+
+    def test_a_single_quoted_backtick_does_not_close_the_body(self) -> None:
+        """The backtick closer reads the same state machine as the paren one.
+
+        HARDENING: no refused payload was reachable through the old pairwise
+        ``find``, because the strings it mis-read are ones bash itself rejects
+        (backticks do not nest unescaped). It is fixed so the two spellings of the
+        same closer cannot drift apart, which is how the paren half broke before.
+        """
+        (body,) = security._substitution_bodies("`A='`'; printf hi`")
+        assert body == "A='`'; printf hi", body
+
+    def test_a_double_quoted_backtick_still_closes_it(self) -> None:
+        """``"`cmd`"`` runs ``cmd``, so a backtick in DOUBLE quotes is a real closer."""
+        assert security._substitution_bodies('`printf "hi"`') == ['printf "hi"']
+
+    def test_a_line_continuated_case_still_arms_the_pattern_rule(self) -> None:
+        """``ca\\`` + newline + ``se`` IS ``case`` -- the shell folds it before reading words.
+
+        Byte-literal recognition missed this spelling, so the rule never armed and
+        the pattern's ``)`` closed the body early. bash was measured running the
+        folded form as ``case``, so the body must survive it.
+
+        Only the BODY is asserted. The verdict on this spelling does NOT flip, and
+        not because of this walk: ``_self_tokens`` reads the backslash-newline as a
+        command SEPARATOR rather than folding it away, which severs the assignment
+        from the invocation so ``$T`` never resolves. That is a tokenizer-level
+        continuation bug, it sits upstream of this helper, and it is present on the
+        base branch with the identical token split -- measured zero delta, so this
+        change neither causes nor worsens it. Tracked separately.
+        """
+        command = f"T=$(ca\\\nse x in x) printf {self.VERB};; esac); {self.NAME} $T"
+        (body,) = security._substitution_bodies(command)
+        assert f"printf {self.VERB}" in body, body
+
+    def test_a_line_continuated_esac_still_ends_the_pattern_rule(self) -> None:
+        """The same folding applies to ``esac``, so the rule disarms where bash does."""
+        (body,) = security._substitution_bodies("$(case x in x) printf hi;; es\\\nac)")
+        assert body == "case x in x) printf hi;; es\\\nac", body
+
+    def test_a_folded_continuation_does_not_make_a_hash_a_comment(self) -> None:
+        """``a\\`` + newline + ``#b`` folds to the single word ``a#b``, which comments nothing."""
+        (body,) = security._substitution_bodies("$(printf a\\\n#b)")
+        assert body == "printf a\\\n#b", body
+
+    def test_a_fold_after_a_word_break_still_opens_a_comment(self) -> None:
+        """What matters is what the fold leaves ADJACENT, not that a fold is there.
+
+        ``:`` + space + ``\\`` + newline + ``#`` folds to ``: #``, so a word break ends
+        up in front of the ``#`` and bash opens a real comment. Reading any preceding
+        fold as "not a comment" missed it in the fail-OPEN direction: the walk then
+        read the ``)`` the comment hides as the closer and truncated the body before
+        the verb, reopening this PR's own bypass for the folded spelling.
+        """
+        command = f"T=$(: \\\n# )\nprintf {self.VERB}); {self.NAME} $T"
+        (body,) = security._substitution_bodies(command)
+        assert f"printf {self.VERB}" in body, body
+        assert security.is_denied(command) is not None
+
+    @pytest.mark.parametrize(
+        "text",
+        ["$(", "`", "$(case", "$(case x in x", "$(: #", "`A='", "$(#", "", "#", "esac)"],
+    )
+    def test_degenerate_input_does_not_raise(self, text: str) -> None:
+        """An unterminated construct yields the remainder, never an exception."""
+        assert isinstance(security._substitution_bodies(text), list)
+
+    def test_an_unproven_span_still_yields_the_whole_remainder(self) -> None:
+        """Fail-CLOSED direction: a body that reaches too far is only over-scanned."""
+        (body,) = security._substitution_bodies(f"$(case x in x) printf {self.VERB}")
+        assert f"printf {self.VERB}" in body, body

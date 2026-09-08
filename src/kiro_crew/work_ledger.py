@@ -465,9 +465,20 @@ def _work_ledger_root() -> Path:
     return data_home() / "work-ledger"
 
 
+def _slot_key_is_shaped(slot_key: str) -> bool:
+    """Whether *slot_key* has the shape a store path may be built from.
+
+    A slot key names a directory, so a null byte or a path separator would let it
+    escape its own directory. This is the shape check :func:`conductor_dir` raises
+    on; it is a named predicate so a reader that must decide UNBOUND-vs-RAISE on a
+    stored key can ask the same question without provoking the raise.
+    """
+    return bool(slot_key) and "\0" not in slot_key and "/" not in slot_key and "\\" not in slot_key
+
+
 def conductor_dir(slot_key: str) -> Path:
     """The directory holding *slot_key*'s ledger. Does not create it."""
-    if not slot_key or "\0" in slot_key or "/" in slot_key or "\\" in slot_key:
+    if not _slot_key_is_shaped(slot_key):
         raise WorkLedgerError(
             f"invalid slot key for work ledger: {slot_key!r}", code=CODE_INVALID_VALUE
         )

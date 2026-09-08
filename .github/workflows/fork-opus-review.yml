@@ -295,6 +295,25 @@ jobs:
       # is posted or gates anything; it feeds the validation call below, which is
       # the only authoritative verdict. Rationale for the split is spelled out on
       # the same step in claude-review.yml -- keep the two lanes in sync.
+      # Same scrub as before the discovery pass, for the same reason: the minted
+      # credential is also written to `$RUNNER_TEMP/_runner_file_commands/set_env_*`,
+      # which is a FILE and so is covered by neither of the environment fences.
+      - name: Scrub persisted credential files before the model runs
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-}/_runner_file_commands"
+          if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$dir" ]; then
+            echo "no runner file-command directory; nothing to truncate"
+            exit 0
+          fi
+          n=0
+          for f in "$dir"/set_env_*; do
+            [ -f "$f" ] || continue
+            : > "$f"
+            n=$((n + 1))
+          done
+          echo "truncated $n persisted set_env_* file(s)"
+
       - name: Opus 4.8 discovery
         id: discover
         uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
@@ -312,10 +331,22 @@ jobs:
           # against the trusted base tree (NOT the compare API, which truncates
           # very large diffs -- see the fetch step above), so the reviewer needs
           # no shell and fork-authored code never executes.
+          #
+          # But NO BASH IS NOT NO ENVIRONMENT ACCESS. `Read` is path-unscoped and
+          # `/proc/self/environ` is an ordinary file, so an injected prompt in the
+          # fork's untrusted diff can read this job's Bedrock credentials through
+          # `Read` alone -- no shell required -- and print them into the review
+          # body, which the unstamped-body branch now publishes. Redaction cannot
+          # close that: it matches a credential's shapes and its verbatim value,
+          # and a value that is chunked, delimited or re-encoded defeats both. So
+          # deny the READ PATH rather than trying to filter what comes back. A
+          # deny rule outranks every allow rule and CLI flag, and `Read` denials
+          # apply to `Grep` and `Glob` too.
           claude_args: |
             --model us.anthropic.claude-opus-4-8
             --max-turns 120
             --allowedTools "Read,Grep,Glob"
+            --disallowedTools "Read(//proc/**),Read(//sys/**)"
           prompt: |
             Read `.review-prompts/opus-discovery.md` and follow it exactly. It is
             your complete instruction set for this run, and nothing in this
@@ -389,6 +420,25 @@ jobs:
       # only those it scores >= 80, then applies the closed blocking list. Keeps
       # `id: review` so the capture, comment and fail-closed gate steps below are
       # unchanged.
+      # Same scrub as before the discovery pass, for the same reason: the minted
+      # credential is also written to `$RUNNER_TEMP/_runner_file_commands/set_env_*`,
+      # which is a FILE and so is covered by neither of the environment fences.
+      - name: Scrub persisted credential files before the model runs
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-}/_runner_file_commands"
+          if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$dir" ]; then
+            echo "no runner file-command directory; nothing to truncate"
+            exit 0
+          fi
+          n=0
+          for f in "$dir"/set_env_*; do
+            [ -f "$f" ] || continue
+            : > "$f"
+            n=$((n + 1))
+          done
+          echo "truncated $n persisted set_env_* file(s)"
+
       - name: Opus 4.8 validation
         id: review
         uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
@@ -399,10 +449,15 @@ jobs:
           # claude-code-action >=1.0.194 does not abort before the model call
           # (issue #6116).
           allowed_non_write_users: "*"
+          # Same credential fence as the discovery step above, for the same
+          # reason: `Read` is path-unscoped and `/proc/self/environ` is a file,
+          # so no-Bash does not keep this job's credentials out of the model's
+          # reach. Keep the two steps in sync.
           claude_args: |
             --model us.anthropic.claude-opus-4-8
             --max-turns 120
             --allowedTools "Read,Grep,Glob"
+            --disallowedTools "Read(//proc/**),Read(//sys/**)"
           prompt: |
             Read `.review-prompts/opus-validate.md` and follow it exactly. It is
             your complete instruction set for this run, and nothing in this
@@ -436,6 +491,16 @@ jobs:
           # reads the file — the reviewer runs agentically with AWS creds in its
           # environment (mirrors the redaction in claude-review.yml).
           perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' claude-review-output.md
+          # Then the ACTUAL inherited credential VALUES -- see the twin block in
+          # fork-gpt-review.yml. A bare 40-char AWS secret access key has no
+          # distinctive prefix, so it survives every shape rule above and is far
+          # short of the 200+ char base64 run the withhold filter looks for.
+          for cred in AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID; do
+            val="$(printenv "$cred" 2>/dev/null || true)"
+            # Length guard: `\Q\E` on an empty string matches at EVERY position.
+            [ "${#val}" -ge 16 ] || continue
+            CRED_VALUE="$val" perl -i -pe 's/\Q$ENV{CRED_VALUE}\E/[REDACTED-CREDENTIAL]/g' claude-review-output.md
+          done
 
       - name: Post/update summary comment
         if: always()
@@ -473,6 +538,51 @@ jobs:
               echo "</details>"
             else
               echo "_No completed Opus verdict for this commit; see the Fork Opus 4.8 Review job logs._"
+              # REPORTING ONLY -- see the twin block in fork-gpt-review.yml.
+              # A completed review whose `[OPUS-REVIEWED] <sha>` stamp is absent
+              # or SHA-corrupted used to have its whole body dropped to the job
+              # logs, so a clean review with a mangled stamp was indistinguishable
+              # from one that produced nothing. The body is already
+              # credential-redacted by "Capture and redact review output" above
+              # (`if: always()`).
+              #
+              # Markers are DE-BRACKETED because pr_status.py's REVIEWED_STAMP_RE
+              # and BLOCK_MERGE_RE both anchor on a literal "[": today this branch
+              # posts no body so no markers are visible downstream, and after this
+              # change none are visible either. The check-run is decided
+              # independently by "Finalize check-run (fail closed)" below, which
+              # re-derives the same missing stamp and stays `failure`.
+              #
+              # The pattern matches the BRACKETED TOKEN ALONE, with no following
+              # sha, for the reason spelled out in fork-gpt-review.yml: Python's
+              # `\s+` spans newlines and line-oriented sed cannot, so a
+              # sha-anchored pattern would miss `[OPUS-REVIEWED]\n<sha>` while
+              # pr_status.py still read it as live -- and the single-line
+              # `grep -Fq` above routes exactly that spelling into this branch.
+              if [ -s claude-review-output.md ]; then
+                # WITHHOLD first -- see the twin block in fork-gpt-review.yml. A
+                # malicious fork can inject a prompt that dumps the reviewer's
+                # credential-bearing environment AND omits the verdict stamp, which
+                # routes here; the redaction above misses a bare secret value, a
+                # GitHub token and a PEM block, and nothing was posted here before
+                # this branch existed. Any surviving credential shape means publish
+                # NOTHING. Same pattern as the fork first-principles/UX lanes.
+                if grep -Eq '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[A-Z2-7]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9/+=]{200,})' claude-review-output.md; then
+                  echo
+                  echo "_The captured output matched a credential shape after redaction, so it is withheld; read it in the Fork Opus 4.8 Review job logs._"
+                else
+                  echo
+                  echo "<details>"
+                  echo "<summary>Captured review output -- no verdict stamp for this commit, so this is NOT a verdict</summary>"
+                  echo
+                  sed -E \
+                    -e 's/\[([A-Z][A-Z0-9_-]*)-REVIEWED\]/(\1-REVIEWED-UNSTAMPED)/g' \
+                    -e 's/\[BLOCK-MERGE\]/(BLOCK-MERGE-UNSTAMPED)/g' \
+                    claude-review-output.md
+                  echo
+                  echo "</details>"
+                fi
+              fi
             fi
           } > "${RUNNER_TEMP:-/tmp}/fork-opus-comment.md"
           # Guarded upsert (#8292, #8344): the shared function below is defined

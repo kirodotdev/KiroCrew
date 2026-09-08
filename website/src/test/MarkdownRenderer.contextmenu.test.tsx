@@ -358,3 +358,76 @@ describe('MarkdownRenderer path chips — keyboard access with context menu', ()
     expect(onFileOpen).toHaveBeenCalledWith('/home/user/a.md')
   })
 })
+
+// ── "Open in editor" affordance (fileOpenAPI shell bridge) ───────────────────
+
+describe('MarkdownRenderer path chips — Open in editor (shell.openPath bridge)', () => {
+  const TEST_PATH = '/home/user/project/notes.md'
+
+  afterEach(() => {
+    delete (window as { fileOpenAPI?: unknown }).fileOpenAPI
+  })
+
+  async function openMenu(path = TEST_PATH, kind: 'file' | 'dir' = 'file') {
+    stubKind(kind, kind === 'file')
+    const { container } = render(<MarkdownRenderer content={`\`${path}\``} />)
+    const chip = await waitFor(() => {
+      const c = container.querySelector(`code[data-path-kind="${kind}"]`)
+      expect(c).not.toBeNull()
+      return c!
+    })
+    rightClick(chip)
+    await waitFor(() => { expect(document.querySelector('[role="menu"]')).not.toBeNull() })
+  }
+
+  it('shows "Open in editor" and calls fileOpenAPI.open with the chip path when the bridge is present', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    ;(window as { fileOpenAPI?: unknown }).fileOpenAPI = { open }
+
+    await openMenu()
+
+    const menu = document.querySelector('[role="menu"]')!
+    expect(menu.textContent).toContain('Open in editor')
+
+    const item = Array.from(document.querySelectorAll('[role="menuitem"]'))
+      .find(el => el.textContent?.includes('Open in editor'))
+    expect(item).toBeDefined()
+    fireEvent.click(item!)
+
+    await waitFor(() => { expect(open).toHaveBeenCalledWith(TEST_PATH) })
+  })
+
+  it('hides "Open in editor" when no shell bridge is present (plain browser)', async () => {
+    // No window.fileOpenAPI — the browser/PWA case. The built-in viewer stays
+    // the only handoff, so the row must not appear.
+    await openMenu()
+    const menu = document.querySelector('[role="menu"]')!
+    expect(menu.textContent).not.toContain('Open in editor')
+    // The existing rows are unaffected.
+    expect(menu.textContent).toContain('Copy path')
+  })
+
+  it('hides "Open in editor" for a directory even with the bridge present', async () => {
+    ;(window as { fileOpenAPI?: unknown }).fileOpenAPI = { open: vi.fn() }
+    await openMenu('/Users/me/workspace/project', 'dir')
+    const menu = document.querySelector('[role="menu"]')!
+    expect(menu.textContent).not.toContain('Open in editor')
+    expect(menu.textContent).toContain('Copy path')
+  })
+
+  it('surfaces the bridge error when the shell refuses to open the file', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: false, error: 'no application to open .md' })
+    ;(window as { fileOpenAPI?: unknown }).fileOpenAPI = { open }
+
+    await openMenu()
+    const item = Array.from(document.querySelectorAll('[role="menuitem"]'))
+      .find(el => el.textContent?.includes('Open in editor'))!
+    fireEvent.click(item)
+
+    await waitFor(() => {
+      const err = document.querySelector('[data-testid="file-path-menu-editor-error"]')
+      expect(err).not.toBeNull()
+      expect(err!.textContent).toContain('no application to open .md')
+    })
+  })
+})

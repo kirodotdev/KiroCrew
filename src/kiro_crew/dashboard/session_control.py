@@ -42,6 +42,7 @@ from kiro_crew.config.loader import (
     default_project_dir,
     resolve_agent_bindings,
 )
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
@@ -349,6 +350,67 @@ def session_control_enabled() -> bool:
             "session_control: config read failed — refusing until config loads", exc_info=True
         )
         return False
+
+
+def member_dispatch_enabled() -> bool:
+    """Whether a crew member's DM session may bypass the ``session_control`` switch.
+
+    The operator ceiling on the zero-configuration member grant. Default true
+    reproduces today's behaviour exactly: a member caller bypasses
+    ``agent.session_control`` and dispatches into workers it created. Set
+    ``agent.member_dispatch`` to false and a member caller stops bypassing —
+    it falls back under ``session_control_enabled()`` like any ordinary caller,
+    so an operator who turned session control off keeps member DM threads
+    chat-only without disabling the member itself.
+
+    Fails CLOSED in BOTH ways the ceiling can lose the operator's value, the
+    same direction :func:`session_control_enabled` does:
+
+    * a config read that RAISES resolves to false; and
+    * a config that LOADS but discarded the ``agent`` section (or the whole
+      file) resolves to false too. ``load()`` does not raise on a malformed
+      section -- it coerces it away, falls back to the field default (which is
+      ``member_dispatch=True``, permissive), and records the loss in
+      ``degraded_sections``. Without this second check a degraded ``agent``
+      overlay carrying ``member_dispatch: false`` would silently revert to the
+      bypass the operator meant to withdraw -- a governance-ceiling fail-open.
+      This is the same "could not read it" vs "was never set" distinction
+      :func:`tailnet_identity_unknown` and the publish gate already draw from
+      ``degraded_sections``. The bypass never fails open.
+    """
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:
+        logger.warning(
+            "member_dispatch: config read failed — withdrawing member bypass until config loads",
+            exc_info=True,
+        )
+        return False
+    if cfg.degraded_sections & {DEGRADED_WHOLE_CONFIG, "agent"}:
+        # The agent section (or the whole file) was discarded, so a stored
+        # `member_dispatch: false` was replaced by the permissive default.
+        # Withdraw the bypass rather than trust that default.
+        logger.warning("member_dispatch: agent config section degraded — withdrawing member bypass")
+        return False
+    return bool(cfg.agent.member_dispatch)
+
+
+def _member_bypass(caller_key: str) -> bool:
+    """Whether *caller_key* may skip the ``session_control`` switch as a member.
+
+    The single expression both switch gates key on, extracted rather than
+    copy-pasted so the member-bypass condition cannot drift between
+    :func:`create_session` and :func:`authorize_target`. A member caller
+    bypasses only while the operator ceiling ``agent.member_dispatch`` is on;
+    turned off, the member is no longer exempt and the switch gate applies to
+    it like any other caller.
+
+    Keyed on the immutable slot-key prefix (via :func:`_member_caller`) AND the
+    config ceiling — the two together decide the bypass, and neither is a proxy
+    for it. ``member_dispatch_enabled`` is read at the gate, synchronously,
+    right before the act, exactly as ``session_control_enabled`` is beside it.
+    """
+    return _member_caller(caller_key) and member_dispatch_enabled()
 
 
 async def prewarm_enabled_check() -> None:
@@ -876,11 +938,13 @@ async def create_session(
         )
     # The caller is resolved BEFORE the config gate so a member DM session —
     # for which dispatching work into workers is the operating model, not an
-    # opt-in — passes without `agent.session_control`. Every other caller
-    # still needs the switch. The member's automatic grant is bounded by
-    # ownership in `authorize_target`, not here: creation makes the caller
-    # the owner by construction.
-    if not session_control_enabled() and not _member_caller(caller_key):
+    # opt-in — passes without `agent.session_control`. That member bypass is
+    # itself gated by the operator ceiling `agent.member_dispatch` (default
+    # true = today's behaviour); with it off the member falls back under the
+    # switch like any other caller. Every other caller still needs the switch.
+    # The member's automatic grant is bounded by ownership in `authorize_target`,
+    # not here: creation makes the caller the owner by construction.
+    if not session_control_enabled() and not _member_bypass(caller_key):
         raise SessionControlError(
             "session control is disabled in config (agent.session_control)",
             code="session_control_disabled",
@@ -1395,9 +1459,11 @@ def authorize_target(
         raise deny("caller session could not be identified", "caller_unidentified")
     # Resolved before the config gate: a member DM session is authorized
     # WITHOUT `agent.session_control` — dispatching and patrolling workers is
-    # its operating model — and is bounded instead by the ownership check
-    # below, which restricts it to slots it created itself.
-    if not skip_enabled_check and not session_control_enabled() and not _member_caller(caller_key):
+    # its operating model — while the operator ceiling `agent.member_dispatch`
+    # (default true = today's behaviour) is on. Turn that ceiling off and the
+    # member falls back under the switch. The member's reach stays bounded by
+    # the ownership check below, which restricts it to slots it created itself.
+    if not skip_enabled_check and not session_control_enabled() and not _member_bypass(caller_key):
         raise deny(
             "session control is disabled in config (agent.session_control)",
             "session_control_disabled",

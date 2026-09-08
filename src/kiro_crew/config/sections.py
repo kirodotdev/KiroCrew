@@ -1202,6 +1202,21 @@ class AgentConfig:
             "sessions it created itself.",
         ),
     )
+    member_dispatch: bool = field(
+        default=True,
+        metadata=_meta(
+            "Member Dispatch",
+            "Let a crew member's DM session open and drive worker sessions it "
+            "creates, even when Session Control is off. On by default, because "
+            "dispatching work into workers is the crew-member operating model, "
+            "not an opt-in: this is the zero-configuration contract. Turn this "
+            "off to put member callers back under the Session Control switch, so "
+            "an operator who withdrew session control keeps member DM threads "
+            "chat-only without disabling the member. When on, a member's reach is "
+            "still bounded to sessions it created itself (creator ownership), the "
+            "same fence that binds it when Session Control is on.",
+        ),
+    )
     subagent_cost_gb: float = field(
         default=0.5,
         metadata=_meta(

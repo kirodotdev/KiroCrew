@@ -1517,6 +1517,78 @@ async def test_edit_resend_commit_does_not_resurrect_a_card_retired_meanwhile(st
     assert announced == [("s1", ["q1", "q2"])]
 
 
+@pytest.mark.asyncio
+async def test_edit_resend_commit_keeps_a_blocking_card_answered_meanwhile(state) -> None:
+    """An answer landing mid-boundary must not be undone by the commit.
+
+    Answering pops the id from the LIVE dict, so a commit that assigned the
+    frozen pre-await copy back would restore the card with its answer channel
+    already gone. A BLOCKING card is the shape that reaches this: an append never
+    retires one, so the edit's own ``user`` row cannot be what cleared it.
+    """
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "first")
+    slot.append("assistant", "answer")
+    slot.drain()
+    state.mark_question_pending("s1", blocking=True, card_id="ask-1")
+    assert "ask-1" in slot._question_pending
+    observed: dict = {}
+
+    async def _discard(key, **kwargs):
+        observed["cleared"] = state.clear_question_pending("s1", card_id="ask-1")
+        return True
+
+    state.sessions.discard_conversation = AsyncMock(side_effect=_discard)
+
+    with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()):
+        async with _client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
+            )
+            assert resp.status == 200
+            await asyncio.sleep(0)
+
+    assert observed["cleared"] is True
+    assert "ask-1" not in slot._question_pending, (
+        "the commit resurrected a card that was answered during the boundary, "
+        "so the slot awaits input against a completed round-trip"
+    )
+
+
+@pytest.mark.asyncio
+async def test_edit_resend_commit_keeps_a_card_that_arrived_meanwhile(state) -> None:
+    """A card marked mid-boundary must survive the commit.
+
+    ``post_question_card`` is addressed by slot key, so a card can be marked on a
+    slot whose turn is being replaced. It is in the LIVE dict and not in the
+    frozen pre-await copy, so any commit keyed on that copy erases it -- and the
+    client has already been shown it.
+    """
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "first")
+    slot.append("assistant", "answer")
+    slot.drain()
+
+    async def _discard(key, **kwargs):
+        state.mark_question_pending("s1", blocking=True, card_id="ask-late")
+        return True
+
+    state.sessions.discard_conversation = AsyncMock(side_effect=_discard)
+
+    with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()):
+        async with _client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/edit-resend", json={"index": 0, "content": "edited"}
+            )
+            assert resp.status == 200
+            await asyncio.sleep(0)
+
+    assert "ask-late" in slot._question_pending, (
+        "the commit erased a card that was raised during the boundary, so the "
+        "client renders a card the server no longer believes is pending"
+    )
+
+
 # ── edit-resend: the commit re-checks the transcript it was authorized against ──
 
 

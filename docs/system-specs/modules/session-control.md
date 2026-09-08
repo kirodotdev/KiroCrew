@@ -141,7 +141,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 
 | Refusal | Status | Why |
 |---------|--------|-----|
-| Config switch off (`agent.session_control` explicitly `false`) | 403 | Operator withdrew the capability from every agent at once. Defaults to true — the agent's `kirocrew-dashboard` mount is the grant. **Exception:** a crew-member DM slot (`member-*` caller key) bypasses this switch — see "Member callers" below |
+| Config switch off (`agent.session_control` explicitly `false`) | 403 | Operator withdrew the capability from every agent at once. Defaults to true — the agent's `kirocrew-dashboard` mount is the grant. **Exception:** a crew-member DM slot (`member-*` caller key) bypasses this switch while `agent.member_dispatch` is true (its default) — see "Member callers" below |
 | Caller session cannot be identified | 403 | An unidentifiable caller makes the self-target guard blind |
 | Caller is an unattended session (`workflow-*`) | 403 | A `workflow-<run_id>` slot exists only once its originating tab is gone, so there is no owning session to fence it to. **Exception:** a cron slot (`cron-*` caller key) is admitted and fenced by creator ownership instead — see "Cron callers" below |
 | Caller is itself incognito, temporary, or app-scoped | 403 | Caller-side isolation — the direction the target-side checks cannot see |
@@ -171,8 +171,15 @@ operator configuration. Two rules give it that shape:
 - **The `agent.session_control` switch does not gate a member caller.** Members
   work out of the box — this is the zero-configuration contract, and it is a
   deliberate trade-off: an operator who turned session control off has NOT
-  thereby disabled member dispatch. There is currently no separate switch for
-  it; disabling a member disables its dispatch.
+  thereby disabled member dispatch. The operator ceiling on that bypass is
+  `agent.member_dispatch` (bool, default **true**). Left at its default it
+  reproduces this exactly — the member bypasses the switch. Set to `false`, a
+  member caller stops bypassing and falls back under `agent.session_control`
+  like any ordinary caller, so an operator who withdrew session control can
+  keep member DM threads chat-only without disabling the member itself. The
+  ceiling is read at the switch gate (`member_dispatch_enabled()`) and, like
+  the switch, **fails closed** — an unreadable config withdraws the bypass
+  rather than granting it.
 - **A member caller may only act on sessions it created.** Slot creation records
   `created_by` (the creator's caller key) in the slot's birth metadata; it is
   persisted with the session and rehydrated on restart (both restore paths).
@@ -550,6 +557,31 @@ conductor is in the second class for `session_create` and `session_read_message`
 loop runs with nobody at the keyboard and must not block on an approval no one is
 there to give. An operator who wants folder tools without session control names the
 folder tools individually.
+
+`agent.member_dispatch` (bool, default **true**). The operator ceiling on the
+member switch bypass described under "Member callers". At its default a member DM
+caller bypasses `agent.session_control` — the zero-configuration contract, and
+today's behaviour, so installing this key changes nothing until it is set. Set it
+`false` and a member caller stops bypassing: it falls back under
+`agent.session_control` like any ordinary caller, which lets an operator who
+withdrew session control keep member DM threads chat-only without disabling the
+member. Read at the switch gate via `member_dispatch_enabled()`, and **fails
+closed** everywhere it can go wrong. (1) An unreadable config withdraws the member
+bypass (`member_dispatch_enabled()` returns false on a raising read). (2) A config
+that loads but *discarded the `agent` section* (or the whole file) also withdraws
+it: `load()` does not raise on a malformed section — it drops the section and
+falls back to the permissive `member_dispatch=True` default, recording the loss in
+`degraded_sections`, so `member_dispatch_enabled()` returns false when
+`degraded_sections` names `agent` or the whole-config marker `*`, the same
+"could not read it" vs "was never set" distinction `tailnet_identity_unknown` and
+the publish gate draw. (3) At load time a *missing* key defaults to true (today's
+behaviour) while any *present but malformed* value — including a quoted `"false"`,
+a routine operator quoting mistake — coerces to false BEFORE schema validation, so
+a botched opt-out withdraws the bypass rather than silently leaving it on. This is
+a config-level ceiling, not an enterprise `SCOPE_CATALOG` scope: `session_control`
+itself is a plain `agent.*` bool with no catalog entry, and a scope would need a
+new governance enforcement seam rather than a data-only append, so it is left to a
+follow-up.
 
 ## What is deliberately not here
 

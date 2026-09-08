@@ -71,9 +71,12 @@ class TestAuthorizeTargetMemberPath:
         # caller_slot_key maps a session key to an open slot; the member path
         # is exercised below the identity resolution, so pin the mapping and
         # the workspace reads to keep the fixture at the authorization layer.
+        # member_dispatch_enabled is pinned True here — these tests assert the
+        # DEFAULT (bypass on) behaviour; the ceiling-off case has its own class.
         with (
             patch.object(sc, "caller_slot_key", return_value=caller_key),
             patch.object(sc, "session_control_enabled", return_value=False),
+            patch.object(sc, "member_dispatch_enabled", return_value=True),
             patch.object(sc, "_resolve_slot", return_value=state._slots.get(target_key)),
         ):
             return sc.authorize_target(
@@ -200,3 +203,115 @@ class TestCreatedByProjection:
         # "" rather than a missing key: the frontend must be able to tell "a
         # person's own tab" from "an older gateway that never sent the field".
         assert _ChatSlot("chat-1-own").to_dict()["created_by"] == ""
+
+
+class TestMemberDispatchCeiling:
+    """The operator ceiling `agent.member_dispatch` on the member switch bypass.
+
+    Default true reproduces today's behaviour (member bypasses the switch); set
+    false, a member caller stops bypassing and falls back under
+    `session_control`. The bypass condition is `_member_bypass` = member caller
+    AND dispatch enabled, and the ceiling read fails CLOSED (withdraws the
+    bypass on an unreadable config) the same direction `session_control` does.
+    """
+
+    def test_bypass_requires_member_and_ceiling_on(self):
+        member = DM_SLOT_KEY_PREFIX + "radar"
+        with patch.object(sc, "member_dispatch_enabled", return_value=True):
+            assert sc._member_bypass(member) is True
+            assert sc._member_bypass("chat-1-abc") is False  # not a member
+        with patch.object(sc, "member_dispatch_enabled", return_value=False):
+            assert sc._member_bypass(member) is False  # ceiling off
+            assert sc._member_bypass("chat-1-abc") is False
+
+    def test_member_dispatch_enabled_reads_the_config_field(self):
+        cfg = SimpleNamespace(
+            agent=SimpleNamespace(member_dispatch=True), degraded_sections=frozenset()
+        )
+        with patch.object(sc.KiroCrewConfig, "load", return_value=cfg):
+            assert sc.member_dispatch_enabled() is True
+        cfg_off = SimpleNamespace(
+            agent=SimpleNamespace(member_dispatch=False), degraded_sections=frozenset()
+        )
+        with patch.object(sc.KiroCrewConfig, "load", return_value=cfg_off):
+            assert sc.member_dispatch_enabled() is False
+
+    def test_member_dispatch_enabled_fails_closed_on_read_error(self):
+        with patch.object(sc.KiroCrewConfig, "load", side_effect=RuntimeError("boom")):
+            # An unreadable config withdraws the bypass rather than granting it.
+            assert sc.member_dispatch_enabled() is False
+
+    def test_member_dispatch_enabled_fails_closed_on_degraded_section(self):
+        # load() does not raise on a discarded `agent` section: it falls back to
+        # the permissive default (member_dispatch=True) and records the loss in
+        # degraded_sections. A stored `member_dispatch: false` would otherwise
+        # silently revert to the bypass -- so a degraded `agent` or whole-config
+        # (`*`) marker must withdraw it.
+        for degraded in ("agent", sc.DEGRADED_WHOLE_CONFIG):
+            cfg = SimpleNamespace(
+                agent=SimpleNamespace(member_dispatch=True),
+                degraded_sections=frozenset({degraded}),
+            )
+            with patch.object(sc.KiroCrewConfig, "load", return_value=cfg):
+                assert sc.member_dispatch_enabled() is False, degraded
+
+    def test_member_dispatch_enabled_trusts_value_when_not_degraded(self):
+        # An unrelated degraded section does not withdraw the bypass -- only the
+        # agent section or the whole config does.
+        cfg = SimpleNamespace(
+            agent=SimpleNamespace(member_dispatch=True),
+            degraded_sections=frozenset({"dashboard"}),
+        )
+        with patch.object(sc.KiroCrewConfig, "load", return_value=cfg):
+            assert sc.member_dispatch_enabled() is True
+
+    def test_member_falls_back_under_switch_when_ceiling_off(self):
+        # Switch off AND ceiling off: the member is no longer exempt, so it hits
+        # the same session_control_disabled refusal an ordinary caller gets.
+        member = DM_SLOT_KEY_PREFIX + "radar"
+        worker = _slot("chat-1-w1", created_by=member)
+        state = _State({member: _slot(member), "chat-1-w1": worker})
+        with (
+            patch.object(sc, "caller_slot_key", return_value=member),
+            patch.object(sc, "session_control_enabled", return_value=False),
+            patch.object(sc, "member_dispatch_enabled", return_value=False),
+            patch.object(sc, "_resolve_slot", return_value=worker),
+        ):
+            with pytest.raises(sc.SessionControlError) as exc_info:
+                sc.authorize_target(
+                    state,
+                    caller_session_key="dashboard:whatever",
+                    target="chat-1-w1",
+                    operation="send",
+                )
+        assert exc_info.value.code == "session_control_disabled"
+
+    def test_member_still_bypasses_when_ceiling_on_and_switch_off(self):
+        # Default behaviour preserved: ceiling on, switch off -> member passes
+        # the config gate (may still be bounded by ownership, but not by the
+        # switch). Pin an owned worker so ownership does not intervene.
+        member = DM_SLOT_KEY_PREFIX + "radar"
+        worker = _slot("chat-1-w1", created_by=member)
+        state = _State({member: _slot(member), "chat-1-w1": worker})
+        with (
+            patch.object(sc, "caller_slot_key", return_value=member),
+            patch.object(sc, "session_control_enabled", return_value=False),
+            patch.object(sc, "member_dispatch_enabled", return_value=True),
+            patch.object(sc, "_resolve_slot", return_value=worker),
+        ):
+            try:
+                sc.authorize_target(
+                    state,
+                    caller_session_key="dashboard:whatever",
+                    target="chat-1-w1",
+                    operation="send",
+                )
+            except sc.SessionControlError as exc:
+                assert exc.code not in ("session_control_disabled", "not_creator"), exc.code
+
+    def test_config_default_is_true(self):
+        # The knob's default IS today's behaviour, so installing the change
+        # alters nothing until an operator opts in.
+        from kiro_crew.config.sections import AgentConfig
+
+        assert AgentConfig().member_dispatch is True

@@ -733,6 +733,32 @@ export function useVirtualChat<T>(
   // hardware events and by the smooth-pin grab interrupts, never by scroll
   // events themselves.
   const lastHardInputAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
+  // When WE last established the reader's bottom position: a pin write, or a
+  // re-baseline of `lastWriteTopRef` onto a layout clamp / an already-at-bottom
+  // observation. Compared against the hard-input stamp above it answers "has the
+  // reader touched the scroller since we placed them" -- the signal
+  // evaluateAutoPin's `readerMovedSinceWrite` needs to tell a reader who left
+  // the bottom from one the content left behind. Only our own positioning moves
+  // it forward, so a reprice that opens a gap with no gesture in between reads
+  // as ours to close, and a gesture -- however small -- reads as theirs.
+  const lastPinAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
+  const readerMovedSinceWrite = useCallback(
+    (): boolean => lastHardInputAtRef.current > lastPinAtRef.current,
+    [],
+  )
+  // Follow was RELEASED by the reader: there is no write of ours they are
+  // resting on any more, so drop the self-scroll reference with it. Left in
+  // place, it kept pointing at the bottom we last pinned -- and a reader who
+  // scrolls back down lands on exactly that pixel, because it is still the
+  // maximum scrollTop. That arrival then read as our own scroll, the handler
+  // skipped its re-engagement branch, and follow never re-armed: the next turn
+  // streamed past a reader who had put themselves at the end to watch it. The
+  // coverage watchdog's per-tick forcePin used to paper over this by re-arming
+  // follow every 500ms; with that misfire gone the reference has to be honest.
+  const releaseFollowBaseline = useCallback(() => {
+    lastWriteTopRef.current = -1
+    lastWriteClientHRef.current = -1
+  }, [])
   // Scroller height as of the last SCROLL event. Deliberately not
   // `viewportHeightRef`, which the ResizeObserver updates: the resize and the
   // clamp it causes are two separate events, and if the observer ran first the
@@ -2063,6 +2089,7 @@ export function useVirtualChat<T>(
       else el.scrollTop = top
       lastWriteTopRef.current = accounting === 'pin' ? top : -1
       lastWriteClientHRef.current = accounting === 'pin' ? el.clientHeight : -1
+      if (accounting === 'pin') lastPinAtRef.current = performance.now()
       // The direction reference must move WITH our own writes, synchronously.
       // A programmatic scroll's event lands asynchronously (and a fake scroller
       // in tests dispatches none), so leaving the reference to the scroll
@@ -2157,13 +2184,16 @@ export function useVirtualChat<T>(
       // "assume live" so an unaware caller keeps its behaviour.
       runActive: runActiveRef.current,
       restoreGate: settleGateRef.current,
+      readerMovedSinceWrite: readerMovedSinceWrite(),
       // Chrome mounting below the transcript shrinks this box, often
       // spring-animated across many frames. Measure the scroll-up guard
       // against the box our reference was a bottom for, never the box the
       // animation just applied.
       viewportShrink,
     })
+    const wasStick = stickRef.current
     stickRef.current = result.stick
+    if (wasStick && !result.stick) releaseFollowBaseline()
     if (result.pin) {
       writeScrollTop(el, result.target, 'auto', 'pin', 'autopin')
     } else if (result.stick) {
@@ -2171,8 +2201,9 @@ export function useVirtualChat<T>(
       // self-scroll reference aligned with the current bottom.
       lastWriteTopRef.current = result.target
       lastWriteClientHRef.current = geom.clientHeight
+      lastPinAtRef.current = performance.now()
     }
-  }, [scrollerRef, writeScrollTop])
+  }, [scrollerRef, writeScrollTop, readerMovedSinceWrite, releaseFollowBaseline])
 
   // Forced pin: explicit jump-to-bottom (slot entry, scrollToBottom API,
   // jump-to-latest pill). Always lands at the bottom and (re-)arms follow.
@@ -2273,6 +2304,7 @@ export function useVirtualChat<T>(
         // real 3-100px scroll-up.
         const clampedAtBottom =
           geom.scrollHeight - (geom.scrollTop + geom.clientHeight) <= SELF_SCROLL_EPSILON
+        const wasStick = stickRef.current
         stickRef.current = resolveUserScrollStick({
           stick: stickRef.current,
           followOutput,
@@ -2289,6 +2321,7 @@ export function useVirtualChat<T>(
               ? geom.clientHeight - lastScrollClientHRef.current
               : 0,
         })
+        if (wasStick && !stickRef.current) releaseFollowBaseline()
         const layoutClamp = stickRef.current && clampedAtBottom
         // A clamp is OUR layout change, so it must not be stamped as input.
         // `lastUserScrollAtRef` arms the SCROLL_SETTLE_MS gate that holds
@@ -2319,6 +2352,7 @@ export function useVirtualChat<T>(
         if (layoutClamp) {
           lastWriteTopRef.current = el.scrollTop
           lastWriteClientHRef.current = geom.clientHeight
+          lastPinAtRef.current = performance.now()
         }
       }
       // Direction reference for the next event — updated for self-scrolls too,
@@ -2372,7 +2406,7 @@ export function useVirtualChat<T>(
       if (rafId) cancelAnimationFrame(rafId)
       scrollRafScheduledRef.current = false
     }
-  }, [scrollerEl, bottomThreshold, followOutput, recomputeWindow, detachSmoothAbort, pinAuto, scheduleAnchorSave])
+  }, [scrollerEl, bottomThreshold, followOutput, recomputeWindow, detachSmoothAbort, pinAuto, scheduleAnchorSave, releaseFollowBaseline])
 
   // ---- Viewport-coverage watchdog (see VIEWPORT_COVERAGE_TICK_MS) ----
   useEffect(() => {
@@ -2394,10 +2428,18 @@ export function useVirtualChat<T>(
       // has zero span and is uncovered by construction.
       const spanTop = idx.offsetOf(start)
       const spanBottom = end > start ? idx.offsetOf(end - 1) + idx.getHeight(end - 1) : spanTop
-      if (
-        top < spanTop - VIEWPORT_COVERAGE_SLACK_PX ||
-        bottom > spanBottom + VIEWPORT_COVERAGE_SLACK_PX
-      ) {
+      // A side the window has already reached the list's end on is covered by
+      // construction: there is no row left to mount there. Without this the
+      // chrome that shares the scroller with the rows -- the tail spacer and
+      // bottom sentinel below the last row, the paging bar above the first --
+      // sits inside the viewport whenever the reader is at an end, reads as
+      // uncovered pixels past the span, and made this fire forcePin every tick
+      // for a reader parked at the bottom: a same-value scrollTo each 500ms
+      // that re-armed follow the idle rule had just released and, on WebKit,
+      // cut every rubber-band and momentum tail short.
+      const uncoveredAbove = start > 0 && top < spanTop - VIEWPORT_COVERAGE_SLACK_PX
+      const uncoveredBelow = end < count && bottom > spanBottom + VIEWPORT_COVERAGE_SLACK_PX
+      if (uncoveredAbove || uncoveredBelow) {
         // Recovery is stick-aware. FOLLOWING: the window is tail-anchored, so
         // remounting rows at the displaced position would endorse a position
         // the reader never chose — force-pin back to the bottom (stick is the
@@ -3079,8 +3121,11 @@ export function useVirtualChat<T>(
         lastWriteTop: lastWriteTopRef.current,
         runActive: runActiveRef.current,
         restoreGate: settleGateRef.current,
+        readerMovedSinceWrite: readerMovedSinceWrite(),
       })
+      const wasStick = stickRef.current
       stickRef.current = decision.stick
+      if (wasStick && !decision.stick) releaseFollowBaseline()
       if (!decision.pin) return
       if (Math.abs(el.scrollTop - decision.target) > 0.5) writeScrollTop(el, decision.target, 'auto', 'pin', 'prepin')
       return
@@ -3129,7 +3174,37 @@ export function useVirtualChat<T>(
   }, [heightCommit, scrollerRef, writeScrollTop])
 
 
-  // ---- Follow-output: pin to bottom when items append ----
+  // ---- Leading chrome: content ABOVE the list inside the scroller ----
+  // The rows and the scroller's own box are observed; what sits between the
+  // scroll origin and the first row is not -- a paging bar that mounts once the
+  // server reports unloaded history, a header band the host renders above the
+  // rows. That chrome mounting or resizing moves every row by its height with
+  // no ResizeObserver seeing it and no scroll event: on Chromium native scroll
+  // anchoring silently carries a bottom-pinned reader through it, on WebKit
+  // (no anchoring) the reader is left the chrome's height short of the end.
+  // Measured on the phone rig: the earlier-messages bar mounting 46px after
+  // the entry pin, and nothing to bring the reader back.
+  //
+  // Re-evaluate the bottom pin whenever the leading offset changes between
+  // commits, while following. pinAuto's predicate decides: a reader resting on
+  // our last write with no input is carried to the live bottom (idempotent on
+  // Chromium, where anchoring already moved them there); anyone else is left
+  // alone. Measured only while following -- released readers own their position
+  // -- and reset on release so a stale value cannot fire on re-engagement.
+  const leadingChromeRef = useRef(-1)
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el || !stickRef.current) { leadingChromeRef.current = -1; return }
+    const lead = leadingOffset(el)
+    const prev = leadingChromeRef.current
+    leadingChromeRef.current = lead
+    if (prev < 0 || Math.abs(lead - prev) <= 0.5) return
+    if (inspectorOn()) devLog('LEAD', `${Math.round(prev)}->${Math.round(lead)} y=${Math.round(el.scrollTop)}`)
+    // Same settle gate as the pre-paint pin: a gesture in flight outranks this
+    // correction, and the post-paint RO pin still covers a parked reader.
+    if (pinSuppressedNow(performance.now(), lastHardInputAtRef.current, pinCascadeUntilRef.current, SCROLL_SETTLE_MS)) return
+    pinAuto()
+  })
   const prevItemCountRef = useRef(itemCount)
   // Tail identity of the previous commit, session-scoped. What separates a
   // bulk PREPEND (idle history prefetch landing hundreds of rows ABOVE a

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
 import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
-import { queryComposerOrExpand, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
+import { queryComposerOrExpand, queryPendingApprovalAction, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
 import {
   loadPanelToggleOverrides,
@@ -171,6 +171,13 @@ export const DEFAULT_SHORTCUTS: ShortcutDef[] = [
   { id: 'nav-schedule', key: 's', alt: true, group: 'panel-navigation' },
   // Actions
   { id: 'focus-input', key: 'Enter', alt: true, group: 'actions' },
+  // Alt+Shift+Enter: focus the pending tool-approval row. Sibling of focus-input
+  // above and deliberately the shifted variant of it, which `focus-input`'s own
+  // handler branch already excludes (`!e.shiftKey`) — so this claims a chord no
+  // other entry wants and needs no new letter reservation, `Enter` already being
+  // in RESERVED_PANEL_CODES. It MOVES FOCUS ONLY: see queryPendingApprovalAction
+  // for why answering a prompt is not something a chord should be able to do.
+  { id: 'focus-approval', key: 'Enter', alt: true, shift: true, group: 'actions' },
   { id: 'new-chat', key: 'n', alt: true, shift: true, group: 'actions' },
   { id: 'close-chat', key: 'w', alt: true, shift: true, group: 'actions' },
   { id: 'shortcuts-modal', key: 'k', alt: true, group: 'actions' },
@@ -251,6 +258,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'nav-projects': 'hooks.useKeyboardShortcuts.projects_panel',
   'nav-schedule': 'hooks.useKeyboardShortcuts.schedule_panel',
   'focus-input': 'hooks.useKeyboardShortcuts.focus_text_input',
+  'focus-approval': 'hooks.useKeyboardShortcuts.focus_pending_approval',
   // Reused: the same command as the chat sidebar's own New chat / Close session
   // controls, so the reference list and the buttons cannot drift apart.
   'new-chat': 'pages.chatSidebar.new_chat',
@@ -894,6 +902,30 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // reach for mid-sentence in the composer, so a bail-out there would make the
     // chord dead exactly where it is wanted.
     if (e.shiftKey && code === 'KeyM') { e.preventDefault(); onToggleFocusMode?.(); return }
+
+    // Alt+Shift+Enter: Focus the pending tool-approval row.
+    //
+    // Fires from inside the composer, exactly like Alt+Enter below and for the
+    // reason Alt+Shift+M states above: this is a chord you reach for mid-sentence,
+    // so bailing out on a focused text field would make it dead precisely where it
+    // is wanted. Firing while typing is safe HERE ONLY BECAUSE IT MOVES FOCUS AND
+    // NOTHING ELSE — the decision still costs a second, deliberate press on a
+    // control the user can now see is focused. A chord that ANSWERED the prompt
+    // would be a one-keystroke path to running a tool call nobody read, which is
+    // why this one stops at focus; see queryPendingApprovalAction.
+    //
+    // Claimed unconditionally, even with no approval pending, on the same grounds
+    // the Alt+digit jumps claim a dead digit: the chord collides with no browser
+    // binding, so swallowing it avoids surprise typing — here, a stray newline in
+    // the draft. Nothing is focused in that case; the keystroke simply does nothing.
+    //
+    // Mutually exclusive with Alt+Enter by an explicit guard on BOTH branches, so
+    // neither depends on which is tested first.
+    if (e.shiftKey && code === 'Enter') {
+      e.preventDefault()
+      queryPendingApprovalAction()?.focus()
+      return
+    }
 
     // Alt+Enter: Focus text input — works even from other inputs
     if (code === 'Enter' && !e.shiftKey) {

@@ -31,7 +31,7 @@
  * row promise a launch it can never perform. Reveal still works on Windows.
  */
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import { ExternalLink, FolderOpen, Copy, Check, AlertCircle } from 'lucide-react'
+import { ExternalLink, FolderOpen, Copy, Check, AlertCircle, PenLine } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -43,6 +43,7 @@ import { useBranding } from '../hooks/useBranding'
 import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
+import { canOpenFileInEditor, openFileInEditor } from '../lib/electron'
 import { i18nT } from '../i18n/t'
 
 /** What the wrapped path is on disk. Directories cannot be "opened".
@@ -280,6 +281,25 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
       ? i18nT('components.filePathMenu.copy_failed')
       : i18nT('components.filePathMenu.copy_path')
 
+  // "Open in editor" hands the PATH to the desktop shell's shell.openPath bridge
+  // so the file opens in the user's own OS default handler — the one place the
+  // built-in viewer and the gateway-host reveal cannot reach. Shown only when
+  // the fileOpenAPI preload bridge exists (desktop shell, not a browser tab or
+  // the PWA) and the target is a file, not a directory. Its own error line,
+  // separate from the gateway reveal's, since this launch happens entirely in
+  // the shell and never touches /api/reveal.
+  const canOpenInEditor = kind !== 'dir' && canOpenFileInEditor()
+  const openInEditorLabel = i18nT('components.markdownPanel.open_in_editor')
+  const [editorError, setEditorError] = useState<string | null>(null)
+  useEffect(() => { setEditorError(null) }, [filePath])
+  const openInEditor = async () => {
+    setEditorError(null)
+    const r = await openFileInEditor(filePath)
+    // The bridge always names a reason on failure (bad path, unsupported type,
+    // or the OS refusal string), so there is no English fallback to translate.
+    if (!r.ok) setEditorError(r.error || 'error')
+  }
+
   return (
     <>
       {/* A failed reveal/open renders IN the menu (which the rows keep open on
@@ -297,6 +317,29 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
             testId="file-path-menu-error"
           />
         </div>
+      )}
+      {editorError && (
+        <div className="px-2 py-1.5 max-w-[260px]">
+          <ErrorNotice
+            variant="inline"
+            className="whitespace-normal"
+            message={editorError}
+            askAgent
+            onDismiss={() => setEditorError(null)}
+            testId="file-path-menu-editor-error"
+          />
+        </div>
+      )}
+      {canOpenInEditor && (
+        <ContextMenuItem
+          // preventDefault keeps the menu open so a launch failure can render
+          // in place through editorError rather than vanishing with the menu.
+          onSelect={(e) => { e.preventDefault(); void openInEditor() }}
+          aria-label={openInEditorLabel}
+        >
+          <PenLine size={14} className="lucide-inline" />
+          {openInEditorLabel}
+        </ContextMenuItem>
       )}
       {canOpen && (
         <ContextMenuItem

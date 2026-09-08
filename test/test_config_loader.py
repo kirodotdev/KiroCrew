@@ -347,6 +347,44 @@ def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
     assert reloaded.slack.home_tab_sessions_per_kind == 42
 
 
+class TestMemberDispatchLoad:
+    """agent.member_dispatch load-time coercion (issue #8073).
+
+    The operator ceiling on the member session-control bypass. A MISSING key
+    defaults to true (today's behaviour), but a PRESENT-but-malformed value —
+    the routine quoted `"false"` config mistake — must coerce to FALSE, so a
+    botched opt-out withdraws the bypass rather than silently leaving it on
+    (a governance ceiling that fails open otherwise).
+    """
+
+    def test_missing_key_defaults_true(self) -> None:
+        assert _load_from_dict({}).agent.member_dispatch is True
+
+    def test_explicit_true_and_false(self) -> None:
+        assert _load_from_dict({"agent": {"member_dispatch": True}}).agent.member_dispatch is True
+        assert _load_from_dict({"agent": {"member_dispatch": False}}).agent.member_dispatch is False
+
+    def test_quoted_false_coerces_to_false_not_true(self) -> None:
+        # The GPT-flagged fail-open: `"false"` is not a bool, and defaulting it
+        # to true would keep the bypass authorized against the operator's intent.
+        assert (
+            _load_from_dict({"agent": {"member_dispatch": "false"}}).agent.member_dispatch is False
+        )
+
+    def test_any_present_non_bool_coerces_to_false(self) -> None:
+        # A present but malformed value fails to the SAFE direction (bypass off),
+        # including a truthy-looking string that must not be trusted.
+        for bad in ("true", "yes", 1, 0, {}, [], None):
+            assert (
+                _load_from_dict({"agent": {"member_dispatch": bad}}).agent.member_dispatch is False
+            ), bad
+
+    def test_round_trips_through_to_dict(self) -> None:
+        loaded = _load_from_dict({"agent": {"member_dispatch": False}})
+        reloaded = _load_from_dict(loaded.to_dict())
+        assert reloaded.agent.member_dispatch is False
+
+
 class TestFallbackModelLoad:
     """agent.fallback_model flows through the explicit load() kwargs."""
 

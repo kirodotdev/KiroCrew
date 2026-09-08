@@ -169,6 +169,16 @@ contextBridge.exposeInMainWorld("wslAPI", {
   detect: () => ipcRenderer.invoke("wsl:detect"),
 });
 
+// File-open bridge for the chat path chip's "Open in editor" affordance. Hands
+// a filesystem PATH — never a URL scheme — to the main process, which validates
+// it and calls shell.openPath so the file opens in the OS default handler on the
+// user's own machine. Resolves { ok, error? }. Absent in a plain browser and in
+// the PWA — the renderer treats a missing bridge as "cannot open externally" and
+// hides the control, keeping the built-in viewer as the only path there.
+contextBridge.exposeInMainWorld("fileOpenAPI", {
+  open: (filePath) => ipcRenderer.invoke("dashboard:open-file", String(filePath || "")),
+});
+
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
 // Chromium's per-origin zoom (the thing Cmd/Ctrl +/- changes) is not
 // reachable from page JS, so the renderer round-trips through main.js.

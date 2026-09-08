@@ -1331,6 +1331,20 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # snapshot-copied via `pinned_fs` into its own 0700 directory.)
         "transcribe.py::_pcm_via_ffmpeg",
         "transcribe.py::audio_exceeds_secs",
+        # The two spawns that split an over-cap recording for the meetings import
+        # route, both ffmpeg-only through `_create_ffmpeg_subprocess` above, so
+        # `_SPAWN_NAMES` propagates the same audit and both are classified here.
+        # `_detect_silence_ends` is a null decode (`-f null -`) with the fixed
+        # `silencedetect` filter and no output file; `_extract_segment` decodes one
+        # `-ss`/`-t` span to a 16 kHz mono WAV in the route's own 0700 snapshot dir.
+        # In both the only variable argv element is the positional input, which the
+        # route hands in as the process-private pinned descriptor path
+        # (`/dev/fd/N`) of the snapshot it already validated and copied — a hostile
+        # value can only name a bad input, never a second command, and the output
+        # path (`_extract_segment`) is a gateway-chosen name under the snapshot dir,
+        # not agent input.
+        "transcribe.py::_detect_silence_ends",
+        "transcribe.py::_extract_segment",
         "transcribe.py::_transcribe_aws",
         # The build probe executes the same authenticated image with the single
         # fixed `-version` argument; it accepts no external input at all. Both

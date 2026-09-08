@@ -3545,7 +3545,11 @@ function ChatInput({
                           {i18nT('components.chatInput.show_in_chat')}
                       </button>
                   )}
-                  <div className="flex gap-1.5 flex-wrap items-center">
+                  {/* `data-approval-actions` is the probe `queryPendingApprovalAction`
+                      resolves — a keyboard chord lands on this row's first enabled
+                      control. A `data-` hook rather than button text because every
+                      catalog translates the labels. */}
+                  <div data-approval-actions className="flex gap-1.5 flex-wrap items-center">
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
                       {approvalIsReadOnly && approvalTrustGrantable && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />{i18nT('components.chatInput.trust_reads')}</button>}
                       {approvalTrustGrantable && approvalTrustCommandGrantable && (

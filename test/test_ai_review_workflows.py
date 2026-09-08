@@ -617,10 +617,10 @@ class TestPrReadiness:
         assert 'failed_passes="$(cat codex-failed-passes 2>/dev/null || true)"' in review_step
 
     def test_each_model_call_starts_on_a_fresh_bedrock_session(self) -> None:
-        """One AssumeRole session lasts an hour; the model calls used to share
-        it, so a first call that consumed most of the hour left the next to
-        die on `401 ... security token ... expired` and fail the gate closed
-        with no verdict. Every lane whose job timeout exceeds the session
+        """One AssumeRole session lasts an hour, so model calls that share it let
+        a first call consume most of the hour and leave the next to die on
+        `401 ... security token ... expired`, failing the gate closed with no
+        verdict. Every lane whose job timeout exceeds the session
         lifetime must re-assume before EACH call — the GPT lanes now make three
         (two CLI passes plus the Opus adjudication of the blocking verdict) —
         and each call must be wall-bounded under that lifetime where the lane
@@ -802,9 +802,9 @@ class TestPrReadiness:
         assert "      - CodeQL" in workflow
         for workflow_name in (
             "ci.yml|CI",
-            # Fast Gate carries the eleven cheap blocking gates that used to sit
-            # inside CI. Splitting them out gave the fork reviewers something to
-            # key on in ~1 minute instead of CI's ~54, but a split-out lane that
+            # Fast Gate carries the eleven cheap blocking gates, split out of
+            # CI so the fork reviewers have something to key on in ~1 minute
+            # instead of CI's ~54. But a split-out lane that
             # readiness does not aggregate is a gate that can go red without
             # turning the PR red -- so it is pinned here exactly like CI.
             "fast-gate.yml|Fast Gate",
@@ -1231,8 +1231,8 @@ class TestFirstPrinciplesReview:
         )
 
     def test_one_contract_file_read_from_the_base_ref(self) -> None:
-        # The contract used to be inlined in BOTH lanes and held in sync by a
-        # byte-equality test -- guarding duplication instead of removing it, when
+        # Inlining the contract in BOTH lanes and holding it in sync by a
+        # byte-equality test guards duplication instead of removing it, when
         # `.github/review-prompts/` already existed for exactly this (2 consumers:
         # the Opus lanes). Reading it from the BASE ref is also load-bearing: an
         # inline prompt on the head lets a change edit the reviewer that judges it.
@@ -1563,10 +1563,10 @@ class TestFirstPrinciplesIntentCapSurvivesALongBody:
 class TestIntentReadFailureFailsClosed:
     """Execute the ACTUAL PR-intent read from both lanes with ``gh`` stubbed.
 
-    `2>/dev/null || true` used to collapse a failed API read onto the same
-    empty string as a PR with no description, so the reviewer judged a PR that
-    appeared to state no intent and the author was blamed for a description
-    the workflow never read. These cases pin the three outcomes apart: a read
+    A bare `2>/dev/null || true` collapses a failed API read onto the same
+    empty string as a PR with no description, which would have the reviewer
+    judge a PR that appears to state no intent and blame the author for a
+    description the workflow never read. These cases pin the three outcomes apart: a read
     that succeeds is judged as written, a transient failure is absorbed by the
     bounded retry, and a read that never succeeds fails the step closed while
     naming the read as the cause.
@@ -3787,8 +3787,8 @@ class TestBlockAdjudicationContract:
         assert _step_env("fork-gpt-review.yml", ADJ_GATE)["REASONS"] == "|".join(reasons)
 
     def test_fenced_findings_get_an_annotate_only_pass_that_cannot_unblock(self) -> None:
-        """#8693: the fence's cost used to be a blind block -- no role in the
-        machine channel could say "this combination is too rare". The fenced
+        """A fence on its own costs a blind block: no role in the machine
+        channel can say "this combination is too rare". The fenced
         block gives the arbiter a voice with NO downgrade authority: a FLAG
         only pre-drafts the override rationale a repository writer must
         verify, and the gate never reads it."""
@@ -6656,7 +6656,7 @@ class TestFirstPrinciplesProblemsFirstContract:
 
     def test_undeclared_and_rides_along_are_inventory_tags_not_verdicts(self) -> None:
         # ~50% of PRs drew CONCERNS, so the signal cost nothing to ignore.
-        # These two tags still print, but no longer carry the verdict by
+        # These two tags print as inventory and do not carry the verdict by
         # themselves; CONCERNS is reserved for premise and depth risks.
         contract = _fp_contract()
         assert "`undeclared` and `rides along`\n  are INVENTORY TAGS ONLY" in contract
@@ -6669,7 +6669,7 @@ class TestFirstPrinciplesProblemsFirstContract:
 
     def test_output_leads_with_problems_and_drops_the_praise_punchline(self) -> None:
         contract = _fp_contract()
-        # The PASS punchline no longer argues the author's case.
+        # The PASS punchline does not argue the author's case.
         assert "why every item earns its place" not in contract.split("Output EXACTLY")[0]
         assert "Never\nexplain why every item earns its place" in contract
         assert "the ONE thing a human should still verify before merge" in contract
@@ -6719,3 +6719,686 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert "REPO CONTEXT: Kiro Crew is an open-source AI agent platform" in contract
         assert "DO NOT REASON FROM AN ASSUMED USER COUNT, in either direction" in contract
         assert "the AGENT is untrusted with respect to its own governance" in contract
+
+
+def _review_contract_module():
+    """Import the REAL marker parser so a drift in its regexes fails these tests.
+
+    Re-declaring the patterns here would let the workflow's neutralization and
+    the parser drift apart silently, which is the whole failure mode under test.
+    Loaded via ``load_skill_script`` so the import writes no ``__pycache__``
+    into the checked-in scripts directory.
+    """
+    from skill_script_helpers import load_skill_script
+
+    return load_skill_script(
+        "_review_contract_under_test",
+        ROOT
+        / "src"
+        / "kiro_crew"
+        / "builtin_skills"
+        / "kirocrew-dev"
+        / "prepare-pr"
+        / "scripts"
+        / "_review_contract.py",
+    )
+
+
+class TestForkLaneRedactsCredentialValues:
+    """A BARE credential value must not survive into the posted body.
+
+    Every shape rule in these lanes misses a bare AWS secret access key: it is 40
+    characters of ``[A-Za-z0-9/+=]`` with no distinctive prefix, so it is not
+    ``AKIA``/``ASIA`` (that is the key *ID*), it carries no ``name=`` for the
+    named-pair rule to anchor on, and it is far short of the 200+ char base64 run
+    the withhold filter looks for. The reviewer runs agentically with those values
+    in its environment and a malicious fork can prompt it to print them, so the
+    lanes redact the VALUES too -- which cannot be evaded by how the model chooses
+    to format them.
+    """
+
+    # Shape-accurate stand-in: 40 chars from the AWS secret alphabet, no prefix.
+    FAKE_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+    LANES = (
+        ("fork-gpt-review.yml", "Redact credential shapes", "codex-review-output.md"),
+        ("fork-opus-review.yml", "Capture and redact review output", "claude-review-output.md"),
+    )
+
+    def _run_redaction(
+        self, tmp_path: Path, workflow: str, step: str, out: str, body: str, cred: str
+    ):
+        bash = _bash()
+        if bash is None or shutil.which("perl") is None or shutil.which("jq") is None:
+            pytest.skip("redaction test requires Bash, perl and jq")
+        if os.name == "nt":
+            pytest.skip("the lanes' perl -i redaction is exercised on POSIX runners")
+
+        cwd = tmp_path / "ws"
+        cwd.mkdir()
+        (cwd / out).write_text(body, encoding="utf-8")
+        # The Opus lane folds redaction into its capture step, which reads the
+        # agent transcript; give it one so the real step runs unmodified.
+        exec_file = tmp_path / "exec.json"
+        exec_file.write_text(json.dumps({"result": body}), encoding="utf-8")
+
+        script_file = tmp_path / "step.sh"
+        script_file.write_text(
+            _step_script(_workflow(workflow), step), encoding="utf-8", newline="\n"
+        )
+        env = {**os.environ, "EXEC_FILE": str(exec_file)}
+        # Absent means "not configured", which must be a no-op rather than an
+        # empty pattern -- so the caller can ask for the unset case explicitly.
+        for name in ("AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_ACCESS_KEY_ID"):
+            env.pop(name, None)
+        if cred is not None:
+            env["AWS_SECRET_ACCESS_KEY"] = cred
+        result = subprocess.run(
+            [bash, "-e", str(script_file)], check=False, capture_output=True, cwd=cwd, env=env
+        )
+        return (cwd / out).read_text(encoding="utf-8"), result
+
+    @pytest.mark.parametrize(("workflow", "step", "out"), LANES)
+    def test_a_bare_secret_value_is_redacted(
+        self, tmp_path: Path, workflow: str, step: str, out: str
+    ) -> None:
+        body = f"the agent printed its environment: {self.FAKE_SECRET} and kept going\n"
+        text, result = self._run_redaction(tmp_path, workflow, step, out, body, self.FAKE_SECRET)
+        assert result.returncode == 0, result.stderr.decode()
+        assert self.FAKE_SECRET not in text, f"{workflow}: bare secret survived redaction"
+        assert "[REDACTED-CREDENTIAL]" in text
+        # Surrounding prose is untouched -- this redacts a value, not the body.
+        assert "and kept going" in text
+
+    @pytest.mark.parametrize(("workflow", "step", "out"), LANES)
+    def test_an_unset_credential_does_not_carpet_the_body(
+        self, tmp_path: Path, workflow: str, step: str, out: str
+    ) -> None:
+        """The guard that makes the loop safe.
+
+        ``\\Q\\E`` on an empty string is an empty pattern, which matches at every
+        position -- so an unconfigured credential would otherwise replace the gaps
+        between every character with the marker and destroy the review body.
+        """
+        body = "a perfectly ordinary review body with no secrets in it\n"
+        text, result = self._run_redaction(tmp_path, workflow, step, out, body, None)
+        assert result.returncode == 0, result.stderr.decode()
+        assert "[REDACTED-CREDENTIAL]" not in text
+        assert text.strip() == body.strip()
+
+
+class TestForkLaneSurfacesAnUnstampedReviewBody:
+    """A completed fork review whose verdict stamp is missing must stay readable.
+
+    Both fork lanes decide ``kind`` from the presence of ``[<NAME>-REVIEWED]
+    <head>`` in the captured output. When a review runs to completion but that
+    stamp is absent or SHA-corrupted -- a clean review can carry a truncated
+    sha -- ``kind`` falls to ``incomplete`` and the body goes only to the job
+    logs behind a one-line "no verdict" notice. A reader then cannot tell a
+    clean review with a mangled stamp from a review that produced nothing, and
+    those need opposite responses.
+
+    The branch prints the captured body with every marker DE-BRACKETED, which is
+    what keeps this a reporting change: ``REVIEWED_STAMP_RE`` and
+    ``BLOCK_MERGE_RE`` both anchor on a literal ``[``, so the surfaced body is
+    inert to the parser in exactly the way an absent body is. The check-run
+    conclusion is re-derived independently and still fails closed.
+
+    Deliberately NOT surfaced: the pass-failure stub. If GPT's pass 1 fails,
+    pass 2 still runs but against an empty discovery block, so its output
+    reviewed nothing; publishing it as findings would misrepresent it.
+    """
+
+    HEAD = "07bdb01215b9161c90ae28b11296bfc60ad30646"
+    # (workflow, captured-output filename, comment step, finalize step, stamp name)
+    LANES = (
+        (
+            "fork-gpt-review.yml",
+            "codex-review-output.md",
+            "Post/update summary comment",
+            "GPT",
+        ),
+        (
+            "fork-opus-review.yml",
+            "claude-review-output.md",
+            "Post/update summary comment",
+            "OPUS",
+        ),
+    )
+
+    def _findings_body(self, stamp: str | None) -> str:
+        """A complete review with two findings; ``stamp`` None means unstamped."""
+        body = (
+            "BLOCKING -- src/kiro_crew/apps/builtins/thing/app.json:2 -- new built-in app\n"
+            "Anchor: no-new-builtin-apps\n"
+            "\n"
+            "BLOCKING -- src/kiro_crew/dashboard/chat_folders.py:618 -- blocking call on the loop\n"
+            "Anchor: no-blocking-call-on-event-loop\n"
+            "\n"
+            f"[BLOCK-MERGE] {self.HEAD}\n"
+        )
+        if stamp is not None:
+            body += f"[{stamp}-REVIEWED] {self.HEAD}\n"
+        return body
+
+    def _run_step(
+        self,
+        tmp_path: Path,
+        *,
+        workflow: str,
+        output_file: str,
+        step: str,
+        review_output: str | None,
+        check_id: str = "",
+    ) -> tuple[Path, "subprocess.CompletedProcess[bytes]"]:
+        bash = _bash()
+        if bash is None or shutil.which("jq") is None:
+            pytest.skip("fork-lane comment tests require Bash and jq")
+        if os.name == "nt":
+            pytest.skip("stubbed-PATH gh interception is exercised on POSIX runners")
+
+        stub_dir = tmp_path / "stub"
+        stub_dir.mkdir()
+        calls_dir = tmp_path / "calls"
+        calls_dir.mkdir()
+        cwd = tmp_path / "workspace"
+        cwd.mkdir()
+        runner_temp = tmp_path / "runner-temp"
+        runner_temp.mkdir()
+
+        if review_output is not None:
+            (cwd / output_file).write_text(review_output, encoding="utf-8")
+
+        gh_stub = stub_dir / "gh"
+        gh_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Records the argv of every mutating call and answers the comment\n"
+            "# finder with an empty array, so the step takes its create path.\n"
+            'if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "PATCH" ]; then\n'
+            '  printf \'%s\\n\' "$@" >> "$STUB_CALLS/patch-argv.txt"\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "POST" ]; then\n'
+            '  printf \'%s\\n\' "$@" >> "$STUB_CALLS/post-argv.txt"\n'
+            '  echo "1"\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "api" ]; then\n'
+            '  echo -n ""\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then\n'
+            "  shift 3\n"
+            '  if [ "$1" = "--body-file" ]; then cp "$2" "$STUB_CALLS/created-body.md"; fi\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        gh_stub.chmod(0o755)
+
+        script_file = tmp_path / "step.sh"
+        script = _step_script(_workflow(workflow), step)
+        # Each lane assembles its comment under `$RUNNER_TEMP`, which this harness
+        # points at a per-test directory. That is what stops two parametrized cases
+        # from racing on one path and reading each other's body -- which is how a
+        # stamped case's live markers first showed up in the unstamped case's
+        # assertions. Assert the path stays RUNNER_TEMP-scoped, so a regression to a
+        # bare `/tmp` (shared between xdist workers, and the operator's own machine
+        # when the suite runs locally) fails here instead of silently restoring the
+        # race.
+        if step == "Post/update summary comment":
+            assert re.search(
+                r"\$\{RUNNER_TEMP:-[^}]*\}/fork-(?:codex|opus)-comment\.md", script
+            ), f"{workflow}: comment path must be RUNNER_TEMP-scoped, not a bare /tmp path"
+        # `newline="\n"`: text-mode translation writes CRLF on Windows and bash
+        # reads the CR as part of the token (`fi\r` is not the `fi` keyword). These
+        # cases skip on Windows today, so this is belt-and-braces.
+        script_file.write_text(script, encoding="utf-8", newline="\n")
+
+        env = {
+            **os.environ,
+            "PATH": f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "REPO": "example/repo",
+            "PR": "1",
+            "HEAD": self.HEAD,
+            "GH_TOKEN": "stub-token",
+            "RUNNER_TEMP": str(runner_temp),
+            "STUB_CALLS": str(calls_dir),
+            "CHECK_ID": check_id,
+            "ADJ_DECISION": "",
+            "ADJ_NOTE": "",
+        }
+        result = subprocess.run(
+            [bash, "-e", str(script_file)],
+            check=False,
+            capture_output=True,
+            cwd=cwd,
+            env=env,
+        )
+        return calls_dir, result
+
+    @pytest.mark.parametrize(("workflow", "output_file", "step", "stamp"), LANES)
+    def test_a_completed_review_with_no_stamp_is_surfaced_not_dropped(
+        self, tmp_path: Path, workflow: str, output_file: str, step: str, stamp: str
+    ) -> None:
+        calls, result = self._run_step(
+            tmp_path,
+            workflow=workflow,
+            output_file=output_file,
+            step=step,
+            review_output=self._findings_body(stamp=None),
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        posted = (calls / "created-body.md").read_text(encoding="utf-8")
+
+        # The lane still reports that it has no verdict -- that is true.
+        assert "No completed" in posted
+        # ...and the findings it DID produce are now readable on the PR rather
+        # than only in the job logs. Both findings, not just the first.
+        assert "no-new-builtin-apps" in posted
+        assert "no-blocking-call-on-event-loop" in posted
+        assert "chat_folders.py:618" in posted
+        # Framed so the body is not mistaken for a verdict.
+        assert "NOT a verdict" in posted
+
+    @pytest.mark.parametrize(("workflow", "output_file", "step", "stamp"), LANES)
+    def test_the_surfaced_body_is_inert_to_the_real_marker_parsers(
+        self, tmp_path: Path, workflow: str, output_file: str, step: str, stamp: str
+    ) -> None:
+        """The invariant that keeps this a reporting change.
+
+        Surfacing a raw body would publish ``[<NAME>-REVIEWED] <head>`` for a
+        review that never completed, and pr_status.py reads that stamp straight
+        out of comment text -- an unstamped review would start reading as freshly
+        reviewed. De-bracketing keeps the downstream view identical to today's.
+        """
+        contract = _review_contract_module()
+        calls, result = self._run_step(
+            tmp_path,
+            workflow=workflow,
+            output_file=output_file,
+            step=step,
+            # Worst case: the body carries BOTH a foreign reviewed-stamp and a
+            # blocking marker, while lacking this lane's own stamp for the head.
+            review_output=self._findings_body(stamp="SOMEOTHER"),
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        posted = (calls / "created-body.md").read_text(encoding="utf-8")
+
+        # The body was surfaced...
+        assert "no-new-builtin-apps" in posted
+        # ...and carries nothing either parser can read.
+        assert contract.REVIEWED_STAMP_RE.findall(posted) == []
+        assert contract.BLOCK_MERGE_RE.findall(posted) == []
+        # The de-bracketed forms are present, so a human can still see what the
+        # model emitted and that it was neutralized rather than deleted.
+        assert "SOMEOTHER-REVIEWED-UNSTAMPED" in posted
+        assert "BLOCK-MERGE-UNSTAMPED" in posted
+
+    @pytest.mark.parametrize(("workflow", "output_file", "step", "stamp"), LANES)
+    def test_the_check_run_still_fails_closed_when_the_stamp_is_missing(
+        self, tmp_path: Path, workflow: str, output_file: str, step: str, stamp: str
+    ) -> None:
+        """Nothing blocks less: the conclusion is re-derived from the same
+        missing stamp and is unchanged by the reporting branch."""
+        calls, result = self._run_step(
+            tmp_path,
+            workflow=workflow,
+            output_file=output_file,
+            step="Finalize check-run (fail closed)",
+            review_output=self._findings_body(stamp=None),
+            check_id="4242",
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        argv = (calls / "patch-argv.txt").read_text(encoding="utf-8")
+        assert "conclusion=failure" in argv
+        assert "conclusion=success" not in argv
+
+    @pytest.mark.parametrize(("workflow", "output_file", "step", "stamp"), LANES)
+    def test_a_marker_split_across_lines_is_still_neutralized(
+        self, tmp_path: Path, workflow: str, output_file: str, step: str, stamp: str
+    ) -> None:
+        """The bypass that a sha-anchored pattern would leave open.
+
+        Python's ``\\s+`` spans newlines; line-oriented ``sed`` cannot. So a body
+        emitting ``[GPT-REVIEWED]\\n<sha>`` would slip past a pattern that required
+        a sha on the same line, while pr_status.py still read it as a live stamp.
+        That spelling lands in THIS branch precisely because the lane's own
+        ``grep -Fq`` is single-line too and so fails to find the marker. The
+        neutralization therefore matches the bracketed token alone.
+        """
+        contract = _review_contract_module()
+        split_body = (
+            "BLOCKING -- src/foo.py:1 -- something\n"
+            f"[BLOCK-MERGE]\n{self.HEAD}\n"
+            f"[{stamp}-REVIEWED]\n{self.HEAD}\n"
+        )
+        # Precondition: the parser really does read the split spelling as live,
+        # otherwise this test would pass for the wrong reason.
+        assert contract.REVIEWED_STAMP_RE.findall(split_body) == [(stamp, self.HEAD)]
+        assert contract.BLOCK_MERGE_RE.findall(split_body) == [self.HEAD]
+
+        calls, result = self._run_step(
+            tmp_path,
+            workflow=workflow,
+            output_file=output_file,
+            step=step,
+            review_output=split_body,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        posted = (calls / "created-body.md").read_text(encoding="utf-8")
+
+        assert contract.REVIEWED_STAMP_RE.findall(posted) == []
+        assert contract.BLOCK_MERGE_RE.findall(posted) == []
+
+    @pytest.mark.parametrize(("workflow", "output_file", "step", "stamp"), LANES)
+    def test_credential_shaped_unstamped_output_is_withheld_entirely(
+        self, tmp_path: Path, workflow: str, output_file: str, step: str, stamp: str
+    ) -> None:
+        """Surfacing an unstamped body must not become a credential exfil path.
+
+        The reviewer runs agentically with credentials in its environment, and a
+        malicious fork can inject a prompt that BOTH dumps that environment and
+        omits the verdict stamp -- which routes into this branch by construction,
+        because the lane's stamp check is what sends it here. Before this branch
+        existed nothing was posted, so publishing the body is the exposure. The
+        redaction earlier in the lane catches an AWS key ID and named
+        ``key=value`` forms but not a bare secret value, a GitHub token or a PEM
+        block, so any surviving credential shape must withhold the WHOLE body.
+        """
+        secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"  # noqa: S105 - shape, not a key
+        calls, result = self._run_step(
+            tmp_path,
+            workflow=workflow,
+            output_file=output_file,
+            step=step,
+            review_output=f"BLOCKING -- src/foo.py:1 -- finding\nenv dump: {secret}\n",
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        posted = (calls / "created-body.md").read_text(encoding="utf-8")
+
+        # The credential shape never reaches the PR...
+        assert secret not in posted
+        # ...and neither does the body that carried it -- withheld wholesale, not
+        # partially scrubbed, because a partial scrub is what missed it already.
+        assert "src/foo.py:1" not in posted
+        assert "withheld" in posted
+        # The lane still reports honestly that it has no verdict.
+        assert "No completed" in posted
+
+    @pytest.mark.parametrize(("workflow", "output_file", "step", "stamp"), LANES)
+    def test_a_stamped_review_keeps_its_markers_intact(
+        self, tmp_path: Path, workflow: str, output_file: str, step: str, stamp: str
+    ) -> None:
+        """The neutralization must not leak out of the unstamped branch.
+
+        A properly stamped blocking review still publishes live markers, because
+        pr_status.py's freshness and blocking reads depend on them.
+        """
+        contract = _review_contract_module()
+        calls, result = self._run_step(
+            tmp_path,
+            workflow=workflow,
+            output_file=output_file,
+            step=step,
+            review_output=self._findings_body(stamp=stamp),
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        posted = (calls / "created-body.md").read_text(encoding="utf-8")
+
+        assert (stamp, self.HEAD) in contract.REVIEWED_STAMP_RE.findall(posted)
+        assert self.HEAD in contract.BLOCK_MERGE_RE.findall(posted)
+        assert "UNSTAMPED" not in posted
+
+
+class TestForkGptLaneKeepsCredentialsOutOfTheModelShell:
+    """`codex exec` hands the model a shell; the Opus lane deliberately does not.
+
+    The Opus fork lane runs with ``--allowedTools "Read,Grep,Glob"``, so its model
+    has no way to read the environment. This lane's model does, and it runs on a
+    fork's UNTRUSTED diff, so a prompt-injected reviewer can be told to print its
+    environment. Redaction cannot close that by itself: it matches the
+    credential's shapes and its verbatim value, and a value printed in chunks,
+    with delimiters, or re-encoded defeats both. The credentials therefore must
+    not be in the shell's environment at all.
+    """
+
+    STEP = "Configure the review CLI for Amazon Bedrock"
+
+    def _config(self, tmp_path: Path) -> dict:
+        import tomllib
+
+        bash = _bash()
+        if bash is None:
+            pytest.skip("writing the review CLI config requires Bash")
+        home = tmp_path / "home"
+        home.mkdir()
+        script_file = tmp_path / "step.sh"
+        script_file.write_text(
+            _step_script(_workflow("fork-gpt-review.yml"), self.STEP),
+            encoding="utf-8",
+            newline="\n",
+        )
+        proc = subprocess.run(
+            [bash, "-e", str(script_file)],
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env={**os.environ, "HOME": str(home)},
+        )
+        assert proc.returncode == 0, proc.stderr
+        written = home / ".codex" / "config.toml"
+        assert written.is_file(), "the step wrote no config.toml"
+        # PARSE, never grep: a heredoc emitting invalid TOML would still satisfy a
+        # substring assertion while codex discards the policy and the model's
+        # shell keeps the credentials.
+        return tomllib.loads(written.read_text(encoding="utf-8"))
+
+    def test_the_bedrock_provider_still_resolves(self, tmp_path: Path) -> None:
+        # The exclusions must not cost the lane its model: the provider reads its
+        # credentials from the codex PROCESS environment, which the shell policy
+        # does not touch.
+        config = self._config(tmp_path)
+        assert config["model_provider"] == "amazon-bedrock"
+        assert config["model"] == "openai.gpt-5.6-sol"
+
+    def test_every_aws_credential_variable_is_excluded(self, tmp_path: Path) -> None:
+        filters = self._config(tmp_path)["shell_environment_policy"]["filters"]
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            assert filters.get(name) == "exclude", f"{name} still reaches the model's shell"
+        # The wildcard covers an AWS variable a later step introduces without
+        # anyone remembering to name it here.
+        assert filters.get("AWS_*") == "exclude"
+
+    def test_secret_named_variables_are_not_kept(self, tmp_path: Path) -> None:
+        # `ignore_default_excludes` reads backwards: it DEFAULTS TO TRUE, and true
+        # KEEPS variables whose names contain KEY, SECRET or TOKEN. It must be
+        # false so GH_TOKEN and future secret-shaped variables drop out too.
+        policy = self._config(tmp_path)["shell_environment_policy"]
+        assert policy["ignore_default_excludes"] is False
+
+
+class TestForkModelStepsDenyReadingTheEnvironment:
+    """Having no Bash is not the same as having no environment access.
+
+    These lanes run their models with ``--allowedTools "Read,Grep,Glob"`` and no
+    shell, which is why they need no `shell_environment_policy`. But `Read` is
+    path-unscoped and ``/proc/self/environ`` is an ordinary file, so an injected
+    prompt in the fork's untrusted diff could read the job's Bedrock credentials
+    through `Read` alone and print them into a body this PR now publishes.
+    Redaction cannot close that -- an encoded or chunked value evades both the
+    shape rules and the verbatim-value match -- so the read path is denied.
+
+    BOTH workflows this change edits are covered, not just the obvious one. The
+    GPT lane's own Opus ADJUDICATION step is a `claude-code-action` step too, and
+    the body it produces is posted by the SAME comment step that surfaces an
+    unstamped review -- so a fence that skipped it would leave the exposure
+    reachable in a file this diff already touches.
+    """
+
+    WORKFLOWS = ("fork-gpt-review.yml", "fork-opus-review.yml")
+    ACTION = "anthropics/claude-code-action"
+
+    def _model_steps(self) -> list[tuple[str, dict]]:
+        import yaml
+
+        found: list[tuple[str, dict]] = []
+        for workflow in self.WORKFLOWS:
+            doc = yaml.safe_load(_workflow(workflow))
+            steps = [
+                step
+                for job in (doc.get("jobs") or {}).values()
+                for step in (job.get("steps") or [])
+                if self.ACTION in str(step.get("uses") or "")
+            ]
+            # Enumerate rather than grep the file: a NEW model step added without
+            # the fence is exactly the regression this test exists to catch, and a
+            # whole-file substring assertion would still pass with one unfenced
+            # step sitting beside a fenced sibling.
+            assert steps, f"{workflow}: found no {self.ACTION} step to check"
+            found.extend((workflow, step) for step in steps)
+        return found
+
+    @staticmethod
+    def _args(workflow: str, step: dict) -> tuple[str, str]:
+        name = step.get("name") or step.get("id") or "<unnamed>"
+        return f"{workflow}:{name}", step.get("with", {}).get("claude_args", "")
+
+    def test_every_model_step_denies_reading_proc(self) -> None:
+        for workflow, step in self._model_steps():
+            where, args = self._args(workflow, step)
+            assert "--disallowedTools" in args, f"{where}: no --disallowedTools fence"
+            assert "Read(//proc/**)" in args, f"{where}: /proc is still readable"
+
+    def test_the_fence_is_a_deny_not_a_narrowed_allow(self) -> None:
+        # A deny rule outranks every allow rule and CLI flag, so the fence must
+        # not be expressed by narrowing --allowedTools: an allow rule that fails
+        # to match falls back to prompting, which in a non-interactive run is not
+        # a guarantee about what was read.
+        for workflow, step in self._model_steps():
+            where, args = self._args(workflow, step)
+            assert (
+                "Read(//proc" not in args.split("--disallowedTools")[0]
+            ), f"{where}: /proc appears before --disallowedTools, so it may be an allow rule"
+
+    def test_the_lanes_still_have_the_tools_they_review_with(self) -> None:
+        # The fence must not cost a lane its work: each reads the checked-out
+        # tree and its pre-fetched data through exactly these three tools.
+        for workflow, step in self._model_steps():
+            where, args = self._args(workflow, step)
+            assert '--allowedTools "Read,Grep,Glob"' in args, f"{where}: review tools changed"
+            # And Bash stays absent -- the no-shell property these lanes rest on.
+            assert "Bash" not in args, f"{where}: Bash reappeared in a fork model step"
+
+
+class TestModelStepsRunAfterTheCredentialFilesAreScrubbed:
+    """The environment fences do not cover the runner's on-disk copy.
+
+    ``configure-aws-credentials`` exports through ``core.exportVariable``, which
+    writes each value into ``$RUNNER_TEMP/_runner_file_commands/set_env_*``. Both
+    other fences guard the ENVIRONMENT -- the codex lane drops the AWS variables
+    from its shell tool's env, and the Opus steps deny ``Read(//proc/**)`` -- so
+    neither reaches a file sitting under a directory these lanes legitimately
+    read. A model told to open it can emit the value in chunks that match no
+    shape rule, which is why the value is removed rather than filtered.
+    """
+
+    WORKFLOWS = ("fork-gpt-review.yml", "fork-opus-review.yml")
+    SCRUB = "Scrub persisted credential files before the model runs"
+
+    def _jobs(self, workflow: str) -> list[list[dict]]:
+        import yaml
+
+        doc = yaml.safe_load(_workflow(workflow))
+        return [job.get("steps") or [] for job in (doc.get("jobs") or {}).values()]
+
+    @staticmethod
+    def _is_model_step(step: dict) -> bool:
+        if "anthropics/claude-code-action" in str(step.get("uses") or ""):
+            return True
+        # The codex lane invokes the model from a run block, so the `uses` test
+        # alone would miss both of its passes.
+        return "/.bin/codex" in str(step.get("run") or "")
+
+    def _scrub_bodies(self) -> list[str]:
+        bodies = []
+        for workflow in self.WORKFLOWS:
+            for steps in self._jobs(workflow):
+                for step in steps:
+                    if step.get("name") == self.SCRUB:
+                        bodies.append(step.get("run") or "")
+        return bodies
+
+    def test_every_model_step_is_directly_preceded_by_the_scrub(self) -> None:
+        seen = 0
+        for workflow in self.WORKFLOWS:
+            for steps in self._jobs(workflow):
+                for index, step in enumerate(steps):
+                    if not self._is_model_step(step):
+                        continue
+                    seen += 1
+                    where = f"{workflow}:{step.get('name') or step.get('id') or index}"
+                    assert index > 0, f"{where}: model step is first, so nothing scrubbed"
+                    assert steps[index - 1].get("name") == self.SCRUB, (
+                        f"{where}: the step before it is "
+                        f"{steps[index - 1].get('name')!r}, not the scrub"
+                    )
+        # Guard the enumeration itself: a rename that makes `_is_model_step` match
+        # nothing would otherwise turn this into a vacuous pass.
+        assert seen == 5, f"expected 5 model steps across both lanes, found {seen}"
+
+    def test_the_scrub_is_byte_identical_at_every_site(self) -> None:
+        bodies = self._scrub_bodies()
+        assert len(bodies) == 5, f"expected 5 scrub steps, found {len(bodies)}"
+        assert len(set(bodies)) == 1, "the scrub bodies have drifted apart"
+
+    def test_the_scrub_truncates_set_env_files_and_nothing_else(self, tmp_path: Path) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the scrub step is exercised on POSIX runners")
+        runner_temp = tmp_path / "runner"
+        commands = runner_temp / "_runner_file_commands"
+        commands.mkdir(parents=True)
+        (commands / "set_env_one").write_text(
+            "AWS_SECRET_ACCESS_KEY<<X\nsecret\nX\n", encoding="utf-8"
+        )
+        (commands / "set_env_two").write_text("AWS_SESSION_TOKEN<<Y\ntoken\nY\n", encoding="utf-8")
+        # A sibling command file the runner still needs: truncating it too would
+        # break state passing, so the pattern has to stay scoped to set_env_*.
+        (commands / "save_state_keep").write_text("keep\n", encoding="utf-8")
+
+        script = tmp_path / "scrub.sh"
+        script.write_text(self._scrub_bodies()[0], encoding="utf-8", newline="\n")
+        proc = subprocess.run(
+            [bash, "-e", str(script)],
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env={**os.environ, "RUNNER_TEMP": str(runner_temp)},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert (commands / "set_env_one").read_text(encoding="utf-8") == ""
+        assert (commands / "set_env_two").read_text(encoding="utf-8") == ""
+        assert (commands / "save_state_keep").read_text(encoding="utf-8") == "keep\n"
+
+    def test_a_missing_runner_directory_is_not_an_error(self, tmp_path: Path) -> None:
+        # The scrub runs unconditionally before every model step, so a job whose
+        # runner exposes no file-command directory must pass through it rather
+        # than failing the lane before the review starts.
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the scrub step is exercised on POSIX runners")
+        script = tmp_path / "scrub.sh"
+        script.write_text(self._scrub_bodies()[0], encoding="utf-8", newline="\n")
+        proc = subprocess.run(
+            [bash, "-e", str(script)],
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env={**os.environ, "RUNNER_TEMP": str(tmp_path / "absent")},
+        )
+        assert proc.returncode == 0, proc.stderr
