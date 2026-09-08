@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -205,6 +206,10 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         if crons:
             env_updates["CRONS"] = "1"
             boot_flags.append("--crons")
+        no_embeddings = bool(getattr(args, "no_embeddings", False))
+        if no_embeddings:
+            env_updates["EMBEDDINGS"] = "0"
+            boot_flags.append("--no-embeddings")
 
         # Read the unit's state BEFORE choosing a port, and inside the mutex: the
         # two questions are one decision. An `up` against an already-active pod is
@@ -299,16 +304,32 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                     f"(kirocrew pod down {name} && kirocrew pod up {name} {joined}).",
                     file=sys.stderr,
                 )
-        # Record boot-time settings: a pod in `yolo` auto-approves every tool and
-        # one with the scheduler on runs work unattended, so the audit trail must
-        # say so rather than recording only that a pod came up. Mark the
+        # Record boot-time settings: a pod in `yolo` auto-approves every tool, one
+        # with the scheduler on runs work unattended, and one without embeddings
+        # answers search from a different index than a normal pod -- so the audit
+        # trail must say so rather than recording only that a pod came up. Mark the
         # requested-but-not-yet-effective case: `boot` reads these once at start,
         # so a setting recorded against a live pod has not applied yet.
+        # `embeddings=off` is keyed on what the pod boots WITH, not on this command's
+        # flag. The merge-preserving env file keeps EMBEDDINGS=0 from an earlier `up`,
+        # so a re-up without the flag boots the same embedding-light pod; and a
+        # KIROCREW_SKIP_MODEL_DOWNLOAD=1 already in this environment is what
+        # pod_context hands every `pod exec` and what an inheriting boot carries,
+        # with no key ever written. Either pod answers search from a different
+        # index, and a row that said nothing would contradict the journal line
+        # `boot` prints for both (it keys on the effective env the same way).
+        embeddings_off = (
+            no_embeddings
+            or rt.embeddings_disabled(rt.read_env_file(cfg, name))
+            or os.environ.get(rt.SKIP_MODEL_DOWNLOAD_ENV) == "1"
+        )
         resources = f"name={name} port={port}"
         if approval:
             resources += f" approval={approval}"
         if crons:
             resources += " crons=on"
+        if embeddings_off:
+            resources += " embeddings=off"
         if boot_flags and was_active:
             resources += " applied=next_boot"
         _audit("pod.up", "allowed", resources)

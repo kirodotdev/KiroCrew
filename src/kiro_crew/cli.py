@@ -1771,6 +1771,20 @@ Examples:
             "scenario may provide them. Persisted per pod; applies at boot."
         ),
     )
+    pod_up.add_argument(
+        "--no-embeddings",
+        dest="no_embeddings",
+        action="store_true",
+        help=(
+            "Boot without the embedding model: the pod never downloads it and "
+            "memory/knowledge search falls back to keyword matching (a documented "
+            "mode). Use it to load-test ingestion without paying per-chunk embed "
+            "compute. Affects the pod's env only, never your own home. Persisted "
+            "per pod as EMBEDDINGS='0' in its env file (hand-edit that line to flip "
+            "a kept pod); applies at boot. The switch is subsystem-wide, so the pod "
+            "skips its speech-to-text (whisper) model download too."
+        ),
+    )
     pod_down = pod_sub.add_parser("down", help="Evict a pod (zero residue)")
     pod_down.add_argument("name", help="Worktree name")
     pod_ls = pod_sub.add_parser("ls", help="List running pods")

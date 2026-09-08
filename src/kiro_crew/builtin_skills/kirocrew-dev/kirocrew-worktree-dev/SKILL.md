@@ -281,9 +281,13 @@ where a pod cannot run.
    the approval mode the pod's gateway boots with, persisted per pod so it
    survives a service-manager restart; omit it to inherit `agent.approval_mode`.
    `--crons` runs the pod's cron scheduler — pods boot `--no-crons`, so a
-   scheduled job you are testing never fires without it. `--ttl` (default `2h`)
-   bounds the dashboard token. All three apply at boot, so re-up a stopped pod to
-   change them.
+   scheduled job you are testing never fires without it. `--no-embeddings` boots
+   the pod without the embedding model: it downloads no GGUF and computes no
+   vector, and memory/knowledge search answers through the documented keyword
+   fallback, so ingestion load tests stop paying per-chunk embed compute. Your own
+   home keeps its model — the variable is set in the pod's env only. `--ttl`
+   (default `2h`) bounds the dashboard token. All of these apply at boot, so re-up
+   a stopped pod to change them.
 
    For behavior that needs existing data, seed a shipped fixture instead of
    clicking state in by hand:
