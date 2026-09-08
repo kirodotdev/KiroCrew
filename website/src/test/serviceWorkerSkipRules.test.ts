@@ -66,10 +66,17 @@ describe('service worker skip rules', () => {
     expect(intercepts('/artifacts')).toBe(true)
   })
 
-  it('leaves the API, app backends and hashed assets to the browser', () => {
+  it('leaves the API and app backends to the browser', () => {
     expect(intercepts('/api/artifacts')).toBe(false)
     expect(intercepts('/apps/dev-fleet/api/state')).toBe(false)
-    expect(intercepts('/assets/App-abc123.js', 'no-cors')).toBe(false)
+  })
+
+  it('DOES take hashed assets over, so a 5xx can be retried', () => {
+    // Not for caching — the immutable HTTP cache still owns them. The worker sits
+    // in the path only so that one 502 on a module script does not kill the page.
+    // The shell above is served from cache, so a module graph that fails leaves a
+    // dark skeleton that no reload clears.
+    expect(intercepts('/assets/App-abc123.js', 'no-cors')).toBe(true)
   })
 })
 
@@ -119,5 +126,100 @@ describe('the shell cache refresh is scoped to the shell', () => {
     const r = shellPutsFor('/app-windows/mochi/panel.html') as unknown as { puts: string[]; settled: Promise<unknown> }
     await r.settled
     expect(r.puts).toEqual([])
+  })
+})
+
+// A page load asks for the whole module graph at once, and the hop in front of the
+// gateway has a lower real concurrency ceiling than it advertises: `tailscale
+// serve` announces 250 concurrent HTTP/2 streams and starts answering 502 past
+// roughly 140. Measured against a Windows gateway on one connection — 120 streams:
+// all 120 OK; 200 streams: 140 OK + 60x502; 247 streams: 143 OK + 104x502. A 502 on
+// a module script is not a degraded page, it is a dead one, and the shell keeps
+// coming from the cache above so no reload escapes it. Hence the retry, and hence
+// these tests: the SW is the only layer that runs when the app cannot boot, so
+// staleShellHeal (a boot-time probe) can never reach this failure.
+/** Drive one asset request with a scripted fetch, and report the attempts made. */
+function assetRequest(steps: Array<number | 'throw'>): {
+  result: Promise<{ status?: number }>
+  attempts: () => number
+} {
+  let calls = 0
+  const listeners: Record<string, (e: unknown) => void> = {}
+  const fakeSelf = {
+    addEventListener: (kind: string, fn: (e: unknown) => void) => { listeners[kind] = fn },
+    location: { origin: ORIGIN },
+    skipWaiting: () => {},
+    clients: { claim: () => {} },
+  }
+  const fakeCaches = {
+    open: async () => ({ addAll: async () => {}, put: async () => {} }),
+    keys: async () => [] as string[],
+    match: async () => undefined,
+    delete: async () => {},
+  }
+  // Past the end of the script the LAST step repeats, so a one-element script
+  // means "always this".
+  const fetchStub = () => {
+    const step = steps[Math.min(calls, steps.length - 1)]
+    calls += 1
+    return step === 'throw'
+      ? Promise.reject(new TypeError('network error'))
+      : Promise.resolve({ status: step })
+  }
+  new Function('self', 'caches', 'fetch', readFileSync(SW_PATH, 'utf8'))(
+    fakeSelf, fakeCaches, fetchStub,
+  )
+  let captured: Promise<{ status?: number }> = Promise.resolve({})
+  listeners.fetch({
+    request: { method: 'GET', url: ORIGIN + '/assets/App-abc123.js', mode: 'no-cors' },
+    respondWith: (p: Promise<{ status?: number }>) => { captured = p },
+  })
+  return { result: captured, attempts: () => calls }
+}
+
+describe('hashed-asset 5xx retry', () => {
+  it('passes a first-try 200 straight through, with no second attempt', async () => {
+    const r = assetRequest([200])
+    expect((await r.result).status).toBe(200)
+    expect(r.attempts()).toBe(1)
+  })
+
+  it('recovers a 502 that succeeds on retry — the black-screen case', async () => {
+    const r = assetRequest([502, 200])
+    expect((await r.result).status).toBe(200)
+    expect(r.attempts()).toBe(2)
+  })
+
+  it('does NOT retry a 404, which is a genuinely missing asset', async () => {
+    // A stale shell pointing at a pruned build must surface at once instead of
+    // costing three round trips per missing module.
+    const r = assetRequest([404])
+    expect((await r.result).status).toBe(404)
+    expect(r.attempts()).toBe(1)
+  })
+
+  it('gives up after a bounded number of attempts and reports the real status', async () => {
+    // Bounded, so a genuinely broken gateway is not hammered; and the LAST real
+    // response is handed back rather than a synthetic network error, so the
+    // browser's console names the actual failure.
+    const r = assetRequest([503])
+    expect((await r.result).status).toBe(503)
+    expect(r.attempts()).toBe(3)
+  })
+
+  it('retries a thrown network error too, and still resolves', async () => {
+    const r = assetRequest(['throw', 200])
+    expect((await r.result).status).toBe(200)
+    expect(r.attempts()).toBe(2)
+  })
+
+  it('keeps a captured 5xx when a later attempt throws', async () => {
+    // The give-up branch promises the browser the TRUE status. A dropped
+    // connection on a later attempt must not downgrade an already-seen 502 into a
+    // synthetic network error — during the burst this fix is for, a 5xx and a
+    // dropped connection arrive together, so this ordering is the common one.
+    const r = assetRequest([502, 'throw'])
+    expect((await r.result).status).toBe(502)
+    expect(r.attempts()).toBe(3)
   })
 })
