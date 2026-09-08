@@ -346,3 +346,131 @@ class TestAgainstARealDaemon:
         state = tailnet_serve.serve_state(_DASH_PORT)
         assert state.published in (True, False, None)
         assert state.detail
+
+
+# A device name a real tailnet routinely carries. Its UTF-8 encoding is
+# ``e6 b8 ac e8 a9 a6``, and every one of those bytes is ALSO a legal Big5 lead
+# or trail byte, so a cp950 host decodes it into different characters rather
+# than raising -- the mojibake half of this class, which no exception handler
+# can notice.
+_CJK_HOST = "測試-desk"
+
+#: Bytes that are not valid UTF-8 at all (``0xff`` can never begin a UTF-8
+#: sequence), wrapped in otherwise well-formed JSON. This is the half that is
+#: deterministic on EVERY host: it does not depend on what the host code page
+#: happens to be, only on the decode being strict.
+_UNDECODABLE_JSON = (
+    b'{"BackendState":"Running","Self":{"DNSName":"' + bytes([0xFF, 0xFE]) + b'.ts.net"}}'
+)
+
+
+def _raw_cli(tmp_path, monkeypatch, payload: bytes) -> None:
+    """Stage a fake ``tailscale`` that writes *payload* to stdout as RAW BYTES.
+
+    The suite's main fake answers through ``print(json.dumps(...))``, which is
+    ASCII by construction (``ensure_ascii`` defaults on) and re-encodes through
+    the CHILD's stdout encoding — so it can never place a non-ASCII byte on the
+    pipe and cannot exercise the parent's decode at all. Writing to
+    ``sys.stdout.buffer`` puts exactly these bytes on the pipe, which is what a
+    Go binary such as ``tailscale`` does.
+
+    Reuses the two seams the module docstring already justifies: the candidate
+    path is patched because ``_CLI_CANDIDATE_PATHS`` holds only root-owned
+    locations, and the POSIX provenance check is relaxed because an unprivileged
+    test cannot satisfy it.
+    """
+    body = tmp_path / "raw_tailscale.py"
+    body.write_text(
+        "import sys\n"
+        f"sys.stdout.buffer.write({payload!r})\n"
+        "sys.stdout.buffer.flush()\n",
+        encoding="utf-8",
+    )
+    if sys.platform == "win32":
+        cli = tmp_path / "tailscale.bat"
+        cli.write_text(f'@echo off\r\n"{sys.executable}" "{body}" %*\r\n')
+    else:
+        cli = tmp_path / "tailscale"
+        cli.write_text(f"#!{sys.executable}\n" + body.read_text(encoding="utf-8"))
+        cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (str(cli),))
+    if tailnet.IS_POSIX:
+        monkeypatch.setattr(tailnet, "_posix_candidate_trusted", lambda _c: True)
+    else:
+        monkeypatch.setattr(
+            tailnet.github_runner, "validate_provider_executable", lambda candidate: candidate
+        )
+
+
+class TestTheCliIsDecodedAsUtf8NotTheHostCodePage:
+    """``tailscale`` is a Go binary and ``--json`` output is JSON: both are UTF-8.
+
+    ``subprocess.run(..., text=True)`` with no ``encoding=`` decodes the child
+    with ``locale.getpreferredencoding()`` — UTF-8 on POSIX, but the legacy ANSI
+    code page on Windows. Tailnet device names are operator-chosen free text, so
+    non-ASCII here is ordinary rather than exotic, and JSON is defined as UTF-8
+    (RFC 8259 §8.1), so pinning the decode is reading the spec, not guessing.
+
+    The class has two halves, and only the second is reproducible on a UTF-8 CI
+    runner:
+
+    * bytes that ARE valid in the host code page decode to the wrong characters,
+      silently — ``_CJK_HOST``;
+    * bytes that decode under neither take a platform-specific path. POSIX raises
+      ``UnicodeDecodeError`` out of ``subprocess.run``; that is a ``ValueError``,
+      so it passes straight through the ``except (OSError,
+      subprocess.SubprocessError)`` guard. On Windows ``capture_output`` reads on
+      a helper thread, so the same error kills that thread, prints a traceback to
+      the gateway's stderr, and leaves ``proc.stdout`` as ``None`` — measured,
+      not assumed. Either way ``_run_json_detail`` breaks its documented promise
+      to return "a name or nothing" and degrade every failure to ``None``.
+    """
+
+    def test_undecodable_bytes_degrade_to_a_name_rather_than_escaping(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The cross-platform half — red on POSIX and Windows alike.
+
+        With the decode pinned, ``errors="replace"`` turns the bad bytes into
+        U+FFFD *inside the string*, so the surrounding JSON still parses and the
+        caller gets its answer. That is the degradation policy this repository
+        applies to decoded child output: one malformed byte costs one
+        character, not the whole payload.
+        """
+        _raw_cli(tmp_path, monkeypatch, _UNDECODABLE_JSON)
+        with pytest.raises(UnicodeDecodeError):
+            _UNDECODABLE_JSON.decode("utf-8")  # guard the guard
+
+        parsed, transient = tailnet._run_json_detail(["status", "--json"])
+
+        assert parsed is not None, "a malformed byte must not cost the whole payload"
+        assert transient is False
+        assert parsed["Self"]["DNSName"].endswith(".ts.net")
+
+    def test_a_non_ascii_device_name_round_trips(self, tmp_path, monkeypatch) -> None:
+        """The real-world half: an operator-named device must survive the read.
+
+        Host-conditioned by construction — a UTF-8 runner decodes it correctly
+        either way — so it is paired with the deterministic test above rather
+        than relied on alone. It is nonetheless the thing that actually breaks
+        for the user, so it is asserted rather than only described.
+        """
+        name = f"{_CJK_HOST}.{_SUFFIX}"
+        payload = json.dumps(
+            {"BackendState": "Running", "Self": {"DNSName": name}}, ensure_ascii=False
+        ).encode("utf-8")
+        _raw_cli(tmp_path, monkeypatch, payload)
+
+        parsed, _ = tailnet._run_json_detail(["status", "--json"])
+
+        assert parsed is not None
+        assert parsed["Self"]["DNSName"] == name
+
+    def test_the_fixture_really_defeats_a_legacy_code_page(self) -> None:
+        """Guard the guard: ``_CJK_HOST`` must be a name cp950 reads DIFFERENTLY.
+
+        Without this, the round-trip test above would pass just as happily on a
+        name that was ASCII all along, and would be pinning nothing.
+        """
+        raw = _CJK_HOST.encode("utf-8")
+        assert raw.decode("cp950", errors="replace") != _CJK_HOST
