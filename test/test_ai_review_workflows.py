@@ -6715,15 +6715,25 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert "`justified` is exactly that ONE word" in contract
         assert "Only a NON-justified tag carries a reason" in contract
 
-    def test_a_clean_inventory_collapses_and_a_dirty_one_stays_open(self) -> None:
+    def test_the_inventory_is_collapsed_on_every_verdict(self) -> None:
+        # The block was left EXPANDED on CONCERNS/BLOCK -- exactly the verdicts
+        # a human opens the comment for -- so the findings sat under a full
+        # list of the items that were fine. Every item a human must act on is
+        # already under `### Not justified as shipped`, so the inventory is an
+        # audit trail and stays one click away on every verdict, with the
+        # counts in the summary line.
         contract = _fp_contract()
-        assert "<details><summary>Inventory (N items)</summary>" in contract
+        assert "ALWAYS COLLAPSED, on every verdict" in contract
+        assert "<details><summary>Inventory (N items) — M justified</summary>" in contract
         assert "</details>" in contract
-        assert "WHEN EVERY ITEM IS TAGGED `justified`, wrap the whole section body in" in contract
-        assert "leave the block EXPANDED" in contract
+        # The old conditional is gone in both directions.
+        assert "WHEN EVERY ITEM IS TAGGED `justified`" not in contract
+        assert "leave the block EXPANDED" not in contract
         # The inventory is still always emitted -- collapsing is not omitting.
         assert "ALWAYS present, even on PASS" in contract
         assert "A PASS here is a claim about EVERY item" in contract
+        # The findings a human acts on live above the block, not in it.
+        assert "this block is the audit trail, not the summary" in contract
 
     def test_every_finding_states_what_would_clear_it(self) -> None:
         # A finding with no statable resolution is what produced 31 of 57
