@@ -210,11 +210,18 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
                       residual strip that jumps away when the animation ends. */}
                   <div className="pt-2.5 flex flex-col gap-1.5">
                   {q.options.map(opt => {
-                    const isSelected = selections[qIdx]?.has(opt.label)
+                    const isSelected = !!selections[qIdx]?.has(opt.label)
                     return (
                       <button
                         key={opt.label}
                         onClick={() => toggleOption(qIdx, opt.label, q.multiSelect ?? false)}
+                        /* WCAG 4.1.2: the selected state must be programmatic, not
+                           CSS-only. aria-pressed (toggle button) in BOTH modes: it
+                           matches multiSelect's independent toggles exactly, and for
+                           single-select it keeps the intended click-again-to-deselect
+                           honest — role=radio would promise a control that cannot be
+                           unchecked by re-activating it, which this one can. */
+                        aria-pressed={isSelected}
                         className={`text-left px-3 py-2 rounded-lg text-[13px] cursor-pointer transition-all border ${
                           isSelected
                             ? 'border-accent text-text bg-accent-subtle/60'

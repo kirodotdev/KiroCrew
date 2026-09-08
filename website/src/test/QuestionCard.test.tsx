@@ -82,16 +82,47 @@ describe('QuestionCard', () => {
     render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} />)
     fireEvent.click(screen.getByText('Red').closest('button')!)
     fireEvent.click(screen.getByText('Blue').closest('button')!)
-    expect(screen.getByText('Red').closest('button')!.className).not.toContain('bg-accent-subtle')
-    expect(screen.getByText('Blue').closest('button')!.className).toContain('bg-accent-subtle')
+    expect(screen.getByText('Red').closest('button')!).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByText('Blue').closest('button')!).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('multi-select allows multiple selections', () => {
     render(<QuestionCard questions={multiQuestion} onSubmit={vi.fn()} />)
     fireEvent.click(screen.getByText('Dark mode').closest('button')!)
     fireEvent.click(screen.getByText('Notifications').closest('button')!)
-    expect(screen.getByText('Dark mode').closest('button')!.className).toContain('border-accent')
-    expect(screen.getByText('Notifications').closest('button')!.className).toContain('border-accent')
+    expect(screen.getByText('Dark mode').closest('button')!).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Notifications').closest('button')!).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('exposes aria-pressed on every option, tracking single-select transitions including deselect', () => {
+    // WCAG 4.1.2 Name/Role/Value: the selected state must be programmatic, not
+    // CSS-only. aria-pressed (toggle button), not role=radio + aria-checked,
+    // because single-select intentionally allows click-again-to-deselect, which
+    // radio semantics forbid.
+    render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} />)
+    const red = screen.getByText('Red').closest('button')!
+    const blue = screen.getByText('Blue').closest('button')!
+    expect(red).toHaveAttribute('aria-pressed', 'false')
+    expect(blue).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(red)
+    expect(red).toHaveAttribute('aria-pressed', 'true')
+    expect(blue).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(red) // deselect: second click on the selected option
+    expect(red).toHaveAttribute('aria-pressed', 'false')
+    expect(blue).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('multi-select toggles aria-pressed independently per option', () => {
+    render(<QuestionCard questions={multiQuestion} onSubmit={vi.fn()} />)
+    const dark = screen.getByText('Dark mode').closest('button')!
+    const notif = screen.getByText('Notifications').closest('button')!
+    fireEvent.click(dark)
+    fireEvent.click(notif)
+    expect(dark).toHaveAttribute('aria-pressed', 'true')
+    expect(notif).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(dark) // independent toggle off; the other keeps its state
+    expect(dark).toHaveAttribute('aria-pressed', 'false')
+    expect(notif).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('submit button disabled when nothing selected', () => {
@@ -122,7 +153,7 @@ describe('QuestionCard', () => {
     fireEvent.click(screen.getByText('Red').closest('button')!)
     const input = screen.getByPlaceholderText('Or type a custom answer...')
     fireEvent.change(input, { target: { value: 'Yellow' } })
-    expect(screen.getByText('Red').closest('button')!.className).not.toContain('bg-accent-subtle')
+    expect(screen.getByText('Red').closest('button')!).toHaveAttribute('aria-pressed', 'false')
   })
 
   it('selecting option clears custom input', () => {
