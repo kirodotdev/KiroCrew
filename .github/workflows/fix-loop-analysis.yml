@@ -6,16 +6,30 @@
 # computes volume, the SZZ culprit trace (git blame of each fix's removed
 # lines), deferred-finding discipline, and Pattern-harvest adoption. The model
 # (Fable 5 via Bedrock, same invocation shape as ux-review.yml) then reads the
-# window's fix-commit bodies in the checkout, classifies them against the
-# closed root-cause / detection-gap rubrics, compares against the 2026-08
-# full-coverage baseline, and narrates. The report is filed as a GitHub issue
-# labeled `fix-loop-report`, so history lives where it is subscribable and the
-# next run can diff against it.
+# window's fix-commit bodies, classifies them against the closed root-cause /
+# detection-gap rubrics, compares against the 2026-08 full-coverage baseline,
+# and narrates. The report is filed as a GitHub issue labeled
+# `fix-loop-report`, so history lives where it is subscribable and the next run
+# can diff against it.
+#
+# TWO JOBS, TWO CLOCKS. The halves have nothing in common except the files
+# they hand over: the metrics half is a git-history walk whose cost scales with
+# the window (28 min on 08-31, 57 min on 09-07), the model half needs 10-30 min
+# of its own. Under one job-level `timeout-minutes: 60` the slow half of the
+# week starved the other, and it was always the narrative that died because it
+# ran second -- both scheduled runs published "metrics only". Each job now has
+# a budget sized for ITS worst case; a slow week in either half can no longer
+# cost the other. The hand-over is a workflow artifact: the metrics job never
+# holds AWS credentials and the model job never holds git history.
 #
 # FAIL-SOFT ON THE MODEL, FAIL-HARD ON THE NUMBERS: if the metrics script
 # fails the run fails; if the model step fails the issue is still filed with
 # the deterministic table and an honest note that the narrative half did not
-# run.
+# run. Either failure then opens or bumps ONE tracking issue (the same
+# fixed-title pattern add-contributor.yml uses), because a red scheduled run
+# is otherwise seen by nobody. That is a per-workflow copy of a repo-wide gap
+# -- 11 other scheduled workflows have no surfacing at all; the shared
+# watcher that would replace these copies is tracked in issue 9562.
 name: Fix Loop Analysis
 
 on:
@@ -36,13 +50,23 @@ permissions:
   # because a report that silently drops PRs understates its own denominator and
   # so must fail loudly instead.
   actions: read
-  id-token: write # OIDC role assumption for Bedrock
+  # No `id-token` here: the OIDC grant for Bedrock is job-scoped to `analyze`
+  # below, so the git-history job never holds a credential it does not use.
+
+# One artifact name, one place to change it: the download in `analyze` must
+# match the upload in `metrics` byte for byte or the model reads nothing.
+env:
+  HANDOVER_ARTIFACT: fix-loop-handover
 
 jobs:
-  analyze:
-    name: Weekly fix-loop deep dive
+  metrics:
+    name: Deterministic metrics
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Sized for the worst observed week (57 min) twice over: SZZ cost scales
+    # with fix volume and `window_days` is a dispatch input.
+    timeout-minutes: 120
+    outputs:
+      since_iso: ${{ steps.metrics.outputs.since_iso }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,28 +81,97 @@ jobs:
         run: |
           set -euo pipefail
           SINCE_ISO="$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)"
+          # Every deliverable lands in the workspace root under a fix-loop-*
+          # name: that is the set the artifact carries, and the model step's
+          # Read tool operates on the workspace root of the OTHER job.
           python3 .github/scripts/fix_loop_metrics.py \
             --since "$WINDOW_DAYS days ago" \
             --since-iso "$SINCE_ISO" \
             --repo "$GITHUB_REPOSITORY" \
             --max-fixes 600 \
-            --out "$RUNNER_TEMP/metrics.json" \
-            --summary "$RUNNER_TEMP/metrics.md" \
+            --out fix-loop-metrics.json \
+            --summary fix-loop-metrics.md \
             --bodies-out fix-loop-commits.txt
-          # The model step's Read tool operates on the workspace, and its
-          # prompt: block does NOT expand shell variables — a $RUNNER_TEMP
-          # literal would leave the model unable to read the numbers it is
-          # told are authoritative. Stage the JSON where Read can reach it.
-          cp "$RUNNER_TEMP/metrics.json" fix-loop-metrics.json
           # Prefetch the previous weekly report for trend comparison. All
           # git/gh access the model needs happens HERE, deterministically and
-          # BEFORE any AWS credentials exist in the job — the model itself
-          # gets no shell at all.
+          # in a job that never holds AWS credentials -- the model itself gets
+          # no shell at all.
           gh issue list --repo "$GITHUB_REPOSITORY" --label fix-loop-report \
             --state all --limit 1 --json body \
             --jq '.[0].body // ""' > fix-loop-previous-report.md || true
           echo "since_iso=$SINCE_ISO" >> "$GITHUB_OUTPUT"
-          cat "$RUNNER_TEMP/metrics.md" >> "$GITHUB_STEP_SUMMARY"
+          cat fix-loop-metrics.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hand the numbers to the analysis job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.HANDOVER_ARTIFACT }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            fix-loop-metrics.json
+            fix-loop-metrics.md
+            fix-loop-commits.txt
+            fix-loop-previous-report.md
+
+      # A scheduled workflow that fails is easy to miss: the metrics half going
+      # red means NO issue at all is filed this week, and nothing else notices.
+      # Same fixed-title tracking issue as add-contributor.yml, deduped so a
+      # run that fails every Monday does not open a new issue every Monday.
+      # `cancelled()` too: a job killed by its own timeout is cancelled, not
+      # failed, and that is exactly the week with the most to report.
+      - name: Surface failure as an issue
+        if: always() && (failure() || cancelled())
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Fix Loop Analysis workflow is failing"
+          existing="$(gh issue list --repo "$REPO" --state open --search "in:title \"$TITLE\"" \
+            --json number --jq '.[0].number // empty')"
+          body="The scheduled \`fix-loop-analysis.yml\` run failed in its METRICS job, so no weekly report was filed: $RUN_URL
+
+          The metrics script fails loud rather than publish a false zero (a 403 from
+          the Actions API, a \`gh\` search cap, a git failure). Check the run log."
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body "Still failing (metrics job): $RUN_URL"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --label bug --label "area: ci" --body "$body"
+          fi
+
+  analyze:
+    name: Classify and narrate
+    needs: metrics
+    runs-on: ubuntu-latest
+    # The model half alone. 09-07 was cut off two minutes into it because the
+    # metrics half had spent 57 of the shared 60.
+    timeout-minutes: 40
+    # A job-level block REPLACES the workflow-level one, so the reads are
+    # restated; `id-token: write` is the OIDC role assumption for Bedrock and
+    # exists only here.
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+      id-token: write
+    steps:
+      # The model reads staged files only; a shallow checkout gives the action
+      # the repository it expects without the history it does not need.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # What the model reads. Everything on this runner's disk is reachable by
+      # the model's Write tool (it takes absolute paths), so nothing downloaded
+      # HERE is trusted after the model step -- see the re-fetch below.
+      - name: Receive the numbers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ env.HANDOVER_ARTIFACT }}
+          path: .
 
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
@@ -93,6 +186,11 @@ jobs:
       - name: Classify and narrate (Fable 5)
         id: narrate
         continue-on-error: true # the issue is still filed from the numbers
+        # A STEP timeout, inside the job's 40: a step that runs out of time is
+        # a failed step the filing below handles normally, where a job that runs
+        # out of time is CANCELLED and the always() tail runs on a 5-minute
+        # grace clock with the model's orphan processes still being torn down.
+        timeout-minutes: 30
         uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
         with:
           # Model id form (bare regional `us.` inference profile) is
@@ -118,7 +216,7 @@ jobs:
 
             TASK — weekly fix-loop deep dive for ${{ github.repository }},
             window: the last ${{ github.event.inputs.window_days || '7' }} days
-            (since ${{ steps.metrics.outputs.since_iso }}).
+            (since ${{ needs.metrics.outputs.since_iso }}).
 
             Everything you need is already staged in the workspace root — you
             have no shell and need none:
@@ -166,13 +264,31 @@ jobs:
                discipline mechanisms are not yet landed or not yet adopted; one
                concrete recommendation. No emojis. Percentages to one decimal.
 
+      # The numbers the issue publishes as "deterministic" are fetched AGAIN
+      # from GitHub after the model has run, into a directory that did not
+      # exist while it ran. The model had Write on this runner, and Write takes
+      # absolute paths, so no copy that was on disk during the model step --
+      # workspace or RUNNER_TEMP -- can be trusted afterwards; the artifact
+      # store is the only copy the model's tools cannot have reached. An
+      # injected commit body can therefore corrupt the narrative (which is
+      # labelled as model output) but never the table above it.
+      - name: Re-fetch the authoritative numbers
+        if: always()
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ env.HANDOVER_ARTIFACT }}
+          path: ${{ runner.temp }}/authoritative
+
+      # `always()` so the numbers land even when this job's own timeout cancels
+      # the model step mid-flight -- that is the 09-07 shape, and the artifact
+      # was already downloaded before any model work began.
       - name: File the weekly report issue
         id: file_issue
-        if: always() && steps.metrics.outcome == 'success'
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           NARRATE_OUTCOME: ${{ steps.narrate.outcome }}
-          SINCE_ISO: ${{ steps.metrics.outputs.since_iso }}
+          SINCE_ISO: ${{ needs.metrics.outputs.since_iso }}
         run: |
           set -euo pipefail
           # Neutralize notification/cross-reference/credential surfaces in
@@ -214,7 +330,9 @@ jobs:
           {
             echo "## Deterministic metrics (window since $SINCE_ISO)"
             echo ""
-            sanitize < "$RUNNER_TEMP/metrics.md"
+            # From the copy re-fetched AFTER the model step, never from anything
+            # that was on this runner while the model held Write.
+            sanitize < "$RUNNER_TEMP/authoritative/fix-loop-metrics.md"
             echo ""
             if [ "$ANALYSIS_OK" = "1" ]; then
               echo "## Analysis"
@@ -236,6 +354,37 @@ jobs:
             --label fix-loop-report \
             --body-file "$RUNNER_TEMP/issue-body.md"
 
+      # A red run is still a signal nobody receives (two scheduled runs went
+      # metrics-only before anyone looked), so a missing narrative also becomes
+      # a tracking issue a human sees -- the same fixed-title, deduped pattern
+      # add-contributor.yml uses. It runs BEFORE the re-raise so the run's last
+      # word is the red exit, and it keys on the same flag: `failure()` alone
+      # would miss a job cancelled by its own timeout (cancelled is not failed),
+      # and an unset analysis_ok means the filing step itself never ran.
+      - name: Surface failure as an issue
+        if: always() && (failure() || steps.file_issue.outputs.analysis_ok != '1')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Fix Loop Analysis workflow is failing"
+          existing="$(gh issue list --repo "$REPO" --state open --search "in:title \"$TITLE\"" \
+            --json number --jq '.[0].number // empty')"
+          body="The scheduled \`fix-loop-analysis.yml\` run failed in its ANALYSIS job: $RUN_URL
+
+          The weekly issue was still filed from the deterministic numbers (look for
+          a \`(metrics only — no analysis)\` title under the \`fix-loop-report\`
+          label); the model half produced no report. Check the model step's log:
+          \`is_error: true\` with \`num_turns: 1\` and zero cost is an IAM mismatch on
+          the Bedrock role, a cancellation is this job's own timeout."
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body "Still failing (analysis job): $RUN_URL"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --label bug --label "area: ci" --body "$body"
+          fi
+
       # The model step is fail-soft so a broken narrative can never cost the
       # deterministic numbers -- but `continue-on-error` also made the whole run
       # report SUCCESS, and a weekly job nobody has reason to open is exactly
@@ -244,10 +393,9 @@ jobs:
       # green.
       #
       # So the failure is re-raised AFTER the issue is filed: the numbers still
-      # land (that step is `if: always()`), and the run goes red, which is the
-      # only signal anyone actually receives. It keys on the filing step's
-      # `analysis_ok`, not on the model step's outcome, because the action can
-      # exit 0 having written nothing.
+      # land (that step is `if: always()`), and the run goes red. It keys on the
+      # filing step's `analysis_ok`, not on the model step's outcome, because
+      # the action can exit 0 having written nothing.
       - name: Re-raise a missing analysis
         if: always() && steps.file_issue.outputs.analysis_ok == '0'
         run: |
