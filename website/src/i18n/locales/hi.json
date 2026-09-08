@@ -7865,7 +7865,14 @@
       "title": "Git",
       "uncommitted": "{{count}} अनकमिटेड",
       "status_failed": "रिपॉज़िटरी की स्थिति पढ़ी नहीं जा सकी।",
-      "log_failed": "कमिट लॉग पढ़ा नहीं जा सका।"
+      "log_failed": "कमिट लॉग पढ़ा नहीं जा सका।",
+      "repos_count_one": "{{count}} रिपॉज़िटरी",
+      "repos_count_other": "{{count}} रिपॉज़िटरी",
+      "truncated": "{{count}} फ़ाइलों पर काटा गया",
+      "commits_unavailable": "मल्टी-रिपो प्रोजेक्ट के लिए कमिट इतिहास उपलब्ध नहीं है",
+      "repo_skipped": "छोड़ा गया",
+      "repos_truncated": "कुछ रिपॉज़िटरी स्कैन नहीं की गईं",
+      "repo_skipped_reason": "सुरक्षा के लिए छोड़ा गया — इस रिपॉज़िटरी का git कॉन्फ़िगरेशन पढ़ने के लिए सुरक्षित नहीं है"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",

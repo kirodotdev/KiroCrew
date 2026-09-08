@@ -7756,7 +7756,13 @@
       "title": "Git",
       "uncommitted": "{{count}} 件の未コミット",
       "status_failed": "リポジトリの状態を読み取れませんでした。",
-      "log_failed": "コミットログを読み取れませんでした。"
+      "log_failed": "コミットログを読み取れませんでした。",
+      "repos_count_other": "{{count}} 個のリポジトリ",
+      "truncated": "{{count}} ファイルで打ち切り",
+      "commits_unavailable": "マルチリポジトリプロジェクトではコミット履歴を表示できません",
+      "repo_skipped": "スキップ",
+      "repos_truncated": "一部のリポジトリはスキャンされていません",
+      "repo_skipped_reason": "安全のためスキップしました — このリポジトリの git 設定は読み取るには安全ではありません"
     },
     "skillsMultiSelect": {
       "add_skill": "Add skill",
