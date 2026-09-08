@@ -1,6 +1,6 @@
 ---
 name: pod-e2e
-description: "ONLY for developing Kiro Crew itself -- if the project you are working on is anything else, ignore this skill: it drives Kiro Crew's own pod tooling, which does not exist in another repository. Runs end-to-end tests (backend API + frontend Playwright) for a Kiro Crew feature worktree against an ISOLATED throwaway pod instance, without touching the live gateway. Use when asked to e2e-test / smoke-test / verify a Kiro Crew worktree's feature hands-off, run API + browser tests on a pod, or prove a new backend route + UI work together. NOT for testing the live instance, and NOT a general-purpose e2e or smoke-test skill."
+description: "ONLY for developing Kiro Crew itself -- if the project you are working on is anything else, ignore this skill: it drives Kiro Crew's own pod tooling, which does not exist in another repository. Boots a Kiro Crew feature worktree's full stack as an ISOLATED throwaway pod and proves it boots, authenticates and renders (headless Playwright), without touching the live gateway. It does NOT run the worktree's test suite -- run the tests your change touches yourself and let CI own the full suite. Use when asked to e2e-test / smoke-test / verify a Kiro Crew worktree's feature hands-off, drive browser checks on a pod, or prove a new backend route + UI work together. NOT for testing the live instance, and NOT a general-purpose e2e or smoke-test skill."
 triggers: e2e test, smoke test, pod test, verify worktree, test pod, run e2e, end to end
 repo_scope: src/kiro_crew
 ---
@@ -22,9 +22,8 @@ bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <worktree-name> --video
 **Expected success output** — a `POD-E2E SUMMARY` ending like:
 ```
   ✅ auth — GET /api/sessions → 200 with token, 403 without
-  ✅ api-tests — … → exit 0
   ✅ playwright — headless chromium loaded dashboard …
-result:       3 passed, 0 failed
+result:       2 passed, 0 failed
 ARTIFACT_DIR=~/.kirocrew-pods/.e2e-artifacts/<worktree-name>
 ```
 Exit code = number of failed phases (0 = all green). Then **look at the
@@ -96,9 +95,16 @@ green). Flags:
 | flag | effect |
 |---|---|
 | `--keep` / `--no-stop` | leave the pod running after tests (debug) |
-| `--api-only` | skip the Playwright phase |
-| `--fe-only` | skip the API-test phase |
+| `--api-only` | skip the Playwright phase (leaves a boot + auth check) |
+| `--fe-only` | accepted no-op — no test-suite phase exists to skip |
 | `--video` | record the session at 1080p → `.webm` + `.mp4` (finalization is time-capped) |
+
+**It does not run the worktree's test suite.** There is no pytest phase, on
+purpose: the suite is ~62k tests that need no pod, CI runs it on the merge ref,
+and a full local fan-out on a shared box costs far more than the browser check
+this harness exists for. Run the tests your change actually touches yourself,
+in the worktree (see the `kirocrew-worktree-dev` skill), and let CI own the
+full suite.
 
 ## What each phase does
 
@@ -115,10 +121,7 @@ green). Flags:
    and aborts.
 3. **auth** — proves auth: `/api/sessions` → 200 with token, 403 without.
    Token comes from `kirocrew pod up --json` output (no manual minting needed).
-4. **API tests** — runs the fixed command `python -m pytest -q` with cwd=the
-   worktree root, the worktree's `.venv` on PATH, and `POD_BASE_URL` +
-   `POD_TOKEN` in env so tests can hit the live pod.
-5. **Playwright** — `pod-playwright.py` (run with a Playwright venv + bundled
+4. **Playwright** — `pod-playwright.py` (run with a Playwright venv + bundled
    chromium) loads `/?token=` headless, asserts the SPA rendered (screenshots
    `fe-smoke.png`), then exec's the optional `PLAYWRIGHT_SPEC` with a live authed
    `page` in scope.
@@ -137,7 +140,7 @@ green). Flags:
      The per-step cap uses `SIGALRM`, so on a platform without it the teardown
      degrades to unbounded and says so in the log (the harness is POSIX-only
      anyway); the phase-level `timeout` still applies.
-6. **collect** — all logs + screenshots land in
+5. **collect** — all logs + screenshots land in
    `~/.kirocrew-pods/.e2e-artifacts/<wt>/`. Per-phase results are appended to
    `verdict.jsonl` **as they are decided** (and `playwright.log` is unbuffered),
    so a stalled or killed run still leaves a readable verdict. The file is
@@ -145,7 +148,7 @@ green). Flags:
    phase — so it can never show a previous run's rows. The rest of the artifact
    dir DOES persist across runs, so check timestamps before trusting an old
    screenshot.
-7. **stop** — `kirocrew pod down <wt>`: stops the service, waits for its process
+6. **stop** — `kirocrew pod down <wt>`: stops the service, waits for its process
    tree to drain, deletes the isolated HOME, and verifies it is gone — a HOME that
    survives fails the command rather than being reported as zero residue. Skipped
    if `--keep` or if
@@ -166,10 +169,10 @@ PLAYWRIGHT_SPEC=".pod-e2e/feature.spec.py" # frontend spec, relative to the mani
 ### Trust model
 
 The **pod** isolates the gateway under test (own `KIROCREW_HOME`, own port,
-no tunnel, resource caps). The **test runner** is not a sandbox: running a
-worktree's tests executes that worktree's code as your user — exactly like
-running `pytest` in the checkout yourself. Only run pod-e2e against branches
-you would be willing to build and test locally.
+no tunnel, resource caps). The **harness** is not a sandbox: it runs the
+worktree's own gateway, and exec's that branch's `PLAYWRIGHT_SPEC`, as your
+user — exactly like building and running the checkout yourself. Only run
+pod-e2e against branches you would be willing to build and run locally.
 
 ### Playwright spec contract
 
@@ -220,12 +223,12 @@ Rules:
   mints the token internally via the CLI — just run the one command above.
 - After it finishes, READ the artifacts in the printed ARTIFACT_DIR:
   verdict.jsonl (per-phase results, written as decided — trust this even if the
-  run was killed), api-tests.log, playwright.log, fe-*.png screenshots (use the
+  run was killed), playwright.log, fe-*.png screenshots (use the
   Read tool on the .png to actually look at the UI), and boot-fail.log if present.
 
 Then return a QA VERDICT, not a raw dump:
   1. Overall: PASS / FAIL / BLOCKED (couldn't even boot the pod).
-  2. Per check (auth / api-tests / playwright): pass|fail + one-line evidence.
+  2. Per check (auth / playwright): pass|fail + one-line evidence.
   3. For each FAIL: triage it — is it (a) a real regression in the feature,
      (b) a flaky/timing issue, or (c) an environment problem (missing venv,
      missing dist, port clash)? Cite the log line or screenshot that proves it.

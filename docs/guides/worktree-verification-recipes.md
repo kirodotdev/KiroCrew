@@ -123,7 +123,7 @@ printf '%s\n' "$HANDLE" | jq -e '
   .status == "up" and (.base_url | startswith("http://127.0.0.1:"))
 ' >/dev/null
 
-bash "$HARNESS" "$WT" --fe-only --no-suppress-first-run
+bash "$HARNESS" "$WT" --no-suppress-first-run
 
 jq -se '
   any(.[]; .phase == "smoke" and .status == "pass") and

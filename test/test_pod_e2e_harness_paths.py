@@ -264,6 +264,38 @@ def test_usage_text_lists_the_flag():
 
 
 # --------------------------------------------------------------------------
+# no test-suite phase
+# --------------------------------------------------------------------------
+
+
+def test_the_harness_never_runs_the_worktrees_test_suite():
+    """No executable line in the harness may invoke the checkout's test suite.
+
+    A `python -m pytest -q` from the checkout root is ~62k tests that need no
+    pod, that CI runs on the merge ref anyway, and whose fan-out costs far more
+    than the browser check this harness exists for. Only the comment explaining
+    the absence may name pytest, so an executable line that invokes it fails
+    here.
+    """
+    offenders = [
+        ln
+        for ln in SCRIPT.read_text(encoding="utf-8").splitlines()
+        if "pytest" in ln and not ln.lstrip().startswith("#")
+    ]
+    assert not offenders, f"the test-suite phase came back: {offenders}"
+
+
+def test_fe_only_is_still_accepted_after_the_phase_was_removed(tmp_path):
+    """Older invocations pass ``--fe-only``; with no suite phase left to skip it
+    is a no-op, and must not become an exit-64 unknown flag."""
+    res = _driver_argv(tmp_path, "smoke", "--fe-only")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "unknown flag" not in res.stderr, res.stderr
+    # And it may not be mistaken for the worktree NAME by the loop's `*)` arm.
+    assert "NAME=--fe-only" not in res.stdout
+
+
+# --------------------------------------------------------------------------
 # resolver: must mirror pod/runtime.py resolve_checkout() exactly
 # --------------------------------------------------------------------------
 
