@@ -671,15 +671,25 @@ export default function MembersPage() {
     },
     [slotKeyOf, patrol.loops],
   )
-  /** Roster-level reading of a member's loop record: `active` while it
-   *  patrols, `stopped` for a record that went inactive (any reason), and
-   *  nothing for a member that never armed one. The stopped state is the
-   *  incident's at-a-glance case — a dead patrol must show at the roster,
-   *  not only once someone opens the drawer. */
+  /** Roster-level reading of a member's loop record. `active` while it
+   *  patrols. A loop stopped for a BENIGN reason (cycle cap, runtime budget,
+   *  manual stop) is a normal resting state and carries no roster mark — the
+   *  reason lives in the drawer's Auto patrol block, where it can be read.
+   *  But `approval_stalled` is an INCIDENT — the loop died waiting on a tool
+   *  approval and only operator action revives it — so it keeps a `warn` mark
+   *  at the roster rather than going silent. An unknown/future stop code does
+   *  too: on a surface whose failure mode is silence, an unrecognised terminal
+   *  state fails visible, not silent. */
   const patrolBadgeOf = useCallback(
-    (m: MemberRosterRow): 'active' | 'stopped' | null => {
+    (m: MemberRosterRow): 'active' | 'warn' | null => {
       const lp = patrolLoopOf(m)
-      return lp ? (lp.active ? 'active' : 'stopped') : null
+      if (lp?.active) return 'active'
+      if (!lp) return null
+      const benign =
+        lp.stopped_reason === 'manual' ||
+        lp.stopped_reason === 'cycle_cap' ||
+        lp.stopped_reason === 'runtime_budget'
+      return benign ? null : 'warn'
     },
     [patrolLoopOf],
   )
@@ -1129,17 +1139,19 @@ export default function MembersPage() {
                       const badge = patrolBadgeOf(m)
                       if (!badge) return null
                       const lp = patrolLoopOf(m)
-                      // The tooltip spells the count the drawer's way ("3 of 24"
-                      // / "61 · no limit"): the compact "3/24" alone read as a date.
+                      // A stopped-incident badge (`warn`) speaks the stopped
+                      // sentence; an active one spells the cycle the drawer's
+                      // way ("3 of 24" / "61 · no limit") — the compact "3/24"
+                      // alone read as a date.
                       const cycle = lp
                         ? lp.max_cycles > 0
                           ? t('pages.membersPage.patrol_cycles_of', { n: lp.cycle_count, max: lp.max_cycles })
                           : t('pages.membersPage.patrol_cycles_unlimited', { n: lp.cycle_count })
                         : ''
                       const label =
-                        badge === 'active'
-                          ? t('pages.membersPage.patrol_badge', { cycle })
-                          : t('pages.membersPage.patrol_badge_stopped')
+                        badge === 'warn'
+                          ? t('pages.membersPage.patrol_badge_stopped')
+                          : t('pages.membersPage.patrol_badge', { cycle })
                       return (
                         <motion.span
                           key="patrol"
@@ -1147,8 +1159,8 @@ export default function MembersPage() {
                           animate={{ opacity: 1, scale: 1 }}
                           exit={{ opacity: 0, scale: 0.6 }}
                           transition={{ duration: 0.15, ease: [0.2, 0, 0, 1] }}
-                          className={`absolute -right-1 -top-1 w-4 h-4 rounded-full border-2 border-bg flex items-center justify-center transition-colors duration-150 ${
-                            badge === 'active' ? 'bg-accent text-accent-fg' : 'bg-warn text-warn-fg'
+                          className={`absolute -right-1 -top-1 w-4 h-4 rounded-full border-2 border-bg flex items-center justify-center ${
+                            badge === 'warn' ? 'bg-warn text-warn-fg' : 'bg-accent text-accent-fg'
                           }`}
                           role="img"
                           aria-label={label}
@@ -1156,13 +1168,12 @@ export default function MembersPage() {
                           data-testid="member-patrol-dot"
                           data-state={badge}
                         >
-                          {/* Distinct glyph per state, not colour alone: the
-                              goal target while patrolling, a pause mark once
-                              stopped, so the two read apart without the hover. */}
-                          {badge === 'active' ? (
-                            <Goal size={10} aria-hidden="true" />
+                          {/* Goal glyph while patrolling; a pause glyph for a
+                              stopped-incident (approval_stalled / unknown) mark. */}
+                          {badge === 'warn' ? (
+                            <Pause size={10} aria-hidden="true" />
                           ) : (
-                            <Pause size={9} aria-hidden="true" strokeWidth={3} />
+                            <Goal size={10} aria-hidden="true" />
                           )}
                         </motion.span>
                       )

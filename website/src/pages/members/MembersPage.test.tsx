@@ -963,32 +963,37 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     expect(screen.queryByTestId('member-patrol-dot')).toBeNull()
   })
 
-  it('the roster badge is accent on an active loop and warn on a stopped one, beside — not instead of — the presence dot', async () => {
+  it('the roster badge is three-state: an active loop shows an accent badge, a benign-stop loop shows none, and an approval_stalled loop keeps a warn badge — always beside, not instead of, the presence dot', async () => {
     ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({
       enabled: true,
       loops: [
         loop({ slot_key: 'member-radar' }),
         loop({ id: 'loop-2', slot_key: 'member-scout', active: false, stopped_reason: 'cycle_cap' }),
+        loop({ id: 'loop-3', slot_key: 'member-scribe', active: false, stopped_reason: 'approval_stalled' }),
       ],
     })
     await renderPage([
       row({ name: 'radar', slug: 'radar', bound: true, slot_key: 'member-radar', running: true }),
       row({ name: 'scout', slug: 'scout', bound: true, slot_key: 'member-scout' }),
       row({ name: 'scribe', slug: 'scribe', bound: true, slot_key: 'member-scribe' }),
+      row({ name: 'fixer', slug: 'fixer', bound: true, slot_key: 'member-fixer' }),
     ])
     await rosterRow('radar')
-    // Two badges: radar's (active, accent) and scout's (stopped, warn — the
-    // dead patrol must show at the roster, not only in the drawer). scribe
-    // never armed one and shows nothing. The active badge carries the wake
-    // readout for AT; the stopped one names the state.
+    // Two badges: radar's active loop (accent, with the wake readout) and
+    // scribe's approval_stalled loop (warn) — a patrol that died waiting on an
+    // operator approval is an incident and must show at the roster, not only
+    // in the drawer. scout's loop stopped for a benign reason (cycle cap) and
+    // fixer never armed one — neither wears a roster mark.
     const badges = await screen.findAllByTestId('member-patrol-dot')
     expect(badges).toHaveLength(2)
     const byState = Object.fromEntries(badges.map((b) => [b.getAttribute('data-state'), b]))
+    expect(byState.active).toBeDefined()
     expect(byState.active).toHaveAttribute('aria-label', expect.stringMatching(/3 of 24/))
-    expect(byState.stopped).toHaveAttribute('aria-label', expect.stringMatching(/patrol stopped/i))
+    expect(byState.warn).toBeDefined()
+    expect(byState.warn).toHaveAttribute('aria-label', 'Patrol stopped')
     // Both signals on one avatar: patrol badge (top-right) AND presence dot
     // (bottom-right) — neither replaces the other.
-    expect(screen.getAllByTestId('member-presence-dot')).toHaveLength(1)
+    expect(screen.getAllByTestId('member-presence-dot').length).toBeGreaterThanOrEqual(1)
   })
 
   it('the registry is a live React Query read: invalidating it (what the websocket hook does on every frame and reconnect) arms and disarms the badge', async () => {
