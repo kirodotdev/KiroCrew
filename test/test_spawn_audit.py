@@ -392,6 +392,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/auto_improvement/backend/pr_watchers.py::_git",
         "apps/builtins/auto_improvement/profiles/github_repo/pr_recipe.py::_gh_prefers_ssh",
         "apps/builtins/auto_improvement/profiles/github_repo/pr_recipe.py::_git",
+        # Fixed `git -C <package root> rev-parse HEAD` / `git diff --quiet HEAD -- <root>`
+        # argv (shell=False). The only path is the kiro_crew package directory this
+        # process imported, derived from `__file__`; no agent-influenced input reaches
+        # it, and it runs once per process (lru_cache) to name the code revision the
+        # MCP gateway daemon and its owner compare.
+        "code_fingerprint.py::_git_fingerprint",
         # Fixed `git rev-parse --verify` argv (shell=False) against the OPERATOR-chosen
         # clone, asking whether the operator's `scopeDiffBase` resolves. The ref comes from
         # config (`_CONFIG_WRITABLE`), not from the agent, and it is passed as one argv

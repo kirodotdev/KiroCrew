@@ -332,6 +332,33 @@ def _binary_version(command: str) -> str:
         return "unknown"
 
 
+#: Kiro Crew's own MCP servers, as the subcommand a stub's target args name.
+#: For these the target binary is the ``kirocrew`` console-script shim, whose
+#: bytes never change across a ``git pull`` of an editable install, so its
+#: hash alone let a pooled backend from a two-day-old checkout keep answering
+#: stubs from a freshly restarted gateway. The package's own fingerprint is
+#: folded in for exactly these, and only these: a third-party MCP binary is
+#: what its bytes say it is, and re-partitioning its pool on every Kiro Crew
+#: commit would cold-start it for no reason.
+_KIROCREW_MCP_SUBCOMMANDS = frozenset(
+    {"mcp-core", "mcp-cron", "mcp-work", "mcp-computer", "mcp-dashboard"}
+)
+
+
+def pool_binary_version(command: str, target_args: list[str]) -> str:
+    """The ``binary_version`` a stub registers: the binary's hash, plus the Kiro
+    Crew code fingerprint when the target is one of Kiro Crew's own servers.
+    """
+    base = _binary_version(command)
+    if not any(a in _KIROCREW_MCP_SUBCOMMANDS for a in target_args):
+        return base
+    # Imported here, not at module top: the stub's cold-start path is timed
+    # and this module is only needed on the Kiro Crew branch.
+    from kiro_crew.code_fingerprint import code_fingerprint
+
+    return f"{base}+{code_fingerprint()}"
+
+
 def binary_fingerprint(command: str) -> str:
     """Public alias of :func:`_binary_version`.
 
@@ -451,7 +478,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "command_args_hash": hash_command(args.target_command, target_args),
         "effective_env_hash": hash_effective_env(env_pairs, identity_keys=identity_keys),
         "work_dir": work_dir,
-        "binary_version": _binary_version(args.target_command),
+        "binary_version": pool_binary_version(args.target_command, target_args),
         # Not os.getuid(): that attribute does not exist on Windows, where an
         # AttributeError here would abort the Register frame and send every
         # session to per-session exec -- pooling would appear enabled and

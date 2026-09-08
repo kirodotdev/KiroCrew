@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.code_fingerprint import code_fingerprint, warm_code_fingerprint
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import resolve_krb5_ccname
 from kiro_crew.mcp_gateway import transport
@@ -249,16 +250,40 @@ class GatewayManager:
         # before our own spawn does. Round two assesses that daemon the same way
         # round one assessed the first, and the cap is what stops two instances
         # trading the socket indefinitely.
+        # Off-loop once, before the first _code_drift reads it synchronously.
+        await warm_code_fingerprint()
         for _attempt in range(_ELECTION_ROUNDS):
             incumbent = await self._ping_payload()
             if incumbent is not None:
+                if self._owned_by_a_live_other(incumbent):
+                    # Another gateway process still owns this daemon. Two
+                    # gateways on one data home is not a supported layout,
+                    # and adopting the daemon would tear it out from under
+                    # its owner -- or, on a managed-service restart racing
+                    # the old process's exit, adopt a daemon whose owner
+                    # sweeper is about to take it down mid-traffic. Neither
+                    # is ours to serve from. Refuse the broker; stubs fall
+                    # back to per-session exec, which keeps every tool
+                    # working, and the next start meets a free socket once
+                    # the owner and its daemon have gone.
+                    logger.error(
+                        "mcp-gateway: the daemon on %s is owned by another LIVE gateway "
+                        "(pid %s) — not adopting it. Two gateways on one data home is "
+                        "unsupported; if this is a restart, the previous gateway has not "
+                        "finished exiting. Starting without a shared broker.",
+                        self._spec.socket_path,
+                        incumbent.get("owner_pid"),
+                    )
+                    return False
                 # Adoption skips _spawn_once, which is the ONLY place
                 # spec.mcp_target_env is applied. Check the incumbent actually
                 # covers what this spec would have given it, and say so if not.
                 missing = self._adoption_drift(incumbent)
-                if not missing:
+                stale_code = self._code_drift(incumbent)
+                orphaned = self._orphaned(incumbent)
+                if not missing and not stale_code and not orphaned:
                     return self._adopt_incumbent()
-                verdict = await self._repair_or_adopt(missing)
+                verdict = await self._repair_or_adopt(missing, stale_code, orphaned)
                 if verdict == _ADOPT:
                     return self._adopt_incumbent()
                 if verdict == _ABORT:
@@ -274,7 +299,12 @@ class GatewayManager:
             spawned = await self._spawn_and_confirm()
             if spawned is None:
                 return False
-            if not self._adoption_drift(spawned):
+            if (
+                not self._adoption_drift(spawned)
+                and not self._code_drift(spawned)
+                and not self._owned_by_a_live_other(spawned)
+                and not self._orphaned(spawned)
+            ):
                 if self.is_running:
                     self._watchdog = asyncio.create_task(
                         self._run_watchdog(), name="mcp-gateway-watchdog"
@@ -294,7 +324,8 @@ class GatewayManager:
             # our exited handle and let the next round assess it as an incumbent.
             logger.warning(
                 "mcp-gateway: our spawn on %s lost the election to a daemon that "
-                "cannot resolve the configured target stems — re-electing",
+                "cannot serve this gateway (target stems or code revision) — "
+                "re-electing",
                 self._spec.socket_path,
             )
             self._process = None
@@ -326,7 +357,54 @@ class GatewayManager:
         )
         return True
 
-    async def _repair_or_adopt(self, missing: list[str]) -> str:
+    def _owned_by_a_live_other(self, pong: dict) -> bool:
+        """True when the pong names an owner that is alive and is not this process.
+
+        ``owner_pid`` 0 or absent means an operator-run or pre-owner daemon: no
+        one else's, so adoptable on the other gates. A dead owner is an orphan
+        (its sweeper will take it down shortly) and is adoptable on the other
+        gates too -- adopting it costs nothing and bridges the gap until it
+        exits and the watchdog spawns ours.
+        """
+        owner = pong.get("owner_pid")
+        if isinstance(owner, bool) or not isinstance(owner, int) or owner <= 0:
+            return False
+        if owner == os.getpid():
+            return False
+        return platform_compat.pid_exists(owner)
+
+    def _orphaned(self, pong: dict) -> bool:
+        """True when the pong names an owner that has exited.
+
+        Such a daemon is already scheduled to leave: its owner-liveness sweeper
+        ends it within two probes of noticing. Adopting it would hand every
+        session a broker that exits under them mid-call, so it is treated as
+        DRAINING -- asked to stand down now (it confirms its owner is gone before
+        agreeing) and replaced by a daemon this process owns. No owner recorded
+        (0 or absent) is not an orphan: nothing is scheduled to end it.
+        """
+        owner = pong.get("owner_pid")
+        if isinstance(owner, bool) or not isinstance(owner, int) or owner <= 0:
+            return False
+        if owner == os.getpid():
+            return False
+        return not platform_compat.pid_exists(owner)
+
+    def _code_drift(self, pong: dict) -> bool:
+        """True when the incumbent runs different code than this process.
+
+        The pong carries the daemon's ``code_fingerprint``. A daemon that omits it
+        (a pre-fingerprint build) is stale by construction: it predates this
+        code, so it is treated as drifted rather than as unverifiable. A daemon
+        resolving every stem can still be running a checkout two days old, and
+        the target check cannot see that -- this is the check that can.
+        """
+        theirs = pong.get("fingerprint")
+        return not isinstance(theirs, str) or theirs != code_fingerprint()
+
+    async def _repair_or_adopt(
+        self, missing: list[str], stale_code: bool = False, orphaned: bool = False
+    ) -> str:
         """Try to replace a stale incumbent; decide what the caller does next.
 
         Returns :data:`_SPAWN` (it yielded, put our own daemon there),
@@ -357,12 +435,21 @@ class GatewayManager:
                 self._stand_downs_issued,
             )
             return _ADOPT
+        grounds: list[str] = []
+        if missing:
+            grounds.append(f"cannot resolve {', '.join(missing)}")
+        if stale_code:
+            grounds.append("runs different code than this gateway")
+        if orphaned:
+            grounds.append("belongs to a gateway that has exited and is about to stop itself")
         logger.warning(
-            "mcp-gateway: incumbent on %s cannot resolve %s — asking it to "
-            "stand down so a daemon with the current target map can bind",
-            self._spec.socket_path, ", ".join(missing),
+            "mcp-gateway: incumbent on %s %s — asking it to stand down so a daemon "
+            "matching this gateway can bind",
+            self._spec.socket_path, " and ".join(grounds),
         )
-        outcome = await self._request_stand_down(missing)
+        outcome = await self._request_stand_down(
+            missing, stale_code=stale_code, orphaned=orphaned
+        )
         if outcome == _RELEASED:
             logger.info(
                 "mcp-gateway: stale incumbent stood down and released %s — "
@@ -381,6 +468,18 @@ class GatewayManager:
                 self._spec.socket_path, _SHUTDOWN_GRACE_SECS,
             )
             return _ABORT
+        if stale_code:
+            # Fail-open like the drift case (a refusing daemon is still serving),
+            # but say plainly what it costs: every control frame this gateway
+            # exchanges with that daemon's pooled backends may be one revision
+            # out of step.
+            logger.error(
+                "mcp-gateway: adopting a daemon on %s that runs DIFFERENT CODE than "
+                "this gateway and refused to stand down. Pooled MCP backends may "
+                "speak a stale protocol (session directives, app calls); run "
+                "`kirocrew restart` to replace it.",
+                self._spec.socket_path,
+            )
         return _ADOPT
 
     async def _spawn_and_confirm(self) -> Optional[dict]:
@@ -522,6 +621,10 @@ class GatewayManager:
             sys.executable,
             "-m", _GATEWAYD_MODULE,
             "--socket", str(self._spec.socket_path),
+            # This process is the daemon's one owner: it exits when we are
+            # gone (start-time-checked, so a recycled PID does not count)
+            # instead of lingering for the next gateway to adopt.
+            "--owner-pid", str(os.getpid()),
             "--idle-timeout-secs", str(self._spec.idle_timeout_secs),
             "--max-backends", str(self._spec.max_backends),
         ]
@@ -692,7 +795,9 @@ class GatewayManager:
         )
         return missing
 
-    async def _request_stand_down(self, need: list[str]) -> str:
+    async def _request_stand_down(
+        self, need: list[str], *, stale_code: bool = False, orphaned: bool = False
+    ) -> str:
         """Ask a stale incumbent to yield the socket.
 
         Returns :data:`_RELEASED` (accepted and the lock is free),
@@ -727,7 +832,17 @@ class GatewayManager:
         wait out another process's drain.
         """
         self._stand_downs_issued += 1
-        reply = await self._control_roundtrip({"type": "stand-down", "need": sorted(need)})
+        frame: dict[str, Any] = {"type": "stand-down", "need": sorted(need)}
+        if stale_code:
+            # Names OUR code so the daemon can confirm the mismatch itself; a
+            # daemon on the same fingerprint refuses, which is correct.
+            frame["caller_fingerprint"] = code_fingerprint()
+        if orphaned:
+            # A claim, not an instruction: the daemon re-checks its own owner
+            # before honouring it, so a caller cannot end a daemon whose
+            # gateway is alive by asserting otherwise.
+            frame["orphaned"] = True
+        reply = await self._control_roundtrip(frame)
         if reply is None or reply.get("type") != "standing-down":
             logger.warning(
                 "mcp-gateway: stand-down request on %s was not accepted (%s)",
@@ -902,9 +1017,11 @@ class GatewayManager:
             return False
         self._last_drift_check = now
         missing = self._adoption_drift(pong)
-        if not missing:
+        stale_code = self._code_drift(pong)
+        orphaned = self._orphaned(pong)
+        if not missing and not stale_code and not orphaned:
             return False
-        verdict = await self._repair_or_adopt(missing)
+        verdict = await self._repair_or_adopt(missing, stale_code, orphaned)
         if verdict != _SPAWN:
             # _ADOPT: it will not yield (or this manager has spent its
             # stand-down budget) and the cost is already on the record via
@@ -1101,9 +1218,28 @@ class GatewayManager:
             # needed its own check because it returns to the caller instead of
             # looping back to a gate.
             incumbent = await self._ping_payload()
+            if incumbent is not None and self._owned_by_a_live_other(incumbent):
+                # Same rule as start: another live gateway's daemon is not ours
+                # to adopt or replace. Back off and look again; the owner's exit
+                # takes the daemon with it and frees the socket.
+                logger.error(
+                    "mcp-gateway: the daemon on %s is owned by another LIVE gateway "
+                    "(pid %s) — waiting rather than adopting it",
+                    self._spec.socket_path,
+                    incumbent.get("owner_pid"),
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _RESPAWN_BACKOFF_MAX_SECS)
+                continue
             if incumbent is not None:
                 missing = self._adoption_drift(incumbent)
-                verdict = _ADOPT if not missing else await self._repair_or_adopt(missing)
+                stale_code = self._code_drift(incumbent)
+                orphaned = self._orphaned(incumbent)
+                verdict = (
+                    _ADOPT
+                    if not missing and not stale_code and not orphaned
+                    else await self._repair_or_adopt(missing, stale_code, orphaned)
+                )
                 if verdict == _ABORT:
                     # Draining incumbent: neither adoptable nor replaceable yet.
                     # Back off and re-assess rather than spawning into a held lock.

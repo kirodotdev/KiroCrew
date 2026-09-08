@@ -48,6 +48,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterator, NoReturn, Optional
 
+from kiro_crew.code_fingerprint import code_fingerprint, warm_code_fingerprint
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.loader import config_dir as _config_dir
 from kiro_crew.executors import (
@@ -101,7 +102,9 @@ from kiro_crew.peer_resolve import resolve_peer_identity
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.platform_compat import count_open_fds as _shared_count_open_fds
 from kiro_crew.platform_compat import get_process_start_id as _get_process_start_id
+from kiro_crew.platform_compat import pid_exists as _pid_exists
 from kiro_crew.platform_compat import proc_rss_bytes as _proc_rss_bytes
+from kiro_crew.platform_compat import process_start_time as _process_start_time
 from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES, warm_backend
 from kiro_crew.sel import SecurityEventLog
 
@@ -281,6 +284,7 @@ async def run_gatewayd(
     target_resolver: Optional[TargetResolver] = None,
     prewarm_count: int = 0,
     credential_watch_paths: Optional[list[Path]] = None,
+    owner_pid: int = 0,
 ) -> None:
     """Run the gateway until ``stop_event`` is set.
 
@@ -327,6 +331,20 @@ async def run_gatewayd(
     socket directory not creatable, another daemon already bound to the
     path) propagate so the caller can surface a clear error.
     """
+    # Published for the ping reply before anything can connect.
+    global _OWNER_PID
+    _OWNER_PID = int(owner_pid) if owner_pid > 0 else 0
+    # The fingerprint the pong and the stand-down handler read is computed
+    # once, HERE, off the loop: its first computation runs git (or walks the
+    # package tree), and the connection handler that reads it must not pay
+    # that on the event loop.
+    await warm_code_fingerprint()
+    # The daemon's own start-time identity, read ONCE here off the loop: on
+    # macOS ``process_start_time`` is a ``ps`` subprocess, and the pong that
+    # publishes it is answered from the connection handler on the loop.
+    global _OWN_START_TIME
+    _own_start = await asyncio.to_thread(_process_start_time, os.getpid())
+    _OWN_START_TIME = _own_start or ""
     socket_path = Path(socket_path)
     # Off the event loop for the same reason as the manager's call: the
     # owner-only step is blocking filesystem work (the Windows DACL is applied
@@ -465,6 +483,7 @@ async def run_gatewayd(
     sweeper: Optional[asyncio.Task[None]] = None
     tmp_sweeper: Optional[asyncio.Task[None]] = None
     socket_liveness: Optional[asyncio.Task[None]] = None
+    owner_liveness: Optional[asyncio.Task[None]] = None
     diagnostic: Optional[asyncio.Task[None]] = None
     heartbeat: Optional[asyncio.Task[None]] = None
     flush_sweeper: Optional[asyncio.Task[None]] = None
@@ -543,6 +562,23 @@ async def run_gatewayd(
             socket_liveness = asyncio.create_task(
                 _socket_liveness_sweeper(socket_path, sweep_interval, stop_event),
                 name="mcp-gateway-socket-liveness",
+            )
+
+        # Owner-liveness self-exit: this daemon exists to serve ONE gateway
+        # process -- the one that spawned it -- and has no business outliving
+        # it. Its socket is spawned ``start_new_session=True`` so a SIGKILLed
+        # gateway never signals it, and the next gateway to start then found
+        # a healthy daemon on the socket and ADOPTED it: a daemon running the
+        # code of a checkout two days old, pooling backends that spoke a
+        # control-frame shape the new gateway did not read. Watching the
+        # owner's PID (with its start time, so a recycled PID is not mistaken
+        # for the owner) closes that: the owner dying takes the daemon down the
+        # same graceful path SIGTERM takes. Not armed when no owner was named
+        # (an operator running the module by hand).
+        if owner_pid > 0:
+            owner_liveness = asyncio.create_task(
+                _owner_liveness_sweeper(owner_pid, _OWNER_LIVENESS_INTERVAL_SECS, stop_event),
+                name="mcp-gateway-owner-liveness",
             )
 
         # Zombie diagnostic: probes
@@ -747,6 +783,11 @@ async def run_gatewayd(
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await socket_liveness
 
+        if owner_liveness is not None:
+            owner_liveness.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await owner_liveness
+
         if diagnostic is not None:
             diagnostic.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -839,6 +880,74 @@ async def _idle_sweeper(
 #: must not kill a healthy daemon, so only an uninterrupted run of misses
 #: counts as proof of unreachability.
 _SOCKET_LIVENESS_MISSES = 3
+
+#: How often the daemon confirms its owning gateway is still the process
+#: that spawned it. Coarse on purpose: a stat of one /proc entry, and a
+#: dead owner costs nothing but idle pooled backends until the next probe.
+_OWNER_LIVENESS_INTERVAL_SECS = 15.0
+
+#: Consecutive owner-gone observations before self-exit. Two, not one: the
+#: start-time read and the pid-exists read are separate syscalls, and a
+#: transient EACCES/EIO between them must not end a serving daemon.
+_OWNER_LIVENESS_MISSES = 2
+
+
+async def _owner_liveness_sweeper(
+    owner_pid: int,
+    interval: float,
+    stop_event: asyncio.Event,
+) -> None:
+    """Self-exit when the gateway that spawned this daemon is gone.
+
+    ``owner_pid`` is the PID the launcher passed on argv. Its start time is
+    read ONCE at arm time and compared on every probe: a PID number is
+    recycled by the kernel, so ``pid_exists`` alone would let a daemon keep
+    running for whatever unrelated process later took its owner's number.
+
+    Fail-safe rules mirror :func:`_socket_liveness_sweeper`: an unreadable
+    start time at arm time disables the check (nothing to compare against,
+    and refusing to serve would be worse than serving one generation too
+    long); a probe that cannot read the start time is inconclusive and
+    neither counts nor resets; :data:`_OWNER_LIVENESS_MISSES` consecutive
+    conclusive misses set ``stop_event``, which is the graceful drain path.
+    """
+    baseline = await asyncio.to_thread(_process_start_time, owner_pid)
+    if baseline is None:
+        logger.warning(
+            "gatewayd: owner pid %d has no readable start time; the owner-liveness "
+            "check is disabled for this daemon",
+            owner_pid,
+        )
+        return
+    misses = 0
+    try:
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+            alive = await asyncio.to_thread(_pid_exists, owner_pid)
+            if alive:
+                now = await asyncio.to_thread(_process_start_time, owner_pid)
+                if now is None:
+                    continue  # inconclusive: neither a miss nor a reset
+                if now == baseline:
+                    misses = 0
+                    continue
+            misses += 1
+            if misses >= _OWNER_LIVENESS_MISSES:
+                logger.warning(
+                    "gatewayd: owning gateway pid %d is gone (%s); this daemon serves "
+                    "no live gateway and would only be adopted by a newer one running "
+                    "different code -- initiating graceful self-shutdown",
+                    owner_pid,
+                    "pid recycled" if alive else "process exited",
+                )
+                stop_event.set()
+                break
+    except asyncio.CancelledError:
+        raise
 
 
 async def _socket_liveness_sweeper(
@@ -2162,6 +2271,42 @@ def _audit_prewarm_spawn(pool_label: str) -> None:
         logger.debug("SEL audit emit for prewarm spawn failed", exc_info=True)
 
 
+#: The gateway PID this daemon was spawned for; 0 when run by hand. Read by
+#: :func:`_pong_payload` so a pinger can tell an ORPHAN (owner dead) from a
+#: daemon another live gateway still owns, and by the stand-down handler.
+_OWNER_PID: int = 0
+
+#: This daemon's own ``process_start_time`` token, computed once at startup
+#: (off the loop) so the pong can publish it without a syscall or a ``ps``.
+_OWN_START_TIME: str = ""
+
+
+def _pong_payload() -> dict[str, Any]:
+    """What a ping is answered with.
+
+    ``targets`` lets the pinger detect a daemon whose baked target map does not
+    cover its stubs. ``fingerprint`` lets it detect a daemon running DIFFERENT
+    CODE -- the case the target check cannot see, since two checkouts resolve
+    the same stems while disagreeing about a wire shape. ``owner_pid`` lets it
+    tell whether anyone is still supervising this daemon; ``start_time`` is the
+    identity a pinned kill must match. Every field is
+    additive: an older manager reads ``type`` and ``targets`` and ignores the
+    rest, and an older daemon omits the new ones, which the manager treats as
+    unverifiable rather than as a match.
+    """
+    return {
+        "type": "pong",
+        "targets": resolvable_target_stems(),
+        "fingerprint": code_fingerprint(),
+        "owner_pid": _OWNER_PID,
+        "pid": os.getpid(),
+        # The daemon's own start-time identity, so a caller that decides to
+        # signal this pid pins the signal on the process that ANSWERED, not on
+        # whatever holds the number by the time the signal is sent.
+        "start_time": _OWN_START_TIME,
+    }
+
+
 def _audit_stand_down(reason: str, outcome: str) -> None:
     """Emit a SEL audit event for a stand-down request.
 
@@ -2213,13 +2358,33 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
     Trust basis for the rest is the same uid-gated owner-only socket that
     authenticates Register/Claim/Abort.
     """
+    # Two grounds, either sufficient. A caller running DIFFERENT CODE names
+    # its own fingerprint; a daemon whose fingerprint differs yields, because
+    # it cannot know which wire shapes the caller's code changed and serving
+    # it anyway is how a two-day-old daemon answered a gateway that did not
+    # read its control frames. A matching fingerprint is NOT a ground: the
+    # caller is running this very code, so there is nothing to gain.
+    caller_fp = frame.get("caller_fingerprint")
+    stale_code = isinstance(caller_fp, str) and bool(caller_fp) and caller_fp != code_fingerprint()
+    # Third ground: this daemon's own gateway has exited. The caller may CLAIM
+    # it (``orphaned``), but the daemon decides from its own record -- a live
+    # owner means the claim is false and nothing here yields. An orphan is
+    # about to stop itself anyway (the owner sweeper); yielding now lets the
+    # replacement bind before any session is handed a dying broker.
+    orphaned = frame.get("orphaned") is True and _OWNER_PID > 0 and not _pid_exists(_OWNER_PID)
+    yield_regardless = stale_code or orphaned
     need = frame.get("need")
-    if not isinstance(need, list) or not need or not all(isinstance(s, str) and s for s in need):
+    if need is None and yield_regardless:
+        need = []
+    if not isinstance(need, list) or not all(isinstance(s, str) and s for s in need):
+        _audit_stand_down("missing or invalid need list", "denied")
+        return {"type": "stand-down-rejected", "reason": "missing or invalid 'need' stem list"}
+    if not need and not yield_regardless:
         _audit_stand_down("missing or invalid need list", "denied")
         return {"type": "stand-down-rejected", "reason": "missing or invalid 'need' stem list"}
     served = set(resolvable_target_stems())
     missing = sorted(set(need) - served)
-    if not missing:
+    if not missing and not yield_regardless:
         _audit_stand_down("already covers every needed stem", "denied")
         return {
             "type": "stand-down-rejected",
@@ -2233,15 +2398,26 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
         # that is never released.
         _audit_stand_down("handler has no stop event", "denied")
         return {"type": "stand-down-rejected", "reason": "shutdown not wired on this handler"}
+    grounds: list[str] = []
+    if missing:
+        grounds.append(f"cannot resolve {', '.join(missing)}")
+    if stale_code:
+        grounds.append(f"runs code {code_fingerprint()} while the caller runs {caller_fp}")
+    if orphaned:
+        grounds.append(f"is owned by gateway pid {_OWNER_PID}, which has exited")
     logger.warning(
-        "gatewayd: standing down on request — this daemon cannot resolve %s, "
-        "which the caller's current config requires; draining so a daemon with "
-        "the current target map can bind",
-        ", ".join(missing),
+        "gatewayd: standing down on request — this daemon %s; draining so a daemon "
+        "matching the caller can bind",
+        " and ".join(grounds),
     )
-    _audit_stand_down(f"missing {','.join(missing)}", "allowed")
+    _audit_stand_down("; ".join(grounds), "allowed")
     stop_event.set()
-    return {"type": "standing-down", "missing": missing}
+    return {
+        "type": "standing-down",
+        "missing": missing,
+        "stale_code": stale_code,
+        "orphaned": orphaned,
+    }
 
 
 async def _handle_connection(
@@ -2341,7 +2517,7 @@ async def _handle_connection(
         # ``targets`` lets the pinger detect a STALE incumbent before adopting
         # it. Absent on a pre-#6xxx daemon, which the adoption gate treats as
         # unverifiable rather than assuming coverage.
-        await _write_json_line(writer, {"type": "pong", "targets": resolvable_target_stems()})
+        await _write_json_line(writer, _pong_payload())
         return
 
     # Metrics short-circuit: return a point-in-time pool snapshot (backends,
@@ -4077,6 +4253,16 @@ def _build_argparser() -> argparse.ArgumentParser:
         "(default) disables the watcher entirely.",
     )
     p.add_argument(
+        "--owner-pid",
+        dest="owner_pid",
+        type=int,
+        default=0,
+        help="PID of the gateway process this daemon serves. When set, the daemon "
+        "exits gracefully once that process is gone (checked with its start time, "
+        "so a recycled PID does not count), instead of lingering to be adopted by "
+        "a later gateway that may run different code. 0 (default) disables it.",
+    )
+    p.add_argument(
         "--log-level",
         dest="log_level",
         default=os.environ.get("MC_GATEWAYD_LOG", "INFO"),
@@ -4155,6 +4341,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             stop_event=stop_event,
             prewarm_count=args.prewarm_count,
             credential_watch_paths=[Path(p) for p in args.credential_watch_paths],
+            owner_pid=max(0, int(args.owner_pid or 0)),
         )
     except Exception:
         logger.exception("gatewayd exited with unhandled exception")

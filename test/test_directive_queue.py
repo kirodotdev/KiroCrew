@@ -477,6 +477,32 @@ class TestEndpoint:
         assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_a_pre_call_input_body_is_named_as_a_stale_backend(self, caplog):
+        """The body shape an MCP server from BEFORE this protocol sends.
+
+        A pooled ``kirocrew mcp-core`` that outlived a code change kept POSTing
+        ``{kind, args}``; read as an empty ``tool`` it was refused ``not_derivable``,
+        which pointed an operator at the directive tools when the fault was a
+        stale process. The refusal now names the process and the fix.
+        """
+        import json as _json
+
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.handlers.sessions"):
+            resp = await api_session_directive(
+                _request(
+                    {"X-Session-Key": "dashboard:slot-a"},
+                    {"kind": "monitor_start", "args": {"message": "go"}},
+                )
+            )
+        assert resp.status == 400
+        assert _json.loads(resp.text)["code"] == "stale_mcp_backend"
+        assert directive_queue.depth("dashboard:slot-a") == 0
+        msg = " ".join(r.getMessage() for r in caplog.records)
+        assert "stale_mcp_backend" in msg
+        assert "kirocrew restart" in msg
+        assert "not_derivable" not in msg
+
+    @pytest.mark.asyncio
     async def test_unknown_tool_is_400_and_parks_nothing(self):
         resp = await api_session_directive(
             _request({"X-Session-Key": "dashboard:slot-a"}, self._body("not_a_directive", {}))

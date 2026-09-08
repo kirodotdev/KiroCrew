@@ -1698,6 +1698,30 @@ async def api_session_directive(request: web.Request) -> web.Response:
     raw_args = body.get("raw_args")
     if not isinstance(raw_args, dict):
         raw_args = {}
+    if not tool and "kind" in body:
+        # The body shape a Kiro Crew MCP server from BEFORE the call-input
+        # protocol sends: the directive's ``kind``/``args`` rather than the call.
+        # That server is running older code than this gateway -- a pooled MCP
+        # backend that outlived a code change -- and every directive it emits
+        # will land here until it is replaced. Name that, rather than the
+        # generic "not derivable", because the generic wording sent an operator
+        # to the directive tools when the fault was a stale process.
+        logger.warning(
+            "session-directive REFUSED (stale_mcp_backend) for session_key=%r: the "
+            "MCP server sent a pre-call-input body (kind=%r) -- it is running OLDER "
+            "code than this gateway. A pooled backend survived a code change; run "
+            "`kirocrew restart` (which replaces the MCP gateway daemon too) or "
+            "`kirocrew doctor` to see the daemon's code revision. Nothing was parked.",
+            session_key,
+            body.get("kind"),
+        )
+        return web.json_response(
+            {
+                "error": "MCP server runs older code than the gateway; restart it",
+                "code": "stale_mcp_backend",
+            },
+            status=400,
+        )
     derived = mcp_core.derive_directive(tool, raw_args, session_key)
     if derived is None:
         logger.warning(
