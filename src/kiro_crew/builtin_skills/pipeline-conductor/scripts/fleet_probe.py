@@ -879,7 +879,7 @@ def _is_shell_command_wrapper(argv: list[str], exe_base: str | None) -> bool:
 
     Takes real ARGV, not a joined string. Once NUL separators become spaces, an
     argument containing a space is indistinguishable from two arguments, so the
-    option/operand structure this function has to read is no longer recoverable.
+    option/operand structure this function has to read cannot be recovered.
 
     Three spellings of the same flag all have to be recognised, and each one was
     a live misattribution before it was:
