@@ -118,11 +118,20 @@ class TestSkillIsInstallable:
         # loading the body, so it has to name the agent it is the procedure for.
         assert "kirocrew-security-conductor" in meta["description"]
 
-    def test_no_bundled_scripts_are_shipped_here(self) -> None:
-        """Sibling changes own the scripts. This one must not have created a stub:
-        a present-but-empty script is worse than an absent one, because the
-        absent-script rule below stops reading as the live path."""
-        assert not (SKILL_DIR / "scripts").exists()
+    def test_no_stub_scripts_are_shipped(self) -> None:
+        """The scripts land in sibling changes, one at a time. Whatever has
+        landed must be a real script, never a placeholder: a present-but-empty
+        script is worse than an absent one, because the absent-script rule below
+        stops reading as the live path. An absent script is fine here (the
+        sibling has not landed yet); an empty one is the defect."""
+        scripts_dir = SKILL_DIR / "scripts"
+        if not scripts_dir.exists():
+            return
+        for path in scripts_dir.iterdir():
+            if path.suffix != ".py":
+                continue
+            assert path.name in BUNDLED_SCRIPTS, f"unlisted script shipped: {path.name}"
+            assert path.stat().st_size > 0, f"stub script shipped: {path.name}"
 
 
 class TestTheProcedureDelegatesToItsScripts:
