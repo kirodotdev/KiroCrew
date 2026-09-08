@@ -126,8 +126,15 @@ def test_the_newline_rule_is_scanning_real_calls() -> None:
     The failure mode that matters is the rule going quiet without anyone editing it,
     which is what happens if the writes move somewhere this walk does not look.
     """
+    # THREE, because two of the builder's reads take bytes and decode them afterwards: the
+    # prompt ceiling is named in BYTES, and ``read(n)`` on a text stream bounds CHARACTERS,
+    # so a 1048576-character three-byte-per-character persona measured 3145728 bytes while
+    # reporting itself within the limit. A binary ``os.fdopen`` takes no ``newline`` at all,
+    # which this module's own contract above calls out as demanding a TypeError -- so those
+    # two are outside this rule by construction rather than by having escaped it. The floor
+    # exists to catch the rule going quiet, and three calls still hold it to something.
     found = len(_text_write_calls())
-    assert found >= 4, (
+    assert found >= 3, (
         f"expected the builder's text read/write calls to be in scope, found {found} -- "
         "if the writes moved, re-point this walk"
     )
@@ -174,8 +181,13 @@ def test_MUTATION_translating_reader_aborts_the_build(tmp_path: pathlib.Path) ->
     """
     mod = load_build(
         mutate=(
-            'with os.fdopen(file_fd, "r", encoding="utf-8", newline="") as fh:\n            return fh.read()',  # noqa: E501
-            'return os.fdopen(file_fd, "r", encoding="utf-8").read()',
+            # The read is BINARY and the decode is separate, so newline translation has
+            # nowhere to happen; the only way to reintroduce it is at the decode. The anchor
+            # carries the ``fh.read()`` line with it because BOTH readers decode this way and
+            # a bare decode line matches the wrong one first -- the skill path goes through
+            # ``_read_text_openat``, and mutating the other reader refuses nothing.
+            '            data = fh.read()\n        return data.decode("utf-8")',
+            '            data = fh.read()\n        return data.decode("utf-8").replace("\\r\\n", "\\n")',
         )
     )
     home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "placeholder"}})

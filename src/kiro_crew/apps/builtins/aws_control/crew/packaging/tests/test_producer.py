@@ -574,6 +574,14 @@ def test_MUTATION_credential_location_copy(tmp_path):
 # ---------------------------------------------------------------------------
 # spec normalisation
 # ---------------------------------------------------------------------------
+def test_file_prompt_without_target_is_refused(tmp_path):
+    mod = load_build()
+    src = make_crew(tmp_path / "home", prompt="file:///gone/persona.md")
+    out = tmp_path / "bundle"
+    crew = mod.resolve_crew("frontdesk", src)
+    spec = mod.read_agent_spec(crew)
+    with pytest.raises(mod.ExportRefused, match="persona"):
+        mod.build_bundle(crew, spec, mod.enumerate_all(crew, spec), None, out)
 
 
 @_posix_only

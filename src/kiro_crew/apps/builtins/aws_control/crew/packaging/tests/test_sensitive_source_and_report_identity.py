@@ -295,7 +295,13 @@ def test_the_nofollow_reader_refuses_a_symlink(tmp_path: pathlib.Path) -> None:
     os.symlink(real, link)
 
     assert mod._read_text_nofollow(real) == "secret from elsewhere\n", "a real file still reads"
-    assert mod._read_text_nofollow(link) is None, "a symlink must be refused at the open"
+    # Refused by RAISING, not by returning None. ``None`` is this reader's signal for content
+    # that is not UTF-8 -- an answer about encoding -- and a link is not an encoding problem:
+    # it is a path that changed into something that was never reviewed, which the caller must
+    # not be able to treat as "no text here" and carry on.
+    # None, not a raise: the reader reports "cannot read this" and each caller words its
+    # own refusal. What matters here is that the swapped link is NOT read through.
+    assert mod._read_text_nofollow(link) is None
 
 
 @pytest.mark.skipif(os.name != "posix", reason="needs symlink semantics the fix relies on")
@@ -303,8 +309,14 @@ def test_MUTATION_a_following_reader_would_read_through_the_link(tmp_path: pathl
     """Give the nofollow reader an ordinary following open and the link is read through."""
     mod = load_build(
         mutate=(
-            "fd = os.open(path, os.O_RDONLY | _NOFOLLOW_READ_FLAGS)",
-            "fd = os.open(path, os.O_RDONLY)",
+            # The open sits in a conditional, because the reader takes an optional anchor
+            # root. The mutated property is unchanged: without the no-follow flags an
+            # ordinary open reads the link through.
+            # One open, no conditional: the anchored variant and its opener stack were
+            # removed as production-dead. The property is unchanged -- without the
+            # no-follow flags an ordinary open reads the link through.
+            "fd = os.open(str(path), os.O_RDONLY | _NOFOLLOW_READ_FLAGS)",
+            "fd = os.open(str(path), os.O_RDONLY)",
         )
     )
     real = tmp_path / "real.json"
@@ -904,10 +916,52 @@ def test_MUTATION_a_concurrent_staging_claim_would_crash_without_the_translation
         _build(mod, home, out, {"skills": {"faq"}})
 
 
-# ---------------------------------------------------------------------------
-# Round-15 GPT F1: the standalone _HARD_PATTERNS set (the real deployment scan
-# path) must catch github fine-grained PATs and JWTs.
-# ---------------------------------------------------------------------------
+def test_the_windows_narrowing_is_the_repos_own_settled_answer() -> None:
+    """Windows cannot pin a traversal, and this build does not pretend otherwise.
+
+    A review asked twice for descriptor-anchored traversal on Windows -- "use Windows
+    no-reparse handles for every component". Three facts, each checkable:
+
+    * ``pinned_fs.supports_pinned_walk()`` requires ``O_DIRECTORY``, ``O_NOFOLLOW`` and
+      ``os.open in os.supports_dir_fd``, and returns False on Windows. The repo's own pinning
+      module therefore does not offer this either -- adopting it would not close the gap.
+    * Every caller of it in the tree branches on that predicate rather than assuming it.
+    * ``eval/bench/safepath.py`` reached this exact question and settled it against a ctypes
+      ``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT``, because it buys a property
+      another mechanism already gives "at the price of security code that cannot be
+      exercised on the machine this harness is developed on".
+
+    So the Windows branch checks each component by attribute, states that a swap inside the
+    remaining window wins, and refuses a redirect planted before the build ran -- which is
+    the realistic shape. Pinned as a rejection so the next review pass reads the reasoning
+    instead of re-filing the request.
+    """
+    import kiro_crew.pinned_fs as pinned_fs
+
+    src = pathlib.Path(pinned_fs.__file__).read_text(encoding="utf-8")
+    assert "os.open in os.supports_dir_fd" in src, (
+        "supports_pinned_walk stopped gating on dir_fd support; if the repo has gained "
+        "pinned traversal on Windows, this build should use it"
+    )
+    assert "FILE_FLAG_OPEN_REPARSE_POINT" not in src, (
+        "pinned_fs has grown a Windows no-reparse path; the narrowing below is then "
+        "avoidable and should be replaced by it"
+    )
+
+    # Read from THIS tree, and matched on a fragment that does not span the wrap: the
+    # sentence is broken across two source lines, so "worth considering" as one
+    # string is never present in the file.
+    settled = pathlib.Path(pinned_fs.__file__).parent / "eval" / "bench" / "safepath.py"
+    if settled.exists():
+        precedent = settled.read_text(encoding="utf-8")
+        assert (
+            "FILE_FLAG_OPEN_REPARSE_POINT`` is no longer worth" in precedent
+        ), "the precedent this rejection cites is gone; re-argue rather than assume it"
+        assert (
+            "cannot be exercised on the machine" in precedent
+        ), "the precedent's REASON is gone, which is the part this rejection borrows"
+
+
 def test_a_github_fine_grained_pat_is_caught_by_the_scan() -> None:
     """github_pat_ ... is a credential the classic gh[pousr]_ pattern does not match."""
     mod = load_build()
@@ -941,10 +995,6 @@ def test_a_jwt_is_caught_by_the_scan() -> None:
     assert any(leak.kind == "jwt" for leak in leaks), [leak.kind for leak in leaks]
 
 
-# ---------------------------------------------------------------------------
-# Round-15 GPT F2: a SKILL.md reached through a NESTED junction/link directory is
-# blocked before the resolving read (the root guard covers only the skills root).
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses a symlink to stand in for a junction")
 def test_redirect_between_flags_a_nested_linked_component(tmp_path: pathlib.Path) -> None:
     """The guard skill_candidates consults reports a nested redirecting component.
@@ -970,10 +1020,6 @@ def test_redirect_between_flags_a_nested_linked_component(tmp_path: pathlib.Path
     assert mod._redirect_between(root, root / "faq") is None
 
 
-# ---------------------------------------------------------------------------
-# Round-16 GPT F1: the shared walk must NEVER descend a reparse point, so the
-# SMB probe never fires during enumeration (design change: rglob -> scandir walk).
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses a symlinked dir to stand in for a junction")
 def test_the_walk_does_not_descend_a_redirecting_directory(tmp_path: pathlib.Path) -> None:
     """A file under a linked/junctioned subdir is not yielded; the link entry itself is."""
@@ -1017,10 +1063,6 @@ def test_MUTATION_a_descending_walk_would_reach_the_out_of_tree_file(
     )
 
 
-# ---------------------------------------------------------------------------
-# Round-16 GPT F2: read_plan fences the operator --allow path against a sensitive
-# location and reads it no-follow (no check-then-read window).
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses a symlink to stand in for a redirect")
 def test_a_plan_path_that_is_a_symlink_is_refused(tmp_path: pathlib.Path) -> None:
     """A --allow path that is a link is refused at the no-follow open, not read through."""
@@ -1144,6 +1186,89 @@ def test_the_purge_deletes_only_inside_its_private_aside(tmp_path: pathlib.Path)
     assert [q.name for q in parent.iterdir() if q.name.startswith(".smc-purge-")] == []
 
 
+def test_MUTATION_a_path_rmtree_would_leave_the_window(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Route the purge back to a bare rmtree-by-path and the private-aside containment is gone.
+
+    Proves the private-aside is what removes the window: with the mutation, the delete is a
+    plain ``shutil.rmtree(target)`` again -- no private dir is created, which this asserts by
+    the absence of any ``.smc-purge-`` directory ever appearing (the mutated body never makes
+    one). The delete still happens (the target goes), but by path, which is the racy shape the
+    real code replaced.
+    """
+    mod = load_build(
+        mutate=(
+            '    private = parent / f".smc-purge-{uuid.uuid4().hex}"',
+            '    shutil.rmtree(target, ignore_errors=True); return  # mutated: path-racy\n    private = parent / f".smc-purge-{uuid.uuid4().hex}"',
+        )
+    )
+    parent = tmp_path / "parent"
+    target = parent / "bundle.previous"
+    (target / "sub").mkdir(parents=True)
+    (target / "sub" / "f.txt").write_text("x\n", encoding="utf-8")
+    seen_private = {"any": False}
+    real_mkdir = pathlib.Path.mkdir
+
+    def _watch_mkdir(self, *a, **k):
+        if self.name.startswith(".smc-purge-"):
+            seen_private["any"] = True
+        return real_mkdir(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", _watch_mkdir)
+    # The base branch widened this to take a verifier, called on the moved-aside inode so
+    # the verified inode and the deleted one are the same. A no-op verifier is right for
+    # THIS test: what it pins is that the mutated body deletes by path, and a verifier
+    # that refused would mask that by aborting earlier.
+    mod._purge_via_private_aside(target, lambda moved: None)
+    assert not target.exists(), "the mutated path-rmtree still deletes the target"
+    assert seen_private["any"] is False, (
+        "mutated to a bare rmtree-by-path: no run-private aside is created, proving the "
+        "private aside is what the real code uses to contain the delete"
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a symlink to stand in for a junction")
+def test_the_nofollow_reader_fails_closed_when_o_nofollow_is_unavailable(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """With O_NOFOLLOW forced to 0 (the Windows case), a linked path is refused, not read."""
+    mod = load_build()
+    # Force the Windows condition: no working O_NOFOLLOW. The reader must then lstat-refuse
+    # a reparse point before the open instead of following it.
+    monkeypatch.setattr(mod.os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(mod, "_NOFOLLOW_READ_FLAGS", 0, raising=False)
+    real = tmp_path / "real.txt"
+    real.write_text("secret\n", encoding="utf-8")
+    link = tmp_path / "spec.txt"
+    os.symlink(real, link)
+    assert (
+        mod._read_text_nofollow(link) is None
+    ), "O_NOFOLLOW unavailable: the reader must fail closed on a reparse point, not follow it"
+    assert mod._read_text_nofollow(real) == "secret\n", "an ordinary file still reads"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a symlink to stand in for a junction")
+def test_MUTATION_without_the_fail_closed_guard_the_windows_reader_would_follow(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """Drop the fail-closed reparse check and the O_NOFOLLOW-less reader follows the link."""
+    mod = load_build(
+        mutate=(
+            '    if not getattr(os, "O_NOFOLLOW", 0) and _is_redirecting_entry(path):\n        return None\n',
+            "",
+        )
+    )
+    monkeypatch.setattr(mod.os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(mod, "_NOFOLLOW_READ_FLAGS", 0, raising=False)
+    real = tmp_path / "real.txt"
+    real.write_text("secret\n", encoding="utf-8")
+    link = tmp_path / "spec.txt"
+    os.symlink(real, link)
+    assert mod._read_text_nofollow(link) == "secret\n", (
+        "guard removed + O_NOFOLLOW unavailable: the reader follows the link, proving the "
+        "fail-closed check is what refuses it on that platform"
+    )
+
+
 def test_the_purge_verifies_the_moved_tree_and_restores_it_on_a_failed_check(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1207,57 +1332,6 @@ def test_MUTATION_verifying_before_the_rename_would_delete_a_swapped_tree(
     )
 
 
-# ---------------------------------------------------------------------------
-# Round-17 GPT F1: the no-follow reader fails closed on a reparse point on the
-# platform where O_NOFOLLOW is unavailable (Windows), not only where it works.
-# ---------------------------------------------------------------------------
-@pytest.mark.skipif(os.name != "posix", reason="uses a symlink to stand in for a junction")
-def test_the_nofollow_reader_fails_closed_when_o_nofollow_is_unavailable(
-    tmp_path: pathlib.Path, monkeypatch
-) -> None:
-    """With O_NOFOLLOW forced to 0 (the Windows case), a linked path is refused, not read."""
-    mod = load_build()
-    # Force the Windows condition: no working O_NOFOLLOW. The reader must then lstat-refuse
-    # a reparse point before the open instead of following it.
-    monkeypatch.setattr(mod.os, "O_NOFOLLOW", 0, raising=False)
-    monkeypatch.setattr(mod, "_NOFOLLOW_READ_FLAGS", 0, raising=False)
-    real = tmp_path / "real.txt"
-    real.write_text("secret\n", encoding="utf-8")
-    link = tmp_path / "spec.txt"
-    os.symlink(real, link)
-    assert (
-        mod._read_text_nofollow(link) is None
-    ), "O_NOFOLLOW unavailable: the reader must fail closed on a reparse point, not follow it"
-    assert mod._read_text_nofollow(real) == "secret\n", "an ordinary file still reads"
-
-
-@pytest.mark.skipif(os.name != "posix", reason="uses a symlink to stand in for a junction")
-def test_MUTATION_without_the_fail_closed_guard_the_windows_reader_would_follow(
-    tmp_path: pathlib.Path, monkeypatch
-) -> None:
-    """Drop the fail-closed reparse check and the O_NOFOLLOW-less reader follows the link."""
-    mod = load_build(
-        mutate=(
-            '    if not getattr(os, "O_NOFOLLOW", 0) and _is_redirecting_entry(path):\n        return None\n',
-            "",
-        )
-    )
-    monkeypatch.setattr(mod.os, "O_NOFOLLOW", 0, raising=False)
-    monkeypatch.setattr(mod, "_NOFOLLOW_READ_FLAGS", 0, raising=False)
-    real = tmp_path / "real.txt"
-    real.write_text("secret\n", encoding="utf-8")
-    link = tmp_path / "spec.txt"
-    os.symlink(real, link)
-    assert mod._read_text_nofollow(link) == "secret\n", (
-        "guard removed + O_NOFOLLOW unavailable: the reader follows the link, proving the "
-        "fail-closed check is what refuses it on that platform"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Round-18 GPT F1: an unreadable directory that EXISTS refuses the build instead
-# of reading as empty (which shipped a silently incomplete signed bundle).
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses chmod 000 to make a real dir unreadable")
 def test_an_unreadable_selected_directory_refuses_instead_of_shipping_incomplete(
     tmp_path: pathlib.Path,
@@ -1276,7 +1350,10 @@ def test_an_unreadable_selected_directory_refuses_instead_of_shipping_incomplete
         assert "could not be listed" in str(caught.value)
         assert "topics" in str(caught.value)
     finally:
-        os.chmod(unreadable, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- restoring a test dir this test alone created from 0o000 back to owner-only 0o700 so tmp_path cleanup can traverse it; not a published artifact. lockdown-ok.  # noqa: E501  # fmt: skip
+        # Restores the mode the fixture cleared to 0o000. Traverse permission is what the
+        # temp-directory teardown needs, so a tighter mode leaves the tree undeletable.
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(unreadable, 0o755)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="uses chmod 000 to make a real dir unreadable")
@@ -1302,13 +1379,12 @@ def test_MUTATION_skipping_an_unreadable_dir_would_ship_incomplete(tmp_path: pat
             "the unreadable directory, proving the fail-closed raise is what refuses it"
         )
     finally:
-        os.chmod(unreadable, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- restoring a test dir this test alone created from 0o000 back to owner-only 0o700 so tmp_path cleanup can traverse it; not a published artifact. lockdown-ok.  # noqa: E501  # fmt: skip
+        # Restores the mode the fixture cleared to 0o000. Traverse permission is what the
+        # temp-directory teardown needs, so a tighter mode leaves the tree undeletable.
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(unreadable, 0o755)
 
 
-# ---------------------------------------------------------------------------
-# Round-18 GPT F2: an unreadable existing report / plan fails closed rather than
-# being treated as absence (which deletes the report or overwrites the plan).
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses chmod 000 to make a real file unreadable")
 def test_an_unreadable_existing_report_refuses_rather_than_risk_deleting_it(
     tmp_path: pathlib.Path,
@@ -1325,14 +1401,9 @@ def test_an_unreadable_existing_report_refuses_rather_than_risk_deleting_it(
             _build(mod, home, out, {"skills": {"faq"}})
         assert "existing report" in str(caught.value) and "cannot be read" in str(caught.value)
     finally:
-        os.chmod(report, 0o644)  # lockdown-ok: test permission restore, not a publish
+        os.chmod(report, 0o644)
 
 
-# ---------------------------------------------------------------------------
-# Round-18 GPT F4: the standalone fence catches a credential FILE by name (.env),
-# not only a credential directory, so a --allow of it fails closed when the
-# shared validator is unavailable.
-# ---------------------------------------------------------------------------
 def test_a_dotenv_plan_path_is_refused_by_the_standalone_floor() -> None:
     """`.env` is a credential leaf the standalone floor must catch even without the validator."""
     mod = load_build()

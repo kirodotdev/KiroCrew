@@ -61,6 +61,70 @@ def _as_windows(monkeypatch, mod):
     monkeypatch.setattr(mod, "os", _OsThatSaysWindows())
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "file:////attacker/share/persona.md",
+        "file://\\\\attacker\\share\\persona.md",
+        "file:////10.0.0.1/public/p.md",
+    ],
+)
+def test_a_unc_prompt_is_refused_on_windows(monkeypatch, tmp_path, raw):
+    mod = load_build()
+    _as_windows(monkeypatch, mod)
+    with pytest.raises(mod.ExportRefused, match="UNC"):
+        mod._resolve_prompt_path(raw, tmp_path)
+
+
+def test_the_refusal_happens_before_any_resolution(monkeypatch, tmp_path):
+    """`resolve()` on a UNC path is the probe, so the gate must run before it."""
+    mod = load_build()
+    _as_windows(monkeypatch, mod)
+    touched: list[str] = []
+    real_resolve = pathlib.Path.resolve
+
+    def _spy(self, *a, **kw):
+        touched.append(str(self))
+        return real_resolve(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", _spy)
+    with pytest.raises(mod.ExportRefused):
+        mod._resolve_prompt_path("file:////attacker/share/persona.md", tmp_path)
+    assert not any(
+        "attacker" in t for t in touched
+    ), f"the UNC target was resolved before it was refused: {touched}"
+
+
+def test_an_ordinary_prompt_is_unaffected_on_windows(monkeypatch, tmp_path):
+    mod = load_build()
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    (agents / "persona.md").write_text("# P\nbody\n", encoding="utf-8")
+    _as_windows(monkeypatch, mod)
+    got = mod._resolve_prompt_path("file://persona.md", agents)
+    assert got.name == "persona.md"
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "On Windows a leading `//` IS a UNC path, so the gate refuses it and that is the "
+        "correct answer. The property under test is POSIX-only: an earlier version of this "
+        "test asserted `os.name != 'nt'` instead of skipping, which turned a platform fact "
+        "into a failing Windows shard."
+    ),
+)
+def test_a_doubled_slash_still_works_on_posix(tmp_path):
+    """POSIX has no network meaning for a leading `//`, so refusing it protects nothing."""
+    mod = load_build()
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    p = agents / "persona.md"
+    p.write_text("# P\nbody\n", encoding="utf-8")
+    got = mod._resolve_prompt_path("file://" + "/" + str(p), agents)
+    assert got.read_text(encoding="utf-8").startswith("# P")
+
+
 # --- promotion keeps one bundle at all times ---------------------------------
 
 

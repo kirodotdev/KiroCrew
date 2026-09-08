@@ -348,3 +348,43 @@ def test_author_path_reads_do_not_use_the_leaf_only_reader_in_source() -> None:
             f"{banned!r} reads an author-supplied path leaf-only; route it through "
             f"_read_text_openat so every component is anchored no-follow"
         )
+
+
+def test_an_external_prompt_is_refused_when_the_shared_fence_is_missing(tmp_path) -> None:
+    """Fail closed, and say which check was unavailable.
+
+    The import is mutated to fail so the fallback path is the one under test. Refusing
+    costs the external-reference feature and nothing else: an inline prompt is unaffected,
+    which is what makes fail-closed the affordable direction here.
+    """
+    mod = load_build(
+        mutate=(
+            "        from kiro_crew.security import is_sensitive_path",
+            "        raise ImportError('simulated standalone environment')",
+        )
+    )
+    persona = tmp_path / "persona.md"
+    persona.write_text("a persona\n", encoding="utf-8")
+    home = make_crew(tmp_path / "home", prompt=f"file://{persona}")
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod.build_spec(crew, spec, set(), crew.agent_spec_path.parent)
+    assert "is_sensitive_path" in str(caught.value)
+
+
+def test_an_external_prompt_still_inlines_when_the_fence_is_present(tmp_path) -> None:
+    """Non-vacuity: refusing unconditionally would satisfy the test above.
+
+    ``kiro_crew.security`` is importable in this repo's own environment, so this is the path
+    every real build takes and it has to keep working.
+    """
+    mod = load_build()
+    persona = tmp_path / "persona.md"
+    persona.write_text("a persona\n", encoding="utf-8")
+    home = make_crew(tmp_path / "home", prompt=f"file://{persona}")
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+    result = mod.build_spec(crew, spec, set(), crew.agent_spec_path.parent)
+    assert "a persona" in result.spec["prompt"]

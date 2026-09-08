@@ -33,6 +33,76 @@ _needs_nofollow = pytest.mark.skipif(
 )
 
 
+@_needs_nofollow
+def test_a_prompt_swapped_for_a_credential_link_is_refused(tmp_path):
+    mod = load_build()
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    secret = tmp_path / "credentials"
+    secret.write_text("aws_secret_access_key = not-a-real-key\n", encoding="utf-8")
+
+    prompt = agents / "persona.md"
+    prompt.write_text("You are the front desk.\n", encoding="utf-8")
+
+    # The swap, after everything that inspects the path by name has run.
+    prompt.unlink()
+    prompt.symlink_to(secret)
+
+    # The reader answers None for anything it cannot read. The property here is that the
+    # credential the link points at never reaches the caller.
+    assert mod._read_text_nofollow(prompt) is None
+
+
+@_needs_nofollow
+def test_the_linked_bytes_never_come_back(tmp_path):
+    """The property is the bytes, not the message."""
+    mod = load_build()
+    secret = tmp_path / "credentials"
+    secret.write_text("aws_secret_access_key = leaked-marker\n", encoding="utf-8")
+    prompt = tmp_path / "persona.md"
+    prompt.write_text("ok\n", encoding="utf-8")
+    prompt.unlink()
+    prompt.symlink_to(secret)
+
+    try:
+        text = mod._read_text_nofollow(prompt)
+    except mod.ExportRefused:
+        text = ""
+    assert "leaked-marker" not in (text or "")
+
+
+def test_a_missing_prompt_still_says_so(tmp_path):
+    """The distinct 'does not exist' refusal must survive the rewrite."""
+    mod = load_build()
+    # The reader answers None for everything it cannot read; the CALLER words the
+    # refusal, which is how the agent-spec path says "agent spec" where the plan path
+    # says "curation plan". Asserting a message here would move that decision into a
+    # function three callers share.
+    assert mod._read_text_nofollow(tmp_path / "nope.md") is None
+
+
+def test_a_real_prompt_reads_unchanged(tmp_path):
+    mod = load_build()
+    prompt = tmp_path / "persona.md"
+    body = "You are the front desk.\n" * 4000  # spans the read loop
+    # write_BYTES, not write_text. On Windows write_text goes through text mode and
+    # stores "\n" as "\r\n", while this reader is deliberately byte-exact -- so the
+    # comparison failed on the Windows shard against correct code. The fix belongs
+    # here: teaching the reader to fold newlines would destroy the property it exists
+    # to have, which is returning the file's bytes. The other writes in this file are
+    # unaffected because none of them compares content byte for byte.
+    prompt.write_bytes(body.encode("utf-8"))
+    assert mod._read_text_nofollow(prompt) == body
+
+
+def test_undecodable_content_returns_none_not_a_refusal(tmp_path):
+    """The caller distinguishes 'not text' from 'not allowed'; keep that split."""
+    mod = load_build()
+    p = tmp_path / "persona.md"
+    p.write_bytes(b"\xff\xfe not utf-8 \x00")
+    assert mod._read_text_nofollow(p) is None
+
+
 def test_the_flag_set_is_guarded_on_every_platform():
     """Both constants must be getattr'd, not just one.
 

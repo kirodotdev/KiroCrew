@@ -168,6 +168,15 @@ def mod_resolve(root: pathlib.Path, name: str):
 # ---------------------------------------------------------------------------
 # F3: the anchor root itself must not be a link
 # ---------------------------------------------------------------------------
+def test_a_prompt_inside_a_real_agents_directory_still_inlines(tmp_path: pathlib.Path) -> None:
+    """The end-to-end path the root check sits on must still work."""
+    mod = load_build()
+    src = make_crew(tmp_path / "home", prompt="file://persona.md")
+    (src / "agents" / "persona.md").write_text("the real persona\n", encoding="utf-8")
+    crew = mod.resolve_crew("frontdesk", src)
+    spec = mod.read_agent_spec(crew)
+    result = mod.build_spec(crew, spec, set(), crew.agent_spec_path.parent)
+    assert "the real persona" in result.spec["prompt"]
 
 
 # ---------------------------------------------------------------------------
