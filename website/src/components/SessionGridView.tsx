@@ -39,6 +39,7 @@ export default function SessionGridView({
   onClose,
   onCollapse,
   seedSlot,
+  openSideChat,
 }: {
   /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
   onClose: () => void
@@ -46,6 +47,10 @@ export default function SessionGridView({
    *  that session (the grid never shows a 1-pane chrome). */
   onCollapse: (slot: string, anchorTs?: string, anchorMid?: string) => void
   seedSlot?: string | null
+  /** Bring the host's Side Chat surface on screen for a pane's slot — what the
+   *  selection toolbar's Ask needs. The grid owns no Side Chat of its own
+   *  (the host's activity panel does), so without it panes offer Quote only. */
+  openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
 }) {
   const grid = useSessionGrid(seedSlot)
 
@@ -136,6 +141,7 @@ export default function SessionGridView({
           onSplitRight={() => grid.splitLeaf(leaf.id, 'right')}
           onSplitDown={() => grid.splitLeaf(leaf.id, 'down')}
           onOpenFull={onCollapse}
+          openSideChat={openSideChat}
         />
       )
     }

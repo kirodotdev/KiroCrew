@@ -22,7 +22,7 @@ import { createTranscriptRenderers } from './chat/transcriptRenderers'
 export { isBrowseCommand }
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import type { ResizeInfo } from '../utils/resizeImage'
-import { useAppSelector, useAppDispatch, store } from '../store'
+import { useAppSelector, useAppDispatch, useAppStore, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
@@ -45,6 +45,7 @@ import {
 } from '../store/chatSlice'
 import { confirmedDelivered } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
+import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells } from '../utils/terminalRegistry'
 import { runInTerminalText } from '../utils/fenceShell'
@@ -4330,45 +4331,73 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the shared row set from the transcript it is handed -- see
   // transcriptRenderers.tsx `lastErrorIndex`.)
 
-  const [flyingQuote, setFlyingQuote] = useState<{ text: string; from: DOMRect } | null>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
 
-  const handleQuote = useCallback((text: string, rect: DOMRect) => {
-    const quoted = text.split('\n').map(line => `> ${line}`).join('\n')
-    setInput(prev => {
-      // Append new quote after existing content (supports multiple quotes)
-      if (!prev.trim()) return `${quoted}\n\n`
-      return `${prev.trimEnd()}\n\n${quoted}\n\n`
-    })
-    // Trigger flying animation
-    setFlyingQuote({ text, from: rect })
-    revealComposer()
-  }, [])
-
-  // "Ask" (Select-to-Ask): open the isolated /side conversation seeded with the
-  // selection, WITHOUT touching the main chat context (unlike handleQuote, which
-  // injects into the main composer). Mirrors the /side slash command's
-  // openActivityToTab('side') bridge, then hands the selection to SideChat via a
-  // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab —
-  // no new prop-drilling, no backend change). No transit
-  // animation: the popup routes the selection straight to the Side Chat panel
-  // (matches Codex's "Ask in side chat" behavior).
-  const handleAsk = useCallback((text: string) => {
-    dispatch(openActivityToTab('side'))
-    // The Side Chat panel (and its `side-seed` listener) mounts asynchronously
-    // once the panel opens. Poll a few frames for its input as a mount signal,
-    // then dispatch the seed. Fall back to dispatching after a cap so the
-    // feature still works even if the input never resolves.
-    const trySeed = (attempt = 0) => {
-      const mounted = document.querySelector('[data-side-chat-input] textarea[data-composer-input]')
-      if (mounted || attempt >= 20) {
-        window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
-      } else {
-        requestAnimationFrame(() => trySeed(attempt + 1))
-      }
+  // Quote / Ask on selected assistant text — the shared chat-core seam
+  // (chat-core/composer/selectionActions): Quote lands in this composer with
+  // the transit animation, Ask seeds the Side Chat. This page's Side Chat
+  // surface is the activity panel's `side` tab; the /side slash command opens
+  // it through the same `openActivityToTab('side')` bridge.
+  const openSideChat = useCallback(() => { dispatch(openActivityToTab('side')) }, [dispatch])
+  const { onQuote: handleQuote, onAsk: handleAsk, quoteFlight: flyingQuote, endQuoteFlight } = useSelectionQuoteAsk({
+    slot: activeSlot,
+    setInput,
+    revealComposer,
+    openSideChat,
+  })
+  // Split view's panes ask about THEIR slot, but the activity panel — and the
+  // Side Chat inside it — is bound to the active slot. Re-bind it first (the
+  // same switchSlot the grid's collapse path uses; split mode itself is not
+  // left), then open the tab. The seed names the slot, so it waits for the
+  // re-bound panel's composer rather than landing on the old slot's.
+  //
+  // Offline, the re-bind is withheld like every other switchSlot in this file
+  // (the tab strip, the sidebar row, the ?sid deep link): a rejected switch
+  // clears the pane's active messages and the transcript the reader just
+  // selected from disappears until reconnect. The grid is handed no
+  // `openSideChat` at all while disconnected, so the panes' toolbars offer
+  // Copy / Quote only (capability by omission, never an Ask into the void);
+  // the guard here covers the frame between the drop and the re-render, and
+  // rather than open a Side Chat bound to some OTHER slot it does nothing.
+  // Read at click time, not captured: the callback is memoized and the
+  // gateway can drop between renders (the tab strip's own gate, now inside
+  // useChatPageSessionController, keeps its ref the same way).
+  const connectedRef = useRef(connected)
+  connectedRef.current = connected
+  // The store this page is rendered under (not the module singleton): the
+  // opener reads live state after an await, and it must be the same store
+  // its dispatches went to.
+  const boundStore = useAppStore()
+  const openSideChatForPane = useCallback((slot: string): boolean | Promise<boolean> => {
+    if (slot === activeSlot) {
+      dispatch(openActivityToTab('side'))
+      return true
     }
-    requestAnimationFrame(() => trySeed())
-  }, [dispatch])
+    // `false` tells the selection seam the Ask did NOT happen, so it does
+    // not seed a quote into a Side Chat that never opened.
+    if (!connectedRef.current) return false
+    // The re-bind is a request the server can reject (the pane's session was
+    // deleted under it); `switchSlot.rejected` then falls back to the slot the
+    // page was on. Report the verdict only once it is known: the seam seeds
+    // on `true`, and a rejection is surfaced through the page's ErrorNotice
+    // instead of leaving a silent, invisible seed behind.
+    return dispatch(switchSlot(slot)).unwrap().then(
+      () => {
+        // A later switch (the user clicked another pane, or Asked from it)
+        // may have landed while this one was in flight; the panel is bound to
+        // whatever is active NOW, so opening the Side tab here would show the
+        // other pane's Side Chat with this quote hidden in this slot's draft.
+        // Report the Ask as not happened instead of seeding a stale slot.
+        if (boundStore.getState().chat.activeSlot !== slot) return false
+        dispatch(openActivityToTab('side'))
+        return true
+      },
+      (e: unknown) => {
+        showActionError(i18nT('pages.chatPage.side_chat_pane_gone', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+        return false
+      },
+    )
+  }, [activeSlot, boundStore, dispatch, showActionError])
 
   const handleEditResend = useCallback((index: number, ts: string, newContent: string) => {
     if (!activeSlot || slotRunning) return
@@ -6855,6 +6884,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         {splitMode && splitFeatureEnabled ? (
           <SessionGridView
             seedSlot={splitAnchor ?? activeSlot}
+            openSideChat={connected ? openSideChatForPane : undefined}
             onClose={() => setSplitMode(false)}
             onCollapse={(slot, anchorTs, anchorMid) => {
               dispatch(switchSlot(slot))
@@ -7355,7 +7385,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
-              {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
+              {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
               <div ref={inputAreaRef} className="relative z-10">
               {/* The refused-press answer sits directly above the composer,
                   adjacent to the message-footer controls that raised it, so the

@@ -8,9 +8,9 @@
  * Monaco uses — so the buttons, their icons and their translated labels are the
  * shipped ones rather than a posed copy.
  *
- * The row's width is the thing under review: "Ask in Side Chat" names the panel
- * the question lands in, which is longer than its neighbours, so the shot has to
- * show all three buttons together at their real type size.
+ * The row's width is the thing under review: "Ask about this" is the longest of
+ * the three (the panel it lands in is named by its tooltip, not the button), so
+ * the shot has to show all three buttons together at their real type size.
  *
  * Language + theme come from the query string: ?lang=zh-CN&theme=light
  */

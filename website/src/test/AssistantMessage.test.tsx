@@ -1119,7 +1119,7 @@ describe('pin toggle a11y state', () => {
 
 /**
  * #7819 — the selection toolbar used to be gated on `!isStreaming`, so Quote /
- * Ask in Side Chat / Copy were unavailable for the minutes a reply takes to
+ * Ask about this / Copy were unavailable for the minutes a reply takes to
  * arrive. Nothing about the actions needs the turn to be over: `SelectionToolbar`
  * snapshots the selected text and rect at selection time and its click handler
  * reads those snapshots, so a mid-stream re-render cannot hand an action stale
@@ -1152,7 +1152,7 @@ describe('AssistantMessage selection toolbar while streaming (#7819)', () => {
     act(() => { vi.advanceTimersByTime(60) })
   }
 
-  it('offers Quote / Ask in Side Chat / Copy on a selection made mid-stream', () => {
+  it('offers Quote / Ask about this / Copy on a selection made mid-stream', () => {
     render(
       <AssistantMessage content="a partial answer" isStreaming={true} slotRunning={true}
         onQuote={() => {}} onAsk={() => {}} />
@@ -1161,7 +1161,7 @@ describe('AssistantMessage selection toolbar while streaming (#7819)', () => {
     selectAllOf(md, md)
 
     expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Ask in Side Chat' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ask about this' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
   })
 

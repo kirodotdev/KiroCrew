@@ -4927,9 +4927,11 @@
       "will_be_removed_on_save": "Will be removed on save."
     },
     "selectionToolbar": {
-      "ask": "Ask in Side Chat",
+      "ask": "Ask about this",
+      "ask_hint": "Opens Side Chat with the selection quoted — nothing is sent until you send, and the main chat is untouched",
       "copy": "Copy",
-      "quote": "Quote"
+      "quote": "Quote",
+      "quote_hint": "Quotes the selection into the composer of this conversation — your reply goes to the main chat"
     },
     "sendToInstanceSubmenu": {
       "failed": "Failed",
@@ -6174,6 +6176,7 @@
         "ask_a_side_question": "Ask a side question",
         "ask_a_side_question_main_agent_keeps_working": "Ask a side question without interrupting the active run. Nothing here is saved to the chat.",
         "context_from": "Context from",
+        "off_record_marker": "Side Chat · not saved to the conversation",
         "refresh_context": "Refresh context",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
@@ -6300,6 +6303,7 @@
       "could_not_regenerate": "Couldn't regenerate",
       "could_not_set_the_agent_default_model": "Could not set the agent's default model",
       "could_not_switch_variant": "Couldn't switch version",
+      "side_chat_pane_gone": "Couldn't open a Side Chat for that pane — its session is no longer available: {{error}}",
       "enter_split_view": "Enter split view",
       "esc_to_dismiss": "Esc to dismiss",
       "failed_to_apply_plan": "Failed to apply plan",
@@ -7014,6 +7018,7 @@
       "patrol_last_wake_ago": "Last wake {{when}}",
       "patrol_none": "No patrol scheduled.",
       "patrol_error": "Couldn't load this member's patrol status.",
+      "side_chat_draft_waiting": "An unsent question is waiting in this member’s Side Chat",
       "patrol_error_roster": "Couldn't load patrol status for the roster.",
       "patrol_badge": "On patrol · {{cycle}}",
       "patrol_next_in": "Due in {{time}}",

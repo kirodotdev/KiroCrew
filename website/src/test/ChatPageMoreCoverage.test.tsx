@@ -35,7 +35,8 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { store as appStore } from '../store'
-import { setVoicePlaying } from '../store/chatSlice'
+import { setVoicePlaying, switchSlot } from '../store/chatSlice'
+import { sseDisconnected } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 
@@ -97,6 +98,21 @@ vi.mock('../components/ChatInput', async (importOriginal) => {
 vi.mock('../components/FlyingQuote', async () => {
   const React = await import('react')
   return { default: () => React.createElement('div', { 'data-testid': 'flying-quote' }) }
+})
+
+// The split grid is stubbed to a prop recorder: what matters here is the
+// `openSideChat` capability ChatPage hands its panes (and when it withholds
+// it), not the grid's own layout, which SessionGridView's suite covers.
+interface GridProps { openSideChat?: (slot: string) => boolean | void | Promise<boolean | void> }
+let gridProps: GridProps | null = null
+vi.mock('../components/SessionGridView', async () => {
+  const React = await import('react')
+  return {
+    default: (props: GridProps) => {
+      gridProps = props
+      return React.createElement('div', { 'data-testid': 'session-grid' })
+    },
+  }
 })
 
 interface ProjectPickerProps { onSelect: (path: string) => void }
@@ -219,6 +235,8 @@ globalThis.fetch = vi.fn().mockResolvedValue({
 }) as never
 
 import ChatPage from '../pages/ChatPage'
+import { readSideChatDraft } from '../chat-core/composer/sideChatDrafts'
+import { ApiError } from '../api/apiError'
 
 // --- Fixtures ---------------------------------------------------------------
 
@@ -226,6 +244,7 @@ const SLOT = {
   key: 'chat-1', title: 'chat-1', messages: 0, running: false,
   mode: '', created: '', last_ts: '',
 }
+const OTHER_SLOT = { ...SLOT, key: 'chat-2', title: 'chat-2' }
 
 interface HistorySession { key: string; title: string; created: string; messages: number }
 
@@ -239,11 +258,16 @@ interface RenderOpts {
   /** Past sessions `api.sessions` yields — ChatPage fetches them on mount, so a
    *  preloaded `chat.history` would be overwritten before the first paint. */
   sessions?: HistorySession[]
+  /** The slot list, both preloaded and what `api.chatSlots` yields (ChatPage
+   *  refetches it on mount). Default: `chat-1` alone. A switch to a key the
+   *  list does not hold is undone by the page itself — its mode-guard clears
+   *  the active slot and the auto-select falls back to the first known one. */
+  slots?: (typeof SLOT)[]
 }
 
 function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
-  const { chat = {}, sessions = [] } = opts
-  apiMocks.chatSlots = vi.fn().mockResolvedValue([SLOT])
+  const { chat = {}, sessions = [], slots = [SLOT] } = opts
+  apiMocks.chatSlots = vi.fn().mockResolvedValue(slots)
   apiMocks.chatSlotDetail = vi.fn().mockResolvedValue({
     messages, has_more: false, total: messages.length,
   })
@@ -257,7 +281,7 @@ function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
       ...base.dashboard,
       status: { platform: 'darwin' } as unknown as RootState['dashboard']['status'],
       connected: true,
-      slots: [SLOT] as unknown as RootState['dashboard']['slots'],
+      slots: slots as unknown as RootState['dashboard']['slots'],
     },
     chat: {
       ...base.chat,
@@ -302,6 +326,7 @@ beforeEach(() => {
   assistantProps = null
   inputProps = null
   projectPickerProps = null
+  gridProps = null
   chatSettings = { contentWidth: 'compact' }
   localStorage.clear()
   sessionStorage.clear()
@@ -446,18 +471,89 @@ describe('ChatPage row callbacks — quote and ask', () => {
 
   it('routes Ask to the side panel and seeds it, leaving the main composer untouched', async () => {
     const { store } = await renderTurn()
-    const seeds: (string | undefined)[] = []
-    const onSeed = (e: Event) => { seeds.push((e as CustomEvent).detail?.text) }
-    window.addEventListener('side-seed', onSeed)
-    try {
-      act(() => { assistantProps!.onAsk!('why is this slow?') })
-      await waitFor(() => expect(seeds).toContain('why is this slow?'))
-    } finally {
-      window.removeEventListener('side-seed', onSeed)
-    }
+    act(() => { assistantProps!.onAsk!('why is this slow?') })
+    // The seed is a store write under the active slot (the shared chat-core
+    // seam), which is the slot the activity panel's Side Chat is bound to.
+    expect(readSideChatDraft(store.getState().chat.activeSlot!)).toBe('> why is this slow?\n\n')
     expect(store.getState().chat.activityTab).toBe('side')
     expect(store.getState().chat.activityOpen).toBe(true)
     expect(inputProps!.value).toBe('')
+  })
+
+  /** Enters split view through the header toggle and returns the grid's props.
+   *  Two known slots, so a switch to `chat-2` is a real re-bind rather than a
+   *  switch to a stranger the page would immediately undo. */
+  async function renderSplit() {
+    apiSpy('dashboardConfig').mockResolvedValue({ session_grid: true })
+    const { store } = await renderTurn({ slots: [SLOT, OTHER_SLOT] })
+    fireEvent.click(await screen.findByRole('button', { name: 'Enter split view' }))
+    await waitFor(() => expect(gridProps?.openSideChat).toBeTypeOf('function'))
+    return { store }
+  }
+
+  it('re-binds the activity panel to a split pane\'s slot before opening its Side Chat', async () => {
+    const { store } = await renderSplit()
+    let verdict: boolean | void | Promise<boolean | void>
+    act(() => { verdict = gridProps!.openSideChat!('chat-2') })
+    // A re-bind is a request the server can reject, so the opener reports its
+    // verdict only once the switch settled — the Side tab opens on the
+    // re-bound panel and the seam seeds on `true`.
+    expect(verdict!).toBeInstanceOf(Promise)
+    await expect(verdict!).resolves.toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('chat-2')
+    expect(store.getState().chat.activityTab).toBe('side')
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it('a re-bind the server rejects reports false and surfaces the failure — nothing is seeded', async () => {
+    const { store } = await renderSplit()
+    // The pane's session was deleted under it: the detail fetch 404s, so
+    // `switchSlot.rejected` falls back to the slot the page was on.
+    apiSpy('chatSlotDetail').mockRejectedValueOnce(new ApiError(404, 'no such slot'))
+    let verdict: boolean | void | Promise<boolean | void>
+    act(() => { verdict = gridProps!.openSideChat!('chat-2') })
+    await expect(verdict!).resolves.toBe(false)
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1'))
+    expect(store.getState().chat.activityTab).not.toBe('side')
+    // The failure is said out loud above the composer, not swallowed.
+    await screen.findByText(/Couldn't open a Side Chat for that pane/)
+  })
+
+  it('a re-bind overtaken by a later switch reports false — the Side tab is not opened for the wrong pane', async () => {
+    const { store } = await renderSplit()
+    // Pane B's detail fetch hangs; the user goes back to pane A meanwhile.
+    let release: (v: unknown) => void = () => {}
+    apiSpy('chatSlotDetail').mockImplementationOnce(() => new Promise(res => { release = res }))
+    let verdict: boolean | void | Promise<boolean | void>
+    act(() => { verdict = gridProps!.openSideChat!('chat-2') })
+    expect(store.getState().chat.activeSlot).toBe('chat-2')
+    await act(async () => { await store.dispatch(switchSlot('chat-1')) })
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    // B's stale fulfilment lands: the slice ignores it (user switched away), and
+    // so must the opener — a `true` here would seed B while A's panel opens.
+    await act(async () => { release({}) })
+    await expect(verdict!).resolves.toBe(false)
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(store.getState().chat.activityTab).not.toBe('side')
+  })
+
+  it('withholds Ask from the panes while disconnected instead of switching slots offline', async () => {
+    const { store } = await renderSplit()
+    const askWhileConnected = gridProps!.openSideChat!
+    act(() => { store.dispatch(sseDisconnected()) })
+    // The capability is dropped, so the panes' toolbars offer Copy / Quote only…
+    await waitFor(() => expect(gridProps!.openSideChat).toBeUndefined())
+    // …and a call that slipped through in the frame before the re-render does
+    // NOT dispatch the switch a disconnected gateway would reject — the
+    // rejection clears the active pane's messages, blanking the transcript the
+    // reader just selected from. Nothing moves and no Side Chat bound to the
+    // wrong slot opens. The opener reports the refusal (`false`) so the
+    // selection seam does not seed a quote into a Side Chat that never opened.
+    let outcome: boolean | void | Promise<boolean | void>
+    act(() => { outcome = askWhileConnected('chat-2') })
+    expect(outcome).toBe(false)
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(store.getState().chat.activityTab).not.toBe('side')
   })
 })
 

@@ -7318,9 +7318,11 @@
       "will_be_removed_on_save": "Sera supprimé à l'enregistrement."
     },
     "selectionToolbar": {
-      "ask": "Demander dans le Chat annexe",
+      "ask": "Demander à ce sujet",
+      "ask_hint": "Ouvre le Chat annexe avec la sélection citée — rien n’est envoyé avant que tu n’envoies, et la discussion principale reste intacte",
       "copy": "Copier",
-      "quote": "Citer"
+      "quote": "Citer",
+      "quote_hint": "Cite la sélection dans le composeur de cette discussion — ta réponse part dans la discussion principale"
     },
     "sendToInstanceSubmenu": {
       "failed": "Échec",
@@ -9471,6 +9473,7 @@
         "ask_a_side_question_2": "Poser une question annexe…",
         "ask_a_side_question_main_agent_keeps_working": "Posez une question annexe sans interrompre l’exécution active. Rien ici n’est enregistré dans la conversation.",
         "context_from": "Contexte de",
+        "off_record_marker": "Chat annexe · non enregistré dans la discussion",
         "context_only_tools_unavailable": "Contexte uniquement · Les outils et les MCP ne sont pas disponibles ici. Utilisez la conversation principale pour agir.",
         "question_too_long": "Question trop longue — réduis-la à moins d'environ {{max}} caractères (la tienne : {{current}})",
         "queue_cancel_failed": "Impossible d'annuler cette question en file d'attente",
@@ -9827,6 +9830,7 @@
       "could_not_regenerate": "Impossible de régénérer",
       "could_not_set_the_agent_default_model": "Impossible de définir le modèle par défaut de l’agent",
       "could_not_switch_variant": "Impossible de changer de version",
+      "side_chat_pane_gone": "Impossible d’ouvrir un Chat annexe pour ce volet — sa session n’est plus disponible : {{error}}",
       "could_not_start_a_new_session": "Impossible de démarrer une nouvelle session",
       "could_not_start_session_message_restored": "Impossible de démarrer une nouvelle session : {{error}}. Ton message a été restauré — envoie-le à nouveau pour réessayer.",
       "enter_split_view": "Passer en vue divisée",
@@ -14472,6 +14476,7 @@
       "patrol_last_wake_ago": "Dernier réveil {{when}}",
       "patrol_none": "Aucune patrouille planifiée.",
       "patrol_error": "Impossible de charger l'état de patrouille de ce membre.",
+      "side_chat_draft_waiting": "Une question non envoyée attend dans le Chat annexe de ce membre",
       "patrol_error_roster": "Impossible de charger l'état de patrouille de la liste.",
       "patrol_badge": "En patrouille · {{cycle}}",
       "patrol_next_in": "Dans {{time}}",

@@ -7098,9 +7098,11 @@
       "will_be_removed_on_save": "保存時に削除されます。"
     },
     "selectionToolbar": {
-      "ask": "サイドチャットで質問",
+      "ask": "これについて質問",
+      "ask_hint": "選択部分を引用してサイドチャットを開きます — 送信するまで何も送られず、メインのチャットには影響しません",
       "copy": "コピー",
-      "quote": "引用"
+      "quote": "引用",
+      "quote_hint": "選択部分をこの会話の入力欄に引用します — 返信はメインのチャットに送られます"
     },
     "sendToInstanceSubmenu": {
       "failed": "失敗",
@@ -9211,6 +9213,7 @@
         "ask_a_side_question_2": "サイドで質問…",
         "ask_a_side_question_main_agent_keeps_working": "実行中の処理を止めずにサイドで質問できます。ここの内容はチャットには保存されません。",
         "context_from": "コンテキスト元",
+        "off_record_marker": "サイドチャット · 会話には保存されません",
         "context_only_tools_unavailable": "コンテキストのみ · ここではツールや MCP は利用できません。操作はメインチャットで依頼してください。",
         "question_too_long": "質問が長すぎます — 約 {{max}} 文字未満に短くしてください（現在は {{current}} 文字）",
         "queue_cancel_failed": "キューに入っている質問をキャンセルできませんでした",
@@ -9549,6 +9552,7 @@
       "could_not_regenerate": "再生成できませんでした",
       "could_not_set_the_agent_default_model": "エージェントのデフォルトモデルを設定できませんでした",
       "could_not_switch_variant": "バージョンを切り替えられませんでした",
+      "side_chat_pane_gone": "そのペインのサイドチャットを開けませんでした — セッションが利用できなくなっています: {{error}}",
       "could_not_start_a_new_session": "新しいセッションを開始できませんでした",
       "could_not_start_session_message_restored": "新しいセッションを開始できませんでした：{{error}}。メッセージは復元されました — もう一度送信して再試行してください。",
       "enter_split_view": "分割表示にする",
@@ -14103,6 +14107,7 @@
       "patrol_last_wake_ago": "最後の起動 {{when}}",
       "patrol_none": "パトロールは予定されていません。",
       "patrol_error": "このメンバーのパトロール状態を読み込めませんでした。",
+      "side_chat_draft_waiting": "このメンバーのサイドチャットに未送信の質問があります",
       "patrol_error_roster": "メンバー一覧のパトロール状態を読み込めませんでした。",
       "patrol_badge": "パトロール中 · {{cycle}}",
       "patrol_next_in": "あと{{time}}",

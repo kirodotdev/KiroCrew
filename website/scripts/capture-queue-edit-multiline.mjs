@@ -21,7 +21,13 @@
  *   MODE=before node scripts/capture-queue-edit-multiline.mjs http://127.0.0.1:6842 ../temp-screenshots/queue-edit-multiline
  */
 import { chromium } from 'playwright'
-import { prepareSplitChatPage } from './lib/prepare-split-chat-page.mjs'
+import {
+  TWO_PANE_SPLIT_LAYOUTS,
+  jsonResponder as json,
+  makeChecker,
+  prepareSplitChatPage,
+  splitPaneFixtures,
+} from './lib/prepare-split-chat-page.mjs'
 import { mkdirSync } from 'node:fs'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:6841'
@@ -51,33 +57,9 @@ const detailB = {
     { role: 'queued', ts: now - 10, content: QUEUED, cls: 'msg msg-queued', meta: { queueId: 'q-demo-1' } },
   ],
 }
-const splitLayouts = {
-  'pane-a': {
-    type: 'split', id: 'seed-split', dir: 'col',
-    children: [
-      { type: 'leaf', id: 'seed-a', kind: 'session', slot: 'pane-a' },
-      { type: 'leaf', id: 'seed-b', kind: 'session', slot: 'pane-b' },
-    ],
-    sizes: [0.5, 0.5],
-  },
-}
-const json = (route, body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-const FIXTURES = {
-  '/api/chat/slots': slots,
-  '/api/kiro-prerequisite': {
-    platform: 'linux', installed: true, authenticated: true, ready: true,
-    initial_setup_complete: true, can_auto_install: false, can_login: false,
-    repair_required: false, docs_url: '', setup_allowed: false,
-    operation: { kind: '', status: 'idle', message: '', detail: '', url: '', error: '' },
-  },
-  '/api/dashboard/config': { session_grid: true },
-}
-
-let failed = false
-function check(name, ok, detail) {
-  console.log(`${name}: ${ok ? 'OK' : 'MISMATCH'} ${detail}`)
-  if (!ok) failed = true
-}
+const splitLayouts = TWO_PANE_SPLIT_LAYOUTS
+const FIXTURES = splitPaneFixtures(slots)
+const { check, failed } = makeChecker()
 
 async function capture(theme) {
   const browser = await chromium.launch()
@@ -116,5 +98,5 @@ async function capture(theme) {
 
 await capture('light')
 await capture('dark')
-if (failed) { console.error('frame assertions failed'); process.exit(1) }
+if (failed()) { console.error('frame assertions failed'); process.exit(1) }
 console.log(`all frames verified (${MODE}) →`, OUT)

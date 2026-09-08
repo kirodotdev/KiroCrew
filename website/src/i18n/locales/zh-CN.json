@@ -7099,8 +7099,10 @@
     },
     "selectionToolbar": {
       "ask": "随手问",
+      "ask_hint": "打开随手问并引用选中内容——在你点击发送前不会发出任何内容，主聊天不受影响",
       "copy": "复制",
-      "quote": "引用"
+      "quote": "引用",
+      "quote_hint": "把选中内容引用到本对话的输入框——你的回复会发到主聊天"
     },
     "sendToInstanceSubmenu": {
       "failed": "失败",
@@ -9211,6 +9213,7 @@
         "ask_a_side_question_2": "随手问一句…",
         "ask_a_side_question_main_agent_keeps_working": "随手问一句，不会打断正在运行的任务。这里的内容不会存进对话。",
         "context_from": "上下文来自",
+        "off_record_marker": "随手问 · 不会保存到对话中",
         "context_only_tools_unavailable": "仅使用上下文 · 此处无法使用工具和 MCP。请在主对话中执行操作。",
         "question_too_long": "问题过长 — 请缩减到约 {{max}} 个字符以内（当前：{{current}}）",
         "queue_cancel_failed": "无法取消排队中的这个问题",
@@ -9549,6 +9552,7 @@
       "could_not_regenerate": "无法重新生成",
       "could_not_set_the_agent_default_model": "无法设置代理的默认模型",
       "could_not_switch_variant": "无法切换版本",
+      "side_chat_pane_gone": "无法为该分栏打开随手问——它的会话已不可用：{{error}}",
       "could_not_start_a_new_session": "无法启动新会话",
       "could_not_start_session_message_restored": "无法启动新会话：{{error}}。消息已恢复 — 再次发送即可重试。",
       "enter_split_view": "进入分屏视图",
@@ -14103,6 +14107,7 @@
       "patrol_last_wake_ago": "上次唤醒：{{when}}",
       "patrol_none": "未安排巡逻。",
       "patrol_error": "无法加载此成员的巡逻状态。",
+      "side_chat_draft_waiting": "这位成员的随手问里还有一条未发送的问题",
       "patrol_error_roster": "无法加载成员列表的巡逻状态。",
       "patrol_badge": "巡逻中 · {{cycle}}",
       "patrol_next_in": "还有 {{time}}",

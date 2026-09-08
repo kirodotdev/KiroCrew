@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
+import { Fragment, useState, useEffect, useId, useLayoutEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { MessageSquareQuote, MessageCircleQuestionMark, Copy, Check } from 'lucide-react'
@@ -11,6 +11,9 @@ export interface SelectionAction {
   id: string
   icon: React.ReactNode
   label: string
+  /** Tooltip shown on hover when the label alone does not say where the
+   *  action lands. Falls back to the label; never the accessible name. */
+  hint?: string
   /** Called with selected text and the bounding rect of the selection */
   onClick: (text: string, rect: DOMRect) => void
 }
@@ -255,6 +258,9 @@ interface SelectionToolbarProps {
 export default function SelectionToolbar({ containerRef, actions, externalSelection }: SelectionToolbarProps) {
   const [visible, setVisible] = useState(false)
   const [pos, setPos] = useState({ x: 0, y: 0 })
+  // Id prefix for the per-action hint nodes (`aria-describedby` targets);
+  // several toolbars can be mounted at once (split view), so it is per instance.
+  const hintIdBase = useId()
   // Clamped top-left, computed after measuring the toolbar so it never clips
   // the viewport edges. The layout effect below corrects this before paint,
   // and framer-motion's `initial opacity: 0` hides the mount frame, so there's
@@ -491,17 +497,24 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
         >
           <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-bg-elevated border border-border shadow-lg">
             {actions.map(action => (
-              <button
-                key={action.id}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-text hover:text-accent hover:bg-bg-hover transition-colors cursor-pointer whitespace-nowrap"
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => handleAction(action)}
-                aria-label={action.label}
-                title={action.label}
-              >
-                {copiedId === action.id ? <Check size={12} className="text-ok" /> : action.icon}
-                {action.label}
-              </button>
+              <Fragment key={action.id}>
+                <button
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium text-text hover:text-accent hover:bg-bg-hover transition-colors cursor-pointer whitespace-nowrap"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => handleAction(action)}
+                  aria-label={action.label}
+                  // The hint is the tooltip AND the accessible description: a
+                  // keyboard or screen-reader user never sees a hover title.
+                  aria-describedby={action.hint ? `${hintIdBase}-${action.id}` : undefined}
+                  title={action.hint ?? action.label}
+                >
+                  {copiedId === action.id ? <Check size={12} className="text-ok" /> : action.icon}
+                  {action.label}
+                </button>
+                {/* Sibling, not child: the button's own text stays the label
+                    (the capture harnesses and tests read it as such). */}
+                {action.hint && <span id={`${hintIdBase}-${action.id}`} className="sr-only">{action.hint}</span>}
+              </Fragment>
             ))}
           </div>
         </motion.div>
@@ -523,18 +536,25 @@ export function useSelectionActions(
       id: 'quote',
       icon: <MessageSquareQuote size={12} />,
       label: i18nT('components.selectionToolbar.quote'),
+      // The pair's hints disambiguate each other: this one names the main
+      // conversation as the destination, Ask's names the Side Chat.
+      hint: i18nT('components.selectionToolbar.quote_hint'),
       onClick: onQuote,
     })
   }
 
   // "Ask" opens the isolated /side conversation seeded with the selection so
   // the user can ask a scoped follow-up WITHOUT polluting the main chat
-  // context (unlike Quote, which injects into the main composer).
+  // context (unlike Quote, which injects into the main composer). The label
+  // says what the action does to the selection ("ask about this"); WHERE the
+  // question lands is the hint's job — a first-time reader has not met the
+  // Side Chat panel yet, so naming it on the button explained nothing.
   if (onAsk) {
     actions.push({
       id: 'ask',
       icon: <MessageCircleQuestionMark size={12} />,
       label: i18nT('components.selectionToolbar.ask'),
+      hint: i18nT('components.selectionToolbar.ask_hint'),
       onClick: onAsk,
     })
   }

@@ -14,6 +14,8 @@ import ChatInput from '../../components/ChatInput'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SlotProvider } from '../../providers/SlotContext'
 import { useConnected } from '../../hooks/useConnected'
+import { consumeSideChatSeed, readSideChatDraft, writeSideChatDraft, useSideChatDraft } from '../../chat-core/composer/sideChatDrafts'
+import { mergeIntoDraft as appendToDraft } from '../../utils/chatDrafts'
 import type { SideMessage, SideQueueEntry } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
 
@@ -149,11 +151,55 @@ export default function SideChat({ slot }: { slot: string }) {
    *  follow-up pick does to the text, where a handed-back submit goes, when Enter is a send
    *  and when it is an IME committing a candidate, and how tall the box may grow. Derived
    *  here from `followUpOptions`, so the hook has to be called after that. */
-  const composer = useComposerDraft({ followUpOptions, maxBytes: MAX_QUESTION_BYTES, maxHeight: MAX_INPUT_H })
+  // The draft lives OUTSIDE this component (chat-core's sideChatDrafts, per
+  // slot): every host unmounts the panel through a control that sits right
+  // beside the composer — another activity tab, the Members drawer's
+  // "Details", closing it, switching members — and an uncontrolled draft died
+  // with each of those. The store is the ONLY source of truth and this is a
+  // subscription to it: typing, a failed request handing its text back, and
+  // the selection toolbar's Ask seeding a quote all write the store, and the
+  // panel re-renders from it. Controlled mode hands the hook the stored text
+  // and takes every change back; `send`'s `setDraft('')` therefore clears the
+  // store too. A cached copy in state was tried and rejected — a failed submit
+  // restores text into the store while the panel may be bound elsewhere, and
+  // a cache then hid that restored text (and the next keystroke overwrote it)
+  // when the panel came back.
+  const { text: storedDraft, seedTick } = useSideChatDraft(slot)
+  const onDraftChange = useCallback((next: string) => { writeSideChatDraft(slot, next) }, [slot])
+  const composer = useComposerDraft({ followUpOptions, maxBytes: MAX_QUESTION_BYTES, maxHeight: MAX_INPUT_H, draft: storedDraft, onDraftChange })
   const {
     draft, setDraft,
     picked: pickedOptions, toggleOption, mergeIntoDraft, exceedsByteLimit,
   } = composer
+
+  /** Hand text back to the draft of the slot it belongs to — ALWAYS through the
+   *  store, never through the composer's `mergeIntoDraft`: in controlled mode
+   *  that resolves its updater against the render-time draft, so two failures
+   *  landing in one tick (two queued edits rejected together) would both build
+   *  on the same stale base and the second would erase the first's restore.
+   *  `readSideChatDraft` is synchronous and current, so successive restores
+   *  compose; the shown composer re-renders from the store like every other
+   *  write. Restoring to a slot the panel is not showing is the same write —
+   *  the store entry waits for that slot's panel.
+   *
+   *  This is the ONLY way an async callback may write a draft. Every writer
+   *  of the draft, and why each lands on the right slot:
+   *  - typing / follow-up chips / `send`'s clear → `setDraft` → the slot the
+   *    panel shows at that moment, which is the slot the user is acting on;
+   *  - the Select-to-Ask seed → `seedSideChatDraft(slot, …)` writes the store
+   *    entry of the slot that was asked about, mounted panel or not;
+   *  - a cancelled queue card's release → read from `slotSide[slot]` for the
+   *    slot shown; a release for a hidden slot waits in the store until that
+   *    slot's panel is on screen;
+   *  - a failed submit (`sendMutation.onError`) and a failed queue edit
+   *    (`editQueued.onError`) → `restoreDraftTo(vars.slot, …)`: the slot
+   *    captured at request time, because the panel may have been re-bound
+   *    (split view's Ask, a member switch) while the request was in flight.
+   *  A `mergeIntoDraft` inside a mutation callback would be the wrong-slot bug
+   *  again — reach for this instead. */
+  const restoreDraftTo = useCallback((target: string, text: string) => {
+    writeSideChatDraft(target, appendToDraft(readSideChatDraft(target), text))
+  }, [])
 
   /** Wrapper around the native composer; the Select-to-Ask seed resolves the
    *  textarea through it (`textarea[data-composer-input]`) instead of a
@@ -321,7 +367,11 @@ export default function SideChat({ slot }: { slot: string }) {
       if (vars.optimistic) dispatch(sideOptimisticRollback(vars.slot))
       // Nothing was accepted, so hand the text back — merged, not chosen: the
       // user may have started a new draft while the request was in flight.
-      mergeIntoDraft(vars.q)
+      // Back to the slot it was SUBMITTED for (`vars.slot`), not whichever slot
+      // this panel shows now: a host can re-bind the panel while the request
+      // is in flight (split view's Ask, a member switch), and handing A's
+      // question to B's draft would lose it for A and corrupt B.
+      restoreDraftTo(vars.slot, vars.q)
     },
   })
 
@@ -423,8 +473,10 @@ export default function SideChat({ slot }: { slot: string }) {
       // The editor is already closed (it closes on save, before the request resolves), so
       // this text has nowhere else to live: a 404 means the entry drained and its card is
       // gone, and a surviving card still shows the pre-edit content. Merge, never assign —
-      // the composer may hold a question the user has since started typing.
-      mergeIntoDraft(vars.content)
+      // the composer may hold a question the user has since started typing — and into
+      // the draft of the slot the edit was FOR (`vars.slot`), not whichever slot the
+      // panel shows now; see `restoreDraftTo`.
+      restoreDraftTo(vars.slot, vars.content)
     },
     onSettled: (_d, _e, vars) => { markQueuePending(vars.queueId, false) },
   })
@@ -470,35 +522,32 @@ export default function SideChat({ slot }: { slot: string }) {
   // no tail-keyed effect — the hook's ResizeObserver sees every height change.
 
   // Select-to-Ask seed: when the user clicks "Ask" in the selection toolbar,
-  // ChatPage opens this panel and fires a `side-seed` CustomEvent carrying the
-  // selected text. Prefill the draft with the selection as a grounding
-  // blockquote and focus the input so the user types their actual question
-  // (which then fires sideOpen → sideTurn as usual). Isolated from main context.
+  // the host opens this panel and `seedSideChatDraft` (chat-core) writes the
+  // selection into THIS slot's draft as a grounding blockquote — the draft
+  // subscription above renders it, whether the panel was already mounted or
+  // came up afterwards. What is left to do here is the focus nudge: put the
+  // caret after the quote so the user immediately types the question (which
+  // then fires sideOpen → sideTurn as usual). `seedTick` marks a seed still
+  // WAITING for the caret (a panel mounting onto an already-seeded slot nudges
+  // once on mount, which is exactly the late-mount case); the nudge consumes
+  // it, so a later remount of a once-seeded slot — reopening the Side tab, a
+  // member switch and back — leaves focus where the user has it.
   useEffect(() => {
-    const onSeed = (e: Event) => {
-      const detail = (e as CustomEvent<{ text?: string }>).detail
-      const sel = detail?.text?.trim()
-      if (!sel) return
-      const quoted = sel.split('\n').map(line => `> ${line}`).join('\n')
-      setDraft(prev => (prev.trim() ? `${prev.trimEnd()}\n\n${quoted}\n\n` : `${quoted}\n\n`))
-      // Focus + place caret at the end so the user immediately types the question.
-      requestAnimationFrame(() => {
-        const el = composerWrapRef.current?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
-        if (el) {
-          el.focus()
-          const len = el.value.length
-          el.setSelectionRange(len, len)
-          // Scroll to the top so the START of a long quote is visible (focusing
-          // + caret-at-end scrolls to the bottom otherwise, hiding the quote).
-          el.scrollTop = 0
-        }
-      })
-    }
-    window.addEventListener('side-seed', onSeed)
-    return () => window.removeEventListener('side-seed', onSeed)
-    // `setDraft` comes from the SDK hook, so its stability is not something the
-    // linter can see for itself — declared rather than assumed.
-  }, [setDraft])
+    if (!seedTick) return
+    const frame = requestAnimationFrame(() => {
+      const el = composerWrapRef.current?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
+      if (el) {
+        el.focus()
+        const len = el.value.length
+        el.setSelectionRange(len, len)
+        // Scroll to the top so the START of a long quote is visible (focusing
+        // + caret-at-end scrolls to the bottom otherwise, hiding the quote).
+        el.scrollTop = 0
+      }
+      consumeSideChatSeed(slot)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [seedTick, slot])
 
   // Auto-grow of the input is the SDK hook's job — the `min-h-[52px]` class below
   // still floors an empty box at ~2 rows, so this surface keeps its own resting size.
@@ -648,7 +697,21 @@ export default function SideChat({ slot }: { slot: string }) {
           resolves the textarea through a wrapper query. Capability shaping is by
           omission: no upload/voice/agent/model props, so the slim surface
           renders none of that chrome — same component, fewer capabilities. */}
-      <div ref={composerWrapRef} data-side-chat-input="" className="border-t border-border p-2 shrink-0">
+      {/* Tinted band: two composers can share one screen (the thread's and this
+          one — on the Members page they sit side by side, same send arrow). One
+          is off the record, the other steers a live run, so the off-record one
+          must read differently at a glance, not only from the panel header. */}
+      {/* `data-side-chat-slot` is a test / capture-harness hook naming the slot
+          this composer belongs to (nothing in production reads it). */}
+      <div ref={composerWrapRef} data-side-chat-input="" data-side-chat-slot={slot} className="border-t border-accent/30 bg-accent/5 p-2 shrink-0">
+        {/* The band says what it is IN WORDS: the blind read of the tint alone
+            was "two filled-in boxes that look almost identical". Same icon as
+            the toolbar's Ask, so the seeded composer is recognisably where
+            that button led. */}
+        <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-medium text-accent" data-testid="side-chat-off-record">
+          <MessageCircleQuestionMark size={12} aria-hidden />
+          {i18nT('pages.chat.sideChat.off_record_marker')}
+        </div>
         <SlotProvider slotId={slot}>
           <ChatInput
             value={draft}

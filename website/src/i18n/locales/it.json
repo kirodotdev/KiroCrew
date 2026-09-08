@@ -7318,9 +7318,11 @@
       "will_be_removed_on_save": "Verrà rimosso al salvataggio."
     },
     "selectionToolbar": {
-      "ask": "Chiedi in Chat laterale",
+      "ask": "Chiedi di questo",
+      "ask_hint": "Apre la Chat laterale con la selezione citata: non viene inviato nulla finché non invii tu, e la chat principale resta intatta",
       "copy": "Copia",
-      "quote": "Cita"
+      "quote": "Cita",
+      "quote_hint": "Cita la selezione nel compositore di questa conversazione: la tua risposta va nella chat principale"
     },
     "sendToInstanceSubmenu": {
       "failed": "Non riuscito",
@@ -9471,6 +9473,7 @@
         "ask_a_side_question_2": "Fai una domanda a parte…",
         "ask_a_side_question_main_agent_keeps_working": "Fai una domanda a parte senza interrompere l’esecuzione attiva. Niente di tutto questo viene salvato nella chat.",
         "context_from": "Contesto da",
+        "off_record_marker": "Chat laterale · non salvata nella conversazione",
         "context_only_tools_unavailable": "Solo contesto · Strumenti e MCP non sono disponibili qui. Usa la chat principale per eseguire azioni.",
         "question_too_long": "Domanda troppo lunga — riducila a meno di circa {{max}} caratteri (la tua: {{current}})",
         "queue_cancel_failed": "Impossibile annullare quella domanda in coda",
@@ -9827,6 +9830,7 @@
       "could_not_regenerate": "Impossibile rigenerare",
       "could_not_set_the_agent_default_model": "Impossibile impostare il modello predefinito dell'agente",
       "could_not_switch_variant": "Impossibile cambiare versione",
+      "side_chat_pane_gone": "Impossibile aprire una Chat laterale per quel riquadro: la sua sessione non è più disponibile: {{error}}",
       "could_not_start_a_new_session": "Impossibile avviare una nuova sessione",
       "could_not_start_session_message_restored": "Non è stato possibile avviare una nuova sessione: {{error}}. Il tuo messaggio è stato ripristinato — invialo di nuovo per riprovare.",
       "enter_split_view": "Attiva la vista divisa",
@@ -14471,6 +14475,7 @@
       "patrol_last_wake_ago": "Ultima attivazione {{when}}",
       "patrol_none": "Nessuna pattuglia programmata.",
       "patrol_error": "Impossibile caricare lo stato di pattuglia di questo membro.",
+      "side_chat_draft_waiting": "Una domanda non inviata attende nella Chat laterale di questo membro",
       "patrol_error_roster": "Impossibile caricare lo stato di pattuglia dell'elenco.",
       "patrol_badge": "In pattuglia · {{cycle}}",
       "patrol_next_in": "Tra {{time}}",

@@ -7318,9 +7318,11 @@
       "will_be_removed_on_save": "Será removido ao salvar."
     },
     "selectionToolbar": {
-      "ask": "Perguntar no Chat lateral",
+      "ask": "Perguntar sobre isto",
+      "ask_hint": "Abre o Chat lateral com a seleção citada: nada é enviado até você enviar, e o chat principal fica intacto",
       "copy": "Copiar",
-      "quote": "Citar"
+      "quote": "Citar",
+      "quote_hint": "Cita a seleção no compositor desta conversa: sua resposta vai para o chat principal"
     },
     "sendToInstanceSubmenu": {
       "failed": "Falhou",
@@ -9471,6 +9473,7 @@
         "ask_a_side_question_2": "Fazer uma pergunta paralela…",
         "ask_a_side_question_main_agent_keeps_working": "Faça uma pergunta paralela sem interromper a execução ativa. Nada aqui é salvo na conversa.",
         "context_from": "Contexto de",
+        "off_record_marker": "Chat lateral · não é salvo na conversa",
         "context_only_tools_unavailable": "Somente contexto · Ferramentas e MCPs não estão disponíveis aqui. Use o chat principal para realizar ações.",
         "question_too_long": "Pergunta longa demais — reduza para menos de aproximadamente {{max}} caracteres (a sua: {{current}})",
         "queue_cancel_failed": "Não foi possível cancelar essa pergunta na fila",
@@ -9827,6 +9830,7 @@
       "could_not_regenerate": "Não foi possível gerar novamente",
       "could_not_set_the_agent_default_model": "Não foi possível definir o modelo padrão do agente",
       "could_not_switch_variant": "Não foi possível trocar de versão",
+      "side_chat_pane_gone": "Não foi possível abrir um Chat lateral para esse painel: a sessão dele não está mais disponível: {{error}}",
       "could_not_start_a_new_session": "Não foi possível iniciar uma nova sessão",
       "could_not_start_session_message_restored": "Não foi possível iniciar uma nova sessão: {{error}}. Sua mensagem foi restaurada — envie novamente para tentar de novo.",
       "enter_split_view": "Entrar na visualização dividida",
@@ -14471,6 +14475,7 @@
       "patrol_last_wake_ago": "Última ativação {{when}}",
       "patrol_none": "Nenhuma patrulha agendada.",
       "patrol_error": "Não foi possível carregar o status de patrulha deste membro.",
+      "side_chat_draft_waiting": "Há uma pergunta não enviada no Chat lateral deste membro",
       "patrol_error_roster": "Não foi possível carregar o status de patrulha da lista.",
       "patrol_badge": "Em patrulha · {{cycle}}",
       "patrol_next_in": "Daqui a {{time}}",

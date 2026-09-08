@@ -7098,9 +7098,11 @@
       "will_be_removed_on_save": "저장할 때 삭제됩니다."
     },
     "selectionToolbar": {
-      "ask": "사이드 채팅에서 질문",
+      "ask": "이에 대해 질문",
+      "ask_hint": "선택한 부분을 인용해 사이드 채팅을 엽니다 — 보내기 전까지는 아무것도 전송되지 않으며 메인 채팅은 그대로 유지됩니다",
       "copy": "복사",
-      "quote": "인용"
+      "quote": "인용",
+      "quote_hint": "선택한 부분을 이 대화의 입력창에 인용합니다 — 답장은 메인 채팅으로 전송됩니다"
     },
     "sendToInstanceSubmenu": {
       "failed": "실패",
@@ -9211,6 +9213,7 @@
         "ask_a_side_question_2": "사이드 질문하기…",
         "ask_a_side_question_main_agent_keeps_working": "실행 중인 작업을 멈추지 않고 사이드에서 질문할 수 있습니다. 여기 내용은 대화에 저장되지 않습니다.",
         "context_from": "컨텍스트 출처",
+        "off_record_marker": "사이드 채팅 · 대화에 저장되지 않습니다",
         "context_only_tools_unavailable": "컨텍스트 전용 · 여기서는 도구와 MCP를 사용할 수 없습니다. 작업은 기본 채팅에서 요청하세요.",
         "question_too_long": "질문이 너무 깁니다 — 약 {{max}} 글자 이내로 줄여 주세요 (현재: {{current}})",
         "queue_cancel_failed": "대기열에 있는 해당 질문을 취소할 수 없습니다",
@@ -9549,6 +9552,7 @@
       "could_not_regenerate": "다시 생성할 수 없습니다",
       "could_not_set_the_agent_default_model": "에이전트의 기본 모델을 설정할 수 없습니다",
       "could_not_switch_variant": "버전을 전환할 수 없습니다",
+      "side_chat_pane_gone": "해당 창의 사이드 채팅을 열 수 없습니다 — 세션을 더 이상 사용할 수 없습니다: {{error}}",
       "could_not_start_a_new_session": "새 세션을 시작할 수 없습니다",
       "could_not_start_session_message_restored": "새 세션을 시작할 수 없습니다: {{error}}. 메시지는 복원되었습니다 — 다시 보내서 재시도하세요.",
       "enter_split_view": "분할 보기로 전환",
@@ -14103,6 +14107,7 @@
       "patrol_last_wake_ago": "마지막 웨이크 {{when}}",
       "patrol_none": "예정된 순찰이 없습니다.",
       "patrol_error": "이 멤버의 순찰 상태를 불러오지 못했습니다.",
+      "side_chat_draft_waiting": "이 멤버의 사이드 채팅에 보내지 않은 질문이 있습니다",
       "patrol_error_roster": "멤버 목록의 순찰 상태를 불러오지 못했습니다.",
       "patrol_badge": "순찰 중 · {{cycle}}",
       "patrol_next_in": "{{time}} 후 예정",

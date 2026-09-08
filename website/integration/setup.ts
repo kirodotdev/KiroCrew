@@ -3,6 +3,7 @@ import '@testing-library/jest-dom'
 import { server } from './mocks/server'
 import { initI18n, i18next } from '../src/i18n'
 import { __resetStagingForTests } from '../src/components/pierreStaging'
+import { clearSideChatDrafts } from '../src/chat-core/composer/sideChatDrafts'
 
 // The Pierre mount queue is MODULE state — in a browser that is per-page, but a
 // vitest worker runs many test files in one process, so without this a file that
@@ -11,6 +12,12 @@ import { __resetStagingForTests } from '../src/components/pierreStaging'
 // stand-in forever and assertions looking for highlighted output fail in a file
 // that passes perfectly on its own. Reset per test: one test is one "page".
 beforeEach(() => { __resetStagingForTests() })
+
+// Side Chat drafts are MODULE state too (chat-core/composer/sideChatDrafts): they exist
+// so a draft survives the panel unmounting, which within one test file means a
+// draft typed in one test would greet the next test's freshly mounted panel.
+// Same rule: one test is one "page".
+beforeEach(() => { clearSideChatDrafts() })
 
 // lottie-web registers a module-scoped `setInterval(checkReady, 100)` purely by
 // being IMPORTED (`readyStateCheckInterval` in the prebuilt player bundles). That

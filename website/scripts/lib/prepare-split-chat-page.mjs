@@ -44,3 +44,64 @@ export async function prepareSplitChatPage(context, { base, fixtures, detailA, d
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   return page
 }
+
+/**
+ * The boilerplate every split-pane harness used to re-declare verbatim: the
+ * persisted two-pane layout, the JSON route responder, the fixture map the app
+ * boots from, and the per-frame assertion logger. Shared by
+ * capture-chatpane-selection-quote-ask.mjs, capture-queue-edit-multiline.mjs
+ * and (the checker) capture-members-selection-quote-ask.mjs; the jscpd gate
+ * runs at 0% duplication over scripts/, so a new harness imports these rather
+ * than pasting the stanza.
+ */
+
+/** Two session leaves, pane-a over pane-b, split 50/50 under pane-a's key. */
+export const TWO_PANE_SPLIT_LAYOUTS = {
+  'pane-a': {
+    type: 'split', id: 'seed-split', dir: 'col',
+    children: [
+      { type: 'leaf', id: 'seed-a', kind: 'session', slot: 'pane-a' },
+      { type: 'leaf', id: 'seed-b', kind: 'session', slot: 'pane-b' },
+    ],
+    sizes: [0.5, 0.5],
+  },
+}
+
+/** Answer a Playwright route with a JSON body. */
+export const jsonResponder = (route, body, status = 200) =>
+  route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+
+/**
+ * The minimum fixture map a split-pane harness boots from: the slot list, a
+ * "ready, nothing to install" prerequisite verdict, and the session grid on.
+ * Spread it and add harness-specific paths.
+ */
+export function splitPaneFixtures(slots) {
+  return {
+    '/api/chat/slots': slots,
+    '/api/kiro-prerequisite': {
+      platform: 'linux', installed: true, authenticated: true, ready: true,
+      initial_setup_complete: true, can_auto_install: false, can_login: false,
+      repair_required: false, docs_url: '', setup_allowed: false,
+      operation: { kind: '', status: 'idle', message: '', detail: '', url: '', error: '' },
+    },
+    '/api/dashboard/config': { session_grid: true },
+  }
+}
+
+/**
+ * Per-frame assertion logger. Returns `check(name, ok, detail)`, which prints
+ * one OK/MISMATCH line, and `failed()`, true once any check has mismatched, so
+ * the harness can exit non-zero after writing every frame it could.
+ */
+export function makeChecker() {
+  let anyFailed = false
+  return {
+    check(name, ok, detail) {
+      console.log(`${name}: ${ok ? 'OK' : 'MISMATCH'} ${detail}`)
+      if (!ok) anyFailed = true
+      return ok
+    },
+    failed: () => anyFailed,
+  }
+}
