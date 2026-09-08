@@ -14,7 +14,7 @@ function queued(content: string, queueId: string): ChatMessage {
 function openEditor() {
   const pencil = screen.getByLabelText('Edit queued message')
   fireEvent.click(pencil)
-  return screen.getByLabelText('Edit queued message') as HTMLInputElement
+  return screen.getByLabelText('Edit queued message') as HTMLTextAreaElement
 }
 
 describe('QueueStack inline edit', () => {
@@ -53,6 +53,48 @@ describe('QueueStack inline edit', () => {
     fireEvent.change(input, { target: { value: 'changed but cancelled' } })
     fireEvent.keyDown(input, { key: 'Escape' })
     expect(onEdit).not.toHaveBeenCalled()
+  })
+
+  it('is a textarea that keeps the newlines between attachment markers through an edit', () => {
+    // The serializer writes one `[attached_file N] path` marker per line. A
+    // single-line <input> drops every newline from its value, which would
+    // glue the markers together and make the queue edit prune all but the
+    // last attachment (a card resolving to a path the agent never received).
+    const onEdit = vi.fn()
+    const twoFiles = 'caption\n[attached_file 1] /tmp/a.pdf\n[attached_file 2] /tmp/My Report.pdf'
+    render(<QueueStack messages={[queued(twoFiles, 'q1')]} onEdit={onEdit} />)
+    const editor = openEditor()
+    expect(editor.tagName).toBe('TEXTAREA')
+    expect(editor.value).toBe(twoFiles)
+    // The card is a fixed-height stack slot, so the editor stays one visible row.
+    expect(editor.getAttribute('rows')).toBe('1')
+    // Only the caption line is selected: a retype replaces the caption, never
+    // the marker lines hidden below the visible row.
+    expect(editor.selectionStart).toBe(0)
+    expect(editor.selectionEnd).toBe('caption'.length)
+    // The hidden lines are named next to the editor so the value below the
+    // fold is never a surprise -- and named as what they are: every hidden
+    // line here is an attachment marker, so the cue says attachments.
+    expect(screen.getByTestId('queue-edit-hidden-lines').textContent).toBe('+2 attachments')
+    const edited = 'new caption\n[attached_file 1] /tmp/a.pdf\n[attached_file 2] /tmp/My Report.pdf'
+    fireEvent.change(editor, { target: { value: edited } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', edited)
+  })
+
+  it('counts hidden lines generically when they are not all attachment markers', () => {
+    const mixed = 'first line\nsecond line of prose\n[attached_file 1] /tmp/a.pdf'
+    render(<QueueStack messages={[queued(mixed, 'q1')]} onEdit={vi.fn()} />)
+    openEditor()
+    expect(screen.getByTestId('queue-edit-hidden-lines').textContent).toBe('+2 lines')
+  })
+
+  it('shows no hidden-line cue on a single-line entry and selects the whole value', () => {
+    render(<QueueStack messages={[queued('one line', 'q1')]} onEdit={vi.fn()} />)
+    const editor = openEditor()
+    expect(screen.queryByTestId('queue-edit-hidden-lines')).toBeNull()
+    expect(editor.selectionStart).toBe(0)
+    expect(editor.selectionEnd).toBe('one line'.length)
   })
 
   it('commits only once when Enter is followed by the trailing blur', () => {

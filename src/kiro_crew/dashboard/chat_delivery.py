@@ -21,7 +21,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.chat_utils import _redact_for_display
+from kiro_crew.dashboard.chat_utils import _redact_for_display, _redact_meta
+from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -534,6 +535,7 @@ def queue_for_next_turn(
     *,
     directive_user_origin: bool = False,
     send_id: str | None = None,
+    attachments: dict[str, list[str]] | None = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -550,6 +552,15 @@ def queue_for_next_turn(
     back to text, which a same-text resend or an injection can share). Additive:
     a send whose POST carried no usable id stores nothing here and the entry
     meta keeps the exact prior shape.
+
+    *attachments* is the client's ordered attachment lists (``files``, ``dirs``),
+    already reduced to lists of strings by ``attachment_meta``. Same reasoning
+    as the id: a dispatched send persists ``meta.files`` on its row, and the
+    renderer resolves each ``[attached_file N] path`` marker LOSSLESSLY against
+    that list. A queued send's row had no such list, so the renderer fell back
+    to a whitespace-bounded capture of the marker text and a path with a space
+    (``/tmp/My Report.pdf``) came back as ``/tmp/My`` -- an attachment card that
+    opens nothing. Stamping the lists onto the entry rides them onto the row.
     """
     # circular import: session_control imports this module at module level.
     from kiro_crew.dashboard.session_control import containment_meta
@@ -557,6 +568,8 @@ def queue_for_next_turn(
     meta: dict[str, Any] = containment_meta(state, slot)
     if send_id:
         meta["sendId"] = send_id
+    if attachments:
+        meta.update(attachments)
     qid = slot.queue_append(
         message,
         meta=meta,
@@ -572,3 +585,36 @@ def queue_for_next_turn(
         },
     )
     return qid
+
+
+def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:
+    """The attachment lists of a send's ``meta``, reduced to lists of strings.
+
+    Anything that is not a non-empty list of non-empty strings is dropped
+    rather than carried: these lists are indexed by marker number on the
+    render side, so a malformed entry would shift every later marker onto the
+    wrong path. An empty result means "carry nothing", keeping the entry meta
+    in its prior shape for a send without attachments. An entry that does
+    carry them drains alone (``chat_utils.carries_attachments``), so the row
+    the drain writes has exactly one text for the lists to index.
+
+    The paths pass through ``_redact_meta``, the same redaction every persisted
+    row meta gets: a path is user-supplied text and can embed a credential
+    just as a message can, and this list reaches every client of the slot
+    (queue entry, drained row, ``queue_pop`` frame) -- the same places the
+    message text reaches only after ``redact_credentials``.
+    """
+    out: dict[str, list[str]] = {}
+    if not isinstance(user_meta, dict):
+        return out
+    for key in ATTACHMENT_META_KEYS:
+        raw = user_meta.get(key)
+        if not isinstance(raw, list) or not raw:
+            continue
+        if not all(isinstance(p, str) and p for p in raw):
+            continue
+        out[key] = list(raw)
+    if not out:
+        return out
+    redacted = _redact_meta(out)
+    return {k: v for k, v in redacted.items() if isinstance(v, list)}

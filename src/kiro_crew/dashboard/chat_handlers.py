@@ -43,6 +43,7 @@ from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_delivery import (
     STEER_REQUEUED,
     STEER_STEERED,
+    attachment_meta,
     normalize_send_id,
     queue_for_next_turn,
     steer_into_running_turn,
@@ -640,12 +641,16 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # queued send's row ends up carrying the same id a dispatched send's row
         # gets from `slot.append(..., meta=user_meta)` below -- the only way a
         # sender can prove ITS message landed without matching by text.
+        # The attachment lists (`meta.files` / `meta.dirs`) ride the same way:
+        # the renderer resolves `[attached_file N]` markers against them, and a
+        # drained row without them truncates a spaced path at its first space.
         qid = queue_for_next_turn(
             state,
             slot,
             message,
             directive_user_origin=not bool(request_app),
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
+            attachments=attachment_meta(user_meta),
         )
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
@@ -698,11 +703,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         from kiro_crew.dashboard.session_control import containment_meta
 
         # Same entry-meta contract as the busy-slot branch: the client's `sendId`
-        # rides on the queue entry so the drained row carries it.
+        # and attachment lists ride on the queue entry so the drained row
+        # carries them.
         _hold_meta: dict = containment_meta(state, slot)
         _hold_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
         if _hold_sid:
             _hold_meta["sendId"] = _hold_sid
+        _hold_meta.update(attachment_meta(user_meta))
         qid = slot.queue_append(
             message,
             meta=_hold_meta,
@@ -4267,6 +4274,12 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         directive_user_origin=not bool(request.get("app", "")),
     ):
         return web.json_response({"error": "queue item not found"}, status=404)
+    # The stored text is what the edit normalized to (attachment markers are
+    # renumbered when the edit dropped one), so the row and the broadcast echo
+    # the ENTRY, not the request body.
+    stored = next((i.get("content") for i in slot._queue if i["id"] == queue_id), None)
+    if isinstance(stored, str):
+        content = stored
     _edit_queued_by_id(slot.messages, queue_id, content)
     slot.invalidate_source_links()
     _redacted = _redact_for_display(content)

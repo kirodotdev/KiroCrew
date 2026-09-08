@@ -6915,6 +6915,8 @@
       "cancel_and_move_back_to_input": "キャンセルして入力に戻る",
       "cancel_queued_message": "キューに入っているメッセージをキャンセル",
       "edit_queued_message": "キューに入っているメッセージを編集",
+      "hidden_attachments_other": "+{{count}} 件の添付ファイル",
+      "hidden_lines_other": "+{{count}} 行",
       "interrupt_current_turn_and_send_this_now": "現在のターンを中断して今すぐ送信",
       "queued": "キューに入っています",
       "run_later": "後で実行",

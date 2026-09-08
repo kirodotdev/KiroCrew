@@ -122,7 +122,7 @@ describe('ChatPane queue inline edit (issue #2240)', () => {
     // accessible name, so match by role rather than bare label text.
     const pencil = await screen.findByRole('button', { name: 'Edit queued message' })
     fireEvent.click(pencil)
-    const input = (await screen.findByRole('textbox', { name: 'Edit queued message' })) as HTMLInputElement
+    const input = (await screen.findByRole('textbox', { name: 'Edit queued message' })) as HTMLTextAreaElement
     fireEvent.change(input, { target: { value: 'edited from split pane' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(api.editQueuedMessage).toHaveBeenCalledTimes(1))
@@ -137,7 +137,7 @@ describe('ChatPane queue inline edit (issue #2240)', () => {
     renderPane('pane-edit-2')
     const pencil = await screen.findByRole('button', { name: 'Edit queued message' })
     fireEvent.click(pencil)
-    const input = (await screen.findByRole('textbox', { name: 'Edit queued message' })) as HTMLInputElement
+    const input = (await screen.findByRole('textbox', { name: 'Edit queued message' })) as HTMLTextAreaElement
     fireEvent.change(input, { target: { value: '  padded edit  ' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(api.editQueuedMessage).toHaveBeenCalledTimes(1))

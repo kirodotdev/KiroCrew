@@ -123,7 +123,7 @@ async function main() {
 
   // ---- 2. Clicking the Pencil opens the inline editor ----
   await pencil.first().click()
-  const editor = page.getByLabel('Edit queued message').and(page.locator('input'))
+  const editor = page.getByLabel('Edit queued message').and(page.locator('textarea'))
   await editor.waitFor({ state: 'visible', timeout: 5000 })
   const value = await editor.inputValue()
   console.log('editor open, initial value:', JSON.stringify(value))

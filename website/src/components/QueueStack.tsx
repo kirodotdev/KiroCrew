@@ -99,19 +99,47 @@ const OVERLAP = 11 // overlap to fuse with input area below
 const DEPTH_BRIGHTNESS = [1, 0.88, 0.76]
 const SPRING = { type: 'spring' as const, stiffness: 400, damping: 30 }
 
-/** Inline editor (input + save) swapped in for the message text while editing.
- *  Owns the live value so its own controls commit the typed text, never stale content. */
+/** Inline editor (textarea + save) swapped in for the message text while editing.
+ *  Owns the live value so its own controls commit the typed text, never stale content.
+ *
+ *  A textarea, not an `<input>`: a queued message can span several lines --
+ *  the attachment serializer writes one `[attached_file N] path` marker per
+ *  line -- and a single-line input drops every newline from its value, so an
+ *  ordinary edit would glue the markers together and the queue edit's
+ *  whitespace-bounded marker match would prune every attachment but the last.
+ *  Enter commits (the composer's own contract); Shift+Enter inserts a line. */
 function EditInput({ initial, onCommit, onCancel }: {
   initial: string
   onCommit: (value: string) => void
   onCancel: () => void
 }) {
-  const ref = useRef<HTMLInputElement>(null)
+  const ref = useRef<HTMLTextAreaElement>(null)
   const ime = useImeGuard()
   const [value, setValue] = useState(initial)
   // Guard so blur and an explicit save/Enter don't both fire onCommit.
   const committedRef = useRef(false)
-  useEffect(() => { ref.current?.focus(); ref.current?.select() }, [])
+  // Select the FIRST line only, never the whole value: the marker lines sit
+  // below the single visible row, and a select-all would let an ordinary
+  // retype replace them unseen -- the queue edit then prunes every
+  // attachment from the send with nothing on screen to say so.
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.focus()
+    const nl = initial.indexOf('\n')
+    el.setSelectionRange(0, nl === -1 ? initial.length : nl)
+  }, [initial])
+  // Lines below the visible one, surfaced as a count so the hidden part of
+  // the value is never a surprise. When every hidden line is an attachment
+  // marker (the serializer's `[attached_file N] path` / `[attached_dir N]
+  // path` lines) the cue names them as attachments -- "+2 attachments" says
+  // what is there, where "+2 lines" only says how much.
+  const hidden = value.split('\n').slice(1)
+  const hiddenLines = hidden.length
+  const hiddenAreAttachments = hiddenLines > 0 && hidden.every(l => /^\[attached_(?:file|dir) \d+\] /.test(l))
+  const hiddenCue = hiddenAreAttachments
+    ? i18nT('components.queueStack.hidden_attachments', { count: hiddenLines })
+    : i18nT('components.queueStack.hidden_lines', { count: hiddenLines })
   // Commit only a real change: skip empty and unchanged values so a stray
   // focus→blur (or clear→blur) doesn't fire a no-op PATCH + WS broadcast.
   const commit = () => {
@@ -124,9 +152,14 @@ function EditInput({ initial, onCommit, onCancel }: {
   const cancel = () => { if (committedRef.current) return; committedRef.current = true; onCancel() }
   return (
     <>
-      <input
+      <textarea
         ref={ref}
         value={value}
+        // One visible row: the card is a fixed-height stack slot (CARD_H) and
+        // shows the content itself truncated to one line, so the editor shows
+        // the same line the card does. The value keeps every newline; the
+        // textarea scrolls to the caret as the user moves through the lines.
+        rows={1}
         onChange={e => setValue(e.target.value)}
         // Stop the card's expand/collapse + drag handlers from swallowing pointer + key events.
         onPointerDown={e => e.stopPropagation()}
@@ -134,14 +167,21 @@ function EditInput({ initial, onCommit, onCancel }: {
         onKeyDown={e => {
           e.stopPropagation()
           if (e.key === 'Enter' && !e.shiftKey) {
-            // The commit's own emptiness check stays in commit().
+            // The commit's own emptiness check stays in commit(). claimEnter
+            // consumes the keypress, so a committing Enter never inserts a line.
             if (ime.claimEnter(e)) commit()
           } else if (e.key === 'Escape') { e.preventDefault(); ime.reset(); cancel() }
         }}
         {...ime.bindComposition({ onBlur: commit })}
-        className="flex-1 min-w-0 bg-[var(--bg)] text-[var(--text)] placeholder:text-[var(--muted)] rounded px-1.5 py-0.5 text-[13px] outline-none border border-[var(--border)] focus-visible:border-[var(--accent)]"
+        className="flex-1 min-w-0 resize-none overflow-hidden bg-[var(--bg)] text-[var(--text)] placeholder:text-[var(--muted)] rounded px-1.5 py-0.5 text-[13px] leading-5 outline-none border border-[var(--border)] focus-visible:border-[var(--accent)]"
         aria-label={i18nT('components.queueStack.edit_queued_message')}
       />
+      {hiddenLines > 0 && (
+        <span className="shrink-0 text-[11px] text-[var(--muted)] tabular-nums" data-testid="queue-edit-hidden-lines"
+          title={hiddenCue}>
+          {hiddenCue}
+        </span>
+      )}
       <button className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors text-[var(--text)]"
         title={i18nT('components.queueStack.save')} aria-label={i18nT('components.queueStack.save_edit')}
         // mousedown commits before the input's blur can fire with the same value.

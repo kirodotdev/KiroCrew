@@ -72,6 +72,7 @@ from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.chat_delivery import (
     STEER_STATE_CONSUMED,
     STEER_STATE_REQUEUED,
+    attachment_meta,
     find_written_steer_row,
 )
 from kiro_crew.dashboard.chat_persistence import _build_history_prefix, save_slot_off_loop
@@ -5378,14 +5379,20 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     for item in consumed:
         content, _ = redact_exfiltration_urls(item["content"])
         content, _ = redact_credentials(content)
-        state.broadcast_ws(
-            "queue_pop",
-            {
-                "slot": slot.key,
-                "content": _redact_for_display(content),
-                "queue_id": item["id"],
-            },
-        )
+        # The client rebuilds this entry as a user row from the frame alone (no
+        # `chat_message` echo follows for a user row), so the attachment lists
+        # the entry carries travel with it -- without them the rebuilt row
+        # resolves `[attached_file N]` markers by whitespace and a spaced path
+        # is truncated until the next reload.
+        _pop: dict = {
+            "slot": slot.key,
+            "content": _redact_for_display(content),
+            "queue_id": item["id"],
+        }
+        _pop_attachments = attachment_meta(item.get("meta"))
+        if _pop_attachments:
+            _pop["meta"] = _pop_attachments
+        state.broadcast_ws("queue_pop", _pop)
         _remove_queued_by_id(slot.messages, item["id"])
 
     next_msg, _ = redact_exfiltration_urls(next_msg)

@@ -1257,6 +1257,12 @@
     }
   },
   "components": {
+    "queueStack": {
+      "hidden_attachments_one": "+{{count}} attachment",
+      "hidden_attachments_other": "+{{count}} attachments",
+      "hidden_lines_one": "+{{count}} line",
+      "hidden_lines_other": "+{{count}} lines"
+    },
     "voicePlaybackNotice": {
       "failed": "{{speak}} failed. Check the Text-to-speech settings and try again.",
       "blocked": "Your browser blocked automatic playback. Open {{moreActions}} below the completed reply, then select {{speak}}.",

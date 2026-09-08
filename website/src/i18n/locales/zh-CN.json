@@ -6915,6 +6915,8 @@
       "cancel_and_move_back_to_input": "取消并退回到输入框",
       "cancel_queued_message": "取消排队消息",
       "edit_queued_message": "编辑排队消息",
+      "hidden_attachments_other": "+{{count}} 个附件",
+      "hidden_lines_other": "+{{count}} 行",
       "interrupt_current_turn_and_send_this_now": "中断当前轮次并立即发送",
       "queued": "已排队",
       "run_later": "推后运行",

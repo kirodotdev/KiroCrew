@@ -5203,9 +5203,14 @@ const chatSlice = createSlice({
       const cached = state.slotMessages[slot]
       if (cached) apply(cached)
     },
-    /** Remove the first queued message matching content and append a user bubble at the end. */
-    removeQueuedMessage(state, action: PayloadAction<{ slot: string; content: string; queue_id?: string }>) {
-      const { slot, content, queue_id } = action.payload
+    /** Remove the first queued message matching content and append a user bubble at the end.
+     *  The frame's `meta` (the entry's attachment lists, `files` / `dirs`) rides
+     *  onto the rebuilt row: no `chat_message` echo follows for a user row, so
+     *  this rebuild IS the row until the next reload, and without the lists the
+     *  renderer resolves `[attached_file N]` markers by whitespace -- a spaced
+     *  path (`/tmp/My Report.pdf`) truncates to `/tmp/My`. */
+    removeQueuedMessage(state, action: PayloadAction<{ slot: string; content: string; queue_id?: string; meta?: Record<string, unknown> }>) {
+      const { slot, content, queue_id, meta } = action.payload
       const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
       if (!msgs) return
       const idx = queue_id
@@ -5214,7 +5219,7 @@ const chatSlice = createSlice({
       if (idx >= 0) {
         const ts = msgs[idx].ts
         msgs.splice(idx, 1)
-        msgs.push({ role: 'user', content, cls: 'msg msg-u', ts })
+        msgs.push({ role: 'user', content, cls: 'msg msg-u', ts, ...(meta && Object.keys(meta).length ? { meta } : {}) })
         // Deliberately NO card retirement here. Three review rounds each found
         // a different way this path could retire the wrong card (system queue
         // items hydrated as indistinguishable rows; duplicate rows from the

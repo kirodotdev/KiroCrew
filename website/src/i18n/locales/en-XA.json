@@ -6538,7 +6538,11 @@
       "save_edit": "[Şàṽè èðìţ ··············]",
       "send_now": "[Şèñð ñøẁ ············]",
       "sub_agent_result_one": "[{{count}} şùƀ-àğèñţ ŕèşùĺţ ···············]",
-      "sub_agent_result_other": "[{{count}} şùƀ-àğèñţ ŕèşùĺţş ················]"
+      "sub_agent_result_other": "[{{count}} şùƀ-àğèñţ ŕèşùĺţş ················]",
+      "hidden_attachments_one": "[+{{count}} àţţàçĥɱèñţ ···········]",
+      "hidden_attachments_other": "[+{{count}} àţţàçĥɱèñţş ············]",
+      "hidden_lines_one": "[+{{count}} ĺìñè ·········]",
+      "hidden_lines_other": "[+{{count}} ĺìñèş ···········]"
     },
     "reasoningEffortDropdown": {
       "effort": "[Èƒƒøŕţ ·········]",

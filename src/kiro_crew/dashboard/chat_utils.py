@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from kiro_crew.slack.outbound import PostedOptions
 
 from kiro_crew.context_blocks import attributable_user_chars
+from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
     COMPACTION_RECOVERY_PREFIX,
@@ -2645,12 +2646,34 @@ def is_system_injection_item(item: dict) -> bool:
     return False
 
 
+def carries_attachments(item: dict) -> bool:
+    """Whether a queue entry's meta names attachment lists (``files``/``dirs``).
+
+    Such an entry drains ALONE. Its text indexes those lists by marker number
+    (``[attached_file 1]`` is ``files[0]``), and a merged row has one meta for
+    several texts: whichever entry's list won, every other entry's markers
+    would resolve against it -- an attachment card that opens a DIFFERENT
+    file, not merely a truncated path. The renumbering a correct merge would
+    need is not worth building for a message shape the merge feature was never
+    about.
+    """
+    meta = item.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    return any(isinstance(meta.get(k), list) and meta.get(k) for k in ATTACHMENT_META_KEYS)
+
+
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
-    """Drain the queue: merge non-cron messages or pop the first one."""
+    """Drain the queue: merge non-cron messages or pop the first one.
+
+    A merge run stops at a system injection and at an attachment-bearing entry
+    (see :func:`carries_attachments`); an attachment-bearing entry at the head
+    of the queue pops alone.
+    """
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
         for item in list(slot._queue):
-            if is_system_injection_item(item):
+            if is_system_injection_item(item) or carries_attachments(item):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

@@ -18,6 +18,94 @@ def _delivery_key(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()[:32]
 
 
+#: Meta keys a queued send's attachment lists ride under, each with the marker
+#: word its ``[<marker> N] path`` tokens use. ``files`` is the image-free list
+#: ``[attached_file N]`` markers index into, ``dirs`` the folder list
+#: ``[attached_dir N]`` markers index into. Defined here, on the queue entry's
+#: own module, because every dashboard module that reads them sits downstream.
+ATTACHMENT_META_KEYS: tuple[str, ...] = ("files", "dirs")
+_ATTACHMENT_MARKERS: dict[str, str] = {"files": "attached_file", "dirs": "attached_dir"}
+
+
+def _marker_spans(content: str, marker: str, index: int, path: str) -> list[tuple[int, int]]:
+    """Every span of the exact ``[<marker> <index>] <path>`` token in *content*.
+
+    The path must end at a whitespace or the end of the text: a bare substring
+    test would keep ``/tmp/report.pdf`` alive through ``/tmp/report.pdf.bak``,
+    and a bare replace would rewrite the ``[attached_file 2] /tmp/b`` prefix of
+    ``[attached_file 2] /tmp/bak`` -- one is a removed attachment drawing a card
+    again, the other is a caption silently altered.
+    """
+    token = f"[{marker} {index}] {path}"
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        at = content.find(token, start)
+        if at < 0:
+            return spans
+        end = at + len(token)
+        if end == len(content) or content[end].isspace():
+            spans.append((at, end))
+        start = at + 1
+
+
+def _renumber_marker(content: str, marker: str, old: int, new: int, path: str) -> str:
+    """Rewrite each exact ``[<marker> <old>] <path>`` token to index *new*."""
+    replacement = f"[{marker} {new}] {path}"
+    for at, end in reversed(_marker_spans(content, marker, old, path)):
+        content = content[:at] + replacement + content[end:]
+    return content
+
+
+def prune_attachment_meta(meta: Any, content: str, previous: str) -> str:
+    """Reconcile an entry's attachment lists with an edited *content*.
+
+    An edit to a queued message can remove a ``[attached_file N] path`` marker;
+    the agent then receives text without that path and never gets the file, so
+    a list still naming it would make the drained row show a card for an
+    attachment that was never delivered. Each list is filtered in place to the
+    entries the edit did not remove (order kept; a list left empty is removed),
+    and the surviving markers in the text are renumbered to the filtered list's
+    positions. The renumbering is what keeps a spaced path lossless: the
+    renderer reads ``files[N-1]`` for marker ``N`` and, when the two disagree,
+    falls back to a whitespace-bounded capture of the marker text -- which
+    would hand back ``/tmp/My`` for ``/tmp/My Report.pdf``.
+
+    "Removed by the edit" means the exact numbered marker was in *previous*
+    (the entry's text before this edit) and is not in *content*. An entry the
+    previous text never named is out of the edit's reach and is kept as-is: a
+    send can carry a list entry with no marker (a caller that stamps
+    ``meta.files`` on markerless text; a path the list redacted while the text
+    kept it verbatim, so the two spellings differ), and the edit did not take
+    that attachment away from the agent -- dropping it would make the drained
+    row lose an attachment the user never touched. Returns the content to
+    store; it equals *content* whenever nothing was pruned.
+    """
+    if not isinstance(meta, dict):
+        return content
+    for key in ATTACHMENT_META_KEYS:
+        raw = meta.get(key)
+        if not isinstance(raw, list):
+            continue
+        marker = _ATTACHMENT_MARKERS[key]
+        indexed = [(i + 1, p) for i, p in enumerate(raw) if isinstance(p, str) and p]
+        kept = [
+            (old, p)
+            for old, p in indexed
+            if _marker_spans(content, marker, old, p) or not _marker_spans(previous, marker, old, p)
+        ]
+        if len(kept) == len(indexed):
+            continue
+        for new, (old, p) in enumerate(kept, start=1):
+            if new != old:
+                content = _renumber_marker(content, marker, old, new, p)
+        if kept:
+            meta[key] = [p for _, p in kept]
+        else:
+            meta.pop(key, None)
+    return content
+
+
 class SlotQueueRepository:
     """Mutate the current facade-owned queue and delivery ledger.
 
@@ -168,7 +256,14 @@ class SlotQueueRepository:
             # moving them to replacement text would acknowledge the wrong work.
             if "_on_consumed" in item or "_on_irreversibly_consumed" in item:
                 return False
-            item["content"] = content
+            # The lists index the OLD text's markers; drop only what this edit
+            # removed (named before, unnamed now) and renumber the survivors
+            # (prune_attachment_meta). An entry the old text never named is
+            # not the edit's to drop.
+            previous = item.get("content")
+            item["content"] = prune_attachment_meta(
+                item.get("meta"), content, previous if isinstance(previous, str) else ""
+            )
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

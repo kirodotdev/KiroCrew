@@ -14,10 +14,11 @@
  * @param opts.detailB      slot-detail body for pane-b
  * @param opts.splitLayouts mc-split-layouts object to persist
  * @param opts.json         the harness's json(route, body[, status]) responder
+ * @param opts.theme        `mc-theme` to persist before load ('dark' by default)
  * @param opts.pre          optional (path, route) handler tried FIRST, for
  *                          harness-specific intercepts (e.g. a 400 upload)
  */
-export async function prepareSplitChatPage(context, { base, fixtures, detailA, detailB, splitLayouts, json, pre = null }) {
+export async function prepareSplitChatPage(context, { base, fixtures, detailA, detailB, splitLayouts, json, pre = null, theme = 'dark' }) {
   const page = await context.newPage()
   await page.routeWebSocket(/\/api\/ws/, () => {})
   await page.route(url => url.pathname.startsWith('/api/'), async route => {
@@ -34,12 +35,12 @@ export async function prepareSplitChatPage(context, { base, fixtures, detailA, d
     return json(route, objectish ? {} : [])
   })
   page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 200)))
-  await page.addInitScript((layouts) => {
-    localStorage.setItem('mc-theme', 'dark')
+  await page.addInitScript(({ layouts, theme }) => {
+    localStorage.setItem('mc-theme', theme)
     localStorage.setItem('mc-onboarded', '1')
     localStorage.setItem('mc-active-slot', 'pane-a')
     localStorage.setItem('mc-split-layouts', layouts)
-  }, JSON.stringify(splitLayouts))
+  }, { layouts: JSON.stringify(splitLayouts), theme })
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   return page
 }
