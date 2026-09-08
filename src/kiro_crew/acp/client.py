@@ -169,6 +169,7 @@ from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import injection_server_names, pooled_session_servers
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.mirrors import mirror_for
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
@@ -2223,6 +2224,52 @@ def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> st
     # ``""`` when the model is absent under both spellings — exactly the
     # inherit-the-default answer this path wants.
     return resolve_pin_spelling(preferred, ids)
+
+
+def pick_served_default(current: str, advertised: Sequence[str] | None) -> str:
+    """The served model a session on *current* must switch to, or ``""``.
+
+    ``session/new`` picks the model itself and reports it as
+    ``currentModelId``, and that choice is the backend's own default rather
+    than anything Crew asked for. A partition does not have to serve the model
+    its backend defaults to: an account whose region omits ``"auto"`` can be
+    handed ``"auto"`` at birth, and then every ``session/prompt`` dies with
+    "your account does not have access to model 'auto'". So inheriting the
+    backend default is only safe when the inherited model is one the same
+    response advertised, and this answers which served model to move to when it
+    is not.
+
+    Returns ``""`` — nothing to do, keep inheriting — whenever the question
+    cannot be answered or the answer is already right:
+
+      - ``advertised`` empty/None: entitlement is unknowable, exactly
+        :func:`model_is_unusable`'s empty-set-means-allow contract. Reading an
+        absent list as "nothing is served" would switch every session on a
+        backend that simply does not advertise;
+      - empty ``current``: the backend echoed no model, so there is no evidence
+        it picked an unserved one. Fail open rather than override a default we
+        cannot see;
+      - ``current`` served, under its own spelling or under a peeled
+        ``<namespace>::`` one (:func:`resolve_pin_spelling`, the shared fold):
+        the session is already on a model the account can run.
+
+    Otherwise the default is genuinely unserved and the session needs a real
+    model: ``"auto"`` when the backend advertises it — the same
+    "let the backend choose" id ``resolve_usable_model`` and the dashboard's
+    ``_wire_model_id`` send — else the FIRST advertised id, because a served
+    model chosen for the user beats a session that cannot answer a single
+    prompt.
+    """
+    ids = [m for m in (advertised or []) if m and m.strip()]
+    if not ids:
+        return ""
+    if not current.strip():
+        return ""
+    if not model_is_unusable(current, ids):
+        return ""
+    if resolve_pin_spelling(current, ids):
+        return ""
+    return "auto" if not model_is_unusable("auto", ids) else ids[0]
 
 
 def _format_acp_error(error: object, available_models: Sequence[str] | None = None) -> str:
@@ -4410,6 +4457,49 @@ class AcpClient:
         )
         return ""
 
+    async def _ensure_served_default(self) -> None:
+        """Move an inheriting session off a backend default it cannot run.
+
+        The companion to :meth:`_apply_startup_model`'s withhold: that one keeps
+        an unusable PIN off the wire, this one keeps an unusable INHERITED
+        default off the session. Both exits of that method leave the session on
+        whatever ``session/new`` assigned, and nothing else checks that id
+        against the list the same response advertised — so a partition whose
+        default is not in its own served list runs a session that fails on its
+        first prompt.
+
+        Only the kiro backend: its advertised ids are exactly the ids
+        ``session/set_model`` accepts, so "absent from the list" genuinely means
+        unusable. The claude backend advertises a different namespace than the
+        model it runs and announces its own substitutions instead.
+
+        ``self._model`` is deliberately left alone. ``""``/``"auto"`` there mean
+        "inherit" to every reader of that field (the settings seed, the
+        warm-pool re-apply), and this session IS still inheriting — the wire is
+        corrected, the intent is not rewritten.
+        """
+        if self._is_kiro:
+            advertised = self._advertised_model_ids()
+            unserved = self._resolved_model_id or ""
+            fallback = pick_served_default(unserved, advertised)
+            if not fallback:
+                return
+            _unserved_log = redact_log_via_context(str(unserved))
+            # The kiro gate also fixes the wire: kiro-cli takes the model via
+            # ``session/set_model``, never via a session config option.
+            await self._send_request(
+                METHOD_SET_MODEL,
+                {"sessionId": self._session_id, "modelId": fallback},
+            )
+            self._resolved_model_id = fallback
+            logger.warning(
+                "ACP backend default %s is not in this account's served list (advertised: %s); "
+                "switched the session to %s",
+                _unserved_log,
+                ", ".join(advertised),
+                fallback,
+            )
+
     async def _apply_startup_model(self) -> None:
         """Apply the configured model to a freshly initialized session.
 
@@ -4445,6 +4535,9 @@ class AcpClient:
             )
         if not self._model or self._model == DEFAULT_MODEL:
             logger.info("ACP model: %s (from agent config)", self._model or "auto")
+            # Inheriting is only safe when the inherited model is served; the
+            # backend can default to one this partition does not carry.
+            await self._ensure_served_default()
             return
         if self._is_kiro and self._model_is_unusable(self._model):
             # A literal miss can be a stale ``<namespace>::`` qualifier on a
@@ -4477,6 +4570,9 @@ class AcpClient:
                 # warm-pool re-apply path reads (session_provider), so leaving the
                 # unusable id here would re-offer it on every claim.
                 self._model = DEFAULT_MODEL
+                # Now inheriting, so the same served-default check applies: the
+                # default we fall back to can itself be one the account lacks.
+                await self._ensure_served_default()
                 return
         if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
             sent = await self._push_model_config_option(self._model, strict=False)

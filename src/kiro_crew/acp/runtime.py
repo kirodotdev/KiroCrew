@@ -2962,6 +2962,10 @@ class AcpRuntime:
 
         # Populate state from session/new response (configOptions, available models)
         handle.store_session_config(resp)
+        # Both halves of that snapshot are now known, which is what makes the
+        # served-default check answerable: the model the backend picked for
+        # this session can be one the account's partition does not serve.
+        await handle.ensure_served_default()
         # The roster this session put on the wire. Set BEFORE drain_init so the
         # report can be read as "of the N we sent, these reported" rather than
         # as a bare list of names.
@@ -3260,6 +3264,11 @@ class AcpRuntime:
             crew_agent=_crew,
         )
         handle.store_session_config(resp)
+        # session/load echoes ``currentModelId`` exactly like session/new, and a
+        # session persisted before the account's served list changed can come
+        # back on a default the account does not serve — so the resumed session gets
+        # the same served-default check as a fresh one.
+        await handle.ensure_served_default()
         # session/load re-initializes this session's servers, so the resumed
         # session gets its own report against the roster load re-declared.
         handle.mcp_session_report().begin_session(mcp_servers)

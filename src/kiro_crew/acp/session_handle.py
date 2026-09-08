@@ -56,6 +56,7 @@ from kiro_crew.acp.client import (
     compaction_failure_is_transient,
     format_command_result,
     parse_slash_command,
+    pick_served_default,
     prompt_timeout_for_ceiling,
     resolve_usable_model,
 )
@@ -120,6 +121,7 @@ from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -1850,6 +1852,53 @@ class AcpSessionHandle:
                 self._resolved_model_id = self._available_models[0]["modelId"]
         elif isinstance(models, list):
             self._available_models = parse_advertised_models({"availableModels": models})
+
+    async def ensure_served_default(self) -> None:
+        """Move an inheriting pooled session off a backend default it cannot run.
+
+        The pooled twin of ``AcpClient._ensure_served_default``.
+        ``store_session_config`` records ``session/new``'s ``currentModelId``
+        as the session's resolved model without judging it against the list the
+        same response advertised. A partition does not have to serve the model
+        its backend defaults to — an account whose region omits ``"auto"`` can
+        be handed ``"auto"`` at birth — and then every prompt on this session
+        dies with "your account does not have access to model 'auto'".
+
+        Only the kiro backend: its advertised ids are exactly the ids
+        ``session/set_model`` accepts, so "absent from the advertised list"
+        genuinely means unusable there.
+
+        Routed through :meth:`set_model` rather than a second wire call, so the
+        KAS-vs-``session/set_model`` verb choice and the window/meter rebase
+        stay in one place; the id handed to it is already an advertised one, so
+        its own ``resolve_usable_model`` passes it straight through.
+
+        ``_model`` is restored afterwards. That field is the session's INTENT
+        (``""``/``"auto"`` mean "inherit"), and it is what the warm-pool
+        re-apply and the slot backfill read: left as the fallback id, a fresh
+        pooled session would be pinned to whichever model happened to be first
+        on the list, and an unpinned slot would stop following the default.
+        Only ``_resolved_model_id`` — what the session actually runs — changes.
+        """
+        if self._runtime.acp_backend == ACP_BACKEND_KIRO:
+            unserved = self._resolved_model_id or ""
+            fallback = pick_served_default(unserved, self._advertised_model_ids())
+            if not fallback:
+                return
+            _unserved_log = redact_log_via_context(str(unserved))
+            logger.warning(
+                "ACP backend default %s is not in this account's served list (advertised: %s); "
+                "switching session %s to %s",
+                _unserved_log,
+                ", ".join(self._advertised_model_ids()),
+                self._session_id,
+                fallback,
+            )
+            intent = self._model
+            try:
+                await self.set_model(fallback)
+            finally:
+                self._model = intent
 
     @staticmethod
     def _normalize_models(advertised: list[Any]) -> list[dict[str, str]]:

@@ -37,6 +37,23 @@ Two behaviours of the resolver are worth knowing before writing a call site:
 `run_bg_oneliner` adds a one-shot reactive retry on a wire rejection as a backstop.
 Treat it as a backstop, not as permission to skip the resolver.
 
+### `""` only inherits a *served* default
+
+`""` promises the session's **served** backend default, and the backend does not
+always keep that promise on its own: `session/new` can answer with a
+`currentModelId` the account is not entitled to (the classic case is `auto` on a
+partition that does not serve it), and the first prompt then fails with "no access
+to model". `acp.client.pick_served_default(current, advertised)` closes that gap:
+given the backend's current id and its advertised list it returns `""` when the
+current id is served (or the list is unknown), otherwise `"auto"` if advertised,
+otherwise the first served id. `AcpClient._ensure_served_default` and
+`AcpSessionHandle.ensure_served_default` run it on every inherit exit of the
+startup model apply and `session/set_model` the pick, correcting only the wire
+(`_resolved_model_id`); the session's intent (`_model` as `""`/`"auto"`) is left
+alone so the warm-pool re-apply and the slot backfill still read "inherit". The
+dashboard carries the corrected id as the slot's `served_model` so the composer
+chip names the model a turn will run on instead of `auto`.
+
 ## An explicit user pick is the opposite
 
 A model the user chose raises `AcpModelUnavailable` instead of resolving. Never

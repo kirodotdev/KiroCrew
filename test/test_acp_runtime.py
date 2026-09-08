@@ -4042,6 +4042,48 @@ class TestAcpRuntimeLoadSession:
         assert METHOD_SET_MODE in methods
 
     @pytest.mark.asyncio
+    async def test_load_session_moves_a_resumed_session_off_an_unserved_default(self, monkeypatch):
+        """The resume path is the second half of the served-default check.
+
+        session/load echoes ``currentModelId`` like session/new does, and a
+        session persisted before the served list changed can come back on a
+        default the account does not serve. load_session must run
+        ``ensure_served_default`` after storing the response, exactly as
+        create_session does, so the first prompt after a resume cannot fail with
+        "no access to model".
+        """
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO, METHOD_SET_MODEL
+
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+        rt._acp_backend = ACP_BACKEND_KIRO
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_LOAD:
+                return {
+                    "modes": {"currentModeId": "kirocrew"},
+                    "models": {
+                        "currentModelId": "auto",
+                        "availableModels": [{"modelId": "gpt-5.6-sol"}, {"modelId": "glm-5"}],
+                    },
+                }
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        # set_model goes through the routed (fire-and-forget) send.
+        routed = AsyncMock(return_value=1)
+        monkeypatch.setattr(rt, "send_request", routed)
+
+        handle = await rt.load_session("/f.json", "sid-resume", agent="kirocrew")
+
+        set_model_calls = [c for c in routed.await_args_list if c.args[0] == METHOD_SET_MODEL]
+        assert len(set_model_calls) == 1, routed.await_args_list
+        assert set_model_calls[0].args[1] == {"sessionId": "sid-resume", "modelId": "gpt-5.6-sol"}
+        assert handle.served_model == "gpt-5.6-sol"
+        # The intent is untouched: the resumed session still INHERITS.
+        assert handle.model == ""
+
+    @pytest.mark.asyncio
     async def test_load_session_raises_when_capability_absent(self):
         rt, _, _ = _make_runtime()
         rt._can_load_session = False
