@@ -16,6 +16,8 @@ except ImportError:
 
 try:
     from docx import Document  # type: ignore[import-untyped]
+    from docx.oxml.ns import qn  # type: ignore[import-untyped]
+    from docx.text.paragraph import Paragraph  # type: ignore[import-untyped]
 except ImportError:
     Document = None  # type: ignore[assignment,misc]
 
@@ -205,7 +207,24 @@ class FileReader:
         try:
             doc = Document(path)
             lines = []
-            for para in doc.paragraphs:
+            # Walk physical paragraphs in body order, including nested tables
+            # and content-control (w:sdt / w:customXml) wrappers, whose subtree
+            # holds ordinary block content Word emits from templates.
+            # Grid-cell proxies repeat merged cells; revision wrappers stay out,
+            # just as they do in python-docx's top-level paragraphs collection.
+            containers = {
+                qn('w:tbl'), qn('w:tr'), qn('w:tc'),
+                qn('w:sdt'), qn('w:sdtContent'), qn('w:customXml'),
+            }
+            pending = list(reversed(doc.element.body))
+            while pending:
+                element = pending.pop()
+                if element.tag in containers:
+                    pending.extend(reversed(element))
+                    continue
+                if element.tag != qn('w:p'):
+                    continue
+                para = Paragraph(element, doc)
                 style = para.style.name if para.style else ''
                 text = para.text
                 if style.startswith('Heading'):

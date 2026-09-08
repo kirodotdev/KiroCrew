@@ -170,7 +170,7 @@ It includes markdown/plain-text (`.md`/`.txt`/`.org`, AsciiDoc `.adoc`/`.asciido
   failure. The child releases each page immediately after extraction (`Page.close()` when
   available, `flush_cache()` for pdfplumber 0.10). Shared with file-grep's document pass
   (`file-search.md`) so the two call sites cannot drift in what they bound.
-- `_read_docx` — python-docx; converts `Heading N` paragraph styles to `#`-prefixed markdown (`content_type: 'markdown'`), records `paragraph_count`.
+- `_read_docx` — python-docx; extracts body and table-cell paragraphs in document order, including nested tables, each physical merged cell once, and content-control (`w:sdt` / `w:customXml`) wrappers. Converts `Heading N` paragraph styles to `#`-prefixed markdown (`content_type: 'markdown'`); `paragraph_count` remains the top-level body paragraph count. Revision-wrapped paragraphs remain excluded.
 - `_read_html` — html2text when importable (`ignore_images=True`, `ignore_links=False`); otherwise a regex fallback strips `<script>`/`<style>` and tags.
 
 Base metadata always carries `format`, `title` (file stem), `file_size`, `extension`, and a computed `line_count`.
