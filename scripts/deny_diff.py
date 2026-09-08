@@ -4,7 +4,7 @@
 Stdlib only, no third-party deps, cross-platform. Run from the repo root::
 
     python3 scripts/deny_diff.py --base origin/main --head HEAD \\
-        --corpus src/kiro_crew/builtin_skills/security-conductor/golden-paths.seed.json
+        --corpus src/kiro_crew/builtin_skills/security-conductor/golden-paths.json
 
 Exit 0 = no regressions, exit 1 = regressions, exit 2 = corpus/ref error.
 

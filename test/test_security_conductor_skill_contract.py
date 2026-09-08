@@ -44,6 +44,16 @@ BUNDLED_SCRIPTS = (
     "ledger.py",
 )
 
+#: Every script that may ship in the directory, which is a WIDER set than the one
+#: the prose must cite. The two lists answer different questions, and collapsing
+#: them made the narrower one govern both: a script whose skill-body clause lands
+#: in a later change has nowhere to be, so the choice becomes shipping an
+#: undocumented script (a glob would allow it) or blocking the script on prose it
+#: does not need yet. Splitting keeps the anti-glob property exactly where it
+#: earns its place -- every CITED script is named -- while an admitted script is
+#: still an explicit decision rather than whatever happens to be on disk.
+SHIPPABLE_SCRIPTS = BUNDLED_SCRIPTS + ("verify_fix.py",)
+
 #: Every field ``scope_check.py`` and the human reviewer read. Pinned as a set so
 #: an export that silently drops one fails, instead of reading as a target with
 #: nothing to say about (say) what is forbidden.
@@ -130,7 +140,7 @@ class TestSkillIsInstallable:
         for path in scripts_dir.iterdir():
             if path.suffix != ".py":
                 continue
-            assert path.name in BUNDLED_SCRIPTS, f"unlisted script shipped: {path.name}"
+            assert path.name in SHIPPABLE_SCRIPTS, f"unlisted script shipped: {path.name}"
             assert path.stat().st_size > 0, f"stub script shipped: {path.name}"
 
 
