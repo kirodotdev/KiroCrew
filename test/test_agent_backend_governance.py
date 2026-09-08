@@ -331,7 +331,15 @@ class TestWhenAPolicyChangeBinds:
 
         pd.apply_ceiling(ceiling)
 
-        assert ctx_mod.current_context().governance is ceiling
+        # ``apply_ceiling`` composes the whole ladder around the pushed document (the
+        # local tiers beneath it), so the installed object is the COMPOSED ceiling
+        # tagged ``tier="central"`` -- equal in every control to the argument, not the
+        # same object. Asserting on the deny it carries, not on identity, is what this
+        # test is about: the change bound.
+        installed = ctx_mod.current_context().governance
+        assert installed is not None
+        assert installed.tier == "central"
+        assert not installed.controls["agent_backend"].permits("kas").permitted
 
     def test_a_restart_applies_it(self, monkeypatch):
         # The promise itself: the same denied policy, taken at boot, does bind. This is

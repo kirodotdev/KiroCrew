@@ -30,21 +30,23 @@ refresh interval changed without editing a signed document.
 Precedence, and why this tier sits where it does
 ------------------------------------------------
 
-``load_security_policy`` resolves, first present winning:
+``load_security_policy`` resolves, highest first.  This tier is the AUTHORITY;
+every tier below it may only **tighten** it:
 
-1. ``KIROCREW_SECURITY_POLICY`` — an explicit LOCAL file.
-2. **this tier** — the centrally-distributed document.
+1. **this tier** — the centrally-distributed document.
+2. ``KIROCREW_SECURITY_POLICY`` — an explicit LOCAL file.
 3. the companion-bundled resource.
 4. ``<data-home>/security_policy.json``.
 5. none → ungoverned.
 
-Tier 1 stays above this one because it is the **rollback lever**.  A bad central
-push is the failure mode with the widest blast radius in the whole model — one
-document, every host — and an operator recovering from it needs a channel that
-outranks the thing that broke, reachable without waiting for the endpoint to be
-fixed.  Tiers 3 and 4 sit below because they are what the fetched document is
-*replacing*; a fleet that ships a bootstrap policy naming a source expects the
-source to win, or the bootstrap could never be superseded.
+Tiers 2–4 are mutually exclusive (first present wins among them) and collectively
+form the *subordinate*, which intersects into the authority above it.  So this tier
+outranks ``KIROCREW_SECURITY_POLICY``: while the env file sat above the fetched
+document the enterprise ceiling was advisory — any account that can set an
+environment variable could point it at a permissive file and the fleet's ceiling
+never bound.  Tiers 3 and 4 sit below for the older reason, unchanged: they are what
+the fetched document is *replacing*, and a fleet that ships a bootstrap policy naming
+a source expects the source to win, or the bootstrap could never be superseded.
 
 Availability, and the one thing this must never do
 --------------------------------------------------
@@ -489,8 +491,8 @@ def _fetch_file(request: FetchRequest) -> FetchedPolicy:
     read-only file. The field manual already tells
     operators to distribute to a "read-only, root-owned path"; this makes that a
     precondition instead of advice. An operator who genuinely wants a local, editable
-    policy file has the channel designed for it — ``KIROCREW_SECURITY_POLICY``, tier 1,
-    which is read once at boot and outranks this tier anyway.
+    policy file has the channel designed for it — ``KIROCREW_SECURITY_POLICY``, which is
+    read once at boot and TIGHTENS this tier.
 
     **Opened ONCE, and the validator is a DIGEST of the bytes read.**  Stat-then-read is
     two trips to a path an administrator (or anything sharing the mount) can replace in
@@ -530,8 +532,8 @@ def _fetch_file(request: FetchRequest) -> FetchedPolicy:
                 "as. A file:// distribution source must be read-only to it, or an agent "
                 "subprocess could publish its own ceiling. Use a root-owned path or a "
                 "read-only mount; for a local, editable policy use "
-                "KIROCREW_SECURITY_POLICY instead — that is the channel designed for it, "
-                "and it outranks this tier anyway."
+                "KIROCREW_SECURITY_POLICY instead — that is the channel designed for "
+                "it; it tightens this tier."
             )
         with os.fdopen(fd, "rb", closefd=False) as handle:
             body = handle.read(MAX_POLICY_BYTES + 1)
@@ -2054,28 +2056,6 @@ class RefreshOutcome:
     signature_state: str = ""
 
 
-def tier1_local_policy() -> str:
-    """The explicit local policy path that OUTRANKS this tier, or ``""``.
-
-    ``KIROCREW_SECURITY_POLICY`` is precedence tier 1 and the documented rollback
-    lever: an operator recovering from a bad central push pins a local file, and the
-    whole recovery story rests on that file winning. It has to win against a live
-    REFRESH as well as against a boot, and a refresh is where it is easiest to miss —
-    the poller is already running when the file appears.
-
-    Checked by path EXISTENCE rather than by inferring provenance from what this
-    process happens to have installed. That is what makes it exact: it asks the same
-    question ``load_security_policy`` asks, so the refresher cannot disagree with the
-    ladder. It also stays correct in the case digest-based inference gets wrong — a
-    host that booted UNGOVERNED under ``degrade`` and then becomes able to reach its
-    source has no tier-1 file, so the refresh proceeds and the ceiling finally binds.
-    """
-    raw = os.environ.get("KIROCREW_SECURITY_POLICY", "").strip()
-    if not raw:
-        return ""
-    return raw if Path(raw).exists() else ""
-
-
 def _body_digest(body: bytes) -> str:
     """A stable digest of a policy document's bytes.
 
@@ -2114,15 +2094,41 @@ def validate_ceiling(ceiling: GovernanceCeiling) -> None:
     from kiro_crew.platform.governance import assert_policy_signature_satisfied
     from kiro_crew.platform.governance_profiles import assert_profile_floor
 
-    tier1 = tier1_local_policy()
-    if tier1:
-        raise PlatformCompositionError(
-            f"refusing to install a centrally fetched ceiling while {tier1} supplies "
-            "one: KIROCREW_SECURITY_POLICY is precedence tier 1 and the rollback lever, "
-            "so a poll must not displace it"
-        )
     assert_policy_signature_satisfied(ceiling)
     assert_profile_floor(ceiling)
+
+
+def _recompose_differs(central: GovernanceCeiling) -> bool:
+    """Would re-folding the ladder around *central* change what the ladder last produced?
+
+    The question the 304 fast path in :func:`refresh_now` has to ask: the central
+    document is provably the one installed, but the local rung below it is read from
+    disk at compose time and can move without the endpoint publishing anything.
+    Composes exactly as :func:`apply_ceiling` does and compares structurally --
+    ``GovernanceCeiling`` is a frozen dataclass, so equality is the whole ladder's
+    content, not identity.
+
+    The basis is the loader's OWN last fold (``governance.last_composed_ceiling``),
+    not ``current_context().governance``.  The installed object is whatever
+    ``bootstrap`` or the companion's ``compose`` put into the context after
+    ``load_security_policy`` returned, and any ``replace()`` or re-tagging on that
+    path makes it structurally unequal to the fold while meaning the same ceiling.
+    Compared against THAT, every quiet 304 would re-install and bump the governance
+    generation, invalidating everything keyed on it once per interval -- the exact
+    churn the "adopt only when it differs" rule exists to avoid.  Before the first
+    fold has been recorded there is nothing to compare but the context, so that is
+    the one-time fallback; the first install records a fold and every later poll has
+    a stable basis.
+    """
+    from kiro_crew.platform.context import current_context
+    from kiro_crew.platform.governance import compose_installed_ceiling, last_composed_ceiling
+
+    # ``last_composed_ceiling`` is what LANDED, never a fold the gates rejected -- so a
+    # tightening refused once is still "different" on the next poll and retried.
+    prior = last_composed_ceiling()
+    if prior is None:
+        prior = current_context().governance
+    return compose_installed_ceiling(central) != prior
 
 
 def apply_ceiling(ceiling: GovernanceCeiling) -> None:
@@ -2149,10 +2155,27 @@ def apply_ceiling(ceiling: GovernanceCeiling) -> None:
     a tightening.  The ordinal floor, which is what "would this host have started
     under the candidate" actually means, still applies.
     """
+    # Compose BEFORE validating and installing. A refresh replaces exactly one rung
+    # of the ladder, so installing the fetched document by itself would drop every
+    # local restriction below it -- a host tightened at boot would find that
+    # tightening gone at the first successful poll, a ceiling that loosens itself on
+    # a timer. Routing through the loader's own composition is what keeps boot and
+    # refresh from diverging, and validating the COMPOSED result means the floor gates
+    # judge what will actually govern.
     from kiro_crew.platform.context import current_context, set_context
+    from kiro_crew.platform.governance import compose_installed_ceiling, record_composed_ceiling
 
-    validate_ceiling(ceiling)
-    set_context(replace(current_context(), governance=ceiling))
+    composed = compose_installed_ceiling(ceiling)
+    # Validate the COMPOSED result, not the fetched rung: the floor gates judge what
+    # will actually govern, and a path that installs without validating admits a
+    # ceiling this host would have refused to boot under.
+    validate_ceiling(composed)
+    set_context(replace(current_context(), governance=composed))
+    # Recorded AFTER the install, so a fold the gates rejected is never the basis the
+    # next 304 poll compares against: were it recorded before, the next re-fold would
+    # equal the rejected one, read "nothing moved", and skip -- leaving the looser
+    # ceiling installed even after the operator fixed the profile.
+    record_composed_ceiling(composed)
 
     # NOTE: the selectable-ACP-backend set is deliberately NOT recomputed here.
     #
@@ -2201,19 +2224,6 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
         )
     if not dist.enabled:
         return RefreshOutcome(REFRESH_NOT_CONFIGURED)
-    # Before spending a fetch: a tier-1 local file outranks this tier, so there is
-    # nothing a refresh could usefully install. ``apply_ceiling`` refuses too, as the
-    # hard guard; this arm exists so the operator gets a reason instead of a fetch
-    # followed by a rejection.
-    tier1 = tier1_local_policy()
-    if tier1:
-        detail = (
-            f"{tier1} (KIROCREW_SECURITY_POLICY) outranks the central source; "
-            "not fetching. Unset it to follow the fleet policy again."
-        )
-        logger.info("%s", detail)
-        return RefreshOutcome(REFRESH_REJECTED, _sanitize_detail(detail, dist.source))
-
     # Observed BEFORE the fetch, and this ordering is the whole control: the concurrent
     # publish this guards against lands DURING the fetch, so a snapshot taken afterwards
     # already includes it and the compare-and-swap below would pass while overwriting a
@@ -2276,8 +2286,9 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
         # deliberately does NOT skip: it means this process does not know what it
         # installed — the case of a boot that DEGRADED to ungoverned — and skipping there
         # would leave such a host permanently below a ceiling another process had already
-        # cached. Tier-1 precedence is guarded separately, above, by asking the loader
-        # ladder's own question.
+        # cached. Adopting the cache cannot displace another rung, because
+        # ``apply_ceiling`` folds the candidate through the loader's own ladder before it
+        # validates or installs anything, so every local restriction below it stays.
         if _body_digest(cached.body) == installed:
             # Re-validate even when nothing changed. "Unchanged" is a statement about the
             # DOCUMENT, and the trust root is a separate input that moves on its own
@@ -2286,13 +2297,36 @@ def refresh_now(*, force: bool = False) -> RefreshOutcome:
             # anything, and a 304 would otherwise let it stand indefinitely. Cheap enough
             # to do per interval.
             try:
-                parse_distributed_policy(cached.body, source=dist.source)
+                unchanged = parse_distributed_policy(cached.body, source=dist.source)
             except PlatformCompositionError as exc:
                 return _refresh_failure(
                     REFRESH_REJECTED,
                     dist,
                     f"the ceiling in effect no longer satisfies the trust root: {exc}",
                     incident="rejected",
+                )
+            # The OTHER rungs move on their own schedule too. The digest above answers
+            # only "is the central document the one installed"; a local document that
+            # appears or tightens between two central publishes would otherwise reach
+            # the running ceiling only when the central body next changed -- a host
+            # above its own floor for as long as the endpoint stayed quiet. Re-fold
+            # the ladder here exactly as an install would and adopt the result when,
+            # and only when, it differs: a genuinely unchanged poll keeps the
+            # installed object (and its generation) untouched, so nothing downstream
+            # is invalidated for a no-op.
+            try:
+                if _recompose_differs(unchanged):
+                    logger.info(
+                        "the central document is unchanged but another tier moved; "
+                        "re-installing the composed ceiling"
+                    )
+                    apply_ceiling(unchanged)
+            except PlatformCompositionError as exc:
+                return _refresh_failure(
+                    REFRESH_REJECTED,
+                    dist,
+                    f"the ceiling in effect no longer composes on this host: {exc}",
+                    incident="compose",
                 )
             touch_cache(cached.meta(), etag=fetched.etag, last_modified=fetched.last_modified)
             # Hooks run on this path too, not just on an install. They are best-effort by
@@ -2728,15 +2762,9 @@ class _Refresher:
             return current
         if not dist.enabled:
             return 0
-        if tier1_local_policy():
-            # An operator pinned a local file mid-incident. Polling on would fetch and
-            # then refuse every cycle, so stop and say so once; the next boot resolves
-            # the ladder afresh.
-            logger.warning(
-                "a local KIROCREW_SECURITY_POLICY file now outranks the central source; "
-                "stopped polling"
-            )
-            return 0
+        # A local KIROCREW_SECURITY_POLICY file never stops this loop: it is a
+        # subordinate tier and tightens whatever the loop installs, so there is
+        # nothing for the refresher to stand down for.
         return dist.effective_refresh_interval() or current
 
     def last(self) -> Tuple[Optional[RefreshOutcome], float]:
@@ -2958,7 +2986,6 @@ __all__ = [
     "touch_cache",
     "reset_fetch_window",
     "reset_process_state",
-    "tier1_local_policy",
     "load_distributed_policy",
     "fetch_once",
     "apply_ceiling",

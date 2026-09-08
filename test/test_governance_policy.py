@@ -28,6 +28,7 @@ from kiro_crew.platform.governance import (
     SIGNATURE_UNSIGNED,
     SIGNATURE_UNVERIFIED,
     SIGNATURE_VERIFIED,
+    TIER_ENV,
     Bind,
     CapabilityGate,
     GovernanceCeiling,
@@ -241,7 +242,7 @@ class TestCapabilityGate:
                 CapabilityGate.from_dict({"enabled": bogus}, default_enabled=True)
 
     def test_known_capability_rejects_non_boolean_enabled(self):
-        # Default-ON siblings (memory_writes, browse, …) used to coerce
+        # Default-ON siblings (memory_writes, browse, …) must not coerce
         # enabled: "false" through bool() and stay on.
         with pytest.raises(PlatformCompositionError, match="boolean"):
             parse_profile(
@@ -321,9 +322,7 @@ class TestLoader:
     def test_absent_returns_none(self, monkeypatch, tmp_path):
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         _nope = tmp_path / "nope.json"
-        monkeypatch.setattr(
-            "kiro_crew.platform.governance._policy_home_path", lambda: _nope
-        )
+        monkeypatch.setattr("kiro_crew.platform.governance._policy_home_path", lambda: _nope)
         assert load_security_policy() is None
 
     def test_env_path_wins(self, monkeypatch, tmp_path):
@@ -350,18 +349,14 @@ class TestLoader:
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         home = tmp_path / "security_policy.json"
         home.write_text(json.dumps(_policy_body()))
-        monkeypatch.setattr(
-            "kiro_crew.platform.governance._policy_home_path", lambda: home
-        )
+        monkeypatch.setattr("kiro_crew.platform.governance._policy_home_path", lambda: home)
         ceiling = load_security_policy()
         assert ceiling is not None
 
     def test_bundled_loader_precedence(self, monkeypatch, tmp_path):
         monkeypatch.delenv("KIROCREW_SECURITY_POLICY", raising=False)
         _nope = tmp_path / "nope.json"
-        monkeypatch.setattr(
-            "kiro_crew.platform.governance._policy_home_path", lambda: _nope
-        )
+        monkeypatch.setattr("kiro_crew.platform.governance._policy_home_path", lambda: _nope)
         called = {}
 
         def bundled():
@@ -374,12 +369,38 @@ class TestLoader:
         assert "commands" in ceiling.controls
 
     def test_env_beats_bundled(self, monkeypatch, tmp_path):
+        """Env still outranks the bundled resource — but bundled IS now resolved.
+
+        The bundled loader is resolved even when the env tier is set, and this
+        test asserts that by failing if it does not run.  It is resolved
+        unconditionally, deliberately: the CENTRAL tier outranks env, and the
+        source it fetches from may be DECLARED by a lower tier's ``distribution``
+        block, so the bundled document has to be read for its declaration to be
+        seen even when env will win the subordinate slot.
+
+        The contract that still holds — and the one this pins — is the precedence
+        itself: tiers 3–5 are mutually exclusive with env first, so the env
+        document is the one that becomes the ceiling.  Asserted on identity rather
+        than on whether the loader ran, because "who won" is the invariant; "was
+        bundled consulted" is an implementation detail that just changed.
+        """
+        monkeypatch.delenv("KIROCREW_POLICY_URL", raising=False)
         p = tmp_path / "policy.json"
-        p.write_text(json.dumps(_policy_body()))
+        p.write_text(json.dumps(_policy_body(identity={"issuer": "env-tier"})))
         monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
-        # bundled_loader must NOT be consulted when env wins.
-        ceiling = load_security_policy(bundled_loader=lambda: pytest.fail("should not call"))
+        resolved = {}
+
+        def bundled():
+            resolved["yes"] = True
+            return _policy_body(identity={"issuer": "bundled-tier"})
+
+        ceiling = load_security_policy(bundled_loader=bundled)
         assert ceiling is not None
+        # Resolved, so a ``distribution`` block declared here would be seen…
+        assert resolved.get("yes")
+        # …but it does not win: env is the first present subordinate tier.
+        assert ceiling.identity_issuer == "env-tier"
+        assert ceiling.tier == TIER_ENV
 
     def test_wrong_version_fails_closed(self):
         with pytest.raises(PlatformCompositionError):
@@ -396,7 +417,7 @@ class TestLoader:
     def test_typod_sandbox_child_fails_closed(self):
         """A typo'd ``min_level`` must RAISE, not vanish into the reserved scope.
 
-        ``sandbox`` used to accept ANY child into the write-only
+        A ``sandbox`` block that accepted ANY child into the write-only
         ``sandbox._flags`` scope, so ``min_levl`` parsed clean and left the
         floor absent — green validation, zero enforcement, on the ordinal with
         the widest blast radius.  The message names the key so the operator can
@@ -1192,9 +1213,7 @@ class TestPolicySignatureStates:
 
     def test_non_ascii_signature_fails_closed_when_required(self, monkeypatch, tmp_path):
         """...and with the opt-in ON it must ABORT, not degrade to ungoverned."""
-        body = _policy_body(
-            identity={"issuer": "fleet-control", "signature": "tamper\u2013ed"}
-        )
+        body = _policy_body(identity={"issuer": "fleet-control", "signature": "tamper\u2013ed"})
         p = tmp_path / "policy.json"
         p.write_text(json.dumps(body))
         monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
@@ -1390,9 +1409,7 @@ class TestPolicySignatureOptIn:
                 bundled_loader=lambda: _policy_body(identity={"issuer": "fleet-control"})
             )
         # A correctly-signed bundled policy verifies and loads.
-        signed = _sign_policy(
-            _policy_body(identity={"issuer": "fleet-control"}), "trust-key"
-        )
+        signed = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), "trust-key")
         ceiling = load_security_policy(bundled_loader=lambda: signed)
         assert ceiling is not None
         assert ceiling.signature_state == SIGNATURE_VERIFIED
@@ -1463,9 +1480,7 @@ class TestPolicySignatureAbsenceGate:
             parse_policy(signed, signature_state=SIGNATURE_VERIFIED)
         )
 
-    def test_present_but_unverified_ceiling_does_NOT_satisfy_the_gate(
-        self, monkeypatch, tmp_path
-    ):
+    def test_present_but_unverified_ceiling_does_NOT_satisfy_the_gate(self, monkeypatch, tmp_path):
         # Presence alone is not enough — the gate is the enforcement point for the
         # verdict too, now that load time only computes it. A tampered or unsigned
         # ceiling that survived precedence must abort here.
@@ -1495,9 +1510,7 @@ class TestPolicySignatureAbsenceGate:
     @pytest.mark.parametrize(
         "shape", ['{ "mode": "open",  <-- typo', "[]", "null", '"a string"', "123"]
     )
-    def test_a_broken_trust_root_reads_as_no_optin_by_design(
-        self, monkeypatch, tmp_path, shape
-    ):
+    def test_a_broken_trust_root_reads_as_no_optin_by_design(self, monkeypatch, tmp_path, shape):
         """A corrupt/malformed admission file does NOT fail closed. Deliberate.
 
         An attacker who can write this file is outside the policy-signature threat
@@ -1554,9 +1567,7 @@ class TestPolicySignatureAbsenceGate:
         # second bespoke file, and NOT from the security policy itself.
         adm = tmp_path / "admission_policy.json"
         adm.write_text(
-            json.dumps(
-                {"require_policy_signature": True, "trust_keys": {"fleet-control": "k"}}
-            )
+            json.dumps({"require_policy_signature": True, "trust_keys": {"fleet-control": "k"}})
         )
         monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
         from kiro_crew.platform.governance import _policy_trust_settings

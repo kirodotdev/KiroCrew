@@ -187,10 +187,21 @@ Two properties to internalise before you design a rollout:
   instantly, and a host that is off takes it when it next starts. The poller waits
   a full interval before its first run, since boot has just fetched from the same
   source — so a fleet restarting together does not stampede your endpoint.
-- **The document is the whole ceiling, not a patch.** The fetched policy replaces
-  the local one outright; there is no merge with `~/.kiro/crew/security_policy.json`
-  and no per-host addendum. Anything a host needs must be in the published
-  document (or in a narrower per-surface profile, which can only tighten).
+- **The document is the whole ceiling, not a patch — but it is one rung of a
+  ladder.** The fetched policy replaces the *previously fetched* one outright; there
+  is no merge of two central documents and no per-host addendum that can loosen what
+  you published. What it does not replace is the rung below it: a local
+  `security_policy.json` still tightens it. That holds identically at boot and on
+  every refresh, because both run the same composition — so a host you tightened
+  locally does not quietly lose that tightening at its next successful poll.
+- **The fetched document outranks every local file.** A local policy — including one
+  named by `KIROCREW_SECURITY_POLICY` — can only *tighten* what you published; it
+  cannot loosen a single clause. That reverses the older behaviour, where a local
+  file beat the central one and the fleet ceiling was therefore advisory: anyone who
+  could set an environment variable could point it at a permissive file. It is the
+  top rung: no local file can override rather than narrow — there is no such channel.
+  Recovery from a bad push is by republishing a good document at the source; see
+  [Rolling back a bad push](#rolling-back-a-bad-push).
 
 ### The two ways to point a host at a source
 
@@ -205,6 +216,32 @@ The two compose, and the environment wins **per setting** — so a host can be
 redirected to a canary endpoint, or have its interval lengthened during an
 incident, without editing (and re-signing) the document the rest of the fleet is
 reading.
+
+Both of these say *where the document comes from*, not *whether it binds*. Neither
+is a channel a standard user cannot touch: an environment variable is per-process
+and redefinable by whoever launches the process, and a bootstrap policy file lives
+in a directory the user may own. What they cannot do is loosen the fetched document —
+every local tier only tightens it.
+
+The full order Kiro Crew loads in, highest first:
+
+| Tier | Where | Role |
+|---|---|---|
+| 1 | the centrally distributed document | **authority** — one document, every host |
+| 2 | `KIROCREW_SECURITY_POLICY` | subordinate — tightens only |
+| 3 | a companion edition's packaged policy | subordinate — tightens only |
+| 4 | `~/.kiro/crew/security_policy.json` | subordinate — tightens only |
+
+A `distribution` block is read from the first of the local tiers that supplies one —
+`KIROCREW_SECURITY_POLICY`, then a companion's packaged policy, then
+`~/.kiro/crew/security_policy.json` — so naming a source in the file
+`KIROCREW_SECURITY_POLICY` points at works exactly as naming it in any other tier's
+file.
+
+Tiers 2–4 are mutually exclusive (the first one present is used) and the result is
+the authority narrowed by it: allow-lists intersect, deny-lists union, a strictness
+level takes the stricter value. A subordinate cannot repeal by omission either — a
+scope it simply leaves out keeps the authority's value.
 
 ```bash
 KIROCREW_POLICY_URL=https://config.corp.example/kirocrew/security_policy.json
@@ -251,7 +288,7 @@ Kiro Crew runs as — the file *and* every directory above it**: a source that a
 write, and the refresher would install that ceiling without a restart. A `0444` file in a
 writable directory does not count: it can be replaced by unlink-and-recreate. Use a
 root-owned path or a read-only mount; if what you want is a local, editable policy file, that is
-`KIROCREW_SECURITY_POLICY` (tier 1), not this channel. The validator is a content digest,
+`KIROCREW_SECURITY_POLICY`, not this channel. The validator is a content digest,
 so a host on a shared mount re-reads only when the bytes actually change — including the
 case where you replace the file with a same-size version and preserve its timestamp.
 Plain
@@ -300,11 +337,12 @@ A one-shot CLI run has no background poller, so it reports none even on a host
 whose gateway is polling happily; the live refresher's own state is on
 `GET /api/governance/policy` and in the dashboard's security panel.
 
-`kirocrew policy fetch` fetches now, validates the document, and on success
-installs it and records it as this host's last-known-good. Run from a shell, what
-outlives the command is the validation and the cache write — the install lands in
-that short-lived CLI process, and the running gateway takes the change on its own
-next poll, or immediately at its next start from the cache the fetch just wrote.
+`kirocrew policy fetch` fetches now, folds the document back into the tier ladder,
+validates that composed result, and on success installs it and records the fetched
+document as this host's last-known-good. Run from a shell, what outlives the command is
+the validation and the cache write — the install lands in that short-lived CLI process,
+and the running gateway takes the change on its own next poll, or immediately at its
+next start from the cache the fetch just wrote.
 The command says which of those applies, because with a **boot-only** source (no
 `refresh_interval_secs`) there is no next poll: a gateway already running keeps its
 ceiling until it is restarted. Set a refresh interval if a push has to bind
@@ -351,8 +389,10 @@ effect on the next start:
 
 - `KIROCREW_POLICY_ON_UNAVAILABLE=degrade` — boot, and report the degradation.
 - unset `KIROCREW_POLICY_URL` — stop fetching centrally on this host.
-- `KIROCREW_SECURITY_POLICY=/path/to/local.json` — govern from a local file,
-  which outranks the central tier entirely.
+- `KIROCREW_SECURITY_POLICY=/path/to/local.json` — supply a local ceiling so the
+  host has one. Note what this is **not**: a local file no longer outranks the
+  central tier, so on a host that *did* reach the endpoint it only tightens what you
+  published. It is a way to give a host a ceiling, not a way to escape one.
 
 A refusal to establish the ceiling aborts every `kirocrew` command on that host,
 `policy source` included, because each of them boots the same platform context.
@@ -369,11 +409,7 @@ host runs under whatever local policy it has, which may be none.
 One document governing every host is the widest blast radius in this model, so
 plan the retraction before the first rollout.
 
-`KIROCREW_SECURITY_POLICY` — an explicit **local** file path — outranks the
-central tier and is the retraction lever. It is reachable without fixing the
-endpoint, which is the point: an operator recovering from a bad push needs a
-channel that outranks the thing that broke. Keep a known-good policy on each host
-(or in your host image) so setting one variable is the whole recovery.
+A time-boxed local override (a dated `break_glass` grant an authority document could issue to a lower tier) was designed for this change and **withdrawn before merge**: a channel by which a local document outranks the fleet ceiling is the override this ladder exists to remove, and the reviewed design carried its own expiry-handling and cache-trust defects. Recovery from a bad central push is by re-publishing a good document at the source. The override is tracked as the follow-up issue [#9106](https://github.com/kirodotdev/KiroCrew/issues/9106), not shipped here.
 
 A running fleet is better protected than a restarting one, and the difference
 matters when you plan:

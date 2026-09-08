@@ -6,7 +6,7 @@ created: 2026-09-08
 last-audited: 2026-09-08
 audited-at: 8a9c269b4
 doc-pr: 9373
-implementation-prs: []
+implementation-prs: [7362]
 tracking-issues: [9106]
 supersedes: []
 superseded-by: []
@@ -28,6 +28,15 @@ time-boxed local override (`break_glass`, RFC step 6) and a fully generic
 platform managed tier. This RFC is the design-of-record for both, so the work is
 not lost and any re-attempt starts from the review history rather than from
 scratch. It is a record of a decision, not a description of code on main.
+
+> **Landed by #7362 (status delta, added on that branch).** The "does not exist"
+> claims in this document are measured at `8a9c269b4` and are accurate for that
+> commit. PR #7362 ships **only** the tighten-only tier ladder in
+> `load_security_policy` — central above every local document, each lower tier
+> intersected in, and no local rollback lever. The platform managed tier described
+> under *Design* is **not** shipped by it and remains design-of-record here in
+> full, as do `break_glass` (#9106) and the Windows
+> `HKLM\SOFTWARE\Policies` rung (Windows stays advisory).
 
 ---
 
