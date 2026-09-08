@@ -1091,6 +1091,13 @@ function applyNonActiveFrame(
     return
   }
   if (role === 'chunk') {
+    // Idempotency guard (direct/non-batched path): drop a replayed chunk so a
+    // redelivered seq is not appended twice. Batched frames are pre-deduped by
+    // the WS flush buffer (see useWebSocket), matching the missedChunkMarker
+    // `!batched` gating below.
+    if (!batched && seq !== undefined && run.lastChunkSeq !== undefined && seq <= run.lastChunkSeq) {
+      return
+    }
     run.state = 'streaming'
     syncOriginRun(state, slot, 'streaming')
     // Drop only the EMPTY thinking placeholder (mirror the active
@@ -5015,6 +5022,13 @@ const chatSlice = createSlice({
       }
       // WS chunk — accumulate into streaming message, preserve rawText
       if (role === 'chunk') {
+        // Idempotency guard (direct/non-batched path): drop a replayed chunk so a
+        // redelivered seq is not appended twice. Batched frames are pre-deduped by
+        // the WS flush buffer (see useWebSocket), matching the missedChunkMarker
+        // `!batched` gating below.
+        if (!batched && seq !== undefined && state.lastChunkSeq !== undefined && seq <= state.lastChunkSeq) {
+          return
+        }
         state.slotState = 'streaming'
         state._wsChunkedDuringFetch = true
         // Drop only the empty "Thinking…" placeholder; keep content-bearing
