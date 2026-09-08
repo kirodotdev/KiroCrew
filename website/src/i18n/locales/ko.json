@@ -9869,6 +9869,7 @@
       "disconnected_locally": "로컬에서 연결이 해제되었습니다. 권한을 완전히 취소하려면 공급자에서 액세스를 취소하세요.",
       "documentation": "문서",
       "finish_approving_in_browser": "브라우저에서 승인을 완료하세요…",
+      "approval_opened_in_default_browser": "기본 브라우저에서 승인 페이지를 열었습니다…",
       "invalid_return_address": "브라우저에서 http://127.0.0.1:PORT/?code=… 주소 전체를 붙여넣으세요.",
       "managed_by_connections": "연결에서 관리",
       "mcp_servers": "MCP 서버",

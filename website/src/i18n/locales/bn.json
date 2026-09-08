@@ -10020,6 +10020,7 @@
       "disconnected_locally": "স্থানীয়ভাবে সংযোগ বিচ্ছিন্ন হয়েছে। অনুমতি পুরোপুরি বাতিল করতে প্রদানকারীর সাইটে অ্যাক্সেস প্রত্যাহার করুন।",
       "documentation": "ডকুমেন্টেশন",
       "finish_approving_in_browser": "ব্রাউজারে অনুমোদন সম্পন্ন করুন…",
+      "approval_opened_in_default_browser": "অনুমোদন আপনার ডিফল্ট ব্রাউজারে খোলা হয়েছে…",
       "invalid_return_address": "ব্রাউজার থেকে সম্পূর্ণ http://127.0.0.1:PORT/?code=… ঠিকানাটি পেস্ট করুন।",
       "managed_by_connections": "Connections দ্বারা পরিচালিত",
       "mcp_servers": "MCP সার্ভার",

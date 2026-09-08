@@ -9869,6 +9869,7 @@
       "disconnected_locally": "ローカルで切断されました。許可を完全にキャンセルするにはプロバイダーでアクセスを取り消してください。",
       "documentation": "ドキュメント",
       "finish_approving_in_browser": "ブラウザーで承認を完了してください…",
+      "approval_opened_in_default_browser": "既定のブラウザーで承認ページを開きました…",
       "invalid_return_address": "ブラウザーから完全なhttp://127.0.0.1:PORT/?code=…アドレスを貼り付けてください。",
       "managed_by_connections": "コネクションで管理",
       "mcp_servers": "MCP サーバー",

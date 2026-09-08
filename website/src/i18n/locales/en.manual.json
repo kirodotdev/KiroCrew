@@ -3838,6 +3838,7 @@
       "disconnected_locally": "Disconnected locally. Revoke access at the provider to cancel the grant completely.",
       "documentation": "Documentation",
       "finish_approving_in_browser": "Finish approving in your browser…",
+      "approval_opened_in_default_browser": "Approval opened in your default browser…",
       "invalid_return_address": "Paste the full http://127.0.0.1:PORT/?code=… address from your browser.",
       "managed_by_connections": "Managed by Connections",
       "mcp_servers": "MCP Servers",

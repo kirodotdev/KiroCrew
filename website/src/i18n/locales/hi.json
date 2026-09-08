@@ -10020,6 +10020,7 @@
       "disconnected_locally": "स्थानीय रूप से डिस्कनेक्ट किया गया। अनुमति पूरी तरह रद्द करने के लिए प्रदाता पर ऐक्सेस वापस लो।",
       "documentation": "दस्तावेज़",
       "finish_approving_in_browser": "ब्राउज़र में मंज़ूरी पूरी करें…",
+      "approval_opened_in_default_browser": "डिफ़ॉल्ट ब्राउज़र में मंज़ूरी खुल गई…",
       "invalid_return_address": "ब्राउज़र से पूरा http://127.0.0.1:PORT/?code=… पता पेस्ट करें।",
       "managed_by_connections": "कनेक्शन द्वारा प्रबंधित",
       "mcp_servers": "MCP सर्वर",

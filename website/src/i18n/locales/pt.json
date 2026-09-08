@@ -10171,6 +10171,7 @@
       "disconnected_locally": "Desconectado localmente. Revogue o acesso no provedor para cancelar totalmente a autorização.",
       "documentation": "Documentação",
       "finish_approving_in_browser": "Conclua a aprovação no navegador…",
+      "approval_opened_in_default_browser": "Aprovação aberta no seu navegador padrão…",
       "invalid_return_address": "Cole o endereço completo http://127.0.0.1:PORT/?code=… do navegador.",
       "managed_by_connections": "Gerenciado por Conexões",
       "mcp_servers": "Servidores MCP",

@@ -10322,6 +10322,7 @@
       "disconnected_locally": "Локальное подключение удалено. Отзовите доступ у поставщика, чтобы полностью отменить разрешение.",
       "documentation": "Документация",
       "finish_approving_in_browser": "Завершите подтверждение в браузере…",
+      "approval_opened_in_default_browser": "Подтверждение открыто в браузере по умолчанию…",
       "invalid_return_address": "Вставьте полный адрес http://127.0.0.1:PORT/?code=… из браузера.",
       "managed_by_connections": "Управляется Подключениями",
       "mcp_servers": "MCP-серверы",

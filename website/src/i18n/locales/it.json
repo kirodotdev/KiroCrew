@@ -10171,6 +10171,7 @@
       "disconnected_locally": "Disconnesso localmente. Revoca l’accesso presso il provider per annullare completamente l’autorizzazione.",
       "documentation": "Documentazione",
       "finish_approving_in_browser": "Completa l’autorizzazione nel browser…",
+      "approval_opened_in_default_browser": "Autorizzazione aperta nel browser predefinito…",
       "invalid_return_address": "Incolla l’indirizzo completo http://127.0.0.1:PORT/?code=… dal browser.",
       "managed_by_connections": "Gestito da Connessioni",
       "mcp_servers": "Server MCP",

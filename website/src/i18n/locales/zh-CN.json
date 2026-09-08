@@ -9869,6 +9869,7 @@
       "disconnected_locally": "已在本地断开。请在服务商处撤销访问权限，以彻底取消授权。",
       "documentation": "文档",
       "finish_approving_in_browser": "请在浏览器中完成授权…",
+      "approval_opened_in_default_browser": "已在默认浏览器中打开授权页面…",
       "invalid_return_address": "请粘贴浏览器中的完整 http://127.0.0.1:PORT/?code=… 地址。",
       "managed_by_connections": "由“连接”管理",
       "mcp_servers": "MCP 服务器",
