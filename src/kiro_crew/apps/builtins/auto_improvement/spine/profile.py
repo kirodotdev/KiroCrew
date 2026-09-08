@@ -708,6 +708,13 @@ class StubProfile(ProfileFieldAliases):
         # carries ``src/<pkg>/__init__.py`` (see driver._run_dry); append a
         # deterministic line so a real diff is produced.
         for init in worktree.glob("src/*/__init__.py"):
-            init.write_text(init.read_text() + f"\n# stub edit {candidate.target} ({tier})\n")
+            # UTF-8 both ways: this rewrites a file in the target repo, and the
+            # platform default would decode it as cp1252/cp936 on Windows and then
+            # write the mojibake back into the tree it is measuring.
+            existing = init.read_text(encoding="utf-8")
+            init.write_text(
+                existing + f"\n# stub edit {candidate.target} ({tier})\n",
+                encoding="utf-8",
+            )
             return True
         return False

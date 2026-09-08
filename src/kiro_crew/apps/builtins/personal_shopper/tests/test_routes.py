@@ -394,10 +394,23 @@ class TestTheSuiteHasNoSideEffects(RoutesTestCase):
         )
 
     async def test_the_real_data_home_is_never_resolved(self) -> None:
-        """The patched path must not be the operator's home under any spelling."""
-        resolved = str(routes_mod._sites_path().resolve())
-        self.assertNotIn(".kiro/crew/apps", resolved)
-        self.assertNotIn(".kirocrew/apps", resolved)
+        """The patched path must not be the operator's home under any spelling.
+
+        Compared through ``as_posix()`` rather than ``str()``: ``str()`` of a
+        resolved path spells the separator the way the host does, so on Windows
+        the forward-slash needles could never match and this guard went green
+        even if the write HAD escaped into the operator's real data home. The
+        containment assertion is the positive form of the same claim and depends
+        on no separator spelling at all.
+        """
+        resolved = routes_mod._sites_path().resolve()
+        spelling = resolved.as_posix()
+        self.assertNotIn(".kiro/crew/apps", spelling)
+        self.assertNotIn(".kirocrew/apps", spelling)
+        self.assertTrue(
+            resolved.is_relative_to(Path(self._tmp).resolve()),
+            f"sites.json resolved outside the tmpdir and landed at {resolved}",
+        )
 
 
 if __name__ == "__main__":

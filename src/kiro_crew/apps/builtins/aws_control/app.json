@@ -6,6 +6,13 @@
   "author": "kirocrew",
   "license": "MIT",
   "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "highlights": [
     "One health light per account, each with reconnect guidance matched to how the profile authenticates",
     "Private, encrypted, versioned storage that is created only after you confirm it",

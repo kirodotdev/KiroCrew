@@ -680,7 +680,12 @@ async def _run(
             env=run_env,
             # Own process group so the tree kill in kill_and_reap reaches the whole
             # child tree (the node capture script's Chromium), not just node.
-            start_new_session=True,
+            # Windows silently ignores start_new_session, so the equivalent there is
+            # CREATE_NEW_PROCESS_GROUP, which is what makes the tree taskkill /T-reapable.
+            # platform_compat.CREATE_NEW_PROCESS_GROUP is 0 on POSIX, where a non-zero
+            # creationflags would be rejected outright.
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
         try:
             # Read both pipes concurrently (avoids a full-buffer deadlock) with a

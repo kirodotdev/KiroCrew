@@ -108,7 +108,14 @@ def is_inflight_temp(path: str) -> bool:
 # where subprocess spawn and filesystem latency are slow or highly variable
 # (e.g. shared Windows CI runners) — mirrors FE_GIT_TIMEOUT_SEC in the
 # file_explorer app.
-GIT_TIMEOUT_SEC = int(os.environ.get("MDNB_GIT_TIMEOUT_SEC", 30))
+#: Windows pays a much higher cost per git invocation — process creation is
+#: dearer and Defender real-time-scans the object store — and one sync() or
+#: status() pass issues six to ten of them, so a large vault hit
+#: ``git <cmd> timed out after 30s`` on a host where nothing was actually wrong.
+#: The budget is doubled there so the app works unconfigured, with
+#: MDNB_GIT_TIMEOUT_SEC still overriding on either platform.
+_DEFAULT_GIT_TIMEOUT_SEC = 60 if platform_compat.IS_WINDOWS else 30
+GIT_TIMEOUT_SEC = int(os.environ.get("MDNB_GIT_TIMEOUT_SEC", _DEFAULT_GIT_TIMEOUT_SEC))
 GIT_NETWORK_TIMEOUT_SEC = int(os.environ.get("MDNB_GIT_NETWORK_TIMEOUT_SEC", 180))
 
 
@@ -304,12 +311,16 @@ def _windows_git_bin_dirs() -> tuple[str, ...]:
     """
     dirs: list[str] = []
     program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    # A 32-bit host interpreter sees %ProgramFiles% as "Program Files (x86)" while
+    # a 64-bit Git-for-Windows installs under "Program Files", so probing only the
+    # former failed closed with git_failed on an otherwise correct machine.
+    program_w6432 = os.environ.get("ProgramW6432", "")
     localappdata = os.environ.get("LOCALAPPDATA", "")
-    roots = (
-        [program_files, os.path.join(localappdata, "Programs")]
-        if localappdata
-        else [program_files]
-    )
+    roots = [program_files]
+    if program_w6432 and program_w6432 != program_files:
+        roots.append(program_w6432)
+    if localappdata:
+        roots.append(os.path.join(localappdata, "Programs"))
     for root in roots:
         dirs.append(os.path.join(root, "Git", "cmd"))
         dirs.append(os.path.join(root, "Git", "bin"))
@@ -322,8 +333,9 @@ def _windows_git_bin_dirs() -> tuple[str, ...]:
 #: otherwise shadow ``git`` with a planted binary that then runs unsandboxed on
 #: the next sync. On a normal POSIX host git lives in one of these, so PATH is
 #: never consulted there. The Windows entries cover both the machine-wide and
-#: the per-user Git-for-Windows install roots (the backend itself is macOS/Linux
-#: only; these serve Windows dev hosts and CI test runners).
+#: the per-user Git-for-Windows install roots, and are load-bearing rather than
+#: a test-runner convenience: the manifest declares Windows, so this is the
+#: lookup a real Windows user's vault operations go through.
 _GIT_BIN_DIRS: tuple[str, ...] = (
     "/usr/bin",
     "/bin",
@@ -339,7 +351,8 @@ def _git_bin() -> str:
     Only the trusted system directories above are searched — never ``PATH`` —
     so a planted binary in a workspace-writable PATH entry cannot win. The
     Windows entries cover both the machine-wide and the per-user
-    Git-for-Windows install roots (Windows dev hosts and CI test runners).
+    Git-for-Windows install roots, which the manifest's Windows declaration makes
+    a real user path rather than a CI convenience.
     Fails closed if git is not found in a trusted location.
     """
     global _git_bin_memo
@@ -357,9 +370,19 @@ def _git_bin() -> str:
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 _git_bin_memo = candidate
                 return candidate
+    # Windows has no OS sandbox backend, so this fail-close is the only thing
+    # standing between a vault operation and an untrusted binary — say what to
+    # install rather than leaving the user with a bare git_failed.
+    detail = (
+        " On Windows, install Git for Windows (winget install --id Git.Git) in its "
+        "default location, or set MD_NOTEBOOK_GIT_BIN to git.exe. PATH is "
+        "deliberately not consulted, so a git only PATH knows about is not used."
+        if platform_compat.IS_WINDOWS
+        else ""
+    )
     raise GitError(
         "no trusted git binary found in a system location "
-        f"({', '.join(_GIT_BIN_DIRS)}); install git or set MD_NOTEBOOK_GIT_BIN"
+        f"({', '.join(_GIT_BIN_DIRS)}); install git or set MD_NOTEBOOK_GIT_BIN{detail}"
     )
 
 

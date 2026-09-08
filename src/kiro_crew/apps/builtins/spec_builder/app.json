@@ -12,6 +12,13 @@
     "developer-tools"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "permissions": {
     "api": [
       "/api/apps/spec-builder",

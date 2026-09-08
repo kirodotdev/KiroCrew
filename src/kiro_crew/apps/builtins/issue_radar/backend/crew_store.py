@@ -498,7 +498,7 @@ def read_settings(owner: str, repo: str, root: Path | None = None) -> dict[str, 
     out = dict(DEFAULT_SETTINGS)
     if path.is_file():
         try:
-            stored = json.loads(path.read_text())
+            stored = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return out
         if isinstance(stored, dict):
@@ -557,7 +557,7 @@ def list_crews(
         if not is_crew_id(path.stem):
             continue
         try:
-            rec = json.loads(path.read_text())
+            rec = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(rec, dict):
@@ -576,7 +576,7 @@ def read_crew(
     if not path.is_file():
         return None
     try:
-        rec = json.loads(path.read_text())
+        rec = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     return _coerce_crew(rec) if isinstance(rec, dict) else None
@@ -791,7 +791,7 @@ def read_work_item(
     if not path.is_file():
         return None
     try:
-        rec = json.loads(path.read_text())
+        rec = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     return rec if isinstance(rec, dict) else None
@@ -806,7 +806,7 @@ def list_work_items(
         return out
     for path in sorted(d.glob("*.json")):
         try:
-            rec = json.loads(path.read_text())
+            rec = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(rec, dict):
@@ -1335,7 +1335,7 @@ def read_skips(owner: str, repo: str, root: Path | None = None) -> dict[str, dic
     if not path.is_file():
         return {}
     try:
-        stored = json.loads(path.read_text())
+        stored = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(stored, dict):

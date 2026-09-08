@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -879,21 +880,111 @@ def _cpu_percent(unit: str, rec: dict[str, str], now: float) -> float | None:
     return round(cpu_delta_ns / wall_delta_ns * 100.0, 1)
 
 
+def _dir_size_bytes(path: str) -> int | None:
+    """Recursive on-disk size of *path* in bytes, computed WITHOUT ``du``.
+
+    ``du`` is not reachable on native Windows: Git for Windows ships it under
+    ``Git\\usr\\bin``, which is deliberately NOT one of runtime's trusted bin
+    dirs, so :func:`runtime._trusted_bin` fails closed and every ``du`` spawn
+    came back rc=-1. The callers then published **0 MB** -- a wrong number where
+    "not measured" was the truth, on a figure app.json's highlights advertise as
+    working on any platform. This walk is the portable equivalent.
+
+    Never follows a symlink or a reparse point (``follow_symlinks=False`` on both
+    the directory test and the stat), so a junction cannot make it recurse
+    forever or count a tree twice, and a hard-linked file is counted once. Any
+    unreadable subtree is skipped rather than aborting the measurement; only a
+    root that is not a directory at all is unmeasurable and reports None.
+
+    Returns APPARENT size, where ``du`` reports ALLOCATED blocks, so the two can
+    differ by the slack of the last block per file. That is acceptable for a
+    "this needs cleaning" readout, and on Windows there is no ``du`` to agree
+    with anyway.
+    """
+    if not os.path.isdir(path):
+        return None
+    total = 0
+    stack = [path]
+    seen: set[tuple[int, int]] = set()
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                    continue
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if st.st_nlink > 1:
+                key = (st.st_dev, st.st_ino)
+                if key in seen:
+                    continue
+                seen.add(key)
+            total += st.st_size
+    return total
+
+
+async def _walk_dir_bytes(path: str) -> int | None:
+    """Off-loop :func:`_dir_size_bytes` -- a tens-of-GB walk must not block."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(subprocess_executor(), _dir_size_bytes, path)
+
+
+async def _measure_dir_bytes(path: str, timeout: int) -> int | None:
+    """Size of *path* in bytes: ``du -sb`` where it resolves, else the walk.
+
+    The ``du`` branch is preferred where available so measured numbers do not
+    change on the hosts that already had them.
+    """
+    if runtime._trusted_bin("du") is not None:
+        rc, stdout, _ = await runtime._run_cmd(["du", "-sb", path], timeout=timeout)
+        if rc == 0:
+            try:
+                return int(stdout.split()[0])
+            except (ValueError, IndexError):
+                return None
+    return await _walk_dir_bytes(path)
+
+
+async def _measure_dir_mb(path: str, timeout: int) -> int | None:
+    """Size of *path* in whole MB: ``du -sm`` where it resolves, else the walk.
+
+    None means NOT MEASURED and must never be rendered as 0 -- see
+    :func:`_dir_size_bytes` for why that distinction is the point of this helper.
+    """
+    if runtime._trusted_bin("du") is not None:
+        rc, stdout, _ = await runtime._run_cmd(["du", "-sm", path], timeout=timeout)
+        if rc == 0:
+            try:
+                return int(stdout.split()[0])
+            except (ValueError, IndexError):
+                return None
+    size = await _walk_dir_bytes(path)
+    return None if size is None else size // (1024 * 1024)
+
+
 async def _pod_home_size(cfg: Any, name: str, unit: str, now: float) -> int | None:
     """Pod HOME size in bytes, cached behind a TTL.
 
     ``du`` over a multi-GB tree is too expensive to run every poll, so the
     result is cached per pod for ``_POD_HOME_SIZE_TTL`` seconds. The HOME path
     is resolved through the existing ``rt.pod_home`` — never hardcoded. Any
-    failure (missing tree, du error) yields None, not 0.
+    failure (missing tree, unmeasurable path) yields None, not 0.
 
-    The ``du`` itself goes through ``_run_cmd``, the same routed chokepoint the
-    module's two other ``du`` calls use. That is deliberately not a bare
-    ``subprocess.run``: routing is what vets the binary instead of trusting the
-    service PATH (which leads with agent-writable directories), pins the child's
-    PATH and encoding, and keeps the spawn inside the sandbox chokepoint the
-    repo's spawn audit requires. Doing it by hand needed three separate
-    exceptions and still would not have been the module's own pattern.
+    Measurement goes through :func:`_measure_dir_bytes`, which prefers ``du``
+    over ``_run_cmd`` — the same routed chokepoint the module's other size calls
+    use — and falls back to a portable walk where ``du`` does not resolve (native
+    Windows). Routing rather than a bare ``subprocess.run`` is what vets the
+    binary instead of trusting the service PATH (which leads with agent-writable
+    directories), pins the child's PATH and encoding, and keeps the spawn inside
+    the sandbox chokepoint the repo's spawn audit requires. Doing it by hand
+    needed three separate exceptions and still would not have been the module's
+    own pattern.
     """
     cached = _POD_HOME_SIZE_CACHE.get(unit)
     if cached is not None and (now - cached[0]) < _POD_HOME_SIZE_TTL:
@@ -902,12 +993,8 @@ async def _pod_home_size(cfg: Any, name: str, unit: str, now: float) -> int | No
         home = runtime.rt.pod_home(cfg, name)
     except Exception:  # noqa: BLE001
         return cached[1] if cached is not None else None
-    rc, stdout, _ = await runtime._run_cmd(["du", "-sb", str(home)], timeout=20)
-    if rc != 0:
-        return cached[1] if cached is not None else None
-    try:
-        size = int(stdout.split()[0])
-    except (ValueError, IndexError):
+    size = await _measure_dir_bytes(str(home), timeout=20)
+    if size is None:
         return cached[1] if cached is not None else None
     _POD_HOME_SIZE_CACHE[unit] = (now, size)
     return size
@@ -1252,13 +1339,7 @@ async def _worktree_detail(name: str) -> dict:
                 if len(design_docs) >= 12:
                     break
 
-    disk_mb = None
-    try:
-        rc, stdout, _ = await runtime._run_cmd(["du", "-sm", path], timeout=15)
-        if rc == 0:
-            disk_mb = int(stdout.split()[0])
-    except (ValueError, IndexError):
-        pass
+    disk_mb = await _measure_dir_mb(path, timeout=15)
 
     pod_running = False
     pod_port = None
@@ -1387,17 +1468,20 @@ async def _disk() -> dict:
         try:
             per: dict = {}
             total = 0
+            measured = False
             for w in await repository._discover_worktrees():
                 nm = Path(w["path"]).name
-                try:
-                    rc, stdout, _ = await runtime._run_cmd(["du", "-sm", w["path"]], timeout=60)
-                    if rc == 0:
-                        mb = int(stdout.split()[0])
-                        per[nm] = mb
-                        total += mb
-                except (ValueError, IndexError):
-                    pass
-            _DISK.update({"status": "done", "total_mb": total, "per": per})
+                mb = await _measure_dir_mb(w["path"], timeout=60)
+                if mb is None:
+                    continue
+                per[nm] = mb
+                total += mb
+                measured = True
+            # NOTHING measurable is "unknown", never 0: a 0 MB total asserts an
+            # empty fleet, and the page header renders that assertion as fact.
+            # Distinguishing the two is what keeps a host where no `du` resolves --
+            # every native Windows host -- from reporting total=0 as a measurement.
+            _DISK.update({"status": "done", "total_mb": total if measured else None, "per": per})
             fresh = True
         except Exception:  # noqa: BLE001
             # A transient discovery failure (a git timeout while a concurrent
@@ -1456,6 +1540,7 @@ __all__ = (
     "_coerce_uint",
     "_context_cached",
     "_cpu_percent",
+    "_dir_size_bytes",
     "_disk",
     "_disk_invalidate",
     "_drop_worktrees",
@@ -1477,6 +1562,8 @@ __all__ = (
     "_is_version_bump",
     "_issue_url",
     "_log_fleet_rebuild_failure",
+    "_measure_dir_bytes",
+    "_measure_dir_mb",
     "_orphan_count_sync",
     "_parse_html_repo_base",
     "_parse_systemctl_records",
@@ -1491,5 +1578,6 @@ __all__ = (
     "_resolve_context",
     "_serving_install_reason",
     "_serving_install_reason_sync",
+    "_walk_dir_bytes",
     "_worktree_detail",
 )

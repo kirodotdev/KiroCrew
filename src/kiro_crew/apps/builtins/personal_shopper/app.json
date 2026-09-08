@@ -19,6 +19,13 @@
     "Organize your saved preferences into groups in the Preferences tab"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "iconUrl": "/app-assets/personal-shopper/icon.svg",
   "heroImage": "/app-assets/personal-shopper/hero-light.svg",
   "heroImageDark": "/app-assets/personal-shopper/hero-dark.svg",

@@ -42,7 +42,8 @@
   "platform": {
     "os": [
       "macos",
-      "linux"
+      "linux",
+      "windows"
     ]
   },
   "useCases": [

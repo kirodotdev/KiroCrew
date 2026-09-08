@@ -30,6 +30,13 @@
       }
     ]
   },
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "useCases": [
     "Keep an at-a-glance, second-screen view of live agents, crons, and subagents while a crew is working."
   ],

@@ -205,8 +205,8 @@ def _load_settings() -> dict:
     served.
     """
     try:
-        data = json.loads(_settings_path().read_text())
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(_settings_path().read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {"base_path": "", "model": ""}
     if not isinstance(data, dict):
         return {"base_path": "", "model": ""}
@@ -260,8 +260,8 @@ def _load_deleted() -> list[str]:
     Shape is treated as untrusted, like every other file this app reads.
     """
     try:
-        data = json.loads(_deleted_path().read_text())
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(_deleted_path().read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return []
     if not isinstance(data, list):
         return []
@@ -436,12 +436,12 @@ def _load_index_snapshot() -> tuple[dict, bool]:
     mutation happens to persist the cleaned reservation.
     """
     try:
-        data = json.loads(_index_path().read_text())
+        data = json.loads(_index_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
         clean: dict = {}
         _refresh_slot_keys(clean)
         return clean, True
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}, False
     if not isinstance(data, dict):
         return {}, False
@@ -2317,7 +2317,7 @@ def _read_recent_projects() -> list[str]:
     BLOCKING -- call via ``asyncio.to_thread``.
     """
     try:
-        data = json.loads((config_dir() / "recent_projects.json").read_text())
+        data = json.loads((config_dir() / "recent_projects.json").read_text(encoding="utf-8"))
     except Exception:
         return []
     if not isinstance(data, list):

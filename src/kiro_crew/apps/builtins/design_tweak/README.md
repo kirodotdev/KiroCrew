@@ -104,7 +104,7 @@ rewriting except the one injected script tag.
 |---|---|
 | Preview (static) | An ephemeral loopback server on its own OS-assigned port serves each registered folder, injecting a `<base href>` pointing at the served file's own directory, plus the overlay. It is a **different origin** from the dashboard (ports separate origins under the same-origin policy), which is what makes the sandboxed frame safe |
 | Preview (dev server) | An injecting reverse proxy on its own ephemeral port, mapping paths 1:1; HTML gains the overlay, WebSocket upgrades are relayed as raw bytes so HMR survives. Its port is resolved live, never persisted — it dies with the backend |
-| Dev-server discovery | `lsof` maps a listening port → pid → working directory, so an already-running server is matched back to its project folder |
+| Dev-server discovery | Two channels. For a server the **user** started, `lsof` maps a listening port → pid → working directory, so it is matched back to its project folder. For a server **we** started the pid is already known, so the port is read from the dev server's own startup output and then proved against the real listener table (`platform_compat.find_port_listeners`) — which is why starting a project's dev server works on hosts with no `lsof` |
 | Selection overlay | `inject/select-to-edit.js`, auto-injected into served HTML — no manual wiring |
 | Pin anchoring | A chain, best first: `[data-kiro-cid]` → the captured CSS locator → the element's former parent → the click point → page bottom-left. It never fails, so a pin is never deleted for failing to resolve |
 | Panel ↔ overlay bridge | `window.postMessage` both ways (comments up; mode + theme colors down). A pin's id **is** its comment's `cid` |
@@ -138,11 +138,26 @@ the request schema and the reporting protocol.
 
 ## Platform notes
 
-macOS and Linux. The only macOS-specific piece is the **native folder chooser**
-(`POST /pick-folder`, AppleScript): on any other platform it answers `501` and
-the panel falls back to typing the folder path, which registers a project
-identically. Dev-server discovery needs `lsof` on PATH; without it, detection is
-skipped and you can point a project at a dev-server URL yourself.
+macOS, Linux, and Windows. Two pieces degrade off macOS/POSIX, both of them into
+a path the app already ships rather than into an error:
+
+- **Native folder chooser** (`POST /pick-folder`, AppleScript) is macOS-only. On
+  Linux and Windows it answers `501` with `code: "picker_unsupported"` and the
+  panel falls back to typing the folder path, which registers a project
+  identically.
+- **Adopting a dev server you started yourself** needs port → pid → working
+  directory, and that needs `lsof`. Without it (Windows, or any POSIX host that
+  never installed it) `/detect-dev-server` reports
+  `detectionAvailable: false` plus a note instead of a bare empty list. Starting
+  the project's **own** dev server is unaffected: the pid is already known, so
+  the port comes from the dev server's own output and is then verified against
+  the listener table. You can also always point a project at a dev-server URL
+  yourself.
+
+Everything else — static folder preview, the injecting reverse proxy, the overlay,
+and the whole request/queue lifecycle — is platform-neutral. Note that the dev
+script itself is spawned directly, **not** through Kiro Crew's sandbox, on every
+platform.
 
 ## Coming from the external `poke-and-prose` app
 

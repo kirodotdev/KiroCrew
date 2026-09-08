@@ -304,9 +304,11 @@ def _venv_ready(engine_root: Path) -> bool:
 
     Root-parameterized rather than reading ``paths.engine_python()``, so it can ask
     the same question of a STAGED tree as of the live one. Same probe
-    ``engine.engine_status`` reports to the provisioning banner.
+    ``engine.engine_status`` reports to the provisioning banner. The layout itself
+    comes from ``paths.venv_python`` so this probe cannot disagree with the
+    interpreter the install step actually writes.
     """
-    return (engine_root / "mcp-local" / ".venv" / "bin" / "python").is_file()
+    return paths.venv_python(engine_root).is_file()
 
 
 def _ensure_venv(engine_root: Path, log: list[str], uv_bin: str) -> bool:
@@ -351,7 +353,7 @@ def _relink_editable_skill(engine_root: Path, log: list[str], uv_bin: str) -> bo
     Idempotent and cheap: the dependencies are already resolved into the venv, and this
     is a local path install with no network.
     """
-    python = engine_root / "mcp-local" / ".venv" / "bin" / "python"
+    python = paths.venv_python(engine_root)
     log.append("installing the engine skill package…")
     code, out = _run(
         [

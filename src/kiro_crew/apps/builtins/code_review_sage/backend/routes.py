@@ -467,8 +467,21 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
             # Offloaded: the executable resolution stats candidates across every
             # PATH entry, and one stale network mount there would stall the loop.
             runtime_error = await asyncio.to_thread(review_pool.runtime_preflight)
+            # `begin_batch` is the only thing that can answer the sandbox question,
+            # because the delegation decision is made inside the spawn (on Windows
+            # Kiro Crew has no native backend, so a review is confined only when
+            # kiro-cli's own sandbox takes it). A refusal is therefore reported
+            # through the SAME channel as a missing kiro-cli — every change fails
+            # fast with a reason naming the config key — instead of escaping as an
+            # undiscriminated run error. `batch_open` is tracked separately so a
+            # refused spawn never calls end_batch() on a batch that never opened.
+            batch_open = False
             if not runtime_error:
-                await pool.begin_batch()
+                try:
+                    await pool.begin_batch()
+                    batch_open = True
+                except review_pool.ReviewRuntimeUnavailable as exc:
+                    runtime_error = str(exc)
             try:
                 summary = await asyncio.to_thread(
                     review_driver.run_review, changes,  # type: ignore[attr-defined]
@@ -486,7 +499,7 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
                     concurrency=1,
                 )
             finally:
-                if not runtime_error:
+                if batch_open:
                     await pool.end_batch()
             run["summary"] = summary
             _collect_delivered(run, summary)

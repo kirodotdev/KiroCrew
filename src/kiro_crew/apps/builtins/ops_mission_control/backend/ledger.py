@@ -308,13 +308,21 @@ def _reconcile(prior: LedgerEntry, other: LedgerEntry) -> LedgerEntry:
 def _write_all(entries: list[LedgerEntry]) -> None:
     """Rewrite the whole ledger. Only the hygiene pass should call this."""
     payload = "".join(json.dumps(entry.to_dict(), sort_keys=True) + "\n" for entry in entries)
-    atomic_write(ledger_path(), payload)
+    # ``newline="\n"`` is load-bearing, not tidiness. This file is COMMITTED and PUSHED to
+    # the team's shared remote by ``ledger_sync``, and ``atomic_write`` defaults to
+    # ``newline=None`` (universal translation), so a hygiene pass on a Windows host would
+    # rewrite every line with CRLF. Reads survive it, so it is invisible locally — but on
+    # a teammate's clone the whole ledger turns into one all-lines diff, and every merge
+    # after that conflicts on lines nobody edited.
+    atomic_write(ledger_path(), payload, newline="\n")
 
 
 def _append(entry: LedgerEntry) -> None:
     path = ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
+    # ``newline="\n"`` for the same shared-repo reason as ``_write_all``, and this is the
+    # hotter path: it runs on every single lesson written, not once a day.
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(entry.to_dict(), sort_keys=True) + "\n")
 
 

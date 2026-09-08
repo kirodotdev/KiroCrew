@@ -563,7 +563,7 @@ def _diag_log(log_dir: Path | None, payload: dict) -> None:
         log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         line = json.dumps(payload, default=str)
-        with open(log_dir / "agent_discovery.log", "a") as fh:
+        with open(log_dir / "agent_discovery.log", "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except Exception:  # noqa: BLE001 — logging must never break discovery
         pass

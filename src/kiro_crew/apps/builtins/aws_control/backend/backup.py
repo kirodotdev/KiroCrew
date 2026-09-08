@@ -789,6 +789,43 @@ def run_sessions_backup(
 JOB_KINDS = (KIND_SNAPSHOT, KIND_SESSIONS)
 
 
+def kind_unavailable_reason(kind: str) -> str | None:
+    """Why ``kind`` cannot run on THIS platform, or ``None`` when it can.
+
+    The refusal itself is not new -- :func:`run_sessions_backup` has always
+    raised on a platform without descriptor-pinned traversal, and that fail-close
+    is correct and stays. What was missing is a way to ASK before starting: the
+    kind was registered and offered identically everywhere, so on Windows the
+    owner pressed a button and got a ``RuntimeError`` back as a failed run
+    record. A capability question deserves an answer before the work, not an
+    exception after it, so the same condition is readable up front here and the
+    route layer turns it into a stated refusal.
+
+    Returns the prose reason so every surface quotes ONE explanation. Callers
+    must treat a non-``None`` result as "offer this as unavailable", not as an
+    error to log.
+    """
+    if kind == KIND_SESSIONS and not _CAN_PIN_TRAVERSAL:
+        return _NO_PINNING_REASON
+    return None
+
+
+def unavailable_job_kinds() -> dict[str, str]:
+    """Every kind this platform cannot run, mapped to its reason.
+
+    Empty on POSIX. ``JOB_KINDS`` itself is deliberately NOT filtered: the kind
+    stays registered so a run record already in the store keeps resolving, and
+    so an unknown kind and an unsupported one give the caller different answers
+    instead of collapsing into one "invalid" reply.
+    """
+    reasons: dict[str, str] = {}
+    for kind in JOB_KINDS:
+        reason = kind_unavailable_reason(kind)
+        if reason is not None:
+            reasons[kind] = reason
+    return reasons
+
+
 def make_job_runner(sdk: Any, kind: str) -> Any:
     """Build the Job SDK runner for ``kind``. Registered once, at app startup.
 

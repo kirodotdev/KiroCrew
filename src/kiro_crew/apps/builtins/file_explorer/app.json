@@ -2,7 +2,7 @@
   "name": "file-explorer",
   "version": "1.0.0",
   "displayName": "Files",
-  "description": "Browse and read files on the machine running Kiro Crew without leaving the dashboard. Keep several files open in tabs, walk the directory tree with each file's git status shown beside it, search a whole folder for a string, and read markdown rendered rather than raw. It is read-only by design: it opens and searches files but never edits, moves, or deletes them, and it can only reach your home directory plus /tmp and /opt.",
+  "description": "Browse and read files on the machine running Kiro Crew without leaving the dashboard. Keep several files open in tabs, walk the directory tree with each file's git status shown beside it, search a whole folder for a string, and read markdown rendered rather than raw. It is read-only by design: it opens and searches files but never edits, moves, or deletes them, and it can only reach your home directory and the system temp directory, plus /home and /opt on macOS and Linux.",
   "author": "kirocrew",
   "tags": [
     "files",
@@ -17,9 +17,16 @@
     "Markdown files render as formatted text instead of raw source",
     "Directory tree shows each file's git status inline",
     "Search across a directory with line-level matches and surrounding preview",
-    "Reachable paths are limited to your home directory, /tmp, and /opt — symlinks out are refused"
+    "Reachable paths are limited to your home directory and the system temp directory (/tmp on macOS and Linux, %TEMP% on Windows), plus /home and /opt on macOS and Linux — symlinks out are refused"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "permissions": {
     "api": [
       "/apps/file-explorer/api"

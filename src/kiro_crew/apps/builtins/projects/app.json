@@ -14,9 +14,17 @@
     "Generate a plan and review the steps before committing to a run",
     "Runs execute unattended, with step-by-step progress on the run's own page",
     "Pause, resume, retry, or stop a run at any point",
-    "Keeps a history of past runs and their outcomes"
+    "Keeps a history of past runs and their outcomes",
+    "Windows: composing, planning, run pages and history work as usual; executing a run spawns an agent process, and since Windows has no native OS sandbox, a backend that cannot be delegated to fails closed until an operator allows unsandboxed exec"
   ],
   "defaultEnabled": true,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "iconUrl": "/app-assets/projects/icon.svg",
   "heroImage": "/app-assets/projects/hero-light.svg",
   "heroImageDark": "/app-assets/projects/hero-dark.svg",

@@ -21,9 +21,16 @@
     "Every write needs triage or push access on the repo; a read-only connection stays suggest-only",
     "Surfaces repositories you have recently contributed to, so connecting one is a click",
     "Caches issues, labels, and members locally, refreshed on demand",
-    "Works with GitHub, GitLab, and Azure DevOps; needs an authenticated CLI for the provider you connect (`gh`, `glab`, or `az`) on the gateway host — no single provider's CLI is required to install"
+    "Works with GitHub, GitLab, and Azure DevOps; needs an authenticated CLI for the provider you connect (`gh`, `glab`, or `az`) on the gateway host — no single provider's CLI is required to install. `gh` and `glab` are supported natively on Windows as well as macOS and Linux; the Azure DevOps provider needs a POSIX gateway host (macOS, Linux, or WSL)"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "permissions": {
     "api": [
       "/api/apps/issue-radar",
@@ -60,7 +67,7 @@
     "Triage issues and pull requests across connected providers while retaining summaries, suggested labels, and investigation history."
   ],
   "configuration": [
-    "Connect a repository and authenticate its provider CLI on the gateway host: gh for GitHub, glab for GitLab, or az with the Azure DevOps extension on macOS, Linux, or WSL."
+    "Connect a repository and authenticate its provider CLI on the gateway host: gh for GitHub or glab for GitLab, both supported natively on Windows, macOS and Linux; or az with the Azure DevOps extension, which needs a POSIX gateway host — on Windows, run the gateway under WSL to use Azure DevOps."
   ],
   "screenshots": [
     "/app-assets/issue-radar/screenshot-main.png"

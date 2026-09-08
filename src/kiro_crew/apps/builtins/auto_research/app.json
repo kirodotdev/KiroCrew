@@ -15,6 +15,13 @@
     "Export the finished report to your knowledge library or a shareable artifact"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "permissions": {
     "api": ["/api/apps/auto-research"]
   },

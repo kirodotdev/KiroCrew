@@ -19,7 +19,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { resolve, isAbsolute } from 'node:path'
+import { resolve, isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { getPlaywright } from './ensure-playwright.mjs'
 
@@ -48,6 +48,30 @@ function toTarget(input) {
 }
 
 function chromeBinary() {
+  // Windows installs land under a per-user LOCALAPPDATA root or one of the two
+  // Program Files roots, and which env var holds them depends on the process
+  // architecture — so read the env rather than hardcoding a drive letter. Edge
+  // is included because it is Chromium and ships with Windows, so on a fresh
+  // machine it is often the only browser present.
+  if (process.platform === 'win32') {
+    const roots = [
+      process.env.LOCALAPPDATA,
+      process.env.PROGRAMFILES,
+      process.env['PROGRAMFILES(X86)'],
+      process.env.PROGRAMW6432,
+    ].filter(Boolean)
+    const relative = [
+      ['Google', 'Chrome', 'Application', 'chrome.exe'],
+      ['Google', 'Chrome Beta', 'Application', 'chrome.exe'],
+      ['Chromium', 'Application', 'chrome.exe'],
+      ['Microsoft', 'Edge', 'Application', 'msedge.exe'],
+    ]
+    const candidates = []
+    for (const root of roots) {
+      for (const parts of relative) candidates.push(join(root, ...parts))
+    }
+    return candidates.find(existsSync) || null
+  }
   const candidates = [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -124,7 +148,8 @@ async function main() {
   if (!ok) { ok = renderWithChrome(target, out, opt); engine = 'chrome-headless' }
 
   if (!ok) {
-    console.error('render: no renderer available. Install Playwright (`npm i playwright`) or Google Chrome.')
+    console.error('render: no renderer available. Install Playwright (`npm i playwright`), or')
+    console.error('render: Google Chrome / Microsoft Edge (Edge is Chromium and works too).')
     process.exit(3)
   }
 

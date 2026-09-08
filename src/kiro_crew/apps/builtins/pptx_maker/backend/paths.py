@@ -29,6 +29,7 @@ import os
 import re
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.security import is_sensitive_path, redact
 
@@ -71,9 +72,29 @@ def engine_root() -> Path:
     return app_root() / "vendor" / _ENGINE_DIRNAME
 
 
+def venv_python(root: Path) -> Path:
+    """The engine venv's interpreter inside *root*, in this platform's venv layout.
+
+    The single authority for this path. ``uv`` puts the interpreter under ``bin/``
+    on POSIX and under ``Scripts/`` (as ``python.exe``) on Windows, and three
+    callers need the answer: the readiness probe, the editable-skill install and
+    the preview-tool launcher. Root-parameterized because provisioning asks it of
+    a STAGED tree as well as the live one.
+
+    Not a cosmetic branch: with the POSIX literal hardcoded, every Windows
+    readiness probe reported "no venv" and the editable install was handed an
+    interpreter path that does not exist, so provisioning could never succeed —
+    and one caller had already grown a private Windows workaround instead.
+    """
+    venv = root / "mcp-local" / ".venv"
+    if platform_compat.IS_WINDOWS:
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
 def engine_python() -> Path:
-    """The engine venv's interpreter (created by the provision script)."""
-    return engine_root() / "mcp-local" / ".venv" / "bin" / "python"
+    """The live engine venv's interpreter (created by the provision script)."""
+    return venv_python(engine_root())
 
 
 def preview_tools_root() -> Path:

@@ -15,6 +15,13 @@
     "One resumable chat session per pull request, finding, and run"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "skills": ["skills/ai-discover", "skills/metric-design"],
   "agents": ["agents/discovery.json", "agents/pr-author.json"],
   "backend": {

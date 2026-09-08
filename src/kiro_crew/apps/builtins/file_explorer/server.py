@@ -631,6 +631,11 @@ def _git_status(repo_root: Path) -> dict:
             cmd_branch,
             capture_output=True,
             text=True,
+            # git emits UTF-8 regardless of host locale, but ``text=True`` alone
+            # decodes with locale.getpreferredencoding() — cp936 on a zh-CN
+            # Windows host — so a non-ASCII branch name came back mojibake.
+            encoding="utf-8",
+            errors="replace",
             timeout=GIT_TIMEOUT_SEC,
             check=False,
         )
@@ -645,6 +650,13 @@ def _git_status(repo_root: Path) -> dict:
             cmd_status,
             capture_output=True,
             text=True,
+            # Same reason as the branch call, with a sharper failure: the status
+            # keys ARE repo-relative paths, so a locale decode both mangles the
+            # key (the badge lands on no file) and can raise UnicodeDecodeError
+            # on bytes cp936 cannot represent — which the except clause below
+            # does not catch. ``errors="replace"`` removes that raise entirely.
+            encoding="utf-8",
+            errors="replace",
             timeout=GIT_TIMEOUT_SEC,
             check=False,
         )
@@ -774,6 +786,13 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
             wrapped_cmd,
             capture_output=True,
             text=True,
+            # ``rg --json`` is UTF-8 by definition. Decoding it with the host
+            # locale (cp936 on zh-CN Windows) corrupts both the match preview
+            # and the path inside each JSON record, and an undecodable byte
+            # raises UnicodeDecodeError, which the except clause below does not
+            # name — so the search 500'd instead of falling back to Python.
+            encoding="utf-8",
+            errors="replace",
             timeout=SEARCH_TIMEOUT_SEC,
             check=False,
         )

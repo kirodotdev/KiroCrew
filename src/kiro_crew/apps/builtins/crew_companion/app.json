@@ -21,6 +21,11 @@
     "routes": "backend.routes:register_routes"
   },
   "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ],
     "requiresDesktopApp": true
   },
   "ui": {

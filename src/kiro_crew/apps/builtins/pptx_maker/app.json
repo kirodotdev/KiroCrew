@@ -78,7 +78,8 @@
   "platform": {
     "os": [
       "macos",
-      "linux"
+      "linux",
+      "windows"
     ]
   },
   "iconUrl": "/app-assets/pptx-maker/icon.svg",

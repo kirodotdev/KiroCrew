@@ -27,11 +27,25 @@ Microsoft Store app-execution alias that runs nothing), so the command would
 stage nothing and the learning would be silently lost. Outside a review
 session, use the interpreter running the app.
 
+## Where every path below is rooted
+
+Paths in this skill are **relative to the app root** — the directory holding
+`sage_lib/` and `data/`. A review or consolidation worker is already started
+there, so `sage_lib/store.py` resolves without any prefix. Deliberately relative,
+not `~/.kiro/crew/apps/code-review-sage/...`: `~` is expanded by the SHELL, and
+the task does not pin one — PowerShell expands it, `cmd.exe` passes it through
+literally, and Python then cannot open the file. Outside a worker session, `cd`
+into the app root first (`~/.kiro/crew/apps/code-review-sage` on macOS/Linux,
+`%USERPROFILE%\.kiro\crew\apps\code-review-sage` on Windows).
+
+Prefer your own file-read tool over `cat` for the reads below — it needs no shell
+at all, so it behaves the same on every host.
+
 ## Self-heal (first)
 
 ```bash
-<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/store.py --ensure
-<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py seed   # no-op if already seeded
+<python> sage_lib/store.py --ensure
+<python> sage_lib/learning.py seed   # no-op if already seeded
 ```
 
 ## Admissible sources only (no self-poisoning)

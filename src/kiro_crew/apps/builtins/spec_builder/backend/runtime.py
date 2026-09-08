@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 
 from . import repository as _repository
@@ -1056,7 +1056,13 @@ async def _remove_nudge_loop_for_slot(slot_key: str, *, only_loop_id: Any = _UNP
 #: second gateway loop in one process (and the test suite) does.
 # Keyed by CANONICAL SPEC DIRECTORY (see _turn_lock), never by name.
 _TURN_LOCKS: dict[str, tuple[Any, asyncio.Lock]] = {}
-_CASE_FOLD_TURN_KEYS = sys.platform == "darwin"
+#: macOS ONLY, and the asymmetry is deliberate: ``_decision_key`` already runs
+#: ``os.path.normcase``, which lowercases on Windows, so NTFS's case-insensitive
+#: default is folded before this flag is ever consulted. Darwin is the one
+#: case-insensitive-by-default filesystem ``normcase`` leaves untouched (it is a
+#: no-op on POSIX), so it needs the extra fold. Stated because the obvious
+#: "Windows is case-insensitive too" patch double-folds for no gain.
+_CASE_FOLD_TURN_KEYS = platform_compat.IS_MACOS
 
 
 def _turn_key(spec_dir: str) -> str:
@@ -1067,6 +1073,9 @@ def _turn_key(spec_dir: str) -> str:
     on a case-sensitive Darwin volume, which is safe; the index collision check uses
     ``samefile`` and still admits them. The conservative lock prevents two filesystem-
     equivalent spellings from racing create against create or delete cleanup.
+
+    Windows needs no extra fold here -- ``_decision_key``'s ``normcase`` has already
+    lowercased the key and unified the separators.
     """
     key = _decision_key(spec_dir)
     return key.casefold() if _CASE_FOLD_TURN_KEYS else key

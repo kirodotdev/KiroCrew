@@ -23,7 +23,8 @@
   "platform": {
     "os": [
       "macos",
-      "linux"
+      "linux",
+      "windows"
     ]
   },
   "agents": [

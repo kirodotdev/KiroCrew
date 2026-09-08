@@ -15,9 +15,17 @@
     "One isolated agent session per change, so findings never bleed between files",
     "Reviews are read in the app — nothing is posted to your pull request unless you ask",
     "Learns per-repository from shipped fixes, review comments, and design discussions",
-    "Reviews GitHub pull requests; needs an authenticated `gh` CLI on the gateway host"
+    "Reviews GitHub pull requests; needs an authenticated `gh` CLI on the gateway host",
+    "Runs on macOS, Linux and Windows — but on Windows the reviewer session starts only when kiro-cli's own sandbox takes the spawn, because Kiro Crew has no native Windows sandbox backend; otherwise it refuses to start until an operator sets agent.sandbox_allow_unsandboxed_exec. Adding repos, reading past reports and publishing a staged draft are unaffected"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "skills": [
     "skills/sage-review",
     "skills/learn-from-sage"
@@ -51,7 +59,8 @@
     "Review one or many GitHub pull requests by risk, inspect focused findings, and stage only the comments worth publishing."
   ],
   "configuration": [
-    "Install and authenticate the gh CLI on the gateway host, add a repository, then choose the review model, reasoning effort, and concurrency in Settings."
+    "Install and authenticate the gh CLI on the gateway host, add a repository, then choose the review model, reasoning effort, and concurrency in Settings.",
+    "Windows only: Kiro Crew ships no native Windows sandbox backend, so a review that kiro-cli's own sandbox does not take is refused rather than run unaudited. Set agent.sandbox_allow_unsandboxed_exec=true in ~/.kiro/crew/config.json to allow it explicitly."
   ],
   "screenshots": [
     "/app-assets/code-review-sage/screenshot-main.png"

@@ -799,12 +799,49 @@ Control how KiroCrew manages the app:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `platform.os` | string[] | `["macos", "linux"]` | Supported platforms |
+| `platform.os` | string[] | `["macos", "linux"]` | Supported platforms. Valid names: `macos`, `linux`, `windows`. **The default excludes `windows`** — see below |
 | `platform.arch` | string[] | `[]` (any) | Supported architectures |
 | `platform.requiresDesktopApp` | boolean | `false` | App's own UI needs the Electron desktop shell |
 | `platform.installMode` | string | `"server"` | `"server"` or `"client"` |
 | `platform.clientInstall.shell` | string | | One-liner for local install |
 | `platform.clientInstall.postInstall` | string | | Command to run after install |
+
+#### `platform.os` — Windows is opt-in, and silence means "no"
+
+`platform.os` is the gate `apps/routes.py` enables an app against
+(`PlatformConfig.supports_platform(sys.platform)`), so a name absent from the
+list is a name the app cannot be enabled on. The default is
+`["macos", "linux"]`, which means **an app that omits the `platform` block
+declares that it does not run on Windows** — not that it is untested there.
+
+That default is deliberate: widening it would promise Windows on behalf of every
+existing app. But it also means the omission is indistinguishable from an
+intentional exclusion, so declare the block explicitly and say what you mean:
+
+```json
+{ "platform": { "os": ["macos", "linux", "windows"] } }
+```
+
+Two things decide whether your app can honestly claim `windows`:
+
+1. **Does its code assume POSIX?** Route every platform decision through
+   `kiro_crew.platform_compat` (`IS_WINDOWS`, `IS_POSIX`, `file_lock`,
+   `rename_noreplace`, `trusted_system_bin`, …) rather than writing a raw
+   `sys.platform` test. Pass explicit `encoding="utf-8"` on text I/O — the
+   Windows default code page is not UTF-8. Prefer `os.replace` over
+   `os.rename`, and reject Windows-reserved file names (`CON`, `NUL`,
+   `COM1`–`COM9`, `LPT1`–`LPT9`, and names ending in a dot or space).
+
+2. **Does it need a backend CHILD PROCESS?** An app with no `backend`, or with
+   `backend.hooks` only, runs inside the Gateway process and spawns nothing, so
+   it is unaffected by the item below. An app with a `backend.entryPoint` is
+   spawned through `sandbox.wrap_argv` without the first-party carve-out, and
+   Kiro Crew has no native Windows sandbox backend — so on native Windows that
+   spawn needs the operator's `agent.sandbox_allow_unsandboxed_exec=true` (or
+   `agent.sandbox='off'`). Declaring `windows` is still correct; state the
+   requirement in your app's copy so the dependency is not a surprise. See
+   `docs/guides/windows-install.md` and
+   `docs/system-specs/common/platform-compat.md`.
 
 When `installMode` is `"client"`, the App Store shows copy-paste terminal
 instructions instead of running the install on the server. This is used for

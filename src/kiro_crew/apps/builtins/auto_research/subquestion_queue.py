@@ -174,8 +174,11 @@ def load_queue(campaign_dir: Path) -> dict:
     if not p.exists():
         return new_queue()
     try:
-        data = json.loads(p.read_text())
-    except (json.JSONDecodeError, OSError):
+        # The queue file lives in the agent-writable campaign dir, so a worker
+        # can rewrite it as UTF-8 (json.dumps below is ASCII-only, but that is
+        # not a guarantee about who wrote the file last).
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return new_queue()
     if not isinstance(data, dict):
         return new_queue()
@@ -189,5 +192,5 @@ def save_queue(campaign_dir: Path, queue: dict) -> None:
     p = Path(campaign_dir) / QUEUE_FILENAME
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(queue, indent=2))
+    tmp.write_text(json.dumps(queue, indent=2), encoding="utf-8")
     tmp.replace(p)

@@ -259,10 +259,18 @@ def write_atomic(file_path: str, data: WatchList) -> None:
 def _backup_corrupted(file_path: str, now_ms: int) -> None:
     bak_path = f"{file_path}.bak.{now_ms}"
     try:
-        os.rename(file_path, bak_path)
+        # os.replace, not os.rename: on Windows rename REFUSES an existing
+        # destination, and two corruptions inside one millisecond share a
+        # timestamp suffix. Because the OSError below is swallowed, that failure
+        # would silently leave the corrupt file in place -- the one outcome this
+        # function exists to prevent. POSIX rename already overwrote.
+        os.replace(file_path, bak_path)
         logger.warning("[watchlist_file] Backed up corrupted file to %s", bak_path)
     except OSError:
-        pass  # file may not exist
+        # File may not exist. On Windows this also catches a sharing violation
+        # while the MCP-server process holds the corrupt file open; the caller
+        # then rebuilds from defaults, which is the same outcome as no backup.
+        pass
 
 
 # ── Item creation ──────────────────────────────────────────────────────────

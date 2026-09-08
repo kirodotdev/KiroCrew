@@ -560,9 +560,13 @@ def check_stagnation(campaign_id: str) -> bool:
         return False
     for f in files[-5:]:
         try:
-            if json.loads(f.read_text()).get("new_findings_count", 0) > 0:
+            # LLM-written cycle file: pin UTF-8 (Windows would otherwise decode
+            # with the ANSI code page) and absorb bad bytes, because a decode
+            # error here would abort the whole watchdog sweep.
+            raw = f.read_text(encoding="utf-8", errors="replace")
+            if json.loads(raw).get("new_findings_count", 0) > 0:
                 return False
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             return False
     return True
 
@@ -586,9 +590,14 @@ def _read_text_or_missing(path: Path) -> str | None:
     them reads as missing rather than raising. Any OTHER ``OSError`` still
     propagates, so an unreadable file keeps its 500 rather than being
     downgraded to "no findings yet".
+
+    UTF-8 is pinned because the file is agent-written prose (FINDINGS.md): on
+    Windows the default locale encoding is the ANSI code page, so an em dash or
+    a CJK character would raise. ``errors="replace"`` keeps a partially
+    corrupt report readable instead of turning an export into a 500.
     """
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return None
 
@@ -600,7 +609,7 @@ def _read_json_or_missing(path: Path) -> Any:
     a corrupt file as "no data", so the parse error is folded in here.
     """
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return None
 
@@ -612,8 +621,13 @@ def _write_text(path: Path, text: str) -> None:
     existing campaign directory before the off-loop move, so a concurrent
     campaign deletion must keep winning (recreating the directory here would
     resurrect a deleted campaign's data).
+
+    UTF-8 is pinned: the payload is LLM prose (FINDINGS.md,
+    findings_for_knowledge.md), so the Windows ANSI code page would raise
+    UnicodeEncodeError on the first em dash or CJK character and no report
+    would ever be produced.
     """
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
 
 
 def _write_new_cycle_files(pending: list[tuple[Path, str]]) -> bool:
@@ -628,7 +642,7 @@ def _write_new_cycle_files(pending: list[tuple[Path, str]]) -> bool:
         if fpath.exists():
             continue
         fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath.write_text(text)
+        fpath.write_text(text, encoding="utf-8")
         wrote = True
     return wrote
 
@@ -637,10 +651,12 @@ def _copy_parent_findings(src: Path, dst: Path) -> None:
     """Seed a forked campaign with its parent's findings. Blocking; call off-loop."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        content = src.read_text()
+        # Agent-written prose on both ends: pin UTF-8 so a fork does not lose the
+        # parent's context to a locale-encoding error, and absorb bad bytes.
+        content = src.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return
-    dst.write_text(content)
+    dst.write_text(content, encoding="utf-8")
 
 
 def _unlink_if_present(path: Path) -> bool:
@@ -664,8 +680,12 @@ def _pending_question(campaign_id: str) -> str | None:
     if not p or not p.exists():
         return None
     try:
-        return str(json.loads(p.read_text()).get("question", "")) or None
-    except (json.JSONDecodeError, OSError):
+        # The agent authors questions.json and its clarification text is very
+        # often non-ASCII, so UTF-8 must be explicit: a locale-encoding failure
+        # here 500s get_campaign and strands the campaign in NEEDS_INPUT.
+        raw = p.read_text(encoding="utf-8", errors="replace")
+        return str(json.loads(raw).get("question", "")) or None
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
 
 
@@ -677,7 +697,8 @@ def write_status(campaign_id: str, status: str, **extra: Any) -> None:
         json.dumps(
             {"status": status, "campaign_id": campaign_id, "ts": time.time(), **extra},
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
 
 
@@ -685,7 +706,8 @@ def write_guidance(campaign_id: str, text: str) -> None:
     if not _validate_campaign_id(campaign_id):
         return
     d = _campaign_dir(campaign_id)
-    (d / "guidance.txt").write_text(text)
+    # User-typed mid-campaign guidance — non-ASCII is the norm, not the edge case.
+    (d / "guidance.txt").write_text(text, encoding="utf-8")
 
 
 def get_findings(campaign_id: str) -> list[dict]:
@@ -698,8 +720,9 @@ def get_findings(campaign_id: str) -> list[dict]:
     results = []
     for f in _cycle_finding_files(findings_dir):
         try:
-            results.append(_redact_finding(json.loads(f.read_text())))
-        except (json.JSONDecodeError, OSError):
+            raw = f.read_text(encoding="utf-8", errors="replace")
+            results.append(_redact_finding(json.loads(raw)))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             continue
     return results
 
@@ -726,9 +749,16 @@ def _read_finding_file(path: Path) -> dict:
     dict (`.items()`), so a non-object payload must be rejected here — letting
     it raise would abort the watchdog iteration mid-cycle (e.g. the stall
     verdict would never settle the campaign, leaving it RUNNING forever).
+
+    UTF-8 is pinned but bad bytes are NOT replaced, deliberately: this reader
+    feeds the stall verdict, so a genuinely corrupt file must keep reading as
+    absent ({}) rather than as mojibake. Before the explicit encoding a
+    perfectly valid UTF-8 finding hit that same {} branch on a Windows ANSI
+    console, so the watchdog saw zero new findings and failed a healthy
+    campaign as stalled.
     """
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return {}
     if not isinstance(data, dict):
@@ -809,7 +839,9 @@ def create_campaign(config: dict) -> dict:
     if grill_tree and isinstance(grill_tree, list):
         d = _campaign_dir(campaign_id)
         d.mkdir(parents=True, exist_ok=True)
-        d.joinpath("grill_tree.json").write_text(json.dumps(grill_tree, indent=2))
+        d.joinpath("grill_tree.json").write_text(
+            json.dumps(grill_tree, indent=2), encoding="utf-8"
+        )
     write_status(campaign_id, CampaignStatus.READY)
     _audit("campaign_created", campaign_id)
     return {"id": campaign_id, "name": name, "status": CampaignStatus.READY}
@@ -906,9 +938,29 @@ def delete_campaign(campaign_id: str) -> dict:
     if rows == 0:
         return {"error": "campaign not found"}
     d = _safe_campaign_dir(campaign_id)
+    residual = False
     if d and d.exists():
-        shutil.rmtree(d, ignore_errors=True)
-    return {"id": campaign_id, "deleted": True}
+        # Windows refuses to unlink a file another process still holds open (POSIX
+        # allows it), so a live worker session's handle on a findings file can make
+        # this tree removal fail HALFWAY. ``ignore_errors=True`` swallowed that:
+        # the DB row was gone while findings stayed on disk as invisible orphans.
+        # Collect the failures instead and report them to the caller.
+        failures: list[str] = []
+
+        def _on_error(_func: Any, path: Any, _exc: BaseException) -> None:
+            failures.append(str(path))
+
+        shutil.rmtree(d, onexc=_on_error)
+        if failures:
+            residual = True
+            logger.warning(
+                "auto_research: campaign %s deleted from the database but %d path(s) "
+                "could not be removed (a process may still hold them open); they will "
+                "be retried on the next delete of this id",
+                campaign_id,
+                len(failures),
+            )
+    return {"id": campaign_id, "deleted": True, "residual": residual}
 
 
 # --- Watchdog ---
@@ -1087,7 +1139,8 @@ async def _expire_trust(cid: str, observed_started_at: float | None) -> None:
                             "question": "Auto-approval expired after 24h. Resume to "
                             "re-authorize and continue."
                         }
-                    )
+                    ),
+                    encoding="utf-8",
                 )
             except OSError:
                 logger.warning(
@@ -1973,7 +2026,7 @@ def _write_brief(cid: str, row: Any) -> None:
             "Wait for all completion events, then synthesize results into your cycle finding. "
             f"If fewer than {pw} sub-questions remain open, spawn only as many as needed.",
         ]
-    _campaign_dir(cid).joinpath("brief.md").write_text("\n".join(lines))
+    _campaign_dir(cid).joinpath("brief.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 # --- RL v2: recursive exploration (emergent sub-questions) ---
@@ -2024,8 +2077,10 @@ def _ingest_emergent_questions(campaign_id: str) -> list[dict]:
         ef.unlink(missing_ok=True)  # not agent mode (or gone) — discard
         return []
     try:
-        raw = json.loads(ef.read_text())
-    except (json.JSONDecodeError, OSError):
+        # LLM-authored sub-question text — non-ASCII is expected, so UTF-8 is
+        # explicit and bad bytes are absorbed rather than aborting the sweep.
+        raw = json.loads(ef.read_text(encoding="utf-8", errors="replace"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         raw = []
     ef.unlink(missing_ok=True)  # consumed regardless of validity
     if not isinstance(raw, list) or not raw:
@@ -2183,7 +2238,7 @@ def _enter_finalize(campaign_id: str) -> bool:
     flag = d / _FINALIZE_FLAG
     if flag.exists():
         return False  # already signaled — leave the guidance in place
-    flag.write_text(str(time.time()))
+    flag.write_text(str(time.time()), encoding="utf-8")
     write_guidance(
         campaign_id,
         "FINALIZE MODE — you are near the cycle budget. STOP opening new "
@@ -2249,7 +2304,8 @@ def _write_workflow_run_id(campaign_id: str, run_id: str) -> None:
     # old). Persisting the offset makes the resumed run append correctly.
     cycle_offset = len(_list_cycle_files(campaign_id))
     d.joinpath(_WORKFLOW_RUN_FILE).write_text(
-        json.dumps({"run_id": run_id, "ts": time.time(), "cycle_offset": cycle_offset})
+        json.dumps({"run_id": run_id, "ts": time.time(), "cycle_offset": cycle_offset}),
+        encoding="utf-8",
     )
 
 
@@ -2259,7 +2315,7 @@ def _read_workflow_cycle_offset(campaign_id: str) -> int:
     if not p or not p.exists():
         return 0
     try:
-        return int(json.loads(p.read_text()).get("cycle_offset", 0) or 0)
+        return int(json.loads(p.read_text(encoding="utf-8")).get("cycle_offset", 0) or 0)
     except (OSError, ValueError, TypeError):
         return 0
 
@@ -2270,8 +2326,8 @@ def _read_workflow_run_id(campaign_id: str) -> str | None:
     if not p or not p.exists():
         return None
     try:
-        return str(json.loads(p.read_text()).get("run_id") or "") or None
-    except (json.JSONDecodeError, OSError):
+        return str(json.loads(p.read_text(encoding="utf-8")).get("run_id") or "") or None
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
 
 
@@ -2812,13 +2868,19 @@ async def _handle_get(request: web.Request) -> web.Response:
 
 
 def _read_report(campaign_id: str) -> str:
-    """Read the agent's cumulative FINDINGS.md report (empty if none yet)."""
+    """Read the agent's cumulative FINDINGS.md report (empty if none yet).
+
+    UTF-8 with byte replacement: the report is LLM prose, and
+    ``UnicodeDecodeError`` is a ``ValueError`` — NOT an ``OSError`` — so before
+    this it escaped the handler and turned GET /campaigns/{id}/report into a 500
+    for any report containing a non-ASCII character.
+    """
     d = _safe_campaign_dir(campaign_id)
     if not d:
         return ""
     p = d / "FINDINGS.md"
     try:
-        return p.read_text() if p.exists() else ""
+        return p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
     except OSError:
         return ""
 

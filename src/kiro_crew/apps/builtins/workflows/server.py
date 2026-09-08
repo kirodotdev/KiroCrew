@@ -30,6 +30,7 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.workflows.runner import WorkflowRunner
@@ -136,12 +137,32 @@ def _examples_dir() -> str:
 
 
 def handle_examples() -> list[dict]:
-    """List the shipped example workflows (name + description + source)."""
+    """List the shipped example workflows (name + description + source).
+
+    Always returns a LIST: the dashboard Workflows page consumes this shape, so an
+    unresolvable examples directory must not change it. Both routes to an empty
+    list are logged at WARNING with the cause, because a silently empty Examples
+    panel is indistinguishable from "this app ships no examples". The directory is
+    resolved relative to this file, so it is present in a source checkout on every
+    platform and absent from a packaged install on every platform alike — this is
+    not a Windows-specific degradation.
+    """
     out: list[dict] = []
     ex_dir = _examples_dir()
     if not ex_dir:
+        logger.warning(
+            "workflows: no examples directory found above %s; serving an empty list",
+            os.path.dirname(os.path.abspath(__file__)),
+        )
         return out
-    for fname in sorted(os.listdir(ex_dir)):
+    try:
+        names = sorted(os.listdir(ex_dir))
+    except OSError as exc:
+        # Racing removal or a directory ACL that denies enumeration: degrade to an
+        # empty list with a reason rather than letting the handler return a 500.
+        logger.warning("workflows: cannot list examples in %s: %s", ex_dir, exc)
+        return out
+    for fname in names:
         if not fname.endswith(".py"):
             continue
         path = os.path.join(ex_dir, fname)
@@ -225,9 +246,28 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
 
+class _Server(ThreadingHTTPServer):
+    """The listener, with the address-reuse flag bound to the platform.
+
+    ``http.server.HTTPServer`` hardcodes ``allow_reuse_address = 1``, and that flag
+    does not mean the same thing on both families. On POSIX it only waives
+    TIME_WAIT so a restart can rebind. On Windows ``SO_REUSEADDR`` additionally
+    lets a socket bind an address that already has a LIVE listener, so a second
+    workflows backend on the same port would bind successfully and the two would
+    split incoming requests instead of one failing.
+
+    The gateway detects a port collision by checking that the spawned child died on
+    its initial bind (``kiro_crew/apps/backend.py``), which only works while the
+    bind is actually allowed to fail. So the flag is off on Windows and EADDRINUSE
+    is permitted to surface.
+    """
+
+    allow_reuse_address = platform_compat.IS_POSIX
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), _Handler)
+    server = _Server(("127.0.0.1", PORT), _Handler)
     logger.info("workflows app backend on 127.0.0.1:%d", PORT)
     server.serve_forever()
 

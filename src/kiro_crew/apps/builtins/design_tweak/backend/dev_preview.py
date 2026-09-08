@@ -3,11 +3,13 @@
 ``server`` is the Design Tweak composition root and security-policy owner.
 Every mutable collaborator is resolved through ``runtime`` at call time.  This
 module never spawns a process or invokes ``lsof`` itself: those audited process
-sinks remain in ``server._start_dev_proc`` and ``server._lsof_fields``.
+sinks remain in ``server._start_dev_proc``, ``server._lsof_fields``, and
+``server._tcp_listeners``.
 """
 
 from __future__ import annotations
 
+import re
 from http.server import BaseHTTPRequestHandler
 from typing import Any, ClassVar, cast
 
@@ -75,6 +77,34 @@ LOCKFILES = (
 )
 DEV_SCRIPTS = ("dev", "start:dev", "dev:web", "serve", "start")
 PROC_TREE_MAX_DEPTH = 16
+
+# Second port-discovery channel: the dev server's OWN startup output.
+#
+# `detect_dev_servers` answers "which listener belongs to this folder" through
+# pid -> working directory, and that mapping has no cross-platform source in this
+# repo — `platform_compat.process_cwd` documents `None` on Windows and psutil is
+# not a dependency, while the `lsof` path is simply absent on a host that never
+# installed it. For a listener we do NOT own that is a real limit. For one we
+# spawned ourselves it is not: the pid is already known, so the only missing fact
+# is the port, and every dev server in `DEV_SCRIPTS` range prints it ("Local:
+# http://localhost:5173/") into the log `server._start_dev_proc` already
+# captures.
+#
+# The log is untrusted project output, so it only ever NOMINATES a port —
+# `owned_listener` then proves ownership against the real listener table before
+# adopting it. A project that printed someone else's URL cannot make this adopt
+# a port its own process tree does not hold.
+LOG_TAIL_BYTES = 65536
+# Ports considered per poll. A dev server prints one or two URLs (Local +
+# Network); the cap bounds the listener lookups a log full of URLs can trigger.
+LOG_PORT_LIMIT = 8
+# Vite wraps the port digits themselves in colour escapes, so the text has to be
+# de-ANSI-ed before the URL match rather than after.
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+LOG_URL_RE = re.compile(
+    r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\]):(\d{2,5})",
+    re.IGNORECASE,
+)
 
 
 def node_bin_dirs(runtime: Any) -> list[Any]:
@@ -272,6 +302,84 @@ def detect_dev_servers(runtime: Any, root: Any, probe: bool = True) -> list[dict
         )
     )
     return out
+
+
+def foreign_detection_available(runtime: Any) -> bool:
+    """Whether a dev server the USER started can be matched to a project root.
+
+    Adopting a FOREIGN listener needs port -> pid -> working directory, and both
+    halves come from ``lsof`` here.  Probing for the binary is the honest test:
+    it reports the same answer on Windows (no ``lsof``) and on a POSIX host that
+    never installed it, instead of hard-coding a platform list that would go
+    stale the moment another source lands.  Starting the project's OWN dev server
+    does not go through this — see :func:`owned_listener`.
+    """
+
+    return runtime.trusted_system_bin("lsof") is not None
+
+
+def dev_log_ports(runtime: Any, log_path: str) -> list[int]:
+    """Loopback ports a dev server announced in its own captured output.
+
+    Reads only the tail, decodes with ``errors="replace"`` because the bytes are
+    an untrusted project's stdout, and de-ANSIs before matching.  Order of
+    appearance is preserved: a dev server prints its primary URL first.
+    """
+
+    try:
+        with runtime.Path(log_path).open("rb") as handle:
+            try:
+                handle.seek(-runtime._LOG_TAIL_BYTES, 2)
+            except OSError:
+                # Log shorter than the tail window, or not seekable.
+                handle.seek(0)
+            raw = handle.read(runtime._LOG_TAIL_BYTES)
+    except OSError:
+        return []
+    text = runtime._ANSI_RE.sub("", raw.decode("utf-8", errors="replace"))
+    ports: list[int] = []
+    for match in runtime._LOG_URL_RE.finditer(text):
+        try:
+            port = int(match.group(1))
+        except ValueError:
+            continue
+        if 1 <= port <= 65535 and port not in ports:
+            ports.append(port)
+            if len(ports) >= runtime._LOG_PORT_LIMIT:
+                break
+    return ports
+
+
+def owned_listener(
+    runtime: Any,
+    log_path: str,
+    root_pid: int,
+    pgid: int | None,
+) -> dict[str, Any] | None:
+    """Resolve the loopback port an OWNED dev process is listening on.
+
+    The log NOMINATES ports; ownership is then proved against the real listener
+    table, so an adopted port is always one held by ``root_pid`` or by a process
+    inside its tree.  Returns a candidate shaped like a
+    :func:`detect_dev_servers` entry, with ``cwd``/``depth`` empty because this
+    path deliberately needs no pid -> working-directory source — which is exactly
+    why it answers where ``detect_dev_servers`` cannot.
+    """
+
+    for port in runtime._dev_log_ports(log_path):
+        for entry in runtime._tcp_listeners(port):
+            if not runtime.address_covers_loopback(entry.address):
+                continue
+            if entry.pid == root_pid or runtime._in_proc_tree(entry.pid, root_pid, pgid):
+                return {
+                    "port": port,
+                    "pid": entry.pid,
+                    "cwd": "",
+                    "depth": 0,
+                    "url": f"http://localhost:{port}",
+                    "servesHtml": None,
+                }
+    return None
 
 
 def auto_dev_server(runtime: Any, root: Any) -> str:

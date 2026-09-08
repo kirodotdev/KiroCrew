@@ -36,6 +36,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from kiro_crew.apps.builtins.mochi.windows_names import is_windows_reserved
 from kiro_crew.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,12 @@ def _pack_dir(data_dir: Path, pack_id: str) -> Path:
     """
     if not _SAFE_ID.match(pack_id):
         raise PackError(f"invalid pack id: {pack_id!r}")
+    # Third check, and unlike the two below it is not about containment: Windows
+    # reserves the legacy DOS device names in every directory, so a client-supplied
+    # overwrite id of `con` or `nul` passes the pattern and then cannot be created.
+    # Rejected on every platform so one data directory stays portable between hosts.
+    if is_windows_reserved(pack_id):
+        raise PackError(f"pack id is not usable as a directory name: {pack_id!r}")
     root = appearances_dir(data_dir).resolve()
     target = (root / pack_id).resolve()
     if target != root and root not in target.parents:
@@ -187,6 +194,12 @@ def save_sprite_pack(data_dir: Path, payload: dict[str, Any]) -> str:
     for slot, data_uri in assignments.items():
         if not isinstance(slot, str) or not _SAFE_ID.match(slot):
             raise PackError(f"invalid slot name: {slot!r}")
+        # The slot becomes a FILENAME (`<slot>.png` below), and a mood slot
+        # arrives verbatim from the request body, so the Windows device names
+        # have to be excluded here too -- `con` would yield `con.png`, which
+        # Windows cannot create however valid the characters are.
+        if is_windows_reserved(slot):
+            raise PackError(f"slot name is not usable as a filename: {slot!r}")
         if not isinstance(data_uri, str):
             raise PackError(f"slot {slot} has no image")
         decoded_slots[slot] = _decode_data_uri(data_uri)
@@ -504,6 +517,10 @@ def save_pack(
         # Same allow-list the sprite path already enforces.
         if not _SAFE_ID.match(slot):
             raise PackError(f"invalid slot name: {slot!r}")
+        # ...and the Windows device names, for the same reason: this slot is
+        # about to be interpolated into `filename` a few lines down.
+        if is_windows_reserved(slot):
+            raise PackError(f"slot name is not usable as a filename: {slot!r}")
         existing = content_to_file.get(content)
         if existing is not None:
             return existing

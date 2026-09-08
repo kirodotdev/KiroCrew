@@ -80,16 +80,13 @@ def _engine_python() -> Path | None:
     run under this interpreter. ``None`` means the engine is not provisioned yet,
     which the caller reports as "provision the engine first" rather than writing a
     launcher that could not work.
+
+    The platform's venv layout is resolved by ``paths.venv_python``, which is the
+    single authority: it knows both the POSIX ``bin/python`` and the Windows
+    ``Scripts\\python.exe`` layout, so no caller carries a private candidate list.
     """
-    candidates = [paths.engine_python()]
-    # The engine's venv layout is POSIX-shaped in `paths`; Windows venvs put the
-    # interpreter under Scripts/ instead.
-    if platform_compat.IS_WINDOWS:
-        candidates.insert(0, paths.engine_root() / "mcp-local" / ".venv" / "Scripts" / "python.exe")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
+    candidate = paths.engine_python()
+    return candidate if candidate.is_file() else None
 
 
 def _launcher_paths() -> list[Path]:

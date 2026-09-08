@@ -29,10 +29,25 @@ to a Microsoft Store app-execution alias that runs nothing), so the command
 would produce no record and the review would end with no result. Outside a
 review session, use the interpreter running the app.
 
+## Where every path below is rooted
+
+Paths in this skill are **relative to the app root** — the directory holding
+`sage_lib/` and `data/`. A review worker is already started there, so
+`sage_lib/store.py` and `data/results/<id>.json` resolve without any prefix.
+Deliberately relative, not `~/.kiro/crew/apps/code-review-sage/...`: `~` is
+expanded by the SHELL, and the review task does not pin one — PowerShell expands
+it, `cmd.exe` passes it through literally, and Python then cannot open the file.
+Outside a review session, `cd` into the app root first
+(`~/.kiro/crew/apps/code-review-sage` on macOS/Linux,
+`%USERPROFILE%\.kiro\crew\apps\code-review-sage` on Windows).
+
+Prefer your own file-read tool over `cat` for the reads below — it needs no shell
+at all, so it behaves the same on every host.
+
 ## Self-heal (run first, always — idempotent)
 
 ```bash
-<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/store.py --ensure
+<python> sage_lib/store.py --ensure
 ```
 
 ## Load learning context (before reviewing)
@@ -41,16 +56,16 @@ Load patterns from all **active namespaces** (configured in config.json →
 `review.active_namespaces`). The CLI command unions them for you:
 
 ```bash
-<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py list-for-review
+<python> sage_lib/learning.py list-for-review
 ```
 
 Or read them manually — the "default" namespace maps to `common/`, others live
 under `namespaces/<name>/`:
 
 ```bash
-cat ~/.kiro/crew/apps/code-review-sage/data/learnings/common/learned-patterns.md
+cat data/learnings/common/learned-patterns.md
 # For each additional active namespace:
-cat ~/.kiro/crew/apps/code-review-sage/data/learnings/namespaces/<namespace>/learned-patterns.md 2>/dev/null
+cat data/learnings/namespaces/<namespace>/learned-patterns.md
 ```
 
 Treat all loaded patterns as additional review heuristics (warm start).
@@ -455,9 +470,13 @@ from the `learn-from-sage` skill:
 3. If it passes the quality gate (general, non-trivial, fits a dimension),
    **stage** it into the candidate file (`source=fix_introduce`):
    ```bash
-   <python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py stage \
-       --file /tmp/pattern.json --source fix_introduce
+   <python> sage_lib/learning.py stage \
+       --file data/tmp/pattern.json --source fix_introduce
    ```
+   Write the pattern JSON to that path yourself first. `data/tmp/` is created by
+   the `store.py --ensure` self-heal above and is inside the app root, so it is
+   real on every platform — unlike a `/tmp/...` path, which does not exist on a
+   Windows host and would lose the learning silently.
    This appends to `learned-patterns.candidate.md` only — it does NOT touch the
    live ruleset. A human later triggers **consolidation** (an AI one-shot merge
    into `learned-patterns.md`); see the `learn-from-sage` skill.
@@ -470,7 +489,7 @@ candidate is pure staging until consolidated.
 
 ## Result record (write one per change)
 
-Write `~/.kiro/crew/apps/code-review-sage/data/results/<change-id>.json`. This is
+Write `data/results/<change-id>.json`. This is
 the durable source of truth the Focus Report reads. **Findings JSON contract**
 (kept stable so the deterministic scorer is decoupled from prompt wording):
 

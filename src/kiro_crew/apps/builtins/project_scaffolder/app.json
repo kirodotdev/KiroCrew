@@ -19,6 +19,13 @@
     "Reports exactly what was created, skipped, and what failed and why"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "permissions": {
     "api": [
       "/api/project-scaffold"

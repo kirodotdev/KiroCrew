@@ -121,13 +121,25 @@ def contain_path(base: Path | str, candidate: str = "") -> Path:
     Both sides are realpath-normalized so traversal and symlink escapes collapse
     before the comparison.  The separator check rejects sibling-prefix paths.
     Callers must use the returned path rather than reopening the input path.
+
+    The comparison additionally runs through ``os.path.normcase``, which is a
+    no-op on POSIX and folds case plus the separator on Windows.  Only the
+    PREFIX that already exists gets canonicalized by ``realpath``, so a record
+    path whose file has not been created yet could otherwise disagree with its
+    own base on drive-letter case alone and read as an escape — a spurious 403
+    on a legitimate write.  The raised message keeps the un-folded paths so the
+    text still names what the caller actually passed.
     """
 
     base_real = os.path.realpath(base)
     candidate_real = os.path.realpath(os.path.join(base_real, candidate))
-    if not candidate_real.startswith(base_real):
+    base_cmp = os.path.normcase(base_real)
+    candidate_cmp = os.path.normcase(candidate_real)
+    if not candidate_cmp.startswith(base_cmp):
         raise PathEscape(f"{candidate_real!r} is outside {base_real!r}")
-    if candidate_real != base_real and not candidate_real[len(base_real) :].startswith(os.sep):
+    if candidate_cmp != base_cmp and not candidate_cmp[len(base_cmp) :].startswith(
+        os.path.normcase(os.sep)
+    ):
         raise PathEscape(f"{candidate_real!r} is a sibling of {base_real!r}, not inside it")
     return Path(candidate_real)
 

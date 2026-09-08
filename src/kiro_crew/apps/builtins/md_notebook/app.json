@@ -37,6 +37,13 @@
       }
     ]
   },
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
   "backend": {
     "entryPoint": "kiro_crew.apps.builtins.md_notebook.server",
     "port": "auto",

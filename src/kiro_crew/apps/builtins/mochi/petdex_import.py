@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from kiro_crew.apps.builtins.mochi.windows_names import is_windows_reserved
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,12 @@ def normalize_slug(raw: str) -> str:
     text = text.lower()
     if not _SLUG_RE.match(text):
         raise PetdexError(f"not a valid petdex pet name: {raw!r}")
+    # The pattern above is a character check, and these two rules are not
+    # expressible as one: a reserved DOS device name (`con`, `nul`, `com1`) and a
+    # trailing dot both satisfy it, then fail when the slug becomes a directory
+    # name on Windows -- as an unreadable OSError from inside the install write.
+    if is_windows_reserved(text):
+        raise PetdexError(f"that pet name cannot be stored on this system: {raw!r}")
     return text
 
 
@@ -358,5 +365,9 @@ def read_installed(slug: str) -> dict[str, Any]:
         "meta": meta,
         "imageMime": _sniff_mime(sheet),
         "imageBase64": base64.b64encode(sheet).decode("ascii"),
-        "source": str(INSTALLED_PETS_DIR),
+        # as_posix, not str: this is a DISPLAY string naming where the petdex CLI
+        # installs pets, and that CLI writes the POSIX form. str() of a Path built
+        # from a POSIX literal renders with backslashes on Windows, which would
+        # show the user a path shape the tool they are being pointed at never uses.
+        "source": INSTALLED_PETS_DIR.as_posix(),
     }

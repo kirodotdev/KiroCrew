@@ -40,9 +40,12 @@ from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.platform_compat import (
     CREATE_NEW_PROCESS_GROUP,
+    IS_MACOS,
     IS_POSIX,
     SIGKILL,
     SIGTERM,
+    address_covers_loopback,
+    find_port_listeners,
     get_ppid,
     is_link_or_junction,
     kill_process_tree,
@@ -68,6 +71,7 @@ _RUNTIME_COMPAT_IMPORTS = (
     SIGKILL,
     SIGTERM,
     _html,
+    address_covers_loopback,
     cast,
     get_credential_patterns,
     get_ppid,
@@ -266,6 +270,10 @@ _CHILD_ENV_STRIP_PREFIXES = dev_preview.CHILD_ENV_STRIP_PREFIXES
 _LOCKFILES = dev_preview.LOCKFILES
 _DEV_SCRIPTS = dev_preview.DEV_SCRIPTS
 _PROC_TREE_MAX_DEPTH = dev_preview.PROC_TREE_MAX_DEPTH
+_LOG_TAIL_BYTES = dev_preview.LOG_TAIL_BYTES
+_LOG_PORT_LIMIT = dev_preview.LOG_PORT_LIMIT
+_ANSI_RE = dev_preview.ANSI_RE
+_LOG_URL_RE = dev_preview.LOG_URL_RE
 
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _LSOF_TIMEOUT = 4
@@ -582,12 +590,38 @@ def _lsof_fields(args: list[str]) -> list[dict]:
     return out
 
 
+def _tcp_listeners(port: int) -> list[Any]:
+    """Enumerate LISTEN sockets on one TCP port through the shared primitive.
+
+    Kept in the composition root because it is an audited process sink like
+    ``_lsof_fields``: ``platform_compat.find_port_listeners`` shells out to the
+    platform's own tool (``lsof`` on POSIX, in-box ``netstat`` on Windows) and
+    already owns the hard parts — the OEM console codepage, locale-independent
+    LISTEN detection, and telling a v4 wildcard bind from a v6-only one.  This
+    app must not grow a second copy of that parse.
+    """
+
+    return find_port_listeners(port)
+
+
 def _loopback_listeners() -> dict[int, int]:
     return dev_preview.loopback_listeners(runtime)
 
 
 def _cwd_for_pids(pids: list[int]) -> dict[int, str]:
     return dev_preview.cwd_for_pids(runtime, pids)
+
+
+def _foreign_detection_available() -> bool:
+    return dev_preview.foreign_detection_available(runtime)
+
+
+def _dev_log_ports(log_path: str) -> list[int]:
+    return dev_preview.dev_log_ports(runtime, log_path)
+
+
+def _owned_listener(log_path: str, root_pid: int, pgid: int | None) -> dict | None:
+    return dev_preview.owned_listener(runtime, log_path, root_pid, pgid)
 
 
 def _serves_html(port: int) -> bool:
@@ -751,24 +785,54 @@ def _start_dev_proc(project_id: str, root: Path) -> dict:
                 "error": f"`{' '.join(cmd)}` exited ({proc.returncode}).",
                 "log": tail,
             }
-        for candidate in _detect_dev_servers(root, probe=False):
-            if candidate["pid"] == proc.pid or _in_proc_tree(candidate["pid"], proc.pid, pgid):
-                _DEV_PROCS[project_id]["url"] = candidate["url"]
-                framed = _front_with_proxy(project_id, candidate["url"])
-                return {
-                    "ok": True,
-                    "url": framed,
-                    "devUrl": candidate["url"],
-                    "port": candidate["port"],
-                    "injected": bool(framed) and framed != candidate["url"],
-                }
+        # Two discovery channels, historical one first. `_detect_dev_servers`
+        # matches on port -> pid -> working directory and stays authoritative
+        # wherever it can answer. `_owned_listener` covers the hosts where it
+        # structurally cannot — Windows has no pid -> cwd source in this repo, and
+        # neither does a POSIX box without `lsof`. There the old single-channel
+        # loop ran the full timeout, then `_stop_dev_proc` KILLED a perfectly
+        # healthy dev server and reported it as never having started.
+        candidate = next(
+            (
+                found
+                for found in _detect_dev_servers(root, probe=False)
+                if found["pid"] == proc.pid or _in_proc_tree(found["pid"], proc.pid, pgid)
+            ),
+            None,
+        )
+        if candidate is None:
+            candidate = _owned_listener(str(log), proc.pid, pgid)
+        if candidate is not None:
+            _DEV_PROCS[project_id]["url"] = candidate["url"]
+            framed = _front_with_proxy(project_id, candidate["url"])
+            return {
+                "ok": True,
+                "url": framed,
+                "devUrl": candidate["url"],
+                "port": candidate["port"],
+                "injected": bool(framed) and framed != candidate["url"],
+            }
         time.sleep(0.4)
 
     _stop_dev_proc(project_id)
-    return {
+    result: dict[str, Any] = {
         "ok": False,
         "error": f"`{' '.join(cmd)}` did not start listening within {_START_TIMEOUT}s.",
     }
+    if not _foreign_detection_available():
+        # Carried as its own field, not folded into `error`, so the message the
+        # panel already renders is unchanged and this is purely additive.
+        result["hint"] = (
+            "This host has no `lsof`, so the port could only be read from the dev "
+            "server's own output — and it printed no http://localhost:PORT line "
+            "before the timeout. Start the dev server in your own terminal, then "
+            "press Dev server to connect to it by URL."
+        )
+        try:
+            result["log"] = log.read_text("utf-8", errors="replace")[-800:]
+        except OSError:
+            pass
+    return result
 
 
 class Handler(http_api.Handler):
@@ -777,8 +841,22 @@ class Handler(http_api.Handler):
     def _h_pick_folder(self) -> None:
         """Open the trusted macOS native folder picker."""
 
-        if _sys.platform != "darwin":
-            return self._json(501, {"error": "native picker is macOS-only"})
+        if not IS_MACOS:
+            # Honest degradation rather than a dead end: the panel's manual path
+            # field registers a project identically, so name that fallback here
+            # instead of leaving the caller holding a bare 501. `code` is the
+            # machine-readable half so the panel can branch without string
+            # matching. This is the path Linux has always taken; Windows now
+            # joins it rather than being excluded over it.
+            return self._json(
+                501,
+                {
+                    "error": "native picker is macOS-only",
+                    "code": "picker_unsupported",
+                    "hint": "Type or paste the project folder path instead — it "
+                    "registers the project identically.",
+                },
+            )
         if not _PICK_LOCK.acquire(blocking=False):
             return self._json(409, {"error": "a folder picker is already open"})
         try:

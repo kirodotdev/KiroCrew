@@ -1,6 +1,6 @@
 {
   "_comment": "Comments and docstrings that narrate change history, per file, as a match COUNT. The rule they break is in docs/system-specs/common/code-style.md (\"Comments explain the WHY\"); it predates any enforcement, so the tree is recorded here rather than rewritten in one pass. The gate requires every OTHER file to be clean and none of these counts to grow, so this list can only shrink. Do NOT add or raise an entry to make a red gate green: a new offender means the comment should state CURRENT behavior in present tense. Lower and prune with `python3 scripts/check_comment_history.py --write-baseline`, which never adds or raises one.",
-  "_total": 6980,
+  "_total": 6979,
   "files": {
     "src/kiro_crew/__main__.py": 1,
     "src/kiro_crew/acp/_dispatch.py": 8,
@@ -78,7 +78,7 @@
     "src/kiro_crew/apps/builtins/code_review_sage/sage_lib/report.py": 5,
     "src/kiro_crew/apps/builtins/code_review_sage/sage_lib/results.py": 5,
     "src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_driver.py": 6,
-    "src/kiro_crew/apps/builtins/code_review_sage/sage_lib/store.py": 3,
+    "src/kiro_crew/apps/builtins/code_review_sage/sage_lib/store.py": 2,
     "src/kiro_crew/apps/builtins/code_review_sage/tests/fixtures.py": 1,
     "src/kiro_crew/apps/builtins/code_review_sage/tests/test_adapters.py": 1,
     "src/kiro_crew/apps/builtins/code_review_sage/tests/test_backend_routes.py": 12,

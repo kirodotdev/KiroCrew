@@ -231,7 +231,7 @@ class Ledger:
     def _load(self) -> None:
         if not self.path.exists():
             return
-        for line in self.path.read_text().splitlines():
+        for line in self.path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -290,7 +290,7 @@ class Ledger:
         # in-memory `_seen` map for readers on this instance.
         with LEDGER_WRITE_LOCK, self._lock:
             self._seen[entry.fp] = entry
-            with self.path.open("a") as f:
+            with self.path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(asdict(entry)) + "\n")
 
     def counts(self) -> dict[str, int]:

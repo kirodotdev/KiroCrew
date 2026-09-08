@@ -53,6 +53,7 @@ from typing import Any
 from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, policy_store
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import read_config
 from kiro_crew.sandbox import (
+    SandboxUnavailableError,
     create_subprocess_limited,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
@@ -112,6 +113,30 @@ _SAFE_BRANCH_RE = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._/-]{0,98}")
 #: existed. ``status()`` reads it so the operator hears about it without pull/push
 #: changing behaviour.
 _align_refusal: str = ""
+
+#: Why the last git invocation never started, when the SANDBOX refused it rather than git
+#: failing. Recorded the same way ``_align_refusal`` is — observed, not predicted — because
+#: predicting it is not possible from the platform alone: ``sandbox.unavailable_kind()``
+#: reports "no backend" without knowing whether the operator has set
+#: ``agent.sandbox_allow_unsandboxed_exec``, so a platform check would claim sync is dead
+#: on a host where it works. Windows is where this actually fires: Kiro Crew has a Seatbelt
+#: backend and a Linux user-namespace backend and no native Windows one, so ``wrap_argv``
+#: fail-closes before git is ever executed. ``status()`` reads this so Settings names the
+#: real reason instead of leaving the operator with "pull errored".
+_sandbox_refusal: str = ""
+
+#: Operator-facing explanation for a sandbox refusal of the git transport. Kept next to the
+#: state it describes so the two cannot drift. Deliberately says what STILL works: the
+#: ledger, the board, dispatch and every provider are in-process and completely unaffected
+#: — only the git transport that shares the ledger with teammates is refused.
+_SANDBOX_REFUSAL_DETAIL = (
+    "git could not start: no OS sandbox backend is available on this host, so the "
+    "spawn was refused before git ran. Kiro Crew sandboxes this transport because the "
+    "remote URL and branch come from settings. Windows has no native backend, so ledger "
+    "sync needs agent.sandbox_allow_unsandboxed_exec=true in ~/.kiro/crew/config.json, "
+    "or a macOS or Linux host as the publishing instance. Everything else keeps working: "
+    "the ledger, the board and every provider are local and never spawn git."
+)
 
 #: Wall-clock cap per git invocation. A hung fetch against an unreachable remote must
 #: not stall the dispatch heartbeat, which is the caller.
@@ -367,9 +392,27 @@ async def _git(*args: str) -> tuple[int, str, str]:
     # even against a repo-local `user.email` an agent could have written, and it needs
     # no `git config` write of our own. Passed on every verb -- the read-only ones
     # ignore it, and scoping it to `commit` would miss the next verb that makes one.
-    argv, env, cleanup = await sandboxed_spawn_argv_async(
-        [_GIT_BINARY, *_COMMIT_IDENTITY, *args], _prepare=sandboxed_spawn_argv
-    )
+    global _sandbox_refusal
+    try:
+        argv, env, cleanup = await sandboxed_spawn_argv_async(
+            [_GIT_BINARY, *_COMMIT_IDENTITY, *args], _prepare=sandboxed_spawn_argv
+        )
+    except SandboxUnavailableError as exc:
+        # The sandbox fail-closed, so git never ran. Turned into a non-zero rc rather than
+        # left to propagate, because the prep call sits OUTSIDE the try below: an exception
+        # here escaped every caller's rc handling and reached `sync_safely`, which logs it
+        # and returns the bare string "pull errored" — an operator on Windows got no reason
+        # at all. rc=126 joins the family already in use here (124 timeout, 127 no binary).
+        # A TRANSIENT refusal keeps its own wording: `sync_safely` retries once when it sees
+        # "transient"/"retry", and that retry must not be suppressed by our own text.
+        if exc.kind == "transient":
+            return 126, "", f"could not start git: {exc}"
+        _sandbox_refusal = _SANDBOX_REFUSAL_DETAIL
+        logger.warning("ops-mission-control: ledger sync git spawn refused by sandbox: %s", exc)
+        return 126, "", _SANDBOX_REFUSAL_DETAIL
+    # A host that has been fixed (backend installed, or the opt-in set) must stop showing
+    # the refusal in Settings.
+    _sandbox_refusal = ""
     try:
         proc = await create_subprocess_limited(
             *argv,

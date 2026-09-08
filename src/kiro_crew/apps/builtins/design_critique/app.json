@@ -24,6 +24,9 @@
     "To take pictures it uses a headless browser, downloaded once into a cache in your home directory on first use and never into the project"
   ],
   "defaultEnabled": false,
+  "platform": {
+    "os": ["macos", "linux", "windows"]
+  },
   "skills": [
     "skills/design-critique"
   ],
