@@ -70,6 +70,7 @@ export default function ChatPane({
   agentLocked,
   frameless,
   followContentWidth,
+  hideEmptyHint,
 }: {
   slotKey: string
   focused?: boolean
@@ -98,6 +99,11 @@ export default function ChatPane({
    *  long transcripts keep the same user-configured measure as the main
    *  chat. */
   followContentWidth?: boolean
+  /** Suppress the "Session ready. Type a message to start." hint on an empty
+   *  transcript. A host that is showing its own verdict about this thread
+   *  above the pane (the Members page's "Couldn't reconnect" notice) sets it,
+   *  so the pane does not say "go" one line under a host that says "broken". */
+  hideEmptyHint?: boolean
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -720,7 +726,7 @@ export default function ChatPane({
               <Btn onClick={() => { void refetchSlotDetail() }}>{i18nT('components.chatPane.retry')}</Btn>
             </div>
           )}
-          {messages.length === 0 && !running && !slotDetailFailed && (
+          {messages.length === 0 && !running && !slotDetailFailed && !hideEmptyHint && (
             <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
           )}
           {/* Suppressed on the active slot: that pane renders the store's full

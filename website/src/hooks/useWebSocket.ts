@@ -18,6 +18,7 @@ import { anchorForSlot, loadLayout, sessionSlots } from './splitLayoutStore'
 import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
+import { forgetUnobservedMemberThreads } from '../api/membersQuery'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
 import { slotChangeUrls } from '../utils/pullRequestLinks'
@@ -62,6 +63,8 @@ function invalidateRefreshQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['sessions-usage'] })
   qc.invalidateQueries({ queryKey: ['agents-installed'] })
   qc.invalidateQueries({ queryKey: ['mcp-tools'] })
+  // Prefix match on purpose: the Crew Members roster lives under this key
+  // (api/membersQuery.ts) and refreshes with the registry.
   qc.invalidateQueries({ queryKey: ['kirocrew-agents'] })
   qc.invalidateQueries({ queryKey: ['default-agent'] })
   qc.invalidateQueries({ queryKey: ['workspaces'] })
@@ -888,6 +891,16 @@ export function useWebSocket() {
         // Invalidate every slot's summary (the key is per-slot and we cannot
         // know which ones moved); react-query only refetches the observed ones.
         queryClient.invalidateQueries({ queryKey: ['session-summary'] })
+        // A dropped socket is the one client-visible sign the gateway may have
+        // restarted — and a restart drops an unmessaged member slot while its
+        // binding survives. The Crew Members page mounts a cached thread key
+        // straight away on a return visit (api/membersQuery.ts), so a key
+        // confirmed BEFORE the drop is no longer known-mountable: forget the
+        // ones nobody is looking at, so the next open waits for the thread
+        // endpoint's answer again; the mounted one is re-confirmed by the page
+        // itself on this same reconnect (and must NOT be cleared here — it
+        // holds the pane, and the draft typed into it).
+        forgetUnobservedMemberThreads(queryClient)
         seedGoalLoops()
         dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()

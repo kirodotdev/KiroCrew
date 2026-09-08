@@ -15,7 +15,9 @@ vi.mock('../../api/client', () => ({
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
     webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
-    kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: '' })),
+    // The drawer's wake block reads the default crew through the shared
+    // ['default-agent'] query (defaultAgentQuery), not the whole registry.
+    defaultAgent: vi.fn(() => Promise.resolve({ default_agent: '' })),
     updateKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
   },
@@ -195,7 +197,10 @@ describe('MembersPage star', () => {
     expect(star.className).toMatch(/\bw-6\b/)
     expect(star.className).toMatch(/\bh-6\b/)
     fireEvent.click(star)
-    expect(api.updateKirocrewAgent).toHaveBeenCalledWith('pkg-a', { starred: true })
+    // The write goes through useMutation: its onMutate first cancels any
+    // in-flight roster refetch (so a stale row cannot land on the optimistic
+    // one), which puts the flip and the PUT a microtask after the click.
+    await waitFor(() => expect(api.updateKirocrewAgent).toHaveBeenCalledWith('pkg-a', { starred: true }))
     expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true')
     // Does not open the member's thread — the star is a sibling of the row.
     // (The page opened the FIRST row on arrival; pkg-a must not be posted.)
@@ -210,13 +215,15 @@ describe('MembersPage star', () => {
     await renderPage()
     const star = screen.getByTestId('member-star-pkg-a')
     fireEvent.click(star)
-    expect(screen.getByTestId('member-star-pkg-a')).toBeDisabled()
+    await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).toBeDisabled())
     // A second click while pending is a no-op: exactly one write in flight.
     fireEvent.click(screen.getByTestId('member-star-pkg-a'))
     expect(api.updateKirocrewAgent).toHaveBeenCalledTimes(1)
     settle({ ok: true })
     await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).not.toBeDisabled())
     expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true')
+    // No roster refetch after a 2xx: the optimistic row IS the server's state.
+    expect(api.members).toHaveBeenCalledTimes(1)
   })
 
   it('reverts the optimistic flip AND surfaces the failure when the write fails', async () => {
@@ -224,11 +231,11 @@ describe('MembersPage star', () => {
     await renderPage()
     expect(screen.queryByTestId('member-star-error')).toBeNull()
     fireEvent.click(screen.getByTestId('member-star-pkg-a'))
-    await waitFor(() =>
-      expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'false'),
-    )
     // Not a silent revert: the user is told the preference did not save.
-    const notice = screen.getByTestId('member-star-error')
+    // (Wait for the notice, not for aria-pressed=false — the row is false
+    // BEFORE the optimistic flip too, now that the flip rides onMutate.)
+    const notice = await screen.findByTestId('member-star-error')
+    expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'false')
     // Localized copy, not the raw server text.
     expect(notice).toHaveTextContent("Could not update this member's star.")
     expect(notice).not.toHaveTextContent('Forbidden')

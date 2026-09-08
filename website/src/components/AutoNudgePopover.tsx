@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Goal, X } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import ErrorNotice from './ErrorNotice'
-import { api } from '../api/client'
+import { cronJobsQuery } from '../api/cronJobsQuery'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
@@ -62,8 +62,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   // costing a request on every chat render just to say "still nothing".
   const queryClient = useQueryClient()
   const { data: cronJobs, isError: watchesFailed, refetch: refetchWatches } = useQuery({
-    queryKey: ['cron-jobs'],
-    queryFn: () => api.crons().then(r => r.jobs || []),
+    ...cronJobsQuery,
     enabled: open,
   })
 

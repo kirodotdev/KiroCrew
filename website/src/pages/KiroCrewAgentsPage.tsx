@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Boxes, FolderOpen, Database, Sparkles, Plus, MessageSquare, Users, Star, LayoutGrid, Rows3, UserPen } from 'lucide-react'
 import Clickable from '../components/Clickable'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
 import { api, type WebhookTokenEntry } from '../api/client'
@@ -715,10 +715,21 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const provider = useProvider()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
-  const { data: agentsData, refetch: refetchAgents, error: agentsError } = useQuery({
+  const queryClient = useQueryClient()
+  const { data: agentsData, error: agentsError } = useQuery({
     queryKey: ['kirocrew-agents'],
     queryFn: () => api.kirocrewAgents(),
   })
+  // After a registry write, invalidate the PREFIX rather than refetching this
+  // page's own query: the Crew Members roster is a projection of the same
+  // registry and lives under the same prefix (see api/membersQuery.ts), so a
+  // crew created, renamed or deleted here reaches it without this page
+  // knowing who else reads the registry. This query is active, so the
+  // invalidation refetches it exactly as `refetch()` did.
+  const refetchAgents = useCallback(
+    () => void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] }),
+    [queryClient],
+  )
   // Memoised for the empty case: a bare `|| []` hands out a new array on every
   // render, which defeats every `useMemo` downstream that keys on the roster
   // (`sharedTargets`). React Query's structural sharing keeps `agentsData`

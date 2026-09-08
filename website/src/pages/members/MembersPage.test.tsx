@@ -15,7 +15,9 @@ vi.mock('../../api/client', () => ({
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
     webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
-    kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: '' })),
+    // The drawer's wake block reads the default crew through the shared
+    // ['default-agent'] query (defaultAgentQuery), not the whole registry.
+    defaultAgent: vi.fn(() => Promise.resolve({ default_agent: '' })),
     // The auto-patrol block and roster badge read the whole loop registry;
     // the default is "feature on, nothing armed" so every other case renders
     // the page without a loop in the way.
@@ -139,6 +141,7 @@ beforeEach(() => {
   )
   vi.mocked(api.crons).mockImplementation(() => Promise.resolve({ jobs: [] }))
   vi.mocked(api.webhooks).mockImplementation(() => Promise.resolve({ tokens: [] }))
+  vi.mocked(api.defaultAgent).mockImplementation(() => Promise.resolve({ default_agent: '' }))
   // The patrol cases make this registry read REJECT (mockRejectedValue also
   // outlives clearAllMocks); a leaked rejection renders the roster's patrol
   // error alert into every later case.
@@ -167,6 +170,108 @@ describe('MembersPage roster', () => {
     expect(
       await screen.findByText(/Could not load the member roster/i),
     ).toBeInTheDocument()
+    // No roster to count: the header says so with a dash, never "0 members"
+    // above a failure it would contradict.
+    expect(screen.getByTestId('member-count')).toHaveTextContent('\u2014')
+    expect(screen.getByTestId('member-count')).not.toHaveTextContent(/members/i)
+  })
+})
+
+/* The roster is a React Query read (issue #9418). These cases pin what that
+ * buys the user: a return to the page renders the CACHED roster and thread at
+ * once — never the empty column, never the skeleton — while the network
+ * refreshes behind; and a crew written anywhere else reaches the list through
+ * the registry-prefix invalidation, in place. The page is unmounted and
+ * remounted INSIDE one provider tree (rerender keeps the QueryClient), which
+ * is exactly a navigation away and back. */
+describe('MembersPage roster cache (React Query)', () => {
+  const page = (
+    <>
+      <MembersPage />
+      <LocationProbe />
+    </>
+  )
+
+  it('a second mount renders the cached roster immediately and, inside the stale window, issues no request at all', async () => {
+    const utils = await renderPage([row(), row({ name: 'research', slug: 'research' })])
+    await rosterRow('research')
+    expect(api.members).toHaveBeenCalledTimes(1)
+    // Navigate away…
+    utils.rerender(<LocationProbe />)
+    expect(screen.queryByTestId('member-roster')).toBeNull()
+    // …and back. The rows are there on the very first frame: no request has
+    // had a chance to answer yet, so this can only be the cache.
+    utils.rerender(page)
+    expect(roster().getByText('oncall')).toBeInTheDocument()
+    expect(roster().getByText('research')).toBeInTheDocument()
+    expect(screen.queryByText(/No crew members yet/i)).toBeNull()
+    // The roster carries its own 30s staleTime (membersRosterQuery), which
+    // wins over the test client's 0: a return inside that window is served
+    // from cache with NO refetch — that is the request the user stopped
+    // paying for. The refresh-behind path is pinned by the invalidation case
+    // below, and by the fixed staleTime through refetchOnMount.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20))
+    })
+    expect(api.members).toHaveBeenCalledTimes(1)
+    expect(roster().getByText('oncall')).toBeInTheDocument()
+  })
+
+  it('a second mount mounts the cached thread at once; the repair POST is re-issued but never waited on', async () => {
+    const utils = await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    expect(api.memberThread).toHaveBeenCalledTimes(1)
+    utils.rerender(<LocationProbe />)
+    // The re-open's POST hangs forever: if the thread column waited on the
+    // network, "Opening the conversation…" would be all it shows.
+    ;(api.memberThread as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
+    utils.rerender(page)
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    expect(screen.queryByText(/Opening the conversation/i)).toBeNull()
+    // Every open still goes through the endpoint — the cache decides what to
+    // render while the POST is out, it never replaces the POST.
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledTimes(2))
+  })
+
+  it('a failed repair over a cached thread keeps the thread up and says the RECONNECT failed, not the open', async () => {
+    const utils = await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    utils.rerender(<LocationProbe />)
+    ;(api.memberThread as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    utils.rerender(page)
+    const notice = await screen.findByTestId('member-thread-error')
+    expect(notice).toHaveTextContent(/Couldn't reconnect this conversation/i)
+    // "Could not open" would contradict the conversation still rendered below.
+    expect(notice).not.toHaveTextContent(/Could not open/i)
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+  })
+
+  it('invalidating the crew-registry prefix (what the crew editor and the websocket hook do) refreshes the roster in place', async () => {
+    const { queryClient } = await renderPage([row()])
+    await rosterRow('oncall')
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
+      members: [row(), row({ name: 'research', slug: 'research' })],
+      default_agent: 'kirocrew',
+    })
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    })
+    expect(await rosterRow('research')).toBeInTheDocument()
+    // In place: the row that was already there never left the screen.
+    expect(roster().getByText('oncall')).toBeInTheDocument()
+    expect(screen.queryByText(/No crew members yet/i)).toBeNull()
+  })
+
+  it('a refetch failure after a good read keeps the last roster instead of flipping to the error state', async () => {
+    const { queryClient } = await renderPage([row()])
+    await rosterRow('oncall')
+    ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    })
+    await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
+    expect(roster().getByText('oncall')).toBeInTheDocument()
+    expect(screen.queryByText(/Could not load the member roster/i)).toBeNull()
   })
 })
 
@@ -237,7 +342,7 @@ describe('MembersPage thread', () => {
       { thread: { slot_key: 'member-oncall', slug: 'oncall', member: 'Oncall', created: false } },
     )
     fireEvent.click(await rosterRow('oncall'))
-    expect(await screen.findByText(/shares its identifier with/i)).toBeInTheDocument()
+    expect(await screen.findByText(/shares its short name with/i)).toBeInTheDocument()
     // The misrouted thread is NOT mounted — that is the entire point.
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
   })
