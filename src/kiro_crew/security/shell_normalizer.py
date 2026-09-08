@@ -2934,6 +2934,10 @@ def _shell_tokens(cmd: str) -> list[str]:
     if not cmd or not cmd.strip():
         return []
     cmd = _decode_shell_quoted_literals(cmd)
+    # Fold POSIX line continuations (backslash-newline) before tokenization.
+    # The shell removes a backslash-newline pair before tokenization, so we must
+    # do the same to avoid treating the continuation as a separator.
+    cmd = cmd.replace("\\\n", "")
     try:
         tokens = shlex.split(cmd, posix=True)
     except ValueError:
