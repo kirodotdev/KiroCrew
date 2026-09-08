@@ -5480,10 +5480,23 @@ class TestConsolidationValueGuard:
         assert store.get_semantic("project.beta.status") is None
 
     def test_well_formed_item_still_overwrites(self, tmp_path) -> None:
-        """Negative control: the harness above can detect a clobber when one happens."""
+        """Negative control: the harness above can detect a clobber when one happens.
+
+        The seed is deliberately NOT ``user_explicit``: consolidation does not
+        escalate a confidence-1.0 item to that source, so a user_explicit seed
+        would (correctly) conflict_skip and this control would prove nothing.
+        Seeding under the consolidation source at the SAME confidence keeps the
+        control honest and threshold-independent — 1.0 clears
+        ``semantic_confidence_threshold`` (which rejects a non-user_explicit write
+        below it outright, so a deliberately-low seed never lands at all), and the
+        incoming write then wins on the `abs(confidence - old_conf) < 0.1` →
+        "newer wins" branch. So a clobber still happens and is still detectable.
+        Do not change this seed back to user_explicit.
+        """
         store = self._store(tmp_path)
         assert (
-            store.set_semantic("project.alpha.status", "curated text", 1.0, "user_explicit") is None
+            store.set_semantic("project.alpha.status", "curated text", 1.0, "consolidation:sess-0")
+            is None
         )
         c = self._consolidator(store)
 

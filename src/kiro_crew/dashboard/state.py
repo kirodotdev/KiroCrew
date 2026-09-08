@@ -4978,6 +4978,14 @@ class DashboardState:
         self.context_builder = context_builder
         self.conversation_log = conversation_log
         self.consolidator = consolidator
+        # Let consolidation report a write it had to refuse because the user owns
+        # the key. Bound here, and only here: a gateway builds the consolidator
+        # before the state that owns `notify`, so there is nothing to pass at its
+        # construction. A surface that builds its state without a consolidator
+        # (`start_api_server` accepts no such argument, so a Slack-only gateway)
+        # never binds a sink and announces nothing.
+        if consolidator is not None:
+            consolidator.set_memory_conflict_notifier(self.notify)
         self.task_runner = task_runner
         self.slack_client = slack_client
         # True only when the Slack socket-mode connect actually succeeded this

@@ -892,7 +892,10 @@ class TestWriteStructuredMemory:
     def test_no_vector_store_is_noop(self) -> None:
         _consolidator()._write_structured_memory({"semantic": [{"key": "a"}]}, "k")
 
-    def test_semantic_write_delete_and_escalation(self, caplog) -> None:
+    def test_semantic_write_delete_and_no_escalation(self, caplog) -> None:
+        """Both items write under the consolidation source: confidence 1.0 does not
+        escalate to ``user_explicit``, which would let a re-summarisation clobber a
+        real user-stated key."""
         vs = MagicMock()
         vs.set_semantic.return_value = None
         vs.delete_semantic.return_value = True
@@ -909,7 +912,7 @@ class TestWriteStructuredMemory:
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
             c._write_structured_memory(result, "sess")
         sources = {kw["key"]: kw["source"] for _, kw in vs.set_semantic.call_args_list}
-        assert sources == {"plain": "consolidation:sess", "explicit": "user_explicit"}
+        assert sources == {"plain": "consolidation:sess", "explicit": "consolidation:sess"}
         vs.delete_semantic.assert_called_once_with("stale", "consolidation:sess")
         assert "2 written, 1 deleted" in caplog.text
 

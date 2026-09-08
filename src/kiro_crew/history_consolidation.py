@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from kiro_crew.memory import MemoryStore
     from kiro_crew.session import SessionManager
     from kiro_crew.skills import SkillsLoader
-    from kiro_crew.vector_memory import VectorMemoryStore
+    from kiro_crew.vector_memory import SemanticRejectCode, VectorMemoryStore
 
 
 _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
@@ -53,6 +53,23 @@ _CONSOLIDATION_MAX_ATTEMPTS = 5
 _CONSOLIDATION_BACKOFF_BASE_SECS = 900.0
 _CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0
 _SKILL_DETECTION_WINDOW = 200
+
+# Cap on the already-announced set below, so a model inventing fresh keys every
+# pass cannot grow it without bound. Dropping the whole map on overflow (rather
+# than evicting one entry) can at worst re-announce a refusal the user already
+# saw, which is the recoverable direction.
+_MAX_CONFLICT_NOTIFIED_KEYS = 256
+
+# Longest refused value echoed into a notification body. A semantic value is
+# already size-capped by validation, but the cap there is far larger than a
+# glanceable notice.
+_CONFLICT_VALUE_PREVIEW_CHARS = 200
+
+# A notification sink shaped like ``DashboardState.notify(kind, title, body)``,
+# so a gateway wires its own notifier in without an adapter. Deliberately NOT
+# ``task_reporter.NotifyCallback``: that one is awaitable, and the only caller
+# here runs on a worker thread where there is nothing to await it.
+ConflictNotifier = Callable[[str, str, str], None]
 
 _CONSOLIDATION_META_KEYS: frozenset[str] = frozenset(
     {
@@ -375,6 +392,15 @@ class HistoryConsolidator:
         self._archive_after_days = archive_after_days
         self._generate_scripts = generate_scripts
         self._judge_model = judge_model
+        # Bound only by ``set_memory_conflict_notifier``: every gateway builds this
+        # consolidator before the dashboard state that owns the sink, so there is
+        # no caller that could pass one here.
+        self._on_memory_conflict: ConflictNotifier | None = None
+        # Key → the refused value already announced for it. Consolidation re-reads
+        # the same history every pass and the prompt tells the model to UPDATE an
+        # existing key, so the identical refusal recurs; without this the user is
+        # told once per pass, forever, about one dropped correction.
+        self._conflict_notified: dict[str, str] = {}
         # Captured on the first _consolidate (the gateway loop) so the sync,
         # thread-offloaded _process_auto_skills can bridge the async dedupe
         # judge back onto the loop. Throttle guards the autonomous lifecycle.
@@ -398,6 +424,19 @@ class HistoryConsolidator:
     def _logger(self) -> logging.Logger:
         """Keep the pre-extraction ``kiro_crew.history`` logger category."""
         return _HISTORY_LOGGER
+
+    def set_memory_conflict_notifier(self, notifier: ConflictNotifier | None) -> None:
+        """Bind the refused-write sink after construction.
+
+        This is the only way the sink is bound. A gateway builds its owner (the
+        dashboard state) *after* the consolidator and hands the consolidator to
+        it, so at construction time there is nothing to pass. Surfaces that hand
+        the consolidator to no state -- ``start_api_server``, which builds a
+        dashboard state but accepts no consolidator, plus the CLI and eval, which
+        build no state at all -- simply never call this, and consolidation there
+        refuses without announcing.
+        """
+        self._on_memory_conflict = notifier
 
     def retry_eligible(
         self, key: str, now: float | None = None, message_count: int | None = None
@@ -1300,14 +1339,29 @@ class HistoryConsolidator:
                     )
                     continue
                 conf = float(item.get("confidence", 0.5))
-                # Confidence 1.0 means user explicitly stated it — escalate source
-                # so it can overwrite previous user_explicit entries
-                item_source = "user_explicit" if conf >= 1.0 else source
+                # Always write under the consolidation source, even at conf 1.0.
+                #
+                # A confidence of 1.0 is not evidence that the user stated this.
+                # The value is the MODEL's, produced by an LLM re-summarising
+                # history, so it carries no signal about whether this pass
+                # observed the user asserting anything. Because _write_semantic
+                # grants source="user_explicit" the unconditional-win path,
+                # deriving that source from the score would let a re-summarisation
+                # overwrite a genuine user-stated key and silently shrink or
+                # corrupt it.
+                #
+                # Writing under `source` routes consolidation through the normal
+                # conflict resolution: it creates new keys and updates its own or
+                # lower-confidence entries, while a real user_explicit key
+                # conflict_skips. The tradeoff is that refreshing a user_explicit
+                # key the user genuinely restated belongs to an explicit write
+                # (learn_add / set_semantic), where the user really is the source.
+                # Stale is recoverable, silent corruption is not.
                 err = self._vector_store.set_semantic(
                     key=item["key"],
                     value=item["value"],
                     confidence=conf,
-                    source=item_source,
+                    source=source,
                 )
                 if err is None:
                     written += 1
@@ -1319,6 +1373,14 @@ class HistoryConsolidator:
                     self._logger.warning(
                         "Semantic consolidation refused %r: %s", item["key"], reject_code.value
                     )
+                    # A refusal is the correct outcome, and it does leave a durable
+                    # row: `_write_semantic` logs a `conflict_skip` audit event,
+                    # served at `/api/memory/events`. But that record is PULL-only —
+                    # it surfaces to a user who already suspects a drop and goes
+                    # looking. Announce the one refusal cause that discards
+                    # something the user themselves expressed, so the drop reaches
+                    # them without being hunted for.
+                    self._surface_user_owned_conflict(reject_code, item["key"], item["value"])
             if written or deleted or skipped or refused:
                 self._logger.info(
                     "Semantic consolidation: %d written, %d deleted, %d skipped (no value), "
@@ -1347,6 +1409,117 @@ class HistoryConsolidator:
                     written += 1
             if written:
                 self._logger.info("Wrote %d episodic entries from consolidation", written)
+
+    def _surface_user_owned_conflict(
+        self, reject_code: "SemanticRejectCode", key: str, value: object
+    ) -> None:
+        """Tell the user when consolidation could not update a key they own.
+
+        ``_write_semantic`` refuses a consolidation write to a key whose existing
+        entry is ``user_explicit``, which is what stops consolidation
+        impersonating the user. The refusal keeps the stored value correct, and it
+        is recorded: a `conflict_skip` audit event lands in the trail served at
+        `/api/memory/events`. What that record cannot do is REACH the user -- it
+        is pull-only, so it helps someone who already suspects a correction was
+        dropped, which is exactly the person who does not need telling. The
+        recovery path (restating it through an explicit write, which wins) has the
+        same shape. Announcing the refusal turns a stale value the user must
+        suspect into one they are told about.
+
+        Coverage is only as wide as the sink: a surface that never binds one
+        (``start_api_server`` takes no consolidator, so a Slack-only gateway)
+        still refuses correctly and still writes the audit row, but announces
+        nothing.
+
+        Scoped to the ``user_explicit`` conflict alone. The other refusals
+        (malformed key, not allowlisted, too low a confidence, oversized value)
+        discard the MODEL's proposal rather than the user's own statement, so
+        surfacing them would be noise about a machine disagreeing with itself. The
+        higher-confidence conflict is excluded on the same ground: nothing the
+        user said is lost there.
+        """
+        notifier = self._on_memory_conflict
+        if notifier is None or self._vector_store is None:
+            return
+        # The reject code cannot distinguish the two conflict branches -- both
+        # report CONFLICT -- and the message text that does is prose, not a
+        # contract. Read the stored row instead: the branch is chosen by the
+        # EXISTING entry's source, so that is the thing to check.
+        #
+        # Compared by VALUE rather than by identity so this branch needs no import
+        # of `vector_memory` at all. That module drags in snowballstemmer plus the
+        # optional numpy/faiss imports (~175ms of boot), and importing it eagerly
+        # for one enum on one error branch is the exact regression
+        # `test_perf_boot_path.py::test_memory_handler_does_not_import_vector_memory`
+        # and `test_cli_lazy_imports.py::test_cli_import_does_not_load_heavy_modules`
+        # exist to catch. `SemanticRejectCode.CONFLICT` IS `"conflict_skip"`, so this
+        # is the same test the identity check made, and `getattr` keeps the previous
+        # tolerance for a `None` that a caller could still pass despite the
+        # annotation.
+        if getattr(reject_code, "value", None) != "conflict_skip":
+            return
+        existing = self._vector_store.get_semantic(key)
+        if not existing or existing.get("source") != "user_explicit":
+            return
+
+        try:
+            marker = json.dumps(value, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            marker = repr(value)
+        if self._conflict_notified.get(key) == marker:
+            return
+        if len(self._conflict_notified) >= _MAX_CONFLICT_NOTIFIED_KEYS:
+            self._conflict_notified.clear()
+        self._conflict_notified[key] = marker
+
+        # A memory value is user-authored free text, so it can carry a credential
+        # the user typed and a URL that exfiltrates on render. Both are scrubbed
+        # on the way to a surface that displays them.
+        preview = redact_credentials(redact_exfiltration_urls(str(value))[0])[0]
+        if len(preview) > _CONFLICT_VALUE_PREVIEW_CHARS:
+            preview = preview[:_CONFLICT_VALUE_PREVIEW_CHARS] + "…"
+        safe_key = redact_credentials(redact_exfiltration_urls(key)[0])[0]
+        # Reports the stored MARKER, not a fact about the user. A row stamped
+        # "user_explicit" by the escalation this change removes is indistinguishable
+        # from one the user really set -- nothing re-sourced or flagged those rows on
+        # upgrade -- so "you set this" would state as history something only the
+        # marker claims, for exactly the rows the old bug mislabelled.
+        body = (
+            f"Consolidation read a new value for `{safe_key}` from your conversation, "
+            f"but the stored value is marked as user-set, so it was kept and the "
+            f"newer one discarded: {preview}\n\n"
+            "Set it yourself (memory editor, or ask to remember it) if the new value is right."
+        )
+        self._deliver_conflict_notice(notifier, safe_key, body)
+
+    def _deliver_conflict_notice(
+        self, notifier: ConflictNotifier, safe_key: str, body: str
+    ) -> None:
+        """Run *notifier* on the event loop, never on this worker thread.
+
+        This runs inside ``_write_structured_memory``, which the async caller
+        offloads through ``run_in_embed_pool``. A dashboard notifier reaches
+        ``DashboardState._broadcast``, which calls ``put_nowait`` on each SSE
+        ``asyncio.Queue`` and sets an ``asyncio.Event`` -- neither is
+        thread-safe, and the lost wakeup it produces is silent. ``call_soon_``
+        ``threadsafe`` is the documented hand-off, and it is also correct when
+        the caller already is the loop thread.
+
+        Failures are logged, not raised: a notification sink is not part of
+        consolidation's contract, and letting one abort the pass would lose the
+        remaining writes over a cosmetic delivery problem.
+        """
+        title = f"Memory correction not applied: {safe_key}"
+        loop = self._event_loop
+        try:
+            if loop is None:
+                # No gateway loop captured (CLI, eval, a direct unit call): there
+                # is no loop to hand off to, and equally no SSE consumer to race.
+                notifier("memory_conflict", title, body)
+            else:
+                loop.call_soon_threadsafe(notifier, "memory_conflict", title, body)
+        except Exception:
+            self._logger.debug("Memory-conflict notification failed", exc_info=True)
 
     def _dedupe_candidate(
         self, slug: str, description: str, triggers: str

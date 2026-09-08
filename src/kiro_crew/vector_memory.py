@@ -111,6 +111,61 @@ _MAX_VALUE_BYTES = 4096
 # Serialized forms, not truthiness: 0/false/[]/{} are legitimate values.
 _EMPTY_VALUE_JSON = frozenset({"null", '""'})
 
+# Every kind of source a semantic write may claim.
+#
+# `source` carries privilege, so it cannot be a free string: "user_explicit"
+# takes the unconditional-win path in _write_semantic and is the only source that
+# may write a reserved "system." key, and removing a user-owned row is limited to
+# the sources in _USER_OWNED_REMOVAL_SOURCES. Two entry points build it from data
+# the caller controls -- import_memory from the imported file, and the dashboard's
+# semantic-write handler from the request body -- so an unconstrained field let
+# either assert the privileged value outright.
+#
+# Matched on the NAMESPACE (the part before the first ":") rather than the whole
+# string, because a source is not always a bare literal: consolidation writes
+# under f"consolidation:{key}", making its sources unbounded in NUMBER while
+# still closed in KIND.
+_KNOWN_SEMANTIC_SOURCES = frozenset(
+    {
+        "user_explicit",
+        "consolidation",
+        "import",
+        "migration",
+        "promotion",
+        "inferred",
+        "tool",
+    }
+)
+
+
+def _source_namespace(source: str) -> str:
+    """The privilege-bearing part of a write source (before the first ":")."""
+    return source.split(":", 1)[0]
+
+
+# Sources permitted to remove a row the user owns.
+#
+# "user_explicit" is the user writing directly. "contradiction_superseded" is the
+# dashboard's supersede sweep, which fires precisely BECAUSE the user wrote a lesson
+# contradicting the stored one -- a user action wearing a different label, not an
+# automated re-summarisation. Leaving it out breaks superseding for exactly the rows
+# that sweep exists to retire, since write_lesson defaults to "user_explicit", so
+# the contradicted lesson is almost always user-owned.
+_USER_OWNED_REMOVAL_SOURCES = frozenset({"user_explicit", "contradiction_superseded"})
+
+
+def _import_source(claimed: object) -> str:
+    """The source an imported entry may write under.
+
+    Anything claiming the privileged `user_explicit` is downgraded to `"import"`,
+    because an import's `source` comes from the file rather than from a user action.
+    A non-str claim also lands on `"import"` so the caller gets a stored entry
+    rather than a `SOURCE_UNKNOWN` refusal for a field it did not choose.
+    """
+    if not isinstance(claimed, str) or claimed == "user_explicit":
+        return "import"
+    return claimed
+
 
 class SemanticRejectCode(str, Enum):
     KEY_FORMAT = "key_format"
@@ -121,6 +176,7 @@ class SemanticRejectCode(str, Enum):
     VALUE_EMPTY = "value_empty"
     INJECTION = "injection_blocked"
     CONFLICT = "conflict_skip"
+    SOURCE_UNKNOWN = "source_unknown"
 
 
 class LessonWriteOutcome(str, Enum):
@@ -1271,6 +1327,28 @@ class VectorMemoryStore:
         if not self._matches_allowlist(key):
             prefixes = ", ".join(self._prefixes)
             return SemanticRejectCode.ALLOWLIST, f"Key must match an allowed prefix ({prefixes})"
+        # Checked before the two privilege tests below, so an unrecognized source is
+        # refused for being unrecognized rather than sliding through as "not
+        # user_explicit" and merely losing privilege.
+        #
+        # The isinstance test is not defensive padding: `source` reaches here from
+        # data the caller controls -- import_memory reads it out of the imported
+        # file, the dashboard handler out of the request body -- so a JSON `null`,
+        # number or list arrives as a non-str. The bare comparisons this check sits
+        # above tolerate that; splitting on ":" would raise AttributeError and turn
+        # a rejectable input into a crash.
+        if not isinstance(source, str) or _source_namespace(source) not in (
+            _KNOWN_SEMANTIC_SOURCES
+        ):
+            # Reports the TYPE, never the value. This message reaches `logger`, whose
+            # output is retained, and `source` is caller-controlled on the paths that
+            # make this branch reachable at all -- an imported file and a request
+            # body -- so echoing it turns a rejected write into a disclosure of
+            # whatever the caller put in the field.
+            return (
+                SemanticRejectCode.SOURCE_UNKNOWN,
+                f"Unknown write source (type {type(source).__name__})",
+            )
         if key.startswith("system.") and source != "user_explicit":
             return (
                 SemanticRejectCode.RESERVED_PREFIX,
@@ -1633,18 +1711,49 @@ class VectorMemoryStore:
         return None
 
     def delete_semantic(self, key: str, source: str) -> bool:
-        """Tombstone a semantic memory entry."""
-        existing = self.get_semantic(key)
-        if not existing:
-            return False
-        now = _now_iso()
+        """Tombstone a semantic memory entry.
+
+        Returns False when nothing was tombstoned: either no such entry, or the
+        entry is user-owned and *source* is not permitted to remove it.
+        """
+        # Read, authorize and tombstone under ONE lock hold. The check below is an
+        # authorization decision, not an existence test, so a row read outside the
+        # lock can be overtaken: a user_explicit write landing between the read and
+        # the UPDATE would be tombstoned on the strength of a row that is already
+        # gone. `_db_lock` is an RLock, so get_semantic re-entering it here is safe.
+        #
+        # Guard removal exactly as _write_semantic guards overwrite, because
+        # otherwise the overwrite guard is not defeated in one step but bypassed in
+        # two. _write_semantic resolves conflicts only `if existing and not
+        # existing["is_deleted"]`, so a tombstoned row takes the create path with no
+        # conflict check at all: tombstone the user's key, write again, and the
+        # model's value lands where the user's value was.
+        #
+        # Both of consolidation's delete paths arrive here carrying a non-user
+        # source -- a model-emitted {"delete": true} item in _write_structured_memory,
+        # and write_lesson's three dedup branches, which pass their caller's source
+        # through -- so a re-summarisation could retire a key or a lesson the user
+        # set. Refusing leaves the stored row intact; a genuinely new lesson still
+        # lands under its own key, at worst as a near-duplicate.
         with self._db_lock:
-            self.db.execute(
-                "UPDATE semantic_memory SET is_deleted = 1, updated_at = ? WHERE key = ?",
-                (now, key),
+            existing = self.get_semantic(key)
+            if not existing:
+                return False
+            value_json = existing["value_json"]
+            refused = (
+                existing["source"] == "user_explicit" and source not in _USER_OWNED_REMOVAL_SOURCES
             )
-            self.db.commit()
-        self._log_event("delete", "semantic", key, existing["value_json"], None, source)
+            if not refused:
+                self.db.execute(
+                    "UPDATE semantic_memory SET is_deleted = 1, updated_at = ? WHERE key = ?",
+                    (_now_iso(), key),
+                )
+                self.db.commit()
+        # Logged outside the lock: the audit sink is not part of the atomic decision.
+        if refused:
+            self._log_event("delete_skip", "semantic", key, value_json, None, source)
+            return False
+        self._log_event("delete", "semantic", key, value_json, None, source)
         return True
 
     def _retire_stale_episodic(self, key: str, old_value: str) -> None:
@@ -3404,8 +3513,13 @@ class VectorMemoryStore:
                     category,
                     len(superseded) + 1,
                 )
-                superseded.append(existing_report)
-                self.delete_semantic(existing["key"], source)
+                # Reported only when the row actually went. delete_semantic now
+                # refuses to tombstone a user-owned lesson for an automated source,
+                # and `superseded` is the caller's record of what was destroyed --
+                # naming a row that is still stored would make the result lie in the
+                # one direction that matters.
+                if self.delete_semantic(existing["key"], source):
+                    superseded.append(existing_report)
                 continue
 
             # Topic overlap dedup
@@ -3422,8 +3536,8 @@ class VectorMemoryStore:
                             category,
                             ratio * 100,
                         )
-                        superseded.append(existing_report)
-                        self.delete_semantic(existing["key"], source)
+                        if self.delete_semantic(existing["key"], source):
+                            superseded.append(existing_report)
                         continue
 
             # Semantic dedup via embeddings (use stored embedding when available)
@@ -3459,13 +3573,18 @@ class VectorMemoryStore:
                     if sim > 0.85:
                         logger.info("Lesson semantic dedup: %.2f sim with %r", sim, existing["key"])
                         if len(rule) > len(existing_text):
-                            pending_backfills[:] = [
-                                (b, k, g)
-                                for b, k, g in pending_backfills
-                                if k != existing["key"]
-                            ]
-                            superseded.append(existing_report)
-                            self.delete_semantic(existing["key"], source)
+                            # Delete FIRST, because both follow-ups are only correct
+                            # for a row that actually went: dropping the pending
+                            # backfill would otherwise discard the embedding computed
+                            # for a row that is still stored and still searched,
+                            # leaving it permanently unembedded.
+                            if self.delete_semantic(existing["key"], source):
+                                pending_backfills[:] = [
+                                    (b, k, g)
+                                    for b, k, g in pending_backfills
+                                    if k != existing["key"]
+                                ]
+                                superseded.append(existing_report)
                         else:
                             _flush_backfills()
                             return LessonWriteResult(
@@ -4690,7 +4809,16 @@ class VectorMemoryStore:
                     else entry.get("value")
                 )
                 conf = float(entry.get("confidence", 0.85))
-                src = entry.get("source", "import")
+                # An import carries whatever the FILE says, and `user_explicit` is a
+                # privilege, not a label: it wins conflicts unconditionally, is the
+                # only source allowed to write a reserved `system.` key, and the only
+                # one allowed to remove a user-owned row. A file that names it would
+                # therefore let imported content overwrite and retire keys the user
+                # actually set -- the same impersonation this change removes from
+                # consolidation, arriving by a different door. The entry still
+                # imports; it just lands under the import source, so it competes on
+                # confidence like any other automated write.
+                src = _import_source(entry.get("source", "import"))
                 if self.set_semantic(entry["key"], val, conf, src) is None:
                     counts["semantic"] += 1
                 else:
