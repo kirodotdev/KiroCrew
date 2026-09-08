@@ -2986,7 +2986,9 @@ Weixin's scheme (AES-128-**ECB**, shared key) and the two must not be merged: th
 mode, key length and key scope all differ. The `aeskey` arrives in two encodings
 for the same value (base64 of raw bytes, base64 of ASCII hex), discriminated by
 decoded length plus a strict hex check, because guessing wrong yields plausible
-garbage rather than an error. The download cap is enforced on BYTES READ, never on
+garbage rather than an error. It also arrives with its base64 `=` padding
+**stripped** (a 32-byte key as 43 characters), so the padding is restored before
+decoding — a strict decoder rejects the unpadded value as invalid base64 outright. The download cap is enforced on BYTES READ, never on
 `Content-Length` — and it is the plaintext ceiling **plus the padding**, because
 what is read is ciphertext: PKCS#7 to a 32-byte multiple always adds 1–32 bytes, so
 a file at exactly WeCom's 20 MB maximum arrives larger than it is and a cap set to

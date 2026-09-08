@@ -83,7 +83,11 @@ def decode_aes_key(raw: str) -> bytes:
     if not raw:
         raise WeComMediaError("media item carries no aeskey")
     try:
-        decoded = base64.b64decode(raw, validate=True)
+        # WeCom strips the base64 ``=`` padding from the aeskey, so a 32-byte key
+        # arrives as 43 characters — not a multiple of 4, which ``validate=True``
+        # rejects outright. Restore the padding before decoding; a value that was
+        # already correctly padded is unchanged (``-len % 4`` is 0).
+        decoded = base64.b64decode(raw + "=" * (-len(raw) % 4), validate=True)
     except (binascii.Error, ValueError) as exc:
         raise WeComMediaError("aeskey is not valid base64") from exc
     if len(decoded) == _KEY_BYTES:

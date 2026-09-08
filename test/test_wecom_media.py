@@ -52,6 +52,22 @@ class TestKeyDecoding:
         encoded = base64.b64encode(key.hex().encode()).decode()
         assert decode_aes_key(encoded) == key
 
+    def test_aeskey_without_base64_padding(self) -> None:
+        # WeCom delivers the aeskey with its trailing ``=`` padding stripped, so a
+        # 32-byte key arrives as 43 characters. A padding-strict decode rejects
+        # that real, valid key as "not valid base64" and the media is refused —
+        # the padding must be restored before decoding.
+        key = os.urandom(32)
+        unpadded = base64.b64encode(key).decode().rstrip("=")
+        assert "=" not in unpadded
+        assert decode_aes_key(unpadded) == key
+
+    def test_ascii_hex_aeskey_without_base64_padding(self) -> None:
+        # The ascii-hex encoding is delivered the same way — padding stripped.
+        key = os.urandom(32)
+        unpadded = base64.b64encode(key.hex().encode()).decode().rstrip("=")
+        assert decode_aes_key(unpadded) == key
+
     def test_an_empty_key_is_refused(self) -> None:
         with pytest.raises(WeComMediaError, match="no aeskey"):
             decode_aes_key("")
