@@ -621,12 +621,21 @@ session working", rather than a private `chat_done` subscription.
 
 ## Skill
 
-`src/kiro_crew/builtin_skills/papyrus-writing/SKILL.md` — bundled (NOT the
-repo-only top-level `skills/`), so every `pip`/DMG install receives it, per the
-skill-bundling rule in `AGENTS.md`. It carries the project path, the compile
-workflow, an error→cause table, the venue/style rules, and the figure/table/
-equation/citation patterns. It is trigger-loaded on LaTeX vocabulary rather than
-`always: true`, so it costs nothing in unrelated sessions.
+Five bundled skills under `src/kiro_crew/builtin_skills/papyrus-*/` (NOT the
+repo-only top-level `skills/`), so every `pip`/DMG install receives them, per the
+skill-bundling rule in `AGENTS.md`:
+
+- `papyrus-writing` — the base skill, loaded first: conduct, the paper-quality
+  principles, the LaTeX house style, the project path, and the compile workflow.
+- `papyrus-make-fluent` — polish English as tracked suggestions.
+- `papyrus-latex-comments` — the comment layer (`\aicomment` margin notes).
+- `papyrus-latex-suggestions` — inline tracked edits (`\aisuggest` old→new).
+- `papyrus-diagnose-compilation` — locate and fix a build failure (the error→cause
+  table lives here, not in the base skill).
+
+`companionPrompt.ts` injects the load order: the base skill first, then the task
+skill matching the request. Each is trigger-loaded on LaTeX vocabulary rather than
+`always: true`, so they cost nothing in unrelated sessions.
 
 The manifest deliberately declares **no** `skills` entry: a builtin app's
 directory receives only `app.json` at registration, so a manifest-declared path
@@ -715,7 +724,11 @@ that host reports `supported: false` and keeps the manual install path.
 | `.../papyrus/backend/tectonic.py` | The managed, digest-pinned Tectonic install (pins, safe extract, provisioning job) |
 | `.../papyrus/backend/gitops.py` | Clone/status/commit/push/pull, **and** the repo-config RCE denylist (19 `-c` overrides + the attributes pin + pack-program flags + `GIT_PROXY_COMMAND`) |
 | `.../papyrus/backend/routes.py` | aiohttp handlers + `register_routes` |
-| `src/kiro_crew/builtin_skills/papyrus-writing/SKILL.md` | The co-author's LaTeX skill |
+| `src/kiro_crew/builtin_skills/papyrus-writing/SKILL.md` | Base skill: conduct, paper-quality principles, LaTeX house style, project path, compile workflow |
+| `.../builtin_skills/papyrus-make-fluent/SKILL.md` | Polish English as tracked suggestions |
+| `.../builtin_skills/papyrus-latex-comments/SKILL.md` | Comment layer — `\aicomment` margin notes |
+| `.../builtin_skills/papyrus-latex-suggestions/SKILL.md` | Inline tracked edits — `\aisuggest` old→new |
+| `.../builtin_skills/papyrus-diagnose-compilation/SKILL.md` | Locate and fix a build failure (error→cause table) |
 | `website/src/apps/papyrus/PapyrusPage.tsx` | Route entry; project list vs. workspace |
 | `website/src/apps/papyrus/ProjectList.tsx` | Landing view (standard page layout) |
 | `website/src/apps/papyrus/PapyrusEditor.tsx` | Monaco source pane + marker push |

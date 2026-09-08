@@ -1,5 +1,5 @@
 /**
- * Prompt text for the Papyrus co-author agent.
+ * Prompt text for the Papyrus writing-assistant agent.
  *
  * Kept in its own module because it is model-facing, not user-facing: the skill
  * name, the file paths and the role framing are English identifiers the agent
@@ -13,15 +13,19 @@
 export const DEFAULT_MAIN_FILE = 'main.tex'
 
 const LOAD_SKILL_INSTRUCTION =
-  'Load the `papyrus-writing` skill for the project path, the compile workflow,'
-  + ' and the LaTeX style rules before editing.'
+  'Load the `papyrus-writing` skill first — it carries the conduct, the'
+  + ' paper-quality principles, the LaTeX house style, and the project path. Then'
+  + ' load the task skill that fits the request: `papyrus-make-fluent` (polish as'
+  + ' tracked suggestions), `papyrus-latex-comments` / `papyrus-latex-suggestions`'
+  + ' (the annotation mechanics), or `papyrus-diagnose-compilation` (a build'
+  + ' failure).'
 
 const READ_BEFORE_WRITE_INSTRUCTION =
   'Read a file before you change it — the author is editing it live in the'
   + ' other pane.'
 
 /**
- * The context lines handed to the co-author on session start.
+ * The context lines handed to the writing assistant on session start.
  *
  * The agent needs the project name and the main document; the bundled
  * `papyrus-writing` skill supplies everything else (where projects live, how to
@@ -29,7 +33,7 @@ const READ_BEFORE_WRITE_INSTRUCTION =
  */
 export function companionContextLines(project: string, mainFile: string): string[] {
   return [
-    `You are the co-author for the Papyrus paper "${project}".`,
+    `You are the writing assistant for the Papyrus paper "${project}".`,
     `The main document is ${mainFile || DEFAULT_MAIN_FILE}.`,
     LOAD_SKILL_INSTRUCTION,
     READ_BEFORE_WRITE_INSTRUCTION,
