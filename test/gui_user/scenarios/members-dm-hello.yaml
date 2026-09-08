@@ -1,0 +1,24 @@
+# Nightly: the PoC scenario from the research report -- find a crew member and
+# send them a DM. The Crew Members page sits behind a feature-preview switch
+# (per-device localStorage), so the tester turns it on through the GUI first,
+# exactly as a user would. Nightly-only because it is the longest scenario.
+name: members-dm-hello
+tier: nightly
+summary: Enable the Crew Members preview, open a member and send "hello" in the DM
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings
+steps:
+  - You are on the Settings page. Open the Developer section and find the Feature Previews list.
+  - Turn on the preview named "Crew Members and Crew Mode".
+  - Open the Crew Members page (a new item appears in the left rail after the preview is on).
+  - Click the first member card (a member named Nova Sky is expected) to open a direct-message conversation with it.
+  - Type exactly "hello" in the message box and send it with Enter.
+  - Wait about two seconds.
+expectations:
+  - A chat bubble containing "hello" is visible in the conversation.
+  - The message box is empty again after sending.
+  - The member's name is visible somewhere in the conversation header or card.
+max_steps: 18
+max_seconds: 480

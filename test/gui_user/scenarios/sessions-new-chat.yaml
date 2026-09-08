@@ -1,0 +1,22 @@
+# Smoke: create a new chat session from the sidebar and see it appear in the
+# session list. Exercises the primary path of the product with the seeded
+# `rich` fixture (four existing sessions), so the new entry must be told apart
+# from the seeded ones on screen.
+name: sessions-new-chat
+tier: smoke
+summary: Create a new chat from the sidebar and confirm it appears in the session list
+preconditions:
+  seed: rich
+  start_url: /
+steps:
+  - You are on the chat page. Count the sessions listed in the left sidebar.
+  - Use the sidebar's control for starting a new chat (a "New chat" button or a plus icon near the top of the sidebar).
+  - In the new session's message box type exactly "hello from the gui test" and send it with Enter.
+  - Wait about two seconds for the reply to arrive.
+expectations:
+  - The sidebar shows one more session than it did at the start, and the new one is highlighted as the current session.
+  - The message "hello from the gui test" is visible in the conversation.
+  - A reply from the assistant is visible below it (its content does not matter).
+  - There is no horizontal scrollbar anywhere on the page.
+max_steps: 14
+max_seconds: 360

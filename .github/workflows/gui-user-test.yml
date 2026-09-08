@@ -1,0 +1,334 @@
+name: GUI User Test
+
+# ADVISORY agentic "real user" GUI test lane (tracking: #9578, docs:
+# docs/build/gui-user-test.md). A Claude model on Amazon Bedrock drives a real
+# Chromium window on a private Xvfb display through the mouse and keyboard
+# only -- no DOM, no accessibility tree -- against a seeded Kiro Crew gateway
+# running the packaged fake ACP backend. It catches the class of defect the
+# Playwright E2E suite structurally cannot see (a control the DOM calls visible
+# but a person cannot click, a theme that flipped a class name and not the
+# pixels, a horizontal scrollbar, a stuck spinner).
+#
+# WHY THIS SHAPE (and not kiro-cli / MCP / claude-code-action): the runner has
+# no kiro-cli login, kiro-cli 2.21 flattens MCP image results to text so a
+# vision agent on it hallucinates (#9578), and claude-code-action is a one-shot
+# review runner, not a screenshot->action loop with a budget gate. So the
+# harness (test/gui_user/harness.py) calls the Bedrock Messages API directly
+# over the same OIDC trust chain ux-review.yml and design-review.yml use.
+#
+# TRIGGERS: workflow_dispatch (pick tier / scenario / model) and the nightly
+# schedule (full tier; a non-PASS night opens or updates ONE issue labelled
+# gui-test-report). Both run the code of the ref they were started on -- the
+# default branch for the schedule, a maintainer-chosen ref for a dispatch -- so
+# no pull-request-controlled code ever runs with the Bedrock credential.
+#
+# DELIBERATELY NO pull_request TRIGGER. A PR lane would execute the PR's own
+# harness with an assumed role, and any write collaborator can open a same-repo
+# PR: that is a code-write -> cloud-credential boundary crossing, however the
+# job is gated. The PR-advisory shape (phase 2 of #9578) runs the harness from
+# the TRUSTED base via workflow_run -- the fork-*-review.yml pattern -- with the
+# PR-built gateway and browser under a separate unprivileged user, so the code
+# under test can be the PR's while the code holding credentials is not.
+#
+# COST GATES: per-scenario max_steps / max_seconds live in the scenario YAML;
+# the run-level USD budget is an input (default $3); a failed scenario is
+# retried once.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Scenario tier to run"
+        type: choice
+        options: [smoke, nightly, all]
+        default: smoke
+      scenario:
+        description: "Run only this scenario name (overrides tier; blank = by tier)"
+        type: string
+        default: ""
+      model:
+        description: "Bedrock model / inference-profile id"
+        type: string
+        default: "us.anthropic.claude-sonnet-4-6"
+      budget_usd:
+        description: "Stop the run once estimated spend reaches this many USD"
+        type: string
+        default: "3"
+  schedule:
+    - cron: "20 9 * * *" # 09:20 UTC, clear of the 06:00 nightly build and the 08:xx benchmarks
+
+permissions:
+  contents: read
+  issues: write # nightly failure report
+  id-token: write # AWS OIDC (configure-aws-credentials)
+
+concurrency:
+  group: gui-user-test-${{ github.ref }}
+  cancel-in-progress: false # a run that is cancelled uploads no evidence
+
+jobs:
+  gui-user-test:
+    name: GUI User Test
+    runs-on: ubuntu-latest
+    # Boot (~4 min: npm ci + build) + up to three scenarios at ~2-4 min each
+    # with one retry apiece, plus model-latency tail.
+    timeout-minutes: 45
+    env:
+      GUI_DISPLAY: ":99"
+      GUI_SCREEN: "1600x1000x24"
+      # AWS_BEDROCK_ROLE_ARN (the review lanes' role) is trusted for
+      # pull_request events only, so a schedule or dispatch run assuming it
+      # fails with "Not authorized to perform sts:AssumeRoleWithWebIdentity".
+      # This lane uses a role trusted for schedule/dispatch: a lane-scoped
+      # GUI_TEST_BEDROCK_ROLE_ARN when an admin has added one, else the
+      # documented bedrock:InvokeModel-only fallback the other scheduled
+      # Bedrock workflows share (ship-report, fix-loop-analysis, issue-triage).
+      ROLE_ARN: ${{ secrets.GUI_TEST_BEDROCK_ROLE_ARN != '' && secrets.GUI_TEST_BEDROCK_ROLE_ARN || secrets.SHIP_REPORT_BEDROCK_ROLE_ARN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # `runner.temp` is not available to job-level `env:`, so the output root
+      # is published once here and every later step (and the artifact path)
+      # reads it from the job environment.
+      - name: Resolve output directory
+        run: echo "GUI_OUT=$RUNNER_TEMP/gui-out" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install display tooling (Xvfb, xdotool)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends xvfb xdotool x11-utils
+
+      # Ubuntu's AppArmor userns restriction makes the gateway's namespace
+      # sandbox unavailable, and every chat turn then renders a red sandbox
+      # error instead of the fake backend's reply -- which is what the tester
+      # would faithfully report as the UI it saw. Same step as the
+      # "namespace sandbox" backend-test job in ci.yml.
+      - name: Enable unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # boto3 is what the harness speaks Bedrock with; it lives in the `voice`
+      # extra, which drags in a speech stack this job never uses, so install it
+      # by name at the extra's own pin. Pillow (screenshots) and PyYAML
+      # (scenarios) are already core dependencies.
+      - name: Install backend
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e . "boto3>=1.34,<2"
+
+      - name: Install frontend deps
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: website
+        run: npm run build
+
+      # The gateway serves the dashboard from src/kiro_crew/static/dist (same
+      # staging as the E2E job).
+      - name: Stage frontend into package
+        run: |
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
+
+      - name: Resolve run parameters
+        id: params
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_TIER: ${{ inputs.tier }}
+          IN_SCENARIO: ${{ inputs.scenario }}
+          IN_MODEL: ${{ inputs.model }}
+          IN_BUDGET: ${{ inputs.budget_usd }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-sonnet-4-6}"; budget="${IN_BUDGET:-3}" ;;
+            *)                 tier="nightly"; model="us.anthropic.claude-sonnet-4-6"; budget="4" ;;
+          esac
+          scenario_args=""
+          if [ -n "${IN_SCENARIO:-}" ] && [ "$EVENT" = "workflow_dispatch" ]; then
+            scenario_args="--scenario $IN_SCENARIO"
+          fi
+          {
+            echo "tier=$tier"
+            echo "model=$model"
+            echo "budget=$budget"
+            echo "scenario_args=$scenario_args"
+          } >> "$GITHUB_OUTPUT"
+          echo "tier=$tier model=$model budget=\$$budget ${scenario_args}"
+
+      # continue-on-error: a boot failure must not skip the always() steps'
+      # reporting (artifact, summary, nightly issue); the status step turns it
+      # into the job's red. The credential and harness steps below are gated on
+      # this step's outcome, so nothing runs against a dead target.
+      - name: Boot the target (Xvfb -> seeded gateway -> Chromium)
+        id: boot
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          bash scripts/gui-user-test/boot.sh
+          # Only the origin goes to later steps; the one-time token stays in
+          # target.env (0600) for boot.sh's browser launch and is masked.
+          grep '^GUI_BASE_URL=' "$GUI_OUT/target.env" >> "$GITHUB_ENV"
+
+      # Credentials are assumed AFTER the target is up: the gateway and the
+      # browser the model drives never inherit AWS_* from the job environment,
+      # so nothing the model can reach through the browser holds the role's
+      # credentials. Only the harness step (boto3 -> Bedrock) runs with them.
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        if: steps.boot.outcome == 'success'
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Run the scenarios
+        id: run
+        if: steps.boot.outcome == 'success'
+        continue-on-error: true
+        env:
+          AWS_REGION: us-west-2
+          TIER: ${{ steps.params.outputs.tier }}
+          MODEL: ${{ steps.params.outputs.model }}
+          BUDGET: ${{ steps.params.outputs.budget }}
+          SCENARIO_ARGS: ${{ steps.params.outputs.scenario_args }}
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC2086 -- SCENARIO_ARGS is a validated "--scenario <slug>" pair or empty
+          python test/gui_user/harness.py \
+            --out "$GUI_OUT/results" \
+            --base-url "$GUI_BASE_URL" \
+            --model "$MODEL" \
+            --region us-west-2 \
+            --tier "$TIER" \
+            --budget-usd "$BUDGET" \
+            --display "$GUI_DISPLAY" \
+            --screen "$GUI_SCREEN" \
+            --retries 1 \
+            $SCENARIO_ARGS
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      # The token is a throwaway for a gateway that dies with this job, but the
+      # artifact is public: scrub it from every log before upload, and drop the
+      # env file that carried it.
+      - name: Scrub the one-time token from logs
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ -f "$GUI_OUT/target.env" ]; then
+            token="$(sed -n 's/^GUI_DASHBOARD_TOKEN=//p' "$GUI_OUT/target.env")"
+            if [ -n "$token" ]; then
+              for f in "$GUI_OUT"/*.log "$GUI_OUT"/*.err; do
+                [ -f "$f" ] && perl -pi -e "s/\Q$token\E/[REDACTED-TOKEN]/g" "$f"
+              done
+            fi
+          fi
+          rm -f "$GUI_OUT/target.env"
+
+      - name: Tear the target down
+        if: always()
+        run: bash scripts/gui-user-test/teardown.sh
+
+      - name: Upload screenshots, steps and verdict
+        id: artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gui-user-test-${{ github.run_id }}
+          path: |
+            ${{ env.GUI_OUT }}
+            !${{ env.GUI_OUT }}/target.env
+            !${{ env.GUI_OUT }}/pids
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summarize
+        id: summary
+        if: always()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: |
+          set -uo pipefail
+          summary="$GUI_OUT/results/summary.json"
+          if [ -f "$summary" ]; then
+            verdict="$(python test/gui_user/report.py --summary "$summary" --format verdict)"
+            {
+              echo "## GUI user test — $verdict"
+              echo
+              python test/gui_user/report.py --summary "$summary" --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            verdict="ERROR"
+            echo "## GUI user test — ERROR (no summary.json: the target did not boot or the harness crashed)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+      # Nightly failure -> ONE open issue labelled gui-test-report. An existing
+      # open report gets the new night's table as a comment (and its title
+      # refreshed); otherwise a new issue is opened. Never more than one open.
+      - name: File or update the nightly report issue
+        if: always() && github.event_name == 'schedule' && steps.summary.outputs.verdict != 'PASS'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          summary="$GUI_OUT/results/summary.json"
+          title_file="${RUNNER_TEMP}/gui-issue-title.txt"
+          body_file="${RUNNER_TEMP}/gui-issue-body.md"
+          if [ -f "$summary" ]; then
+            python test/gui_user/report.py --summary "$summary" --format issue-title --head-sha "$SHA" > "$title_file"
+            python test/gui_user/report.py --summary "$summary" --format issue-body --head-sha "$SHA" \
+              --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" > "$body_file"
+          else
+            echo "Nightly GUI user test ERROR: target did not boot" > "$title_file"
+            printf 'The nightly agentic GUI user test produced no summary at `%s`: the target did not boot or the harness crashed.\n\nSee the [workflow run](%s).\n\nLane: `.github/workflows/gui-user-test.yml` · tracking: #9578\n' "$SHA" "$RUN_URL" > "$body_file"
+          fi
+          gh label create gui-test-report --repo "$REPO" --color B60205 \
+            --description "Nightly agentic GUI user-test failure report" --force >/dev/null 2>&1 || true
+          existing="$(gh issue list --repo "$REPO" --label gui-test-report --state open --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file "$body_file" && echo "Updated issue #$existing"
+            gh issue edit "$existing" --repo "$REPO" --title "$(cat "$title_file")" >/dev/null || true
+          else
+            gh issue create --repo "$REPO" --title "$(cat "$title_file")" --body-file "$body_file" \
+              --label gui-test-report --label "area: tests" && echo "Opened a new report issue"
+          fi
+
+      # The job's status IS the verdict: a dispatch or nightly run that did not
+      # PASS is red, so a red means red and the nightly issue carries the why.
+      - name: Lane status
+        if: always()
+        env:
+          VERDICT: ${{ steps.summary.outputs.verdict }}
+          RUN_OUTCOME: ${{ steps.run.outcome }}
+          BOOT_OUTCOME: ${{ steps.boot.outcome }}
+        run: |
+          if [ "$BOOT_OUTCOME" != "success" ]; then
+            echo "::error::the GUI test target did not boot (Xvfb / gateway / browser); see the boot step"
+            exit 1
+          fi
+          if [ "$VERDICT" = "PASS" ]; then
+            echo "GUI user test PASS"
+            exit 0
+          fi
+          echo "::error::GUI user test $VERDICT (harness outcome: $RUN_OUTCOME); see the run summary and artifact"
+          exit 1
