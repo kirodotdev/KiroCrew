@@ -1,4 +1,5 @@
 import type { DisplayItem } from '../pages/chat/types'
+import type { ChatMessage } from '../types'
 import { TURN_OPENER_ROLES } from '../pages/chat/groupDisplayItems'
 import { mdImageDestToPath } from './fileTokens'
 import { type PasteBlock, expandAll } from './pasteTokens'
@@ -69,9 +70,20 @@ export function pinHandoffY(foldY: number, collapsedCardH: number): number {
  * workflow fan-out) otherwise offers no pinnable row cycle after cycle — the walk
  * upward skips every one and lands on the human's last typed message, dozens of
  * turns and tens of thousands of pixels away.
+ *
+ * A STEER is the exception in the other direction. It carries role `user`, so
+ * the role test alone admits it, but `meta.steer` (set by the `steer_push` echo)
+ * marks it as injected INTO a turn already running: its row lays out between the
+ * opener and that turn's reply, so admitting it hands the pin to the
+ * interruption for the rest of the turn.
  */
+function isSteer(msg: ChatMessage): boolean {
+  return !!(msg.meta as { steer?: boolean } | undefined)?.steer
+}
+
 function isPrompt(item: DisplayItem | undefined): boolean {
-  return !!item && item.kind === 'single' && TURN_OPENER_ROLES.has(item.msg.role)
+  if (!item || item.kind !== 'single') return false
+  return TURN_OPENER_ROLES.has(item.msg.role) && !isSteer(item.msg)
 }
 
 /**
@@ -123,7 +135,7 @@ export function findNextPromptIdx(items: DisplayItem[], afterIdx: number): numbe
  *
  * The walk deliberately consumes MACHINE turn openers too (nudge and subagent
  * rows — `isPrompt` derives from `TURN_OPENER_ROLES`), not only consecutive
- * user rows like a steer following its prompt. The mechanism-backed case is a
+ * user rows. The mechanism-backed case is a
  * fan-out whose completions drain back to back: each is a turn opener and none
  * of them carries a reply of its own, so they lay out as one run of consecutive
  * opener rows. Consecutive
