@@ -19,6 +19,7 @@ import sqlite3
 import struct
 import threading
 import uuid
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
@@ -347,31 +348,38 @@ class PreferenceStore:
         match = _fts_query(query)
         if not match:
             return []
-        with self._lock:
-            rows = self._conn.execute(
+        results: list[SearchResult] = []
+        with self._lock, closing(
+            self._conn.execute(
                 "SELECT f.entry_id, p.text, p.tags, f.rank "
                 "FROM preferences_fts f JOIN preferences p ON p.id = f.entry_id "
-                "WHERE preferences_fts MATCH ? ORDER BY f.rank LIMIT ?",
-                (match, top_k * 3),  # over-fetch, tag filtering happens below
-            ).fetchall()
-
-        results: list[SearchResult] = []
-        for entry_id, text, tags_json, rank in rows:
-            tags = json.loads(tags_json)
-            if not self._matches_tags(tags, tag_filter):
-                continue
-            # bm25 rank is negative and unbounded; map it to a monotonic 0-1
-            # ordering signal. It is NOT a similarity, hence semantic=False.
-            results.append(
-                SearchResult(
-                    id=entry_id,
-                    text=text,
-                    tags=tags,
-                    score=1.0 / (1.0 + abs(float(rank))),
-                    semantic=False,
-                )
+                "WHERE preferences_fts MATCH ? ORDER BY f.rank",
+                (match,),
             )
-        return results[:top_k]
+        ) as rows:
+            # Count eligible results, not candidates from unrelated groups.
+            # Stream under the connection lock so a sparse filter does not
+            # materialize every matching preference in Python.
+            while len(results) < top_k:
+                row = rows.fetchone()
+                if row is None:
+                    break
+                entry_id, text, tags_json, rank = row
+                tags = json.loads(tags_json)
+                if not self._matches_tags(tags, tag_filter):
+                    continue
+                # bm25 rank is negative and unbounded; map it to a monotonic 0-1
+                # ordering signal. It is NOT a similarity, hence semantic=False.
+                results.append(
+                    SearchResult(
+                        id=entry_id,
+                        text=text,
+                        tags=tags,
+                        score=1.0 / (1.0 + abs(float(rank))),
+                        semantic=False,
+                    )
+                )
+        return results
 
     def _find_similar(self, text: str) -> SearchResult | None:
         """The existing entry *text* restates, or None.
