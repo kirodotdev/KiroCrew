@@ -6,8 +6,8 @@ created: 2026-08-22
 last-audited: 2026-09-05
 audited-at: 8ed028b0b
 doc-pr:
-implementation-prs: ["#5128", "#5909", "#8599", "#8631", "#8655", "#8689"]
-tracking-issues: ["#8651"]
+implementation-prs: ["#5128", "#5909", "#8599", "#8631", "#8655", "#8689", "#9576", "#9587"]
+tracking-issues: ["#8651", "#9570"]
 supersedes: []
 superseded-by: []
 ---
@@ -91,12 +91,14 @@ Background: P3's ChatEmbed adoption (#8631) mounts the real `ChatInput`, whose s
 | P3 | ChatEmbed mounts the real `ChatInput` (fail-closed `embedded` preset) | [#8631](https://github.com/kirodotdev/KiroCrew/pull/8631) | merged into #8599's branch |
 | P2 | SideChat → `sendTurn` over a `/side/*` wire; shared core-owned receipt copy; `AcceptedBodyUnreadable` | [#8655](https://github.com/kirodotdev/KiroCrew/pull/8655) | in review (stacked on #8599) |
 | P2 | ChatPage send + steer → `sendTurn` (`steer`, `colorTheme` flags) | [#8689](https://github.com/kirodotdev/KiroCrew/pull/8689) | in review |
-| P2 | `App.tsx`, `useSceneInteraction`, mochi `panelBridge`, design-tweak, design-critique, issue-radar / auto-improvement `agentSession` | — | not started |
+| P2 | issue-radar / auto-improvement `agentSession` seeds → `sendTurn` (#9570 batch A) | [#9576](https://github.com/kirodotdev/KiroCrew/pull/9576) | in review |
+| P2 | design-critique, design-tweak, mochi `panelBridge` → `sendTurn`; receipt defects fixed (#9570 batch B) | [#9587](https://github.com/kirodotdev/KiroCrew/pull/9587) | in review (stacked on #8599) |
+| P2 | `useSceneInteraction` (last `api.steerChat` caller), `App.tsx` feedback → `sendTurn` (#9570 batch C) | — | not started |
 | P3 | Store-free `ChatInput` seam | [#8651](https://github.com/kirodotdev/KiroCrew/issues/8651) | design draft pending |
 | P5-a | `ChatPage.renderMessage` → registry | — | next |
 | P4 | Error hand-off → side panel; `askAgent` default-on | — | after P5-a |
 
-Follow-ups recorded during review, not yet scheduled: route SideChat's four remaining panel-local statuses (queue cancel/edit failure, question-too-long, demotion notice) through the per-slot `sideSendStatus` store channel (#8655 FP); design-critique's `SyntaxError` swallow (its own P2 slot).
+Follow-ups recorded during review, not yet scheduled: route SideChat's four remaining panel-local statuses (queue cancel/edit failure, question-too-long, demotion notice) through the per-slot `sideSendStatus` store channel (#8655 FP).
 
 ### 4.3 P4 scoping — non-destructive error hand-off, `askAgent` default-on (2026-09-05, measured at `main` e76341d16)
 

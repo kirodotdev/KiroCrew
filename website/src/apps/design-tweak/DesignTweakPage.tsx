@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
+import { SEND_REFUSED } from '../../chat-core/transport/sendTurn'
 import { FolderBody } from '../../components/FolderBody'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -887,8 +888,17 @@ export default function DesignTweak() {
       }))
       return true
     } catch (dispatchErr) {
-      // The dispatch threw, so the batch may or may not have landed — the host
-      // could have accepted it and failed on the way back. Say so and stop:
+      if (dispatchErr instanceof Error && dispatchErr.name === SEND_REFUSED) {
+        // The server said no: nothing landed, so there is nothing to verify --
+        // it is an ERROR, rendered through the page's ErrorNotice (the
+        // `bridgeError` slot, whose No hand-off decision covers this too: the
+        // preview overlay's composer may hold an unsent comment), and the
+        // request stays actionable in the rail for a resend.
+        setBridgeError(i18nT('pages.chatPage.send_failed_with_error', { error: dispatchErr.message }))
+        return false
+      }
+      // No receipt, so the batch may or may not have landed — the host could
+      // have accepted it and failed on the way back. Say so and stop:
       // `verifyDelivery` settles it against the session on the next load or
       // refresh, and the rail keeps the request actionable meanwhile.
       setStatus(i18nT('apps.designTweak.status.dispatch_failed_unconfirmed', {

@@ -60,6 +60,19 @@ export type SendReceiptStatus =
   | 'response-late'
   | 'transport-error'
 
+/**
+ * `Error.name` values a caller that must REJECT on a receipt can stamp on the
+ * error it throws, so the surface that catches it can tell the two outcomes
+ * that carry their own user copy apart from everything else:
+ * - `SEND_REFUSED`: a `refused` receipt that carried the server's own reason;
+ *   the message is fit to show verbatim.
+ * - `SEND_UNCONFIRMED`: no receipt (`response-late`); delivery indeterminate,
+ *   so the surface must not promise that a retry is safe.
+ * One spelling here rather than one per app.
+ */
+export const SEND_REFUSED = 'SendRefused'
+export const SEND_UNCONFIRMED = 'SendUnconfirmed'
+
 export interface SendReceipt {
   status: SendReceiptStatus
   /** The parsed acceptance body -- `{}` when no readable body exists. Passed

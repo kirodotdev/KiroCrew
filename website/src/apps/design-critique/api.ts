@@ -1,10 +1,28 @@
 import { AGENT } from './constants'
 import { toApiError } from '../../api/apiError'
+import { sendTurn, type SendWire } from '../../chat-core/transport/sendTurn'
+import { i18nT } from '../../i18n/t'
 import type { Scope, SlotData } from './types'
 
 // This app's own backend (mounted by the built-in at gateway startup). It does
 // the clone / discover / render work server-side so the agent never runs a tool.
 const DC = '/api/apps/design-critique'
+
+/** The transport's fetch seam for this app's sends: one plain same-origin
+ *  `POST /api/chat?ws=1` (the JSON receipt, not the SSE stream) carrying the
+ *  slot-recreation fields `send` documents, resolving the Response on every HTTP
+ *  status so the shared classifier reads a 4xx/5xx as a refusal, and honouring
+ *  the transport's deadline signal. */
+const critiqueSendWire: SendWire = (payload, signal) =>
+  fetch('/api/chat?ws=1', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: payload.message, slot: payload.slot, agent: AGENT, memory_mode: 'temporary', mode: 'design-critique',
+    }),
+    signal,
+  })
 
 // These hit the dashboard's own chat endpoints (NOT an app-scoped reverse proxy),
 // so they are plain same-origin fetches — the same convention file-explorer's
@@ -68,28 +86,33 @@ export const designCritiqueApi = {
   getSlot: (slotKey: string) =>
     jsonFetch<SlotData>('/api/chat/slots/' + encodeURIComponent(slotKey)),
 
-  // Fire a message at a slot. The response body is not JSON we care about, so a
-  // parse error is swallowed — only a real HTTP/network error propagates.
-  send: (slotKey: string, message: string): Promise<void> =>
-    jsonFetch<void>('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      // memory_mode AND mode must be repeated here, not only at slot creation.
-      // POST /api/chat auto-creates a missing slot, and with neither in the body
-      // it falls back to the persistent default with surface '' — so if the
-      // gateway restarts mid-run (the slot is in memory, not on disk) the next
-      // send would silently recreate this critique slot with memory reads and
-      // writes ENABLED and visible in the chat sidebar (whose allowlist admits
-      // surface ''). Passing them is also safe when the slot exists:
-      // get_or_create_slot only raises on a memory_mode mismatch and ignores
-      // mode for existing slots, and both match what openSlot() asked for.
-      body: JSON.stringify({
-        message, slot: slotKey, agent: AGENT, memory_mode: 'temporary', mode: 'design-critique',
-      }),
-    }).catch((e: unknown) => {
-      if (e instanceof SyntaxError) return
-      throw e
-    }),
+  // Fire a message at a slot through the chat-core transport. The body carries
+  // three fields the generic dashboard wire does not: memory_mode AND mode must
+  // be repeated here, not only at slot creation. POST /api/chat auto-creates a
+  // missing slot, and with neither in the body it falls back to the persistent
+  // default with surface '' — so if the gateway restarts mid-run (the slot is in
+  // memory, not on disk) the next send would silently recreate this critique
+  // slot with memory reads and writes ENABLED and visible in the chat sidebar
+  // (whose allowlist admits surface ''). Passing them is also safe when the slot
+  // exists: get_or_create_slot only raises on a memory_mode mismatch and ignores
+  // mode for existing slots, and both match what openSlot() asked for. Hence an
+  // app-local wire (the same plain same-origin fetch this file uses everywhere)
+  // rather than the transport's default one.
+  //
+  // Receipt policy for a background sender with no composer to restore into:
+  // `refused` and `transport-error` reject (nothing is running -- the caller's
+  // failWith reports it and drops the pending critique, as it did for a non-2xx
+  // before); `unknown` and `response-late` RESOLVE, because the request was or
+  // may have been accepted and the poll that follows will find out -- rejecting
+  // would invite a retry that runs the critique twice. The old send read the SSE
+  // stream the bare endpoint answers with and swallowed its parse error as
+  // success, so a `{ok:false}` refusal inside a 200 never surfaced at all.
+  send: async (slotKey: string, message: string): Promise<void> => {
+    const receipt = await sendTurn({ message, slot: slotKey, wire: critiqueSendWire })
+    if (receipt.status === 'refused' || receipt.status === 'transport-error') {
+      throw new Error(receipt.reason || (i18nT('pages.chatPage.send_failed') as string))
+    }
+  },
 
   deleteSlot: (slotKey: string): Promise<void> =>
     jsonFetch<void>('/api/chat/slots/' + encodeURIComponent(slotKey), { method: 'DELETE' }).catch(() => {}),
