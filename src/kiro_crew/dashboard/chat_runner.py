@@ -11263,7 +11263,8 @@ async def _run_chat(
             slot.append(
                 "notice",
                 "ℹ️ This turn ended after the model said work was still in progress. "
-                "No further main-agent steps run from this completed turn. Separately "
+                "No further main-agent steps run from this completed turn unless a "
+                "Stop hook explicitly requests a bounded continuation. Separately "
                 "shown subagents or monitor loops, if any, continue on their own; "
                 "otherwise send a message to resume.",
                 "msg msg-info",

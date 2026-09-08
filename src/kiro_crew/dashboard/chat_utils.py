@@ -1798,10 +1798,6 @@ _UNFINISHED_PROGRESS_RE = re.compile(
     r"))",
     re.IGNORECASE,
 )
-_PROGRESS_DELIVERED_CONTENT_RE = re.compile(
-    r"\b(?:answer|explanation|quote|quotation|sentence|paragraph|example|summary)\b",
-    re.IGNORECASE,
-)
 
 
 def _terminal_sentence(text: str) -> str:
@@ -1813,21 +1809,21 @@ def _terminal_sentence(text: str) -> str:
 
 
 def has_unfinished_progress_claim(final_segment_text: str) -> bool:
-    """Return whether a completed turn's final segment says foreground work continues.
+    """Return whether a completed turn's final sentence says foreground work continues.
 
     The caller supplies only text emitted after the last tool boundary. A match
     is diagnostic, not permission to re-run anything: earlier tools may already
-    have produced side effects. Content-delivery phrases (for example,
-    ``I'm continuing with the explanation: ...``) are excluded because that work
-    is fulfilled by the same response rather than left running after it.
+    have produced side effects. Only the terminal sentence can describe work as
+    still running when control returns; an earlier progress update followed by a
+    completed-status sentence is not an unfinished claim. A colon followed by
+    content is likewise a lead-in fulfilled by the same response.
     """
     text = (final_segment_text or "").strip()
-    match = _UNFINISHED_PROGRESS_RE.search(text)
+    terminal = _terminal_sentence(text)
+    match = _UNFINISHED_PROGRESS_RE.search(terminal)
     if match is None:
         return False
-    claim = _SENTENCE_BOUNDARY_RE.split(text[match.start("claim") :], maxsplit=1)[0]
-    if _PROGRESS_DELIVERED_CONTENT_RE.search(claim):
-        return False
+    claim = terminal[match.start("claim") :]
     return not bool(re.search(r":\s*\S", claim))
 
 

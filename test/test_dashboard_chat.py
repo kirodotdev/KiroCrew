@@ -5472,6 +5472,9 @@ class TestRunChatSegmentFlush:
 
         notices = [m["content"] for m in slot.messages if m.get("role") == "notice"]
         assert any("No further main-agent steps run" in text for text in notices)
+        assert any(
+            "Stop hook explicitly requests a bounded continuation" in text for text in notices
+        )
         assert claim in [m["content"] for m in slot.messages if m.get("role") == "assistant"]
         assert slot._queue == []
 

@@ -77,6 +77,7 @@ def test_terminal_foreground_progress_claim_is_detected():
     assert _has_progress_claim("Next, I'm running the broader test suite.")
     assert _has_progress_claim("I'll keep working on this.")
     assert _has_progress_claim("Setup is done. I'm continuing with the full local gate run.")
+    assert _has_progress_claim("Setup is done. I'm running checks.")
     assert _has_progress_claim("Here's the plan\nI'm continuing with the build now.")
 
 
@@ -84,6 +85,7 @@ def test_completed_or_background_status_is_not_foreground_progress_claim():
     for text in (
         "The full local gate run passed.",
         "I finished the validation and opened the PR.",
+        "I'm running checks. They passed.",
         "The subagent is still working on the build.",
         "The monitor will continue checking every five minutes.",
         "I'm continuing the quotation from the previous paragraph.",
