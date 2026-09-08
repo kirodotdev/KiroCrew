@@ -4,7 +4,8 @@
 # a consumer look migrated while still reading the backend's own types.
 #
 # The gate requires every OTHER file under src/ to be clean and none of these
-# counts to grow, so the list can shrink but never grow.
+# counts to grow, so the list can shrink but never grow. The SDK, ACP client,
+# ACP agent server, and retiring provider shim are the only direct-import boundaries.
 #
 # It is a floor, not a countdown to zero. Most of these consumers are expected
 # to keep reading ACP directly: ACP is the foundation the SDK is built on, not

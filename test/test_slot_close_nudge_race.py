@@ -51,6 +51,7 @@ class _Req:
     def __init__(self, state, slot: str) -> None:
         self.app = {"state": state}
         self.match_info = {"slot": slot}
+        self.headers: dict[str, str] = {}
 
     def get(self, key: str, default: str = "") -> str:
         del key

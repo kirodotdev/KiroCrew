@@ -28,7 +28,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMappin
 from dataclasses import MISSING, asdict, dataclass, field  # noqa: F401 - loader namespace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility facade
 
 # Module alias for post-split helpers. The `from ... import` list below is a
@@ -4838,6 +4838,7 @@ class KiroCrewConfig:
             # watchdog, which is the exact defect the callback exists to end.
             on_gate_acquired: Callable[[float], None] | None = None,
             on_gate_queued: Callable[[], None] | None = None,
+            session_mcp_servers: list[dict[str, Any]] | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -4983,6 +4984,7 @@ class KiroCrewConfig:
                 # to reclaim at shutdown; an explicit ``cwd`` is the caller's
                 # directory whatever the key says (session_work_dir).
                 disposable_work_dir=not cwd and is_disposable_session_key(session_key),
+                session_mcp_servers=session_mcp_servers,
             )
 
         return _acp

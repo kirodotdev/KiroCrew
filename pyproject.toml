@@ -83,6 +83,8 @@ dev = [
     # reaches them. Constraining the resolved version is the one lever that
     # does, because no process in the environment can then see the entry point.
     "platformdirs<4.12",
+    # ACP SDK used by the closed-box interoperability tests.
+    "agent-client-protocol==0.12.1",
 ]
 
 [tool.black]

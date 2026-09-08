@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,8 +14,13 @@ from kiro_crew.dashboard.chat import api_chat_slot_project
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 
-def _make_app(state: DashboardState) -> web.Application:
-    app = web.Application()
+def _make_app(state: DashboardState, *, internal_auth: bool = False) -> web.Application:
+    @web.middleware
+    async def mark_internal(request: web.Request, handler):
+        request["internal_auth"] = True
+        return await handler(request)
+
+    app = web.Application(middlewares=[mark_internal] if internal_auth else [])
     app["state"] = state
     app.router.add_post("/api/chat/slots/{slot}/project", api_chat_slot_project)
     return app
@@ -179,6 +186,173 @@ class TestChatSlotProject:
                 assert resp.status == 200
         state.sessions.reset.assert_not_awaited()
         assert slot._pending_reset_history_key is None
+
+    @pytest.mark.asyncio
+    async def test_assignment_superseded_during_recent_save_has_no_rollback_receipt(self, tmp_path):
+        old = tmp_path / "old"
+        requested = tmp_path / "requested"
+        newer = tmp_path / "newer"
+        for path in (old, requested, newer):
+            path.mkdir()
+        slot = _ChatSlot("test")
+        slot.project = str(old)
+        state = _mock_state(slot)
+        save_started = threading.Event()
+        release_save = threading.Event()
+
+        def save_recent(_project: str) -> None:
+            if not save_started.is_set():
+                save_started.set()
+                assert release_save.wait(5)
+
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project", save_recent):
+            async with TestClient(TestServer(_make_app(state, internal_auth=True))) as client:
+                assignment = asyncio.create_task(
+                    client.post(
+                        "/api/chat/slots/test/project",
+                        json={"project": str(requested), "return_previous": True},
+                    )
+                )
+                assert await asyncio.to_thread(save_started.wait, 5)
+                assigned_generation = slot._project_generation
+                slot.project = str(newer)
+                release_save.set()
+
+                response = await assignment
+                data = await response.json()
+                assert response.status == 409
+                assert data["code"] == "project_changed"
+                assert "generation" not in data
+                assert "previous_project" not in data
+
+                stale = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={
+                        "project": str(old),
+                        "expected_generation": assigned_generation,
+                    },
+                )
+                assert (await stale.json())["applied"] is False
+
+        assert slot.project == str(newer)
+
+    @pytest.mark.asyncio
+    async def test_conditional_restore_refuses_newer_generation(self, tmp_path):
+        old = tmp_path / "old"
+        first = tmp_path / "first"
+        newer = tmp_path / "newer"
+        for path in (old, first, newer):
+            path.mkdir()
+        slot = _ChatSlot("test")
+        slot.project = str(old)
+        state = _mock_state(slot)
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project"):
+            async with TestClient(TestServer(_make_app(state, internal_auth=True))) as client:
+                first_resp = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(first), "return_previous": True},
+                )
+                first_data = await first_resp.json()
+                first_generation = first_data["generation"]
+                assert first_data["previous_project"] == str(old)
+                newer_resp = await client.post(
+                    "/api/chat/slots/test/project", json={"project": str(newer)}
+                )
+                newer_generation = (await newer_resp.json())["generation"]
+                stale = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={
+                        "project": str(old),
+                        "expected_generation": first_generation,
+                    },
+                )
+                stale_data = await stale.json()
+                assert stale_data["applied"] is False
+                assert slot.project == str(newer)
+
+                current = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={
+                        "project": str(old),
+                        "expected_generation": newer_generation,
+                    },
+                )
+                current_data = await current.json()
+                assert current_data["applied"] is True
+                assert slot.project == str(old)
+
+    @pytest.mark.asyncio
+    async def test_project_mutation_retry_replays_original_response(self, tmp_path):
+        first = tmp_path / "first"
+        newer = tmp_path / "newer"
+        first.mkdir()
+        newer.mkdir()
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        first_body = {"project": str(first), "mutation_id": "mutation-first"}
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project"):
+            async with TestClient(TestServer(_make_app(state, internal_auth=True))) as client:
+                initial = await client.post("/api/chat/slots/test/project", json=first_body)
+                initial_data = await initial.json()
+                await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(newer), "mutation_id": "mutation-newer"},
+                )
+                replay = await client.post("/api/chat/slots/test/project", json=first_body)
+                assert await replay.json() == initial_data
+                assert slot.project == str(newer)
+                conflict = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(newer), "mutation_id": "mutation-first"},
+                )
+                assert conflict.status == 409
+                assert (await conflict.json())["code"] == "mutation_conflict"
+
+    @pytest.mark.asyncio
+    async def test_conditional_restore_accepts_owner_but_predecessor_requires_internal_auth(
+        self, tmp_path
+    ):
+        old = tmp_path / "old"
+        new = tmp_path / "new"
+        old.mkdir()
+        new.mkdir()
+        slot = _ChatSlot("test")
+        slot.project = str(old)
+        state = _mock_state(slot)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            denied = await client.post(
+                "/api/chat/slots/test/project",
+                json={"project": str(new), "expected_generation": "generation"},
+            )
+        assert denied.status == 404
+
+        with (
+            patch(
+                "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+                return_value=True,
+            ),
+            patch("kiro_crew.dashboard.chat_handlers._save_recent_project"),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                assigned = await client.post(
+                    "/api/chat/slots/test/project", json={"project": str(new)}
+                )
+                generation = (await assigned.json())["generation"]
+                restored = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(old), "expected_generation": generation},
+                )
+                restored_data = await restored.json()
+                predecessor = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(new), "return_previous": True},
+                )
+
+        assert restored.status == 200
+        assert restored_data["applied"] is True
+        assert slot.project == str(old)
+        assert predecessor.status == 404
 
 
 class TestFolderProjectDirOverlapPreflight:

@@ -30,11 +30,13 @@ consumer could be "migrated" off `acp` while still reading ACP shapes, and the
 count would fall. Watching both means the number only drops when a consumer
 stops depending on the backend at all.
 
-Three source trees are exempt, because they ARE the boundary:
+Four source trees are exempt, because they ARE the boundary:
 
 * `src/kiro_crew/agent_sdk/` -- the SDK and its driver, the one place allowed to
   reach the ACP layer.
 * `src/kiro_crew/acp/` -- itself.
+* `src/kiro_crew/acp_server/` -- the agent-role protocol endpoint, which owns
+  ACP framing and protocol types for editor clients.
 * `src/kiro_crew/providers/` -- the shim being retired. **This exemption is
   temporary**: the RFC's final phase deletes the package, and when it goes this
   entry should go with it.
@@ -106,6 +108,7 @@ FORBIDDEN_ROOTS = ("kiro_crew.acp", "kiro_crew.providers")
 EXEMPT_PREFIXES = (
     "src/kiro_crew/agent_sdk/",
     "src/kiro_crew/acp/",
+    "src/kiro_crew/acp_server/",
     "src/kiro_crew/providers/",
 )
 
@@ -118,7 +121,8 @@ HEADER = """\
 # a consumer look migrated while still reading the backend's own types.
 #
 # The gate requires every OTHER file under src/ to be clean and none of these
-# counts to grow, so the list can shrink but never grow.
+# counts to grow, so the list can shrink but never grow. The SDK, ACP client,
+# ACP agent server, and retiring provider shim are the only direct-import boundaries.
 #
 # It is a floor, not a countdown to zero. Most of these consumers are expected
 # to keep reading ACP directly: ACP is the foundation the SDK is built on, not
