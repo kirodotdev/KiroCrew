@@ -375,14 +375,18 @@ async def test_switch_variant_survives_a_persist_failure(state, caplog) -> None:
 # thread; the event loop is free across that one await, and a same-name
 # close-and-recreate is NOT serialized against this lock (the cleanup pops
 # state._slots[name] and get_or_create_slot re-inserts, neither taking the
-# original lock). Without a pin the rewrite resolves its target file from the
-# slot object it was handed and lands the truncation on the replacement's
-# transcript. The fix passes expected_history_key = slot_history_key(slot),
-# captured BEFORE the await, so _save_slot_to_history refuses (returns False,
-# nothing written) when the routing has moved -- the same guard edit-resend
-# already carries. These tests assert the pin reaches the write and names the
-# transcript the slot was authorized against; the disk-side refusal itself is
-# covered by _save_slot_to_history's own expected_history_key tests.
+# original lock). The rewrite resolves its target file from the slot object it
+# was handed, so an unguarded write lands the truncation on the replacement's
+# transcript. The fix carries the same PAIR edit-resend carries:
+#   * expected_history_key = slot_history_key(slot), captured before the await,
+#     so the save refuses when the routing resolves to a different key -- a
+#     RENAMED replacement;
+#   * a state._slots[name] object-identity check immediately before the write,
+#     so a SAME-NAME recreate (which keeps the key identical, waving the routing
+#     check through) skips the write instead.
+# These tests assert the pin reaches the write, and that a same-name swap before
+# the write suppresses it. The disk-side routing refusal itself is covered by
+# _save_slot_to_history's own expected_history_key tests.
 
 
 @pytest.mark.asyncio
@@ -402,9 +406,58 @@ async def test_regenerate_pins_the_truncating_write_to_its_transcript(state) -> 
             assert resp.status == 200
             await asyncio.sleep(0)
 
-    # The write carried the slot's own transcript as its authorization pin.
+    # The write carried the slot's own transcript and map key as its
+    # authorization pins.
     assert saved.await_count == 1
     assert saved.await_args.kwargs["expected_history_key"] == "orig:key"
+    assert saved.await_args.kwargs["expected_slot_name"] == "s1"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_skips_the_write_when_the_slot_is_recreated(state) -> None:
+    """A same-name recreate that lands INSIDE the executor wait -- after the
+    caller dispatches the write, while the worker thread holds the lock --
+    keeps the history key identical, so only an object-identity recheck at the
+    locked commit boundary catches it. The truncating write must not commit
+    onto the replacement's transcript."""
+    slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
+    slot.append("user", "hi")
+    slot.append("assistant", "keep-me-1")
+    slot.append("user", "again")
+    slot.append("assistant", "keep-me-2")
+    slot.drain()
+    # A replacement bound to the SAME transcript key -- what a recreate that
+    # resumes the same session produces, so the routing check alone waves it
+    # through.
+    replacement = state.get_or_create_slot("s1b", linked_session_key="orig:key")
+
+    real_status = state.conversation_log.get_metadata_status
+
+    def _swap_inside_the_locked_write(key):
+        # get_metadata_status runs inside the save's _locked region, before the
+        # identity recheck -- model the recreate landing in that window.
+        if state._slots.get("s1") is slot:
+            state._slots["s1"] = replacement
+        return real_status(key)
+
+    with (
+        patch.object(
+            state.conversation_log,
+            "get_metadata_status",
+            side_effect=_swap_inside_the_locked_write,
+        ),
+        patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=AsyncMock()) as run,
+    ):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/regenerate")
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "regenerate_save_refused"
+            await asyncio.sleep(0)
+
+    # The truncation never reached disk for the transcript the replacement holds.
+    assert state.conversation_log.get_metadata("orig:key") == {}
+    # And the turn was not dispatched onto the removed slot.
+    assert run.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -422,6 +475,43 @@ async def test_switch_variant_pins_the_persist_to_its_transcript(state) -> None:
 
     assert saved.await_count == 1
     assert saved.await_args.kwargs["expected_history_key"] == "orig:key"
+    assert saved.await_args.kwargs["expected_slot_name"] == "s1"
+
+
+@pytest.mark.asyncio
+async def test_switch_variant_skips_the_write_when_the_slot_is_recreated(state) -> None:
+    """Switch-variant carries the same object-identity recheck at the save's
+    locked commit boundary: a same-name recreate landing inside the executor
+    wait suppresses the persist onto the replacement's transcript."""
+    slot = state.get_or_create_slot("s1", linked_session_key="orig:key")
+    slot.append("assistant", "v2")
+    slot.messages[-1]["variants"] = [{"content": "v1", "ts": "t1"}, {"content": "v2", "ts": "t2"}]
+    slot.drain()
+    replacement = state.get_or_create_slot("s1b", linked_session_key="orig:key")
+
+    real_status = state.conversation_log.get_metadata_status
+
+    def _swap_inside_the_locked_write(key):
+        if state._slots.get("s1") is slot:
+            state._slots["s1"] = replacement
+        return real_status(key)
+
+    with patch.object(
+        state.conversation_log,
+        "get_metadata_status",
+        side_effect=_swap_inside_the_locked_write,
+    ):
+        async with _client(state) as client:
+            resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "switch_variant_save_refused"
+
+    assert state.conversation_log.get_metadata("orig:key") == {}
+    # A refused persist must not announce a switch no transcript holds.
+    assert not any(
+        call.args and call.args[0] == "chat_variant_switch"
+        for call in state.broadcast_ws.call_args_list
+    )
 
 
 # ── edit-resend ──

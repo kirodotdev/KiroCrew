@@ -133,32 +133,67 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         slot._pending_rewrite = True
         slot._pending_variants = variants
 
-        # The transcript this truncation was authorized against. Captured
-        # BEFORE the write's await: that await frees the event loop while the
-        # worker thread runs, and a same-name close-and-recreate is NOT
-        # serialized against this slot._lock (the cleanup pops state._slots[name]
-        # and get_or_create_slot re-inserts, neither taking the original lock).
-        # Without the pin the truncating rewrite would resolve its file from the
-        # object it was handed -- the original slot -- and land on the
-        # replacement's transcript. save_slot_off_loop refuses (returns False,
-        # nothing written) when the routing no longer resolves to this key,
-        # exactly the guard edit-resend below already carries. On refusal the
-        # original slot is being torn down and its regeneration has no future,
-        # so nothing that would otherwise persist is lost; the refusal is
-        # recorded in the save's own "routing moved" log line. best_effort keeps
-        # the site fire-and-forget: a genuine transient failure re-arms _dirty
-        # (and _pending_rewrite is already set) so the periodic flush retries.
+        # Pin the transcript and the slot object this truncation was authorized
+        # against. Both are read BEFORE the write's await: that await frees the
+        # event loop while the worker thread runs, and a same-name
+        # close-and-recreate is NOT serialized against this slot._lock (the
+        # cleanup pops state._slots[name] and get_or_create_slot re-inserts,
+        # neither taking the original lock).
+        #
+        # Two axes can move, and they need two checks, matching the pair
+        # edit-resend below carries:
+        #   * routing -- save_slot_off_loop refuses the write (returns False,
+        #     nothing written) when the slot's routing resolves to a different
+        #     key at write time. This catches a RENAMED replacement.
+        #   * object identity -- a same-name recreate that resumes the same
+        #     transcript keeps the history key identical, so the routing check
+        #     passes and the stale rewrite would land on the replacement anyway.
+        #     expected_slot_name carries this slot's map key into the save, where
+        #     state._slots[name] is re-read at the locked commit boundary with no
+        #     await before the write: if the map holds a different slot the
+        #     save refuses (returns False). A pre-dispatch check cannot cover it
+        #     because the recreate can land inside the executor wait, after the
+        #     check and before the write.
+        #
+        # On either refusal the original slot is being torn down and its
+        # regeneration has no future, so nothing that would otherwise persist is
+        # lost; both refusals are recorded in the save's own log lines.
+        # best_effort keeps the site fire-and-forget: a genuine transient
+        # failure re-arms _dirty (and _pending_rewrite is already set) so the
+        # periodic flush retries.
         expected_history_key = slot_history_key(slot)
         try:
             msgs_snapshot = list(slot.messages)
-            await save_slot_off_loop(
+            committed = await save_slot_off_loop(
                 state,
                 slot,
                 msgs_snapshot,
                 expected_history_key=expected_history_key,
+                expected_slot_name=name,
             )
         except Exception:
             logger.warning("Regenerate: failed to rewrite session history", exc_info=True)
+            committed = True
+        if not committed:
+            # The save's own guards refused the write: the slot was rebound to
+            # another transcript, or a same-name recreate replaced it, while the
+            # write awaited its lock. The truncation exists only in this popped
+            # slot's in-memory window. Dispatching _run_chat now would run a turn
+            # on a removed slot and persist its truncated branch over the
+            # replacement's transcript, so abort without dispatching.
+            logger.warning(
+                "Regenerate: history save refused for %s (concurrent delete or recreate); "
+                "not dispatching the turn",
+                slot.key,
+            )
+            state.push_slots_update()
+            return web.json_response(
+                {
+                    "error": "the conversation changed while saving; retry",
+                    "code": "regenerate_save_refused",
+                },
+                status=409,
+            )
 
         sel().log_api_access(
             caller="dashboard",
@@ -256,26 +291,46 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         target_dict["variant_idx"] = idx
         slot._dirty = True
         slot._resumed_count = 0
-        # Same slot-identity pin as regenerate above and edit-resend below: a
-        # same-name close-and-recreate can swap state._slots[name] while this
-        # save is parked in its worker thread (the recreate does not take this
-        # slot._lock), and _save_slot_to_history resolves its target file from
-        # the object it was handed. Pin the transcript this switch was
-        # authorized against so the write refuses (False, nothing written)
-        # rather than rewriting the replacement's transcript. Captured before
-        # the await. best_effort re-arms _dirty on a transient failure so the
-        # periodic flush retries the write.
+        # Same two-axis pin as regenerate above, matching the pair edit-resend
+        # carries: routing (save_slot_off_loop refuses when the slot resolves to
+        # a different transcript at write time -- a renamed replacement) and
+        # object identity (expected_slot_name carries this slot's map key into
+        # the save, where state._slots[name] is re-read at the locked commit
+        # boundary with no await before the write -- a same-name recreate that
+        # resumes the same transcript keeps the key identical, so only the
+        # identity check catches it, and it must run at the write not before it
+        # because the recreate can land inside the executor wait). best_effort
+        # re-arms _dirty on a transient failure so the periodic flush retries.
         expected_history_key = slot_history_key(slot)
         try:
             msgs_snapshot = list(slot.messages)
-            await save_slot_off_loop(
+            committed = await save_slot_off_loop(
                 state,
                 slot,
                 msgs_snapshot,
                 expected_history_key=expected_history_key,
+                expected_slot_name=name,
             )
         except Exception:
             logger.warning("switch-variant: failed to persist", exc_info=True)
+            committed = True
+        if not committed:
+            # The save's guards refused: the slot was rebound or a same-name
+            # recreate replaced it while the write awaited its lock. The chosen
+            # variant exists only in this popped slot's in-memory window;
+            # broadcasting the switch would announce a state no transcript holds,
+            # so abort without broadcasting.
+            logger.warning(
+                "switch-variant: history save refused for %s (concurrent delete or recreate)",
+                slot.key,
+            )
+            return web.json_response(
+                {
+                    "error": "the conversation changed while saving; retry",
+                    "code": "switch_variant_save_refused",
+                },
+                status=409,
+            )
         sel().log_api_access(
             caller="dashboard",
             operation="chat.switch_variant",
