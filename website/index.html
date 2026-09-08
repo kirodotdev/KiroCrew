@@ -36,6 +36,47 @@
   <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" /></noscript>
   <title>Kiro Crew</title>
   <script>
+    // The entry module (the module tag Vite appends to the document head on
+    // build; the /src/main.tsx tag in the body in dev) is an ES module with a
+    // few hundred statically imported chunks, and Chromium evaluates the graph
+    // only once EVERY edge has loaded. One chunk that fails to fetch (a 404 --
+    // live from the gateway mid-upgrade, or replayed from a poisoned HTTP cache)
+    // fails the whole graph: no console line, no exception, none of our
+    // JavaScript runs, so main.tsx's own `mc-embedded-boot stage=entry` never
+    // fires and a pane is just "Loading" forever. The loader does fire `error`
+    // on the script element itself. Resource errors do not bubble, but a
+    // capture-phase listener on window still sees them -- that is the one
+    // renderer-side signal that survives, so it is taken here, in the shell,
+    // before the module is even requested. Vite rewrites the module tag's src
+    // on build and drops its attributes, so this cannot be an onerror= on the
+    // tag. Wildcard target is safe: the payload is a stage name plus the
+    // failing script's own path (query stripped), and the parent validates the
+    // origin. Standalone, it logs. Placed in the document head ahead of the
+    // module tag, so the listener exists before the module can possibly fail
+    // -- a replayed-from-cache 404 fails fast.
+    //
+    // Keep this comment free of a literal script OPENING TAG, above all one
+    // with a module type: Vite relocates the import map to just before the
+    // first module script it finds with a regex over the raw HTML, so that
+    // text spelled out in prose here once received the import map mid-comment,
+    // its closing tag ended this script early, and the remainder ran as an
+    // inline module that threw. `npm run i18n:render` renders the built shell
+    // and is what catches that; `vite build` alone exits 0.
+    window.addEventListener('error', function (e) {
+      var t = e && e.target;
+      if (!t || t.tagName !== 'SCRIPT' || t.type !== 'module') return;
+      var src = String(t.src || '').split('?')[0];
+      try { console.error('[boot] module script failed to load: ' + src); } catch (err) {}
+      var embedded = false;
+      try { embedded = window.self !== window.top; } catch (err) { embedded = true; }
+      if (!embedded) return;
+      try {
+        // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+        window.parent.postMessage({ type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: src }, '*');
+      } catch (err) {}
+    }, true);
+  </script>
+  <script>
     // Set data-ui from localStorage before React hydrates to prevent flash of
     // chat layout when the user's preferred mode is 'cli'. Mirrors the
     // pattern used by data-theme bootstrapping. Synced by useUIMode.

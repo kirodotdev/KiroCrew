@@ -41,6 +41,7 @@ import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWa
 import InstanceTabBar, { visibleInstanceTabs, useCrewPins, toggleCrewPin, useCrewSwitcherStableOrder, setStableOrder } from './InstanceTabBar'
 import { parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigin'
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
+import { clearPaneHttpCache, paneOriginFor } from '../lib/paneCache'
 import { connectInstanceInto } from '../lib/connectInstance'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -170,6 +171,14 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // Reactive (mc-auth-expired) re-mints answered per pane since its last Retry
   // — see MAX_REACTIVE_REMINTS.
   const reactiveMintsRef = useRef<Map<string, number>>(new Map())
+  // Load watchdog verdict + forced-reload sequence, documented at their consumer
+  // (the watchdog effect below); declared here because the relay listener also
+  // bumps `reloadSeq` for the one-shot script-error heal.
+  const [timedOut, setTimedOut] = useState<Record<string, boolean>>({})
+  const [reloadSeq, setReloadSeq] = useState<Record<string, number>>({})
+  // Panes already granted their one automatic cache-evict-and-reload after a
+  // `script-error` (see the relay listener). Cleared by Retry.
+  const scriptErrorHealsRef = useRef<Set<string>>(new Set())
   // Live iframe elements by id, so the parent can postMessage the switcher model
   // into each embedded pane. Set/cleared by the iframe ref cb.
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
@@ -288,6 +297,12 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     })
     for (const id of iframeRefCallbacks.current.keys()) {
       if (!warm[id]) iframeRefCallbacks.current.delete(id)
+    }
+    // The one-shot script-error heal is per LOAD: an evicted pane that re-warms
+    // is a new load and gets its budget back, otherwise its next poisoned-cache
+    // failure could only be healed by a manual Retry.
+    for (const id of scriptErrorHealsRef.current) {
+      if (!warm[id]) scriptErrorHealsRef.current.delete(id)
     }
   }, [warm])
 
@@ -421,8 +436,35 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // failure the journal could not: a pane whose shell loaded (200,
         // cross-origin) but never announced readiness was either a bundle that
         // never ran (no `boot`) or an App that mounted and got stuck before the
-        // bridge (a `boot` with no `ready`). Journal only, no state change.
-        paneLog('boot', { id, stage: typeof data.stage === 'string' ? data.stage : 'unknown' })
+        // bridge (a `boot` with no `ready`). Journal only, no state change --
+        // except `script-error`, below.
+        const stage = typeof data.stage === 'string' ? data.stage : 'unknown'
+        const src = typeof data.src === 'string' ? safePaneUrl(data.src) : undefined
+        paneLog('boot', { id, stage, src })
+        if (stage === 'script-error') {
+          // Posted by the pane's index.html shell (not its bundle, which never
+          // ran): the entry <script type=module> fired `error`, i.e. some chunk
+          // in its graph failed to FETCH. Whatever happens next, this pane is
+          // NOT ready: it may have been (a ready pane reloads itself after a
+          // bundle change and can land on a mid-swap 404), and a stale `ready`
+          // keeps the load watchdog off and the error panel unreachable, so a
+          // failed heal would leave a blank pane with no Retry. Retract first.
+          // The one cause a reload cannot fix by itself is a 404 the desktop's
+          // HTTP cache is replaying under this origin, so evict that origin's
+          // cache and reload once. ONCE: a 404 the gateway is really serving
+          // right now (dist/ mid-swap) would otherwise loop clear/reload
+          // forever; after the one attempt the (now armed) watchdog surfaces
+          // the error panel, and Retry re-opens the budget.
+          dispatch(clearPaneReady(id))
+          if (!scriptErrorHealsRef.current.has(id)) {
+            scriptErrorHealsRef.current.add(id)
+            paneLog('script-error-heal', { id, origin: e.origin })
+            const cleared = clearPaneHttpCache(e.origin)
+            const reload = () => setReloadSeq(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
+            if (cleared) void cleared.then(reload, reload)
+            else reload()
+          }
+        }
       } else if (data.type === 'mc-embedded-ready') {
         // The pane just (re)mounted and asked for the current model — send it now
         // rather than waiting for the next input-driven broadcast. Also record
@@ -503,8 +545,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // never stranded). `reloadSeq[id]` is bumped by Retry to force an iframe
   // remount even when the backend returns the SAME cached port+token (identical
   // src would otherwise not reload a dead frame).
-  const [timedOut, setTimedOut] = useState<Record<string, boolean>>({})
-  const [reloadSeq, setReloadSeq] = useState<Record<string, number>>({})
+  // (`timedOut`, `reloadSeq` and `scriptErrorHealsRef` are declared up by
+  // reactiveMintsRef: the relay listener above reaches them too.)
   // Live mirror of `timedOut` for `retry`, which must read the verdict at press
   // time without re-creating itself on every watchdog flip.
   const timedOutRef = useRef(timedOut)
@@ -621,20 +663,33 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // that never navigated (`about:blank`) or whose connect itself failed
       // keeps the cheap path: there is no stalled stream to escape.
       const rebuild = !!timedOutRef.current[id] && frame === 'cross-origin'
+      const port = warmRef.current[id]?.port
       // Clear the stale verdict and force a reload even if the re-mint returns
       // an identical token (setWarm would be a no-op for the iframe src).
       paneLog('retry', {
         id,
-        port: warmRef.current[id]?.port,
+        port,
         frame,
         rebuild: rebuild || undefined,
       })
-      setTimedOut(prev => ({ ...prev, [id]: false }))
-      setReloadSeq(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
-      // An explicit user press is a fresh start: re-open the reactive budget so
-      // a pane that recovers on the next token can still self-heal afterwards.
-      reactiveMintsRef.current.delete(id)
-      connectMutation.mutate({ id, rebuild })
+      const proceed = () => {
+        setTimedOut(prev => ({ ...prev, [id]: false }))
+        setReloadSeq(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
+        // An explicit user press is a fresh start: re-open the reactive budget so
+        // a pane that recovers on the next token can still self-heal afterwards,
+        // and the one-shot script-error heal likewise.
+        reactiveMintsRef.current.delete(id)
+        scriptErrorHealsRef.current.delete(id)
+        connectMutation.mutate({ id, rebuild })
+      }
+      // Desktop only: evict this origin's HTTP cache BEFORE the reload, so a
+      // chunk 404 the cache is replaying (the failure a tunnel rebuild cannot
+      // reach) is re-fetched rather than replayed again. Resolves fast (one IPC
+      // round-trip) and the reload proceeds whatever it answers. A pane that
+      // never navigated has no port to name and nothing cached to evict.
+      const cleared = typeof port === 'number' ? clearPaneHttpCache(paneOriginFor(port)) : null
+      if (cleared) void cleared.then(proceed, proceed)
+      else proceed()
     },
     [connectMutation],
   )

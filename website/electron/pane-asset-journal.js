@@ -27,6 +27,21 @@
  * that never settles and shows one STALLED line is this bug; a pane whose graph
  * settled and still never announced readiness is a different one.
  *
+ * The second failure, found by reading that "different one": a graph that settles
+ * with `done=N failed=0` and still never boots. `onCompleted` fires for EVERY
+ * response, a 404 included, so a chunk the gateway did not have -- served, once,
+ * with `Cache-Control: immutable`, and replayed from the local HTTP cache forever
+ * after -- counted as `done`. One 404 anywhere in the graph fails the whole
+ * `<script type=module>` with no console line. So a completion whose status is
+ * not 2xx is now counted under `failed=` and journaled on its own line with the
+ * path and whether it came from cache:
+ *
+ *   `[pane-assets] origin=http://localhost:7778 started=252 done=245 failed=7
+ *    inflight=0 ERROR=/assets/check-BiXj6uGO.js status=404 fromCache=true`
+ *
+ * `fromCache=true` on a 404 is the poisoned-cache signature; the same 404 fresh
+ * from the network is the gateway genuinely lacking the chunk (a dist/ mid-swap).
+ *
  * Scope is deliberately narrow: loopback origins only, `/assets/` paths only (the
  * content-hashed chunks the module graph is made of), and never the dashboard's own
  * origin — its bundle is served by the local gateway and is not the surface that
@@ -59,6 +74,12 @@ const LOG_LINES_MAX = 2_000;
 
 const PREFIX = "[pane-assets]";
 
+/** True for the hostnames a remote-crew pane can be reached on: loopback only. */
+function isLoopbackHost(host) {
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]"
+    || host.endsWith(".localhost");
+}
+
 /** Origin + path of a request URL, or null when it is not a loopback hashed asset. */
 function classifyUrl(url) {
   let parsed;
@@ -68,12 +89,40 @@ function classifyUrl(url) {
     return null;
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-  const host = parsed.hostname;
-  const loopback = host === "localhost" || host === "127.0.0.1" || host === "[::1]"
-    || host.endsWith(".localhost");
-  if (!loopback) return null;
+  if (!isLoopbackHost(parsed.hostname)) return null;
   if (!parsed.pathname.startsWith("/assets/")) return null;
   return { origin: parsed.origin, path: parsed.pathname };
+}
+
+/**
+ * The one origin string the renderer may ask the main process to purge the HTTP
+ * cache for, or null. Exactly a loopback http(s) ORIGIN (no path, no query --
+ * the renderer sends `MessageEvent.origin`, which is already that shape) and
+ * never the dashboard's own: the local bundle is not the surface that gets
+ * poisoned, and a hostile pane must not be able to evict the shell's assets.
+ * The purge is bounded to `dataTypes: ["cache"]` -- the HTTP cache, which is
+ * only ever a copy of what the gateway will serve again -- so the worst a
+ * mis-aimed call can do is re-download one pane's chunks.
+ */
+function purgeableOrigin(candidate, dashboardOrigin) {
+  const text = String(candidate || "");
+  let parsed;
+  try {
+    parsed = new URL(text);
+  } catch {
+    return null;
+  }
+  if (parsed.origin !== text) return null;
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  if (!isLoopbackHost(parsed.hostname)) return null;
+  let skip = "";
+  try {
+    skip = new URL(String(dashboardOrigin)).origin;
+  } catch {
+    skip = "";
+  }
+  if (skip && parsed.origin === skip) return null;
+  return parsed.origin;
 }
 
 /**
@@ -139,7 +188,7 @@ function createPaneAssetTracker({
     s.inflight.set(requestId, { path: c.path, startedAt, timer });
   };
 
-  const finish = (requestId, url, outcome) => {
+  const finish = (requestId, url, outcome, detail) => {
     const c = classifyUrl(url);
     if (!c || c.origin === skipOrigin) return;
     const s = origins.get(c.origin);
@@ -156,15 +205,34 @@ function createPaneAssetTracker({
     }
     if (outcome === "done") s.done += 1;
     else s.failed += 1;
+    if (detail) emit(`${PREFIX} ${summary(c.origin, s)} ERROR=${c.path} ${detail}`);
     if (s.hadInflight && s.inflight.size === 0 && s.untracked === 0) {
       s.hadInflight = false;
       emit(`${PREFIX} ${summary(c.origin, s)} settled stalled=${s.stalled}`);
     }
   };
 
+  /**
+   * A response that arrived is not a chunk that loaded: a 404 (or any non-2xx)
+   * for a module in the graph fails the graph exactly like a dropped connection,
+   * and the module loader reports neither. `statusCode` is Electron's
+   * `onCompleted` field; a completion without one (older runtime, fake) keeps
+   * the historical reading of "completed = done". `fromCache` says whether the
+   * bad status was replayed from the local HTTP cache -- the poisoned-entry case
+   * a tunnel rebuild can never fix.
+   */
+  const onCompleted = (requestId, url, statusCode, fromCache) => {
+    const status = Number(statusCode);
+    if (!Number.isFinite(status) || status <= 0 || (status >= 200 && status < 300) || status === 304) {
+      finish(requestId, url, "done");
+      return;
+    }
+    finish(requestId, url, "failed", `status=${status} fromCache=${fromCache === true}`);
+  };
+
   return {
     onStart,
-    onCompleted: (requestId, url) => finish(requestId, url, "done"),
+    onCompleted,
     onError: (requestId, url) => finish(requestId, url, "failed"),
     /** Test/inspection hook: a snapshot of one origin's counters. */
     snapshot(origin) {
@@ -221,7 +289,7 @@ function attachPaneAssetJournal(session, log, dashboardOrigin) {
     tracker.onStart(details.id, details.url);
   });
   wr.onCompleted(filter, (details) => {
-    tracker.onCompleted(details.id, details.url);
+    tracker.onCompleted(details.id, details.url, details.statusCode, details.fromCache);
   });
   wr.onErrorOccurred(filter, (details) => {
     tracker.onError(details.id, details.url);
@@ -235,4 +303,5 @@ module.exports = {
   attachPaneAssetJournal,
   classifyUrl,
   createPaneAssetTracker,
+  purgeableOrigin,
 };

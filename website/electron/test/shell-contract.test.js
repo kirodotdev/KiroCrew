@@ -136,8 +136,8 @@ test("the WSL preload invoke is registered by the IPC owner", () => {
   );
 });
 
-// The three-gate local-dashboard check guards `wsl:detect` and both
-// `crash-reports:*` channels. It was briefly written out twice, and two
+// The three-gate local-dashboard check guards `wsl:detect`, both
+// `crash-reports:*` channels and `pane:clear-http-cache`. It was briefly written out twice, and two
 // hand-maintained spellings of a security check is one of them being tightened
 // while the other is not. The port probe is gate 3 and appears in no other code
 // path, so counting its call sites counts the copies.
@@ -149,7 +149,7 @@ test("the local-dashboard gate has exactly one spelling", () => {
     "gate 3 must be reached through the single assertLocalDashboard helper; "
       + `found ${probes.length} probe call sites, so the gate has been copied`,
   );
-  for (const channel of ["wsl:detect", "crash-reports:get", "crash-reports:reveal"]) {
+  for (const channel of ["wsl:detect", "crash-reports:get", "crash-reports:reveal", "pane:clear-http-cache"]) {
     assert.match(
       IPC_REGISTRAR_SOURCE,
       new RegExp(`assertLocalDashboard\\(event, "${channel}"\\)`),

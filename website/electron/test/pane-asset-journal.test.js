@@ -9,6 +9,7 @@ const {
   attachPaneAssetJournal,
   classifyUrl,
   createPaneAssetTracker,
+  purgeableOrigin,
 } = require("../pane-asset-journal");
 
 /** A manual clock + timer queue so stall detection runs without real waiting. */
@@ -232,5 +233,63 @@ describe("aggregate log budget", () => {
     time.advance(1000);
     assert.equal(lines.length, 3);
     assert.match(lines[2], /budget-exhausted/);
+  });
+});
+
+describe("non-2xx completions", () => {
+  it("counts a 404 completion as failed and journals its path and cache provenance", () => {
+    const { tr, lines } = tracker();
+    tr.onStart(1, `${PANE}/assets/main-abc.js`);
+    tr.onStart(2, `${PANE}/assets/check-BiXj6uGO.js?token=nope`);
+    tr.onCompleted(1, `${PANE}/assets/main-abc.js`, 200, false);
+    tr.onCompleted(2, `${PANE}/assets/check-BiXj6uGO.js?token=nope`, 404, true);
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /started=2 done=1 failed=1 inflight=0 ERROR=\/assets\/check-BiXj6uGO\.js status=404 fromCache=true$/);
+    assert.ok(!lines[0].includes("token"), "query string never reaches the journal");
+    assert.match(lines[1], /done=1 failed=1 inflight=0 settled stalled=0/);
+    assert.deepEqual(tr.snapshot(PANE), { started: 2, done: 1, failed: 1, stalled: 0, inflight: 0 });
+  });
+
+  it("treats 2xx, 304 and a missing status as done", () => {
+    const { tr, lines } = tracker();
+    const outcomes = [[1, 200], [2, 206], [3, 304], [4, undefined]];
+    for (const [id] of outcomes) tr.onStart(id, `${PANE}/assets/c${id}.js`);
+    for (const [id, status] of outcomes) tr.onCompleted(id, `${PANE}/assets/c${id}.js`, status, false);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /started=4 done=4 failed=0 inflight=0 settled/);
+  });
+
+  it("forwards statusCode and fromCache from the webRequest details", () => {
+    const listeners = {};
+    const s = {
+      webRequest: {
+        onSendHeaders(filter, fn) { listeners.before = fn; },
+        onCompleted(filter, fn) { listeners.completed = fn; },
+        onErrorOccurred(filter, fn) { listeners.error = fn; },
+      },
+    };
+    const lines = [];
+    assert.equal(attachPaneAssetJournal(s, (l) => lines.push(l), "http://localhost:5476"), true);
+    listeners.before({ id: 7, url: `${PANE}/assets/folder-BGvEsjbu.js` });
+    listeners.completed({ id: 7, url: `${PANE}/assets/folder-BGvEsjbu.js`, statusCode: 404, fromCache: true });
+    assert.match(lines[0], /ERROR=\/assets\/folder-BGvEsjbu\.js status=404 fromCache=true/);
+  });
+});
+
+describe("purgeableOrigin", () => {
+  const DASH = "http://localhost:5476/?token=abc";
+  it("accepts a bare loopback origin that is not the dashboard's", () => {
+    assert.equal(purgeableOrigin("http://localhost:7778", DASH), "http://localhost:7778");
+    assert.equal(purgeableOrigin("http://127.0.0.1:7778", DASH), "http://127.0.0.1:7778");
+    assert.equal(purgeableOrigin("https://gian.localhost:7778", DASH), "https://gian.localhost:7778");
+  });
+  it("refuses the dashboard origin, remote hosts, paths, and non-strings", () => {
+    assert.equal(purgeableOrigin("http://localhost:5476", DASH), null);
+    assert.equal(purgeableOrigin("http://10.0.0.5:7778", DASH), null);
+    assert.equal(purgeableOrigin("http://localhost:7778/assets/a.js", DASH), null);
+    assert.equal(purgeableOrigin("http://localhost:7778/", DASH), null);
+    assert.equal(purgeableOrigin("file:///tmp", DASH), null);
+    assert.equal(purgeableOrigin(null, DASH), null);
+    assert.equal(purgeableOrigin({}, DASH), null);
   });
 });

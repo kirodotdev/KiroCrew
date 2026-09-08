@@ -60,6 +60,8 @@ declare global {
     reportMemorySample: (sample: ElectronMemorySample) => void
     heapStatisticsKB: () => { usedHeapKB: number | null } | null
     getGlobalHotkey: () => Promise<ElectronGlobalHotkeyInfo>
+    /** Evict the HTTP cache of one loopback pane origin; resolves to whether a purge ran. */
+    clearPaneHttpCache?: (origin: string) => Promise<boolean>
   }
 
   interface LocalGatewayAPI {

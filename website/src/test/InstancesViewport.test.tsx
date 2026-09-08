@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
@@ -1349,4 +1349,180 @@ describe('InstancesViewport', () => {
     expect(screen.queryByText(/ssh unreachable/i)).toBeNull()
   })
 
+
+  describe('script-error heal (poisoned HTTP cache)', () => {
+    // The pane's index.html shell posts this when its entry <script type=module>
+    // fires `error`: a chunk in the graph failed to fetch. On the desktop the one
+    // cause a plain reload cannot fix is a 404 the shell's HTTP cache is
+    // replaying under that origin, so the parent evicts the origin's cache and
+    // reloads -- exactly once per Retry, so a 404 the gateway is really serving
+    // cannot spin clear/reload forever.
+    const scriptError = (origin = 'http://127.0.0.1:7778') =>
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: `${origin}/assets/main-krfrL6rl.js?token=x` },
+          origin,
+        }),
+      )
+    const withBridge = (impl: (origin: string) => Promise<boolean>) => {
+      const clear = vi.fn(impl)
+      ;(window as unknown as { electronAPI: unknown }).electronAPI = { clearPaneHttpCache: clear }
+      return clear
+    }
+    afterEach(() => {
+      delete (window as unknown as { electronAPI?: unknown }).electronAPI
+    })
+
+    it('evicts the pane origin cache and reloads the iframe once, journaling the src without its query', async () => {
+      mockConnectedCd1()
+      const clear = withBridge(async () => true)
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+      try {
+        const store = createTestStore({
+          instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+        })
+        renderWithProviders(<InstancesViewport />, { store })
+        expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
+        const before = document.querySelector('iframe') as HTMLIFrameElement
+
+        scriptError()
+        await waitFor(() => expect(clear).toHaveBeenCalledWith('http://127.0.0.1:7778'))
+        await waitFor(() => expect(document.querySelector('iframe')).not.toBe(before))
+        const lines = info.mock.calls.map(c => String(c[0]))
+        const boot = lines.find(l => l.includes('boot id=cd-1 stage=script-error'))
+        expect(boot).toBeDefined()
+        expect(boot).toContain('src=http://127.0.0.1:7778/assets/main-krfrL6rl.js?token=<redacted>')
+        expect(boot).not.toContain('token=x')
+        expect(lines.some(l => l.includes('script-error-heal id=cd-1 origin=http://127.0.0.1:7778'))).toBe(true)
+
+        // A second script-error on the same load is NOT healed again: the
+        // watchdog owns it from here, and only Retry re-opens the budget.
+        const healed = document.querySelector('iframe') as HTMLIFrameElement
+        scriptError()
+        await new Promise(r => setTimeout(r, 20))
+        expect(clear).toHaveBeenCalledTimes(1)
+        expect(document.querySelector('iframe')).toBe(healed)
+      } finally {
+        info.mockRestore()
+      }
+    })
+
+    it('retracts readiness on script-error so the watchdog can arm again for a pane that WAS ready', async () => {
+      // A ready pane reloads itself (bundle change) and lands on a chunk 404: its
+      // shell posts script-error while the store still says ready. Left alone,
+      // the watchdog stays off (it skips ready panes) and a failed heal would be
+      // a blank pane with no Retry.
+      mockConnectedCd1()
+      const clear = withBridge(async () => true)
+      const store = createTestStore({
+        instances: {
+          warm: { 'cd-1': { port: 7778, token: 'tok' } },
+          activeId: 'cd-1',
+          mru: ['cd-1'],
+          unread: {},
+          ready: { 'cd-1': true },
+        },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      expect(screen.queryByText(/Loading pane/i)).toBeNull()
+      scriptError()
+      await waitFor(() => expect(store.getState().instances.ready['cd-1']).toBeUndefined())
+      await waitFor(() => expect(clear).toHaveBeenCalledTimes(1))
+      // Readiness retracted -> the loading overlay is back and the watchdog owns the pane.
+      expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
+      // The retraction is not gated on the heal budget: a second script-error
+      // (budget spent, no reload) still leaves the pane un-ready.
+      window.dispatchEvent(
+        new MessageEvent('message', { data: { type: 'mc-embedded-ready', v: 1 }, origin: 'http://127.0.0.1:7778' }),
+      )
+      await waitFor(() => expect(store.getState().instances.ready['cd-1']).toBe(true))
+      scriptError()
+      await waitFor(() => expect(store.getState().instances.ready['cd-1']).toBeUndefined())
+      expect(clear).toHaveBeenCalledTimes(1)
+    })
+
+    it('gives an evicted-then-re-warmed pane its one-shot heal back', async () => {
+      // The budget is per load. Eviction (removeWarm) ends the load; a later
+      // re-warm is a new one and must be able to heal a poisoned cache again
+      // without a manual Retry.
+      mockConnectedCd1()
+      const clear = withBridge(async () => true)
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
+      scriptError()
+      await waitFor(() => expect(clear).toHaveBeenCalledTimes(1))
+      // Budget spent for this load.
+      scriptError()
+      await new Promise(r => setTimeout(r, 20))
+      expect(clear).toHaveBeenCalledTimes(1)
+
+      await act(async () => { store.dispatch(removeWarm('cd-1')) })
+      await waitFor(() => expect(document.querySelector('iframe')).toBeNull())
+      await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok2' } })) })
+      await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull())
+      scriptError()
+      await waitFor(() => expect(clear).toHaveBeenCalledTimes(2))
+    })
+
+    it('still reloads once when the bridge is absent or refuses (browser, non-Electron)', async () => {
+      mockConnectedCd1()
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
+      const before = document.querySelector('iframe') as HTMLIFrameElement
+      scriptError()
+      await waitFor(() => expect(document.querySelector('iframe')).not.toBe(before))
+    })
+
+    it('ignores a script-error from an origin that is not a warm pane', async () => {
+      mockConnectedCd1()
+      const clear = withBridge(async () => true)
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
+      const before = document.querySelector('iframe') as HTMLIFrameElement
+      scriptError('http://127.0.0.1:9999')
+      scriptError('https://evil.example.com')
+      await new Promise(r => setTimeout(r, 20))
+      expect(clear).not.toHaveBeenCalled()
+      expect(document.querySelector('iframe')).toBe(before)
+    })
+
+    it('Retry evicts the pane origin cache before reloading and re-opens the heal budget', async () => {
+      mockConnectedCd1()
+      vi.mocked(api.connectInstance).mockResolvedValue({ state: 'connected', local_port: 7778, token: 'tok' })
+      const clear = withBridge(async () => true)
+      vi.useFakeTimers()
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      await act(async () => {
+        vi.advanceTimersByTime(15_000)
+      })
+      expect(screen.getByText(/Pane failed to load/i)).toBeInTheDocument()
+      vi.useRealTimers()
+
+      const u = userEvent.setup()
+      await u.click(screen.getByRole('button', { name: /Retry/i }))
+      await waitFor(() => expect(clear).toHaveBeenCalledWith(`http://${window.location.hostname}:7778`))
+      await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('cd-1'))
+      // The evict resolved BEFORE the reconnect was issued.
+      expect(clear.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.connectInstance).mock.invocationCallOrder[0])
+      await waitFor(() => expect(screen.queryByText(/Pane failed to load/i)).toBeNull())
+
+      // Budget re-opened: a script-error after Retry is healed again.
+      const before = document.querySelector('iframe') as HTMLIFrameElement
+      scriptError()
+      await waitFor(() => expect(clear).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(document.querySelector('iframe')).not.toBe(before))
+    })
+  })
 })

@@ -988,6 +988,7 @@ async def _vendor_preflight_handler(request: web.Request) -> web.Response:
 # /sprites: those use stable, un-hashed filenames.
 _IMMUTABLE_PATH_PREFIXES = ("/assets/",)
 _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_NO_STORE_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
 
 # Max size of a single incoming HTTP header field, raised from aiohttp's
 # 8190-byte default. Browser cookies are not port-isolated (RFC 6265), so on
@@ -1111,11 +1112,19 @@ def _apply_security_headers(
     # responses for hashed assets: a 304's headers merge into the stored
     # cache entry, so answering it with no-store would degrade the cached
     # immutable bundle.
+    #
+    # This check is NOT sufficient on its own for the static route: aiohttp's
+    # ``FileResponse`` is built with status 200 and only stats the file inside
+    # ``prepare()``, after the middleware chain has returned. A missing chunk
+    # therefore passes through here as a 200 and becomes a 404 later, still
+    # wearing the immutable header. ``_finalize_asset_cache_control`` (an
+    # ``on_response_prepare`` handler, which runs once the status is final)
+    # closes that hole; this early decision stays as the common path.
     status = getattr(resp, "status", None)
     if status in (200, 206, 304) and path.startswith(_IMMUTABLE_PATH_PREFIXES):
         resp.headers.setdefault("Cache-Control", _IMMUTABLE_CACHE_CONTROL)
     else:
-        resp.headers.setdefault("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        resp.headers.setdefault("Cache-Control", _NO_STORE_CACHE_CONTROL)
         resp.headers.setdefault("Pragma", "no-cache")
         resp.headers.setdefault("Expires", "0")
 
@@ -1167,6 +1176,41 @@ def _apply_security_headers(
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+
+async def _finalize_asset_cache_control(request: web.Request, response: web.StreamResponse) -> None:
+    """``on_response_prepare`` hook: never let an error under ``/assets/`` out
+    with ``immutable``.
+
+    ``_apply_security_headers`` runs in middleware, when a ``FileResponse``
+    still reports status 200 — aiohttp defers the ``stat`` to ``prepare()``.
+    A request for a chunk the running ``dist/`` does not have (mid-upgrade, or
+    a stale bundle asking for a chunk the new build renamed) thus reached the
+    wire as ``404`` + ``public, max-age=31536000, immutable``, and Chromium
+    kept that 404 for a year under the request URL. Lucide icon chunks keep
+    their content hash across releases, so one poisoned entry breaks the module
+    graph of every later bundle that imports it: the entry ``<script
+    type=module>`` fails silently and the page never boots — tunnel rebuilds and
+    gateway restarts cannot fix it because the cache key is the local URL. This
+    hook runs after the status is final and overwrites (not ``setdefault``) the
+    header for exactly that case: an immutable-prefixed path whose final status
+    is not one the immutable policy admits.
+    """
+    if response.status in (200, 206, 304):
+        return
+    if not request.path.startswith(_IMMUTABLE_PATH_PREFIXES):
+        return
+    if response.headers.get("Cache-Control") != _IMMUTABLE_CACHE_CONTROL:
+        return
+    response.headers["Cache-Control"] = _NO_STORE_CACHE_CONTROL
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
+
+def _install_asset_cache_control_finalizer(app: web.Application) -> None:
+    """Register ``_finalize_asset_cache_control`` on ``app``. Idempotent."""
+    if _finalize_asset_cache_control not in app.on_response_prepare:
+        app.on_response_prepare.append(_finalize_asset_cache_control)
 
 
 # URL prefix for app-shipped standalone HTML windows. One namespace keeps app
@@ -3730,6 +3774,11 @@ async def start_dashboard(
         if hasattr(resp, "headers"):
             _apply_security_headers(resp, request.app, request.path, request)
         return resp  # type: ignore[return-value]
+
+    # The static handler's FileResponse decides 200-vs-404 only in prepare(),
+    # after the middleware above has already stamped immutable. This hook sees
+    # the final status and strips immutable from any /assets/ error.
+    _install_asset_cache_control_finalizer(app)
 
     # SPA fallback: serve index.html for client-side React Router paths.
     # Uses the same _is_spa_shell_request predicate as the auth middleware so

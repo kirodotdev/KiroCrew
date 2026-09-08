@@ -28,6 +28,13 @@ contextBridge.exposeInMainWorld("kirocrew", {
 });
 
 contextBridge.exposeInMainWorld("electronAPI", {
+  // Evict the HTTP cache of one remote-crew pane origin (a loopback tunnel
+  // port) before reloading it. Used when the pane's module graph reports a
+  // load error: a hashed chunk the gateway once answered 404+immutable is
+  // replayed from cache forever, and only eviction gets the pane past Loading.
+  // Resolves to whether a purge ran; the caller reloads regardless.
+  clearPaneHttpCache: (origin) =>
+    ipcRenderer.invoke("pane:clear-http-cache", String(origin || "")),
   onStatus: (cb) => {
     const handler = (_e, msg) => cb(msg);
     ipcRenderer.on("status", handler);

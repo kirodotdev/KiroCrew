@@ -17,6 +17,7 @@ const { initAutoUpdate } = require("./auto-update");
 const { makeUpdaterLogger } = require("./update-logger");
 const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
+const { PREFIX: PANE_ASSETS_PREFIX, purgeableOrigin } = require("./pane-asset-journal");
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -230,6 +231,44 @@ function createIpcRegistrar({
       } catch (e) {
         log(`crash-reports:reveal failed: ${e && e.message}`);
         return { ok: false, error: String((e && e.message) || e) };
+      }
+    });
+
+    // Purge the HTTP cache of ONE remote-crew pane origin. The renderer asks for
+    // this when a pane's entry `<script type=module>` fires `error` (relayed as
+    // `mc-embedded-boot stage=script-error`) and again on an explicit Retry:
+    // a chunk 404 the gateway once served with `Cache-Control: immutable` is
+    // replayed from this cache on every load, so no tunnel rebuild, re-mint or
+    // gateway restart can ever get that pane past Loading -- only evicting the
+    // entry can. Scope is the pane's ORIGIN and the `cache` data type only:
+    // cookies, storage and the service worker are untouched, and the shell's
+    // own origin is refused (see `purgeableOrigin`). Sender-gated like every
+    // other channel that acts on this machine: the same preload serves a
+    // connection window pointed at a REMOTE gateway, and only the local
+    // dashboard shell -- the one that frames remote panes -- may evict a
+    // loopback origin's cache; `purgeableOrigin` bounds WHICH origin, the gate
+    // bounds WHO asks. After the gate, resolves to whether a purge ran and
+    // never throws into the renderer: the reload that follows must go ahead
+    // either way.
+    ipcMain.handle("pane:clear-http-cache", async (event, origin) => {
+      await assertLocalDashboard(event, "pane:clear-http-cache");
+      const target = purgeableOrigin(origin, backendUrl);
+      if (!target) {
+        log(`${PANE_ASSETS_PREFIX} clear-http-cache refused origin=${String(origin).slice(0, 128)}`);
+        return false;
+      }
+      const ses = event && event.sender && event.sender.session;
+      if (!ses || typeof ses.clearData !== "function") {
+        log(`${PANE_ASSETS_PREFIX} clear-http-cache unavailable origin=${target}`);
+        return false;
+      }
+      try {
+        await ses.clearData({ origins: [target], dataTypes: ["cache"] });
+        log(`${PANE_ASSETS_PREFIX} clear-http-cache origin=${target} cleared`);
+        return true;
+      } catch (e) {
+        log(`${PANE_ASSETS_PREFIX} clear-http-cache origin=${target} failed: ${e && e.message}`);
+        return false;
       }
     });
 
