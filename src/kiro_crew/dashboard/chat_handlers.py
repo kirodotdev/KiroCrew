@@ -7486,6 +7486,20 @@ async def api_chat_slot_reload(request: web.Request) -> web.Response:
         # while the now-current session was never touched -- the exact silent
         # stale-session failure the two earlier checks exist to prevent, just
         # moved one await later.
+        #
+        # Identity first, same as the 7399/7422 checks above: registry
+        # mutation (slot removal + same-name re-registration for a DIFFERENT
+        # app) takes no lock of its own, so it can land during this same
+        # await exactly as it can during the two earlier lock-acquisition
+        # waits those checks guard. A key-only re-check would still pass for
+        # a stale ``slot`` object recreated under app B's name whenever B's
+        # session happens to resolve to the same key, and the notice/
+        # broadcast below would then fire under B's identity -- the same
+        # cross-slot-identity gap the two earlier checks close, just moved to
+        # this last await. Same response as those checks: a mismatch here is
+        # indistinguishable from a missing slot.
+        if state._slots.get(name) is not slot:
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
         if effective_session_key(slot) != session_key:
             return web.json_response(
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},

@@ -457,6 +457,57 @@ class TestReloadRacesSwitchCommitResetSpan:
         assert slot.linked_session_key == NEW_SESSION_KEY
 
     @pytest.mark.asyncio
+    async def test_reload_refuses_a_slot_recreated_during_the_reset_await(
+        self, state, slot, monkeypatch
+    ):
+        """The recreation race, one await later: during the teardown itself.
+
+        The two earlier guards re-check ``state._slots.get(name) is slot``
+        before ``_reset_slot_session`` is awaited. Registry mutation (slot
+        removal + same-name re-registration for a DIFFERENT app) takes no
+        lock of its own, so it is just as free to land WHILE that await is
+        in flight -- one await later than the second guard's window, and
+        past it. Unlike the rebind test above, this swaps the OBJECT itself
+        (not just ``linked_session_key`` on the same object), and the
+        replacement's session happens to resolve to the SAME key: a key-only
+        re-check would pass, since ``effective_session_key(replacement) ==
+        session_key`` holds. This drives that exact placement: hook
+        ``reset:pre_pop`` to swap in a same-named replacement there, then let
+        the reset and the rest of reload's flow proceed. Reload must still
+        refuse with 404/slot_not_found rather than broadcast a reload notice
+        under the replacement's identity.
+        """
+        replacement = _ChatSlot(_SLOT)
+        replacement.model = _MODEL_OLD
+        # Same key as the original: this is what makes a key-only re-check
+        # insufficient to catch the swap, unlike the rebind test above.
+        assert replacement.key == slot.key
+
+        async def _interleave(point: str) -> None:
+            if point == "reset:pre_pop":
+                state._slots[_SLOT] = replacement
+
+        monkeypatch.setattr(chat_handlers, "_test_interleave", _interleave)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(f"/api/chat/slots/{_SLOT}/reload")
+            status = resp.status
+            body = await resp.json()
+
+        assert status == 404
+        assert body["code"] == "slot_not_found"
+        # The reset itself still ran against the ORIGINAL slot's session (the
+        # swap lands mid-reset, not before it) -- this guard's job is to stop
+        # the response, not to have prevented the one reset already in
+        # flight when the swap arrived.
+        state.sessions.reset.assert_awaited_once_with(_SESSION_KEY, skip_if_busy=True)
+        # Neither slot's message history gained the reload notice: the guard
+        # fires before the notice append, on either identity.
+        assert slot.messages == []
+        assert replacement.messages == []
+        assert state._slots[_SLOT] is replacement
+
+    @pytest.mark.asyncio
     async def test_reload_blocks_until_a_suspended_switch_releases_its_locks(
         self, state, slot, monkeypatch
     ):
