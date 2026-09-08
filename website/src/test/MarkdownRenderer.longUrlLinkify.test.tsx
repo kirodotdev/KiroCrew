@@ -197,9 +197,20 @@ describe('fixUnencodedLinkDestinations — repairs a refused [text](url) (#5729)
     // grammar excludes `[`, so a failed start position dies in O(1) instead
     // of rescanning the rest of the line: with no match anywhere the function
     // returns after the preflight, isolating exactly that path. Output is
-    // pinned unchanged, and the shape check is a generous doubling ratio
-    // (quadrupling the input: linear predicts ~4x, quadratic ~16x) because
-    // shared CI runners are noisy.
+    // pinned unchanged.
+    //
+    // Quadrupling the input, a linear scan costs ~4x and a quadratic one ~15.5x
+    // (measured, not predicted: a rescan-the-remainder mutant of this function
+    // lands there). The 10x bound has to stay BETWEEN those two -- widening it
+    // to the 16x a quadratic is loosely said to cost stops the mutant failing
+    // at all, which is a gate that passes while checking nothing.
+    //
+    // Noise is therefore handled in the MEASUREMENT, not in the bound. Each
+    // size is the minimum of several samples: scheduler noise on a shared
+    // runner only ever ADDS time, so a minimum converges on the real cost from
+    // above, where a single reading can land on a spike. One spike in the
+    // larger size alone is enough to redden a build that touched no frontend
+    // code at all.
     const adversarial = (n: number) => '['.repeat(n) + '](https://x.com/?a 1'
     // The `?`+space shape: `[^\s()?]*` pins the FIRST `?` as the only split
     // point, so a run of `a?` repeats offers no restart positions and a
@@ -208,16 +219,20 @@ describe('fixUnencodedLinkDestinations — repairs a refused [text](url) (#5729)
       '[x](https://' + 'a?'.repeat(n / 2) + ' z'.repeat(16)
     expect(fixUnencodedLinkDestinations(adversarial(4096))).toBe(adversarial(4096))
     expect(fixUnencodedLinkDestinations(qAdversarial(4096))).toBe(qAdversarial(4096))
-    const time = (n: number, gen: (n: number) => string) => {
+    const bestOf = (n: number, gen: (n: number) => string) => {
       const s = gen(n)
-      const t0 = performance.now()
-      for (let i = 0; i < 50; i++) fixUnencodedLinkDestinations(s)
-      return performance.now() - t0
+      let best = Infinity
+      for (let sample = 0; sample < 5; sample++) {
+        const t0 = performance.now()
+        for (let i = 0; i < 50; i++) fixUnencodedLinkDestinations(s)
+        best = Math.min(best, performance.now() - t0)
+      }
+      return best
     }
     for (const gen of [adversarial, qAdversarial]) {
-      time(32768, gen) // warm-up
-      const small = time(32768, gen)
-      const big = time(131072, gen)
+      bestOf(32768, gen) // warm-up: let the JIT settle before either measurement
+      const small = bestOf(32768, gen)
+      const big = bestOf(131072, gen)
       expect(big).toBeLessThan(Math.max(small, 1) * 10)
     }
   })
