@@ -6,6 +6,7 @@ import { Card, CardTitle, Badge, EmptyState } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
+import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { useProvider } from '../../providers'
 
 import type { KiroCrewAgent } from '../../components/AgentSelector'
@@ -22,7 +23,7 @@ interface KiroCrewCfg {
   default_workspace: string
   memory_stores: Record<string, MemoryStoreCfg>
   default_memory_store: string
-  agent: { default_agent: string; provider: string; model: string; approval_mode: string; sandbox: string; subagent_max_turns?: number; max_subagents?: number; subagent_auto_max?: number; conductor_skill?: boolean; tool_search?: boolean; max_channels: number; max_channel_agents: number; enforce_denied_commands: string }
+  agent: { default_agent: string; provider: string; model: string; approval_mode: string; sandbox: string; sandbox_wsl_distro?: string; subagent_max_turns?: number; max_subagents?: number; subagent_auto_max?: number; conductor_skill?: boolean; tool_search?: boolean; max_channels: number; max_channel_agents: number; enforce_denied_commands: string }
   session: { timeout_secs: number; pool_size: number; pool_agent: string; pool_ttl_secs: number }
   memory: { embedding_provider: string }
   auto_update: boolean
@@ -134,6 +135,21 @@ export default function KiroCrewCfgTab() {
   const err = queryErr ? (queryErr instanceof Error ? queryErr.message : String(queryErr)) : ''
   const [saveErr, setSaveErr] = useState('')
   const [rev, setRev] = useState(0)
+  // agent.sandbox's valid set depends on the host (wsl2 only offered when
+  // plausible — Windows, with wsl.exe present), same reason agent.acp_backend
+  // (AgentBackendTab.tsx) reads its options from the schema endpoint rather
+  // than a static array. `undefined` while the schema is in flight falls back
+  // to the two values that are always valid everywhere.
+  const schema = useConfigSchema()
+  const sandboxOptions = schema?.get('agent.sandbox')?.enum ?? ['auto', 'off']
+  // Real distros discovered live via `wsl -l -v` (Docker Desktop's own WSL
+  // utility instances excluded — see sandbox.py's wsl2_distro_choices).
+  // '' means WSL's own default distro, given its own label below rather
+  // than shown blank in the dropdown.
+  const wslDistroOptions = schema?.get('agent.sandbox_wsl_distro')?.enum ?? ['']
+  // detect_backend() caches its verdict for the gateway's lifetime, so a move
+  // to or from 'wsl2' is read at the next start; the hint says so only where
+  // 'wsl2' is actually on offer, so other hosts keep the immediate wording.
 
   const reqId = useRef(0)
 
@@ -279,7 +295,10 @@ export default function KiroCrewCfgTab() {
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.provider')}</span><span className="text-text font-mono text-[13px]">{cfg.agent.provider}</span></div>
           <CfgSelect key={`approval-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.approval_mode')} path="agent.approval_mode" value={cfg.agent.approval_mode} options={['auto', 'interactive']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_approves_all_tools_interactive_as')} onSave={save} />
           <CfgNumber key={`timeout-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.session_timeout')} path="session.timeout_secs" value={cfg.session.timeout_secs} suffix="s" min={60} max={86400} hint={i18nT('pages.overview.kiroCrewCfgTab.takes_effect_on_next_session_range_60_86400s')} onSave={save} />
-          <CfgSelect key={`sandbox-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.sandbox')} path="agent.sandbox" value={cfg.agent.sandbox} options={['auto', 'off']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_enables_sandbox_for_untrusted_too')} onSave={save} />
+          <CfgSelect key={`sandbox-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.sandbox')} path="agent.sandbox" value={cfg.agent.sandbox} options={sandboxOptions} hint={sandboxOptions.includes('wsl2') ? i18nT('pages.overview.kiroCrewCfgTab.auto_enables_sandbox_for_untrusted_tools_switchi') : i18nT('pages.overview.kiroCrewCfgTab.immediate_auto_enables_sandbox_for_untrusted_too')} onSave={save} />
+          {cfg.agent.sandbox === 'wsl2' && (
+            <CfgSelect key={`wsldistro-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.wsl2_distribution')} path="agent.sandbox_wsl_distro" value={cfg.agent.sandbox_wsl_distro ?? ''} options={wslDistroOptions} labels={{'': i18nT('pages.overview.kiroCrewCfgTab.wsl_default_distro')}} hint={i18nT('pages.overview.kiroCrewCfgTab.restart_required_which_wsl2_distribution_to_sand')} onSave={save} />
+          )}
           <CfgSelect key={`enforce-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.enforce_denied_commands')} path="agent.enforce_denied_commands" value={cfg.agent.enforce_denied_commands ?? 'all'} options={['all', 'kirocrew']} hint={i18nT('pages.overview.kiroCrewCfgTab.immediate_all_enforces_on_every_agent_kirocrew_o')} onSave={save} />
           <div className={readonlyCls}><span className="text-muted"><Lock className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.embedding_provider')}</span><span className="text-text font-mono text-[13px]">{cfg.memory.embedding_provider}</span></div>
           <CfgToggle key={`autoupdate-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.auto_update')} path="auto_update" value={cfg.auto_update} hint={i18nT('pages.overview.kiroCrewCfgTab.next_update_check_cycle')} onSave={save} />
