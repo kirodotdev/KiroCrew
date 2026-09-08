@@ -10498,7 +10498,9 @@
       "discard_unsaved_body": "このクルーには保存されていない編集があります。今閉じると破棄されます。",
       "discard_confirm": "変更を破棄",
       "discard_also_crew_edits": "このクルーの他の未保存の編集も一緒に破棄されます。",
-      "editor_options_load_failed": "クルーエディターのワークスペース、テンプレート、メモリストアの選択肢を読み込めませんでした。"
+      "editor_options_load_failed": "クルーエディターのワークスペース、テンプレート、メモリストアの選択肢を読み込めませんでした。",
+      "template_edit_later_note": "いちばん近い出発点を選んでください — このエージェントのテンプレートは作成後にいつでも切り替えられます。",
+      "template_edit_later_note_member": "最も近い開始点を選んでください — このメンバーのテンプレートは作成後いつでも変更できます。"
     },
     "knowledge": {
       "detailView": {

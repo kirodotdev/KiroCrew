@@ -10804,7 +10804,9 @@
       "discard_unsaved_body": "Este equipo tiene ediciones que nunca se guardaron. Cerrar ahora las descartará.",
       "discard_confirm": "Descartar cambios",
       "discard_also_crew_edits": "Las demás ediciones sin guardar de este equipo se descartarán junto con ella.",
-      "editor_options_load_failed": "No se pudieron cargar las opciones de espacio de trabajo, plantilla y almacén de memoria del editor de crew."
+      "editor_options_load_failed": "No se pudieron cargar las opciones de espacio de trabajo, plantilla y almacén de memoria del editor de crew.",
+      "template_edit_later_note": "Elige el punto de partida más parecido: puedes cambiar la plantilla de este agente en cualquier momento después de crearlo.",
+      "template_edit_later_note_member": "Elige el punto de partida más cercano: podrás cambiar la plantilla de este miembro en cualquier momento después de crearlo."
     },
     "knowledge": {
       "detailView": {

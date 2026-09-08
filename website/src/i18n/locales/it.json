@@ -10804,7 +10804,9 @@
       "discard_unsaved_body": "Questa crew ha modifiche che non sono mai state salvate. Chiudere ora le eliminerà.",
       "discard_confirm": "Ignora le modifiche",
       "discard_also_crew_edits": "Anche le altre modifiche non salvate di questa crew andranno perse insieme a essa.",
-      "editor_options_load_failed": "Impossibile caricare le opzioni di workspace, modello e archivio della memoria dell'editor del crew."
+      "editor_options_load_failed": "Impossibile caricare le opzioni di workspace, modello e archivio della memoria dell'editor del crew.",
+      "template_edit_later_note": "Scegli il punto di partenza più simile: puoi cambiare il modello di questo agente in qualsiasi momento dopo la creazione.",
+      "template_edit_later_note_member": "Scegli il punto di partenza più vicino: potrai cambiare il modello di questo membro in qualsiasi momento dopo la creazione."
     },
     "knowledge": {
       "detailView": {

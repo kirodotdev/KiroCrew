@@ -10498,7 +10498,9 @@
       "discard_unsaved_body": "此团队有从未保存的编辑内容。现在关闭将会丢弃它们。",
       "discard_confirm": "放弃更改",
       "discard_also_crew_edits": "此团队其他未保存的编辑内容也会随之丢弃。",
-      "editor_options_load_failed": "无法加载团队编辑器的工作区、模板和记忆存储选项。"
+      "editor_options_load_failed": "无法加载团队编辑器的工作区、模板和记忆存储选项。",
+      "template_edit_later_note": "选择最接近的起点 — 这个代理的模板在创建后随时可以更换。",
+      "template_edit_later_note_member": "选择最接近的起点 — 该成员的模板在创建后随时可以更换。"
     },
     "knowledge": {
       "detailView": {

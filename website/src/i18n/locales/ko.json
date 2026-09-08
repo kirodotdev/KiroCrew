@@ -10498,7 +10498,9 @@
       "discard_unsaved_body": "이 크루에는 저장되지 않은 편집 내용이 있습니다. 지금 닫으면 삭제됩니다.",
       "discard_confirm": "변경 사항 취소",
       "discard_also_crew_edits": "이 크루의 다른 저장되지 않은 편집 내용도 함께 삭제됩니다.",
-      "editor_options_load_failed": "크루 편집기의 워크스페이스, 템플릿, 메모리 저장소 옵션을 불러올 수 없습니다."
+      "editor_options_load_failed": "크루 편집기의 워크스페이스, 템플릿, 메모리 저장소 옵션을 불러올 수 없습니다.",
+      "template_edit_later_note": "가장 가까운 출발점을 선택하세요 — 이 에이전트의 템플릿은 만든 뒤에 언제든지 바꿀 수 있습니다.",
+      "template_edit_later_note_member": "가장 가까운 시작점을 선택하세요 — 이 멤버의 템플릿은 만든 뒤 언제든 바꿀 수 있습니다."
     },
     "knowledge": {
       "detailView": {

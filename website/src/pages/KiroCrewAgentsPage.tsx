@@ -320,8 +320,11 @@ function withCurrent(opts: string[], cur: string): string[] {
  * SAME control rather than two copies that drift. Create composes them through
  * `BindingFields`; the editor mounts them individually, one per rail pane.
  */
-export function TemplateField({ label, options, value, onChange, subject }: {
+export function TemplateField({ label, options, value, onChange, subject, editLaterNote }: {
   label: string; options: string[]; value: string; onChange: (v: string) => void; subject: FormSubject
+  /** Create-only reassurance that the pick is not a commitment. The editor never
+   *  sets it: there the fields being edited are themselves the answer. */
+  editLaterNote?: boolean
 }) {
   const hint = subject === 'member'
     ? i18nT('pages.kiroCrewAgentsPage.template_hint_member')
@@ -335,6 +338,19 @@ export function TemplateField({ label, options, value, onChange, subject }: {
         triggerFallback={i18nT('pages.kiroCrewAgentsPage.select_an_agent_template')}
         aria-label={label}
       />
+      {/* Says "this agent" / "this member", not "the template": a definition
+       *  edit customizes THIS one, so copy implying the template itself changes
+       *  would promise a blast radius onto other agents bound to it that does
+       *  not exist. The noun follows `subject`, like every other string in the
+       *  form: the member flow never says "agent". */}
+      {editLaterNote && (
+        <span className="flex items-start gap-1.5 text-[11.5px] leading-relaxed text-accent">
+          <Sparkles className="lucide-inline h-3 w-3 mt-0.5 shrink-0" aria-hidden="true" />
+          {subject === 'member'
+            ? i18nT('pages.kiroCrewAgentsPage.template_edit_later_note_member')
+            : i18nT('pages.kiroCrewAgentsPage.template_edit_later_note')}
+        </span>
+      )}
     </Field>
   )
 }
@@ -561,7 +577,7 @@ function BindingFields({
 }) {
   return (
     <>
-      <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} subject={subject} />
+      <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} subject={subject} editLaterNote />
       <WorkspaceField options={workspaceOptions} value={workspace} onChange={setWorkspace} onNewWorkspace={onNewWorkspace} subject={subject} />
       <MemoryStoreField options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} subject={subject} />
       {modelOptions && setModel && model !== undefined && (

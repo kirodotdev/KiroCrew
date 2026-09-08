@@ -4157,7 +4157,9 @@
       "discard_unsaved_body": "This crew has edits that were never saved. Closing now throws them away.",
       "discard_confirm": "Discard changes",
       "discard_also_crew_edits": "The crew's other unsaved edits are thrown away with it.",
-      "editor_options_load_failed": "Couldn't load the crew editor's workspace, template, and memory store options."
+      "editor_options_load_failed": "Couldn't load the crew editor's workspace, template, and memory store options.",
+      "template_edit_later_note": "Pick the closest starting point — you can switch this agent's template anytime after creating.",
+      "template_edit_later_note_member": "Pick the closest starting point — you can switch this member's template anytime after creating."
     },
     "knowledge": {
       "detailView": {

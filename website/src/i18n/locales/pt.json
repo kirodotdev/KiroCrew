@@ -10804,7 +10804,9 @@
       "discard_unsaved_body": "Este grupo tem edições que nunca foram salvas. Fechar agora vai descartá-las.",
       "discard_confirm": "Descartar alterações",
       "discard_also_crew_edits": "As outras edições não salvas deste grupo serão descartadas junto com ele.",
-      "editor_options_load_failed": "Não foi possível carregar as opções de espaço de trabalho, modelo e armazenamento de memória do editor de crew."
+      "editor_options_load_failed": "Não foi possível carregar as opções de espaço de trabalho, modelo e armazenamento de memória do editor de crew.",
+      "template_edit_later_note": "Escolha o ponto de partida mais próximo: você pode trocar o modelo deste agente a qualquer momento depois de criá-lo.",
+      "template_edit_later_note_member": "Escolha o ponto de partida mais próximo — você pode trocar o modelo deste membro a qualquer momento depois de criar."
     },
     "knowledge": {
       "detailView": {
