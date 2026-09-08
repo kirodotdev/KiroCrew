@@ -9643,6 +9643,7 @@
       "worktree_creation_returned_no_path": "워크트리 생성 결과에 경로가 없습니다",
       "loading_earlier_messages": "이전 메시지를 불러오는 중…",
       "send_failed_with_error": "전송 실패: {{error}}",
+      "send_failed_with_error_restored": "이 메시지를 보낼 수 없습니다: {{error}}. 입력한 텍스트를 입력창에 되돌려 두었습니다.",
       "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
       "could_not_read_file_reason": "{{path}}을(를) 읽을 수 없습니다 ({{reason}})",
       "screenshot_failed_reason": "스크린샷 실패: {{reason}}",

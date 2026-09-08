@@ -9925,6 +9925,7 @@
       "worktree_creation_returned_no_path": "A criação da worktree não retornou nenhum caminho",
       "loading_earlier_messages": "Carregando mensagens anteriores…",
       "send_failed_with_error": "Falha ao enviar: {{error}}",
+      "send_failed_with_error_restored": "Não foi possível enviar esta mensagem: {{error}}. Seu texto voltou para a caixa de composição.",
       "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
       "could_not_read_file_reason": "Não foi possível ler {{path}} ({{reason}})",
       "screenshot_failed_reason": "Falha na captura de tela: {{reason}}",

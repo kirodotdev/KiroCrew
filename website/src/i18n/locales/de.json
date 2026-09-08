@@ -9784,6 +9784,7 @@
       "worktree_creation_returned_no_path": "Die Worktree-Erstellung hat keinen Pfad zurückgegeben",
       "loading_earlier_messages": "Frühere Nachrichten werden geladen…",
       "send_failed_with_error": "Senden fehlgeschlagen: {{error}}",
+      "send_failed_with_error_restored": "Diese Nachricht konnte nicht gesendet werden: {{error}}. Dein Text steht wieder im Eingabefeld.",
       "delivery_unconfirmed": "Zustellung nicht bestätigt — dein Text steht wieder im Eingabefeld; prüfe den Verlauf, bevor du erneut sendest.",
       "could_not_read_file_reason": "{{path}} konnte nicht gelesen werden ({{reason}})",
       "screenshot_failed_reason": "Screenshot fehlgeschlagen: {{reason}}",

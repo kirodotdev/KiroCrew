@@ -1449,6 +1449,96 @@ describe('ChatInput', () => {
     })
   })
 
+  /* busyMode="steer-only": the surface has no queue concept (a member DM
+   * thread is a conversation with one named peer). While busy the composer
+   * keeps the PLAIN send button and every send steers. The main chat and
+   * split view never pass it, so the default stays the split button.
+   * Mutation checks: drop `steerOnly ||` from steerActive -> the persisted-
+   * queue test goes RED; drop the steer-only render branch -> the "no
+   * split" tests go RED. */
+  describe('busyMode="steer-only" while running', () => {
+    const steerOnlyProps = () => ({
+      ...defaultProps,
+      value: 'more',
+      isRunning: true,
+      canSteer: true,
+      busyMode: 'steer-only' as const,
+      onStop: vi.fn(),
+      onSend: vi.fn(),
+      onSteer: vi.fn(),
+    })
+
+    it('renders the plain send button — no split button, no caret, no mode picker', () => {
+      renderWithProviders(<ChatInput {...steerOnlyProps()} />)
+      const send = screen.getByTestId('steer-only-send')
+      expect(send).toHaveAttribute('aria-label', 'Send')
+      expect(send).not.toBeDisabled()
+      expect(screen.queryByTestId('busy-send-button')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('busy-send-caret')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Queue message' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Send options' })).not.toBeInTheDocument()
+    })
+
+    it('click steers (onSteer), never onSend', () => {
+      const p = steerOnlyProps()
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.click(screen.getByTestId('steer-only-send'))
+      expect(p.onSteer).toHaveBeenCalledTimes(1)
+      expect(p.onSend).not.toHaveBeenCalled()
+    })
+
+    it('Enter steers', () => {
+      const p = steerOnlyProps()
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(p.onSteer).toHaveBeenCalledTimes(1)
+      expect(p.onSend).not.toHaveBeenCalled()
+    })
+
+    it('ignores a persisted Queue preference — there is no Queue on this surface', () => {
+      safeSetItem('mc-busy-send-mode', 'queue')
+      const p = steerOnlyProps()
+      renderWithProviders(<ChatInput {...p} />)
+      expect(screen.getByTestId('steer-only-send')).toHaveAttribute('aria-label', 'Send')
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(p.onSteer).toHaveBeenCalledTimes(1)
+      expect(p.onSend).not.toHaveBeenCalled()
+    })
+
+    it('still falls back to onSend while stopping (soft_pending) — stop state wins', () => {
+      const p = { ...steerOnlyProps(), stopState: 'soft_pending' as const }
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(p.onSend).toHaveBeenCalledTimes(1)
+      expect(p.onSteer).not.toHaveBeenCalled()
+    })
+
+    it('idle composer sends normally (onSend) regardless of busyMode', () => {
+      const p = { ...steerOnlyProps(), isRunning: false }
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.click(screen.getByLabelText('Send'))
+      expect(p.onSend).toHaveBeenCalledTimes(1)
+      expect(p.onSteer).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('steer-only-send')).not.toBeInTheDocument()
+    })
+
+    it('without a steer path it degrades to the queue button like the split mode does', () => {
+      const p = { ...steerOnlyProps(), canSteer: false, onSteer: undefined }
+      renderWithProviders(<ChatInput {...p} />)
+      expect(screen.queryByTestId('steer-only-send')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Queue message' })).toBeInTheDocument()
+    })
+
+    it('the default busyMode is the split button (main chat unchanged)', () => {
+      // An explicit `undefined` resolves to the prop default exactly as an
+      // omitted prop does — this is what ChatPage and split view pass.
+      renderWithProviders(<ChatInput {...steerOnlyProps()} busyMode={undefined} />)
+      expect(screen.getByTestId('busy-send-button')).toBeInTheDocument()
+      expect(screen.getByTestId('busy-send-caret')).toBeInTheDocument()
+      expect(screen.queryByTestId('steer-only-send')).not.toBeInTheDocument()
+    })
+  })
+
   describe('global "/" focus shortcut', () => {
     it('focuses textarea when "/" is pressed outside any input', () => {
       renderWithProviders(<ChatInput {...defaultProps} />)

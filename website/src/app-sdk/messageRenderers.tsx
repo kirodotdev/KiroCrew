@@ -88,7 +88,7 @@ export interface MessageRenderer {
  * IDENTICALLY to the main chat's. `fmtMessageTime` elides the year only when it
  * is safe, so a message from a previous year is never dated to the current one.
  */
-function formatTs(ts?: string): string | undefined {
+export function formatTs(ts?: string): string | undefined {
   if (!ts) return undefined
   return fmtMessageTime(ts) || undefined
 }

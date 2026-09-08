@@ -26,12 +26,42 @@ import MembersPage from '../src/pages/members/MembersPage'
 import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
 import { sseSlots } from '../src/store/dashboardSlice'
+import { appendSlotMessage, selectSlotMessages, sseChatMessage } from '../src/store/chatSlice'
 import '../src/index.css'
+
+/** The two store frames the capture script needs to fire AFTER the page is up
+ *  (to photograph a transition, or a server echo the gateway-free harness has
+ *  no WebSocket to deliver): the tool frame that makes radar's thread busy,
+ *  and the `steer_push` echo that confirms a steer. Same reducers the WS drives. */
+function busyFrame(slot: string) {
+  return sseChatMessage({ slot, role: 'tool', content: '🔧 gh issue list --state open', ts: '2026-08-27T01:00:06Z', meta: { kind: 'shell' } })
+}
+window.addEventListener('capture:frame', (e) => {
+  const d = (e as CustomEvent<{ kind: string; slot: string; text?: string; sendId?: string }>).detail
+  if (d.kind === 'busy') store.dispatch(busyFrame(d.slot))
+  if (d.kind === 'steer-echo') {
+    // The server echoes the sendId it received in the POST's meta; mirror that
+    // by reusing the id of the slot's latest optimistic steer bubble, so the
+    // echo reconciles the bubble in place exactly as production does.
+    const rows = selectSlotMessages(store.getState(), d.slot)
+    const optimistic = [...rows].reverse().find(m => m.role === 'user' && m.meta?.steer && m.meta?.optimistic)
+    const sendId = d.sendId ?? (typeof optimistic?.meta?.sendId === 'string' ? optimistic.meta.sendId : undefined)
+    store.dispatch(appendSlotMessage({
+      slot: d.slot,
+      message: { role: 'user', content: d.text ?? '', cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, steerState: 'consumed', ...(sendId ? { sendId } : {}) } },
+    }))
+  }
+})
 
 const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
 const route = params.get('route') || '/members'
 const nav = params.get('nav') === '1'
+// ?busy=1 — radar's DM THREAD has a turn running (not just the roster's
+// presence dot): the same WS frame a live tool step delivers flips the
+// member slot's stream state, which is what the pane's composer reads to
+// decide its busy affordance. Documents the steer-only composer.
+const busy = params.get('busy') === '1'
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 
 // Live presence rides the WS `slots` frames; seed the same shape so the
@@ -63,6 +93,7 @@ store.dispatch(
     { key: 'chat-1-other', title: 'Draft the release notes', messages: 5, running: true, created_by: 'member-scribe', created: iso(20), last_turn_ts: iso(2) },
   ] as never),
 )
+if (busy) store.dispatch(busyFrame('member-radar'))
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 

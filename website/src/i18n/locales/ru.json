@@ -10066,6 +10066,7 @@
       "worktree_creation_returned_no_path": "Создание worktree не вернуло путь",
       "loading_earlier_messages": "Загрузка предыдущих сообщений…",
       "send_failed_with_error": "Не удалось отправить: {{error}}",
+      "send_failed_with_error_restored": "Не удалось отправить это сообщение: {{error}}. Ваш текст возвращён в поле ввода.",
       "delivery_unconfirmed": "Доставка не подтверждена — ваш текст возвращён в поле ввода; проверьте переписку, прежде чем отправлять снова.",
       "could_not_read_file_reason": "Не удалось прочитать {{path}} ({{reason}})",
       "screenshot_failed_reason": "Не удалось сделать снимок экрана: {{reason}}",

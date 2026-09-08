@@ -25,6 +25,7 @@
  */
 import { chromium } from 'playwright'
 import { makeChecker } from './lib/prepare-split-chat-page.mjs'
+import { routeMembersApi } from './lib/members-fixtures.mjs'
 import { mkdirSync, readdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -50,32 +51,15 @@ const { check, failed } = makeChecker()
 async function newPage(theme = 'dark', viewport = { width: 1440, height: 860 }, contextOpts = {}) {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1, ...contextOpts })
   const page = await context.newPage()
-  // Gateway-free: answer every REAL API call the page, its ChatPane and the
-  // SideChat make. Array-shaped endpoints must answer [] ({} crashes .map).
-  await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
-    const path = new URL(route.request().url()).pathname
-    const json = (body) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-    if (path === '/api/members') return json({ members: MEMBERS, default_agent: 'kirocrew' })
-    if (path === '/api/crons') return json({ jobs: [] })
-    if (path === '/api/webhooks') return json({ tokens: [] })
-    if (path === '/api/agents') return json({ agents: [], default_agent: 'kirocrew' })
-    const thread = path.match(/^\/api\/members\/([^/]+)\/thread$/)
-    if (thread) {
-      const slug = decodeURIComponent(thread[1])
-      return json({ slot_key: `member-${slug}`, slug, member: slug, created: false })
-    }
-    if (/^\/api\/members\/[^/]+\/activity$/.test(path)) return json({ slug: 'radar', member: 'radar', capped: false, entries: [] })
-    if (/^\/api\/chat\/slots\/[^/]+$/.test(path)) {
-      return json({
-        key: 'member-radar', title: 'radar', running: false, messages: [
-          { role: 'user', content: 'What did you triage tonight?', ts: '2026-09-06T01:00:00Z' },
-          { role: 'assistant', content: REPLY, ts: '2026-09-06T01:00:05Z' },
-        ],
-      })
-    }
-    const isList = /commands|skills|agents|sessions|files|history|models|artifacts|folders/.test(path)
-    return json(isList ? [] : {})
-  })
+  // Gateway-free: the shared Members-page API stub (scripts/lib/members-fixtures.mjs)
+  // answers every REAL call the page, its ChatPane and the SideChat make; this
+  // harness only supplies its own roster and the radar thread under test.
+  await routeMembersApi(page, {
+    key: 'member-radar', title: 'radar', running: false, messages: [
+      { role: 'user', content: 'What did you triage tonight?', ts: '2026-09-06T01:00:00Z' },
+      { role: 'assistant', content: REPLY, ts: '2026-09-06T01:00:05Z' },
+    ],
+  }, { members: MEMBERS })
   await page.goto(`${BASE}/capture/members-page.html?theme=${theme}`)
   await page.waitForSelector('[data-capture-root]')
   await page.getByText('radar', { exact: true }).first().click()

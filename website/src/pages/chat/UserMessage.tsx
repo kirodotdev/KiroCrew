@@ -42,9 +42,16 @@ interface UserMessageProps {
    *  work that ended (#9037 UX review). Fail-closed: no claim without a
    *  running turn. */
   slotRunning?: boolean
+  /** Draw a steer as an ORDINARY user message in every lifecycle state: no
+   *  "Steered into the running turn" badge, no accent tint, no entrance ring,
+   *  no "Steering…" pulse, no requeued note. For a surface that
+   *  has no queue/steer concept to explain (a member DM thread, where every
+   *  send while the member works is a steer), the badge would label every
+   *  such send with the mechanics the surface exists to hide. */
+  hideSteerBadge?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin, slotRunning }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin, slotRunning, hideSteerBadge }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -92,7 +99,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // moment nothing is known, which is the claim this change exists to stop.
   const steerState = (meta as { steerState?: string } | undefined)?.steerState
   const steerOptimistic = !!(meta as { optimistic?: boolean } | undefined)?.optimistic
-  const isSteer = !!(meta && (meta as { steer?: boolean }).steer)
+  const isSteer = !hideSteerBadge
+    && !!(meta && (meta as { steer?: boolean }).steer)
     && steerState !== 'written'
     && steerState !== 'requeued'
     && !(steerOptimistic && !steerState)
@@ -106,8 +114,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // excluded from `isSteer` above, so the accent badge's confirmed-only gating
   // (#7997) is untouched.
   const steerMeta = !!(meta && (meta as { steer?: boolean }).steer)
-  const pendingSteer = steerMeta && !!slotRunning && (steerState === 'written' || (steerOptimistic && !steerState))
-  const requeuedSteer = steerMeta && steerState === 'requeued'
+  // `hideSteerBadge` silences all three lifecycle indicators, not just the
+  // confirmed badge: "Steering…" and "runs as its own message" are the same
+  // steer/queue vocabulary the steer-only surface exists to hide.
+  const pendingSteer = !hideSteerBadge && steerMeta && !!slotRunning && (steerState === 'written' || (steerOptimistic && !steerState))
+  const requeuedSteer = !hideSteerBadge && steerMeta && steerState === 'requeued'
   // Fired from an EFFECT rather than a `useState` initializer, because the state
   // this depends on arrives AFTER mount. The optimistic bubble mounts with
   // `{ steer: true, optimistic: true }` and no `steerState`, so `isSteer` is

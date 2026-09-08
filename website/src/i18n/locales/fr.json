@@ -9925,6 +9925,7 @@
       "worktree_creation_returned_no_path": "La création du worktree n’a renvoyé aucun chemin",
       "loading_earlier_messages": "Chargement des messages précédents…",
       "send_failed_with_error": "Échec de l'envoi : {{error}}",
+      "send_failed_with_error_restored": "Impossible d'envoyer ce message : {{error}}. Votre texte est de retour dans le champ de saisie.",
       "delivery_unconfirmed": "Envoi non confirmé — votre texte est de retour dans le champ de saisie ; vérifiez la conversation avant de renvoyer.",
       "could_not_read_file_reason": "Impossible de lire {{path}} ({{reason}})",
       "screenshot_failed_reason": "Échec de la capture d’écran : {{reason}}",

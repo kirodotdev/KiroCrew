@@ -9925,6 +9925,7 @@
       "worktree_creation_returned_no_path": "La creazione del worktree non ha restituito alcun percorso",
       "loading_earlier_messages": "Caricamento dei messaggi precedenti…",
       "send_failed_with_error": "Invio non riuscito: {{error}}",
+      "send_failed_with_error_restored": "Impossibile inviare questo messaggio: {{error}}. Il testo è tornato nel campo di scrittura.",
       "delivery_unconfirmed": "Consegna non confermata: il testo è tornato nel campo di scrittura; controlla la conversazione prima di inviarlo di nuovo.",
       "could_not_read_file_reason": "Impossibile leggere {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot non riuscito: {{reason}}",
