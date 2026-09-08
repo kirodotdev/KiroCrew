@@ -26,11 +26,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-try:  # POSIX only; pods are refused on hosts without it (require_backend)
-    import fcntl
-except ImportError:  # pragma: no cover - Windows
-    fcntl = None  # type: ignore[assignment]
-
 from kiro_crew import pinned_fs
 from kiro_crew import seed as seed_mod
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
@@ -42,6 +37,7 @@ from kiro_crew.platform_compat import (
     IS_LINUX,
     IS_MACOS,
     IS_POSIX,
+    file_lock,
     find_port_listeners,
     listening_pid_tool_available,
     loopback_owner_pids,
@@ -1032,18 +1028,19 @@ def pod_name_mutex(cfg: PodConfig, name: str):
 
     **Reentrant within a thread** so the CLI can hold it across a transaction
     while :func:`start_pod` / :func:`stop_pod` re-acquire it internally (their own
-    protection for direct callers): flock is per open-file-description, so a naive
-    second acquisition in the same thread would deadlock against itself.
+    protection for direct callers): the OS lock is per open-file-description on
+    POSIX (per byte-range via msvcrt on Windows), so a naive second acquisition
+    in the same thread would deadlock against itself.
 
     Advisory and cooperative by design: every mutating path routes through here.
-    Without ``fcntl`` it degrades to a no-op, which only unit tests reach — pods
-    are refused on those hosts. The lock file is deliberately never deleted:
+    The exclusion is real on every platform via :func:`file_lock`
+    (``fcntl.flock`` on POSIX, ``msvcrt.locking`` on Windows) over a dedicated
+    lock file opened non-truncating (``touch`` + ``"r+"`` -- a ``"w"`` open
+    would erase the file before the acquire, and msvcrt needs the fd writable).
+    The lock file is deliberately never deleted:
     unlinking a lock file another process may be opening reintroduces the race the
     lock exists to close.
     """
-    if fcntl is None:
-        yield
-        return
     held = getattr(_MUTEX_STATE, "held", None)
     if held is None:
         held = _MUTEX_STATE.held = {}
@@ -1057,14 +1054,14 @@ def pod_name_mutex(cfg: PodConfig, name: str):
         return
     cfg.pods_dir.mkdir(parents=True, exist_ok=True)
     lock_file = cfg.pods_dir / f"{key}.lock"
-    with open(lock_file, "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        held[key] = 1
-        try:
-            yield
-        finally:
-            held[key] = 0
-            fcntl.flock(fh, fcntl.LOCK_UN)
+    lock_file.touch(exist_ok=True)
+    with open(lock_file, "r+") as fh:
+        with file_lock(fh.fileno(), exclusive=True, required=True):
+            held[key] = 1
+            try:
+                yield
+            finally:
+                held[key] = 0
 
 
 #: Reserved "name" the plane-wide lock borrows from :func:`pod_name_mutex`. Safe
