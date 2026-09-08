@@ -411,7 +411,23 @@ class AcpRequestTimeout(AcpRuntimeError):
     the request was waiting on can attach that context before it reaches the
     user. Subclasses the base so existing ``except AcpRuntimeError`` handlers
     keep catching it.
+
+    ``transient = True`` is the retry-eligibility verdict read structurally by
+    ``llm_helpers.acp_error_is_transient`` (via ``getattr(exc, "transient",
+    None)``), the same channel ``AcpError.transient`` uses. Every request that
+    can time out here is a control-plane one — ``_send_and_await`` serves only
+    ``initialize`` / ``session/new`` / ``session/load`` / ``set_mode`` / teardown,
+    never the prompt stream (that path raises ``AcpTimeoutError``). A timeout on
+    any of those means the runtime was slow to answer a handshake, not that the
+    work failed: no prompt was dispatched, so nothing was attempted to fail. A
+    cold-start stall is transient host weather, so the retry layer should try
+    again rather than count it. Carrying the verdict on the type — instead of a
+    ``"timed out"`` string added to ``_TRANSIENT_MARKERS`` — decides eligibility
+    by exception type rather than by message wording, so a reword of the timeout
+    message cannot flip retryability.
     """
+
+    transient = True
 
 
 class AcpRuntimeProtocol(Protocol):
