@@ -48,6 +48,7 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [subagent.md](subagent.md) | Spawning background workers, result delivery, and orphan recovery. |
+| [monitor-architecture.md](monitor-architecture.md) | The paradigm every monitoring loop follows: the seven layers, the plural probe contract, level-triggered decision, versioned state, and how to add a new monitored kind. Umbrella over the two implementation specs below. |
 | [agent-interrupt-controller.md](agent-interrupt-controller.md) | `kiro_crew.irq`: masking, coalescing, epoch resets and an error backstop for script-cron pollers, so a cheap probe interrupts an expensive agent turn instead of the turn polling. Also the app-facing probe SDK. |
 | [babysit-pr-watch.md](babysit-pr-watch.md) | Zero-token PR polling for babysit loops: a script cron that wakes the owning session only on unexpected state. |
 | [task.md](task.md) | Task models and state. |
