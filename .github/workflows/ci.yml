@@ -371,7 +371,11 @@ jobs:
     # not classify as frontend -- docs, a new root file, meta -- still runs it.
     if: needs.changes.outputs.only_frontend != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The job's floor on today's hosted runners is ~14-15 min (black --check
+    # over the whole tree alone takes 7-8 min, flake8 ~2 min, mypy cold ~3 min),
+    # so 15 cancelled mypy mid-run on green PRs. 25 is the budget frontend-test
+    # and bundle-size already run on, and leaves headroom for runner variance.
+    timeout-minutes: 25
     strategy:
       matrix:
         python-version: ["3.12"]
