@@ -6,8 +6,10 @@ with the point names in the order the code reaches them -- and then use it for t
 thing it exists for: driving a reload's teardown into the middle of a switch
 handler's commit-then-reset span, deterministically, with no sleep.
 
-That interleaving is the one described in issue #9019, and the test named for it
-below asserts TODAY's outcome, not the desired one. See its docstring.
+That interleaving is what reload joining the same two locks the switch
+handlers hold now closes: the tests named for it below assert the serialized
+outcome -- the second racer blocks on the session lock while the first holds
+it. See their docstrings.
 """
 
 from __future__ import annotations
@@ -177,32 +179,33 @@ class TestInterleaveSeamContract:
 
 
 class TestReloadRacesSwitchCommitResetSpan:
-    """The race in issue #9019, driven through the seam.
+    """The reload-vs-switch race, driven through the seam, serialized.
 
-    ``api_chat_slot_reload`` tears down the slot's effective session while
-    holding neither ``slot._lock`` nor the session-keyed switch lock. The four
-    commit-before-reset switch handlers hold both across their commit-then-reset
-    span. Nothing orders the two, so a reload's teardown can land inside that
-    span -- which is what these tests make happen, deterministically, by
-    suspending one racer at a named point and driving the other from there.
+    Without a shared lock, ``api_chat_slot_reload`` tears down the slot's
+    effective session while holding neither ``slot._lock`` nor the
+    session-keyed switch lock, while the four commit-before-reset switch
+    handlers hold both across their commit-then-reset span -- nothing orders
+    the two. Reload joins the SAME two locks in the SAME order, so its
+    probe-then-teardown is serialized against a switch's span on the same
+    session. These tests drive the interleaving from both directions and
+    prove that the second racer BLOCKS on the session lock while the first
+    holds it, then completes only in the serialized order once the first
+    releases.
     """
 
     @pytest.mark.asyncio
-    async def test_switch_transaction_completes_inside_reloads_unguarded_teardown(
+    async def test_switch_blocks_until_reloads_serialized_teardown_completes(
         self, state, slot, monkeypatch
     ):
-        """A whole model switch runs while reload sits on its pre-teardown point.
+        """A model switch launched while reload holds the locks must wait its turn.
 
-        DEFECT PIN for issue #9019: this asserts the CURRENT outcome, which is
-        the wrong one. Reload holds no lock here, so the switch takes both of
-        its own locks unopposed, commits the new model, and tears the session
-        down -- all inside reload's window -- and reload's own teardown then
-        lands on the session that switch just prepared.
-
-        Serializing reload onto the session-keyed lock flips this test: the
-        switch would block on that lock instead, so ``switch.done()`` stays
-        False and the two assertions marked below fail. That is the intended
-        signal to the fix -- invert them and drop the "unguarded" wording.
+        Reload is suspended at ``reload:pre_reset`` holding both ``slot._lock``
+        and the session-keyed switch lock. A model switch on the same session
+        is launched from there: it BLOCKS on the session
+        lock, so ``switch.done()`` stays False for as long as reload is
+        suspended. Once reload resumes, finishes its teardown and releases the
+        locks, the switch proceeds -- its whole transaction lands strictly
+        AFTER reload's teardown pair.
         """
         order: list[str] = []
         switch: asyncio.Task[object] | None = None
@@ -213,24 +216,31 @@ class TestReloadRacesSwitchCommitResetSpan:
                 order.append(point)
                 if point != "reload:pre_reset":
                     return
-                # Suspended inside reload's teardown. Start the switch here:
-                # whether it can proceed while reload is mid-teardown IS the
-                # question, so run it to completion and record what happened.
+                # Suspended inside reload's teardown while it holds both locks.
+                # Start the switch here and hand the loop back a bounded number
+                # of turns: a serialized switch cannot make progress, so this
+                # proves it blocks rather than interleaves.
                 nonlocal switch
                 switch = asyncio.create_task(
                     client.post(f"/api/chat/slots/{_SLOT}/model", json={"model": _MODEL_NEW})
                 )
-                await _yield_until(lambda: switch is not None and switch.done())
+                blocked = not await _yield_until(lambda: switch is not None and switch.done())
+                # The switch is blocked on the session lock reload holds: it has
+                # made no progress past the lock, so none of its seam points
+                # have fired yet.
+                assert blocked, "switch completed while reload held the session lock"
+                assert "switch:post_commit" not in order
 
             monkeypatch.setattr(chat_handlers, "_test_interleave", _interleave)
             reload_resp = await client.post(f"/api/chat/slots/{_SLOT}/reload")
 
             assert switch is not None
             try:
-                # DEFECT (#9019): the switch got all the way through while
-                # reload's teardown was open. A serialized reload leaves this
-                # False.
-                assert switch.done(), "switch never completed inside reload's window"
+                # Reload has released its locks by now, so the switch that was
+                # blocked runs to completion in the serialized order.
+                assert await _yield_until(
+                    lambda: switch.done()
+                ), "switch never completed after reload released the locks"
                 switch_resp = switch.result()
             finally:
                 switch.cancel()
@@ -239,38 +249,225 @@ class TestReloadRacesSwitchCommitResetSpan:
             assert switch_resp.status == 200
             assert reload_resp.status == 200
 
-        # DEFECT (#9019): the switch's committed value and its teardown both land
-        # between reload's own two points, so reload's pop -- the last entry --
-        # destroys the session the switch reported success for. A serialized
-        # reload orders every switch entry AFTER reload's pair.
+        # Reload's own teardown pair completes BEFORE any switch point: the
+        # switch was blocked on the session lock until reload released it, so
+        # its commit and teardown land strictly after reload's pair.
         assert order == [
             "reload:pre_reset",
-            "switch:post_commit",
             "reset:pre_pop",
             "reset:post_pop",
+            "switch:post_commit",
             "reset:pre_pop",
             "reset:post_pop",
         ]
         assert slot.model == _MODEL_NEW
-        # Two teardowns of ONE session key, unserialized.
+        # Reload's single teardown, then the switch's -- serialized on the one
+        # session key, serialized rather than two unserialized teardowns racing.
         assert state.sessions.reset.await_count == 2
         assert {c.args[0] for c in state.sessions.reset.await_args_list} == {_SESSION_KEY}
 
     @pytest.mark.asyncio
-    async def test_reload_teardown_lands_inside_a_suspended_switch_span(
+    async def test_reload_refuses_a_slot_recreated_under_the_same_name_while_it_queued(
         self, state, slot, monkeypatch
     ):
-        """The same race driven from the other side: switch first, reload second.
+        """A stale slot reference must not authorize tearing down its replacement.
 
-        DEFECT PIN for issue #9019, and the direction that shows the harm the
-        issue names. The switch is suspended after committing its new model and
-        before tearing the old session down, holding both of its locks. Reload
-        then runs its ENTIRE teardown from inside that span, because it joins
-        neither lock -- so the switch resumes and tears down a session that has
-        already been replaced.
+        Reload reads ``state._slots.get(name)`` before ever awaiting, then
+        queues on ``slot._lock``. If the name is deleted and recreated (a
+        different app's slot, or the same app reconnecting) while that request
+        sits on the lock, the locks it eventually acquires belong to the OLD
+        object -- but ``session_key`` and the app-isolation check downstream
+        would resolve against the NEW slot if nothing re-checked identity. This
+        drives that exact window: hold ``slot._lock`` itself (so reload queues
+        on it, never reaching any interleave seam), swap in a same-named
+        replacement, then release. Reload must see the mismatch and refuse
+        with 404 -- not tear down the replacement's session.
+        """
+        replacement = _ChatSlot(_SLOT)
+        replacement.model = _MODEL_OLD
 
-        A serialized reload leaves ``reload.done()`` False while the switch is
-        suspended, failing the assertion marked below.
+        async with TestClient(TestServer(_make_app(state))) as client:
+            async with slot._lock:
+                reload_task = asyncio.create_task(client.post(f"/api/chat/slots/{_SLOT}/reload"))
+                # Give the request a chance to read the (still-current) slot and
+                # queue on the lock this block already holds.
+                stuck = not await _yield_until(lambda: reload_task.done())
+                assert stuck, "reload completed without ever contending for slot._lock"
+
+                # The name is now a different slot object -- same shape a
+                # delete-then-recreate under the same key produces.
+                state._slots[_SLOT] = replacement
+
+            try:
+                resp = await _yield_until(lambda: reload_task.done())
+                assert resp, "reload never completed after slot._lock was released"
+                reload_resp = reload_task.result()
+                reload_status = reload_resp.status
+                reload_body = await reload_resp.json()
+            finally:
+                reload_task.cancel()
+                await asyncio.gather(reload_task, return_exceptions=True)
+
+        assert reload_status == 404
+        assert reload_body["code"] == "slot_not_found"
+        # The replacement's session was never touched by the stale request.
+        state.sessions.reset.assert_not_awaited()
+        assert state._slots[_SLOT] is replacement
+
+    @pytest.mark.asyncio
+    async def test_reload_refuses_a_slot_recreated_while_queued_on_the_session_lock(
+        self, state, slot, monkeypatch
+    ):
+        """The same stale-authorization window, reopened by the SECOND await.
+
+        Reload re-checks slot identity right after ``slot._lock`` -- the test
+        above pins that. But ``_slot_switch_session_lock(session_key)`` is a
+        SECOND suspension point (a concurrent switch on the same session holds
+        it), and nothing re-checks identity between resuming from it and the
+        app-isolation call that follows. This drives that exact window: hold
+        the session lock externally (via the same registry function reload
+        uses) so reload passes ``slot._lock`` and its first re-check, then
+        queues on the session lock; swap in a same-named replacement; release.
+        Reload must refuse with 404 rather than authorize against the
+        replacement.
+        """
+        replacement = _ChatSlot(_SLOT)
+        replacement.model = _MODEL_OLD
+        session_lock = chat_handlers._slot_switch_session_lock(_SESSION_KEY)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            async with session_lock:
+                reload_task = asyncio.create_task(client.post(f"/api/chat/slots/{_SLOT}/reload"))
+                # Give the request a chance to pass slot._lock, pass its first
+                # identity re-check (the slot is still current at this point),
+                # resolve session_key, and queue on the session lock this
+                # block already holds.
+                stuck = not await _yield_until(lambda: reload_task.done())
+                assert stuck, "reload completed without ever contending for the session lock"
+
+                # The name is now a different slot object -- reload is queued
+                # past its first re-check with the OLD slot captured, so only
+                # a second re-check after the session lock catches this.
+                state._slots[_SLOT] = replacement
+
+            try:
+                resp = await _yield_until(lambda: reload_task.done())
+                assert resp, "reload never completed after the session lock was released"
+                reload_resp = reload_task.result()
+                reload_status = reload_resp.status
+                reload_body = await reload_resp.json()
+            finally:
+                reload_task.cancel()
+                await asyncio.gather(reload_task, return_exceptions=True)
+
+        assert reload_status == 404
+        assert reload_body["code"] == "slot_not_found"
+        # The replacement's session was never touched by the stale request.
+        state.sessions.reset.assert_not_awaited()
+        assert state._slots[_SLOT] is replacement
+
+    @pytest.mark.asyncio
+    async def test_reload_refuses_a_rebind_that_lands_while_queued_on_the_session_lock(
+        self, state, slot, monkeypatch
+    ):
+        """A same-slot rebind must not let a stale session_key authorize a teardown.
+
+        Unlike the two tests above, the slot object here is NEVER swapped --
+        ``state._slots[_SLOT] is slot`` holds throughout, so both identity
+        re-checks pass. What changes is ``slot.linked_session_key`` itself: a
+        cron/channel rebind mutates that attribute on the SAME slot object
+        while reload is queued on the session lock it already resolved
+        ``session_key`` from. ``effective_session_key(slot)`` now names a
+        DIFFERENT session than the one the lock guards, so reload must refuse
+        with 409/session_rebound rather than tear the new session down under
+        an authorization computed for the old one.
+        """
+        NEW_SESSION_KEY = "slack:1234.5678"
+        new_lock = chat_handlers._slot_switch_session_lock(NEW_SESSION_KEY)
+        session_lock = chat_handlers._slot_switch_session_lock(_SESSION_KEY)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            async with session_lock:
+                reload_task = asyncio.create_task(client.post(f"/api/chat/slots/{_SLOT}/reload"))
+                # Give the request a chance to pass slot._lock, its first
+                # identity re-check, resolve session_key = _SESSION_KEY, and
+                # queue on the session lock this block already holds.
+                stuck = not await _yield_until(lambda: reload_task.done())
+                assert stuck, "reload completed without ever contending for the session lock"
+
+                # The rebind: same slot object, new linked session. Reload's
+                # captured session_key (_SESSION_KEY) is now stale.
+                slot.linked_session_key = NEW_SESSION_KEY
+
+            try:
+                resp = await _yield_until(lambda: reload_task.done())
+                assert resp, "reload never completed after the session lock was released"
+                reload_resp = reload_task.result()
+                reload_status = reload_resp.status
+                reload_body = await reload_resp.json()
+            finally:
+                reload_task.cancel()
+                await asyncio.gather(reload_task, return_exceptions=True)
+
+        assert reload_status == 409
+        assert reload_body["code"] == "session_rebound"
+        # Neither the stale session nor the new one was torn down by this
+        # request: the guard fires before any teardown call.
+        state.sessions.reset.assert_not_awaited()
+        assert state._slots[_SLOT] is slot
+        assert not new_lock.locked()
+
+    @pytest.mark.asyncio
+    async def test_reload_refuses_a_rebind_that_lands_during_the_reset_await(
+        self, state, slot, monkeypatch
+    ):
+        """The same rebind race, one await later: during the teardown itself.
+
+        The two earlier guards re-check identity/binding before
+        ``_reset_slot_session`` is awaited. ``_bind_cron_slot`` takes NO lock
+        of its own, so a rebind is just as free to land WHILE that await is
+        in flight -- one await later than the second guard's window, and past
+        it. This drives that exact placement: hook ``reset:pre_pop`` (a seam
+        point INSIDE ``_reset_slot_session``, reached only after both earlier
+        guards already passed) to mutate ``slot.linked_session_key`` there,
+        then let the reset and the rest of reload's flow proceed. Reload must
+        still refuse with 409/session_rebound rather than report success for
+        a session that was never touched.
+        """
+        NEW_SESSION_KEY = "slack:9999.1111"
+
+        async def _interleave(point: str) -> None:
+            if point == "reset:pre_pop":
+                slot.linked_session_key = NEW_SESSION_KEY
+
+        monkeypatch.setattr(chat_handlers, "_test_interleave", _interleave)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(f"/api/chat/slots/{_SLOT}/reload")
+            status = resp.status
+            body = await resp.json()
+
+        assert status == 409
+        assert body["code"] == "session_rebound"
+        # The reset itself still ran against the ORIGINAL session_key (the
+        # rebind lands mid-reset, not before it) -- this guard's job is to
+        # stop the response, not to have prevented the one reset already in
+        # flight when the rebind arrived.
+        state.sessions.reset.assert_awaited_once_with(_SESSION_KEY, skip_if_busy=True)
+        assert slot.linked_session_key == NEW_SESSION_KEY
+
+    @pytest.mark.asyncio
+    async def test_reload_blocks_until_a_suspended_switch_releases_its_locks(
+        self, state, slot, monkeypatch
+    ):
+        """The same race from the other side: switch holds the locks, reload waits.
+
+        The switch is suspended at ``switch:post_commit`` after committing its
+        new model and before tearing the old session down, holding both of its
+        locks. A reload on the same session is launched from there: it BLOCKS on the session lock, so ``reload_task.done()`` stays
+        False for as long as the switch is suspended. Only after the switch
+        resumes, finishes its teardown and releases the locks does reload run
+        its own teardown -- strictly AFTER the switch's pair.
         """
         order: list[str] = []
         reload_task: asyncio.Task[object] | None = None
@@ -284,9 +481,19 @@ class TestReloadRacesSwitchCommitResetSpan:
                 order.append(point)
                 if point != "switch:post_commit":
                     return
+                # Suspended inside the switch's span while it holds both locks.
+                # Launch reload and hand the loop back a bounded number of
+                # turns: a serialized reload cannot make progress, so this
+                # proves it blocks rather than interleaves.
                 nonlocal reload_task
                 reload_task = asyncio.create_task(client.post(f"/api/chat/slots/{_SLOT}/reload"))
-                await _yield_until(lambda: reload_task is not None and reload_task.done())
+                blocked = not await _yield_until(
+                    lambda: reload_task is not None and reload_task.done()
+                )
+                # Reload is blocked on the session lock the switch holds: it has
+                # not reached its own pre-reset seam point.
+                assert blocked, "reload completed while the switch held the session lock"
+                assert "reload:pre_reset" not in order
                 hook_completed.set()
 
             monkeypatch.setattr(chat_handlers, "_test_interleave", _interleave)
@@ -296,9 +503,11 @@ class TestReloadRacesSwitchCommitResetSpan:
 
             assert reload_task is not None
             try:
-                # DEFECT (#9019): reload completed a full teardown while the
-                # switch held both locks with its commit already applied.
-                assert reload_task.done(), "reload never completed inside the switch span"
+                # The switch has released its locks by now, so the reload that
+                # was blocked runs to completion in the serialized order.
+                assert await _yield_until(
+                    lambda: reload_task.done()
+                ), "reload never completed after the switch released the locks"
                 reload_resp = reload_task.result()
             finally:
                 reload_task.cancel()
@@ -308,14 +517,14 @@ class TestReloadRacesSwitchCommitResetSpan:
             assert switch_resp.status == 200
 
         assert hook_completed.is_set()
-        # DEFECT (#9019): reload's whole teardown pair sits between the switch's
-        # commit and the switch's own pop, so the switch reports success for a
-        # session reload had already torn down and re-armed.
+        # The switch's whole commit-then-reset pair completes BEFORE reload's
+        # pre-reset point: reload was blocked on the session lock until the
+        # switch released it, so its teardown lands strictly after.
         assert order == [
             "switch:post_commit",
-            "reload:pre_reset",
             "reset:pre_pop",
             "reset:post_pop",
+            "reload:pre_reset",
             "reset:pre_pop",
             "reset:post_pop",
         ]
