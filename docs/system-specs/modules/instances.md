@@ -4,7 +4,8 @@ Lets a single Kiro Crew gateway (the **hub**) manage and switch between several
 **remote** Kiro Crew instances (dev hosts, EC2, home servers) over SSH **or AWS
 SSM Session Manager** tunnels, embedding each remote dashboard as an iframe pane
 below a switcher strip. Opt-in: off by default (`instances.enabled`). The transport is
-per-instance (`connection_method`) — see §13.
+per-instance (`connection_method`) — see §13, and §16 for the same-host
+`loopback` transport that spawns no forwarder at all.
 
 > **Naming — "Remote Instances".** The user-facing surfaces label this feature
 > **Remote Instances**: the Settings section (*Settings → Remote Instances*), the
@@ -49,6 +50,7 @@ mint, diagnostics, injection validation, run-marker) plus
 - [13. The SSM connection method (`connection_method`)](#13-the-ssm-connection-method-connection_method)
 - [14. Session transfer (send a session to another instance)](#14-session-transfer-send-a-session-to-another-instance)
 - [15. Federated session search (search every connected instance at once)](#15-federated-session-search-search-every-connected-instance-at-once)
+- [16. The loopback connection method (same-host gateways)](#16-the-loopback-connection-method-same-host-gateways)
 
 ---
 
@@ -302,6 +304,7 @@ cannot drift.
 | `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks how many crews are registered, so up to an internal ceiling no configured crew is evicted; an explicit value is honoured exactly, including one below the registered count. Negative values fall back to automatic. |
 | `instances.tunnel_base_port` | `7778` | First local loopback port the allocator hands out. Out-of-range values fall back to the default. |
 | `instances.ssh_compression` | `true` | Add `-C` to the tunnel argv. See §5.2. |
+| `instances.allow_loopback_transport` | `false` | Permit `connection_method="loopback"` — a gateway on this host's own loopback, with no forwarder child. Read live rather than at startup. See §16. |
 | `instances.connect_timeout_secs` | unset (SSH `15.0`, SSM `25.0`) | How long (secs) to wait for the local forward port to accept connections before declaring a connect attempt failed. Hosts behind a ProxyCommand or jump host need longer (the proxy handshake runs before ssh begins the forward). An explicit value applies to both transports, including a value equal to either transport's default. Values below 1 fall back to the transport defaults; values above 120 are clamped to 120. |
 | `instances.mint_timeout_secs` | unset (SSH `30.0`, SSM `90.0`) | How long (secs) to wait for the remote `kirocrew token` mint before failing a connect. The mint rides the same ssh transport as the tunnel, so a host behind a ProxyCommand or jump host pays the proxy handshake here too (the connect flow spawns two proxy-bound ssh children: `connect_timeout_secs` budgets the first, this budgets the second). An explicit value applies to both transports, including a value equal to either transport's default — size it for the slowest transport in use. Values below 10 fall back to the transport defaults; values above 120 are clamped with a warning. |
 | `instances.max_recovery_attempts` | `8` | Consecutive self-heal attempts before the tunnel is left disconnected. Below 1 falls back to the default; above `MAX_RECOVERY_ATTEMPTS_CEILING` (100) is clamped with a warning, so a pathological setting cannot turn bounded self-heal into a near-infinite retry loop. |
@@ -1694,3 +1697,169 @@ neither resume nor delete it:
 - Any federated-endpoint failure in the UI — including the `403` when the
   instances feature is off — falls back to the plain local search, which is
   always the floor.
+
+---
+
+## 16. The loopback connection method (same-host gateways)
+
+A third `connection_method`, `"loopback"`, reaches a Kiro Crew gateway that is
+already listening on **this host's own loopback**. It is the one transport with
+**no child process**: there is nothing to forward, so no `ssh`, no
+`session-manager-plugin`, and no credential leaves the machine.
+
+Opt-in and **off by default** (`instances.allow_loopback_transport`, §16.1).
+
+**What it is for.** Two gateways on one host — a second `kirocrew gateway
+--port 5477` beside the default, or a `kirocrew pod` serving an isolated
+`KIROCREW_HOME` — previously had no way to appear in each other's switcher.
+`CONNECTION_METHODS` held only `ssh` and `ssm`, and neither can name this host:
+an ssh self-connect fails host-key verification by design, and SSM requires a
+managed node plus a local plugin. A pod consuming this transport is how the
+instances feature becomes verifiable against a real gateway at all, which is
+the `Refs #8175` link — but the capability is not a test fixture: it is what a
+two-gateway host needs.
+
+| Method | Tunnel | Destination | Mint path |
+|--------|--------|-------------|-----------|
+| `ssh` | `ssh -N -L` child | `<ssh_host>:RP` | `ssh <host> kirocrew token` |
+| `ssm` | `aws ssm start-session` child | `<ssm_target>:RP` | `aws ssm send-command` → `kirocrew token` |
+| `loopback` | **none** | `<loopback_host>:RP` on this host | HTTP `GET /api/token/local` on that port |
+
+Records stay back-compatible: an `instances.json` written before this feature
+has no `loopback_host` and loads as `127.0.0.1`.
+
+### 16.1 Configuration
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `instances.allow_loopback_transport` | `false` | Permit `connection_method="loopback"`. Read **live**, not at startup, so turning it on takes effect without a gateway restart — unlike `instances.enabled`, which decides whether the manager exists at all. |
+
+```bash
+kirocrew config set instances.allow_loopback_transport true
+```
+
+The flag is enforced in **two** places, and both matter. `POST /api/instances` /
+`PATCH` reject a loopback record with `400` / `code:
+"loopback_transport_disabled"`, which is the early reject an operator sees at the
+point they configure it. `SshTunnelManager._resolve_transport` refuses again at
+connect, and that one is authoritative: `instances.json` is agent-writable, so a
+hand-edited record reaches the tunnel without ever passing the API check. An
+unreadable config refuses (fail closed — absence of config is not consent).
+
+### 16.2 Destination validation is loopback-TIGHT
+
+`loopback_host` (registry field, default `127.0.0.1`) is checked by
+`validation.validate_loopback_host`, which is a **parse, not a pattern**:
+`ipaddress.IPv4Address(value).is_loopback`. A regex over dotted quads would be a
+spelling chase — the octal, short-form and IPv4-mapped-IPv6 spellings all have to
+be refused, and each one closed by hand narrows an unbounded set by exactly one.
+Parsing answers the actual question once, and the function returns the CANONICAL
+form (`str(IPv4Address(...))`), so a value carrying a trailing newline cannot
+reach a caller even in principle.
+
+Three refusals carry the weight:
+
+- **Every hostname form, `localhost` included.** A name is resolved outside this
+  process — `/etc/hosts`, NSS, a resolver — so accepting one would put "is this
+  destination local" in the hands of whoever edits that mapping.
+- **Every non-loopback address**, RFC-1918 and link-local included. This
+  transport's whole safety argument is that the destination cannot be off-host;
+  reaching a network peer is what `ssh` and `ssm` are for.
+- **IPv6, including `::1`.** Three URL builders on this path interpolate the host
+  unbracketed (the readiness/health probe, the stored-token probe, the chat
+  proxy), and the ssh transport already pins `AddressFamily=inet`. IPv4 loopback
+  is the family this package speaks; admitting `::1` would mean bracket-quoting
+  a security-sensitive URL builder for no real destination.
+
+The exercised boundary, asserted by test: **accepted** — `127.0.0.1`,
+`127.0.0.2`, `127.1.2.3`, empty (→ default), surrounding whitespace;
+**refused** — `localhost`, `LOCALHOST`, `kirocrew.localhost`, `::1`,
+`0:0:0:0:0:0:0:1`, `::ffff:127.0.0.1`, `0.0.0.0`, `10.0.0.5`, `172.16.0.1`,
+`192.168.1.1`, `169.254.169.254`, `8.8.8.8`, `127.1`, `0177.0.0.1`,
+`127.0.0.1:7904`, `127.0.0.1%eth0`, `-oProxyCommand=x`, `127.0.0.256`.
+
+### 16.3 The mint, and the self-connect ownership carve-out
+
+The ssh and ssm minters run `kirocrew token` on a remote shell. This one has no
+remote: it calls `GET /api/token/local` on the destination port, gated on the
+internal secret that gateway wrote for its own port — the same call
+`pod.runtime.mint_token` makes, and deliberately modelled on it
+(`instances/local_token_mint.py`).
+
+**Which credential.** Only `run/gateway-<port>.secret`, the per-GENERATION,
+per-PORT credential written `0600` inside the `0700` `run/` dir. Never the shared
+`.local_secret`: that file is last-writer-wins per data home, so on a two-gateway
+host it names whichever started most recently, and sending it to the other one
+both fails and puts a live credential on the wire for a listener it does not
+authenticate.
+
+**Why a listener must prove itself.** A port carries no evidence of who holds it,
+and the credential goes on the wire before any reply comes back. `kirocrew token
+--port P` is not a usable substitute precisely because it does neither check: an
+explicit `--port` skips the ownership proof, and `read_local_secret` then falls
+back to the shared secret — so routing this feature through it would have turned
+an owner-only API field into "send this data home's internal secret to whatever
+is listening on an arbitrary loopback port". The mint therefore requires
+`port_resolution.port_is_gateway_owned(port)` and **refuses** when it cannot be
+obtained, rather than degrading to send-and-see.
+
+**The carve-out.** There is exactly one case where no proof is possible *or
+needed*: when the destination port is **this gateway's own bound port**, the
+listener is this very process. `mint_loopback_token` takes `own_port` and derives
+that itself rather than accepting a `require_proof` flag — a security-relevant
+boolean a caller can pass wrongly, versus a fact.
+
+That carve-out is not a convenience. `port_is_gateway_owned` needs
+`platform_compat.find_listening_pids`, which on POSIX needs `lsof` to attribute a
+socket to a pid, and on hosts where `/proc` is opaque to that lookup it returns
+`[]` for a listener that is plainly alive (**#9188**). Measured on the
+verification host: `/usr/bin/lsof` present and trusted,
+`lsof -nP -iTCP:<port> -sTCP:LISTEN -Fptn` **empty**, while the gateway on that
+port answered `/api/health` with **200**. Without the carve-out the transport
+would be permanently dead on such a host — including for the #8175 verification
+it exists to unblock — while the cross-process case still gets the full proof.
+
+### 16.4 What the shared state machine already covered
+
+The readiness wait, the health probe and the teardown all watch a **port**, so
+they carry over unchanged to a transport with no process. Only two things
+genuinely depended on a child:
+
+- **Spawning** — `_SshTunnel._spawn_child` returns success without spawning.
+  `_proc` stays `None`, which every downstream reader already treats as "no
+  child" (`_failed_on_child_exit`, `_capture_stderr`, `_terminate`, `pid`).
+- **Reading a failure off its exit** — normally a child exit is what publishes an
+  ERROR status and fires `on_exit`. `_SshTunnel._fail_unhealthy` publishes that
+  verdict directly when there is no child, so a destination gateway that goes
+  away still triggers recovery instead of sitting CONNECTED forever.
+
+Consequences worth stating:
+
+- **`local_port == remote_port`.** `_acquire_local_port` allocates a free port
+  for a transport that BINDS one and returns the destination port verbatim for
+  the one that DIALS one — including the pre-flight, which is inverted between
+  them: a port to bind must be free, a port to dial must be occupied.
+- **Self-heal.** Tier 1 (rebuild the tunnel) is a no-op; Tier 2 (re-mint) is the
+  real recovery.
+- **Forwarder reclaim never engages.** No child means `forwarder_pid` is the `0`
+  sentinel, and the reclaim refuses an unrecorded identity outright. A record
+  hand-edited to carry a pid fails the HMAC the gateway never wrote.
+- **`restart_remote` is refused** (`ok: false`): there is no remote, and
+  restarting a gateway on this host is the operator's own `kirocrew restart`.
+- **Diagnosis** (`diagnose_instance_loopback`) has two rungs, not three —
+  destination up? then connected? A `tunnel_down` verdict could never be true,
+  so it is absent rather than reworded.
+
+### 16.5 Security posture
+
+- **Nothing is exposed.** No listener is created, no port is bound, no forward
+  exists; the transport only DIALS a port on `127.0.0.0/8`.
+- **No new framing privilege.** The dashboard CSP already carries loopback
+  origins in `frame-src` unconditionally for the Web Preview panel (§2), so a
+  pane on a loopback port is not a new capability — only a new reason to have
+  one.
+- **The credential never crosses a machine boundary**, and never reaches the
+  browser: the minted dashboard token follows the same two-route rule as the
+  other transports (`connect` + `refresh-token`, §6), and the internal secret is
+  read in-process and sent only to a proven listener.
+- **Off by default**, enforced at both the API write and the connect.

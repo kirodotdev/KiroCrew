@@ -125,6 +125,13 @@ DEFAULT_CONNECT_TIMEOUT_SECS: float = 15.0
 # an explicit ``connect_timeout_secs`` override, it wins for both transports.
 DEFAULT_SSM_CONNECT_TIMEOUT_SECS: float = 25.0
 
+# The loopback transport spawns no forwarder: the destination gateway is already
+# listening on this host, so readiness is a single loopback TCP connect that
+# either works now or is not going to. The wait exists only to cover a
+# destination still binding its port (a sibling gateway started moments ago), so
+# it is short — a longer one would just delay an honest "nothing is there".
+DEFAULT_LOOPBACK_CONNECT_TIMEOUT_SECS: float = 5.0
+
 # Upper bound (secs) on a user-configured instances.connect_timeout_secs. Keeps
 # a pathological value from making the connect path hang indefinitely. 120s is
 # generous enough for any realistic proxy chain while still bounding the wait.
@@ -154,6 +161,11 @@ DEFAULT_MINT_TIMEOUT_SECS: float = 30.0
 # higher than the direct-ssh mint's. When the user supplies an explicit
 # (non-None) ``mint_timeout_secs`` override, it wins for both transports.
 DEFAULT_SSM_MINT_TIMEOUT_SECS: float = 90.0
+
+# The loopback mint is one HTTP request to a gateway on this host's loopback —
+# no ssh child, no proxy handshake, no SSM dispatch latency. Sized for a busy
+# event loop rather than for a network.
+DEFAULT_LOOPBACK_MINT_TIMEOUT_SECS: float = 10.0
 
 # Bounds on a user-configured instances.mint_timeout_secs. Below the floor
 # falls back to the default (a mint that can't finish in under 10s of budget

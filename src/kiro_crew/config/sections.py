@@ -5002,6 +5002,21 @@ class InstancesConfig:
             "one below the number of configured crews.",
         ),
     )
+    allow_loopback_transport: bool = field(
+        default=False,
+        metadata=_meta(
+            "Allow Loopback Transport",
+            "Allow instances with connection_method 'loopback' — a gateway reached on "
+            "THIS host's own loopback rather than over ssh or SSM, with no forwarder "
+            "process and no credential leaving the machine. Off by default: it is only "
+            "useful when you run more than one gateway on this host (or are verifying "
+            "the instances feature against this one), and keeping it opt-in means a "
+            "hand-edited instances.json cannot make the gateway dial its own loopback "
+            "ports on an install that never asked for it. The destination must be a "
+            "numeric loopback address (127.0.0.0/8); hostnames and every off-host "
+            "address are refused.",
+        ),
+    )
     tunnel_base_port: int = field(
         default=_DEFAULT_TUNNEL_BASE_PORT,
         metadata=_meta(

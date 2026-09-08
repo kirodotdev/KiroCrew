@@ -2,9 +2,11 @@
 
 Backs the *Instances* feature (multi-instance management). The registry is a
 small JSON file at ``~/.kiro/crew/instances.json``. Each record describes how to
-reach one remote Kiro Crew over **either SSH or AWS SSM Session Manager**
-(``connection_method``); the *local* instance is implicit (the gateway itself)
-and is never stored here.
+reach one Kiro Crew gateway over **SSH, AWS SSM Session Manager, or this host's
+own loopback** (``connection_method``); the *local* instance -- this gateway
+itself, as the switcher's ``Local`` entry -- is implicit and is never stored
+here. A ``loopback`` record is not that entry: it names a gateway reached on
+loopback, which may be a sibling on another port or this gateway's own port.
 
 Two persisted hints support lazy reconnect on gateway restart:
 
@@ -21,6 +23,8 @@ Security notes (standard practices):
 * ``ssh_host`` and ``remote_bin`` get a light charset check here to reject
   obviously malformed input early; the injection-safe validation that guards
   the actual ``ssh`` command line lives with the ``SshTunnelManager``.
+  ``loopback_host`` is checked here by the same authoritative parser the
+  manager applies, since "is this a loopback literal" has no weaker early form.
 * Writes go through :func:`kiro_crew.atomic_write.atomic_write` (temp file +
   rename) so a crash mid-write can't corrupt the registry.
 
@@ -42,6 +46,11 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import _DEFAULT_PORT, config_dir
 from kiro_crew.instances.constants import TTL_PATTERN
 from kiro_crew.instances.validation import _AWS_PROFILE_RE as _validation_aws_profile_re
+from kiro_crew.instances.validation import (
+    DEFAULT_LOOPBACK_HOST,
+    LoopbackValidationError,
+    validate_loopback_host,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +110,17 @@ _DEFAULT_TTL = "20h"
 # (ssh -N -L); "ssm" tunnels over AWS Systems Manager Session Manager
 # (aws ssm start-session --document-name AWS-StartPortForwardingSession),
 # needing no inbound SSH port and no SSH key — only IAM + the SSM agent.
-CONNECTION_METHODS: tuple[str, ...] = ("ssh", "ssm")
-_DEFAULT_CONNECTION_METHOD = "ssh"
+# "loopback" reaches a gateway already listening on THIS host's loopback and so
+# spawns no forwarder at all; it is gated on instances.allow_loopback_transport.
+CONNECTION_METHOD_SSH = "ssh"
+CONNECTION_METHOD_SSM = "ssm"
+CONNECTION_METHOD_LOOPBACK = "loopback"
+CONNECTION_METHODS: tuple[str, ...] = (
+    CONNECTION_METHOD_SSH,
+    CONNECTION_METHOD_SSM,
+    CONNECTION_METHOD_LOOPBACK,
+)
+_DEFAULT_CONNECTION_METHOD = CONNECTION_METHOD_SSH
 
 # ``local_port == 0`` is the sentinel for "not yet allocated" — the port
 # allocator (Stage 3) assigns a real port at connect time.
@@ -165,7 +183,10 @@ class Instance:
     ``connection_method`` selects the transport: ``"ssh"`` (default, uses
     ``ssh_host``/``remote_bin``) or ``"ssm"`` (uses ``ssm_target`` — an EC2/SSM
     managed-instance id — plus optional ``aws_profile``/``aws_region``; no SSH
-    key or inbound port needed). Both methods share ``remote_port``/``ttl``.
+    key or inbound port needed), or ``"loopback"`` (uses ``loopback_host`` —
+    this host's own loopback — and reaches a gateway already listening there,
+    so nothing is forwarded and no credential leaves the machine). All three
+    share ``remote_port``/``ttl``.
     """
 
     id: str
@@ -175,7 +196,7 @@ class Instance:
     local_port: int = _UNALLOCATED_PORT
     ttl: str = _DEFAULT_TTL
     remote_bin: str = ""
-    # "ssh" (default) or "ssm" — see CONNECTION_METHODS.
+    # "ssh" (default), "ssm" or "loopback" — see CONNECTION_METHODS.
     connection_method: str = _DEFAULT_CONNECTION_METHOD
     # SSM-only fields. ssm_target is an EC2 instance id (i-...) or SSM managed
     # instance id (mi-...); aws_profile/aws_region are optional (empty = use the
@@ -188,6 +209,10 @@ class Instance:
     # launcher-provisioned AL2023 user; set "ubuntu" (or whoever runs the remote
     # gateway) on other AMIs, otherwise the tunnel comes up but the mint fails.
     ssm_run_as: str = _DEFAULT_SSM_RUN_AS
+    # Loopback-only field: the numeric loopback address the destination gateway
+    # listens on, defaulting to 127.0.0.1. Never a hostname — see
+    # validation.validate_loopback_host for why the name form is refused.
+    loopback_host: str = DEFAULT_LOOPBACK_HOST
     # Sticky "connection intent" — the source of truth for whether a tab should
     # exist for this instance. Set True when a tunnel is opened and cleared ONLY
     # on an explicit user disconnect; deliberately LEFT TRUE across gateway
@@ -225,11 +250,19 @@ class Instance:
                 f"invalid connection_method {self.connection_method!r}: "
                 f"must be one of {CONNECTION_METHODS}"
             )
-        if self.connection_method == "ssh":
+        if self.connection_method == CONNECTION_METHOD_SSH:
             if not self.ssh_host or not _SSH_HOST_RE.match(self.ssh_host):
                 raise InvalidInstanceError(
                     f"invalid ssh_host {self.ssh_host!r}: must match {_SSH_HOST_RE.pattern}"
                 )
+        elif self.connection_method == CONNECTION_METHOD_LOOPBACK:
+            # Delegated to the authoritative guard rather than re-spelled as a
+            # charset check here: the answer is "does this parse as a loopback
+            # literal", which a pattern can only approximate.
+            try:
+                validate_loopback_host(self.loopback_host)
+            except LoopbackValidationError as e:
+                raise InvalidInstanceError(str(e)) from e
         else:  # ssm
             if not self.ssm_target or not _SSM_TARGET_RE.match(self.ssm_target):
                 # No regex in the message — it reaches the Settings form verbatim.
@@ -293,6 +326,7 @@ class Instance:
             "aws_profile": self.aws_profile,
             "aws_region": self.aws_region,
             "ssm_run_as": self.ssm_run_as,
+            "loopback_host": self.loopback_host,
             "was_connected": self.was_connected,
             "forwarder_pid": self.forwarder_pid,
             "forwarder_start": self.forwarder_start,
@@ -329,6 +363,10 @@ class Instance:
             # by an older build has no key, and one written with an explicit
             # empty string would fail validation — both mean "use the default".
             ssm_run_as=str(data.get("ssm_run_as", "") or _DEFAULT_SSM_RUN_AS),
+            # Same "" -> default treatment as ssm_run_as above, for the same two
+            # reasons: an older record has no key at all, and an explicit empty
+            # value means "the standard loopback address".
+            loopback_host=str(data.get("loopback_host", "") or DEFAULT_LOOPBACK_HOST),
             was_connected=bool(data.get("was_connected", False)),
             # max(): a hand-edited negative pid normalizes to the sentinel
             # rather than poisoning every later update() with a validate error
@@ -451,6 +489,7 @@ class InstancesRegistry:
         aws_profile: str = "",
         aws_region: str = "",
         ssm_run_as: str = _DEFAULT_SSM_RUN_AS,
+        loopback_host: str = DEFAULT_LOOPBACK_HOST,
         instance_id: str | None = None,
     ) -> Instance:
         """Add a new instance and return it.
@@ -459,8 +498,8 @@ class InstancesRegistry:
         to disambiguate collisions. Raises :class:`DuplicateInstanceError` if an
         explicit id already exists, or :class:`InvalidInstanceError` on bad input.
 
-        *connection_method* selects the transport ("ssh" or "ssm"); the fields
-        required depend on it — see :meth:`Instance.validate`.
+        *connection_method* selects the transport ("ssh", "ssm" or "loopback");
+        the fields required depend on it — see :meth:`Instance.validate`.
         """
         with self._lock:
             doc = self._read()
@@ -491,6 +530,7 @@ class InstancesRegistry:
                 aws_profile=aws_profile,
                 aws_region=aws_region,
                 ssm_run_as=ssm_run_as or _DEFAULT_SSM_RUN_AS,
+                loopback_host=loopback_host or DEFAULT_LOOPBACK_HOST,
                 was_connected=False,
             )
             inst.validate()
@@ -501,7 +541,7 @@ class InstancesRegistry:
                 "Added instance %s (%s: %s)",
                 inst.id,
                 inst.connection_method,
-                inst.ssh_host or inst.ssm_target,
+                inst.ssh_host or inst.ssm_target or inst.loopback_host,
             )
             return inst
 
@@ -513,7 +553,8 @@ class InstancesRegistry:
         Accepts any of: ``name``, ``ssh_host``, ``remote_port``, ``local_port``,
         ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
         ``ssm_run_as``,
-        ``aws_profile``, ``aws_region``, ``was_connected``, ``forwarder_pid``,
+        ``aws_profile``, ``aws_region``, ``loopback_host``, ``was_connected``,
+        ``forwarder_pid``,
         ``forwarder_start``, ``forwarder_sig``.
         The ``id`` is
         immutable. ``mark_last_active=True`` additionally records the instance
@@ -534,6 +575,7 @@ class InstancesRegistry:
             "ssm_run_as",
             "aws_profile",
             "aws_region",
+            "loopback_host",
             "was_connected",
             "forwarder_pid",
             "forwarder_start",

@@ -1,4 +1,4 @@
-"""Injection-safe validation for SSH and SSM connection inputs.
+"""Injection-safe validation for SSH, SSM and loopback connection inputs.
 
 The ``SshTunnelManager`` and token-mint helper pass ``ssh_host`` and
 ``remote_bin`` into ``ssh`` argv lists, or ``ssm_target``/``aws_profile``/
@@ -20,10 +20,16 @@ remain:
 Validation lives here, with the tunnel manager, rather than in the registry:
 the registry does a light early-reject charset check, but this is the
 authoritative guard applied immediately before a command line is built.
+
+The ``loopback`` transport builds no command line at all -- it dials a gateway
+already listening on this host -- so its guard answers a different question:
+whether the configured destination is a numeric loopback address. See
+:func:`validate_loopback_host`.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import re
 
 from kiro_crew.constants import AWS_PROFILE_NAME_RE
@@ -67,6 +73,13 @@ _AWS_PROFILE_RE = AWS_PROFILE_NAME_RE
 # aws_region: standard AWS region shape (e.g. us-east-1, us-gov-west-1).
 _AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}\Z")
 
+# The loopback transport's destination address. IPv4 only, and deliberately so:
+# every URL this module's callers build (the readiness/health probe, the
+# stored-token probe, the chat proxy) interpolates the host unbracketed, which an
+# IPv6 literal would break, and the ssh transport already pins
+# ``AddressFamily=inet`` — IPv4 loopback is the family this whole package speaks.
+DEFAULT_LOOPBACK_HOST = "127.0.0.1"
+
 
 class SshValidationError(ValueError):
     """Raised when an ssh_host or remote_bin fails injection-safe validation."""
@@ -74,6 +87,58 @@ class SshValidationError(ValueError):
 
 class SsmValidationError(ValueError):
     """Raised when an ssm_target, aws_profile, or aws_region fails validation."""
+
+
+class LoopbackValidationError(ValueError):
+    """Raised when a loopback destination is not a numeric loopback address."""
+
+
+def validate_loopback_host(loopback_host: str) -> str:
+    """Return *loopback_host* if it names this host's own loopback, else raise.
+
+    Empty resolves to :data:`DEFAULT_LOOPBACK_HOST`, so a record that omits the
+    field addresses ``127.0.0.1``.
+
+    Accepts only a NUMERIC IPv4 loopback literal (``127.0.0.0/8``). Three
+    refusals carry the weight:
+
+    * **Every hostname form, ``localhost`` included.** A name is resolved by
+      something outside this process -- ``/etc/hosts``, NSS, a resolver -- so
+      accepting one would put "is this destination local" in the hands of
+      whoever can edit that mapping. ``ipaddress`` parses literals only, which
+      is why the check is a parse rather than a pattern.
+    * **Every non-loopback address**, private RFC-1918 ranges and link-local
+      included. This transport's entire safety argument is that the destination
+      cannot be off-host; ``10.0.0.5`` is a network peer, and reaching one is
+      what the ssh and ssm transports are for.
+    * **IPv6, including ``::1``.** See :data:`DEFAULT_LOOPBACK_HOST`.
+
+    ``0.0.0.0`` is refused by the same rule: it is a wildcard bind address, not
+    a destination, and is not loopback.
+    """
+    if loopback_host is None:
+        return DEFAULT_LOOPBACK_HOST
+    if not isinstance(loopback_host, str):
+        raise LoopbackValidationError("loopback_host must be a string")
+    host = loopback_host.strip()
+    if not host:
+        return DEFAULT_LOOPBACK_HOST
+    try:
+        addr = ipaddress.IPv4Address(host)
+    except ipaddress.AddressValueError as e:
+        raise LoopbackValidationError(
+            f"invalid loopback_host {host!r}: must be a numeric IPv4 loopback "
+            f"address such as {DEFAULT_LOOPBACK_HOST} (a hostname is not "
+            f"accepted, because resolving one would decide off-host reachability "
+            f"outside this gateway)"
+        ) from e
+    if not addr.is_loopback:
+        raise LoopbackValidationError(
+            f"invalid loopback_host {host!r}: not a loopback address. The "
+            f"loopback transport reaches a gateway on this same host; use the "
+            f"ssh or ssm transport for anything reachable over a network."
+        )
+    return str(addr)
 
 
 def validate_ssh_host(ssh_host: str) -> str:

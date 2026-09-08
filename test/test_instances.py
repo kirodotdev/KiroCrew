@@ -77,6 +77,7 @@ class TestConfig:
         assert d["instances"] == {
             "enabled": False,
             "warm_set_cap": 0,
+            "allow_loopback_transport": False,
             "tunnel_base_port": 7778,
             "ssh_compression": True,
             "connect_timeout_secs": None,
@@ -90,6 +91,7 @@ class TestConfig:
             "instances",
             "instances.enabled",
             "instances.warm_set_cap",
+            "instances.allow_loopback_transport",
             "instances.tunnel_base_port",
             "instances.ssh_compression",
             "instances.connect_timeout_secs",
@@ -7506,3 +7508,107 @@ class TestProxyHandlerPolicy:
         assert _body(await api_instances_proxy(req))["code"] == "proxy_method_not_allowed"
         req = self._req(tmp_path, monkeypatch, path="api/chat/slots", manager=None)
         assert _body(await api_instances_proxy(req))["code"] == "instances_manager_unavailable"
+
+
+class TestLoopbackTransport:
+    """The loopback transport: destination validation and the config gate."""
+
+    # Every accepted spelling is a numeric IPv4 loopback literal; empty resolves
+    # to the default. The refusal list is the point of the test -- it pins the
+    # spellings a regex over dotted quads would have had to chase one at a time.
+    ACCEPTED = ("127.0.0.1", "127.0.0.2", "127.1.2.3", "", "  ", " 127.0.0.1 ")
+    REFUSED = (
+        "localhost",
+        "LOCALHOST",
+        "kirocrew.localhost",
+        "::1",
+        "0:0:0:0:0:0:0:1",
+        "::ffff:127.0.0.1",
+        "0.0.0.0",
+        "10.0.0.5",
+        "172.16.0.1",
+        "192.168.1.1",
+        "169.254.169.254",
+        "8.8.8.8",
+        "127.1",
+        "0177.0.0.1",
+        "127.0.0.1:7904",
+        "127.0.0.1%eth0",
+        "-oProxyCommand=x",
+        "127.0.0.256",
+    )
+
+    def test_validator_accepts_only_numeric_loopback(self):
+        from kiro_crew.instances.validation import (
+            DEFAULT_LOOPBACK_HOST,
+            LoopbackValidationError,
+            validate_loopback_host,
+        )
+
+        for value in self.ACCEPTED:
+            got = validate_loopback_host(value)
+            assert got == (DEFAULT_LOOPBACK_HOST if not value.strip() else value.strip())
+        for value in self.REFUSED:
+            with pytest.raises(LoopbackValidationError):
+                validate_loopback_host(value)
+
+    def test_validator_returns_the_canonical_form(self):
+        """A trailing newline cannot reach a caller: the return is re-serialized."""
+        from kiro_crew.instances.validation import validate_loopback_host
+
+        assert validate_loopback_host("127.0.0.1\n") == "127.0.0.1"
+
+    def test_record_roundtrips_and_defaults(self):
+        from kiro_crew.instances.registry import (
+            CONNECTION_METHOD_LOOPBACK,
+            CONNECTION_METHODS,
+            Instance,
+        )
+
+        assert CONNECTION_METHOD_LOOPBACK in CONNECTION_METHODS
+        inst = Instance(id="lb", name="lb", connection_method=CONNECTION_METHOD_LOOPBACK)
+        inst.validate()  # no ssh_host / ssm_target required
+        assert inst.loopback_host == "127.0.0.1"
+        # A record written before this feature has no key at all.
+        legacy = Instance.from_dict({"id": "old", "name": "old"})
+        assert legacy.loopback_host == "127.0.0.1"
+        assert Instance.from_dict(inst.to_dict()).loopback_host == "127.0.0.1"
+
+    def test_record_rejects_an_off_host_destination(self):
+        from kiro_crew.instances.registry import (
+            CONNECTION_METHOD_LOOPBACK,
+            InvalidInstanceError,
+            Instance,
+        )
+
+        inst = Instance(
+            id="lb",
+            name="lb",
+            connection_method=CONNECTION_METHOD_LOOPBACK,
+            loopback_host="10.0.0.5",
+        )
+        with pytest.raises(InvalidInstanceError):
+            inst.validate()
+
+    def test_connect_is_refused_while_the_transport_is_opted_out(self, tmp_path, monkeypatch):
+        """The authoritative gate: instances.json is agent-writable."""
+        from kiro_crew.instances.registry import (
+            CONNECTION_METHOD_LOOPBACK,
+            Instance,
+            InstancesRegistry,
+        )
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
+        from kiro_crew.instances.validation import LoopbackValidationError
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        reg = InstancesRegistry(tmp_path)
+        mgr = SshTunnelManager(reg, allow_loopback=False)
+        inst = Instance(id="lb", name="lb", connection_method=CONNECTION_METHOD_LOOPBACK)
+        with pytest.raises(LoopbackValidationError):
+            mgr._resolve_transport(inst)
+        mgr_on = SshTunnelManager(reg, allow_loopback=True)
+        params = mgr_on._resolve_transport(inst)
+        assert params.method == CONNECTION_METHOD_LOOPBACK
+        assert params.loopback_host == "127.0.0.1"
+        # The transport that DIALS a port never allocates one.
+        assert params.binds_local_port is False

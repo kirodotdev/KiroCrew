@@ -42,6 +42,7 @@ from kiro_crew.instances.constants import (
     PROXY_REQUEST_BODY_MAX_BYTES,
 )
 from kiro_crew.instances.registry import (
+    CONNECTION_METHOD_LOOPBACK,
     DEFAULT_REMOTE_PORT,
     DuplicateInstanceError,
     InstanceNotFoundError,
@@ -89,6 +90,32 @@ def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "
 # (see coordsOf() in RemoteCrewPanel.tsx). Locked from PATCH for a correlated
 # cloud instance — see _is_correlated_cloud_instance().
 _ADDRESSING_FIELDS = {"connection_method", "ssm_target", "aws_profile", "aws_region"}
+
+
+def _loopback_transport_denied(connection_method: str) -> web.Response | None:
+    """Refuse writing a loopback record while the transport is opted out.
+
+    The manager refuses to CONNECT one regardless (``instances.json`` is
+    agent-writable, so that is the authoritative gate). This is the early
+    reject, so an operator who has not turned the transport on is told at the
+    point they configure it rather than at a later connect that looks broken.
+    """
+    if (connection_method or "").strip().lower() != CONNECTION_METHOD_LOOPBACK:
+        return None
+    if KiroCrewConfig.load().instances.allow_loopback_transport:
+        return None
+    _audit("add", "denied", error="loopback transport not enabled")
+    return web.json_response(
+        {
+            "error": (
+                "the loopback transport is off. Turn it on with `kirocrew config "
+                "set instances.allow_loopback_transport true` and restart the "
+                "gateway."
+            ),
+            "code": "loopback_transport_disabled",
+        },
+        status=400,
+    )
 
 
 def _is_correlated_cloud_instance(ssm_target: str) -> bool:
@@ -289,6 +316,11 @@ async def api_instances_add(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "invalid_body"}, status=400
         )
+    denied_loopback = await asyncio.to_thread(
+        _loopback_transport_denied, str(body.get("connection_method", ""))
+    )
+    if denied_loopback is not None:
+        return denied_loopback
     try:
         inst = await asyncio.to_thread(
             reg.add,
@@ -302,6 +334,7 @@ async def api_instances_add(request: web.Request) -> web.Response:
             ssm_run_as=str(body.get("ssm_run_as", "")),
             aws_profile=str(body.get("aws_profile", "")),
             aws_region=str(body.get("aws_region", "")),
+            loopback_host=str(body.get("loopback_host", "")),
             instance_id=body.get("id"),
         )
     except DuplicateInstanceError as e:
@@ -335,6 +368,7 @@ _PATCH_FIELD_TYPES: dict[str, type] = {
     "ssm_run_as": str,
     "aws_profile": str,
     "aws_region": str,
+    "loopback_host": str,
     "remote_port": int,
 }
 
@@ -396,6 +430,7 @@ async def api_instances_update(request: web.Request) -> web.Response:
         "aws_profile",
         "aws_region",
         "remote_bin",
+        "loopback_host",
     }
     current = await asyncio.to_thread(reg.get, instance_id)
     if current is None:
