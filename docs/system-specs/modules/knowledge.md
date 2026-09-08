@@ -156,7 +156,7 @@ It includes markdown/plain-text (`.md`/`.txt`/`.org`), source-code extensions, a
   and releases each page immediately after extraction so its parsed-layout cache does not
   remain resident until the whole document closes (`Page.close()` when available, with
   `flush_cache()` compatibility for pdfplumber 0.10).
-- `_read_docx` — python-docx; converts `Heading N` paragraph styles to `#`-prefixed markdown (`content_type: 'markdown'`), records `paragraph_count`.
+- `_read_docx` — python-docx; extracts body and table-cell paragraphs in document order, including nested tables and each physical merged cell once. Converts `Heading N` paragraph styles to `#`-prefixed markdown (`content_type: 'markdown'`); `paragraph_count` remains the top-level body paragraph count. Revision-wrapped paragraphs remain excluded.
 - `_read_html` — html2text when importable (`ignore_images=True`, `ignore_links=False`); otherwise a regex fallback strips `<script>`/`<style>` and tags.
 
 Base metadata always carries `format`, `title` (file stem), `file_size`, `extension`, and a computed `line_count`.
