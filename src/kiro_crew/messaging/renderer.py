@@ -270,23 +270,23 @@ def display_safe(text: str) -> str:
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
 
 
-def credential_redaction_notice(count: int) -> str:
+def redaction_notice(cred_count: int, url_count: int = 0) -> str:
     """The notice a channel sends after delivering text redaction rewrote.
 
     Lives beside :func:`display_safe` because it is the other half of the same
-    outbound contract: that function guarantees the credential does not reach the
+    outbound contract: that function guarantees the credential/URL does not reach the
     channel, and this one tells the reader it happened. Shared across channels so
     one sentence cannot drift into per-channel spellings that each have to be
     reviewed for leaked bytes.
 
-    ``count`` is the number of redaction placeholders standing in the text that
-    actually shipped, so the wording matches what the reader can see above the
-    notice. It carries NO secret bytes: by the time it is built a tag has already
-    replaced them, and only the count is used.
+    ``cred_count`` and ``url_count`` are the numbers of redaction placeholders
+    standing in the text that actually shipped, so the wording matches what the
+    reader can see above the notice. It carries NO secret bytes: by the time it is
+    built a tag has already replaced them, and only the counts are used.
 
     Says "a redaction placeholder" rather than naming a specific tag, because the
-    redactor emits more than one (``security.CREDENTIAL_REDACTION_TAGS``) and
-    naming one would print a marker the reader cannot find whenever the
+    redactor emits more than one (``security.CREDENTIAL_REDACTION_TAGS`` and the URL
+    prefix) and naming one would print a marker the reader cannot find whenever the
     substitution came from a different pass.
 
     Plain text with no markup and no emoji, so one string is correct on every
@@ -299,13 +299,35 @@ def credential_redaction_notice(count: int) -> str:
     pasting text that cannot run, which is the reported failure -- an opaque
     downstream error far from the real cause.
     """
-    subject = "A credential" if count == 1 else f"{count} credentials"
-    verb = "was" if count == 1 else "were"
+    subjects: list[str] = []
+    if cred_count:
+        subjects.append("a credential" if cred_count == 1 else f"{cred_count} credentials")
+    if url_count:
+        subjects.append("a suspicious URL" if url_count == 1 else f"{url_count} suspicious URLs")
+    subject = " and ".join(subjects)
+    subject = subject[0].upper() + subject[1:]
+    verb = "was" if (cred_count + url_count) == 1 and len(subjects) == 1 else "were"
+    lead = "Any command shown above" if not url_count else "Any command or link shown above"
+    if cred_count and url_count:
+        remedy = (
+            "supply the secret yourself on the machine where you run it, and "
+            "re-check any redacted URL against a trusted source."
+        )
+    elif cred_count:
+        remedy = "supply the secret yourself on the machine where you run it."
+    else:
+        remedy = "re-check the original URL against a trusted source before using it."
     return (
         f"Security notice: {subject} in the message above {verb} replaced with a "
-        "redaction placeholder. Any command shown will not work if you paste it "
-        "as-is; supply the secret yourself on the machine where you run it."
+        f"redaction placeholder before it reached this page. {lead} "
+        f"will not work if you paste it as-is; {remedy}"
     )
+
+
+# Backward compatibility alias
+def credential_redaction_notice(count: int) -> str:
+    """Backward compatible alias for credential-only redaction notices."""
+    return redaction_notice(cred_count=count, url_count=0)
 
 
 def _choice_display_safe(text: str, capabilities: TransportCapabilities | None) -> str:

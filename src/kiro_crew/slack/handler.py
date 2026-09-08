@@ -89,7 +89,8 @@ from kiro_crew.messaging.commands import (
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
-from kiro_crew.messaging.renderer import credential_redaction_notice
+from kiro_crew.messaging.renderer import credential_redaction_notice, redaction_notice
+from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX
 from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trusted_sessions
 from kiro_crew.messaging.session_trust import add_trusted_session as _add_trusted_session
 from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
@@ -4023,6 +4024,7 @@ async def handle_message(
     # single warning covers the turn if either the answer or the thinking was
     # rewritten -- one turn, one notice, never two identical warnings.
     _cred_redactions = sum(clean_text.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
+    _url_redactions = clean_text.count(EXFILTRATION_REDACTION_TAG_PREFIX)
 
     # ── Review mode: ephemeral draft instead of public post ──
     if channel_activation == ACTIVATION_REVIEW:
@@ -4151,13 +4153,13 @@ async def handle_message(
     # answer via stop_stream/chat_update above and the answer text must stay
     # exactly as redacted (never relaxed, never annotated inline). Best-effort --
     # a failed notice must not turn a delivered answer into a failed turn.
-    if _cred_redactions > 0:
+    if _cred_redactions > 0 or _url_redactions > 0:
         try:
             await slack.post_message(
-                channel, credential_redaction_notice(_cred_redactions), reply_ts
+                channel, redaction_notice(_cred_redactions, _url_redactions), reply_ts
             )
         except Exception:
-            logger.warning("Failed to post credential redaction notice", exc_info=True)
+            logger.warning("Failed to post redaction notice", exc_info=True)
 
     # Persist the turn BEFORE posting anything that invites an answer to it.
     # The control below carries a staleness token derived from this session's last
