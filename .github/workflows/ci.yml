@@ -429,6 +429,18 @@ jobs:
           python3 scripts/check_subprocess_encoding.py --test
           python3 scripts/check_subprocess_encoding.py
 
+      # A comment must not narrate change history -- PR/issue numbers, review
+      # rounds, commit SHAs, "previously", "no longer", "we now". That history is
+      # in git, and a comment describing a past change is stale the moment the
+      # next one lands. code-style.md said so already and nothing checked it, so
+      # the tree carries ~7,600 such markers; they are recorded in
+      # comment-history-baseline.json and it is shrink-only.
+      # Self-test first, same reason as the gate above.
+      - name: Check comments for change history (gate, baselined)
+        run: |
+          python3 scripts/check_comment_history.py --test
+          python3 scripts/check_comment_history.py
+
       # Application code must reach the agent backend through kiro_crew.agent_sdk,
       # not by importing kiro_crew.acp (or kiro_crew.providers, which re-exports
       # the same ACP shapes and would otherwise be a laundering channel). Today's

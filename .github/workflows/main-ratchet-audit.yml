@@ -138,6 +138,12 @@ jobs:
           python3 scripts/check_subprocess_encoding.py --test
           python3 scripts/check_subprocess_encoding.py
 
+      - name: Check comments for change history (gate, baselined)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/check_comment_history.py --test
+          python3 scripts/check_comment_history.py
+
       - name: Check agent-SDK import boundary (gate, baselined)
         if: ${{ !cancelled() }}
         run: |

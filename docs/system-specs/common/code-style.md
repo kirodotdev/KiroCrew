@@ -66,7 +66,10 @@ Do NOT put in a comment or docstring:
 
 - PR or review numbers, review-round or finding markers, ticket ids
 - incident dates, milestone tags, commit SHAs
-- historical narration: "previously", "used to", "we now", "Status: implemented"
+- historical narration: "previously", "used to", "we now", "no longer",
+  "historically", "Status: implemented"
+- a change's place in a sequence of changes: "hotfix", "follow-up to",
+  "regression for", "round N", "GPT round", "review round"
 
 That history lives in git. State CURRENT behavior in present tense. A comment that
 narrates a change is stale the moment the next change lands, and a reader cannot
@@ -75,13 +78,29 @@ tell whether it describes the code in front of them.
 Keep them concise. `_vendor/` (vendored third-party code) and pragma comments
 (`# type: ignore`, `# noqa`) are exempt.
 
+`scripts/check_comment_history.py` enforces this, and the list above IS its rule
+set: every phrase named there is a pattern in the script, and the script matches
+nothing the list does not name. It reads only comment tokens and docstrings, so a
+string literal that is not a docstring is never scanned and a user-facing message
+using one of these phrases is fine. Present-tense purpose is not narration:
+"regression test pins this shape" passes, "regression for the truncated parse"
+does not.
+
+The ~7,600 markers the tree already carries are recorded per file in
+`comment-history-baseline.json`. A file not listed there must be clean, a listed
+file may not grow its count, and a count that drops must be lowered in the same
+PR — run `python3 scripts/check_comment_history.py --write-baseline`, which only
+ever lowers and prunes. It refuses when the baseline is absent, so deleting the
+file cannot amnesty the tree; restore it from git instead.
+
 ## The lint pitfalls
 
-The blocking gates are black (baselined), the subprocess-encoding gate (baselined), isort, flake8 and mypy. Run them before
+The blocking gates are black (baselined), the subprocess-encoding gate (baselined), the comment-history gate (baselined), isort, flake8 and mypy. Run them before
 committing:
 
 ```bash
-python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py && isort src/kiro_crew test
+python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py
+python3 scripts/check_comment_history.py && isort src/kiro_crew test
 flake8 src/kiro_crew test && mypy src/kiro_crew
 python -m pytest
 ```
