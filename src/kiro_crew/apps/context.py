@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.app_storage import AppStorage
+from kiro_crew.apps.audit_sdk import AuditSDK
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.event_bus import EventBus
 from kiro_crew.apps.job_sdk import JobSDK
@@ -77,6 +78,13 @@ class AppContext:
     # SDK carries none, so a hand-built context gets the same scrubber the factory
     # would hand it rather than one attributed to an app that does not exist.
     scrub: ScrubSDK = field(default_factory=ScrubSDK)
+    # `| None` like the capability SDKs above and UNLIKE `scrub`, though nothing
+    # gates it either: a default instance would have to invent an app name, and a
+    # row attributed to an app that does not exist defeats the attribution this
+    # SDK is for -- whereas a scrubber carries no identity, so it can have one.
+    # `build_app_context` always populates it, so a context built by the factory
+    # never sees None.
+    audit: AuditSDK | None = None
 
 
 def build_app_context(
@@ -152,6 +160,7 @@ def build_app_context(
         storage=app_storage,
         spawn=spawn_sdk,
         job=job_sdk,
-        # Unconditional: see the field's comment on AppContext.
+        # Both unconditional: see the fields' comments on AppContext.
         scrub=ScrubSDK(),
+        audit=AuditSDK(app_name),
     )

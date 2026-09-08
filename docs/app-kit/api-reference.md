@@ -491,6 +491,38 @@ there is nothing to withhold and no `None` branch that could become a silent
 no-redaction path. **Do not copy these patterns into your app** — a set that drifts
 from the gateway's is a control that looks present and is not.
 
+### Audit Events (`ctx.audit`)
+
+When your app acts on the user's behalf against something outside the machine,
+record the decision in the same append-only security event log the gateway's own
+decisions land in — otherwise "who changed what, and what was refused" is
+answerable for the gateway and unanswerable for your half of the same operation.
+
+```python
+ctx.audit.record("publish", "success", resources=doc_id)
+ctx.audit.record("publish", "denied", resources=doc_id, error="no edit access")
+```
+
+`record(operation, outcome, *, resources="", error="")` **never raises** — an audit
+sink that is unwritable must not fail the user's publish.
+
+`outcome` is a short verb you choose (`success`, `denied`, `error`, `completed`, …).
+It is not checked against a vocabulary — a spelling of your own is kept, because
+rewriting it would record something other than what happened. It is redacted and
+length-clipped like `resources` and `error`, so a credential that reaches it by
+accident is not written; that is a no-op for any real outcome value. This log is
+append-only and readable over `/api/sel/events`, so nothing put in it can be taken
+back — don't route free-form remote output through these fields.
+
+There is no `caller=` argument. Attribution is minted from your app name
+(`app:<name>`, the same tag `ctx.cron` uses for ownership), so there is no
+parameter to pass the wrong value into. It is **cooperative, not unforgeable**: hook
+code runs inside the gateway process and can construct another app's SDK or reach
+the log directly, so treat `app:<name>` as "which app said this", not as proof.
+`operation` is namespaced the same way, so two apps cannot collide on a bare
+`"publish"`. No permission gates it: an app cannot obtain anything with it, only
+state what it did.
+
 ### Lessons
 
 | Method | Returns | Description |

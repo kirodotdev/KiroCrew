@@ -2400,6 +2400,18 @@ class SecurityEventLog:
         Pass ``critical=True`` for fail-closed audits (e.g. safety-override
         activation): the event is written synchronously and a filesystem
         failure is re-raised so the caller can refuse the audited action.
+
+        ``outcome`` is redacted and clipped like ``resources`` and ``error``,
+        even though it reads as a constrained vocabulary. It is not one at this
+        boundary: an installed app reaches this helper through ``ctx.audit``, so
+        the value can be caller text rather than an in-tree constant, and this
+        log is append-only and served over ``/api/sel/events`` -- a secret that
+        lands here has no recovery path. The pass is the identity function on
+        every spelling in-tree code writes (``ok``, ``denied``, ``completed``,
+        ``rejected``, ``allowed``), so no existing row changes; it is applied
+        here rather than in each caller so a new filler cannot miss it. The
+        writer's own pass is not the backstop: ``_REDACTED_TEXT_FIELDS`` omits
+        ``outcome`` because identity-shaped fields stay verbatim there.
         """
         self.log(
             SecurityEvent(
@@ -2410,7 +2422,7 @@ class SecurityEventLog:
                 agent="",
                 source=source,
                 operation=operation,
-                outcome=outcome,
+                outcome=_redact_and_clip(outcome) if outcome else "",
                 resources=_redact_and_clip(resources) if resources else "",
                 error=_redact_and_clip(error) if error else "",
             ),
