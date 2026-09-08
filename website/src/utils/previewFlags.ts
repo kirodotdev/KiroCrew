@@ -18,7 +18,12 @@
  * Retiring a flag is the goal, not an afterthought: when the surface is
  * polished, delete its `previewFlag` from the registry entry and its card from
  * Settings > Developer > Feature Previews. The stale localStorage key then reads as an
- * ordinary unused key and no longer gates anything.
+ * ordinary unused key and no longer gates anything. The card's "See what it
+ * looks like" intro goes with it: its builder in `FeaturePreviewsSection.tsx`,
+ * its captures under `public/app-assets/feature-previews/`, its
+ * `pages.developer.featurePreviewsTab.intro.*` keys in every catalog, and its
+ * `shoot` step in `scripts/capture-feature-previews.mjs` — the media is the
+ * heaviest thing a flag ships, so it must not outlive the flag.
  */
 import { safeGetItem, safeSetItem } from './safeStorage'
 

@@ -7955,6 +7955,19 @@
     "fileMenuContributions": {
       "app_actions": "アプリの操作",
       "contributed_by": "アプリ: {{app}}"
+    },
+    "featurePreviewIntro": {
+      "learn_more": "どんな見た目か見る",
+      "learn_more_about": "{{feature}} がどんな見た目か見る",
+      "gif_badge": "GIF",
+      "previous": "前のキャプチャ",
+      "next": "次のキャプチャ",
+      "captures": "キャプチャ",
+      "capture_n_of_m": "キャプチャ {{n}} / {{m}}",
+      "where_to_find": "表示される場所",
+      "turn_on": "このプレビューをオンにする",
+      "screenshot_badge": "スクリーンショット",
+      "is_on": "このプレビューはオンです。オフにしても隠れるだけで、作成したものは失われません"
     }
   },
   "hooks": {
@@ -10203,7 +10216,16 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "受信 Webhook のトークン、登録済みコンテキスト、実行履歴。API は動作しますが、ページは未完成です。",
         "open_webhooks": "Webhooks を開く",
         "the_crew_members_page_and_crew_mode_chats_both_a": "クルーメンバーのページと Crew Mode チャット。どちらもまだ開発中のため、これをオンにするまで表示されません。",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "intro": {
+          "webhooks_summary": "別のシステム（CI、レビューボット、デプロイパイプライン）が、Webhooks ページで作成したアクセストークン付きでメッセージを送るだけで、あなたの代わりにエージェントを動かせます。",
+          "webhooks_where": "オンにすると、設定のこのカードに「Webhooks を開く」リンクが現れ、新しい Webhooks ページはそこから開きます。ページが完成するまでサイドバーには表示されません。オフにしてもページが再び隠れるだけで、作成したトークンは残ります。",
+          "webhooks_media_page": "Webhooks ページ：左にトークン一覧、右に「外部システムからエージェントを起こす」設定。",
+          "crew_summary": "Crew Members は、そのエージェント全員と、それぞれが今動かしているものを一覧するページです。Crew Mode チャットは複数の仕事を同時に進め、トピックごとに独立したセッションを持ち、終わり次第まとめて答えます。下の「crew 上でチャット」プレビューとは無関係です。そちらは別のマシンの話です。",
+          "crew_where": "オンにするとすぐ、サイドバーの Sessions の下に「Crew Members」が、「新規」ボタンのメニューに「新しい Crew Mode チャット」が現れます。",
+          "crew_media_members": "Crew Members ページ。メンバーを 1 人選び、アクティビティパネルを開いた状態。",
+          "crew_media_menu": "「新規」ボタンのメニューに「新しい Crew Mode チャット」が追加された状態。付いている Experimental の印は、この同じプレビューを指すメニュー側のタグです。"
+        }
       }
     },
     "developerPage": {

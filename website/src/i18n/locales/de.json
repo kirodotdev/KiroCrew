@@ -8065,6 +8065,19 @@
     "fileMenuContributions": {
       "app_actions": "App-Aktionen",
       "contributed_by": "App: {{app}}"
+    },
+    "featurePreviewIntro": {
+      "learn_more": "Ansehen, wie es aussieht",
+      "learn_more_about": "Ansehen, wie {{feature}} aussieht",
+      "gif_badge": "GIF",
+      "previous": "Vorherige Aufnahme",
+      "next": "Nächste Aufnahme",
+      "captures": "Aufnahmen",
+      "capture_n_of_m": "Aufnahme {{n}} von {{m}}",
+      "where_to_find": "Wo du es siehst",
+      "turn_on": "Diese Vorschau einschalten",
+      "screenshot_badge": "Screenshot",
+      "is_on": "Diese Vorschau ist an – Ausschalten blendet sie nur aus, nichts Erstelltes geht verloren"
     }
   },
   "hooks": {
@@ -10353,7 +10366,16 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens für eingehende Webhooks, registrierte Kontexte und Ausführungsverlauf. Die API funktioniert, die Seite ist noch nicht fertig.",
         "open_webhooks": "Webhooks öffnen",
         "the_crew_members_page_and_crew_mode_chats_both_a": "Die Seite „Crew-Mitglieder“ und Crew-Mode-Chats. Beides ist noch in Arbeit und wird erst angeboten, wenn diese Option aktiviert ist.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "intro": {
+          "webhooks_summary": "Ein anderes System – CI, ein Review-Bot, eine Deploy-Pipeline – kann deinen Agenten für dich starten, indem es eine Nachricht mit einem Zugriffstoken sendet, das du auf der Webhooks-Seite erstellst.",
+          "webhooks_where": "Sobald das an ist, erscheint auf dieser Karte in den Einstellungen der Link „Webhooks öffnen“; dort öffnest du die neue Webhooks-Seite. In der Seitenleiste erscheint sie erst, wenn sie fertig ist. Ausschalten blendet die Seite nur wieder aus; erstellte Token bleiben erhalten.",
+          "webhooks_media_page": "Die Webhooks-Seite: links die Token-Liste, rechts die Einrichtung „Ein externes System soll deinen Agenten wecken“.",
+          "crew_summary": "Crew Members ist eine Seite, die jeden deiner Agenten auflistet und zeigt, was er gerade steuert; ein Crew-Mode-Chat erledigt mehrere Aufgaben gleichzeitig, jedes Thema in einer eigenen Sitzung, und antwortet, sobald sie fertig sind. Hat nichts mit der Vorschau „Chat auf einer Crew“ unten zu tun – dort geht es um eine andere Maschine.",
+          "crew_where": "„Crew Members“ erscheint in der Seitenleiste unter Sessions, „Neuer Crew-Mode-Chat“ im Menü der Schaltfläche „Neu“ – beides, sobald das hier an ist.",
+          "crew_media_members": "Die Seite Crew Members mit einem ausgewählten Mitglied und geöffnetem Aktivitätsbereich.",
+          "crew_media_menu": "Das Menü der Schaltfläche „Neu“ mit dem neuen Eintrag „Neuer Crew-Mode-Chat“. Sein Experimentell-Abzeichen ist die Markierung des Menüs für genau diese Vorschau."
+        }
       }
     },
     "developerPage": {

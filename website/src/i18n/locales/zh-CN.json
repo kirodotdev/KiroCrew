@@ -7955,6 +7955,19 @@
     "fileMenuContributions": {
       "app_actions": "应用操作",
       "contributed_by": "应用：{{app}}"
+    },
+    "featurePreviewIntro": {
+      "learn_more": "看看它长什么样",
+      "learn_more_about": "看看 {{feature}} 长什么样",
+      "gif_badge": "GIF",
+      "previous": "上一张",
+      "next": "下一张",
+      "captures": "截图",
+      "capture_n_of_m": "第 {{n}} 张，共 {{m}} 张",
+      "where_to_find": "你会在哪看到它",
+      "turn_on": "开启此预览",
+      "screenshot_badge": "截图",
+      "is_on": "此预览已开启。关闭只会把它隐藏起来，你创建的内容不会丢失"
     }
   },
   "hooks": {
@@ -10203,7 +10216,16 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
         "the_crew_members_page_and_crew_mode_chats_both_a": "团队成员页面和 Crew Mode 聊天。两者仍在开发中，开启后才会显示。",
-        "webhooks": "Webhook"
+        "webhooks": "Webhook",
+        "intro": {
+          "webhooks_summary": "让另一个系统替你启动代理——CI、评审机器人、部署流水线——只需用你在 Webhooks 页面创建的访问令牌发送一条消息。",
+          "webhooks_where": "开启后，这张卡片在“设置”里会出现“打开 Webhooks”链接，新的 Webhooks 页面从那里进入；页面完成之前不会出现在侧边栏里。关闭后只是重新隐藏这个页面；你创建的 token 会保留。",
+          "webhooks_media_page": "Webhooks 页面：左侧是 token 列表，右侧是“让外部系统唤醒你的代理”的设置。",
+          "crew_summary": "Crew Members 是一个页面，列出你拥有的每个代理以及它当前在驱动什么；Crew Mode 聊天同时跑多个任务，每个主题各占一个会话，完成后再汇总回答。与下方的“在 crew 上聊天”预览无关，那个说的是另一台机器。",
+          "crew_where": "开启后，“Crew Members”会出现在侧边栏的 Sessions 下方，“新建 Crew Mode 聊天”会出现在“新建”按钮的菜单里。",
+          "crew_media_members": "Crew Members 页面，选中了一个成员并打开了它的活动面板。",
+          "crew_media_menu": "“新建”按钮的菜单里多出“新建 Crew Mode 聊天”。它上面的“实验性”标记，指的就是这同一个预览。"
+        }
       }
     },
     "developerPage": {

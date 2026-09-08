@@ -1,6 +1,10 @@
 /**
  * Inbound webhooks — rail-and-detail surface for `POST /api/hooks/agent`.
  *
+ * CAPTURED: Settings > Developer > Feature Previews shows a screenshot of this
+ * page in its "See what it looks like" dialog. A visible change here makes that
+ * picture stale — re-shoot with `scripts/capture-feature-previews.mjs`.
+ *
  * Shape (Option C revised): a Webhooks plane whose rail contains only
  * first-class sources, plus an Activity plane for registered contexts and runs.
  * Each source owns one credential, destination agent, signing policy, enabled

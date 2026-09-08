@@ -1,6 +1,10 @@
 /**
  * Crew Members — one durable, pinned DM thread per crew member.
  *
+ * CAPTURED: Settings > Developer > Feature Previews shows a screenshot of this
+ * page in its "See what it looks like" dialog. A visible change here makes that
+ * picture stale — re-shoot with `scripts/capture-feature-previews.mjs`.
+ *
  * The page realizes the B+C merged design: a member list on the left, the
  * selected member's pinned DM thread in the center (the real chat stack,
  * hosted the way split-view panes host it), and a toggleable read-only

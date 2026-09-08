@@ -6066,7 +6066,12 @@ function ChatSidebar({
                  *  is not released, so the menu does not offer it unless the
                  *  operator opted in at Settings > Developer > Feature Previews. The
                  *  mutation above stays wired either way, so a session already in
-                 *  crew mode is unaffected — only this ingress disappears. */}
+                 *  crew mode is unaffected — only this ingress disappears.
+                 *
+                 *  CAPTURED: the Feature Previews "See what it looks like" dialog
+                 *  shows a GIF of this menu opening with this entry. A visible
+                 *  change to the menu or the entry makes that picture stale —
+                 *  re-shoot with `scripts/capture-feature-previews.mjs`. */}
                 {crewPreview && (
                 <DropdownMenuItem className="items-start" data-testid="new-crew-chat" onClick={() => { createCrewMutation.mutate() }}>
                   <Users size={14} className="text-muted mt-[3px] shrink-0" />

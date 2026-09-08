@@ -401,9 +401,13 @@ describe('Settings > Developer > Feature Previews', () => {
     // Counted as `<button>` ELEMENTS rather than by accessible name: the name of
     // a link that no longer exists is not in any catalog, so a name query could
     // never fail. `SettingsToggle`'s own row is a `div role="button"`, so it is
-    // correctly not counted here.
+    // correctly not counted here. The "See what it looks like" button each card
+    // may carry (`FeaturePreviewIntroButton`) is excluded by its test id: it is
+    // not an ingress — it opens an explainer dialog, never the page — and it is
+    // present on either side of the toggle by design.
     const { container } = renderTab()
-    const realButtons = () => Array.from(container.querySelectorAll('button'))
+    const realButtons = () =>
+      Array.from(container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'))
     expect(realButtons()).toHaveLength(0)
     await act(async () => {
       screen.getByRole('switch', { name: /^crew members and crew mode$/i }).click()

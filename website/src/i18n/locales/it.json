@@ -8175,6 +8175,19 @@
     "fileMenuContributions": {
       "app_actions": "Azioni dell'app",
       "contributed_by": "App: {{app}}"
+    },
+    "featurePreviewIntro": {
+      "learn_more": "Guarda com’è fatto",
+      "learn_more_about": "Guarda com’è fatto {{feature}}",
+      "gif_badge": "GIF",
+      "previous": "Cattura precedente",
+      "next": "Cattura successiva",
+      "captures": "Catture",
+      "capture_n_of_m": "Cattura {{n}} di {{m}}",
+      "where_to_find": "Dove lo vedrai",
+      "turn_on": "Attiva questa anteprima",
+      "screenshot_badge": "Screenshot",
+      "is_on": "Questa anteprima è attiva: disattivarla la nasconde soltanto, nulla di ciò che hai creato va perso"
     }
   },
   "hooks": {
@@ -10503,7 +10516,16 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Token dei webhook in ingresso, contesti registrati e cronologia delle esecuzioni. L’API funziona, ma la pagina non è finita.",
         "open_webhooks": "Apri Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "La pagina Membri della crew e le chat Crew Mode. Entrambi sono ancora in sviluppo, quindi non vengono proposti finché non si attiva questa opzione.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "intro": {
+          "webhooks_summary": "Un altro sistema (CI, un bot di revisione, una pipeline di deploy) può avviare il tuo agente per te inviando un messaggio con un token di accesso che crei nella pagina Webhooks.",
+          "webhooks_where": "Una volta attivo, su questa scheda nelle Impostazioni compare il link «Apri Webhooks», da cui si apre la nuova pagina Webhooks; non compare nella barra laterale finché non è finita. Disattivarlo nasconde di nuovo la pagina e nulla più; i token che hai creato restano.",
+          "webhooks_media_page": "La pagina Webhooks: a sinistra l’elenco dei token, a destra la configurazione «Lascia che un sistema esterno svegli il tuo agente».",
+          "crew_summary": "Crew Members è una pagina che elenca ogni agente che hai e cosa sta guidando in questo momento; una chat in Crew Mode esegue più lavori insieme, ogni argomento nella sua sessione, e risponde quando finiscono. Non ha a che fare con l’anteprima «Chatta su un Crew» qui sotto, che riguarda un’altra macchina.",
+          "crew_where": "«Crew Members» compare nella barra laterale sotto Sessioni e «Nuova chat Crew Mode» nel menu del pulsante Nuovo, entrambi appena attivi questo.",
+          "crew_media_members": "La pagina Crew Members con un membro selezionato e il suo pannello attività aperto.",
+          "crew_media_menu": "Il menu del pulsante Nuovo con «Nuova chat Crew Mode» aggiunta. Il suo badge Sperimentale è l’etichetta del menu per questa stessa anteprima."
+        }
       }
     },
     "developerPage": {

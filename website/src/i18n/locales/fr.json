@@ -8175,6 +8175,19 @@
     "fileMenuContributions": {
       "app_actions": "Actions de l'application",
       "contributed_by": "Application : {{app}}"
+    },
+    "featurePreviewIntro": {
+      "learn_more": "Voir à quoi ça ressemble",
+      "learn_more_about": "Voir à quoi ressemble {{feature}}",
+      "gif_badge": "GIF",
+      "previous": "Capture précédente",
+      "next": "Capture suivante",
+      "captures": "Captures",
+      "capture_n_of_m": "Capture {{n}} sur {{m}}",
+      "where_to_find": "Où tu le verras",
+      "turn_on": "Activer cet aperçu",
+      "screenshot_badge": "Capture d’écran",
+      "is_on": "Cet aperçu est activé — le désactiver ne fait que le masquer, rien de ce que tu as créé n’est perdu"
     }
   },
   "hooks": {
@@ -10503,7 +10516,16 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "Jetons de webhooks entrants, contextes enregistrés et historique des exécutions. L'API fonctionne, mais la page n'est pas terminée.",
         "open_webhooks": "Ouvrir Webhooks",
         "the_crew_members_page_and_crew_mode_chats_both_a": "La page Membres de l'équipe et les chats Crew Mode. Les deux sont encore en construction : rien n'est proposé tant que cette option n'est pas activée.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "intro": {
+          "webhooks_summary": "Un autre système (CI, bot de revue, pipeline de déploiement) peut lancer ton agent à ta place en envoyant un message avec un jeton d’accès que tu crées sur la page Webhooks.",
+          "webhooks_where": "Une fois activé, le lien « Ouvrir Webhooks » apparaît sur cette carte dans les Réglages ; c’est de là que s’ouvre la nouvelle page Webhooks. Elle n’apparaît pas dans la barre latérale tant qu’elle n’est pas terminée. Le désactiver ne fait que masquer la page à nouveau ; les jetons que tu as créés sont conservés.",
+          "webhooks_media_page": "La page Webhooks : la liste des jetons à gauche, la configuration « Laisser un système externe réveiller ton agent » à droite.",
+          "crew_summary": "Crew Members est une page qui liste chacun de tes agents et ce qu’il pilote en ce moment ; une discussion en Crew Mode mène plusieurs tâches à la fois, chaque sujet dans sa propre session, et répond quand elles aboutissent. Sans rapport avec l’aperçu « Discuter sur un Crew » ci-dessous, qui concerne une autre machine.",
+          "crew_where": "« Crew Members » apparaît dans la barre latérale sous Sessions et « Nouvelle discussion Crew Mode » dans le menu du bouton Nouveau, tous deux dès que ceci est activé.",
+          "crew_media_members": "La page Crew Members, avec un membre sélectionné et son panneau d’activité ouvert.",
+          "crew_media_menu": "Le menu du bouton Nouveau avec « Nouvelle discussion Crew Mode » ajouté. Son badge Expérimental est l’étiquette du menu pour ce même aperçu."
+        }
       }
     },
     "developerPage": {

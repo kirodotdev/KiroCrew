@@ -2828,6 +2828,19 @@
     "fileMenuContributions": {
       "app_actions": "App actions",
       "contributed_by": "App: {{app}}"
+    },
+    "featurePreviewIntro": {
+      "learn_more": "See what it looks like",
+      "learn_more_about": "See what {{feature}} looks like",
+      "gif_badge": "GIF",
+      "previous": "Previous capture",
+      "next": "Next capture",
+      "captures": "Captures",
+      "capture_n_of_m": "Capture {{n}} of {{m}}",
+      "where_to_find": "Where you’ll see it",
+      "turn_on": "Turn this preview on",
+      "screenshot_badge": "Screenshot",
+      "is_on": "This preview is on — turning it off only hides it; nothing you made is lost"
     }
   },
   "hooks": {
@@ -5728,7 +5741,16 @@
       },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat on a crew",
-        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane."
+        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane.",
+        "intro": {
+          "webhooks_summary": "Another system can start your agent for you — CI, a review bot, a deploy pipeline — by sending a message with an access token you create on the Webhooks page.",
+          "webhooks_where": "A new Webhooks page opens from the “Open Webhooks” link that appears on this card in Settings once this is on; it stays out of the sidebar until the page is finished. Turning it off only hides the page again; tokens you created are kept.",
+          "webhooks_media_page": "The Webhooks page: token list on the left, the “Let an outside system wake up your agent” setup on the right.",
+          "crew_summary": "Crew Members is a page that lists every agent you have and what each is driving right now; a Crew Mode chat runs several jobs at once, each topic in its own session, and answers when they land. Not related to the “Chat on a crew” preview below, which is about another machine.",
+          "crew_where": "“Crew Members” appears in the sidebar under Sessions, and “New Crew Mode chat” appears in the New button’s menu, both as soon as this is on.",
+          "crew_media_members": "The Crew Members page, with one member selected and its activity panel open.",
+          "crew_media_menu": "The New button’s menu with “New Crew Mode chat” added. Its Experimental badge is the menu’s tag for this same preview."
+        }
       }
     },
     "appPage": {

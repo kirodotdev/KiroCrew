@@ -7955,6 +7955,19 @@
     "fileMenuContributions": {
       "app_actions": "앱 작업",
       "contributed_by": "앱: {{app}}"
+    },
+    "featurePreviewIntro": {
+      "learn_more": "어떻게 보이는지 보기",
+      "learn_more_about": "{{feature}} 어떻게 보이는지 보기",
+      "gif_badge": "GIF",
+      "previous": "이전 캡처",
+      "next": "다음 캡처",
+      "captures": "캡처",
+      "capture_n_of_m": "캡처 {{n}} / {{m}}",
+      "where_to_find": "어디에 나타나는지",
+      "turn_on": "이 미리보기 켜기",
+      "screenshot_badge": "스크린샷",
+      "is_on": "이 미리보기가 켜져 있습니다. 끄면 숨겨질 뿐이며 만든 것은 사라지지 않습니다"
     }
   },
   "hooks": {
@@ -10203,7 +10216,16 @@
         "inbound_webhook_tokens_registered_contexts_and_r": "수신 웹훅 토큰, 등록된 컨텍스트, 실행 기록입니다. API는 동작하지만 페이지는 아직 완성되지 않았습니다.",
         "open_webhooks": "Webhooks 열기",
         "the_crew_members_page_and_crew_mode_chats_both_a": "크루 멤버 페이지와 Crew Mode 채팅입니다. 둘 다 아직 개발 중이므로 이 옵션을 켜기 전에는 표시되지 않습니다.",
-        "webhooks": "Webhooks"
+        "webhooks": "Webhooks",
+        "intro": {
+          "webhooks_summary": "다른 시스템(CI, 리뷰 봇, 배포 파이프라인)이 Webhooks 페이지에서 만든 액세스 토큰으로 메시지를 보내 대신 에이전트를 실행할 수 있습니다.",
+          "webhooks_where": "켜면 설정의 이 카드에 “Webhooks 열기” 링크가 나타나고, 새 Webhooks 페이지는 거기서 열립니다. 페이지가 완성될 때까지 사이드바에는 나타나지 않습니다.끄면 페이지가 다시 숨겨질 뿐이며, 만든 토큰은 그대로 유지됩니다.",
+          "webhooks_media_page": "Webhooks 페이지: 왼쪽은 토큰 목록, 오른쪽은 “외부 시스템이 에이전트를 깨우게 하기” 설정입니다.",
+          "crew_summary": "Crew Members는 그 에이전트 전부와 각각이 지금 무엇을 이끌고 있는지 보여 주는 페이지이며, Crew Mode 채팅은 여러 작업을 동시에 진행하고 주제마다 별도 세션을 두고 끝나면 모아서 답합니다. 아래의 “crew에서 채팅” 미리보기와는 무관합니다. 그것은 다른 머신에 관한 것입니다.",
+          "crew_where": "켜는 즉시 사이드바의 Sessions 아래에 “Crew Members”가, 새로 만들기 버튼 메뉴에 “새 Crew Mode 채팅”이 나타납니다.",
+          "crew_media_members": "멤버 하나를 선택해 활동 패널을 연 Crew Members 페이지입니다.",
+          "crew_media_menu": "새로 만들기 버튼 메뉴에 “새 Crew Mode 채팅”이 추가된 모습입니다. 붙어 있는 Experimental 표시는 이 동일한 미리보기를 가리키는 메뉴 쪽 태그입니다."
+        }
       }
     },
     "developerPage": {
