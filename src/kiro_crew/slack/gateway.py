@@ -4631,7 +4631,7 @@ class GatewayOrchestrator:
                 # Run-scoped: a sequence where one agent got a tool through has
                 # done work, even if a later agent was blocked outright.
                 _gate = _GateTally()
-                for agent in agents:
+                for agent_index, agent in enumerate(agents):
                     agent_session_key = f"cron:{job.id}:{agent}"
                     if self.cron_svc is not None:
                         self.cron_svc.register_active_session_key(job.id, agent_session_key)
@@ -4653,7 +4653,7 @@ class GatewayOrchestrator:
                                 job.last_status = "error"
                                 job.last_error = (
                                     f"Agent sequence interrupted by an install update after "
-                                    f"'{agents[agents.index(agent) - 1]}' completed; not retried "
+                                    f"'{agents[agent_index - 1]}' completed; not retried "
                                     "automatically to avoid duplicating finished work"
                                 )
                                 job.record_failure()

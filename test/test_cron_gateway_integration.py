@@ -1404,6 +1404,31 @@ class TestModelFallback:
         assert job.consecutive_failures == 1
 
     @pytest.mark.asyncio
+    async def test_mid_sequence_pruning_names_previous_repeated_agent_position(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=["repeat", "middle", "repeat"])
+        missing = FileNotFoundError(
+            2,
+            "No such file or directory",
+            str(Path(sys.prefix) / "bin" / "python3.12"),
+        )
+        provider_mock = MagicMock()
+        calls = {"n": 0}
+
+        async def _acquire(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return (provider_mock, True, False)
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_acquire)
+
+        assert result is None
+        assert "after 'middle' completed" in job.last_error
+        assert "duplicating finished work" in job.last_error
+
+    @pytest.mark.asyncio
     async def test_unrelated_agent_spawn_enoent_remains_a_failure(self):
         gw = _make_gw_for_llm()
         job = _make_llm_job()
