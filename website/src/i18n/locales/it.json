@@ -9814,6 +9814,7 @@
       "no_tools": "Nessuno strumento",
       "open_activity_panel": "Apri il pannello attività",
       "open_file": "Apri il file {{path}}",
+      "attached_file_inert": "File allegato (non può essere aperto qui): {{path}}",
       "open_folder": "Apri la cartella {{path}}",
       "plan_from_here_failed_error": "Pianificazione da qui non riuscita: {{error}}",
       "pop_out_session_to_its_own_window": "Apri la sessione in una finestra separata",

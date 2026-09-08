@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { addPendingFile, hasExactRelMention, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, serializeDirTokens } from '../utils/fileTokens'
+import { addPendingFile, hasExactRelMention, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, restoreUnreferencedImages, serializeDirTokens } from '../utils/fileTokens'
 
 describe('buildFileLabels uniqueness', () => {
   it('disambiguates paths that share a basename', () => {
@@ -499,5 +499,55 @@ describe('restoreQueuedContent (cancel-queued parser fallback)', () => {
     const r = restoreQueuedContent(txt)
     expect(r.text).toBe('diff these')
     expect(r.files).toEqual(['/tmp/a.png', '/tmp/b shots/b 2.png'])
+  })
+})
+
+describe('restoreUnreferencedImages (legacy pane rows: image only on meta.files)', () => {
+  it('prepends a producer-form image line for each image the text never names', () => {
+    expect(restoreUnreferencedImages('look', { files: ['/tmp/a.png', '/tmp/b.jpg'] }))
+      .toBe('![image](/tmp/a.png)\n![image](/tmp/b.jpg)\n\nlook')
+  })
+
+  it('leaves a row alone when the markdown already names the image (no doubling)', () => {
+    const content = '![image](/tmp/a.png)\n\nlook'
+    expect(restoreUnreferencedImages(content, { files: ['/tmp/a.png'] })).toBe(content)
+  })
+
+  it('recognises the wrapped destination mdImageDest emits for a spaced path', () => {
+    const p = '/tmp/b shots/b 2.png'
+    const content = `![image](${mdImageDest(p)})\n\nlook`
+    expect(restoreUnreferencedImages(content, { files: [p] })).toBe(content)
+  })
+
+  it('ignores non-image files (those become cards, never images)', () => {
+    expect(restoreUnreferencedImages('read', { files: ['/tmp/report.pdf'] })).toBe('read')
+  })
+
+  it('a caption that merely mentions the path in prose does not suppress the restore', () => {
+    // Only a markdown DESTINATION `](dest)` counts as the image being named.
+    expect(restoreUnreferencedImages('compare with /tmp/a.png please', { files: ['/tmp/a.png'] }))
+      .toBe('![image](/tmp/a.png)\n\ncompare with /tmp/a.png please')
+  })
+
+  it('a link to the image (not just an image embed) counts as named', () => {
+    const content = 'see [the frame](/tmp/a.png)'
+    expect(restoreUnreferencedImages(content, { files: ['/tmp/a.png'] })).toBe(content)
+  })
+
+  it('is the identity without meta, with an empty list, or with a malformed list', () => {
+    expect(restoreUnreferencedImages('plain')).toBe('plain')
+    expect(restoreUnreferencedImages('plain', { files: [] })).toBe('plain')
+    expect(restoreUnreferencedImages('plain', { files: 'nope' })).toBe('plain')
+    expect(restoreUnreferencedImages('plain', { files: [42, null] })).toBe('plain')
+  })
+
+  it('a healed row and a freshly sent one share one content shape', () => {
+    // What the pane now sends for the same upload + caption.
+    const { displayTxt } = prepareSendPayload('look', ['/tmp/a.png'])
+    expect(restoreUnreferencedImages('look', { files: ['/tmp/a.png'] })).toBe(displayTxt)
+  })
+
+  it('an image-only legacy row (empty caption) yields just the image line', () => {
+    expect(restoreUnreferencedImages('', { files: ['/tmp/a.png'] })).toBe('![image](/tmp/a.png)')
   })
 })

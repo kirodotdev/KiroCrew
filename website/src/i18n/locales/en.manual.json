@@ -3648,6 +3648,7 @@
       "no_tools": "No tools",
       "open_activity_panel": "Open activity panel",
       "open_file": "Open file {{path}}",
+      "attached_file_inert": "Attached file (can't be opened here): {{path}}",
       "open_folder": "Open folder {{path}}",
       "plan_from_here_failed_error": "Plan from here failed: {{error}}",
       "send_failed": "Send failed",

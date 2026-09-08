@@ -202,6 +202,36 @@ export function findUnreferencedAttachments(text: string, orderedFiles: string[]
   return orderedFiles.filter(p => !IMG_EXT.test(p) && !referenced.has(p))
 }
 
+/**
+ * Image companion to findUnreferencedAttachments, applied to the CONTENT rather
+ * than returned as a list: every image on `meta.files` that the text never
+ * shows is re-emitted as a producer-form `![image](dest)` line ahead of it, so
+ * the bubble renders the picture the way a main-chat send always has.
+ *
+ * Exists for rows already on disk. Until ChatPane adopted prepareSendPayload
+ * it shipped the typed text verbatim and parked every attachment — images
+ * included — on `meta.files`, a shape the renderer reads for FILE cards only
+ * (resolveFileSegment drops image tokens on the promise that images arrive as
+ * markdown). Those member-DM and split-pane rows carry no such markdown, so
+ * their screenshots rendered as nothing. A main-chat row is untouched: its
+ * `meta.files` never holds an image (prepareSendPayload keeps `filePaths`
+ * image-free), and a row whose markdown already names the path is left alone,
+ * so a healed row and a freshly sent one draw identically.
+ */
+export function restoreUnreferencedImages(content: string, meta?: Record<string, unknown>): string {
+  const files = Array.isArray(meta?.files) ? (meta.files as unknown[]).filter((p): p is string => typeof p === 'string') : []
+  // "Named" means the path is an actual markdown DESTINATION -- `](dest)` --
+  // in either the raw or the mdImageDest-wrapped spelling. A bare substring
+  // test would let a caption that merely mentions the path in prose
+  // ("compare with /tmp/a.png") suppress the restore, and the picture would
+  // stay missing on exactly the row this exists to heal.
+  const named = (p: string) => [p, mdImageDest(p)].some(d => content.includes(`](${d})`))
+  const missing = files.filter(p => IMG_EXT.test(p) && !named(p))
+  if (!missing.length) return content
+  const imgMd = missing.map(p => `![image](${mdImageDest(p)})`).join('\n')
+  return [imgMd, content].filter(Boolean).join('\n\n')
+}
+
 /** Walk path segments to find the shortest @suffix present in text. */
 export function buildRelMap(paths: string[], text: string): Map<string, string> {
   const map = new Map<string, string>()

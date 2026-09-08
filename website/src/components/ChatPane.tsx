@@ -44,7 +44,7 @@ import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
-import { serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
+import { prepareSendPayload, serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
 import { displayModel } from '../lib/model'
 
 
@@ -493,12 +493,26 @@ export default function ChatPane({
       setInput('')
       setPendingFiles([])
     }
+    // Attachments take the SAME wire/bubble serialization as ChatPage
+    // (prepareSendPayload, the single owner of attachment-marker knowledge):
+    // every image becomes a producer-form `![image](dest)` line on BOTH the
+    // wire text and the bubble, every other file an `[attached_file N] path`
+    // marker on the wire with the ORDERED non-image list on `meta.files`.
+    // Before this the pane shipped the typed text verbatim and parked every
+    // path (images included) on `meta.files` alone — a shape neither side
+    // reads: the agent's image extraction matches absolute paths in the
+    // PROMPT TEXT, and the bubble renders images only from their markdown.
+    // So a picture attached in a member DM or a split pane never rendered
+    // and never reached the model, while the same send from the main chat
+    // did both (#9433).
+    const { txt, displayTxt, filePaths } = prepareSendPayload(text, files)
     // Folder tokens take the same wire/bubble split ChatPage uses: the wire
     // text carries `[attached_dir N] path` markers the agent can resolve, the
     // bubble keeps the `@path/` token for the chip, and `meta.dirs` indexes
     // marker N to dirPaths[N-1] for lossless history replay. The pane has no
-    // project context, so tokens are absolute and serialize as-is.
-    const { llm, dirPaths } = serializeDirTokens(text, '')
+    // project context, so tokens are absolute and serialize as-is. Runs AFTER
+    // the file pass: file tokens never end in `/`, so the rewrites are disjoint.
+    const { llm, dirPaths } = serializeDirTokens(txt, '')
     // sendId correlation (same contract as ChatPage): the wire text differs
     // from the bubble text whenever a folder token serialized, so the store's
     // content-equality fallback can never reconcile the server echo against
@@ -509,14 +523,14 @@ export default function ChatPane({
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
     // running) — the backend returns a "queued" message instead, avoiding a duplicate.
     const meta = {
-      ...(files.length ? { files } : {}),
+      ...(filePaths.length ? { files: filePaths } : {}),
       ...(dirPaths.length ? { dirs: dirPaths } : {}),
       sendId,
     }
     if (!busy && (text || files.length)) {
       dispatch(appendSlotMessage({
         slot: slotKey,
-        message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
+        message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
       }))
     }
     // A failed send has to say so on the pane it was typed into. This path
@@ -548,10 +562,10 @@ export default function ChatPane({
       if (receipt.status === 'unknown' || receipt.status === 'response-late') return
       // The receipt names the queue entry this send became: bind the
       // pre-send composer state to it so cancelling that card restores the
-      // TYPED text and re-stages the files (issue #560). This matters MORE
-      // here than on ChatPage: the pane sends attachments via `meta.files`,
-      // so the queued row's content carries no markers and the parser
-      // fallback has nothing to recover the files from. `!optionText`
+      // TYPED text and re-stages the files (issue #560). The stash is the
+      // lossless path; the parser fallback (`restoreQueuedContent`) inverts
+      // the wire markers the pane now emits, which recovers the paths but not
+      // the exact typed text around them. `!optionText`
       // mirrors the composer-consumption gate above -- an option send never
       // consumed the draft, so there is no pre-send state to bind. An empty
       // wire text can never reach here (sendTurn classifies it `refused`),

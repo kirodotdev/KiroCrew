@@ -427,13 +427,15 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     expect((box as HTMLTextAreaElement).value).toBe('')
   })
 
-  it('reports an attachment-only send the backend refuses for its empty wire text', async () => {
-    // The server refuses an empty wire text above every dispatch branch, so a
-    // file-only send comes back 400 `message_required`. The pane must surface
-    // that refusal: nothing else carries the attachment once the composer clears.
+  it('reports an attachment-only send the backend refuses', async () => {
+    // The pane must surface a refusal of a file-only send: nothing else
+    // carries the attachment once the composer clears. The wire text is no
+    // longer empty for such a send (it carries the `[attached_file N]` marker,
+    // as ChatPage's always has), so the refusal here stands in for any server
+    // rejection rather than the old `message_required` for an empty text.
     ;(api.uploadFiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ paths: ['/tmp/report.pdf'] })
     ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: false, status: 400, json: () => Promise.resolve({ error: 'message is required', code: 'message_required' }),
+      ok: false, status: 400, json: () => Promise.resolve({ error: 'refused', code: 'refused' }),
     })
     const { store, container } = renderPane('pane-dropped')
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
@@ -446,9 +448,9 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
 
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
-    // Wire text is empty for a file-only send, which is exactly what the server
-    // refuses.
-    expect((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('')
+    // A file-only send carries its marker on the wire (ChatPage parity), so
+    // the agent can resolve the path and the server has a message to accept.
+    expect((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('[attached_file 1] /tmp/report.pdf')
     await waitFor(() => expect(errorsIn(store, 'pane-dropped')).toHaveLength(1))
   })
 
