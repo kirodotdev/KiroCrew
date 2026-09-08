@@ -16,6 +16,8 @@ vi.mock('../../api/client', () => ({
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
     webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
     kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: '' })),
+    // The wake block reads the shared ['default-agent'] query (defaultAgentQuery).
+    defaultAgent: vi.fn(() => Promise.resolve({ default_agent: 'kirocrew' })),
     updateKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
   },
@@ -194,9 +196,23 @@ describe('MembersPage star', () => {
     // 24x24 touch target around the 13px glyph.
     expect(star.className).toMatch(/\bw-6\b/)
     expect(star.className).toMatch(/\bh-6\b/)
+    // The settle-side invalidation refetches the roster; serve the post-write
+    // truth so the reconciling GET agrees with the optimistic flip, the way a
+    // real server would after a successful PUT.
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
+      members: ROSTER.map((m) => (m.name === 'pkg-a' ? { ...m, starred: true } : m)),
+    })
     fireEvent.click(star)
-    expect(api.updateKirocrewAgent).toHaveBeenCalledWith('pkg-a', { starred: true })
-    expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true')
+    // The write lands (mutations dispatch async)…
+    await waitFor(() =>
+      expect(api.updateKirocrewAgent).toHaveBeenCalledWith('pkg-a', { starred: true }),
+    )
+    // …and the row is starred, staying starred once the reconciling refetch
+    // settles. (The optimistic-before-settle half is pinned by the pending
+    // test below, whose write never resolves.)
+    await waitFor(() =>
+      expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true'),
+    )
     // Does not open the member's thread — the star is a sibling of the row.
     // (The page opened the FIRST row on arrival; pkg-a must not be posted.)
     expect(api.memberThread).not.toHaveBeenCalledWith('pkg-a')
@@ -213,7 +229,13 @@ describe('MembersPage star', () => {
     expect(screen.getByTestId('member-star-pkg-a')).toBeDisabled()
     // A second click while pending is a no-op: exactly one write in flight.
     fireEvent.click(screen.getByTestId('member-star-pkg-a'))
-    expect(api.updateKirocrewAgent).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(api.updateKirocrewAgent).toHaveBeenCalledTimes(1))
+    // The flip is optimistic — visible while the write is STILL unsettled.
+    expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true')
+    // Post-write server truth for the settle-side reconciling refetch.
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
+      members: ROSTER.map((m) => (m.name === 'pkg-a' ? { ...m, starred: true } : m)),
+    })
     settle({ ok: true })
     await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).not.toBeDisabled())
     expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true')

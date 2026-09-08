@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useState } from 'react'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
@@ -16,6 +17,8 @@ vi.mock('../../api/client', () => ({
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
     webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
     kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: '' })),
+    // The wake block reads the shared ['default-agent'] query (defaultAgentQuery).
+    defaultAgent: vi.fn(() => Promise.resolve({ default_agent: 'kirocrew' })),
     // The auto-patrol block and roster badge read the whole loop registry;
     // the default is "feature on, nothing armed" so every other case renders
     // the page without a loop in the way.
@@ -139,6 +142,7 @@ beforeEach(() => {
   )
   vi.mocked(api.crons).mockImplementation(() => Promise.resolve({ jobs: [] }))
   vi.mocked(api.webhooks).mockImplementation(() => Promise.resolve({ tokens: [] }))
+  vi.mocked(api.defaultAgent).mockImplementation(() => Promise.resolve({ default_agent: 'kirocrew' }))
   // The patrol cases make this registry read REJECT (mockRejectedValue also
   // outlives clearAllMocks); a leaked rejection renders the roster's patrol
   // error alert into every later case.
@@ -1226,5 +1230,213 @@ describe('MembersPage default member, memory and URL', () => {
       expect(currentUrl()).toBe('/members')
       expect(navigateSpy).not.toHaveBeenCalledWith(-1)
     })
+  })
+})
+
+/* ── React Query migration (issue #9418) ─────────────────────────────────
+ * The roster, thread, activity and wake reads live in the shared query
+ * cache now. These pin the three behaviors the migration exists for:
+ * cache-on-remount (no blank flash), invalidation reaching the roster, and
+ * a failed wake fetch being retryable instead of latched. */
+describe('MembersPage server state is React Query cached', () => {
+  it('serves the roster from cache on remount — rows render on the first paint, no blank flash', async () => {
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
+      members: [row(), row({ name: 'research', slug: 'research' })],
+      default_agent: 'kirocrew',
+    })
+    ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation(echoThread)
+    function Harness() {
+      const [mounted, setMounted] = useState(true)
+      return (
+        <>
+          <button data-testid="mount-toggle" onClick={() => setMounted((v) => !v)}>t</button>
+          {mounted && <MembersPage />}
+        </>
+      )
+    }
+    renderWithProviders(<Harness />, { route: '/members' })
+    expect(await rosterRow('oncall')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('mount-toggle'))
+    expect(screen.queryByTestId('member-roster')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('mount-toggle'))
+    // SYNCHRONOUS assertion, deliberately un-awaited: the cached roster must
+    // be on screen at the remount's first paint. The old useState fetch
+    // started from an empty list every visit — the blank-then-repopulate
+    // flash this migration removes.
+    expect(within(screen.getByTestId('member-roster')).getByText('oncall')).toBeInTheDocument()
+    expect(within(screen.getByTestId('member-roster')).getByText('research')).toBeInTheDocument()
+  })
+
+  it("invalidating the ['kirocrew-agents'] prefix refetches the roster in place", async () => {
+    const utils = await renderPage([row()])
+    expect(await rosterRow('oncall')).toBeInTheDocument()
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
+      members: [row(), row({ name: 'newcrew', slug: 'newcrew' })],
+      default_agent: 'kirocrew',
+    })
+    // Exactly what useWebSocket does on every server `refresh` frame — which
+    // every crew create/rename/delete pushes. The bare prefix must reach the
+    // roster's child key, or crews created elsewhere only appear after a
+    // full remount (the invalidation gap issue #9418 names).
+    act(() => {
+      void utils.queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    })
+    expect(await rosterRow('newcrew')).toBeInTheDocument()
+    // The refetch swapped data in place — the existing rows never blanked.
+    expect(roster().getByText('oncall')).toBeInTheDocument()
+  })
+
+  it("a failed wake-sources fetch recovers on the next retry signal instead of latching for the page's life", async () => {
+    // Persistent rejection first (a Once-style mock is consumed by React's
+    // double-invoked mounts before the assertion can see the error state).
+    vi.mocked(api.crons).mockImplementation(() => Promise.reject(new Error('boom')))
+    const utils = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    // The drawer's default open state tracks the ambient viewport (closed on
+    // narrow screens); this test is about the wake block's retryability, not
+    // that default — open it explicitly when it starts closed.
+    if (!screen.queryByTestId('member-drawer')) {
+      fireEvent.click(await screen.findByTestId('member-drawer-toggle'))
+    }
+    await screen.findByTestId('member-wake-error')
+    // The gateway recovers; the WS refresh frame's invalidation re-runs the
+    // failed fetch. The old one-shot effect latched `failed` forever — the
+    // block stayed blank until a full remount, the never-retried bug issue
+    // #9418 names.
+    vi.mocked(api.crons).mockImplementation(() =>
+      Promise.resolve({
+        jobs: [
+          { id: 'j1', name: 'nightly-triage', message: '', enabled: true, schedule: '0 2 * * *', last_status: '', agent: 'oncall' },
+        ],
+      }),
+    )
+    act(() => {
+      void utils.queryClient.invalidateQueries({ queryKey: ['cron-jobs'] })
+    })
+    const list = await screen.findByTestId('member-wake-sources')
+    expect(list).toHaveTextContent('nightly-triage')
+    expect(screen.queryByTestId('member-wake-error')).toBeNull()
+  })
+
+  it('a refresh-frame refetch never reorders the roster; a membership change re-sorts it', async () => {
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    const utils = await renderPage([
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 100 }),
+      row({ name: 'beta', slug: 'beta', last_active_ts: 50 }),
+    ])
+    const names = () =>
+      within(screen.getByTestId('member-roster'))
+        .getAllByRole('listitem')
+        .map((li) => within(li).queryByText(/^(alpha|beta|gamma)$/)?.textContent)
+        .filter(Boolean)
+    await waitFor(() => expect(names()).toEqual(['alpha', 'beta']))
+    // beta's activity advances server-side; the refresh-frame refetch lands
+    // it. The ORDER must hold — a re-sort would move rows under the cursor
+    // mid-click, opening the wrong member's durable DM thread.
+    membersMock.mockResolvedValue({
+      members: [
+        row({ name: 'alpha', slug: 'alpha', last_active_ts: 100 }),
+        row({ name: 'beta', slug: 'beta', last_active_ts: 999, last_message: 'fresh row content' }),
+      ],
+      default_agent: 'kirocrew',
+    })
+    act(() => {
+      void utils.queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    })
+    // Content updated in place…
+    await within(screen.getByTestId('member-roster')).findByText('fresh row content')
+    // …but the order did not move.
+    expect(names()).toEqual(['alpha', 'beta'])
+    // A membership change (new crew) re-sorts from scratch by recency.
+    membersMock.mockResolvedValue({
+      members: [
+        row({ name: 'alpha', slug: 'alpha', last_active_ts: 100 }),
+        row({ name: 'beta', slug: 'beta', last_active_ts: 999 }),
+        row({ name: 'gamma', slug: 'gamma', last_active_ts: 500 }),
+      ],
+      default_agent: 'kirocrew',
+    })
+    act(() => {
+      void utils.queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    })
+    await rosterRow('gamma')
+    expect(names()).toEqual(['beta', 'gamma', 'alpha'])
+  })
+
+  it('a failed wake refetch keeps the known-good list on screen instead of the error banner', async () => {
+    vi.mocked(api.crons).mockResolvedValue({
+      jobs: [
+        { id: 'j1', name: 'nightly-triage', message: '', enabled: true, schedule: '0 2 * * *', last_status: '', agent: 'oncall' },
+      ],
+    })
+    const utils = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    if (!screen.queryByTestId('member-drawer')) {
+      fireEvent.click(await screen.findByTestId('member-drawer-toggle'))
+    }
+    const list = await screen.findByTestId('member-wake-sources')
+    expect(list).toHaveTextContent('nightly-triage')
+    // These are shared keys other pages refetch; one transient blip must not
+    // replace a correct list with "couldn't load".
+    vi.mocked(api.crons).mockImplementation(() => Promise.reject(new Error('blip')))
+    act(() => {
+      void utils.queryClient.invalidateQueries({ queryKey: ['cron-jobs'] })
+    })
+    await waitFor(() =>
+      expect(vi.mocked(api.crons).mock.results.length).toBeGreaterThanOrEqual(2),
+    )
+    expect(screen.getByTestId('member-wake-sources')).toHaveTextContent('nightly-triage')
+    expect(screen.queryByTestId('member-wake-error')).toBeNull()
+  })
+
+  it('the store-wide webhook kill switch marks bound tokens "(paused)" via the shared predicate', async () => {
+    vi.mocked(api.webhooks).mockResolvedValue({
+      // Token itself is enabled — only the store-wide switch silences it.
+      tokens: [{ id: 'w1', label: 'ci-callback', agent: 'oncall', enabled: true }],
+      switch_on: false,
+    })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    if (!screen.queryByTestId('member-drawer')) {
+      fireEvent.click(await screen.findByTestId('member-drawer-toggle'))
+    }
+    const list = await screen.findByTestId('member-wake-sources')
+    // A killed store cannot call in (webhookCanCallIn holds BOTH switches),
+    // so listing the token as a live wake source would contradict the
+    // Webhooks page and the crew editor about a security-relevant fact.
+    expect(list).toHaveTextContent('ci-callback')
+    expect(list).toHaveTextContent('(paused)')
+  })
+
+  it('reopening the drawer revalidates activity: cached entries render, then fresh data lands', async () => {
+    const now = Date.now() / 1000
+    vi.mocked(api.memberActivity).mockResolvedValue({
+      slug: 'oncall', member: 'oncall', capped: false,
+      entries: [{ ts: now - 60, via: 'chat', project: 'first-entry' }],
+    })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    if (!screen.queryByTestId('member-drawer')) {
+      fireEvent.click(await screen.findByTestId('member-drawer-toggle'))
+    }
+    await within(await screen.findByTestId('member-activity')).findByText(/first-entry/)
+    // New activity is recorded server-side; nothing invalidates this key, so
+    // the reopen itself must revalidate (staleTime 0) or the drawer shows
+    // the same "recent" activity forever.
+    vi.mocked(api.memberActivity).mockResolvedValue({
+      slug: 'oncall', member: 'oncall', capped: false,
+      entries: [
+        { ts: now - 10, via: 'chat', project: 'fresh-entry' },
+        { ts: now - 60, via: 'chat', project: 'first-entry' },
+      ],
+    })
+    fireEvent.click(screen.getByTestId('member-drawer-toggle'))  // close
+    fireEvent.click(screen.getByTestId('member-drawer-toggle'))  // reopen
+    // Cached entry is on screen immediately (no re-skeleton)…
+    expect(within(screen.getByTestId('member-activity')).getByText(/first-entry/)).toBeInTheDocument()
+    // …and the background refetch lands the new entry.
+    await within(screen.getByTestId('member-activity')).findByText(/fresh-entry/)
   })
 })
