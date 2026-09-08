@@ -81,7 +81,7 @@ describe('sendTurn receipt contract', () => {
     expect(receipt.status).toBe('queued')
   })
 
-  it('maps a transport rejection (never left the machine) to transport-error', async () => {
+  it('maps a transport rejection (no response -- delivery indeterminate) to transport-error', async () => {
     fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
     const receipt = await sendTurn({ message: 'hi', slot: 'chat-1' })
     expect(receipt.status).toBe('transport-error')

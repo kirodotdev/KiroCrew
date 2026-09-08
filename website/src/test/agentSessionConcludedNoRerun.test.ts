@@ -20,14 +20,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 
-const { dispatch, apiMock, saveInvestigation, getInvestigation } = vi.hoisted(() => ({
+const { dispatch, apiMock, sendTurn, saveInvestigation, getInvestigation } = vi.hoisted(() => ({
   dispatch: vi.fn(),
   apiMock: {
     chatFolders: vi.fn(),
     createChatFolder: vi.fn(),
-    sendChat: vi.fn(),
     chatSlotDetail: vi.fn(),
   },
+  sendTurn: vi.fn(),
   saveInvestigation: vi.fn(),
   getInvestigation: vi.fn(),
 }))
@@ -40,6 +40,7 @@ vi.mock('../store/chatSlice', () => ({
 }))
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('../api/client', () => ({ api: apiMock }))
+vi.mock('../chat-core/transport/sendTurn', () => ({ sendTurn }))
 vi.mock('../apps/issue-radar/api', () => ({ issueRadarApi: { saveInvestigation, getInvestigation } }))
 
 import { useAgentSession, itemKey } from '../apps/issue-radar/lib/agentSession'
@@ -60,7 +61,7 @@ function harness() {
   apiMock.chatSlotDetail.mockImplementation((key: string) =>
     key === SLOT_KEY ? Promise.reject(slotGone) : Promise.resolve({ messages: [] }))
   apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: 'Issue Radar - demo-repo' }])
-  apiMock.sendChat.mockResolvedValue({ status: 200, ok: true } as unknown as Response)
+  sendTurn.mockResolvedValue({ status: 'dispatched', body: {} })
   saveInvestigation.mockResolvedValue({ investigation: { slot_key: 'slot-new' } })
   // Default: the server agrees with the record the case passed in, so the re-read
   // is a no-op and each case still exercises the status it names.
@@ -86,7 +87,7 @@ const open = async (status: string, force = false) => {
 
 const createdSlot = () =>
   dispatch.mock.calls.some((c) => (c[0] as { type: string }).type === 'createSlot')
-const seeded = () => apiMock.sendChat.mock.calls.length > 0
+const seeded = () => sendTurn.mock.calls.length > 0
 
 describe('Issue Radar - a concluded investigation is not silently re-run', () => {
   beforeEach(() => {

@@ -27,7 +27,8 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../../../store'
 import { createSlot, switchSlot, deleteSlot } from '../../../store/chatSlice'
 import { api } from '../../../api/client'
-import { readSendReceipt } from '../../../utils/sendDelivery'
+import { sendTurn } from '../../../chat-core/transport/sendTurn'
+import { settleSeedReceipt } from '../../../utils/seedReceipt'
 import { isMissingSlotError } from '../../../utils/thunkError'
 import { issueRadarApi, type InvestigationRecord, type ItemKind, RepoRef } from '../api'
 import { repoScopeKey } from './links'
@@ -276,31 +277,22 @@ export function useAgentSession(): UseAgentSession {
         createdSlotKey = slot.key
         // Seed + auto-run the first turn (background task; persisted + survives
         // the navigation). await ensures the user message is stored before we
-        // switch, so it paints immediately on arrival.
-        // api.sendChat hands back the raw fetch response, and fetch RESOLVES on
-        // 4xx/5xx — so without this check a rejected prompt still got recorded and
-        // navigated to, leaving a resumable but empty session.
-        const seedInFlight = api.sendChat(prompt, slot.key)
+        // switch, so it paints immediately on arrival. The chat-core transport
+        // owns the receipt contract (`POST /api/chat?ws=1` RESOLVES on 4xx/5xx,
+        // a 200 can still decline with `{ok:false}`, a hung POST is bounded by
+        // its deadline) and never rejects: every outcome is a receipt status.
+        const seedInFlight = sendTurn({ message: prompt, slot: slot.key })
         createdSlotKey = null
-        const seeded = await seedInFlight
-        // A REFUSAL, not merely a non-2xx: `/api/chat` also declines inside a 200
-        // by answering `{ok:false}`, and a status-only check passed that as a
-        // success -- recording and navigating to exactly the empty session this
-        // guard exists to prevent. `readSendReceipt` owns that distinction for
-        // every send site. An UNREADABLE 2xx receipt deliberately does NOT land
-        // here: the request was accepted, so the seed may be running, and
-        // deleting the slot would cancel real work over a mangled reply.
-        if (seeded && typeof seeded === 'object' && 'ok' in seeded) {
-          const { body, outcome } = await readSendReceipt(seeded as Response)
-          if (outcome === 'refused') {
-            // Rejected outright, so nothing is running: the empty slot is safe
-            // (and wrong) to remove.
-            await dispatch(deleteSlot(slot.key)).unwrap().catch(() => {})
-            const reason = typeof body.error === 'string' && body.error
-              ? body.error
-              : `HTTP ${(seeded as Response).status}`
-            throw new Error(`could not seed the session (${reason})`)
-          }
+        const receipt = await seedInFlight
+        // `settleSeedReceipt` owns the seed policy (shared with the other app
+        // seeder): only a seed that provably never ran -- refused, or no receipt
+        // and the slot stays empty -- tears the empty slot down; recording and
+        // navigating to it would be exactly the empty session this guard exists
+        // to prevent. Everything else is, or may be, running and is recorded.
+        const verdict = await settleSeedReceipt(receipt, slot.key)
+        if (!verdict.ran) {
+          await dispatch(deleteSlot(slot.key)).unwrap().catch(() => {})
+          throw new Error(verdict.reason)
         }
         const res = await issueRadarApi.saveInvestigation(repoRef, number, {
           slot_key: slot.key,

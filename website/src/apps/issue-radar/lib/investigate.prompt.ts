@@ -9,10 +9,10 @@
 // Why the exemption exists: this prompt is functional payload. The agent reads
 // the instructions and acts on them, so a translated copy would change agent
 // BEHAVIOUR, not the interface language. It is nonetheless shown to the user —
-// `agentSession.openSession` sends it with `api.sendChat`, so it lands in the
-// transcript as the seeding user message — which is exactly why it cannot be
-// hidden behind a shape rule and pretended to be invisible: the boundary is the
-// honest form of the claim.
+// `agentSession.openSession` sends it through the chat-core `sendTurn`, so it
+// lands in the transcript as the seeding user message — which is exactly why it
+// cannot be hidden behind a shape rule and pretended to be invisible: the
+// boundary is the honest form of the claim.
 //
 // A `words.exclude` shape rule cannot do this job. The
 // exclusion IS consulted for a template literal — eslint-plugin-i18next

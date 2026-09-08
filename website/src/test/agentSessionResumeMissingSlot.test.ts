@@ -36,14 +36,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 
-const { dispatch, apiMock, saveInvestigation, getInvestigation } = vi.hoisted(() => ({
+const { dispatch, apiMock, sendTurn, saveInvestigation, getInvestigation } = vi.hoisted(() => ({
   dispatch: vi.fn(),
   apiMock: {
     chatFolders: vi.fn(),
     createChatFolder: vi.fn(),
-    sendChat: vi.fn(),
     chatSlotDetail: vi.fn(),
   },
+  sendTurn: vi.fn(),
   saveInvestigation: vi.fn(),
   getInvestigation: vi.fn(),
 }))
@@ -56,6 +56,7 @@ vi.mock('../store/chatSlice', () => ({
 }))
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('../api/client', () => ({ api: apiMock }))
+vi.mock('../chat-core/transport/sendTurn', () => ({ sendTurn }))
 vi.mock('../apps/issue-radar/api', () => ({ issueRadarApi: { saveInvestigation, getInvestigation } }))
 
 import { useAgentSession } from '../apps/issue-radar/lib/agentSession'
@@ -83,7 +84,7 @@ function harness(rejection: unknown) {
     key === 'slot-closed' ? Promise.reject(rejection) : Promise.resolve({ messages: [] }))
   getInvestigation.mockResolvedValue({ investigation: null })
   apiMock.chatFolders.mockResolvedValue([{ id: 'f1', name: 'Issue Radar - demo-repo' }])
-  apiMock.sendChat.mockResolvedValue({ status: 200, ok: true } as unknown as Response)
+  sendTurn.mockResolvedValue({ status: 'dispatched', body: {} })
   saveInvestigation.mockResolvedValue({ investigation: { slot_key: 'slot-new' } })
 }
 
