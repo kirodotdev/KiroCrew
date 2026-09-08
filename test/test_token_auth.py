@@ -285,11 +285,11 @@ def _make_request(
     return req
 
 
-# -- Property 5: Middleware accepts valid tokens via query param or cookie --
+# -- Property 5: Middleware accepts valid tokens via query, header, or cookie --
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("via", ["query", "cookie"])
+@pytest.mark.parametrize("via", ["query", "header", "cookie"])
 async def test_middleware_accepts_valid_token(via: str) -> None:
     mw = token_auth_middleware()
     token = generate_token("testuser", ttl_seconds=300)
@@ -299,6 +299,8 @@ async def test_middleware_accepts_valid_token(via: str) -> None:
         bind_token_ip(token, "127.0.0.1")
         mark_consumed(token)
         req = _make_request(cookies={"mc_token_5476": token})
+    elif via == "header":
+        req = _make_request(headers={"X-Presigned-Token": token})
     else:
         req = _make_request(query={"token": token})
 

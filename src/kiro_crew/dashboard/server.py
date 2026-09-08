@@ -724,7 +724,14 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # Called by MCP (loopback + secret) AND browser polling
         # (DCV/SSH-forwarded cookie auth).  See token_auth.py.
         "/api/spawn",
+        # ACP title subscriptions use the loopback internal secret, then the
+        # WebSocket event gate narrows delivery to registered slot keys.
+        "/api/ws",
         "/api/chat",
+        # ACP selector and command discovery authenticate through loopback internal-secret access.
+        "/api/models",
+        "/api/effort-levels",
+        "/api/slash-commands",
         "/api/lessons",
         "/api/crons",  # CLI cron trigger; prefix covers all sub-routes (consistent with spawn/taskrunner)
         # The cron_add/cron_update MCP tools resolve-or-create Schedule-page
@@ -1608,12 +1615,18 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_ask_question_answer,
         api_ask_question_dismiss,
         api_ask_question_pending,
+        api_ask_question_slot_answer,
+        api_ask_question_slot_pending,
     )
 
     app.router.add_post("/api/ask-question", api_ask_question)
     # Registered before the {ask_id} route so the literal path is not captured
     # as an ask_id.
     app.router.add_get("/api/ask-question/pending", api_ask_question_pending)
+    app.router.add_get("/api/chat/slots/{slot_key}/questions", api_ask_question_slot_pending)
+    app.router.add_post(
+        "/api/chat/slots/{slot_key}/questions/{card_id}/answer", api_ask_question_slot_answer
+    )
     app.router.add_post("/api/ask-question/dismiss", api_ask_question_dismiss)
     app.router.add_post("/api/ask-question/{ask_id}/answer", api_ask_question_answer)
 

@@ -28,7 +28,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMappin
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility facade
 
 # Module alias for post-split helpers. The `from ... import` list below is a
@@ -4668,6 +4668,7 @@ class KiroCrewConfig:
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
             crew_agent: str | None = None,
+            session_mcp_servers: list[dict[str, Any]] | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -4778,6 +4779,7 @@ class KiroCrewConfig:
                 tool_search_min_tokens=tool_search_min_tokens,
                 mcp_gateway_overlay=_gw_overlay,
                 mcp_gateway_socket=_gw_socket,
+                session_mcp_servers=session_mcp_servers,
             )
 
         return _acp

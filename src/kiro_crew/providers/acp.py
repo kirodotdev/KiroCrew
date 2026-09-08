@@ -308,6 +308,7 @@ class AcpProvider(LLMProvider):
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
         crew_agent: str | None = None,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -335,6 +336,9 @@ class AcpProvider(LLMProvider):
         if agent:
             kwargs["agent"] = agent
         self._client = AcpClient(**kwargs)
+        # The adapter owns the editor-supplied MCP process lifecycle; the provider
+        # retains only its canonical session-scoped configuration.
+        self._session_mcp_servers: list[dict[str, Any]] = list(session_mcp_servers or [])
         # Consumer opt-in for the low-fidelity child permission downgrade
         # (see child_fidelity_aware property). Set by fidelity-aware
         # consumers (dashboard chat) BEFORE startup; re-applied when
@@ -744,6 +748,7 @@ class AcpProvider(LLMProvider):
                     cwd=work_dir,
                     agent=agent or None,
                     member_session_key=member_session_key,
+                    mcp_servers=self._session_mcp_servers or None,
                 )
                 if attempt:
                     logger.info(
@@ -793,7 +798,7 @@ class AcpProvider(LLMProvider):
         return None
 
     async def _start_kiro_runtime_impl(
-        self, phases: dict[str, float], meta: dict[str, object]
+        self, phases: dict[str, float], meta: dict[str, object] | None = None
     ) -> None:
         """Spawn an AcpRuntime and replace self._client with AcpSessionProvider.
 
@@ -803,6 +808,9 @@ class AcpProvider(LLMProvider):
         ``phases`` is populated in-place with per-step wall-clock (ms) — spawn_init,
         session_new, set_model — for the startup histogram in the wrapper.
         """
+        if meta is None:
+            meta = {}
+
         # Extract params from the AcpClient that was created in __init__
         # (it was never spawned — just used for config storage)
         work_dir = self._client._work_dir
@@ -953,6 +961,7 @@ class AcpProvider(LLMProvider):
                         cwd=work_dir,
                         agent=agent or None,
                         member_session_key=self._member_session_key(),
+                        mcp_servers=self._session_mcp_servers or None,
                     )
                 except AcpRuntimeError as exc:
                     if runtime.saw_not_logged_in():

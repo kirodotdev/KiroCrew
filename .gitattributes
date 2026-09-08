@@ -38,3 +38,7 @@
 src/kiro_crew/_vendor/**/*.py text eol=lf
 src/kiro_crew/_vendor/**/*.md text eol=lf
 src/kiro_crew/_vendor/**/*.typed text eol=lf
+
+# The ACP conformance oracle hashes checkout bytes; CRLF conversion invalidates
+# the pinned upstream checksums on Windows.
+test/conformance/vendor/acp-v1/* text eol=lf

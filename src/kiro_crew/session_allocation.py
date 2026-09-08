@@ -86,6 +86,7 @@ class AllocationDeps:
     is_claude_backend: Callable[[LLMProvider], bool]
     provider_label: Callable[[LLMProvider], str]
     detect_provider_switch: Callable[[Any, str, str], bool]
+    mcp_fingerprint: Callable[[list[dict[str, Any]] | None], str]
     session_factory: Callable[..., Any]
     first_turn_nothing_armed: object
     first_turn_fresh: object
@@ -1093,6 +1094,7 @@ class SessionAllocationService:
         model: str | None = None,
         cwd: str | None = None,
         extra_env: dict[str, str] | None = None,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
         speculative: bool = False,
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
@@ -1109,6 +1111,9 @@ class SessionAllocationService:
         owner = self._owner
         constants = self._deps.constants
         key = owner._fold_key(key)
+        requested_mcp_fp = self._deps.mcp_fingerprint(session_mcp_servers)
+        if session_mcp_servers:
+            extra_factory_kwargs["session_mcp_servers"] = session_mcp_servers
         stale_provider: LLMProvider | None = None
         stale_session: Any | None = None
         claimed: Any | None = None
@@ -1126,9 +1131,11 @@ class SessionAllocationService:
                 if existing is not None and not recycling:
                     session = existing
                     alive = session.provider.is_process_alive()
-                    if not alive:
+                    mcp_changed = getattr(session, "mcp_fingerprint", "") != requested_mcp_fp
+                    if not alive or mcp_changed:
                         if (
-                            self._deps.is_claude_provider(session.provider)
+                            not mcp_changed
+                            and self._deps.is_claude_provider(session.provider)
                             and session.provider.connection_mode == "per_session"
                         ):
                             self._deps.logger.info(
@@ -1137,17 +1144,21 @@ class SessionAllocationService:
                             )
                             alive = True
                         else:
-                            self._deps.logger.warning(
-                                "Session %s has dead provider — removing stale entry",
-                                key,
-                            )
+                            if mcp_changed:
+                                self._deps.logger.info(
+                                    "Session %s editor MCP set changed — recreating provider",
+                                    key,
+                                )
+                            else:
+                                self._deps.logger.warning(
+                                    "Session %s has dead provider — removing stale entry",
+                                    key,
+                                )
                             stale_provider = session.provider
                             stale_session = session
                             del self._sessions[key]
-                            # Same tick as the removal. Left unrecorded, the
-                            # start crumb survives and the next boot calls this
-                            # a crash rather than an eviction.
                             await record_session_ended(key, end_reason=END_REASON_EVICTED)
+                            alive = False
                     if alive:
                         session.last_used = time.monotonic()
                         if (
@@ -1249,6 +1260,8 @@ class SessionAllocationService:
             pool_decision = "bypass_cwd"
         elif extra_env:
             pool_decision = "bypass_env"
+        elif session_mcp_servers:
+            pool_decision = "bypass_mcp"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run
@@ -1486,6 +1499,7 @@ class SessionAllocationService:
                         first_turn=first_turn,
                         approval_policy=approval_policy,
                         agent=agent or "",
+                        mcp_fingerprint=requested_mcp_fp,
                     )
                     replay_needed = getattr(provider, "_history_replay_needed", False) is True
                     if provider_switched or replay_needed:
@@ -1588,6 +1602,7 @@ class SessionAllocationService:
                 model=model,
                 cwd=cwd,
                 extra_env=extra_env,
+                session_mcp_servers=session_mcp_servers,
                 speculative=speculative,
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,

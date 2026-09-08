@@ -1194,6 +1194,16 @@ class TestEveryRegistryRemovalRecordsAnEnd:
     #: re-derives the claim, so the day such a module starts participating in the
     #: crumb lifecycle its exemption fails instead of quietly covering for it.
     UNRELATED_REGISTRIES = {
+        "acp_server.mcp_supervisor": (
+            "the ACP server's dict[str, _SessionMcpProcess], keyed by ACP session id "
+            "and owning editor MCP proxy subprocesses -- not the session registry's "
+            "dict[str, _SessionEntry], and it writes no lifetime crumb"
+        ),
+        "acp_server.server": (
+            "the ACP protocol server's dict[str, SessionState], keyed by editor-facing "
+            "ACP session id -- not the gateway session registry's dict[str, "
+            "_SessionEntry], and it writes no lifetime crumb"
+        ),
         "connections.warm": (
             "the shared warm OAuth mint's dict[int, _WarmSession], keyed by "
             "activation id -- not the session registry's dict[str, _SessionEntry], "

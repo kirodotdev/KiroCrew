@@ -1,0 +1,13 @@
+This directory contains files vendored from the Agent Client Protocol
+JSON Schema, licensed under the Apache License, Version 2.0.
+
+Source:     https://github.com/agentclientprotocol/agent-client-protocol
+Tag:        schema-v1.21.0
+Commit:     272bf799f35a258c6a4107a0410ed361e83683d3
+Retrieved:  2026-08-24
+
+Copyright 2025 Zed Industries, Inc. and contributors.
+
+See LICENSE for the Apache-2.0 grant. Files (schema.json, schema.unstable.json,
+meta.json, meta.unstable.json) were copied verbatim; no modifications were made.
+Regenerate by re-fetching the tagged commit — see UPDATING.md.
