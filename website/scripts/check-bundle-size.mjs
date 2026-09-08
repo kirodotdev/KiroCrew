@@ -100,9 +100,14 @@ export const CHUNK_BUDGETS = {
   // of every open PR rather than on a new library or surface — the same
   // recurrence the `t` entry above documents. Attribution was measured, not
   // assumed: main's tip alone, with no PR code, reproduces the failure.
-  // 5% headroom, matching the `all` and `t` entries' convention, so ordinary
-  // first-party growth does not re-trip this within days.
-  App: 3360 * KB, // measured 3201 KB on main @ 701f8f981 (~5% headroom)
+  // Re-measured 2026-09-08: four days of ordinary first-party growth took main
+  // @ 6ae74179d to 3,440,273 B (3360 KB) against the 3360 KB ceiling -- 367 B
+  // of headroom, so a PR adding ONE module to the app core (#9437, +1.7 KB)
+  // fails the gate on its merge ref while main itself still passes by a hair.
+  // Same recurrence, same remedy: 5% headroom, matching the `all` and `t`
+  // entries' convention, so ordinary first-party growth does not re-trip this
+  // within days.
+  App: 3530 * KB, // measured 3360 KB on main @ 6ae74179d (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `manualChunks` bucket, see vite.config.ts.
