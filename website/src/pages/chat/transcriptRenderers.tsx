@@ -32,6 +32,7 @@ import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { resolveInjectCard } from './RecoveryCard'
+import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import { ErrorCard } from './ErrorCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
@@ -280,6 +281,21 @@ export function createTranscriptRenderers(
         if (!parsed) return null
         return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
       },
+    },
+    {
+      // Refines `assistant`: a gateway system notice (kind=compaction or
+      // kind=session_reload, the SYSTEM_NOTICE_KINDS set the last-real-message
+      // scans already skip) is a status card, not a reply. The gateway writes
+      // them as assistant rows (chat_utils._append_compaction_notice,
+      // chat_handlers' reload confirmation); the compaction row's content is the
+      // backend's whole context summary, so the bubble fallback painted
+      // kilobytes of machine digest as if the model had said it — on this page
+      // AND in every ChatPane (Crew DM) that shares this factory. Must precede
+      // any assistant-keyed bubble.
+      id: 'system_notice',
+      roles: ['assistant'],
+      match: isSystemNoticeRow,
+      render: (m, ctx) => ctx.row(<SystemNoticeRow key={ctx.key} message={m} disclosureKey={ctx.key} />),
     },
     {
       // Refines `assistant`: an injected workflow completion is a compact

@@ -9117,6 +9117,11 @@
         "blocked": "ブロック済み",
         "warning": "警告"
       },
+      "compactionCard": {
+        "no_summary": "完了 — 表示する要約はありません",
+        "summary_hint": "要約は折りたたまれています — 展開して表示",
+        "title": "コンテキストを圧縮しました"
+      },
       "recoveryCard": {
         "action_not_taken": "アクションは実行されませんでした",
         "announced_no_action_continuing": "宣言のみで未実行 · 継続を自動送信しました",

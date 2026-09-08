@@ -9245,6 +9245,11 @@
         "blocked": "Blockiert",
         "warning": "Warnung"
       },
+      "compactionCard": {
+        "no_summary": "Fertig – keine Zusammenfassung vorhanden",
+        "summary_hint": "Zusammenfassung eingeklappt – zum Lesen aufklappen",
+        "title": "Kontext komprimiert"
+      },
       "recoveryCard": {
         "action_not_taken": "Aktion nicht ausgeführt",
         "announced_no_action_continuing": "angekündigt, aber nicht ausgeführt · Fortsetzung automatisch gesendet",

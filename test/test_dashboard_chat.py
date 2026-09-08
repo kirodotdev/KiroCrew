@@ -812,6 +812,45 @@ class TestBroadcastCompactionResultBackoff:
             c for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "context_usage"
         ]
 
+    def test_notice_prefixes_pin_the_frontend_parser_contract(self, tmp_path, monkeypatch):
+        """The dashboard folds the compaction row by parsing its TEXT: the
+        frontend (``website/src/pages/chat/CompactionCard.tsx``,
+        ``parseCompactionNotice``) keys on the exact ``✅ Conversation compacted``
+        lead (colon or period) for the folded card and on a ``❌`` lead for the
+        error notice, and the row is tagged ``kind="compaction"`` so the registry
+        can claim it. Nothing else pins the writer side, so a wording change here
+        would silently unfold a multi-KB summary back into a plain notice. This
+        test is that pin — change both sides together."""
+        from kiro_crew.dashboard.chat_utils import _broadcast_compaction_result
+
+        state, slot = self._make_slot_and_state(tmp_path, monkeypatch)
+
+        with_summary = _broadcast_compaction_result(
+            state, slot, self._completed_event("## Goal\nship")
+        )
+        assert with_summary == "\u2705 Conversation compacted: ## Goal\nship"
+        without_summary = _broadcast_compaction_result(state, slot, self._completed_event(""))
+        assert without_summary == "\u2705 Conversation compacted."
+        failed = _broadcast_compaction_result(state, slot, self._failed_event("too large"))
+        assert failed is not None and failed.startswith("\u274c Compaction failed: ")
+
+        tagged = [m for m in slot.messages if m.get("role") == "assistant"]
+        assert tagged and all((m.get("meta") or {}).get("kind") == "compaction" for m in tagged)
+
+    def test_state_notice_glyphs_pin_the_frontend_status_regex(self):
+        """The other half of the same contract: ``state.py`` writes three more
+        ``kind="compaction"`` shapes whose LEAD GLYPH the frontend strips
+        (``STATUS_LEAD_RE`` in ``CompactionCard.tsx``: 🔄 U+1F504, ♻ U+267B,
+        ⏳ U+23F3) and one ⚠-led failure it routes to the error surface. A glyph
+        swap here (⏳ U+23F3 vs ⌛ U+231B was a real review-round slip) would
+        leave a raw emoji beside the card's icon with nothing red on this side."""
+        from kiro_crew.dashboard import state as st
+
+        assert st._AUTO_COMPACT_NOTICE.startswith("\U0001f504 ")
+        assert st._SESSION_RECYCLED_NOTICE.startswith("\u267b\ufe0f ")
+        assert st.stuck_turn_notice(120).startswith("\u23f3 ")
+        assert st._AUTO_COMPACT_FAILED_NOTICE.startswith("\u26a0 Auto-compact failed")
+
 
 @pytest.mark.asyncio
 class TestApiChatDrainOnDisconnect:

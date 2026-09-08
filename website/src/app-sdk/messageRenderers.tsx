@@ -30,6 +30,7 @@ import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
+import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
@@ -395,6 +396,20 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
       />,
       true,
     ),
+  },
+  {
+    // Refines `assistant`, so it must precede it: a gateway system notice
+    // (kind=compaction / kind=session_reload — the set lib/systemNotice.ts
+    // already skips in the last-real-message scans) is a status row, not a
+    // reply. The compaction row's content is the backend's whole context
+    // summary; folded behind a one-line card here so an embed surface
+    // (ChatEmbed, SideChat) never paints it as a reply either. The dashboard
+    // row set (pages/chat/transcriptRenderers) registers the same id and
+    // replaces this entry with an identical row.
+    id: 'system_notice',
+    roles: ['assistant'],
+    match: isSystemNoticeRow,
+    render: (m, ctx) => ctx.row(<SystemNoticeRow message={m} disclosureKey={ctx.key} />),
   },
   {
     id: 'assistant',

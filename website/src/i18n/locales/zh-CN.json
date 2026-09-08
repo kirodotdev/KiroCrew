@@ -9117,6 +9117,11 @@
         "blocked": "已拦截",
         "warning": "警告"
       },
+      "compactionCard": {
+        "no_summary": "已完成，无摘要可显示",
+        "summary_hint": "摘要已折叠，展开查看",
+        "title": "上下文已压缩"
+      },
       "recoveryCard": {
         "action_not_taken": "未执行操作",
         "announced_no_action_continuing": "已声明但未执行 · 已自动发送续接指令",

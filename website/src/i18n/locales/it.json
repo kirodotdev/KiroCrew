@@ -9373,6 +9373,11 @@
         "blocked": "Bloccato",
         "warning": "Avviso"
       },
+      "compactionCard": {
+        "no_summary": "Completato: nessun riepilogo da mostrare",
+        "summary_hint": "Riepilogo ripiegato: espandi per leggerlo",
+        "title": "Contesto compattato"
+      },
       "recoveryCard": {
         "action_not_taken": "Azione non eseguita",
         "announced_no_action_continuing": "annunciato ma non eseguito · continuazione inviata automaticamente",
