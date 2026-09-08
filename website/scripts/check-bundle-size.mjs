@@ -75,7 +75,12 @@ export const CHUNK_BUDGETS = {
   // the growth is main's accumulated English strings, and headroom is what was
   // actually missing. 5% headroom, matching the `all` entry's convention above,
   // so the next English string does not re-trip this for the third time.
-  t: 777 * KB, // measured 740 KB on main @ 1cd64b8c9 (~5% headroom)
+  // Re-measured 2026-09-08: main @ 9af9543b0 alone builds the chunk at
+  // 795,127 B (776.5 KB) against the 777 KB ceiling -- 0.07% headroom, the
+  // same drift again (~36 KB of English strings in four days). A feature PR
+  // adding ~40 keys (#8307) trips it on its merge ref while main's own gate
+  // stays green, so the ceiling moves back to the 5% convention.
+  t: 815 * KB, // measured 776.5 KB on main @ 9af9543b0 (~5% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor
