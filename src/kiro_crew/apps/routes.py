@@ -2016,7 +2016,12 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
             "X-Accel-Buffering": "no",
         },
     )
-    await resp.prepare(request)
+    try:
+        await resp.prepare(request)
+    except (ConnectionResetError, ConnectionAbortedError):
+        # The client vanished between sending the request and the stream
+        # opening; nothing has been installed yet, so just hang up quietly.
+        return resp
 
     # Create a queue-backed log collector so install_from_registry streams
     # each log line as it's appended — zero changes to the install logic.
@@ -2040,6 +2045,20 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                 payload += f"data: {line}\n"
             payload += "\n"
             await resp.write(payload.encode("utf-8"))
+        except (ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    async def _finish_stream() -> None:
+        """Close the SSE stream, tolerating a client that already left.
+
+        A browser tab closed mid-install makes ``write_eof`` raise
+        ``ClientConnectionResetError`` ("Cannot write to closing
+        transport", a ``ConnectionResetError`` subclass), which would
+        otherwise escape the handler and be logged by aiohttp as an
+        unhandled server error for a routine client disconnect.
+        """
+        try:
+            await resp.write_eof()
         except (ConnectionResetError, ConnectionAbortedError):
             pass
 
@@ -2103,7 +2122,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
 
     if result.get("needsClientInstall"):
         await _send_sse("done", json.dumps(result))
-        await resp.write_eof()
+        await _finish_stream()
         return resp
 
     if not result.get("ok"):
@@ -2115,7 +2134,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
             error=result.get("error", ""),
         )
         await _send_sse("done", json.dumps(result))
-        await resp.write_eof()
+        await _finish_stream()
         return resp
 
     # Resource registration + backend start already ran inside the locked
@@ -2127,7 +2146,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         resources=name,
     )
     await _send_sse("done", json.dumps(result))
-    await resp.write_eof()
+    await _finish_stream()
     return resp
 
 
@@ -2802,20 +2821,26 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
             # after the open must not stream past the length the client was told,
             # so the loop below caps at `remaining` as well as EOF.
             resp.content_length = st.st_size
-            await resp.prepare(request)
-            remaining = st.st_size
-            # The enclosing `_UI_STREAM_SEMAPHORE` scope (acquired before the
-            # open, released after the close) is what bounds this loop's
-            # `to_thread` hops on the shared default executor — no second
-            # acquisition here: a nested acquire under the same semaphore
-            # would deadlock once 8 holders each waited for a 9th permit.
-            while remaining > 0:
-                chunk = await asyncio.to_thread(os.read, fd, min(_UI_STREAM_CHUNK, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                await resp.write(chunk)
-            await resp.write_eof()
+            try:
+                await resp.prepare(request)
+                remaining = st.st_size
+                # The enclosing `_UI_STREAM_SEMAPHORE` scope (acquired before the
+                # open, released after the close) is what bounds this loop's
+                # `to_thread` hops on the shared default executor — no second
+                # acquisition here: a nested acquire under the same semaphore
+                # would deadlock once 8 holders each waited for a 9th permit.
+                while remaining > 0:
+                    chunk = await asyncio.to_thread(os.read, fd, min(_UI_STREAM_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    await resp.write(chunk)
+                await resp.write_eof()
+            except (ConnectionResetError, ConnectionAbortedError):
+                # A tab can close at any response boundary. The descriptor is
+                # still closed by the shielded finally below; the disconnect is
+                # routine client behavior, not an application error.
+                pass
             return resp
         finally:
             # Off the loop: `os.close` is on the no-blocking-call-on-event-loop
@@ -3741,10 +3766,16 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
                         if k.lower() not in _PROXY_HOP_HEADERS
                     },
                 )
-                await resp.prepare(request)
-                async for chunk in upstream.content.iter_any():
-                    await resp.write(chunk)
-                await resp.write_eof()
+                try:
+                    await resp.prepare(request)
+                    async for chunk in upstream.content.iter_any():
+                        await resp.write(chunk)
+                    await resp.write_eof()
+                except (ConnectionResetError, ConnectionAbortedError):
+                    # The upstream request may finish after the browser has
+                    # already closed its side of the proxy stream. Do not turn
+                    # that routine client disconnect into a gateway traceback.
+                    pass
                 return resp
         finally:
             if owns_session:
