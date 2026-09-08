@@ -97,7 +97,7 @@ async def _roundtrip(
     try:
         # Own nonce per round-trip: this ephemeral stub is a distinct connection
         # from every real one, so an unnamed app-call must not land in a chat
-        # session's per-tenant namespace on a pooled backend (#5322).
+        # session's per-tenant namespace on a pooled backend.
         await backend.forward_from_stub(
             stub_uuid, frame, caller=caller, tenant_nonce=new_tenant_nonce()
         )

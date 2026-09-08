@@ -186,42 +186,41 @@ _PRINTENV_AWS_SECRET_PATTERN = r"(?<![\w-])printenv(?!\w).*AWS_" + _AWS_SECRET_V
 # secret, so neither is scrubbed from an agent child's environment -- the AWS CLI
 # and every SDK read them directly.
 #
-# Two rules here previously denied RETRIEVAL of those two names: a shell
-# dereference (``$NAME``, ``${NAME}``, ``%NAME%``, ``!NAME!``, ``$env:NAME``) and
-# an inline-interpreter environment lookup (``os.environ['NAME']``). Both are
-# REMOVED, deliberately, and the reasoning is worth keeping because it
-# generalizes to any future "deny the variable name" proposal.
+# Two rules are deliberately ABSENT here, and the reasoning is worth keeping
+# because it generalizes to any future "deny the variable name" proposal: a
+# shell dereference (``$NAME``, ``${NAME}``, ``%NAME%``, ``!NAME!``,
+# ``$env:NAME``) and an inline-interpreter environment lookup
+# (``os.environ['NAME']``).
 #
-# They existed because ``acp.client._apply_pod_home_remap`` used to EXPORT both
-# names into a pod child, pinned at the real home, so that a pod agent turn could
-# still reach the operator's AWS profiles after ``HOME`` moved. That export made
-# each name an alias for a path the sensitive-path keystone fences, and since the
-# matchers here work on command TEXT with no variable expansion, the alias was
-# reachable while the literal path was refused.
+# Such a rule is only reachable at all when something EXPORTS one of these
+# names into an agent child pinned at the real home, which would make the name
+# an alias for a path the sensitive-path keystone fences; because the matchers
+# here work on command TEXT with no variable expansion, that alias would be
+# reachable while the literal path is refused.
 #
-# Three review rounds each closed one spelling of that retrieval -- the shell
-# sigils, then the interpreter lookup, then ``cp "$(printenv NAME)" x`` -- which
-# is the shape of a losing race: command substitution, ``eval``, indirect
-# expansion (``v=NAME; cat "${!v}"``), and a two-line helper script are all still
-# available, and no text matcher can see through them. The alias was deleted at
-# its source instead: the remap no longer exports either name. With nothing
-# manufacturing the alias, these rules guarded only an operator who set the
-# variable in their own environment -- their own named file, not an alias this
-# codebase created -- at the cost of implying a completeness the pattern class
-# cannot deliver. Partial coverage of an unbounded bypass space is worse than
-# none, because it reads as a fence.
+# Closing that retrieval one spelling at a time -- the shell sigils, then the
+# interpreter lookup, then ``cp "$(printenv NAME)" x`` -- is the shape of a
+# losing race: command substitution, ``eval``, indirect expansion
+# (``v=NAME; cat "${!v}"``), and a two-line helper script are all still
+# available, and no text matcher can see through them. The alias is denied at
+# its source instead: the remap in ``acp.client._apply_pod_home_remap`` exports
+# neither name. With nothing manufacturing the alias, such rules would guard
+# only an operator who set the variable in their own environment -- their own
+# named file, not an alias this codebase created -- at the cost of implying a
+# completeness the pattern class cannot deliver. Partial coverage of an
+# unbounded bypass space is worse than none, because it reads as a fence.
 #
-# #9183 then generalized that same judgement across this whole catalog, which is
-# why this note now reads as precedent rather than as an exception: the
-# twenty-seven sensitive-file-read rows were deleted for the identical reason, so
-# no path -- named literally or through a variable -- is fenced at the text layer
-# any more. The floor is what it always was, minus a layer that never held:
+# That judgement holds across this whole catalog, so this note reads as
+# precedent rather than as an exception: the twenty-seven
+# sensitive-file-read rows are absent for the identical reason, so no path --
+# named literally or through a variable -- is fenced at the text layer. The
+# floor is
 # ``redact_credentials`` on the output, ``is_sensitive_path`` on every resolved
 # path a file tool opens (which anchors ``KIROCREW_OS_HOME`` as an alternate home
 # root, so a pod's relocated credential tree is covered there), and the OS sandbox
 # on the subprocess. ``_AWS_SECRET_VAR_NAMES`` above still denies retrieval of the
 # variables that hold a SECRET rather than a path; that set is closed and
-# enumerable, which is why a name-based rule is defensible there and was not here.
+# enumerable, which is why a name-based rule is defensible there and not here.
 
 
 BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
@@ -1681,12 +1680,12 @@ BUILTIN_DENY_PATTERNS: list[str] = [r.pattern for r in BUILTIN_DENIED_RULES]
 # enrichment, and they never enter ``BUILTIN_DENY_PATTERNS`` or the golden
 # manifest.
 #
-# Currently EMPTY, on purpose.  The four entries it held (#4799) aliased the
-# pre-widening spellings of the ``restart`` / ``update`` / ``cloud`` / ``gateway
-# restart`` rows, and those rows no longer exist: their enforcement is the
+# Currently EMPTY, on purpose.  Entries here would alias the pre-widening
+# spellings of the ``restart`` / ``update`` / ``cloud`` / ``gateway restart``
+# rows, and those rows do not exist: their enforcement is the
 # ungated argv floor (``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), which no opt-out
 # can reach, so there is nothing left for such a pin to force back on.  A
-# persisted pin in either spelling now resolves to ``None`` and is reported by
+# persisted pin in either spelling resolves to ``None`` and is reported by
 # ``_resolved_pin_ids`` as pinning nothing -- which is the truth, and preferable
 # to resolving it onto an id the catalog cannot display or toggle.
 _LEGACY_RULE_ID_BY_PATTERN: dict[str, str] = {}
@@ -1908,8 +1907,7 @@ def edition_denied_rules() -> list[DeniedCommandRule]:
     # at module scope executes ``kiro_crew.platform.__init__``, which imports
     # ``platform.security_authority``, which imports THIS module — a genuine cycle.
     # The pre-existing local import in ``installed_context``'s caller below has the
-    # same cause. (``top-level-imports``, documented exception; GPT 5.6 asked for
-    # this note on #7705.)
+    # same cause. (``top-level-imports``, documented exception.)
     from kiro_crew.platform.context import PlatformCompositionError, current_context
 
     try:
@@ -1985,21 +1983,20 @@ def edition_denied_rules() -> list[DeniedCommandRule]:
 # Exceptions are NOT applied when the input contains command separators
 # (;, &&, ||, |, newlines) to prevent chaining bypasses.
 #
-# Scoped carve-out for INERT MENTIONS of a destructive literal (see #8802).
+# Scoped carve-out for INERT MENTIONS of a destructive literal.
 #
 # A read-only search verb cannot execute its own operands, so a destructive
 # string handed to it as a pattern is text, not an action:
 #
 #     grep -rn "rm -rf /" tests/     <- searching FOR the rule, not running it
 #
-# Before this carve-out those were denied identically to the real command,
-# which prevented nothing (the same work completes by moving the payload into
-# a file, which is not scanned -- see the #2660 thread) while blocking anyone
-# working ON these rules, and surfaced to the agent as
+# Denying those identically to the real command prevents nothing (the same work
+# completes by moving the payload into a file, which is not scanned) while
+# blocking anyone working ON these rules, and surfaces to the agent as
 # ``User denied tool execution`` -- indistinguishable from a human cancelling.
 #
-# Two conditions make this safe, and BOTH are load-bearing -- an earlier
-# revision of this carve-out got each one wrong and re-allowed a real wipe:
+# Two conditions make this safe, and BOTH are load-bearing -- getting either one
+# wrong re-allows a real wipe:
 #
 #   1. The glob must be ANCHORED AT THE VERB. ``fnmatch`` is a full match but
 #      ``*`` crosses spaces, so a LEADING ``*`` is an unanchored substring
@@ -2013,12 +2010,12 @@ def edition_denied_rules() -> list[DeniedCommandRule]:
 #      rewording.
 #
 #   2. The view must contain NO shell-active character at all, enforced by
-#      :func:`_exception_eligible`. An earlier revision blocklisted the opener
-#      it knew about (``(``) and was promptly defeated by the next one -- a
+#      :func:`_exception_eligible`. Blocklisting only the openers already
+#      known is defeated by the next one -- a
 #      bash 5.3 funsub, ``grep x ${ rm -rf /;}``, which the splitter cuts only
 #      at the ``;`` so the destructive command stays glued to the search verb.
-#      Enumerating opener SPELLINGS is the losing side of that game (#8074
-#      makes the same point about a spelling-based recognizer), so the guard is
+#      Enumerating opener SPELLINGS is the losing side of that game (the same
+#      point applies to any spelling-based recognizer), so the guard is
 #      inverted: an eligible view may contain none of ``$`` ``(`` ``)`` ``{``
 #      ``}`` `` ` `` ``<`` ``>``. That covers command substitution, process
 #      substitution, funsubs, subshells and redirection as a CLASS rather than
@@ -2040,11 +2037,11 @@ def edition_denied_rules() -> list[DeniedCommandRule]:
 #
 # Because nothing in an eligible segment executes, whether the literal was
 # quoted is irrelevant -- so this needs no quote awareness, which is what keeps
-# it compatible with #7013 (quote-NORMALIZED matching, added to close evasion:
-# quoting must never exculpate a command that does run).
+# it compatible with quote-NORMALIZED matching (quoting must never exculpate a
+# command that does run).
 #
-# Deliberately NOT included, pending the maintainer decision asked for on
-# #8802: ``echo``/``printf`` (inert to execute, but ``>`` is not a segment
+# Deliberately NOT included, pending a maintainer decision:
+# ``echo``/``printf`` (inert to execute, but ``>`` is not a segment
 # separator, so an exoneration there also covers writing the string to a file)
 # and ``git commit -m`` (the arguable non-search verb).
 _INERT_SEARCH_VERBS = ("grep", "egrep", "fgrep")
@@ -2352,7 +2349,7 @@ def _polynomial_backtracking_prone(pattern: str) -> bool:
     parentheses do not change how the engine redistributes the run, so
     ``(a+)(a+)$`` backtracks exactly like ``a+a+$``. Resetting state at a group
     boundary — treating a group as opaque — is what let the grouped spelling
-    through; GPT 5.6 caught that on #7705.
+    through.
 
     Conservative and syntactic: adjacency is judged on quantified units with no
     literal between them, so ``a+b+`` (disjoint runs, linear) is flagged too.
@@ -2679,9 +2676,8 @@ class _DenyMatcher:
             # also removes what made POLYNOMIAL backtracking harmless. ``a+a+$``
             # passes ``is_safe_user_regex`` (it is not the exponential shape) and
             # measures ~3.5s against 2,000 characters, which is a stall of the
-            # synchronous gate — GPT 5.6 flagged exactly this on #7705 and was
-            # right. Such a pattern keeps the bounded engine it already had; only
-            # patterns that are free to run unbounded get the full-input path.
+            # synchronous gate. Such a pattern keeps the bounded engine it already had;
+            # only patterns that are free to run unbounded get the full-input path.
             single_fragment = (
                 frags is not None and len(frags) == 1 and not _polynomial_backtracking_prone(linear)
             )

@@ -783,7 +783,7 @@ def reject_option_id(params: dict) -> str | None:
     that names deny, then to a legacy id that names reject. ``None`` means
     the caller must answer with the ``cancelled`` outcome instead — kiro-cli
     maps that to cancelling the TURN, which auto-denies every later tool call
-    in it without prompting (#7681), so recognition here is deliberately
+    in it without prompting, so recognition here is deliberately
     broad: any deny-shaped option beats the cancelled fallback. What it must
     never do is pick an ALLOW option, so every branch matches deny-naming
     values exactly rather than by substring.
@@ -845,9 +845,9 @@ _LEGACY_OPTION_KIND: dict[str, str] = {
     "reject_once": "reject_once",
     "reject_always": "reject_always",
     # Deny-naming ids without a `kind`: recognising them is what keeps a user
-    # denial on the per-tool reject path. Missing them meant reject_tool fell
-    # back to the `cancelled` outcome, which kiro-cli treats as cancelling the
-    # TURN — every later tool call in it was auto-denied unprompted (#7681).
+    # denial on the per-tool reject path. Missing them drops reject_tool onto
+    # the `cancelled` outcome, which kiro-cli treats as cancelling the TURN —
+    # auto-denying every later tool call in it unprompted.
     "reject": "reject_once",
     "deny": "reject_once",
     "deny_once": "reject_once",
@@ -870,7 +870,7 @@ _DENY_BEHAVIORS = frozenset({"deny", "reject"})
 
 #: Deny-naming option ids, DERIVED from the one table above so the auto-answer
 #: path (`reject_option_id`) and the event builder (`build_permission_event`)
-#: cannot drift on the vocabulary a second time (#7681 was exactly that drift).
+#: cannot drift on the vocabulary.
 _DENY_OPTION_IDS: frozenset[str] = frozenset(
     k for k, v in _LEGACY_OPTION_KIND.items() if v in ("reject_once", "reject_always")
 )
@@ -919,7 +919,7 @@ def build_permission_event(
     tool_kind = tool_call.get("kind", "")
 
     # ACP spec uses optionId/name + kind ("allow_once"|"allow_always"|
-    # "reject_once"|"reject_always"); kiro-cli historically uses id/label with id
+    # "reject_once"|"reject_always"); kiro-cli uses id/label with id
     # values "allow_once"/"allow_always". Accept both shapes and remember the
     # actual optionIds keyed by kind so approve/reject can echo the exact id.
     options: list[dict[str, str]] = []
@@ -946,7 +946,7 @@ def build_permission_event(
             # Adapters that speak `behavior` instead of `kind`: an exact deny
             # behavior classifies the option as a per-tool reject whatever the
             # id is called, keeping a user denial off the turn-cancelling
-            # `cancelled` fallback (#7681).
+            # `cancelled` fallback.
             behavior = o.get("behavior")
             if isinstance(behavior, str) and behavior.lower() in _DENY_BEHAVIORS:
                 opt_kind = "reject_once"
@@ -967,7 +967,7 @@ def build_permission_event(
     # turns into a cryptic "Tool use aborted". A payload advertising no
     # deny-shaped option at all leaves reject_tool on the "cancelled" fallback,
     # which kiro-cli maps to cancelling the TURN — auto-denying every later
-    # tool call in it (#7681); that is why recognition above is deliberately
+    # tool call in it; that is why recognition above is deliberately
     # broad and why both fallback sites log a warning.
     any_allow = kind_to_id.get("allow_once") or kind_to_id.get("allow_always")
     any_reject = kind_to_id.get("reject_once") or kind_to_id.get("reject_always")
@@ -1399,10 +1399,9 @@ def tool_call_content_text(entry: Any) -> str | None:
     ``{"type": "content", "content": {"type": "text", "text": ...}}``. Real
     backends also send the ContentBlock BARE -- ``{"type": "text", "text": ...}``
     -- and that form is unambiguous, so it is read as if it had been wrapped.
-    Rejecting it dropped every entry of the frame, so the dashboard had nothing
-    to render and fell through to "No input or output captured for this tool
-    call." while the backend believed it had reported the result
-    (kirodotdev/KiroCrew#8522).
+    Rejecting it drops every entry of the frame, so the dashboard has nothing
+    to render and falls through to "No input or output captured for this tool
+    call." while the backend believes it reported the result.
     """
     if not isinstance(entry, dict):
         return None

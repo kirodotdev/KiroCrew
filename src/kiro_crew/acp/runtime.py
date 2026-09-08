@@ -615,10 +615,9 @@ def _get_rss_tree_mb(pid: int) -> float | None:
     On macOS the tree is walked too, and it is NOT redundant: kiro-cli spawns
     MCP-server / tool children there exactly as it does on Windows (see that
     branch's note), so measuring only ``pid`` under-reports a session's real
-    footprint and blinds the watchdog's leak ceiling. An earlier version of this
-    docstring claimed the macOS tree "is just the process itself"; it is kept
-    corrected here because that claim is what made the per-pid whole-machine
-    snapshot look free.
+    footprint and blinds the watchdog's leak ceiling. The macOS tree is NOT "just
+    the process itself" — believing otherwise is what makes the per-pid
+    whole-machine snapshot look free.
     """
     if sys.platform == "linux":
         total = 0.0
@@ -2482,13 +2481,12 @@ class AcpRuntime:
         actionable login prompt) instead of a generic process-death error —
         parity with AcpClient, which inspects stderr the same way.
 
-        That parity is what this now actually delivers. The check used to be a
-        single regex for the literal banner ``not logged in``, while AcpClient's
-        error-frame path recognised the full auth vocabulary; a real expired
-        bearer token writes ``AccessDeniedException: "Invalid token"`` and ``the
-        bearer token included in the request is invalid`` and says ``not logged
-        in`` nowhere, so this returned False on exactly the state it exists to
-        detect, and the operator was shown a ``session/new`` timeout instead.
+        Recognises the full auth vocabulary rather than the literal banner
+        ``not logged in``: a real expired bearer token writes
+        ``AccessDeniedException: "Invalid token"`` and ``the bearer token
+        included in the request is invalid`` and says ``not logged in`` nowhere,
+        so a single-banner regex answers False on exactly the state this exists
+        to detect, and the operator is shown a ``session/new`` timeout instead.
 
         Reads the latch, not the ring buffer: see ``_saw_auth_failure``.
         """
@@ -3207,8 +3205,8 @@ class AcpRuntime:
                 # session/load their 90s budget. A switched-to server pending
                 # OAuth holds the response for its full 30s wait, so the generic
                 # _REQUEST_TIMEOUT turns set_mode into the SAME race the
-                # session-start floor exists to prevent (see _SESSION_NEW_TIMEOUT
-                # and #9185). `budget` is already resolved for the session/new
+                # session-start floor exists to prevent (see
+                # _SESSION_NEW_TIMEOUT). `budget` is already resolved for the session/new
                 # above, so reuse it rather than re-reading config.
                 await self._send_and_await(
                     METHOD_SET_MODE,
@@ -3492,7 +3490,7 @@ class AcpRuntime:
                 # Same as create_session: set_mode on the resume path boots the
                 # switched-to agent's MCP servers, so it shares session/load's
                 # 90s budget rather than the generic _REQUEST_TIMEOUT that the
-                # backend's own 30s OAuth wait would race (#9185). `budget` is
+                # backend's own 30s OAuth wait would race. `budget` is
                 # the session-start budget already resolved above.
                 await self._send_and_await(
                     METHOD_SET_MODE,

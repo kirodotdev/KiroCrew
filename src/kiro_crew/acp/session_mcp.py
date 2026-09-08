@@ -39,8 +39,8 @@ the ACP spec at large:
   the host ``canUseTool`` gate that carries the deny floor, the sensitive-path
   check and the governance ceiling. Every MCP call on this backend is gated.
 
-**The governing rule, stated once, because three review rounds each rediscovered
-one corner of it: this module matches kiro-cli, and deviating in EITHER direction
+**The governing rule, stated once because each corner of it is easy to argue
+separately: this module matches kiro-cli, and deviating in EITHER direction
 is the defect.** Granting what kiro-cli would drop widens the session's tool
 surface behind the user's back; withholding what kiro-cli would keep removes
 capability from a session with no error to explain it. Two consequences that are
@@ -237,7 +237,7 @@ def _agent_spec_for(agent: str, work_dir: str | Path | None = None) -> dict[str,
     file is refused at the size cap instead of being read into memory during a
     spawn, and non-UTF-8 bytes or non-object JSON come back as ``None``. The
     labels name THIS surface so a refusal is attributed to the session-MCP
-    translation rather than to an unrelated agent listing (#6722); ``source`` is
+    translation rather than to an unrelated agent listing; ``source`` is
     ``"unknown"`` because a session is started from every channel Crew has.
     """
     ensure_agent_materialized(agent)
@@ -345,7 +345,7 @@ def session_mcp_servers(
     that entry), so emitting both would put two elements with one ``name`` into
     a single array: either the raw entry shadows the stub and the session
     bypasses the broker, or both register and every pooled backend runs twice --
-    the #927 regression ``injection_server_names`` exists to detect. The KAS spec
+    the regression ``injection_server_names`` exists to detect. The KAS spec
     projection resolves the same set for the same reason; the caller owns the
     overlay, so it resolves the set and passes it down.
 

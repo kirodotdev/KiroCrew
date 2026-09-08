@@ -290,9 +290,9 @@ class AcpSessionProvider(LLMProvider):
 
         Routes through AcpSessionHandle.stream_command so kiro-cli executes the
         command itself and returns its structured output deterministically —
-        no LLM round-trip. (Previously delegated to stream(), which sent the
-        command through session/prompt: a full model turn that summarized the
-        output instead of returning it.) The handle keeps /compact, /help, and
+        no LLM round-trip. Routing it through ``session/prompt`` instead would be
+        a full model turn that summarized the output rather than returning it.
+        The handle keeps /compact, /help, and
         non-kiro backends (KAS) on the prompt transport — see its docstring.
         Same exception translation as stream(): everything leaving this
         surface stays within AcpError.
@@ -448,7 +448,7 @@ class AcpSessionProvider(LLMProvider):
         self._runtime._last_activity = time.monotonic()
         # Parity with AcpClient.rekey: the handle's prompt stats describe the
         # session this runtime served BEFORE the handoff; leaking them lets
-        # check_context_usage() compact the new, empty session (#2932).
+        # check_context_usage() compact the new, empty session.
         self._handle.last_prompt_stats.reset_context_state()
         # Claim-push: re-target every MCP stub connection under the shared
         # runtime's PID to the claiming session (see AcpClient.rekey for the
@@ -497,7 +497,7 @@ class AcpSessionProvider(LLMProvider):
         """Backend id when a manual ``/compact`` cannot be served, else ``None``.
 
         Same ``ACP_BACKENDS_COMPACT`` membership answer as
-        ``AcpProvider.manual_compact_unsupported_backend`` (#7800), for the
+        ``AcpProvider.manual_compact_unsupported_backend``, for the
         bare shared-subagent shape that is handed out without the
         ``AcpProvider`` wrapper.
         """

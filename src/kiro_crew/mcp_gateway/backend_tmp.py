@@ -3,7 +3,7 @@
 Third-party MCP servers write telemetry, caches, and scratch files into
 whatever temp directory their process sees. Spawned with an inherited
 default, that is the shared system temp dir -- which nothing ever cleans, so
-their output accumulates for as long as the host lives (issue #5064). Setting
+their output accumulates for as long as the host lives. Setting
 ``TMPDIR``/``TMP``/``TEMP`` at the spawn chokepoint contains every
 well-behaved server without touching any server's code. A server that
 hardcodes ``/tmp`` ignores the variables and keeps today's behavior: this is
@@ -107,7 +107,7 @@ def probe_child_scratch(root: Path) -> Path:
 
     The allocation ROOT holds the ``.owner`` reclamation record. The probe's
     sandbox write carve-out and the ``TMPDIR`` triple point at this SUBDIR so
-    that record stays OUTSIDE the child's writable window (#8653): a child
+    that record stays OUTSIDE the child's writable window: a child
     that could garble ``.owner`` (or write a live pid into it) would make the
     directory permanently unreclaimable by the daemon sweep after a gateway
     crash, since the sweep deletes only owned-and-dead directories. Same

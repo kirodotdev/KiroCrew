@@ -981,8 +981,8 @@ def _exfil_url_warning(
 
     if heuristic_query:
         # NO per-shape waiver on this gate, deliberately, and the same reasoning
-        # forbids adding one. Two were tried for the prefilled GitHub issue link of
-        # #7820 — one keyed to the validated SHAPE, one additionally pinned to this
+        # forbids adding one. Two were tried for the prefilled GitHub issue link —
+        # one keyed to the validated SHAPE, one additionally pinned to this
         # project's own tracker — and both are exfiltration primitives, because what
         # reaches this function is MODEL-AUTHORED text:
         #
@@ -1003,9 +1003,9 @@ def _exfil_url_warning(
         # bounded variant for paths that DO get relayed through prose.
         #
         # To make a long legitimate URL render, narrow or replace this heuristic for
-        # EVERY host on its own merits (#7820 also reports monitorportal.amazon.com)
-        # — do not reintroduce a per-shape escape hatch. Pinned by
-        # test_redaction_mirror_parity.py::TestPrefilledIssueCarveOutParity.
+        # EVERY host on its own merits (more than one host is reported this way)
+        # — do not reintroduce a per-shape escape hatch. Pinned
+        # by test_redaction_mirror_parity.py::TestPrefilledIssueCarveOutParity.
         if len(heuristic_query) >= _EXFIL_QUERY_MIN_LEN:
             trace("exfil_query_length")
             return (
@@ -1051,7 +1051,7 @@ def scan_exfiltration_urls(text: str) -> list[str]:
 #: a PREFIX constant and deliberately NOT a member of
 #: :data:`kiro_crew.security.redaction.CREDENTIAL_REDACTION_TAGS` (see that
 #: tuple's docstring). A consumer that must detect this rewriter's
-#: substitutions (the dashboard chat notice, issue #8132) prefix-counts THIS
+#: substitutions (the dashboard chat notice) prefix-counts THIS
 #: constant; the substitution below is built from it so the two can never
 #: drift.
 EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "

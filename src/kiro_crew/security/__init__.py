@@ -630,9 +630,9 @@ def sanitized_oauth_endpoint(url: str) -> tuple[str, str] | None:
     """Best-effort ``(host, path)`` of an OAuth URL, safe to surface to users.
 
     :func:`oauth_url_contains_credential` answers only a boolean, so its
-    callers historically could not tell the user WHICH endpoint tripped the
-    scanner — the remedy (``oauth_endpoints.json``) needs an exact host+path to
-    be actionable. This sibling names the endpoint without weakening the
+    callers cannot tell the user WHICH endpoint tripped the scanner — and the
+    remedy (``oauth_endpoints.json``) needs an exact host+path to be
+    actionable. This sibling names the endpoint without weakening the
     rejection:
 
     * only the lowercase hostname and the path are returned — NEVER the query,
@@ -972,8 +972,8 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
     ── Nested shell payloads ──
     A shell's ``-c`` argument is a COMMAND, and ``shlex`` strips only the OUTER
     quoting level, so ``bash -c 'dd "if=/dev/zero" of=/dev/sda'`` re-joins with
-    its inner quotes intact and the ``dd if=`` rule still does not match (found
-    by the GPT 5.6 review lane on this change).  Each literal payload is
+    its inner quotes intact and the ``dd if=`` rule still does not match.
+    Each literal payload is
     therefore walked and viewed in its own right, reusing
     :func:`_nested_shell_payloads` — the extractor the self-protection floor
     already uses, so the ``-c`` / ``eval`` / ``env -S`` / herestring /
@@ -1070,8 +1070,8 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             # REQUIRES an intervening token (``rm -rf .* ./data``) matched the
             # double-spaced view and matches neither the elided one nor the
             # command's canonical spelling, so dropping it removed a denial that
-            # existed before: ``r""m -rf "" ./data`` was refused and became
-            # allowed (found by the GPT 5.6 review lane, reproduced against the
+            # existed: ``r""m -rf "" ./data`` was refused and became
+            # allowed (reproduced against the
             # merge-base).  Emitting both means a rule authored against either
             # whitespace shape still fires, which is the only reading that cannot
             # lose a denial.  Rules whose own pattern already tolerated the extra
@@ -1094,8 +1094,8 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             programs = _argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
-            # payload.  Asking per payload is what made this loop quadratic in
-            # payload count (#8595 -- 18k payloads, ~293s): the exemption's
+            # payload.  Asking per payload is what makes this loop quadratic in
+            # payload count (18k payloads, ~293s): the exemption's
             # command-level guards sweep the whole argv, and recovering a
             # payload's positions with ``enumerate`` sweeps it again, so N
             # payloads cost N x len(tokens).  Neither hoist can change a verdict:
@@ -1113,8 +1113,8 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 if len(payload) >= parent_len:
                     continue
                 # ``echo bash -c '<script>'`` PRINTS the script, so descending into
-                # it refuses a command that runs nothing (raised as an advisory by
-                # the GPT 5.6 lane).  The repo's own exemption decides this, rather
+                # it refuses a command that runs nothing.  The repo's own exemption
+                # decides this, rather
                 # than a "launcher must be in command position" rule: the launcher
                 # is NOT in command position in ``sudo bash -c …``,
                 # ``timeout 5 bash -c …``, ``nohup``, ``ssh host``, ``xargs`` or
@@ -1132,8 +1132,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 # substring or a re-join, not an element of ``tokens``.  Recovering
                 # a position with ``list.index`` therefore raised ``ValueError`` and
                 # propagated out of the permission gate on legitimate input
-                # (``sed 's/x/y/e' notes.txt``): found independently as BLOCKING by
-                # the GPT 5.6 and Opus 4.8 lanes.
+                # (``sed 's/x/y/e' notes.txt``).
                 #
                 # The exemption is decided per OCCURRENCE and fails closed: it is
                 # applied only when the payload appears as a token AND every
@@ -1160,8 +1159,8 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 # the top level got: the shell that runs it folds ITS continuations
                 # before lexing, so fold before splitting or the split severs them.
                 # ``bash -c 'r\<newline>m -rf /'`` otherwise yields the pieces ``r``
-                # and ``m -rf /``, and no view holds the command that runs (BLOCKING
-                # from the GPT 5.6 lane).  A view must also not be joined across one
+                # and ``m -rf /``, and no view holds the command that runs.
+                # A view must also not be joined across one
                 # of the payload's own separators.  Only the PIECES are recorded as
                 # walked — recording the payload itself would filter out the single
                 # piece that equals it.
@@ -1609,8 +1608,8 @@ def is_denied(
     # suppressed.  ``_split_segments`` is deliberately quote-unaware, so a newline
     # inside a quoted payload severs the command before the payload can be
     # extracted from it -- ``bash -c 'r\<newline>m -rf /'`` arrives as the pieces
-    # ``bash -c 'r\`` and ``m -rf /'`` and the ``-c`` script is never seen (BLOCKING
-    # from the GPT 5.6 lane).  Emitting no view for the command itself is what keeps
+    # ``bash -c 'r\`` and ``m -rf /'`` and the ``-c`` script is never seen.
+    # Emitting no view for the command itself is what keeps
     # this from fabricating one across its separators.
     folded = _fold_line_continuations(tool_name)
     segments = [seg.strip() for seg in _split_segments(folded)]
@@ -1621,8 +1620,7 @@ def is_denied(
     # walking it twice doubles the payload scan -- which is quadratic in token
     # count inside ``_nested_shell_payloads`` -- for no view the segment walk does
     # not already produce.  Measured: skipping the duplicate halves the cost on a
-    # command padded with thousands of interpreter tokens (raised as a stall risk by
-    # the GPT 5.6 lane).
+    # command padded with thousands of interpreter tokens (a stall risk).
     if len(segments) != 1 or segments[0] != folded.strip():
         work.append(("", _deny_segment_views(tool_name, False)))
     for seg_raw in segments:
@@ -1785,9 +1783,8 @@ def _emit_deny_event(
         # credential straddling the 200-char boundary would otherwise be cut in half,
         # and the fragment no longer matches the credential pattern, so SEL's own
         # write-path redaction cannot catch it and the partial secret persists in a
-        # dashboard-readable log.  Both fields take it: ``raw_segment`` is new, and
-        # ``segment`` carried the same hazard from a bare slice (found by the GPT 5.6
-        # review lane on the new field).
+        # dashboard-readable log.  Both fields take it: a bare slice carries the
+        # same hazard in either one.
         metadata = {
             "deny_pattern": deny_pattern,
             "segment": redact_and_truncate(segment, 200) if segment else "",

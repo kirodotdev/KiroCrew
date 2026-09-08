@@ -1564,11 +1564,11 @@ def _voice_memo_context(
 ) -> str:
     """*text* plus one visible note per voice memo that produced no words.
 
-    A memo whose transcription is unavailable or failed used to be dropped in
-    TOTAL silence: nothing was appended to the prompt, so a voice-only message
-    had no text at all and the turn never started. The sender's send succeeded, so
+    A memo whose transcription is unavailable or failed would otherwise be dropped
+    in TOTAL silence: nothing appended to the prompt, so a voice-only message has
+    no text at all and the turn never starts. The sender's send succeeded, so
     from their side that is indistinguishable from being ignored, and the agent
-    was never told anything arrived. The note makes both true again: the turn runs,
+    is never told anything arrived. The note keeps both true: the turn runs,
     and it runs knowing a memo it cannot hear is what the user sent.
 
     The wording is the neutral half's (``slack/files.py`` pins it), so the same
@@ -2278,7 +2278,7 @@ async def _route_message(
     # EXEMPT only cancellation (``!stop``): a denied channel must still be able to
     # halt a runaway session it previously started. ``!restart`` is NOT
     # cancellation and stays gated. Default OSS build (no ``channels`` policy)
-    # permits, so this is byte-identical to today. handle_message keeps its own
+    # permits. handle_message keeps its own
     # gate as defense-in-depth for its other entry points (interaction
     # re-dispatch, synthetic sends).
     #

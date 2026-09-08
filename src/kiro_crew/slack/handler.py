@@ -586,11 +586,10 @@ class _VoiceConfig:
     aws_profile: str = ""
     region: str = ""
     # TTS provider. Defaults to the LOCAL provider, matching
-    # ``voice_reply.DEFAULT_PROVIDER``. It used to default to "polly" here,
-    # which meant enabling voice reply without naming a provider silently sent
-    # text to a paid AWS service under whatever the ambient credential chain
-    # resolved to. Sourced from the single constant so the two cannot drift
-    # again.
+    # ``voice_reply.DEFAULT_PROVIDER``. Defaulting to "polly" here would mean
+    # enabling voice reply without naming a provider silently sends text to a
+    # paid AWS service under whatever the ambient credential chain resolves to.
+    # Sourced from the single constant so the two cannot drift.
     provider: str = DEFAULT_PROVIDER
     # Piper-specific (ignored by the other providers):
     piper_binary: str = ""
@@ -1525,11 +1524,11 @@ async def _handle_slash_command(
                     # | denied    | an admin's policy forbids   | the org's policy  |
                     # | permitted | the fail-closed SEL audit   | the audit system  |
                     #
-                    # This branch used to post the policy line unconditionally, so a
-                    # solo operator with no policy at all was told a phantom
-                    # organization had blocked them and went hunting a file that does
-                    # not exist, while the real fault went unnamed. The verdict is a
-                    # memory read (pushed when the ceiling was installed), so no thread.
+                    # Posting the policy line unconditionally would tell a solo
+                    # operator with no policy at all that a phantom organization had
+                    # blocked them, sending them hunting a file that does not exist
+                    # while the real fault went unnamed. The verdict is a memory read
+                    # (pushed when the ceiling was installed), so no thread.
                     if not yolo_policy_permits():
                         _outcome, _error = "approval_mode_denied_by_policy", (
                             "mode_disabled_by_policy"
@@ -2324,7 +2323,7 @@ async def _handle_compact_command(
             )
             return
 
-        # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+        # Capability gate, mirroring the dashboard's own gate: a
         # backend that cannot serve a manual /compact treats the prompt as
         # ordinary text and never answers, so dispatching would strand the
         # 120s wait below. Informational, never an error.
@@ -2653,8 +2652,8 @@ async def maybe_route_linked_thread(
     _safe_text, _ = redact_credentials(_safe_text)
     # Nothing rendered this Slack-typed row optimistically in the dashboard, so
     # broadcast_user=True: append delivers the ONE identity-carrying frame
-    # (the old manual frame here carried no ``meta.mid``, so a client receiving
-    # the row through a second door rendered a duplicate — #5981 family).
+    # (a frame without ``meta.mid`` lets a client receiving the row through a
+    # second door render it a second time as a duplicate).
     append_and_surface(
         _dashboard_state, _linked_slot, "user", _safe_text, "msg msg-u", broadcast_user=True  # type: ignore[arg-type]
     )
@@ -2676,7 +2675,7 @@ async def maybe_route_linked_thread(
         # circular import: session_control pulls in dashboard modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
-        # Stamp the admission-time containment (#5911). A linked slot records
+        # Stamp the admission-time containment. A linked slot records
         # linked=True here, so its own channel's queued messages keep draining;
         # only a constraint that appears AFTER this enqueue drops the entry.
         _linked_slot.queue_append(
@@ -4730,8 +4729,8 @@ async def handle_interaction(
                 return None
             # Through the shared grant, which owns BOTH halves: the in-memory
             # mapping the driver reads and the parent approval_policy a subagent
-            # reads (see subagent.py). Poking the container directly is what let a
-            # revoke clear one half and leave the other, so the two are no longer
+            # reads (see subagent.py). Poking the container directly would let a
+            # revoke clear one half and leave the other, so the two are not
             # separable at a call site.
             add_trusted_session(session_key, sessions)
             logger.info("Trust mode ON (late click) for session %s", session_key)
@@ -4924,8 +4923,8 @@ async def _handle_cron_command(
     branches can attribute their SEL audit events to the human who issued
     the command (per-caller identity, matching the dashboard/MCP/CLI paths).
     """
-    # ``source``/``caller`` carry #5428's attribution into the shared remove-all
-    # audit: the hoist moved the audit's home, not its contract.
+    # ``source``/``caller`` carry that attribution into the shared remove-all
+    # audit, which is where the event is emitted.
     return await cron_command_reply(text, cron_service, source="slack", caller=user_id)
 
 

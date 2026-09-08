@@ -152,12 +152,12 @@ def resource_limit_spec(config: dict | None = None) -> list[tuple[str, int]]:
     limits = dict(_RLIMIT_DEFAULTS)
     if config:
         # The one validated parse for this block. Two things this replaces a
-        # local ``val >= 0`` test to get: an Infinity from json.loads used to
-        # pass that test and then raise OverflowError inside ``int()`` -- with no
-        # try/except on this path, so it propagated out of resource_limit_preexec
-        # and failed the spawn; and a fraction in (0, 1) used to floor to 0,
+        # local ``val >= 0`` test to get: an Infinity from json.loads passes that
+        # test and then raises OverflowError inside ``int()`` -- with no
+        # try/except on this path, so it propagates out of resource_limit_preexec
+        # and fails the spawn; and a fraction in (0, 1) floors to 0,
         # which is this path's "leave inherited" sentinel, silently dropping a
-        # limit the operator had asked for. from_raw refuses both and says so.
+        # limit the operator asked for. from_raw refuses both and says so.
         # circular import: config.loader reaches back into this module (it
         # imports security.is_sensitive_path function-locally for the same
         # reason), so importing the loader at security's module scope would

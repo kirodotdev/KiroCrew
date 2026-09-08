@@ -141,7 +141,7 @@ def _default_socket_path() -> str:
     """Resolve the default gateway socket under KIROCREW_HOME (0700 dir)."""
     home = _crew_home()
     new_path = home / "kirocrew-mcp-gateway.sock"
-    # Accept legacy socket name written by older versions (#928).
+    # Accept legacy socket name written by older versions.
     legacy_path = home / "mc-mcp-gateway.sock"
     if not new_path.exists() and legacy_path.exists():
         return str(legacy_path)
@@ -301,7 +301,7 @@ def _hash_permission_profile(
     for tool in sorted(auto_approve):
         h.update(tool.encode("utf-8"))
         h.update(b"\0")  # NUL delimiter: injective — cannot occur in a tool name,
-        #                  so ["a,b"] and ["a","b"] no longer collide onto one key.
+        #                  so ["a,b"] and ["a","b"] cannot collide onto one key.
     h.update(b"mode=")
     h.update(approval_mode.encode("utf-8"))
     h.update(b"\0trust_all=")
@@ -416,8 +416,6 @@ def _build_caller_block(channel_id: Optional[str]) -> dict[str, str]:
     session_key = CallerContext.from_env().session_key
     # Diagnostic identity only — the OS user. USERNAME is the Windows spelling
     # of USER; check both so this dimension is not empty on one platform.
-    # (A ``KIROCREW_PRINCIPAL`` override existed historically but nothing ever
-    # set it — Kiro Crew is single-operator, so it was deleted.)
     principal = (
         os.environ.get("USER") or os.environ.get("USERNAME") or ""
     )
@@ -505,7 +503,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         # ``user_identity``. Omitting the key would make that daemon reject
         # every new stub's register as malformed, silently un-pooling the
         # whole install until the daemon restarts. A current daemon ignores
-        # the key. Safe to drop once no pre-#3604 daemon can be adopted.
+        # the key. Safe to drop once no daemon predating the key can be adopted.
         "user_identity": caller["principal_id"] or "unknown",
         "channel_id": channel_id,
         "config_snapshot_hash": _CONFIG_SNAPSHOT_PLACEHOLDER,
@@ -679,10 +677,10 @@ class StubSession:
     which is scoped to one socket:
 
     * **the stdin reader thread and its queue.** This is why a reconnect cannot
-      simply call ``run_bridge`` again on a fresh socket. The reader used to be
-      created per call, so a second call would put two threads on fd 0 --
-      splitting kiro-cli's lines between two consumers -- while any line the
-      first one had already dequeued died with the old frame.
+      simply call ``run_bridge`` again on a fresh socket. Creating the reader
+      per call would put two threads on fd 0 -- splitting kiro-cli's lines
+      between two consumers -- while any line the first one had already
+      dequeued dies with the old frame.
     * **the ``initialize`` frame.** The stdin pump consumes and forwards it
       once and kiro-cli never re-sends it, so without a copy here a fresh daemon
       would hold a never-initialized backend that rejects every later call --
@@ -1454,8 +1452,8 @@ def _fallback_log_path() -> Path:
 
 
 # Rotate the fallback log once it exceeds this size, keeping ONE previous
-# generation (``.jsonl.1``). The log grew unbounded before (467 KB in 15 h on
-# one degraded host, issue #3495); a 1 MiB cap bounds total disk use at ~2 MiB
+# generation (``.jsonl.1``). Unrotated it grows unbounded (467 KB in 15 h on
+# one degraded host); a 1 MiB cap bounds total disk use at ~2 MiB
 # while keeping enough history for the gateway's per-server fallback-rate
 # aggregation (see ``gatewayd`` stats).
 _FALLBACK_LOG_MAX_BYTES = 1024 * 1024
@@ -2055,9 +2053,10 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         return 1
     if session.reason in StubSession.RECONNECTABLE:
         # The transport was lost with nothing in flight, so no call needs an
-        # answer — but the session still loses these servers, and that used to
-        # leave no trace at all. Record it so a degraded session is explicable
-        # afterwards instead of looking like a healthy one whose tools fail.
+        # answer — but the session still loses these servers, and without this
+        # record that leaves no trace at all. Record it so a degraded session is
+        # explicable afterwards instead of looking like a healthy one whose
+        # tools fail.
         await alog_fallback(
             f"bridge_dead_{session.reason}", stub_uuid, pool_label, args
         )

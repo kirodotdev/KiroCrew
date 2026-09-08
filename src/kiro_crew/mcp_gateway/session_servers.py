@@ -101,7 +101,7 @@ def _load_overlay_for_agent(overlay_dir: Path, agent: str) -> dict[str, Any] | N
     silently misses and disables pooling for every packaged agent. Match the
     bare filename first (fast path for unprefixed agents), then fall back to a
     filename-qualified overlay (``*<agent>.json``) whose parsed ``name`` equals
-    *agent*. (#925)
+    *agent*.
 
     Fail-soft: an unreadable/malformed overlay yields ``None`` (unpooled), never
     an exception.
@@ -200,7 +200,7 @@ def injection_server_names(
     Callers use this to detect an additive-injection regression: if a launched
     session reports MCP servers whose names overlap with this set, injection has
     become additive rather than overriding and every pooled server is running
-    twice. See #927.
+    twice.
 
     This is deliberately cheap (one file read, no shaping) so it can be called
     as a post-launch health check without adding latency to the session path.

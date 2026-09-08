@@ -281,7 +281,7 @@ async def _evaluate_pass(
             # and nothing else, so a result that is not stored is not merely
             # forgotten, it is reported as "never measured" about a server we
             # just spawned twice -- but it must not suppress a re-measure, being
-            # the one verdict two spawns cannot justify freezing (#4339). So it
+            # the one verdict two spawns cannot justify freezing. So it
             # stays a candidate and the next pass re-derives it, which is what
             # lets a press clear a row that was wrong.
             if not hit.caller_sensitive:
@@ -307,7 +307,7 @@ async def _evaluate_pass(
     # Bounded fan-out, not a sequential walk. This is awaited by a request the
     # operator is waiting on, and each pre-flight is two spawns that can each hit
     # the probe timeout — serially that is the budget times two timeouts of dead
-    # wait, so one hung server used to make the whole pass feel hung. The cap is
+    # wait, so one hung server would make the whole pass feel hung. The cap is
     # the prober's own, because the same executor and the same DNS resolution sit
     # underneath: raising it here would flood the pool this bound exists to
     # protect. Each pre-flight already spawns twice, so the real process ceiling
@@ -369,9 +369,9 @@ async def _evaluate_pass(
             # makes a result VISIBLE (the dashboard reads this cache and only this
             # cache); what makes a divergence non-durable is that the loop above
             # refuses to let such a row skip the next measurement. Separating
-            # those two meanings is the whole of the #4339 fix -- the earlier
-            # attempt withheld the row instead, which made the measurement
-            # invisible and had the page call the server unmeasured.
+            # those two meanings is what keeps both properties: withholding the
+            # row instead would make the measurement invisible and have the page
+            # call the server unmeasured.
             cache.put(server.name, identities[server.name], verdict)
             measured += 1
         else:

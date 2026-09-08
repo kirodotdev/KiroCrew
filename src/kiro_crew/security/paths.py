@@ -136,11 +136,10 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     # (sandbox.py) is SEPARATE, so kiro-cli's own auth is unaffected.
     # The identity-store directories come from the single canonical table
     # (``identity_stores.IDENTITY_STORE_ROOTS``) so this fence and the five other
-    # readers cannot drift apart (#6352). The splice emits all eight in table
+    # readers cannot drift apart. The splice emits all eight in table
     # order (``.local/share`` -> ``Library/Application Support`` ->
-    # ``AppData/Local`` -> ``AppData/Roaming``, kiro-cli before amazon-q), which
-    # is the exact order this list carried before the refactor -- a golden test
-    # freezes that the final list is unchanged.
+    # ``AppData/Local`` -> ``AppData/Roaming``, kiro-cli before amazon-q), and a
+    # golden test freezes the final list against exactly that.
     #
     # Windows layouts: current kiro-cli writes the local, non-roaming app-data
     # directory (%LOCALAPPDATA% defaults to ~/AppData/Local); the Roaming entries
@@ -337,7 +336,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     "sel_hmac.key",
     # SEL trust-root directory: sel.py stores/migrates the audit chain's HMAC
     # signing key at ``trust/sel_hmac.key`` — OUTSIDE the log's directory, so
-    # write access to the log dir no longer implies re-signing power. The whole
+    # write access to the log dir does not imply re-signing power. The whole
     # dir is gated (like ``profiles``/``run``) so future trust-root material is
     # covered without a new entry. sel.py opens the key directly, not through
     # this gate.
@@ -512,7 +511,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # agent could therefore mint the dashboard token, PUT ``mode=act`` with a rule
     # matching a signal, and unlock provider actions the operator never granted, which
     # defeats the app's central safety property (``effective = min(app_mode, rule_mode)``
-    # is only a ceiling if the agent cannot raise it). Found in review. Here for the same
+    # is only a ceiling if the agent cannot raise it). Here for the same
     # reasons as the secrets leaf directly above — served unauthenticated over
     # ``/config`` and writable by any auto-approved shell in ``config.json`` — so it moves
     # to the read+write keystone floor. Dashboard PUT is the sole writer and opens the
@@ -619,8 +618,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     "run",
     # Encrypted secret vault directory — denylists the entire subdirectory so
     # the key file, ciphertext store, lock, and atomic-write temp files are all
-    # unreadable to the agent through any Kiro Crew-mediated channel (PR 1 of
-    # #2351). The verb-independent sensitive-path backstop covers a scripted
+    # unreadable to the agent through any Kiro Crew-mediated channel.
+    # The verb-independent sensitive-path backstop covers a scripted
     # ``python -c "open('~/.kiro/crew/.vault/...')"`` too.
     ".vault",
     # KAS-mode auth token store. In the KAS-embedded runtime Kiro Crew performs the
@@ -766,7 +765,7 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # could rewrite it to name its own login would make
     # ``rotation.authorize_action`` -> ``_definitely_off_shift`` accept its own
     # forged shift and execute an off-shift production write against a teammate's
-    # tooling. Found in review.
+    # tooling.
     #
     # This is the last of five instances of one class on this app's off-shift
     # refusal (the others: the GitHub login, the strict-gating flag, the
@@ -793,7 +792,7 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # signal that does not exist. That is the same defect already fixed on ``/incident/claim``
     # by resolving the signal server-side; this is the same forgery reached through the store
     # instead of the request body, which server-side resolution cannot help with because the
-    # store IS the server's copy. Found in review (GPT 5.6).
+    # store IS the server's copy.
     #
     # The gateway's own writers (``store.claim``/``update_fields``, the reconcile SOP) open
     # this path directly and do not route through this gate, so the app keeps working; only
@@ -859,7 +858,7 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # alias — laundering the edit through Kiro Crew's own trusted writer, which is what makes
     # it worse than editing the spec directly: the deletion is performed and persisted by the
     # legitimate owner of that file. The generation fingerprint cannot defend this, because a
-    # forger reads the same spec it does. Found in review (GPT 5.6).
+    # forger reads the same spec it does.
     #
     # ``alias_record._write`` opens the path directly via ``atomic_write`` and does not route
     # through this gate, so both record writes still work; only the agent's own file-edit
@@ -1302,7 +1301,7 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
     # the lexical forms are the fail-safe fallback when resolution FAILS
     # (over-matching a sensitive-looking path is the safe direction).
     # Resolution is BOUNDED -- see _resolved_forms_bounded: an unbounded lstat on
-    # a stalled automount used to wedge the event loop from inside on_tool_call.
+    # a stalled automount would wedge the event loop from inside on_tool_call.
     # A resolution that does not COMPLETE raises PathResolutionStalled through
     # here, and every gate turns that into a refusal: no lexical-only matching
     # of a path whose canonical form is unknown.
@@ -1496,13 +1495,13 @@ def _home_dir_targets_uncached(
 # The key is built from the RESOLVED roots (``Path.home().resolve()`` and the
 # resolved ``KIROCREW_HOME``), NOT from the raw env vars, because those two
 # values are exactly what the builder anchors its targets on. Keying on the raw
-# ``$HOME`` string was wrong twice over:
+# ``$HOME`` string is wrong twice over:
 #   1. Repointing a symlink AT ``$HOME`` leaves ``$HOME`` unchanged while every
-#      target moves, so the gate returned False for a credential path the
-#      uncached code blocked (a real, reproduced bypass — see the regression
+#      target moves, so the gate returns False for a credential path the
+#      uncached code blocks (a real, reproduced bypass — see the regression
 #      test ``test_repointed_home_symlink_is_not_served_from_cache``).
 #   2. ``Path.home()`` reads ``USERPROFILE`` on Windows and never ``HOME``, so on
-#      that platform the key omitted the one variable that decides the anchor.
+#      that platform the key omits the one variable that decides the anchor.
 # Resolving the roots costs ~2 realpath calls (~0.06ms) against the ~1.14ms
 # rebuild it replaces, so the win survives. Those calls -- and the rebuild
 # itself -- run on the ``mc-pathres`` pool under the resolve budget, one thread
@@ -1738,9 +1737,9 @@ def _home_dir_targets(home_dirs: list[str]) -> set[str]:
     poison the cache for every other caller; copy here if that ever happens.
     """
     # Resolve the roots ONCE and use the same tuple for both the key and the
-    # build. Resolving separately let a root symlink repointed between the two
+    # build. Resolving separately lets a root symlink repointed between the two
     # reads file one root's targets under the other root's key — a fail-OPEN
-    # TOCTOU. Local review caught this; see the regression test
+    # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
     roots = _resolved_root_key()
     key = (tuple(home_dirs),) + roots
@@ -1764,11 +1763,11 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     The anchors -- ``$HOME``, the ``KIROCREW_HOME`` / ``KIRO_HOME`` / adapter
     override roots and the ~40 keystone leaves under them -- are the paths the
     sensitive-target set is built FROM, as opposed to the agent-supplied
-    candidate checked AGAINST it.  They used to be ``realpath``'d inline, on
-    the event loop, every time the 0.1s cache expired: on a Windows desktop
-    under heavy disk load (a full test run plus several subagents, all being
-    scanned by real-time antivirus) ``realpath($HOME)`` blocked past the 25s
-    loop-stall watchdog from inside ``on_tool_call``, and the gateway exited
+    candidate checked AGAINST it.  They are deliberately NOT ``realpath``'d
+    inline on the event loop every time the 0.1s cache expires: on a Windows
+    desktop under heavy disk load (a full test run plus several subagents, all
+    being scanned by real-time antivirus) ``realpath($HOME)`` blocks past the
+    25s loop-stall watchdog from inside ``on_tool_call``, and the gateway exits
     with every in-flight turn -- the same crash the bounded candidate
     resolution already prevents for the OTHER half of the check.
 
@@ -2119,9 +2118,9 @@ def is_sensitive_bash_command(
     The subject is a SHELL COMMAND LINE. The two detectors read it with shell grammar
     -- separator runs are redundant, newlines and ``|`` split pipeline stages, an
     ``env | grep`` pipeline is one command -- and none of that holds for a Python
-    source file. A caller with a source body in hand must not route it here: it was
-    tried (#7912, #8563, #8643, #8812) and every shell pass produced a class of false
-    denial on ordinary scripts. The cron script gate (``mcp_cron._vet_script_contents``)
+    source file. A caller with a source body in hand must not route it here: every
+    shell pass over a source body produces a class of false denial on ordinary
+    scripts. The cron script gate (``mcp_cron._vet_script_contents``)
     runs only full-text detectors that are meaningful on source, and the sandbox is the
     runtime control for what a script may open.
 
@@ -2132,7 +2131,7 @@ def is_sensitive_bash_command(
     ``admission_policy.json``, ``computer_use.json``) read-only in every mode, and
     :func:`is_sensitive_path` refuses every resolved path the file tools open. A text
     matcher over ``cat ~/.aws/credentials`` adds no protection on top of that and
-    denied ordinary read-only commands whenever a fenced spelling appeared as data
+    denies ordinary read-only commands whenever a fenced spelling appears as data
     (a grep pattern, a commit message, a note), so no such matcher runs here; a
     keystone READ through the shell is permitted by design.
 

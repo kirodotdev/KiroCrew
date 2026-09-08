@@ -37,10 +37,10 @@ from kiro_crew.slack.format import SLACK_MSG_LIMIT
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 
 # Slack's capabilities — the SINGLE declaration (the renderer imports this
-# object; it was previously declared twice, an un-DRY drift hazard).
+# object; two literal declarations for one fact are an un-DRY drift hazard).
 # max_message_chars matches the SHIPPED send path: slack/format.py splits at
-# SLACK_MSG_LIMIT (3900), not the platform's ~40000 ceiling that was declared
-# before. Declaring the ceiling was a lie waiting for a capability-aware
+# SLACK_MSG_LIMIT (3900), not the platform's ~40000 ceiling. Declaring that
+# ceiling would be a lie waiting for a capability-aware
 # caller to trust it and emit messages 10x larger than the renderer ever sends.
 SLACK_CAPABILITIES = TransportCapabilities(
     streaming=True,

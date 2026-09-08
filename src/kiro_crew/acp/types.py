@@ -139,24 +139,25 @@ ACP_CLIENT_CAPABILITIES: dict = {
 
 # ── ACP Backend Identifiers ──
 # DEFINED in :mod:`kiro_crew.acp_backends` and re-exported from the import block
-# at the top of this module, so the ~19 existing
-# ``from kiro_crew.acp.types import ACP_BACKEND_*`` call sites are unchanged.
+# at the top of this module, so ``from kiro_crew.acp.types import ACP_BACKEND_*``
+# resolves here for its ~19 call sites.
 #
-# The definitions had to move out of this package: importing anything under
+# The definitions live outside this package: importing anything under
 # ``kiro_crew.acp`` executes its ``__init__`` (client + runtime), so the loader's
-# field metadata and the dashboard's PATCH allowlist could not read them and each
-# kept a literal copy of the selectable list instead. ``acp_backends`` imports
-# nothing from this package, so it can be the single code owner.
+# field metadata and the dashboard's PATCH allowlist cannot read them from here
+# without dragging that in, and would each need a literal copy of the selectable
+# list. ``acp_backends`` imports nothing from this package, so it can be the
+# single code owner.
 #
-# The selectable set is no longer a constant either: it is a REGISTRY an edition
+# The selectable set is not a constant either: it is a REGISTRY an edition
 # extends (``register_selectable_backend``). A frozen ``ACP_BACKENDS_SELECTABLE``
 # snapshot here would be read before boot registration and silently miss it.
 
 # ── Capability membership ──
 # The ``ACP_BACKENDS_*`` capability sets are DEFINED in the leaf module
 # ``kiro_crew.acp_backends`` and re-exported by the import above, so
-# ``from kiro_crew.acp.types import ACP_BACKENDS_STEER`` still resolves. They moved
-# for the same reason the backend identifiers did: a consumer outside this package
+# ``from kiro_crew.acp.types import ACP_BACKENDS_STEER`` resolves. They live there
+# for the same reason the backend identifiers do: a consumer outside this package
 # must be able to ask a capability question without importing ``kiro_crew.acp``,
 # whose ``__init__`` pulls in the client and runtime.
 
@@ -655,9 +656,9 @@ class AcpEvent:
         - Structured AWS CLI (kiro-cli ``use_aws``): ``service_name`` +
           ``operation_name`` (+ ``parameters``/``positional_args``). kiro-cli
           reports ``use_aws`` with the shell tool kind, so without this shape
-          the deny-by-default backstop in ``HookManager.on_tool_call`` rejected
-          EVERY ``use_aws`` call ("shell command could not be verified") — the
-          v3.3.x regression that fully broke SSM for kiro-backend users. The
+          the deny-by-default backstop in ``HookManager.on_tool_call`` rejects
+          EVERY ``use_aws`` call ("shell command could not be verified"), which
+          breaks SSM outright for kiro-backend users. The
           structured fields are the ground truth of what executes (kiro-cli
           builds the CLI invocation from them, never from the display title),
           so synthesizing ``aws <service> <operation> …`` gives the gate real
@@ -869,8 +870,7 @@ class AcpPromptStats:
         context fields because they describe the SESSION — which is exactly why
         they must NOT survive a warm-pool handoff, where the runtime outlives
         whatever it did before the re-bind. Stale stats handed to a new chat
-        make ``check_context_usage`` fire compaction on an empty conversation
-        (issue #2932).
+        make ``check_context_usage`` fire compaction on an empty conversation.
 
         Everything returns to dataclass defaults, window included: a handoff
         may re-apply a different model post-claim, and a window measured before
@@ -1006,8 +1006,8 @@ class AcpPromptStats:
 
         kiro-cli 2.10+ metadata and KAS ``context_usage`` both give a percentage
         with no ``usage_update {used, size}``. Shared by the AcpClient and
-        AcpSessionHandle paths (previously two verbatim copies) so both report
-        the same context-meter token counts. No-op once a real usage_update has
+        AcpSessionHandle paths so both report the same context-meter token
+        counts. No-op once a real usage_update has
         set authoritative counts. ``model_id`` is the caller's resolved id (the
         kiro-agent ``currentModelId``, else the user-picked alias). Resolves the
         window through ``model_registry.model_window`` (kiro-list cache >

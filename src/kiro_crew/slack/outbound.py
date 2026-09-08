@@ -4,9 +4,9 @@ Rendering text for Slack is NOT this module's job. ``slack.format`` owns that â€
 ``render_for_slack`` for bodies and ``build_options_blocks`` for the control,
 which redacts every choice through ``redact_for_display`` so a key split by ANSI,
 emphasis, backticks or link markup is caught in the form Slack actually shows.
-This module deliberately holds no second copy of that pipeline: an earlier
-version did, and the two drifted apart until the same credential-exposure bug
-had to be fixed twice, three review rounds apart.
+This module deliberately holds no second copy of that pipeline: two copies
+drift apart, and the same credential-exposure bug then has to be fixed in
+both.
 
 What is left here is the part ``slack.format`` has no opinion about: whether a
 posted control is still answering the question the conversation is on.
@@ -64,7 +64,7 @@ class PostedOptions:
 
 
 _MAX_EDIT_LOCKS = 512
-# LoopBoundLock, not asyncio.Lock (#4800): the registry is a module global, so
+# LoopBoundLock, not asyncio.Lock: the registry is a module global, so
 # a value created on one event loop would otherwise be handed to a later loop
 # for the same key and raise RuntimeError on acquire.
 _EDIT_LOCKS: dict[tuple[str, str], LoopBoundLock] = {}
@@ -158,11 +158,11 @@ def claim_options_answer(channel: str, ts: str) -> bool:
     the in-place edit landed, the original was deleted, or the expiry's
     strike-through succeeded. Only such settled entries are evictable.
 
-    An earlier version evicted the oldest entry outright, justified as "a dropped
+    Evicting the oldest entry outright would be justified as "a dropped
     entry can only re-admit a click on a control old enough to have aged out of a
     512-message window, which the turn-start expiry has long since struck
-    through". That is wrong, and wrong in the same way this PR's other bounds
-    were: eviction here is by insertion order across the WHOLE workspace, not by
+    through". That is wrong: eviction here is by insertion order across the WHOLE
+    workspace, not by
     age within one conversation, so traffic in busy channels can evict the claim
     on a control still sitting unanswered in a quiet thread. When the render or
     the strike-through failed those buttons are genuinely still on screen, and

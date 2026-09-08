@@ -180,24 +180,26 @@ _CREDENTIAL_PATTERNS = re.compile(
     # matched by the `{2,4}` quantifier below; the 2-segment link token has its
     # OWN separately bounded alternative.
     #
-    # The floor stays at 2: at 2 the two-segment dashboard token did not
-    # match here at all and fell through to the bare-secret entropy pass, whose run
-    # class `[A-Za-z0-9+/]` is STANDARD base64 and excludes base64url's `-`/`_`.
-    # That made redaction depend on which characters a random HMAC signature
-    # happened to contain. That rate is derivable, so it is stated as a closed form
-    # rather than as a sample. HMAC-SHA256 is 256 bits and base64url-unpadded gives
-    # 43 chars. The first 42 each carry a full 6 bits, so each is uniform over the
-    # 64-char alphabet, of which exactly 2 are `-`/`_`. The 43rd carries only the
-    # leftover 4 bits (256 - 42*6), and they land in the HIGH bits of its 6-bit
+    # The floor stays at 2 because the two-segment dashboard token is what a higher
+    # floor drops: it would not match here at all and would fall through to the
+    # bare-secret entropy pass, whose run class `[A-Za-z0-9+/]` is STANDARD base64
+    # and excludes base64url's `-`/`_`. That makes redaction depend on which
+    # characters a random HMAC signature happens to contain. That rate is derivable,
+    # so it is stated as a closed form rather than as a sample. HMAC-SHA256 is 256
+    # bits and base64url-unpadded gives 43 chars. The first 42 each carry a full 6
+    # bits, so each is uniform over the 64-char alphabet, of which exactly 2 are
+    # `-`/`_`. The 43rd carries only the leftover 4 bits (256 - 42*6), and they
+    # land in the HIGH bits of its 6-bit
     # group with the low 2 bits zero, so it spans exactly the 16 alphabet indices
     # divisible by 4 (`048AEIMQUYcgkosw`) and can never be `-`/`_`, which sit at
     # 62/63. Hence P(no `-`/`_`) = (62/64)^42 = 26.4%, verified by encoding all
     # 256 possible final digest bytes.
-    # So roughly a quarter of tokens had only the signature replaced (leaving the
-    # payload claims verbatim in a URL that still looked complete but no longer
-    # authenticated), and the other ~74% streamed out entirely unredacted. Matching the whole token here makes
-    # the outcome deterministic and replaces it as one unit. The 2-segment token gets
-    # its OWN alternative rather than relaxing the segment floor to `{1,4}`. Relaxing
+    # So roughly a quarter of tokens would have only the signature replaced (leaving
+    # the payload claims verbatim in a URL that still looks complete but is not
+    # authenticated), and the other ~74% would stream out entirely unredacted.
+    # Matching the whole token here makes the outcome deterministic and replaces it
+    # as one unit. The 2-segment token gets its OWN alternative rather than
+    # relaxing the segment floor to `{1,4}`. Relaxing
     # the floor over-redacts ordinary code and prose, because the pattern has no left
     # boundary and post-header segments allow an EMPTY match: `keyJson.get(raw)` then
     # redacts to `k[REDACTED…](raw)`, and a JWT quoted at the end of a sentence loses
@@ -422,7 +424,7 @@ _B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 # prose intact and stop a longer high-entropy blob from being split and missed),
 # then require the *specific 40-char secret shape* per token.
 #
-# NO LONGER CONSULTED BY `redact_credentials`. Pass 3 derives its runs from
+# NOT CONSULTED BY `redact_credentials`. Pass 3 derives its runs from
 # `_B64_CHUNK_RE` instead (`run = chunk.rstrip("=")`), because that one scan feeds
 # both pass 2 and pass 3 and the two patterns select identical spans. The only
 # remaining consumer here is `_text_contains_bare_secret`. That split is a
@@ -889,13 +891,13 @@ _REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
 #: :data:`kiro_crew.security.exfil.EXFILTRATION_REDACTION_TAG_PREFIX` (beside
 #: the rewriter itself), and a consumer that needs the full "was this text
 #: rewritten" answer must check that constant by prefix ALONGSIDE this tuple --
-#: the dashboard chat notice does exactly that (issues #6189 and #8132).
+#: the dashboard chat notice does exactly that.
 #:
-#: This tuple exists because the enumeration used to live at the call site, where
-#: it silently missed the encoded tag and under-reported redactions on the
+#: This tuple exists so the enumeration lives beside the tags instead of at the
+#: call site, where it silently misses a tag and under-reports redactions on the
 #: dashboard chat notice. Co-locating it means a NEW tag is added next to the list
 #: that must name it; ``test_every_redaction_tag_constant_is_registered`` fails if
-#: one is added without registering it, so the drift cannot recur silently.
+#: one is added without registering it, so the drift cannot happen silently.
 #:
 #: Invariant relied on by callers that SUM per-tag counts: no tag is a substring
 #: of another, so one substitution cannot be counted twice.

@@ -361,9 +361,9 @@ async def handle_message_transport(
     renderer: SlackRenderer | None = None
     # Hoisted above the try deliberately: the failure path reads both to decide
     # whether partial assistant output still needs rescuing, and the turn can
-    # die anywhere inside the try — including before the points that used to
-    # initialize these — which would make the except branch raise NameError
-    # while handling the original error.
+    # die anywhere inside the try — including before the points inside it that
+    # assign them — which would make the except branch raise NameError while
+    # handling the original error.
     _logged_user_turn = False
     _stamped_turn = False
 
@@ -494,11 +494,10 @@ async def handle_message_transport(
         #
         # Slack-restricted (incognito / temporary) sessions are skipped at BOTH
         # write points, so a restricted session still persists nothing. Note
-        # this is a skip-at-each-write guarantee, not parity with the old
-        # single write: because Slack events dispatch concurrently, an
-        # `!incognito` that lands mid-turn used to suppress the whole turn
-        # (both rows were still unwritten), and can now only suppress the
-        # reply -- the question is already durable.
+        # this is a skip-at-each-write guarantee, not a single-write one:
+        # because Slack events dispatch concurrently, an `!incognito` that
+        # lands mid-turn suppresses only the reply -- the question row is
+        # already durable by then.
         if conversation_log and not _is_slack_restricted(session_key):
             try:
                 # Off the loop deliberately. ``ConversationLog.append`` takes a
@@ -901,8 +900,8 @@ async def handle_message_transport(
         #     already durable, while a lock timeout raises with nothing written.
         #     Writing both rows there would duplicate the question; writing the
         #     assistant row alone would orphan the answer. Neither is honest, so
-        #     the rescue no-ops and the retry starts from the question, exactly
-        #     as it did before this change. Same rule the delivery ledger applies
+        #     the rescue no-ops and the retry starts from the question. Same rule
+        #     the delivery ledger applies
         #     to an unacknowledged send: when an outcome is unconfirmable, record
         #     nothing.
         #   * ``_is_slack_restricted`` — incognito/temporary sessions persist
