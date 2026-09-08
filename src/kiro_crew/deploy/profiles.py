@@ -273,22 +273,34 @@ def resolve_profile(requested: str = "") -> tuple[str, str] | None:
 
 # --- discovery (read-only, names only) --------------------------------------
 
-def discover_aws_profiles() -> list[str]:
+def discover_aws_profiles() -> list[str] | None:
     """Profile names known to the AWS CLI (``aws configure list-profiles``).
 
     Names only — the CLI enumerates sections itself; we never read the files.
 
-    On native Windows the sandboxed subprocess backend is unavailable (deploy
-    features are POSIX-only, fail-loud policy) — degrade to an empty list
-    instead of surfacing a sandbox error through the profiles endpoint.
+    ``None`` means could not ask, and it is deliberately not ``[]``. "Asked, and
+    there are none" is a fact about the machine, "could not ask" is a fact about
+    this process, and a caller handed the same empty list for both reports the
+    second as the first. That is not a corner case: ``configure list-profiles``
+    arrived in AWS CLI v2 and exits non-zero on v1, so an ordinary host with
+    profiles configured takes the failing branch, and a route that compares a
+    requested name against an empty set then answers that the operator's own
+    profiles are not on this machine. ``cli_doctor._aws_profile_names`` draws the
+    same line for the doctor report, for the same reason.
+
+    Windows is the other ``None``: the sandboxed subprocess backend deploy needs
+    is POSIX-only (fail-loud policy), so discovery cannot run there rather than
+    running and finding nothing. A caller with something more useful to say about
+    the platform than about the failure branches on ``os.name`` itself, which is
+    how the aws-control listing gets to name WSL.
     """
     if os.name == "nt":
         logger.debug("deploy-web: profile discovery unsupported on Windows")
-        return []
+        return None
     rc, out, err = engine.run_aws(["configure", "list-profiles"], "")
     if rc != 0:
         logger.debug("deploy-web: list-profiles failed: %s", (err or "")[:200])
-        return []
+        return None
     names: list[str] = []
     for line in (out or "").splitlines():
         line = line.strip()

@@ -1075,6 +1075,17 @@ class TestProfilesControlPlane:
         assert body["default"] == "p" and body["available"] == ["other"]
 
     @pytest.mark.asyncio
+    async def test_get_survives_a_scan_that_could_not_run(self, monkeypatch):
+        # `discover_aws_profiles` returns None when it could not ask, and this
+        # handler iterates its result -- so without narrowing it, the endpoint
+        # raises TypeError on exactly the hosts that cannot list profiles.
+        handlers._save_config("p", "us-west-2")
+        monkeypatch.setattr(profiles_mod, "discover_aws_profiles", lambda: None)
+        body = _payload(await handlers._handle_profiles_get(_FakeReq()))
+        assert body["available"] == []
+        assert body["default"] == "p"
+
+    @pytest.mark.asyncio
     async def test_post_rejects_empty_name(self):
         resp = await handlers._handle_profiles_post(_FakeReq({"name": ""}))
         assert resp.status == 400 and "must not be empty" in _payload(resp)["error"]

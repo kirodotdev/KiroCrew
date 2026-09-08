@@ -1575,8 +1575,14 @@ async def _handle_profiles_get(_request: web.Request) -> web.Response:
     return web.json_response({
         "profiles": _redact_profile_fields(reg["profiles"]),
         "default": _redact_text(str(reg["default"])),
+        # `discovered or []` deliberately does NOT carry the could-not-ask state:
+        # this endpoint feeds a profile picker, and both readers hide their
+        # section on an empty list, so a field for the difference would ship with
+        # no consumer. Narrowing `None` here is still required -- iterating it
+        # raised TypeError. The distinction an operator acts on lives on the
+        # aws-control profile routes, which answer 503 or 501 instead.
         "available": [_redact_text(str(n))
-                      for n in discovered if n not in registered],
+                      for n in (discovered or []) if n not in registered],
     })
 
 

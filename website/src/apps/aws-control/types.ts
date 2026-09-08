@@ -83,6 +83,11 @@ export interface AvailableProfile {
  * read as "can't tell", not "none" — the UI says so instead of implying the
  * operator has no accounts. `registeredCount`/`max` bound the registry so the
  * picker can show a count hint and stop offering more once the cap is reached.
+ *
+ * A scan that FAILS on a supported platform answers 503 `profiles_unavailable`
+ * rather than a 200 carrying an empty list, so this payload is only ever the
+ * real listing: `profiles: []` with `supported: true` does mean none are left to
+ * register. The failed scan surfaces through the query's error state instead.
  */
 export interface AvailableProfilesResponse {
   profiles: AvailableProfile[]
@@ -94,7 +99,10 @@ export interface AvailableProfilesResponse {
 /**
  * Payload of `POST /profiles/register`. A batch registers the prefix that fits
  * under the cap, so `added + skipped` counts the whole request, not just the
- * winners. Error codes: `invalid_names` (400), `unknown_profile` (400).
+ * winners. Error codes: `invalid_names` (400), `unknown_profile` (400),
+ * `profiles_unavailable` (503, the local profile scan could not run, so no name
+ * could be checked and nothing was registered), `unsupported_platform` (501, the
+ * same but on a platform that cannot scan at all, so retrying never clears it).
  */
 export interface RegisterProfilesResult {
   added: number

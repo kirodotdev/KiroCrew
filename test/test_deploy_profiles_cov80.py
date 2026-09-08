@@ -222,19 +222,27 @@ class TestResolveProfile:
 
 
 class TestDiscoverAwsProfiles:
-    def test_windows_degrades_to_empty_list(self, monkeypatch) -> None:
+    def test_windows_reports_could_not_ask(self, monkeypatch) -> None:
         monkeypatch.setattr(profiles_mod.os, "name", "nt")
 
         def _unexpected(*_a, **_k):
             pytest.fail("ran an aws command on an unsupported platform")
 
         monkeypatch.setattr(profiles_mod.engine, "run_aws", _unexpected)
-        assert profiles_mod.discover_aws_profiles() == []
+        assert profiles_mod.discover_aws_profiles() is None
 
-    def test_cli_failure_degrades_to_empty_list(self, monkeypatch) -> None:
+    def test_cli_failure_reports_could_not_ask(self, monkeypatch) -> None:
+        # `configure list-profiles` is AWS CLI v2 only, so v1 exits non-zero on a
+        # host whose profiles are all present. `[]` here would say the opposite.
         monkeypatch.setattr(
             profiles_mod.engine, "run_aws", lambda *a, **k: (1, "", "could not be found")
         )
+        assert profiles_mod.discover_aws_profiles() is None
+
+    @_POSIX_ONLY
+    def test_a_successful_empty_listing_stays_empty(self, monkeypatch) -> None:
+        # The other half of the contract: asked, and there are none.
+        monkeypatch.setattr(profiles_mod.engine, "run_aws", lambda *a, **k: (0, "", ""))
         assert profiles_mod.discover_aws_profiles() == []
 
     @_POSIX_ONLY

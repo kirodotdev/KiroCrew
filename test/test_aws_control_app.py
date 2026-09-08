@@ -2681,6 +2681,110 @@ class TestProfileDiscovery:
         assert _payload(resp) == {"added": 0, "skipped": 1}
         assert len(reg["profiles"]) == routes_mod._MAX_REGISTERED
 
+    def test_available_reports_a_failed_scan_rather_than_an_empty_list(self):
+        # A 200 carrying no profiles is the page's authoritative "none left to
+        # add", so a scan that could not run must not borrow it -- on AWS CLI v1
+        # that would report every configured profile as absent.
+        handlers = _registered()
+        p1, p2 = self._env()
+        with (
+            p1,
+            p2,
+            mock.patch.object(routes_mod.os, "name", "posix"),
+            mock.patch.object(
+                routes_mod.deploy_profiles, "discover_aws_profiles", return_value=None
+            ),
+            mock.patch.object(routes_mod.deploy_profiles, "load_registry") as registry,
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/profiles/available")](  # type: ignore[operator]
+                    _request("GET", "/profiles/available")
+                )
+            )
+        assert resp.status == 503
+        assert _payload(resp)["code"] == "profiles_unavailable"
+        # Nothing was read either: the answer does not depend on the registry.
+        registry.assert_not_called()
+
+    def test_available_on_windows_keeps_the_platform_answer(self):
+        # Windows cannot enumerate profiles at all, and the page has copy naming
+        # WSL for exactly that. It stays a 200 so the operator reads the remedy
+        # instead of a retryable failure they cannot clear by retrying.
+        handlers = _registered()
+        p1, p2 = self._env()
+        with (
+            p1,
+            p2,
+            mock.patch.object(routes_mod.os, "name", "nt"),
+            mock.patch.object(
+                routes_mod.deploy_profiles, "discover_aws_profiles", return_value=None
+            ),
+            mock.patch.object(
+                routes_mod.deploy_profiles,
+                "load_registry",
+                return_value={"version": 2, "profiles": [], "default": ""},
+            ),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/profiles/available")](  # type: ignore[operator]
+                    _request("GET", "/profiles/available")
+                )
+            )
+        assert resp.status == 200
+        body = _payload(resp)
+        assert body["supported"] is False
+        assert body["profiles"] == []
+
+    def test_register_refuses_the_batch_when_the_scan_could_not_run(self):
+        # The refusal an operator cannot act on is "not profiles on this
+        # machine", when the profiles are there and only the listing failed.
+        handlers = _registered()
+        p1, p2 = self._env()
+        with (
+            p1,
+            p2,
+            mock.patch.object(routes_mod.os, "name", "posix"),
+            mock.patch.object(
+                routes_mod.deploy_profiles, "discover_aws_profiles", return_value=None
+            ),
+            mock.patch.object(routes_mod.deploy_profiles, "locked_registry") as locked,
+            mock.patch.object(routes_mod.accounts_mod, "invalidate_cache") as invalidated,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/profiles/register")](  # type: ignore[operator]
+                    self._post({"names": ["real"]})
+                )
+            )
+        assert resp.status == 503
+        payload = _payload(resp)
+        assert payload["code"] == "profiles_unavailable"
+        assert "not profiles on this machine" not in payload["error"]
+        locked.assert_not_called()
+        invalidated.assert_not_called()
+
+    def test_register_does_not_ask_windows_to_retry(self):
+        # 503 means "try again", which clears a failed scan and never clears a
+        # platform that cannot scan. Windows gets the answer that stays true.
+        handlers = _registered()
+        p1, p2 = self._env()
+        with (
+            p1,
+            p2,
+            mock.patch.object(routes_mod.os, "name", "nt"),
+            mock.patch.object(
+                routes_mod.deploy_profiles, "discover_aws_profiles", return_value=None
+            ),
+            mock.patch.object(routes_mod.deploy_profiles, "locked_registry") as locked,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/profiles/register")](  # type: ignore[operator]
+                    self._post({"names": ["real"]})
+                )
+            )
+        assert resp.status == 501
+        assert _payload(resp)["code"] == "unsupported_platform"
+        locked.assert_not_called()
+
 
 class TestProfileUnregister:
     """Removing a key is registry-only: it must never reach ``~/.aws`` or AWS,
