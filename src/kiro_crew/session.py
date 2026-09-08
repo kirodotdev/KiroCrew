@@ -408,6 +408,37 @@ def _provider_uses_kiro_identity_store(provider: Any) -> bool:
     return declared is True
 
 
+def _mcp_fingerprint(servers: list[dict[str, Any]] | None) -> str:
+    """Return an order-independent identity for a session's ACP MCP set."""
+    if not servers:
+        return ""
+    entries: list[tuple[Any, ...]] = []
+    for server in servers:
+        if not isinstance(server, dict):
+            entries.append(("?", repr(server)))
+            continue
+        raw_env = server.get("env")
+        env_pairs: list[tuple[str, str]] = []
+        if isinstance(raw_env, dict):
+            env_pairs = [(str(key), str(value)) for key, value in raw_env.items()]
+        elif isinstance(raw_env, list):
+            for item in raw_env:
+                if isinstance(item, dict):
+                    env_pairs.append((str(item.get("name", "")), str(item.get("value", ""))))
+        raw_args = server.get("args")
+        args = tuple(str(arg) for arg in raw_args) if isinstance(raw_args, list) else ()
+        entries.append(
+            (
+                str(server.get("name", "")),
+                str(server.get("command", "")),
+                args,
+                tuple(sorted(env_pairs)),
+            )
+        )
+    entries.sort(key=lambda entry: (str(entry[0]), repr(entry)))
+    return repr(entries)
+
+
 def detect_provider_switch(session_map: "SessionMap", session_key: str, new_provider: str) -> bool:
     """Detect if the provider for a session differs from the stored one.
 
@@ -1021,6 +1052,8 @@ class _Session:
     # first turn replayed history. Read by the compaction coordinator to decide
     # whether a reset could free anything at all.
     floor_pct: float | None = None
+    # Identity of editor-supplied stdio MCP servers bound at session creation.
+    mcp_fingerprint: str = ""
 
     def adopt_provider(self, provider: LLMProvider) -> None:
         """Swap in a freshly-spawned *provider*, resetting conversation state.
@@ -1133,6 +1166,7 @@ class SessionManager:
             detect_provider_switch=lambda session_map, key, provider: detect_provider_switch(
                 session_map, key, provider
             ),
+            mcp_fingerprint=lambda servers: _mcp_fingerprint(servers),
             session_factory=lambda **kwargs: _Session(**kwargs),
             first_turn_nothing_armed=FirstTurnState.NOTHING_ARMED,
             first_turn_fresh=FirstTurnState.FRESH,
@@ -2059,9 +2093,11 @@ class SessionManager:
             wait_if_busy=wait_if_busy,
         )
 
-    async def _evict_stale_session(self, key: str, sess: "_Session") -> None:
+    async def _evict_stale_session(
+        self, key: str, sess: "_Session", *, lease_held: bool = False
+    ) -> None:
         """Evict and close the exact stale session."""
-        await self._allocation_boundary()._evict_stale_session(key, sess)
+        await self._allocation_boundary()._evict_stale_session(key, sess, lease_held=lease_held)
 
     async def open_task_session(
         self,
@@ -2286,6 +2322,7 @@ class SessionManager:
         model: str | None = None,
         cwd: str | None = None,
         extra_env: dict[str, str] | None = None,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
         speculative: bool = False,
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
@@ -2301,6 +2338,7 @@ class SessionManager:
             model=model,
             cwd=cwd,
             extra_env=extra_env,
+            session_mcp_servers=session_mcp_servers,
             speculative=speculative,
             speculative_resume=speculative_resume,
             wait_if_busy=wait_if_busy,

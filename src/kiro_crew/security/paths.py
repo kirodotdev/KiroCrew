@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.config.paths import ACP_CLEANUP_RECEIPTS_DIR_NAME
 from kiro_crew.executors import _MAX_PATH_RESOLVE_WORKERS, path_resolve_executor
 from kiro_crew.identity_stores import (
     AUTH_SQLITE_DB,
@@ -447,6 +448,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     "policy_cache",
     "admission_policy.json",
     "denied_commands.json",
+    # ACP adapter cleanup receipts authorize generation-checked MCP clears and
+    # empty failed-session deletion after a transport-ambiguous process exit.
+    # An agent that could forge one could target another session for deletion;
+    # the trusted adapter opens this owner-only directory directly.
+    ACP_CLEANUP_RECEIPTS_DIR_NAME,
     # The cron store. It holds access-control state, not just scheduling data:
     # ``session_key`` decides which session may manage a job through the MCP cron
     # tools and where the job's output is delivered, ``approval_mode`` is a

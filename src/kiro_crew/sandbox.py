@@ -44,7 +44,11 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import refuse_linked_parent
-from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.config.paths import (
+    ACP_CLEANUP_RECEIPTS_DIR_NAME,
+    config_dir,
+    kiro_agents_dir,
+)
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
 from kiro_crew.pinned_fs import fd_real_path
@@ -357,6 +361,9 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # creates LAZILY, and nothing creates this one any more, so there is no writer to
     # race. Precreating it would re-materialise the retired name on every machine.
     "ledgers",
+    # Deferred ACP cleanup receipts authorize slot mutation and have no
+    # in-sandbox reader; the gateway adapter opens them directly.
+    ACP_CLEANUP_RECEIPTS_DIR_NAME,
     "cron-history",
     # The single-use step-up nonce that authorizes recording a flagged-file
     # delivery grant. Whole DIRECTORY (arm renames a sibling ``.tmp`` into place),
@@ -1488,6 +1495,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "file-delivery-consent-pending",
     "appearance-library",
     "quarantined-clones",
+    # Cleanup receipts can first appear after an adapter transport failure. Give
+    # the namespace mask a directory target before any adapter needs to write it.
+    ACP_CLEANUP_RECEIPTS_DIR_NAME,
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
     # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the

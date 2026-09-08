@@ -317,6 +317,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # directories. Called from a worker thread, never the event loop --
         # ``test/test_acp_pi_backend.py`` pins that.
         "acp/client.py::_verify_pi_gate",
+        # asyncio.run enters an event loop; neither site spawns a subprocess.
+        "cli_acp.py::run_acp",
+        "acp_server/mcp_proxy.py::main",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent

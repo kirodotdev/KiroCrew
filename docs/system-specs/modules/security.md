@@ -21,6 +21,22 @@ commands: those retain the sandbox chokepoint and the AST routing audit.
 
 KiroCrew implements defense-in-depth security across multiple layers: OS-level process isolation, credential path protection, input/output validation, authentication, authorization, and audit logging. This document consolidates all security controls and the vulnerabilities they address.
 
+The `acp-cleanup-receipts/` data-home directory is on the read/write sensitive-path
+floor. Its owner-only records authorize generation-checked MCP cleanup and safe
+deletion of empty partial ACP slots after transport failure; allowing an agent to
+forge or erase those records would grant a delayed slot-mutation capability or disable
+required cleanup. Non-empty MCP registration writes its owner-scoped clear receipt
+before the gateway mutation and retains it for the registration lifetime, so an
+adapter crash still leaves replayable intent. Trusted ACP adapters open the directory directly; the gateway
+precreates and hides it in every agent sandbox mode so a late first receipt cannot
+appear inside an older namespace. ACP lifecycle requests also reject any sensitive
+path as their workspace before session creation. Client MCP hosting additionally pins
+that accepted workspace by directory descriptor for the full hosted lifetime; initial
+and reconnect children enter the verified inode after sandbox preparation instead of
+re-resolving a pathname another child could rename or replace. These controls prevent a provider
+from inheriting a protected directory as its process CWD before namespace masks are
+installed; the path decision runs off the protocol event loop.
+
 ### Member memory boundaries
 
 Cold subagent continuation restores app ownership from the canonical

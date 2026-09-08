@@ -17,6 +17,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Coroutine, Iterable, Iterator
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
@@ -90,6 +91,7 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.notifications.rate_limit import AppRateLimiter
 from kiro_crew.notifications.resource_pressure import ResourcePressureNotifier
 from kiro_crew.notifications.settings import ChannelSettings
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
@@ -2176,7 +2178,11 @@ class _ChatSlot:
         "workspace",
         "memory_store",
         "_memory_assignment_from_history",
-        "project",
+        "_project",
+        "_project_generation",
+        "_project_mutation_receipts",
+        "_mcp_generation",
+        "_mcp_mutation_receipts",
         "created_at",
         "messages",
         "total_messages",
@@ -2221,6 +2227,9 @@ class _ChatSlot:
         "_mcp_report_session_id",
         "_on_message",
         "_on_question_retired",
+        "_on_acp_message",
+        "_acp_origin_session_id",
+        "_acp_mcp_servers",
         "_has_reader_flag",
         "_stop_state_raw",
         "_stop_generation",
@@ -2360,6 +2369,8 @@ class _ChatSlot:
         "_steer_user_origin",
         "_steer_admissions",
         "_steer_audience_fences",
+        "session_mcp_servers",
+        "session_mcp_owner",
         "_wait_state",
         "_end_wait_request",
         "_wait_last_ping",
@@ -2451,7 +2462,11 @@ class _ChatSlot:
         # assignment. Only a protected binding or an explicit owner pick clears
         # that admission boundary; this marker is not persisted in the transcript.
         self._memory_assignment_from_history = False
-        self.project: str = ""
+        self._project: str = ""
+        self._project_generation = uuid.uuid4().hex
+        self._project_mutation_receipts: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._mcp_generation = uuid.uuid4().hex
+        self._mcp_mutation_receipts: dict[str, tuple[str, dict[str, Any]]] = {}
         # Remote-execution binding. ``executor`` is "local" for every ordinary
         # slot; "remote" means the turn is dispatched over an instance tunnel to
         # ``instance_id`` and run by the peer's slot ``remote_slot``. The local
@@ -2659,6 +2674,13 @@ class _ChatSlot:
         # is invisible to a second window, and to a /pending response already in
         # flight — either would re-render a card whose answer has been sent.
         self._on_question_retired: object | None = None
+        self._on_acp_message: object | None = None
+        self._acp_origin_session_id: ContextVar[str] = ContextVar(
+            f"acp_origin_{self.key}", default=""
+        )
+        self._acp_mcp_servers: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+            f"acp_mcp_servers_{self.key}", default=None
+        )
         self._has_reader_flag: bool = False  # True when HTTP SSE stream is draining
         self._stop_state_raw: str = "idle"  # 'idle' | 'soft_pending' | 'killing'
         # Monotonic count of stop INITIATIONS (idle → active edges of
@@ -3291,6 +3313,9 @@ class _ChatSlot:
         # TURN-SCOPED: the turn's teardown empties it, so one turn's withheld reply
         # never silences the next, whose authorization is its own.
         self._steer_audience_fences: dict[str, dict] = {}
+        # Editor MCP server configuration is slot-scoped; providers own its lifecycle.
+        self.session_mcp_servers: list[dict[str, Any]] = []
+        self.session_mcp_owner: str = ""
         # In-flight `wait` tool sleep, as reported by the tool's own keepalive
         # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
         # deadline is on the dashboard's clock (see api_session_keepalive) so
@@ -3338,6 +3363,15 @@ class _ChatSlot:
         # "the agent is done and asked you something", and which entries a user
         # message may retire.
         self._question_pending: dict[str, dict] = {}
+
+    @property
+    def project(self) -> str:
+        return self._project
+
+    @project.setter
+    def project(self, value: str) -> None:
+        self._project = value
+        self._project_generation = uuid.uuid4().hex
 
     def bump_tags_revision(self) -> str:
         """Rotate and return the revision for the current tag list.
@@ -3595,6 +3629,13 @@ class _ChatSlot:
         }
         if meta:
             msg["meta"] = meta
+        acp_origin = self._acp_origin_session_id.get()
+        if acp_origin:
+            existing_meta = msg.get("meta")
+            msg["meta"] = {
+                **(existing_meta if isinstance(existing_meta, dict) else {}),
+                "_acp_session": acp_origin,
+            }
         # Stamp a per-row delivery identity. A client sees the SAME row through
         # two doors — the slot-detail HTTP rebuild and the live `chat_message`
         # broadcast — and must be able to tell "this row again" from "another row
@@ -3660,6 +3701,8 @@ class _ChatSlot:
             and not self._has_reader
         ):
             self._on_message(self.key, msg)  # type: ignore[operator]
+        elif broadcast and self._on_acp_message and role == "user" and not self._has_reader:
+            self._on_acp_message(self.key, role, content, msg)  # type: ignore[operator]
         # Trim old messages to bound memory usage
         if len(self.messages) > _MAX_SLOT_MESSAGES:
             excess = len(self.messages) - _MAX_SLOT_MESSAGES
@@ -5705,6 +5748,16 @@ class DashboardState:
             card_id=card_id,
         )
 
+    def pending_question_cards(self, slot_key: str) -> list[dict]:
+        """Return active stateless question cards for one slot."""
+        return _questions_for(self).pending_for_slot(self, slot_key)
+
+    def answer_question_card(
+        self, slot_key: str, card_id: str, answers: dict[str, Any]
+    ) -> str | None:
+        """Record validated card answers and return a prompt when all are complete."""
+        return _questions_for(self).answer_card(self, slot_key, card_id, answers)
+
     def _broadcast_question_retired(self, slot_key: str, card_ids: list[str]) -> None:
         """Tell owner clients that question cards are no longer actionable."""
         _questions_for(self).broadcast_retired(self, slot_key, card_ids)
@@ -6077,6 +6130,7 @@ class DashboardState:
         slot._tab_id = uuid.uuid4().hex[:12]
         slot._on_message = self._broadcast_chat_message
         slot._on_question_retired = self._broadcast_question_retired
+        slot._on_acp_message = self._broadcast_acp_message
         slot._app = app
         # ``origin`` must be declared by the layer that actually knows it, and
         # an undeclared non-app slot stays UNTAGGED ("") rather than being
@@ -6368,6 +6422,53 @@ class DashboardState:
                 eventlog_hooks.submit(_emit_message)
         except Exception:
             logger.debug("member/message event-log hook failed", exc_info=True)
+        self._broadcast_acp_message(slot_key, role, content, msg)
+
+    def _broadcast_acp_message(
+        self, slot_key: str, role: str, content: Any, msg: dict[str, Any]
+    ) -> None:
+        """Send one finalized, minimally shaped row to subscribed ACP adapters."""
+        message_id = row_mid(msg)
+        if role not in ("user", "assistant") or not message_id or not isinstance(content, str):
+            return
+        meta = msg.get("meta")
+        origin = meta.get("_acp_session") if isinstance(meta, dict) else ""
+        data: dict[str, str] = {
+            "slot": slot_key,
+            "role": role,
+            "content": redact_via_context(content),
+            "messageId": message_id,
+        }
+        if isinstance(origin, str) and origin:
+            data["origin"] = origin
+        self._send_ws_all("acp_message", data, json.dumps({"type": "acp_message", "data": data}))
+
+    def _broadcast_acp_plan(self, slot_key: str, todo: dict[str, Any] | None) -> None:
+        """Send a complete sanitized task snapshot only to the owning ACP editor."""
+        if not isinstance(todo, dict) or not isinstance(todo.get("tasks"), list):
+            return
+        data = {
+            "slot": slot_key,
+            "description": redact_via_context(str(todo.get("description") or "")),
+            "tasks": self._redact_acp_payload(todo["tasks"]),
+        }
+        self._send_ws_all("acp_plan", data, json.dumps({"type": "acp_plan", "data": data}))
+
+    @staticmethod
+    def _redact_acp_payload(value: Any) -> Any:
+        """Recursively redact model-authored strings before ACP WebSocket egress."""
+        if isinstance(value, str):
+            return redact_via_context(value)
+        if isinstance(value, dict):
+            return {
+                (redact_via_context(key) if isinstance(key, str) else key): (
+                    DashboardState._redact_acp_payload(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [DashboardState._redact_acp_payload(item) for item in value]
+        return value
 
     # ── Folder persistence ──
 

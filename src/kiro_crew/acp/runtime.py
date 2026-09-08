@@ -6174,6 +6174,7 @@ class AcpRuntime:
         member_session_key: str = "",
         session_key: str = "",
         channel_id: str = "",
+        mcp_servers: list[dict[str, Any]] | None = None,
     ) -> AcpSessionHandle:
         """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -6222,42 +6223,47 @@ class AcpRuntime:
         denied_tools: frozenset[tuple[str, str]] = frozenset()
         mirrored_snapshot: Any = None
         ref_spec: Any = None
-        # A mirrored host re-declares the array its projection built, not the raw
-        # pooled one: session/load re-initializes the session's servers, so an
-        # unprojected array here does not merely fail to withhold a stub -- it MOUNTS
-        # one on a conversation whose session/new withheld it.
-        #
-        # Gated on the registry read rather than entered unconditionally, for the
-        # reason this method already gives for gating the KAS re-attach on the
-        # backend: the kiro resume path must reach a comparison and STOP -- no awaited
-        # step, nothing to unwind, no shared coroutine that could grow a failure mode
-        # later. A membership read is the sanctioned form of that comparison.
-        mirrored = None
-        if has_mirror(self.acp_backend):
-            mirrored = await self._mirrored_session_mcp(
-                active_agent,
-                work_dir=session_work_dir,
-                session_key=session_key,
-                channel_id=channel_id,
-            )
-        if mirrored is not None:
-            mcp_servers = mirrored.servers
-            stub_token = mirrored.stub_token
-            denied_tools = mirrored.denied_tools
-            mirrored_snapshot = mirrored.derived_spec_snapshot
-            ref_spec = mirrored.ref_spec
+        if mcp_servers is None:
+            # A mirrored host re-declares the array its projection built, not the raw
+            # pooled one: session/load re-initializes the session's servers, so an
+            # unprojected array here does not merely fail to withhold a stub -- it MOUNTS
+            # one on a conversation whose session/new withheld it.
+            #
+            # Gated on the registry read rather than entered unconditionally, for the
+            # reason this method already gives for gating the KAS re-attach on the
+            # backend: the kiro resume path must reach a comparison and STOP -- no awaited
+            # step, nothing to unwind, no shared coroutine that could grow a failure mode
+            # later. A membership read is the sanctioned form of that comparison.
+            mirrored = None
+            if has_mirror(self.acp_backend):
+                mirrored = await self._mirrored_session_mcp(
+                    active_agent,
+                    work_dir=session_work_dir,
+                    session_key=session_key,
+                    channel_id=channel_id,
+                )
+            if mirrored is not None:
+                mcp_servers = mirrored.servers
+                stub_token = mirrored.stub_token
+                denied_tools = mirrored.denied_tools
+                mirrored_snapshot = mirrored.derived_spec_snapshot
+                ref_spec = mirrored.ref_spec
+            else:
+                pooled, ref_spec = await asyncio.to_thread(
+                    _pooled_session_servers_and_ref_spec,
+                    self._mcp_gateway_overlay,
+                    active_agent,
+                    self.acp_backend,
+                    session_work_dir,
+                )
+                mcp_servers = await self._unpooled_control_planes(
+                    pooled, active_agent, session_work_dir
+                )
+                mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
         else:
-            pooled, ref_spec = await asyncio.to_thread(
-                _pooled_session_servers_and_ref_spec,
-                self._mcp_gateway_overlay,
-                active_agent,
-                self.acp_backend,
-                session_work_dir,
-            )
-            mcp_servers = await self._unpooled_control_planes(
-                pooled, active_agent, session_work_dir
-            )
-            mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+            # Explicit arrays are narrowed by the host harness below.
+            mcp_servers = list(mcp_servers)
+            stub_token = ""
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time, same as create_session().

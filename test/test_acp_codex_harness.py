@@ -1393,6 +1393,23 @@ def _codex_session_new_response(sid: str = "sid-codex") -> dict[str, Any]:
 
 class TestTheRuntimeSendsCodexNoAgentMode:
     @pytest.mark.asyncio
+    async def test_explicit_session_mcp_reaches_session_new(self):
+        rt = _codex_runtime()
+        plane = _ControlPlane(_codex_session_new_response())
+        servers = [{"name": "editor-mcp", "command": "proxy"}]
+
+        with ExitStack() as stack:
+            plane.install(rt, stack)
+            handle = await rt.create_session(
+                cwd="/w",
+                agent="kirocrew",
+                mcp_servers=servers,
+            )
+
+        assert handle.session_id == "sid-codex"
+        assert plane.params_for(METHOD_SESSION_NEW)[0]["mcpServers"] == servers
+
+    @pytest.mark.asyncio
     async def test_no_set_mode_goes_out_for_a_codex_session(self):
         """codex's modes are permission tiers, so a Crew agent id resolves to none.
 
