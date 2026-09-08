@@ -9172,6 +9172,88 @@ class TestIsTransientRawError:
             is False
         )
 
+    def test_prose_spelled_dispatch_failure_is_transient(self):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # The AWS Rust SDK spells ONE connector fault two ways: the Debug repr
+        # is CamelCase (DispatchFailure) and the Display impl is prose
+        # ("dispatch failure"). kiro-cli surfaces whichever the failing layer
+        # produced. While the pattern was CamelCase-only and case-SENSITIVE the
+        # prose form read as an unknown shape and was classified TERMINAL, so
+        # every affected turn surfaced a bare error on the FIRST attempt and no
+        # retry ladder ever ran.
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": (
+                "Encountered an error in the response stream: "
+                "An unknown error occurred: dispatch failure"
+            ),
+        }
+        assert _is_transient_raw_error(err) is True
+        # The CamelCase spelling keeps classifying identically.
+        assert _is_transient_raw_error({"data": "DispatchFailure ConnectionReset"}) is True
+        # Same two-spelling split for the sibling connector fault.
+        assert _is_transient_raw_error({"data": "connection reset by peer"}) is True
+
+    def test_bare_internal_error_stays_terminal(self):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # -32603's canonical message is literally "Internal error". The
+        # separator tolerance loosens only the gaps BETWEEN words, never the
+        # tokens, so this still matches nothing (no "server", no "failure") and
+        # keeps falling through to the unknown-shape branch instead of being
+        # mis-told to retry a condition that will never succeed.
+        assert (
+            _is_transient_raw_error(
+                {"code": -32603, "message": "Internal error", "data": "Input is too long"}
+            )
+            is False
+        )
+
+    def test_terminal_branches_outrank_a_co_occurring_dispatch_failure(self):
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        # Every terminal branch is checked BEFORE the 5xx family, so widening
+        # the 5xx pattern must not let a connector token rescue an error that
+        # can only be reproduced by retrying it.
+        for data in (
+            "You've reached your monthly usage limit. dispatch failure",
+            "dispatch failure: session expired",
+            "AccessDeniedException dispatch failure",
+            "Improperly formed request dispatch failure",
+        ):
+            assert _is_transient_raw_error({"data": data, "message": ""}) is False
+
+    def test_prose_dispatch_failure_reaches_the_retry_decider(self):
+        import pytest
+
+        from kiro_crew.acp.client import AcpError, _raise_acp_error
+        from kiro_crew.llm_helpers import acp_error_is_transient
+
+        # The classifier and the retry decider are two different layers, and
+        # the gap between them is what broke: acp_error_is_transient prefers the
+        # structured AcpError.transient flag and consults its string markers
+        # ONLY when no flag is present. _TRANSIENT_MARKERS already listed the
+        # prose spellings, so a transient=False flag made that list unreachable
+        # dead code on this path. Assert the end-to-end verdict, not just the
+        # classifier, or the next regex edit silently reintroduces this.
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": (
+                "Encountered an error in the response stream: "
+                "An unknown error occurred: dispatch failure"
+            ),
+        }
+        with pytest.raises(AcpError) as ei:
+            _raise_acp_error(err)
+        exc = ei.value
+        assert exc.transient is True
+        assert acp_error_is_transient(exc) is True
+        # The raw provider text is replaced by the actionable 5xx wording.
+        assert "transient error (HTTP 5xx)" in str(exc)
+
     def test_raise_acp_error_carries_transient_flag_and_formatted_message(self):
         import pytest
 

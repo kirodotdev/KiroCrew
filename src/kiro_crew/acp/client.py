@@ -1810,9 +1810,12 @@ _RE_AUTH = re.compile(
     r"\b(AccessDenied(?:Exception)?|UnauthorizedException|ExpiredToken(?:Exception)?"
     r"|InvalidSignatureException|UnrecognizedClientException)\b"
 )
+_5XX_SEP = r"[ \t_-]?"
 _RE_5XX_NAMED = re.compile(
-    r"\b(InternalServerError|InternalFailure|ServiceUnavailable(?:Exception)?"
-    r"|DispatchFailure|ConnectionReset(?:Error)?)\b"
+    rf"\b(internal{_5XX_SEP}server{_5XX_SEP}error|internal{_5XX_SEP}failure"
+    rf"|service{_5XX_SEP}unavailable(?:{_5XX_SEP}exception)?"
+    rf"|dispatch{_5XX_SEP}failure|connection{_5XX_SEP}reset(?:{_5XX_SEP}error)?)\b",
+    re.IGNORECASE,
 )
 _RE_5XX_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:50[0234]|529)\b", re.IGNORECASE)
 # Genuine retry hint only. "response stream" is deliberately NOT matched here,
