@@ -43,6 +43,7 @@ from kiro_crew.apps.builtins.pptx_maker.backend import engine_source, paths
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
 
@@ -224,7 +225,7 @@ def _run(argv: list[str], *, cwd: str, timeout: int) -> tuple[int, str]:
             cwd=cwd,
             env=env,
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=timeout,
             check=False,
         )

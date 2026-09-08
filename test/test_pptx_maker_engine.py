@@ -19,16 +19,22 @@ happy path, and each is pinned below:
 * **The engine's shape is normalized.** ``load_lists`` and ``scan_new_templates``
   coerce whatever comes back over the subprocess boundary.
 
-No real subprocess: every test mocks at the ``_spawn`` / ``sandboxed_spawn_argv``
-boundary.
+No real subprocess, with ONE stated exception: every test mocks at the
+``_spawn`` / ``sandboxed_spawn_argv`` boundary, except
+``TestTheEngineStdoutIsDecodedAsUtf8``, which measures the decode that happens
+between the child's bytes and ``EngineResult.stdout`` and so cannot use a mock
+that hands back a ``str``.
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, paths
 
@@ -470,3 +476,92 @@ class TestProvisionState:
     def test_elapsed_counts_from_the_start(self):
         state = engine.ProvisionState(started=engine.time.time() - 5)
         assert state.elapsed() >= 5
+
+
+class TestTheEngineStdoutIsDecodedAsUtf8:
+    """The one class here that spawns a REAL child, because a mock cannot decode.
+
+    Every other test in this module mocks at the ``_spawn`` /
+    ``sandboxed_spawn_argv`` boundary, which is right for logic and structurally
+    useless here: the defect *is* the decode `subprocess` performs between the
+    child's bytes and `EngineResult.stdout`, so a mock that hands back a `str`
+    has already skipped the step under test. These therefore drive the real
+    ``run_limited`` with a real child, and mock only the sandbox wrapper (whose
+    argv rewriting is not what is being measured).
+
+    ``run_limited(..., text=True)`` with no ``encoding=`` decodes with
+    ``locale.getpreferredencoding()`` — UTF-8 on POSIX, the legacy ANSI code page
+    on Windows. The child here is the engine venv's own Python, driven with
+    model-authored deck content, so non-ASCII in its output is the normal case
+    rather than the exotic one.
+
+    What that costs is worse than a crash, and is measured rather than argued:
+    the child exits **0** and its entire stdout arrives as ``""``. On Windows
+    ``capture_output`` decodes on a helper thread, so `UnicodeDecodeError` kills
+    that thread instead of the call — `proc.stdout` is ``None``, which
+    ``_spawn`` folds to ``""``. `EngineResult.ok` is then ``False`` for a run
+    that succeeded, and the comment on ``test_a_zero_exit_with_empty_stdout_is_
+    not_ok`` above reads that state as "the snippet did not reach its `print`" —
+    a diagnosis this defect makes false. On POSIX the same decode raises
+    `UnicodeDecodeError`, which is a `ValueError` and so passes straight through
+    ``_spawn``'s ``except (OSError, subprocess.SubprocessError)``, breaking the
+    module's stated "degrades, never raises" contract instead.
+    """
+
+    #: Bytes that are not valid UTF-8 (``0xff`` can never begin a sequence),
+    #: wrapped in otherwise well-formed JSON. Chosen so the test does not depend
+    #: on what the host code page happens to be — only on the decode being
+    #: strict — which is what makes it red on a UTF-8 CI runner too.
+    PAYLOAD = b'{"added":["deck"],"note":"' + bytes([0xFF, 0xFE]) + b'"}'
+
+    def _argv(self) -> list[str]:
+        return [
+            sys.executable,
+            "-c",
+            f"import sys;sys.stdout.buffer.write({self.PAYLOAD!r});sys.stdout.buffer.flush()",
+        ]
+
+    def test_undecodable_engine_output_still_reaches_the_caller(self, tmp_path: Path):
+        """A malformed byte must cost one character, not the whole result."""
+        with pytest.raises(UnicodeDecodeError):
+            self.PAYLOAD.decode("utf-8")  # guard the guard
+
+        with (
+            mock.patch.object(
+                engine, "sandboxed_spawn_argv", return_value=(self._argv(), None, None)
+            ),
+            mock.patch.object(engine, "cgroup_scope_argv", side_effect=lambda a: a),
+        ):
+            result = engine._spawn(["ignored"], cwd=str(tmp_path), timeout=30)
+
+        assert result.returncode == 0
+        assert result.ok is True, "a run that exited 0 with output must not read as empty"
+        assert result.json() == {"added": ["deck"], "note": "��"}
+
+    def test_a_non_ascii_engine_payload_round_trips(self, tmp_path: Path):
+        """Deck content is model-authored, so CJK and emoji are ordinary here.
+
+        Host-conditioned — a UTF-8 runner decodes it correctly either way — so it
+        is paired with the deterministic test above rather than relied on alone.
+        """
+        payload = json.dumps({"added": ["提案 \U0001f600"]}, ensure_ascii=False).encode("utf-8")
+        argv = [
+            sys.executable,
+            "-c",
+            f"import sys;sys.stdout.buffer.write({payload!r});sys.stdout.buffer.flush()",
+        ]
+        with (
+            mock.patch.object(engine, "sandboxed_spawn_argv", return_value=(argv, None, None)),
+            mock.patch.object(engine, "cgroup_scope_argv", side_effect=lambda a: a),
+        ):
+            result = engine._spawn(["ignored"], cwd=str(tmp_path), timeout=30)
+
+        assert result.json() == {"added": ["提案 \U0001f600"]}
+
+    def test_the_fixture_really_defeats_a_legacy_code_page(self):
+        """Guard the guard: the round-trip payload must be one cp950 cannot carry.
+
+        Without this, that test would pass just as happily on an ASCII payload.
+        """
+        with pytest.raises(UnicodeEncodeError):
+            "提案 \U0001f600".encode("cp950")
