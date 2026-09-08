@@ -33,7 +33,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Circle, Clock, ExternalLink, Goal, Pencil, Star, UserPlus, Users, Webhook } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Circle, Clock, ExternalLink, Goal, Pencil, Route, Star, UserPlus, Users, Webhook } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
@@ -55,7 +55,7 @@ import {
 } from '../../components/autoNudgeLoop'
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { timeAgo } from '../../utils/timeAgo'
-import { fmtDateTimeNumeric } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtTime } from '../../i18n/format'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
@@ -81,6 +81,7 @@ import { loadColumnWidth } from '../../lib/columnWidth'
 import { compareText } from '../../i18n/format'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
 import { lastActivityEpoch } from '../chat/sessionOrder'
+import { activityDayLabel, floorCountText, groupActivityDays, projectLabel } from './activityDays'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 
 /** The crew manager surface — the ONLY write path for member configuration.
@@ -197,6 +198,8 @@ export function panelSitsBeside({ winW, rosterW, isMobile }: { winW: number; ros
 const PROJECT_SEPARATOR = ' \u00b7 '
 /** Driving-sessions rows shown before the list folds behind "Show all". */
 const DRIVING_VISIBLE = 5
+/** Activity days shown before the list folds behind "Show N more days". */
+const ACTIVITY_DAYS_VISIBLE = 3
 /** Roster filter persistence — same `mc-` localStorage family as the rest of
  *  the dashboard's view preferences (ChatSidebar's session filters use the
  *  same idiom). Only the TOGGLES live here; the star mark itself is a crew
@@ -924,6 +927,30 @@ export default function MembersPage() {
   const oldestTs = activeEntries.length ? activeEntries[activeEntries.length - 1].ts : 0
   const todayIsFloor = activityCapped && oldestTs >= todayFloorTs
   const weekIsFloor = activityCapped && oldestTs >= weekFloorTs
+
+  // Recent activity folded by calendar day: the log's rows are all alike
+  // ("conversation · <project>"), so eight of them say nothing that one
+  // "8 conversations" row does not. Each day carries how the member was
+  // reached (picked by a human vs routed by the orchestrator) and the projects
+  // it worked in; the rows themselves stay behind the day, as a time strip, for
+  // whoever wants the rhythm of the day. Local midnight is the boundary — the
+  // same "today" the stat card counts against.
+  const activityDays = useMemo(
+    () => groupActivityDays(activeEntries, activityCapped),
+    [activeEntries, activityCapped],
+  )
+  // Both folds are reading positions in ONE member's list (same idiom as the
+  // driving list): switching members starts the next list folded.
+  const [activityDaysExpandedFor, setActivityDaysExpandedFor] = useState('')
+  const activityDaysExpanded = activityDaysExpandedFor === activeMemberKey
+  const visibleActivityDays = activityDaysExpanded
+    ? activityDays
+    : activityDays.slice(0, ACTIVITY_DAYS_VISIBLE)
+  const [openActivityDay, setOpenActivityDay] = useState('')
+  // A day's count phrase; on a floor day the phrase is rendered for n+1 so it
+  // takes the plural, and the number is shown as `n+` (see floorCountText).
+  const countPhrase = (key: string, n: number, isFloor: boolean) =>
+    isFloor ? floorCountText(t(key, { count: n + 1 }), n + 1, n) : t(key, { count: n })
 
   // Mounting a member thread IS reading it, but nothing on this page moves
   // `chat.activeSlot` (that transition belongs to the Sessions page's
@@ -1991,22 +2018,124 @@ export default function MembersPage() {
               {t('pages.membersPage.activity_empty')}
             </div>
           ) : (
-            <ul className="list-none m-0 p-0 mb-4 space-y-1.5" data-testid="member-activity">
-              {activeEntries.slice(0, 8).map((e, i) => (
-                <li
-                  key={`${e.ts}-${i}`}
-                  className="flex gap-2 text-[11px] border-b border-border/60 pb-1.5 last:border-b-0"
+            /* One row per calendar day, newest first, three days before the
+               list folds. A row opens into the day's time strip — the same
+               rows the old list showed, reduced to the one thing that varied
+               between them (the clock), with routed picks marked in accent. */
+            <div className="mb-4" data-testid="member-activity-days">
+              {/* A grid, not flex rows: the day column sizes to its widest
+                  label ("yesterday" in English, 「前天」 in Chinese) instead of
+                  a fixed width that gapes in one locale and clips the other. */}
+              <ul className="list-none m-0 p-0 -mx-1.5 grid grid-cols-[max-content_minmax(0,1fr)_auto] gap-y-0.5">
+                {visibleActivityDays.map((day) => {
+                  const dayKey = `${activeMemberKey}:${day.dayStart}`
+                  const open = openActivityDay === dayKey
+                  const first = day.projects[0] ? projectLabel(day.projects[0]) : ''
+                  const more = day.projects.length - 1
+                  return (
+                    <li key={day.dayStart} className="contents">
+                      <button
+                        type="button"
+                        onClick={() => setOpenActivityDay(open ? '' : dayKey)}
+                        className="col-span-3 grid grid-cols-subgrid items-center gap-x-2 text-left text-[11px] px-1.5 py-1 rounded hover:bg-accent/40"
+                        aria-expanded={open}
+                        data-testid="member-activity-day"
+                      >
+                        <span className="text-muted whitespace-nowrap">
+                          {activityDayLabel(day.dayStart)}
+                        </span>
+                        {/* Wraps rather than truncates: the project is the value
+                            the row exists to show, and it sits last — the first
+                            thing an ellipsis ate on a dense day. */}
+                        <span className="min-w-0 break-words">
+                          {/* `isFloor`: the server capped the log and this day holds
+                              its oldest returned entry, so older events may be
+                              missing — the count is "at least N", shown as N+.
+                              The footer under the list says so in words. */}
+                          {day.chats > 0 && countPhrase('pages.membersPage.activity_chat_count', day.chats, day.isFloor)}
+                          {day.chats > 0 && day.routed > 0 && PROJECT_SEPARATOR}
+                          {day.routed > 0 && (
+                            <>
+                              {/* The same glyph the time strip uses, introduced here
+                                  beside its name so the strip's bare icon is
+                                  already taught by the time a day is opened. */}
+                              <Route size={10} className="inline-block align-[-1px] mr-0.5" aria-hidden />
+                              {countPhrase('pages.membersPage.activity_routed_count', day.routed, day.isFloor)}
+                            </>
+                          )}
+                          {first && (
+                            <span className="text-muted" title={day.projects.join('\n')}>
+                              {PROJECT_SEPARATOR}
+                              {/* Spelled out, not "+1": the bare plus already
+                                  means "at least" on a floor count in this row. */}
+                              {more > 0
+                                ? t('pages.membersPage.activity_projects_more', { name: first, count: more })
+                                : first}
+                            </span>
+                          )}
+                        </span>
+                        <ChevronRight
+                          size={12}
+                          className={`shrink-0 text-muted transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+                          aria-hidden
+                        />
+                      </button>
+                      {/* Plain muted text, not pills and not accent: these open
+                          nothing, and both a border and the accent colour read as
+                          something to click. The Route icon alone marks an
+                          orchestrator pick; the tooltip spells it out. */}
+                      {open && (
+                        <ul
+                          className="list-none m-0 p-0 col-start-2 col-span-2 flex flex-wrap gap-x-2.5 gap-y-0.5 pr-1.5 pt-0.5 pb-1.5"
+                          data-testid="member-activity-times"
+                        >
+                          {day.entries.map((e, i) => {
+                            const routed = e.via === 'select_crew'
+                            return (
+                              <li
+                                key={`${e.ts}-${i}`}
+                                className="inline-flex items-center gap-0.5 font-mono text-[10px] leading-4 text-muted"
+                                title={
+                                  (routed
+                                    ? t('pages.membersPage.activity_routed')
+                                    : t('pages.membersPage.activity_chat')) +
+                                  (e.project ? PROJECT_SEPARATOR + e.project : '')
+                                }
+                                data-routed={routed || undefined}
+                              >
+                                {routed && <Route size={10} className="shrink-0" aria-hidden />}
+                                {fmtTime(e.ts)}
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+              {activityDays.length > ACTIVITY_DAYS_VISIBLE && (
+                <button
+                  type="button"
+                  onClick={() => setActivityDaysExpandedFor(activityDaysExpanded ? '' : activeMemberKey)}
+                  className="text-[11px] text-muted hover:text-text px-1.5 py-1 -mx-1.5 rounded hover:bg-accent/40"
+                  data-testid="member-activity-more"
                 >
-                  <span className="text-muted shrink-0 whitespace-nowrap">{timeAgo(e.ts)}</span>
-                  <span className="min-w-0 truncate">
-                    {e.via === 'select_crew'
-                      ? t('pages.membersPage.activity_routed')
-                      : t('pages.membersPage.activity_chat')}
-                    {e.project ? PROJECT_SEPARATOR + e.project : ''}
-                  </span>
-                </li>
-              ))}
-            </ul>
+                  {activityDaysExpanded
+                    ? t('pages.membersPage.driving_show_less')
+                    : t('pages.membersPage.activity_more_days', {
+                        count: activityDays.length - ACTIVITY_DAYS_VISIBLE,
+                      })}
+                </button>
+              )}
+              {/* Says in words what the `N+` on the oldest day means, so the
+                  floor is explained where it is seen rather than on hover. */}
+              {activityCapped && (
+                <div className="text-[11px] text-muted mt-1" data-testid="member-activity-capped">
+                  {t('pages.membersPage.activity_capped')}
+                </div>
+              )}
+            </div>
           )}
           <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5 flex items-center">
             <span className="flex-1">{t('pages.membersPage.wake_sources')}</span>

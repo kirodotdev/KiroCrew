@@ -131,11 +131,12 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   const drawer = await page.getByTestId('member-drawer').textContent()
   check('02-thread drawer config', /kirocrew-autofix/.test(drawer || ''), 'agent template shown')
   check('02-thread shared-memory note', /share one memory/i.test(drawer || ''), 'disclosure present')
-  // Activity additions: honest counters + the recorded timeline. Four fixture
-  // entries; the routed one carries its project label.
-  await page.getByTestId('member-activity').waitFor()
-  const activityRows = await page.getByTestId('member-activity').locator('li').count()
-  check('02-thread activity timeline', activityRows === 4, `entries=${activityRows}`)
+  // Activity additions: honest counters + the recorded activity folded by
+  // day. Four fixture entries spanning two calendar days (three within the
+  // last two hours, one a day earlier) -> at most two day rows, never four.
+  await page.getByTestId('member-activity-days').waitFor()
+  const activityRows = await page.getByTestId('member-activity-day').count()
+  check('02-thread activity days', activityRows >= 1 && activityRows <= 2, `days=${activityRows}`)
   const stats = await page.getByTestId('member-stats').textContent()
   check('02-thread stat cards', /Today/.test(stats || '') && /Past 7 days/.test(stats || ''), 'both honest counters labeled')
   const status = await page.getByTestId('member-drawer-status').textContent()
