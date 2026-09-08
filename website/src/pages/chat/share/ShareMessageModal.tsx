@@ -33,6 +33,28 @@ function kindLabel(kind: SensitiveKind): string {
   }
 }
 
+/**
+ * Host-supplied wording for the two strings that describe WHAT is being shared.
+ *
+ * Both are optional and both default to the chat wording, so a host that omits this
+ * gets exactly the dialog it got before. A non-chat surface passes its own, because
+ * the defaults name a reply and a question that surface does not have.
+ */
+export interface ShareMessageCopy {
+  /** Dialog subtitle. Default speaks of "this reply". */
+  description?: string
+  /** Label for the checkbox that includes the paired text above the excerpt.
+   *  Default speaks of "my question". */
+  includeQuestion?: string
+  /** The caption the post STARTS with -- the text handed to the X / LinkedIn
+   *  composer and put on the clipboard beside the image. The user edits it in
+   *  the dialog; this is only its initial value. Default is the chat template
+   *  ("... just did this for me"), which describes a reply the assistant wrote
+   *  and reads as a lie for anything else, so a non-chat surface supplies the
+   *  words the post should actually carry. */
+  caption?: string
+}
+
 export interface ShareMessageModalProps {
   onClose: () => void
   /** The assistant reply being shared (steer markers already stripped). */
@@ -43,13 +65,16 @@ export interface ShareMessageModalProps {
    *  while this dialog is open, the dialog stays mounted so the user's edits are
    *  not destroyed: the actions are withdrawn and a notice says why. */
   shareEnabled: boolean
+  /** Surface-appropriate wording for the two strings that name the shared thing.
+   *  Omit it entirely on the chat surface: the defaults ARE the chat strings. */
+  copy?: ShareMessageCopy
 }
 
-export default function ShareMessageModal({ onClose, messageText, prevUserText, shareEnabled }: ShareMessageModalProps) {
+export default function ShareMessageModal({ onClose, messageText, prevUserText, shareEnabled, copy }: ShareMessageModalProps) {
   const initialExcerpt = useMemo(() => clampExcerpt(messageText), [messageText])
   // Q&A pairs travel best on social feeds, so the question defaults IN.
   const [includeQuestion, setIncludeQuestion] = useState(!!prevUserText)
-  const [caption, setCaption] = useState(() => i18nT('pages.chat.share.caption_template', { link: SHARE_REPO_URL }))
+  const [caption, setCaption] = useState(() => copy?.caption ?? i18nT('pages.chat.share.caption_template', { link: SHARE_REPO_URL }))
   // Mirrors of the card's contentEditable text; feed the scan, never the DOM.
   const [excerpt, setExcerpt] = useState(initialExcerpt)
   const [questionEdit, setQuestionEdit] = useState<string | null>(null)
@@ -209,7 +234,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
       <DialogContent maxWidth={960}>
         <DialogHeader>
           <DialogTitle>{i18nT('pages.chat.share.title')}</DialogTitle>
-          <DialogDescription>{i18nT('pages.chat.share.description')}</DialogDescription>
+          <DialogDescription>{copy?.description ?? i18nT('pages.chat.share.description')}</DialogDescription>
         </DialogHeader>
         <DialogBody>
           <div className="flex flex-col lg:flex-row gap-5">
@@ -227,8 +252,8 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
             <div className="flex flex-col gap-3 min-w-0 flex-1">
               {prevUserText && (
                 <label className="flex items-center gap-2 text-[13px] leading-5 text-text cursor-pointer select-none">
-                  <input type="checkbox" aria-label={i18nT('pages.chat.share.include_question')} checked={includeQuestion} onChange={(e) => { setIncludeQuestion(e.target.checked); setQuestionEdit(null) }} />
-                  {i18nT('pages.chat.share.include_question')}
+                  <input type="checkbox" aria-label={copy?.includeQuestion ?? i18nT('pages.chat.share.include_question')} checked={includeQuestion} onChange={(e) => { setIncludeQuestion(e.target.checked); setQuestionEdit(null) }} />
+                  {copy?.includeQuestion ?? i18nT('pages.chat.share.include_question')}
                 </label>
               )}
 

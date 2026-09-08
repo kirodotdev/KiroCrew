@@ -4991,6 +4991,8 @@
         "add_accounts_title": "खाते जोड़ें",
         "add_accounts_summary": "इस मशीन के और AWS प्रोफ़ाइल पंजीकृत करें",
         "add_accounts_intro": "ये स्थानीय AWS प्रोफ़ाइल अभी पंजीकृत नहीं हैं। जो भी जोड़ोगे वह उसके अकाउंट के अंतर्गत एक कुंजी बन जाएगी।",
+        "add_accounts_search_placeholder": "प्रोफ़ाइल खोजो",
+        "add_accounts_search_keeps_selected": "तुमने जो प्रोफ़ाइल चुनी हैं, वे मेल न खाने पर फी सूची में बनी रहती हैं।",
         "add_accounts_none": "सभी स्थानीय प्रोफ़ाइल पहले से पंजीकृत हैं।",
         "add_accounts_unsupported": "Windows पर AWS Control इस मशीन के AWS प्रोफ़ाइल तक नहीं पहुँच सकता: AWS ऐक्सेस के लिए Linux या macOS शेल चाहिए। {{productName}} गेटवे को WSL (Windows Subsystem for Linux) में चलाएँ, फिर वहाँ सेट किए प्रोफ़ाइल रजिस्टर करें।",
         "add_accounts_count_one": "{{max}} में से {{count}} पंजीकृत",
@@ -7460,6 +7462,15 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "क्षेत्र कैप्चर करने के लिए ड्रैग करें · अटैच करने के लिए छोड़ें · रद्द करने के लिए Esc",
       "drag_to_select_the_screen_region_to_capture": "कैप्चर करने के लिए स्क्रीन का क्षेत्र चुनने के लिए ड्रैग करें",
       "screen_capture_drag_the_area_you_want_it_attache": "स्क्रीन कैप्चर — जो क्षेत्र चाहिए उसे ड्रैग करें; छोड़ने पर यह स्वतः अटैच हो जाता है"
+    },
+    "startupVideoModal": {
+      "close": "बंद करें",
+      "feature_intro": "फ़ीचर परिचय",
+      "got_it": "समझ गया",
+      "media_failed": "फ़ीचर वीडियो लोड नहीं हो सका",
+      "share": "साझा करो",
+      "share_description": "इस फ़ीचर वीडियो को शेयर कार्ड बनाओ जिसे कहीं भी पोस्ट कर सकते हो।",
+      "share_include_title": "वीडियो का शीर्षक शामिल करो"
     },
     "tagManagerList": {
       "change_color": "{{name}} का रंग बदलें",
@@ -10020,6 +10031,7 @@
       "disconnected_locally": "स्थानीय रूप से डिस्कनेक्ट किया गया। अनुमति पूरी तरह रद्द करने के लिए प्रदाता पर ऐक्सेस वापस लो।",
       "documentation": "दस्तावेज़",
       "finish_approving_in_browser": "ब्राउज़र में मंज़ूरी पूरी करें…",
+      "approval_opened_in_default_browser": "डिफ़ॉल्ट ब्राउज़र में मंज़ूरी खुल गई…",
       "invalid_return_address": "ब्राउज़र से पूरा http://127.0.0.1:PORT/?code=… पता पेस्ट करें।",
       "managed_by_connections": "कनेक्शन द्वारा प्रबंधित",
       "mcp_servers": "MCP सर्वर",

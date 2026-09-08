@@ -1169,6 +1169,101 @@ describe('add accounts', () => {
     expect(names).toEqual(['staging', 'sandbox'])
   })
 
+  /** A profile family with a shared prefix — the case the filter exists for. */
+  function manyProfiles() {
+    vi.mocked(awsControlApi.availableProfiles).mockResolvedValue(
+      availablePayload({
+        profiles: [
+          { name: 'personal', registered: true },
+          { name: 'acme-prod-eu', registered: false },
+          { name: 'acme-prod-us', registered: false },
+          { name: 'acme-dev-eu', registered: false },
+          { name: 'sandbox', registered: false },
+        ],
+      }),
+    )
+  }
+
+  async function openPicker() {
+    await openAccountsPane()
+    fireEvent.click(await screen.findByTestId('add-accounts-toggle'))
+    await screen.findByTestId('add-accounts-list')
+  }
+
+  const listedNames = () =>
+    screen.getAllByTestId('add-accounts-checkbox').map((b) => b.getAttribute('data-name'))
+
+  it('filters the profile list client-side by name', async () => {
+    manyProfiles()
+    await openPicker()
+    expect(listedNames()).toEqual(['acme-prod-eu', 'acme-prod-us', 'acme-dev-eu', 'sandbox'])
+
+    fireEvent.change(screen.getByTestId('add-accounts-search'), {
+      target: { value: 'PROD' },
+    })
+    // Case-insensitive substring over the name, which is the only thing on the
+    // row: a profile's account is unknown until it is probed.
+    expect(listedNames()).toEqual(['acme-prod-eu', 'acme-prod-us'])
+  })
+
+  it('says the filter hid the profiles rather than claiming there are none', async () => {
+    manyProfiles()
+    await openPicker()
+
+    fireEvent.change(screen.getByTestId('add-accounts-search'), {
+      target: { value: 'zzq' },
+    })
+    expect(screen.getByTestId('add-accounts-search-empty')).toBeTruthy()
+    expect(screen.queryByTestId('add-accounts-list')).toBeNull()
+    // Never the none-left sentence: that asserts every profile is registered.
+    expect(screen.queryByTestId('add-accounts-none')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('add-accounts-search-empty-clear'))
+    expect(listedNames()).toHaveLength(4)
+  })
+
+  it('keeps a ticked profile listed under a filter it does not match, and says why', async () => {
+    manyProfiles()
+    await openPicker()
+    const sandbox = screen
+      .getAllByTestId('add-accounts-checkbox')
+      .find((b) => b.getAttribute('data-name') === 'sandbox')!
+    fireEvent.click(sandbox)
+
+    fireEvent.change(screen.getByTestId('add-accounts-search'), {
+      target: { value: 'prod' },
+    })
+    // Register acts on the tick set, not on what is on screen. Hiding a ticked
+    // row is how an operator registers a profile they never saw, so the tick
+    // survives the filter — and the list explains why it disagrees.
+    expect(listedNames()).toEqual(['acme-prod-eu', 'acme-prod-us', 'sandbox'])
+    expect(screen.getByTestId('add-accounts-kept-selected')).toHaveTextContent(
+      i18nT('apps.awsControl.page.add_accounts_search_keeps_selected'),
+    )
+
+    // Nothing is being held on screen once every listed row matches, so the
+    // sentence is not standing copy.
+    fireEvent.click(sandbox)
+    expect(screen.queryByTestId('add-accounts-kept-selected')).toBeNull()
+    expect(listedNames()).toEqual(['acme-prod-eu', 'acme-prod-us'])
+  })
+
+  it('registers exactly the ticks a filter left on screen', async () => {
+    vi.mocked(awsControlApi.registerProfiles).mockResolvedValue({ added: 1, skipped: 0 })
+    manyProfiles()
+    await openPicker()
+
+    fireEvent.change(screen.getByTestId('add-accounts-search'), {
+      target: { value: 'prod-eu' },
+    })
+    fireEvent.click(screen.getAllByTestId('add-accounts-checkbox')[0])
+    fireEvent.click(screen.getByTestId('add-accounts-register'))
+
+    await waitFor(() => {
+      expect(awsControlApi.registerProfiles).toHaveBeenCalledWith(['acme-prod-eu'])
+    })
+  })
+
   it('register posts exactly the checked names and refetches the account list', async () => {
     vi.mocked(awsControlApi.registerProfiles).mockResolvedValue({ added: 1, skipped: 0 })
     await openAccountsPane()

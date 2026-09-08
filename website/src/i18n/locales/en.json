@@ -3869,6 +3869,8 @@
         "add_accounts_title": "Add accounts",
         "add_accounts_summary": "Register more of this machine's AWS profiles",
         "add_accounts_intro": "These local AWS profiles aren't registered yet. Each one you add becomes a key under its account.",
+        "add_accounts_search_placeholder": "Search profiles",
+        "add_accounts_search_keeps_selected": "Profiles you've selected stay listed even when they don't match.",
         "add_accounts_none": "Every local profile is already registered.",
         "add_accounts_unsupported": "AWS Control can't reach this machine's AWS profiles on Windows: its AWS access needs a Linux or macOS shell. Run the {{productName}} gateway under WSL (Windows Subsystem for Linux), then register the profiles you set up there.",
         "add_accounts_count_one": "{{count}} of {{max}} registered",

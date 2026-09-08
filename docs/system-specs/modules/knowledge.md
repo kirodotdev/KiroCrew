@@ -287,6 +287,31 @@ decides how fast. It applies to the confirm- and resume-triggered scans as well 
 because the confirm scan is the largest burst — nothing is ingested yet, so every
 discovered file is new.
 
+The watcher's **single-file `local_file` loop draws from the same global counter**,
+and the two populations **alternate which spends the budget first** on the sweep
+counter's parity — so sustained pressure from one side (a churning folder source,
+or many changed single files) delays the other by at most one sweep, never
+permanently. The single-file loop walks rows **least-recently-attempted first** — every served row (committed,
+deduped, oversized, or failed) stamps `sweep_attempted_at` into its properties and
+rotates to the back, with `last_synced` as the fallback key for never-served rows —
+so under sustained contention every source makes progress and a persistently
+failing row cannot hold the front of the order while its charged attempts consume
+the budget. It checks the remaining
+`sweep_chunk_budget` allowance per row and charges back the
+**attempted** chunk total the pipeline's `on_progress` callback reports for the
+`extracting` phase — the calls the budget meters are extraction calls, and they are
+spent whether or not the write later commits, so a rolled-back partial ingest still
+charges (never a `get_job_status` read-back, which is blocking SQLite on the event
+loop). The gate sits below the existence check and defers with a per-row `continue`
+rather than the folder loop's `break`, so zero-cost `sync_status` upkeep (the
+'missing' marker) still lands on a sweep whose folder sources spent the whole
+budget. A deferred row's `mtime`/`content_hash` stay unrecorded so the next sweep
+resumes from it. Terminal outcomes are latched from the pipeline's `on_committed`
+(fully committed) and `on_duplicate` (pre-ingest gate refusal) callbacks: only those
+persist bookkeeping, so a rolled-back partial ingest stays retryable — bounded by
+the attempted-charge above — instead of being parked behind a recorded hash while
+the superseded document stays searchable.
+
 **Cost visibility.** `POST /api/knowledge/sources` walks a folder before ingesting
 anything and returns `file_count`, `capped_file_count`, `estimated_chunks`,
 `estimated_llm_calls` and `chunk_budget_per_sweep` alongside the

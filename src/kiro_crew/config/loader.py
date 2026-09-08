@@ -35,7 +35,7 @@ from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility fac
 # so new resolution helpers are reached through the module, not re-exported.
 import kiro_crew.config.resolution as _resolution
 from kiro_crew import __version__, model_registry, platform_compat, windows_acl
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
 
 # Leaf module (stdlib + platform_compat only) — no import cycle with config.
 from kiro_crew.atomic_write import atomic_write, on_event_loop
@@ -4154,12 +4154,15 @@ class KiroCrewConfig:
         :meth:`_resolve_agent_model` when it is the ``auto`` sentinel).
 
         The result is translated into the namespace of the backend that will
-        actually be asked to run it: ``to_provider_id(…, "claude_code")`` for
-        the claude backend, ``model_registry.to_acp_id`` otherwise (canonical
-        keys become kiro ids). ``auto`` collapses to ``""`` either way.
+        actually be asked to run it, and the namespace is asked for as a
+        CAPABILITY (``SessionCapabilities.model_id_namespace``) rather than
+        inferred from the harness's name: a backend on its own provider namespace
+        goes through ``to_provider_id`` into that namespace, and one on the native
+        ``acp`` namespace goes through ``model_registry.to_acp_id`` (canonical keys
+        become kiro ids). ``auto`` collapses to ``""`` either way.
 
         Keying the translation on the backend is what the warm-pool model-switch
-        path already does (``session_allocation``, via ``is_claude_backend``).
+        path already does (``session_allocation``).
         Hardcoding ``to_acp_id`` here meant a COLD start handed the claude
         adapter a kiro-namespaced id — which its ``set_config_option`` rejects,
         and which nothing withheld, because the pre-wire availability guard is
@@ -4187,8 +4190,9 @@ class KiroCrewConfig:
             m = self._resolve_named_agent_model(agent) or global_model
         if not m:
             return ""
-        if self.agent.acp_backend == ACP_BACKEND_CLAUDE:
-            return model_registry.to_provider_id(m, "claude_code")
+        namespace = capabilities_for(self.agent.acp_backend).model_id_namespace
+        if namespace != MODEL_NAMESPACE_ACP:
+            return model_registry.to_provider_id(m, namespace)
         return model_registry.to_acp_id(m)
 
     def crew_pinned_effort(self, agent: str | None, crew_agent: str | None = None) -> str:

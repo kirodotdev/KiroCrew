@@ -74,9 +74,13 @@ def _safe_field(text: str) -> str:
     stdout/stderr, so every string this module serializes is untrusted text on
     an output path. Same double pass the app's HTTP error surface uses.
 
-    This module is a STAGING point, not an egress boundary: it owns no output,
-    and the snapshot reaches a client only through ``routes.py`` (the module
-    registered as this app's redaction sink). It is allowlisted in
+    This module is a STAGING point, not an egress boundary: it owns no output.
+    The snapshot reaches a client through ``routes.py`` (the module registered as
+    this app's redaction sink) and, for the two profile fields the paid-service
+    consent card names, through ``dashboard/handlers/aws_consent.py``. Scrubbing
+    here -- as the snapshot is built, and on
+    :func:`resolve_consent_target`'s registry fallback -- is what makes both of
+    those safe without either one repeating the pass. It is allowlisted in
     ``NON_EGRESS_REDACTION_MODULES`` on exactly that ground.
     """
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -388,6 +392,75 @@ async def resolve_account_profile(account: str) -> tuple[str, str] | None:
     if not account:
         return None
     return _pick_profile(await list_accounts(), account)
+
+
+def _default_account(snapshot: dict[str, Any]) -> str:
+    """The account id the registry's default key belongs to, or "".
+
+    Read off the snapshot rather than from a fresh probe, because the case this
+    exists for is a default key whose probe FAILS: ``_fold_profile`` already
+    falls back to the account the registry recorded at verify time, so the row
+    the default sits in still names the right account. A default that has never
+    resolved to any account lands in the unresolved pseudo-row and yields "" —
+    there is no account to pick a key for.
+    """
+    for row in snapshot.get("accounts", []):
+        account = row.get("account") or ""
+        if account and any(p.get("default") for p in row.get("profiles", [])):
+            return account
+    return ""
+
+
+async def resolve_default_account_profile() -> tuple[str, str] | None:
+    """The working (profile, region) for the account the registry default names.
+
+    The resolution every paid-service consumer shares, so the key an operation
+    runs under is the key its grant was recorded against. Goes through
+    :func:`_pick_profile`: a consumer that re-derives this decision with its own
+    reading of the registry gets a DIFFERENT key whenever the default is
+    unhealthy and a sibling is not, which is either a refused grant or a key with
+    no resolvable account.
+
+    STRICT, like :func:`resolve_account_profile`: None means there is no working
+    key, and a caller that is about to spend money must read that as "not now"
+    rather than substituting one. :func:`resolve_consent_target` is the variant
+    for the surface that has to EXPLAIN the absence.
+
+    The account comes from the registry default because the consent surface is
+    not account-scoped — one grant per service — so the default entry is what
+    picks the account. Only WHICH of that account's keys is chosen is decided
+    here.
+    """
+    snapshot = await list_accounts()
+    account = _default_account(snapshot)
+    return _pick_profile(snapshot, account) if account else None
+
+
+async def resolve_consent_target() -> tuple[str, str] | None:
+    """The (profile, region) a paid-service confirmation must be shown for.
+
+    :func:`resolve_default_account_profile` with a display fallback. With no
+    working key to agree with — nothing healthy in that account, or a default
+    that has never resolved to one — it names the registry default anyway, so the
+    card can report WHY nothing is authorizable instead of showing nothing.
+    Returns None only when the registry names no profile at all.
+
+    Every value returned is scrubbed, the fallback included. The registry is
+    agent-writable and the charset it admits is the shape an access key id has,
+    so a profile named after a credential would otherwise flow verbatim into the
+    consent card's JSON: the snapshot path is scrubbed as it is BUILT, and this
+    fallback reads the registry directly, so it is scrubbed on this side of the
+    return rather than by each reader. Consumers therefore all run on the same
+    text -- a name mangled by the scrub fails its identity probe on every path
+    alike, which is the fail-closed answer for a profile named after a secret.
+    """
+    resolved = await resolve_default_account_profile()
+    if resolved is not None:
+        return resolved
+    fallback = await asyncio.to_thread(deploy_profiles.resolve_profile, "")
+    if fallback is None:
+        return None
+    return _safe_field(fallback[0]), _safe_field(fallback[1])
 
 
 def resolve_account_profile_cached(account: str) -> tuple[str, str] | None:

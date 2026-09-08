@@ -32,7 +32,7 @@ reports upward. It never touches a target itself.
 Three child roles:
 
 - **Auditor** — one per attack surface. Static review plus a unit-test-level proof of concept in a
-  local sandbox. Emits one structured finding file per candidate. Runs the installed
+  disposable local checkout. Emits one structured finding file per candidate. Runs the installed
   `security-assistance` (ARCC) skill before starting, so governance search happens before any probe.
 - **Verifier** — one per finding, independently re-runs the PoC. It exists specifically to reject
   false positives. Hallucinated vulnerabilities are the dominant noise source in agentic security
@@ -109,6 +109,55 @@ Registered alongside `kirocrew-pipeline-conductor` in `UNADVERTISED_AGENTS`
 (`src/kiro_crew/subagent.py`), with its own filename constant in `src/kiro_crew/agent_files.py` and
 its own installer in `src/kiro_crew/agent.py`, mirroring the existing installer tests.
 
+## The trust boundary
+
+Every containment claim below is bounded by one fact: the verifier runs as the operator, on the
+operator's machine, against a checkout the operator chose. There is no privilege drop between the
+two. A checkout that can execute code already has everything the verifier has, so a defense against
+a hostile checkout defends a boundary that does not exist. This RFC therefore draws the boundary in
+one place and states plainly what falls outside it.
+
+**Trusted, for host integrity: the target checkout.** Its code runs as the operator, and this
+design does not defend the operator's machine from code the operator chose to check out — a
+symlink out of the tree, a detached process, a report the checkout's own code rewrote. Those are
+the operator attacking themselves, and no privilege drop exists to stop it.
+
+**Defended regardless: verdict integrity.** Trusting the checkout with the host is not trusting
+its exit status or its stdout with the verdict. A test suite that exits 1 because collection failed,
+a `conftest.py` that prints `1 failed`, a command that dies on a missing import — none of these is a
+reproduction, and the verifier reads its verdict from a structured report keyed to the requested
+test, or from a deliberate exit status, precisely so that ordinary breakage cannot confirm a
+finding. That discipline is about false positives, not about adversaries, and it stays.
+
+**Untrusted: the auditor's finding.** The proof of concept is model-authored text, and the
+conductor ingests it on unattended cycles. Screening it against the `forbidden` rules of engagement
+before execution is the mechanism that makes "not too aggressive" checkable, and it stays. It is a
+named-shape screen, and this RFC says plainly what that does and does not bound: it catches the
+sloppy PoC -- an auditor that reaches for `curl`, names a credential path, or writes outside the
+worktree -- and it does not catch an adversarially crafted one, because a `cmd::` proof is an
+arbitrary program and `python -c` with `urllib` names none of the screened words. What bounds that
+case is not this script. It is the two layers the RFC already places around it: the auditor is a
+Kiro Crew session and its PoC is written under the session's own tool gate and, where the host
+provides one, its sandbox; and the verifier runs as the operator's session, inheriting the same
+containment the operator granted that session. A `cmd::` proof therefore executes with exactly the
+privileges the operator gave the crew, no more. For the dogfood pilot -- the operator auditing the
+operator's own repository -- that is the accepted bound. An operator who wants a stricter one has
+two levers without any change here: disallow `cmd::` in the rules of engagement so only `pytest::`
+proofs file, or run the crew under the host sandbox. A future RFC may add attended confirmation for
+first-run `cmd::` proofs; this one does not.
+
+**Containment is a disposable worktree plus a deadline, not an OS sandbox.** The verifier refuses a
+`--worktree` that is not a git checkout, refuses the checkout it is itself running from, bounds the
+proof's wall time, and reaps the process it started. It does not attempt kernel-level isolation.
+Kiro Crew's own namespace sandbox is Linux-only and package-internal, and these scripts are
+standard-library files with no package import, so reaching for it would trade a cross-platform
+verifier for a Linux one. Where those two conflict, cross-platform wins.
+
+**Out of scope, explicitly.** A verifier pointed at a checkout the operator did not author —
+auditing a third party's repository, or a branch from an untrusted pull request — is not a supported
+use. Nothing in this design contains such a tree, and a finding that assumes one is out of scope
+rather than unfixed.
+
 ## The harness
 
 Deliverables, following the four-piece shape the pipeline conductor ships:
@@ -121,8 +170,9 @@ Deliverables, following the four-piece shape the pipeline conductor ships:
    `UNKNOWN`, never permission. The conductor decides scope with this script, not by judgment.
 3. **`scripts/finding_entry.py`** — dedupe and format. One finding per real defect, so a surface
    re-audited later does not re-file what is already recorded.
-4. **`scripts/verify_finding.py`** — re-run one finding's PoC in the sandbox and emit the verdict.
-   The conductor reads the verdict; it never reads a verifier's prose and decides for itself.
+4. **`scripts/verify_finding.py`** — re-run one finding's PoC in a disposable worktree under a
+   deadline (see the trust boundary above) and emit the verdict. The conductor reads the verdict;
+   it never reads a verifier's prose and decides for itself.
 5. **`scripts/ledger.py`** — the ledger CLI: init schema, add finding, record verdict, propose a
    lesson, approve a lesson, export the rules-of-engagement JSON, list. This is also the human's
    editing surface (see the learning section).

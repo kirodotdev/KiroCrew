@@ -5,6 +5,12 @@ boundary is enforced by ``scripts/check_agent_sdk_boundary.py`` and
 ``test/test_agent_sdk_boundary.py``, so application code cannot introduce new
 direct dependencies on the backend packages while the rest of the SDK is built.
 
+Which backends this build can serve, and every capability set a harness may
+claim, live in :mod:`kiro_crew.agent_sdk.backends`; the per-session record a
+consumer asks instead of naming a harness is
+:class:`kiro_crew.agent_sdk.capabilities.SessionCapabilities`. Whether a harness's
+tool calls reach the PreToolUse gate is :mod:`kiro_crew.agent_sdk.tool_gate`.
+
 Machine-local backend readiness lives in :mod:`kiro_crew.agent_sdk.backend_install`.
 Promptless structured command batches live in
 :mod:`kiro_crew.agent_sdk.native_commands`; their ACP process lifecycle and
@@ -59,6 +65,13 @@ from kiro_crew.agent_sdk.backend_install import (
     probe_backend,
     probe_backends,
 )
+from kiro_crew.agent_sdk.capabilities import (
+    MODEL_NAMESPACE_ACP,
+    UNKNOWN_BACKEND_CAPABILITIES,
+    SessionCapabilities,
+    capabilities_for,
+    capabilities_of,
+)
 from kiro_crew.agent_sdk.native_commands import NativeCommandBatch, run_kiro_native_commands
 
 TURN_STOP_REASON_CANCELLED = "cancelled"
@@ -74,6 +87,11 @@ class AgentTurnUsage(Protocol):
 
 __all__ = [
     "AgentTurnUsage",
+    "MODEL_NAMESPACE_ACP",
+    "SessionCapabilities",
+    "UNKNOWN_BACKEND_CAPABILITIES",
+    "capabilities_for",
+    "capabilities_of",
     "CACHE_TTL_SECONDS",
     "COMPONENT_CLAUDE_ACP_ADAPTER",
     "COMPONENT_CLAUDE_CODE_CLI",

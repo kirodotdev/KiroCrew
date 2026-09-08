@@ -66,6 +66,7 @@ from kiro_crew.monitoring.models import (
     MonitorObservationStatus,
     MonitorOutcome,
     MonitorState,
+    MonitorVerdict,
     monitor_state_from_dict,
     monitor_state_to_dict,
     quarantine_monitor_state,
@@ -2377,23 +2378,29 @@ class AutoNudgeService:
         *,
         now: float,
         config_generation: int,
-    ) -> MonitorDecision:
-        """Persist one probe decision and any wake claim as one transition."""
+    ) -> MonitorVerdict:
+        """Persist one probe decision and any wake claim as one transition.
+
+        A refusal that never reaches the decision engine carries no entries: no
+        observation was judged, so the verdict has nothing to name.
+        """
         async with self._lock:
             loop = self._loops.get(monitor_id)
             state = loop.monitor if loop is not None else None
             if loop is None or state is None or not loop.active or state.outcome is not None:
-                return MonitorDecision.STOP_BLOCKED
+                return MonitorVerdict(decision=MonitorDecision.STOP_BLOCKED)
             staged = deepcopy(loop)
             staged_state = staged.monitor
             assert staged_state is not None
             if state.config_generation != config_generation:
                 self._set_monitor_deadline(staged, now + staged_state.cadence_secs)
                 decision = MonitorDecision.NO_CHANGE
+                verdict = MonitorVerdict(decision=decision)
             elif state.wake_in_flight:
-                return MonitorDecision.NO_CHANGE
+                return MonitorVerdict(decision=MonitorDecision.NO_CHANGE)
             else:
-                decision = decide_monitor(staged_state, result.observation, now=now)
+                verdict = decide_monitor(staged_state, result.observation, now=now)
+                decision = verdict.decision
                 staged_state.probe_count += 1
                 staged_state.last_probe_at = now
                 staged_state.last_decision = decision
@@ -2449,7 +2456,7 @@ class AutoNudgeService:
             if not loop.active:
                 self._sync_terminal_completion_timer(loop)
         self._emit("updated", loop)
-        return decision
+        return verdict
 
     def _set_monitor_deadline(self, loop: NudgeLoop, deadline: float) -> None:
         """Write the scheduler authority and inspection mirror together."""
@@ -4332,8 +4339,8 @@ class AutoNudgeService:
                             #
                             # SKIPPED, not returned from. This block's own comment forbids
                             # an early exit because the rest of the fire cycle still has
-                            # to run, and round 35 was that exact rule being broken by a
-                            # re-raise leaving through the same door.
+                            # to run, and a re-raise leaving through the same door breaks
+                            # that exact rule.
                             monitor.terminal_pending = ""
                             self._persist_soon()
                             logger.info(

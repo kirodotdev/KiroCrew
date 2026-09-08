@@ -86,6 +86,7 @@ agent loads only the one it needs.
 | [mcp-apps.md](mcp-apps.md) | Apps that surface as MCP servers. |
 | [mcp-shareability.md](mcp-shareability.md) | Predicting which MCP servers can share one backend, from local evidence. |
 | [mcp-gateway-backend-replacement.md](mcp-gateway-backend-replacement.md) | Validating a replacement MCP backend's tool set before a live session adopts it. |
+| [mcp-gateway-daemon-lifecycle.md](mcp-gateway-daemon-lifecycle.md) | The MCP gateway daemon has one owning gateway and one code revision: owner-liveness self-exit, the fingerprint adoption gate, the CLI stop, and the stale-backend diagnosis. |
 | [mcp-probe-quarantine.md](mcp-probe-quarantine.md) | A durable consecutive-probe-failure count per MCP server, surfaced on its dashboard row with a reset control. The unmount half is deferred; the spec records why. |
 | [app-notifications.md](app-notifications.md) | How an app publishes a notification to the local bus, and the two shipped producers. |
 | [artifacts.md](artifacts.md) | Artifact identity, versioning, and the companion chat panel. |

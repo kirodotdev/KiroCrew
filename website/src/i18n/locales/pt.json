@@ -5072,6 +5072,8 @@
         "add_accounts_title": "Adicionar contas",
         "add_accounts_summary": "Registrar mais perfis da AWS desta máquina",
         "add_accounts_intro": "Estes perfis locais da AWS ainda não estão registrados. Cada um que você adicionar vira uma chave da conta dele.",
+        "add_accounts_search_placeholder": "Buscar perfis",
+        "add_accounts_search_keeps_selected": "Os perfis que você selecionou continuam na lista mesmo que não correspondam.",
         "add_accounts_none": "Todos os perfis locais já estão registrados.",
         "add_accounts_unsupported": "No Windows, o AWS Control não consegue acessar os perfis da AWS desta máquina: o acesso à AWS precisa de um shell Linux ou macOS. Execute o gateway do {{productName}} no WSL (Windows Subsystem for Linux) e registre lá os perfis configurados.",
         "add_accounts_count_one": "{{count}} de {{max}} registrado",
@@ -7571,6 +7573,15 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "Arraste para capturar uma área · solte para anexar · Esc para cancelar",
       "drag_to_select_the_screen_region_to_capture": "Arraste para selecionar a região da tela a capturar",
       "screen_capture_drag_the_area_you_want_it_attache": "Captura de tela — arraste a área desejada; ela é anexada automaticamente ao soltar"
+    },
+    "startupVideoModal": {
+      "close": "Fechar",
+      "feature_intro": "Introdução ao recurso",
+      "got_it": "Entendi",
+      "media_failed": "Não foi possível carregar o vídeo do recurso",
+      "share": "Compartilhar",
+      "share_description": "Transforme este vídeo do recurso em um card que você pode publicar em qualquer lugar.",
+      "share_include_title": "Incluir o título do vídeo"
     },
     "tagManagerList": {
       "change_color": "Alterar a cor de {{name}}",
@@ -10171,6 +10182,7 @@
       "disconnected_locally": "Desconectado localmente. Revogue o acesso no provedor para cancelar totalmente a autorização.",
       "documentation": "Documentação",
       "finish_approving_in_browser": "Conclua a aprovação no navegador…",
+      "approval_opened_in_default_browser": "Aprovação aberta no seu navegador padrão…",
       "invalid_return_address": "Cole o endereço completo http://127.0.0.1:PORT/?code=… do navegador.",
       "managed_by_connections": "Gerenciado por Conexões",
       "mcp_servers": "Servidores MCP",

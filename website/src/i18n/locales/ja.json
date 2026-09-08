@@ -4906,6 +4906,8 @@
         "add_accounts_title": "アカウントを追加",
         "add_accounts_summary": "このマシンの AWS プロファイルをさらに登録する",
         "add_accounts_intro": "これらのローカル AWS プロファイルはまだ登録されていません。追加したものは、それぞれのアカウントのキーになります。",
+        "add_accounts_search_placeholder": "プロファイルを検索",
+        "add_accounts_search_keeps_selected": "選択したプロファイルは、検索に一致しなくても一覧に残ります。",
         "add_accounts_none": "ローカルプロファイルはすべて登録済みです。",
         "add_accounts_unsupported": "Windows では AWS Control はこのマシンの AWS プロファイルにアクセスできません。AWS へのアクセスには Linux または macOS のシェルが必要です。WSL (Windows Subsystem for Linux) で {{productName}} のゲートウェイを実行し、そこで設定したプロファイルを登録してください。",
         "add_accounts_count_other": "{{max}} 件のうち {{count}} 件を登録済み",
@@ -7349,6 +7351,15 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "ドラッグで領域をキャプチャ · 放して添付 · Esc でキャンセル",
       "drag_to_select_the_screen_region_to_capture": "ドラッグしてキャプチャする画面領域を選択してください",
       "screen_capture_drag_the_area_you_want_it_attache": "スクリーンキャプチャ — ドラッグして希望の領域を選択してください; 放すと自動的に添付されます"
+    },
+    "startupVideoModal": {
+      "close": "閉じる",
+      "feature_intro": "機能紹介",
+      "got_it": "了解しました",
+      "media_failed": "機能紹介動画を読み込めませんでした",
+      "share": "共有",
+      "share_description": "この機能紹介動画を、どこにでも投稿できる共有カードにします。",
+      "share_include_title": "動画のタイトルを含める"
     },
     "tagManagerList": {
       "change_color": "{{name}}の色を変更",
@@ -9869,6 +9880,7 @@
       "disconnected_locally": "ローカルで切断されました。許可を完全にキャンセルするにはプロバイダーでアクセスを取り消してください。",
       "documentation": "ドキュメント",
       "finish_approving_in_browser": "ブラウザーで承認を完了してください…",
+      "approval_opened_in_default_browser": "既定のブラウザーで承認ページを開きました…",
       "invalid_return_address": "ブラウザーから完全なhttp://127.0.0.1:PORT/?code=…アドレスを貼り付けてください。",
       "managed_by_connections": "コネクションで管理",
       "mcp_servers": "MCP サーバー",

@@ -159,6 +159,28 @@ describe('client transport', () => {
     expect(call().headers['X-Session-Key']).toBe('dashboard:chat-3')
   })
 
+  it('the feature-video routes put the caller\'s session key on the wire', async () => {
+    // Both routes are gated server-side by `_is_restricted_session`, which treats
+    // the shared `dashboard:ui` placeholder as NOT restricted -- so a key that never
+    // reaches the header makes that guard unreachable and lets a session which keeps
+    // nothing record a PERMANENT verdict.
+    await api.featureVideoNext('dashboard:chat-4')
+    expect(call().url).toBe('/api/feature-videos/next')
+    expect(call().headers['X-Session-Key']).toBe('dashboard:chat-4')
+
+    await api.featureVideoFeedback('vid-1', 'seen', 'dashboard:chat-4')
+    expect(call(1).url).toBe('/api/feature-videos/feedback')
+    expect(call(1).headers['X-Session-Key']).toBe('dashboard:chat-4')
+    expect(call(1).body).toEqual({ id: 'vid-1', status: 'seen' })
+  })
+
+  it('the feature-video routes fall back to the placeholder when no key is passed', async () => {
+    await api.featureVideoNext()
+    expect(call().headers['X-Session-Key']).toBe('dashboard:ui')
+    await api.featureVideoFeedback('vid-1', 'dismissed')
+    expect(call(1).headers['X-Session-Key']).toBe('dashboard:ui')
+  })
+
   it('createArtifact derives the session key from origin_session_key when none is passed', async () => {
     await api.createArtifact({ name: 'Doc', content: '<p/>', origin_session_key: 'chat-9' })
     expect(call().headers['X-Session-Key']).toBe('dashboard:chat-9')

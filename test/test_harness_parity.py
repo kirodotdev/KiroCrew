@@ -24,7 +24,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from kiro_crew import acp_backends
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp.types import (
@@ -54,6 +53,7 @@ from kiro_crew.acp_backends import (
     BASELINE_SELECTABLE_BACKENDS,
     selectable_backends,
 )
+from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import AgentConfig, _normalize_acp_backend
 from kiro_crew.providers import acp as providers_acp
 
@@ -144,6 +144,10 @@ def test_registering_a_backend_makes_it_survive_load() -> None:
     ``register_selectable_backend`` writes the baseline too, and restoring only the
     effective set would leak a widened baseline into the rest of the run.
     """
+    # Reaches the private registry state through ``agent_sdk.backends``, the module
+    # that DEFINES it. The ``kiro_crew.acp_backends`` shim re-exports the public
+    # names only: a second binding to a mutable set is how two views of one
+    # registry start disagreeing, so the private pair deliberately has one home.
     baseline_before = set(acp_backends._baseline)
     before = set(acp_backends._selectable)
     try:

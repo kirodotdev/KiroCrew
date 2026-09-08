@@ -1155,6 +1155,51 @@ describe('MembersPage default member, memory and URL', () => {
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('fresh-talker')
   })
 
+  it('a refresh-frame refetch never reorders the roster; a membership change re-sorts it', async () => {
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    const utils = await renderPage([
+      row({ name: 'alpha', slug: 'alpha', last_active_ts: 100 }),
+      row({ name: 'beta', slug: 'beta', last_active_ts: 50 }),
+    ])
+    const names = () =>
+      roster()
+        .getAllByRole('listitem')
+        .map((li) => within(li).queryByText(/^(alpha|beta|gamma)$/)?.textContent)
+        .filter(Boolean)
+    await waitFor(() => expect(names()).toEqual(['alpha', 'beta']))
+    // beta's activity advances server-side and a refresh-frame refetch lands
+    // it. The ORDER must hold: re-sorting here moves rows under the cursor
+    // mid-click, so the click opens a different member's durable thread.
+    membersMock.mockResolvedValue({
+      members: [
+        row({ name: 'alpha', slug: 'alpha', last_active_ts: 100 }),
+        row({ name: 'beta', slug: 'beta', last_active_ts: 999, last_message: 'fresh row content' }),
+      ],
+      default_agent: 'kirocrew',
+    })
+    act(() => {
+      void utils.queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    })
+    // Content updated in place…
+    await roster().findByText('fresh row content')
+    // …but the order did not move.
+    expect(names()).toEqual(['alpha', 'beta'])
+    // A membership change (a new crew appears) re-sorts from scratch by recency.
+    membersMock.mockResolvedValue({
+      members: [
+        row({ name: 'alpha', slug: 'alpha', last_active_ts: 100 }),
+        row({ name: 'beta', slug: 'beta', last_active_ts: 999 }),
+        row({ name: 'gamma', slug: 'gamma', last_active_ts: 500 }),
+      ],
+      default_agent: 'kirocrew',
+    })
+    act(() => {
+      void utils.queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    })
+    await rosterRow('gamma')
+    expect(names()).toEqual(['beta', 'gamma', 'alpha'])
+  })
+
   it('restores the remembered member on return (and after a reload)', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'beta')
     await renderPage(alphaBeta())

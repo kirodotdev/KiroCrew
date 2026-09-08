@@ -82,12 +82,18 @@ SKIP_PATHS = frozenset(
 # ``kiro_crew.acp`` executes that package's ``__init__`` (client + runtime), so the
 # config loader and the dashboard could not read the vocabulary and each kept a
 # literal copy of the selectable list instead — the drift this rule exists to
-# prevent, reached by obeying it. ``acp_backends`` imports nothing from
+# prevent, reached by obeying it. The vocabulary module imports nothing from
 # ``kiro_crew.acp``, so every consumer can name the constants instead of copying
-# them. The invariant is unchanged: exactly ONE module defines them, and
-# ``acp/types.py`` now re-exports from here (an import, not an assignment, so it
-# does not match this rule).
-VOCABULARY_PATH = "src/kiro_crew/acp_backends.py"
+# them.
+#
+# Moved AGAIN by RFC PR 3a, from ``kiro_crew/acp_backends.py`` into
+# ``kiro_crew/agent_sdk/backends.py``, so the vocabulary sits behind the agent-SDK
+# boundary rather than beside it. The invariant is unchanged and this is still ONE
+# path, not two: ``acp/types.py`` and ``acp_backends.py`` both re-export from here,
+# and a re-export is an import rather than an assignment, so neither matches this
+# rule. Pointing the rule at the shim instead would be the drift it exists to
+# prevent -- a second place a definition could legally live.
+VOCABULARY_PATH = "src/kiro_crew/agent_sdk/backends.py"
 
 SUPPRESSION = re.compile(r"harness-ok")
 

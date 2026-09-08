@@ -8,9 +8,17 @@ forbidden edge, against a baseline that may only shrink. Onboarding a new harnes
 means teaching outside consumers (readiness, prerequisite, MCP wiring) to ask these
 sets, so that cost was about to be paid repeatedly.
 
-Definitions now live in the leaf ``kiro_crew.acp_backends`` and are re-exported from
-``acp.types`` for existing importers. These tests pin both halves: the leaf stays
-reachable without the ACP package, and the re-export keeps working.
+Definitions now live in the leaf :mod:`kiro_crew.agent_sdk.backends` -- moved there
+from ``kiro_crew/acp_backends.py`` by RFC PR 3, which pulls the capability
+mechanism inside the agent-SDK boundary -- and are re-exported from ``acp.types``
+for existing importers. These tests pin both halves: the leaf stays reachable
+without the ACP package, and the re-export keeps working.
+
+``kiro_crew.acp_backends`` survives as a pure re-export shim, so both spellings
+still import and both still read one registry. The definition-home test below
+asserts the sets are defined in the SDK module and NOT in that shim, because a
+definition left behind in the shim is a definition an outside consumer can reach
+without crossing the boundary at all.
 """
 
 from __future__ import annotations
@@ -55,18 +63,26 @@ CAPABILITY_SETS = (
 
 @pytest.mark.parametrize("name", CAPABILITY_SETS)
 def test_defined_in_the_leaf_not_in_the_acp_package(name: str) -> None:
-    """The definition must sit in ``acp_backends``, never back in ``acp.types``.
+    """The definition must sit in ``agent_sdk.backends``, never back in ``acp.types``.
 
     A future edit that moves one back would compile and pass every other test while
-    silently re-imposing a forbidden edge on each consumer that reads it.
+    silently re-imposing a forbidden edge on each consumer that reads it. The third
+    assertion covers the other direction: a set re-defined in the ``acp_backends``
+    shim would be readable without ever crossing the boundary, which is what the
+    move was for.
     """
-    leaf = (SRC / "acp_backends.py").read_text(encoding="utf-8")
+    leaf = (SRC / "agent_sdk" / "backends.py").read_text(encoding="utf-8")
     types_mod = (SRC / "acp" / "types.py").read_text(encoding="utf-8")
+    shim = (SRC / "acp_backends.py").read_text(encoding="utf-8")
 
-    assert f"\n{name} = frozenset(" in leaf, f"{name} is not defined in acp_backends.py"
+    assert f"\n{name} = frozenset(" in leaf, f"{name} is not defined in agent_sdk/backends.py"
     assert f"\n{name} = frozenset(" not in types_mod, (
         f"{name} is defined in acp/types.py again; define it in the leaf "
-        f"acp_backends.py so a consumer can read it without importing kiro_crew.acp"
+        f"agent_sdk/backends.py so a consumer can read it without importing kiro_crew.acp"
+    )
+    assert f"\n{name} = frozenset(" not in shim, (
+        f"{name} is defined in the acp_backends shim; that file must only re-export "
+        f"from agent_sdk/backends.py, or the boundary has a second front door"
     )
 
 
@@ -76,12 +92,17 @@ def test_the_re_export_is_the_same_object(name: str) -> None:
 
     Identity, not equality: a copy would drift the moment one side is edited.
     """
-    import kiro_crew.acp_backends as leaf
+    import kiro_crew.acp_backends as shim
+    import kiro_crew.agent_sdk.backends as leaf
     from kiro_crew.acp import types as acp_types
 
     assert getattr(acp_types, name) is getattr(leaf, name), (
-        f"acp.types.{name} is a different object than acp_backends.{name}; "
+        f"acp.types.{name} is a different object than agent_sdk.backends.{name}; "
         f"re-export it rather than redefining it"
+    )
+    assert getattr(shim, name) is getattr(leaf, name), (
+        f"acp_backends.{name} is a different object than agent_sdk.backends.{name}; "
+        f"the shim must re-export, never copy"
     )
 
 

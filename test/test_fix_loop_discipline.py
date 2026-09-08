@@ -16,7 +16,6 @@ still there and still pointed at the same names.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import re
 import shutil
@@ -26,6 +25,7 @@ from typing import Iterator
 
 import pytest
 import yaml
+from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
@@ -207,11 +207,9 @@ class TestHarvestRecognitionMatchesTheGate:
     """
 
     def _module(self):
-        spec = importlib.util.spec_from_file_location("fix_loop_metrics", METRICS_SCRIPT)
-        assert spec and spec.loader
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
+        # Import-by-path writes bytecode beside the source unless suppressed; the
+        # helper does the suppression, so no __pycache__ lands in .github/scripts/.
+        return load_skill_script("fix_loop_metrics", METRICS_SCRIPT)
 
     def test_patterns_are_transcribed_from_the_gate(self) -> None:
         """Drift is silent: both sides keep working, and only the count is wrong."""
@@ -290,11 +288,9 @@ class TestHarvestDenominator:
     """
 
     def _module(self):
-        spec = importlib.util.spec_from_file_location("fix_loop_metrics", METRICS_SCRIPT)
-        assert spec and spec.loader
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
+        # Import-by-path writes bytecode beside the source unless suppressed; the
+        # helper does the suppression, so no __pycache__ lands in .github/scripts/.
+        return load_skill_script("fix_loop_metrics", METRICS_SCRIPT)
 
     @staticmethod
     def _fake_gh(prs: list[dict], run_created: dict[str, str] | None = None):

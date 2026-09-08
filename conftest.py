@@ -863,6 +863,89 @@ def _block_host_service_mutation(request, monkeypatch):
     monkeypatch.setattr(os, "execve", guarded_exec)
 
 
+# ── no systemd user session for the test process tree ─────────────────
+
+
+#: The session-bus locators the operator's shell carried, captured before the floor
+#: removes them. ``real_user_session`` hands exactly these back to the one test that
+#: needs the real user manager.
+_REAL_USER_SESSION_ENV_AT_START: dict[str, str] = {
+    name: os.environ[name]
+    for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+    if name in os.environ
+}
+
+
+def _reset_cgroup_scope_probe() -> None:
+    """Drop ``sandbox``'s memoised cgroup-scope probe so the next call re-reads the env."""
+    sb = sys.modules.get("kiro_crew.sandbox")
+    if sb is not None:
+        sb._CGROUP_SCOPE_PROBE = None
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_systemd_user_session():
+    """Run the whole session, children included, without a systemd user session.
+
+    ``sandbox.cgroup_scope_argv`` wraps a spawn in ``systemd-run --user --scope
+    --slice=kirocrew-agents-<token>.slice`` whenever its probe finds a user session,
+    and the token is a hash of the data home. This floor pins a FRESH ``KIROCREW_HOME``
+    per test, so on a developer host every test that reaches the wrapper -- and every
+    ``kirocrew`` CLI child a test spawns, which probes for itself -- creates a NEW
+    transient slice, and systemd never garbage-collects a slice: five full runs left
+    over 4,000 ``kirocrew-agents-*.slice`` units loaded in the operator's user manager.
+    The same session bus is what let a late reconcile thread run a real
+    ``systemctl --user set-property`` on the operator's agents slice after its test's
+    monkeypatch was undone.
+
+    The probe's own documented gate is ``XDG_RUNTIME_DIR`` ("no systemd user
+    session"), so removing the bus locators for the session is the whole fix: it
+    reaches children through the inherited environment, it cannot be outrun by a
+    thread, and it matches CI, where the runner has no user session either. The
+    host-service guard above cannot do this job -- it sees in-process spawns only.
+
+    A test that needs the real user manager opts in with :func:`real_user_session`.
+    """
+    for name in _REAL_USER_SESSION_ENV_AT_START:
+        os.environ.pop(name, None)
+    _reset_cgroup_scope_probe()
+    try:
+        yield
+    finally:
+        os.environ.update(_REAL_USER_SESSION_ENV_AT_START)
+        _reset_cgroup_scope_probe()
+
+
+@pytest.fixture
+def real_user_session(monkeypatch):
+    """Opt ONE test back into the operator's real systemd user session.
+
+    Skips where the operator has none. On teardown the per-instance agents slice the
+    test's pinned data home maps to is stopped, because systemd would otherwise keep
+    it loaded forever (see :func:`_no_systemd_user_session`). That stop is issued
+    through ``os.posix_spawn`` on purpose: it is cleanup of a unit this very test
+    created, and the host-service guard's ``Popen`` funnel would refuse the verb.
+    """
+    if "XDG_RUNTIME_DIR" not in _REAL_USER_SESSION_ENV_AT_START:
+        pytest.skip("no systemd user session on this host")
+    for name, value in _REAL_USER_SESSION_ENV_AT_START.items():
+        monkeypatch.setenv(name, value)
+    import kiro_crew.sandbox as sb
+
+    monkeypatch.setattr(sb, "_CGROUP_SCOPE_PROBE", None)
+    try:
+        yield
+    finally:
+        slice_name = sb._agents_slice_name()
+        systemctl = shutil.which("systemctl")
+        if systemctl and slice_name != sb._CGROUP_AGENTS_SLICE:
+            pid = os.posix_spawn(
+                systemctl, [systemctl, "--user", "stop", "-q", slice_name], os.environ
+            )
+            os.waitpid(pid, 0)
+        sb._CGROUP_SCOPE_PROBE = None
+
+
 # ── the process working directory is shared state too ─────────────────
 
 
@@ -2236,6 +2319,15 @@ _SHARED_KIRO_PATHS: tuple[tuple[str, str, str], ...] = (
     # leaked into it. This is the sibling-binding case the ratchet's own docstring says
     # it cannot see, which is why the set is enumerated here by hand.
     ("kiro_crew.dashboard.handlers.mcp", "_MCP_LOCK_PATH", ".kiro/settings/mcp.lock"),
+    # RELATIVE in production (``home / _AUTH_STAGING_RELATIVE``, home = ``Path.home()``),
+    # and it must stay so: the sandbox hides ``~/.kiro/crew-auth-staging`` by that
+    # HOME-relative spelling, so deriving it from the data home instead would leave a
+    # relocated ``KIROCREW_HOME``'s staging tree visible to the sandboxed CLI. Pinning
+    # the constant to an ABSOLUTE tmp path still lands, because ``pathlib`` discards
+    # the left operand when the right one is absolute -- so the mkdir+chmod that
+    # ``KiroPrerequisiteService`` performs on construction stops reaching the
+    # operator's real ``~/.kiro`` (fifteen dashboard-server tests did).
+    ("kiro_crew.kiro_prerequisite", "_AUTH_STAGING_RELATIVE", ".kiro/crew-auth-staging"),
 )
 
 
@@ -2473,8 +2565,26 @@ def _is_under(path: pathlib.Path, root: pathlib.Path) -> bool:
     return resolved == root or root in resolved.parents
 
 
+def _test_owned_roots(tmp_path_factory) -> tuple[pathlib.Path, ...]:
+    """This run's own temp trees: pytest's basetemp and the redirected ``tempfile`` base.
+
+    A path under either was created by a fixture or by the test itself, so it is never
+    the operator's -- even when the tree sits INSIDE a guarded root. That happens
+    routinely: a Kiro Crew agent session sets ``TMPDIR`` to its scratch dir under
+    ``~/.kiro/crew/scratch/``, which puts both trees under the real ``~/.kiro``. A fence
+    keyed on the real home alone would then redirect a test that relocated kiro-cli's
+    home to its OWN ``tmp_path`` away from the tree it just built.
+    """
+    roots = [tmp_path_factory.getbasetemp().resolve()]
+    try:
+        roots.append(pathlib.Path(tempfile.gettempdir()).resolve())
+    except OSError:  # pragma: no cover - no usable temp dir at all
+        pass
+    return tuple(roots)
+
+
 @pytest.fixture(autouse=True)
-def _isolate_kiro_sessions_dir(_isolation_dirs, monkeypatch):
+def _isolate_kiro_sessions_dir(_isolation_dirs, monkeypatch, tmp_path_factory):
     """Pin kiro-cli's transcript store (``<kiro home>/sessions/cli``), for EVERY testpath.
 
     A fourth ``~/.kiro`` isolation axis, distinct from the data home, the import-time
@@ -2524,6 +2634,10 @@ def _isolate_kiro_sessions_dir(_isolation_dirs, monkeypatch):
         paths = None
     if paths is not None:
         real_kiro_home = paths.kiro_home
+        own_roots = _test_owned_roots(tmp_path_factory)
+
+        def _test_owned(path: pathlib.Path) -> bool:
+            return any(_is_under(path, owned) for owned in own_roots)
 
         def _pinned_sessions_dir() -> pathlib.Path:
             # A GUARD, not a redirect. The lazy resolver is deliberately left to
@@ -2534,7 +2648,7 @@ def _isolate_kiro_sessions_dir(_isolation_dirs, monkeypatch):
             # ``~/.kiro`` -- the one place a test may never delete from -- answer
             # the isolation dir instead.
             unpinned = real_kiro_home() / "sessions" / "cli"
-            if _is_under(unpinned, _REAL_KIRO_HOME_AT_START):
+            if _is_under(unpinned, _REAL_KIRO_HOME_AT_START) and not _test_owned(unpinned):
                 return root
             return unpinned
 

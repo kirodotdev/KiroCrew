@@ -23,6 +23,18 @@ ISSUE_URL = "https://github.com/acme/repo/issues/9"
 GLAB_URL = "https://gitlab.com/grp/sub/-/merge_requests/4"
 
 
+def _visibility_tasks_for(loop: asyncio.AbstractEventLoop) -> list[asyncio.Task]:
+    """The subset of ``source._VISIBILITY_TASKS`` this loop can legally await.
+
+    The set is process-wide, and a task is awaitable only on the loop that created
+    it. ``schedule_visibility_refresh`` prunes entries whose loop is CLOSED, but a
+    task from another still-live loop (the previous test's, torn down a moment
+    later) can sit in the set at drain time, and gathering it raises ``attached to
+    a different loop`` -- once in five full runs here. Drain only what is ours.
+    """
+    return [task for task in list(source._VISIBILITY_TASKS) if task.get_loop() is loop]
+
+
 @pytest.fixture(autouse=True)
 def _clear_caches():
     source._visibility_cache.clear()
@@ -305,7 +317,7 @@ async def test_schedule_dedups_by_repo_and_skips_issue_and_jira(monkeypatch):
         [PR_URL, ISSUE_URL, "https://github.com/acme/repo/pull/99", "not-a-url"]
     )
     # Let the created tasks run.
-    await asyncio.gather(*list(source._VISIBILITY_TASKS), return_exceptions=True)
+    await asyncio.gather(*_visibility_tasks_for(asyncio.get_running_loop()), return_exceptions=True)
     assert calls == [source._visibility_key(source.parse_source_url(PR_URL))]
 
 
@@ -321,7 +333,7 @@ async def test_schedule_respects_fresh_ttl(monkeypatch):
 
     monkeypatch.setattr(source, "_refresh_repo_visibility", fake_refresh)
     source.schedule_visibility_refresh([PR_URL])
-    await asyncio.gather(*list(source._VISIBILITY_TASKS), return_exceptions=True)
+    await asyncio.gather(*_visibility_tasks_for(asyncio.get_running_loop()), return_exceptions=True)
     assert called is False
 
 
@@ -349,7 +361,7 @@ async def test_force_synchronously_invalidates_public_before_refresh(monkeypatch
     await started.wait()
     assert source.is_repo_public(PR_URL) is None
     release.set()
-    await asyncio.gather(*list(source._VISIBILITY_TASKS), return_exceptions=True)
+    await asyncio.gather(*_visibility_tasks_for(asyncio.get_running_loop()), return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -409,7 +421,7 @@ async def test_stale_inflight_positive_cannot_restore_public_across_force(monkey
     # Let the stale positive read complete.
     release.set()
     await asyncio.gather(task, return_exceptions=True)
-    await asyncio.gather(*list(source._VISIBILITY_TASKS), return_exceptions=True)
+    await asyncio.gather(*_visibility_tasks_for(asyncio.get_running_loop()), return_exceptions=True)
     # The stale positive did NOT restore public — is_repo_public stays fail-closed.
     assert source.is_repo_public(PR_URL) is None
 
@@ -457,7 +469,7 @@ async def test_force_public_to_private_transition_queues_hide_update(monkeypatch
         fired["n"] += 1
 
     source.schedule_visibility_refresh([PR_URL], on_update=on_update, force=True)
-    await asyncio.gather(*list(source._VISIBILITY_TASKS), return_exceptions=True)
+    await asyncio.gather(*_visibility_tasks_for(asyncio.get_running_loop()), return_exceptions=True)
     # The hide-the-chip update was queued (public -> private is a rendered flip).
     assert on_update in source._check_update_callbacks or fired["n"] >= 1
     assert source.is_repo_public(PR_URL) is False
@@ -667,3 +679,26 @@ def test_non_owner_public_status_grant_is_sel_audited(monkeypatch):
     # Deduped within the window.
     _project_source_links([_link(PR_URL_2)], False, dashboard_user=True)
     assert len(events) == 1
+
+
+def test_visibility_tasks_for_skips_a_live_foreign_loops_task():
+    """A task another LIVE loop registered must not be handed to this loop's gather.
+
+    The dead-loop prune in ``schedule_visibility_refresh`` cannot see it (its loop is
+    still open), and gathering it raises ``attached to a different loop`` -- the
+    1-in-5 failure the loop-scoped drain exists to remove.
+    """
+    mine = asyncio.new_event_loop()
+    other = asyncio.new_event_loop()
+    try:
+        foreign = other.create_task(asyncio.sleep(0))
+        own = mine.create_task(asyncio.sleep(0))
+        source._VISIBILITY_TASKS.update({foreign, own})
+
+        assert _visibility_tasks_for(mine) == [own]
+        assert _visibility_tasks_for(other) == [foreign]
+        mine.run_until_complete(own)
+        other.run_until_complete(foreign)
+    finally:
+        mine.close()
+        other.close()

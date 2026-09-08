@@ -43,7 +43,32 @@ def _gate():
 
 @pytest.fixture(scope="module")
 def gate():
-    return _gate()
+    """The gate module, with ``_scan`` memoized for the module's lifetime.
+
+    ``_scan(("src",))`` walks and ``ast.parse``s every module under ``src/`` --
+    ~9s a call -- and this test module calls it twice with the identical
+    argument: once directly (``test_every_recorded_violation_still_exists``)
+    and once inside ``seed_baseline`` (``test_seeding_outside_the_checkout_
+    reports_the_file_it_wrote``). Patched on the module object rather than
+    wrapped at the call site so ``seed_baseline``'s own bare-name call -- which
+    resolves ``_scan`` through this module's globals at call time -- goes
+    through the memo too. Keyed on ``targets`` even though every caller here
+    passes ``DEFAULT_TARGETS``, so a future test with a different target set
+    still gets a real scan instead of the wrong cached answer.
+    """
+    module = _gate()
+    memo: dict[tuple[str, ...], dict[str, dict[int, str]]] = {}
+    uncached = module._scan
+
+    def scan(targets: tuple[str, ...]) -> dict[str, dict[int, str]]:
+        if targets not in memo:
+            memo[targets] = uncached(targets)
+        # A copy of the outer dict (and of each inner one) so a caller that
+        # mutates its result cannot poison the memo for the next caller.
+        return {rel: dict(lines) for rel, lines in memo[targets].items()}
+
+    module._scan = scan
+    return module
 
 
 def test_the_sdk_package_exists_and_is_exempt(gate):

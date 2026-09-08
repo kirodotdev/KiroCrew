@@ -34,6 +34,7 @@ Keeping the module-level name means existing ``monkeypatch.setattr(mod,
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 from unittest.mock import patch
@@ -103,6 +104,32 @@ def _transitive_path_factories() -> frozenset[str]:
     return _transitive_path_factories_for(SRC, PATHS_MODULE)
 
 
+def _iter_source(src: Path, require_substring: str | None = None) -> Iterator[tuple[Path, str]]:
+    """Yield ``(path, text)`` for every module under ``src``, one at a time.
+
+    ``require_substring`` drops a file before it is even read into the caller's
+    working set for a *cheap* reason: an AST node this scan is looking for
+    (a ``Path`` return annotation, a call to a named factory) can only exist in
+    a file whose raw text already contains that literal, so a file lacking it
+    is never a false negative to skip.
+
+    Deliberately does not retain or return parsed trees between files (unlike
+    an ``lru_cache`` of the whole tree): ``source_corpus.py`` measured that
+    holding ~1300 parsed ASTs live for the caller inflates the interpreter's own
+    generational GC cost enough to make the SUM of two never-retaining passes
+    faster than one retaining pass over the same tree, because every later
+    collection has to trace the retained set. Each file is read, optionally
+    parsed by the caller, and then eligible for collection before the next one.
+    """
+    for py in sorted(src.rglob("*.py")):
+        if "__pycache__" in py.parts:
+            continue
+        text = py.read_text(encoding="utf-8")
+        if require_substring is not None and require_substring not in text:
+            continue
+        yield py, text
+
+
 @lru_cache(maxsize=None)
 def _transitive_path_factories_for(src: Path, paths_module: Path) -> frozenset[str]:
     """Cached by the actual (src, paths_module) pair, for the same monkeypatch
@@ -112,12 +139,14 @@ def _transitive_path_factories_for(src: Path, paths_module: Path) -> frozenset[s
     # Build a map: function_name -> set of names it calls, for every
     # Path-returning function in the tree. We only need function names (not
     # qualified paths) because the guard's detector matches bare call names.
+    #
+    # `require_substring="Path"`: a function can only carry a return
+    # annotation containing "Path" if that literal is somewhere in the file's
+    # raw text, so a file without it is never a Path-returning-function source.
     candidates: dict[str, set[str]] = {}  # name -> called names
-    for py in sorted(src.rglob("*.py")):
-        if "__pycache__" in py.parts:
-            continue
+    for _py, text in _iter_source(src, require_substring="Path"):
         try:
-            tree = ast.parse(py.read_text(encoding="utf-8"))
+            tree = ast.parse(text)
         except SyntaxError:
             continue
         for node in ast.walk(tree):
@@ -187,15 +216,13 @@ def _frozen_path_constants_for(src: Path, paths_module: Path) -> tuple[str, ...]
     reason as ``_path_factories_for``."""
     factories = _transitive_path_factories_for(src, paths_module)
     offenders: list[str] = []
-    for py in sorted(src.rglob("*.py")):
-        if "__pycache__" in py.parts:
-            continue
+    for py, text in _iter_source(src):
         # App-internal test harnesses legitimately capture the real data-home
         # path before monkeypatching (e.g. spec_builder's _REAL_STATE_DIR).
         if "tests" in py.parts:
             continue
         try:
-            tree = ast.parse(py.read_text(encoding="utf-8"))
+            tree = ast.parse(text)
         except SyntaxError:  # pragma: no cover - syntax is enforced elsewhere
             continue
         rel = py.relative_to(src)

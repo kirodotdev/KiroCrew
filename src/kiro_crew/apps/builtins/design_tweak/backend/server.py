@@ -153,7 +153,11 @@ else:
 
 QUEUE_DIR = DATA_DIR / "queue"
 HANDLED_DIR = DATA_DIR / "handled"
-CONFIG_FILE = DATA_DIR / "config.json"
+# The project registry lives at ``DATA_DIR / "config.json"`` and is resolved on
+# every access (``request_state.config_file``), never frozen into a constant: a
+# caller that repoints ``DATA_DIR`` to an isolated directory -- the way this
+# module is sandboxed -- must have registry writes follow it, not land under the
+# ``DATA_DIR`` captured at import.
 # Directory creation stays in main(); imports are side-effect-free and never
 # touch the operator's real data home.
 

@@ -1,17 +1,35 @@
 name: Update Test Durations
 
-# Keeps .test_durations fresh so pytest-split's shards in ci.yml stay balanced
-# by *recorded runtime*. Brand-new tests are auto-assigned the average duration
-# by pytest-split, so sharding degrades gracefully between refreshes -- this job
-# just re-measures periodically and opens a PR with the updated file.
+# Measures per-test runtime into .test_durations so pytest-split's shards in
+# ci.yml can balance by *recorded runtime* instead of by test count.
+#
+# NOT SCHEDULED -- run it by hand when you want fresh numbers. Measured on
+# 2026-09-08 against a full 89,281-test recording:
+#
+#   * balancing by recorded runtime puts every shard at 18.1 min;
+#   * falling back to an even split by COUNT (what pytest-split does when the
+#     file is absent) gives 18.7 / 15.1 / 19.9 / 18.7 -- slowest shard 19.9 min.
+#
+# So the file buys ~1.8 min on the critical path, against a 40-minute shard cap
+# that already has 20 minutes of headroom. It costs an 11.7 MB JSON file whose
+# every value changes on each refresh, so each run rewrote all 89k lines -- a
+# weekly ~90 MB/yr of permanently un-deletable git history, plus a full
+# unsharded suite run and a PR nobody could merge automatically.
+#
+# Trimming the file is NOT a fix: pytest-split charges any test missing from it
+# `sum(kept)/len(kept)`, an average over what SURVIVED the trim. Dropping the
+# fast tests inflates that average (measured 23x), so the slow tests' real
+# signal drowns in fake weight and the split degrades to count-based anyway.
+#
+# Slow tests are still visible without any of this: setup.cfg's addopts carry
+# --durations=5, so every pytest run -- including each CI shard, with coverage
+# on and under real runner contention -- prints its slowest tests.
 #
 # Runs the FULL suite once (no --splits) with --store-durations. main is a
 # protected branch, so instead of committing directly it pushes a feature
 # branch and opens/updates a PR for review.
 
 on:
-  schedule:
-    - cron: "0 7 * * 1" # Mondays 07:00 UTC
   workflow_dispatch: {}
 
 permissions:

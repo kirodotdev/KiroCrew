@@ -26,6 +26,7 @@ from kiro_crew import members as members_mod
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
+from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
@@ -6065,10 +6066,17 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
 
     ``slot.model`` holds a canonical/wire value while ``session/set_model`` only
     accepts the backend's own ids — two namespaces. Mirrors the normalisation the
-    warm-pool post-claim switch does in ``SessionManager``: kiro wants the bare
-    dotted id via ``to_acp_id`` (which translates canonical keys and passes
-    kiro's own ids through unchanged), the claude backend wants the
-    ``global.anthropic.*`` id.
+    warm-pool post-claim switch does in ``SessionManager``: a backend on the
+    native ``acp`` namespace wants the bare dotted id via ``to_acp_id`` (which
+    translates canonical keys and passes kiro's own ids through unchanged), while
+    one on its own provider namespace wants that namespace's id (for
+    claude-agent-acp, ``global.anthropic.*``).
+
+    Which namespace is asked as a CAPABILITY, not read off the harness's name:
+    ``SessionCapabilities.model_id_namespace``. The same field also answers
+    whether "provider default" is expressible, because that is a property of the
+    namespace — the native one carries the real id ``auto`` and a provider
+    namespace has no id meaning "choose for me".
 
     Returns "" when the change cannot be expressed as a ``set_model`` on this
     backend, which tells the caller to fall back to a session reset.
@@ -6076,10 +6084,11 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
     # The dashboard sends "" for Auto, but the literal "auto" also passes the
     # guard (stale clients / direct API calls), so both mean "provider default".
     is_default = model_name in ("", "auto")
-    if provider.is_claude_backend:
-        # The claude backend has no id meaning "let the server choose", so
-        # returning to default needs a reset.
-        return "" if is_default else model_registry.to_provider_id(model_name, "claude_code")
+    namespace = capabilities_of(provider).model_id_namespace
+    if namespace != MODEL_NAMESPACE_ACP:
+        # No id on this namespace means "let the server choose", so returning to
+        # default needs a reset.
+        return "" if is_default else model_registry.to_provider_id(model_name, namespace)
     if is_default:
         # kiro DOES express Auto as a real model id — but only switch to it when
         # this session's backend actually advertised it.

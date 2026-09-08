@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 
 from kiro_crew import name_grant, platform_compat
 from kiro_crew.agent_discovery import cached_project_agent_names, list_agents
+from kiro_crew.agent_sdk.capabilities import capabilities_of
+from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.constants import SUBAGENT_COMPLETION_PREFIX, SUBAGENT_TIMEOUT_SECS
 from kiro_crew.context import (
@@ -140,8 +142,8 @@ from kiro_crew.subagent_persistence import (
 from kiro_crew.validation import _AGENT_NAME_RE
 
 # Standalone ClaudeCodeProvider removed (KiroACP-only). Name kept as None so the
-# legacy isinstance guards short-circuit; the claude-agent-acp seam lives in
-# providers.acp.is_claude_backend.
+# legacy isinstance guards short-circuit; which seam serves a session is answered
+# by ``SessionCapabilities.provider_seam``.
 ClaudeCodeProvider = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
@@ -2340,14 +2342,18 @@ class SubagentManager:
         latter is what ``_sessions.get_or_create`` actually returns for the
         ``claude_code`` provider, so detecting it here is what makes the
         session-file cleanup target ``~/.claude`` instead of ``~/.kiro``.
+
+        Asks ``SessionCapabilities.provider_seam`` through
+        :func:`~kiro_crew.agent_sdk.capabilities.capabilities_of`, which replaced a
+        lazy ``from kiro_crew.providers.acp import is_claude_backend``. The import
+        was lazy because ``providers.acp`` sits in a providers -> session cycle;
+        the SDK is in no cycle, so this one can live at module scope. The calling
+        convention is unchanged: a shape that is not a provider answers False,
+        which is what the old predicate's ``isinstance`` gate bought.
         """
         if ClaudeCodeProvider is not None and isinstance(provider, ClaudeCodeProvider):
             return True
-        # circular import: providers.acp participates in a providers -> session
-        # cycle (see session.py), so keep this off the module top.
-        from kiro_crew.providers.acp import is_claude_backend
-
-        return is_claude_backend(provider)
+        return capabilities_of(provider).provider_seam == PROVIDER_CLAUDE_CODE
 
     @staticmethod
     def _provider_label_of(provider: object) -> str:

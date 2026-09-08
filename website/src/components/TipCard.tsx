@@ -10,17 +10,10 @@ import MarkdownRenderer from './MarkdownRenderer'
 import { i18nT } from '../i18n/t'
 import { SettingsLink } from './SettingsLink'
 
-// Tip docs live in the repo at src/kiro_crew/docs/ (same base the Security and
-// Discord settings panels link to).
-const DOCS_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs'
-// Tips can be LLM-generated: only link a doc value shaped like a plain
-// markdown filename so an invented value can't produce a weird URL.
-const DOC_FILENAME_RE = /^[a-z0-9][a-z0-9._-]*\.md$/i
-
-export function tipDocHref(doc: string | undefined): string | null {
-  if (!doc || !DOC_FILENAME_RE.test(doc)) return null
-  return `${DOCS_BASE}/${doc}`
-}
+// The resolver lives in `utils/docsLink`: a pure function must not live behind a
+// component module, or importing it drags this file's router and markdown
+// dependencies along with it.
+import { tipDocHref } from '../utils/docsLink'
 
 // Optional one-click action button on a tip. A single 'route' kind for now:
 // navigate to an internal dashboard path (an exact settings tab/control via

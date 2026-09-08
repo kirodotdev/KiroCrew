@@ -1211,6 +1211,49 @@ def _doctor_trust_root() -> None:
 _STRICT_IDENTITY_SERVERS = ("kirocrew-core", "kirocrew-dashboard", "kirocrew-work")
 
 
+def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
+    """Report the MCP gateway daemon's code revision next to this one.
+
+    The daemon pools MCP backends across sessions and is a separate process
+    from the gateway. One that outlived a code change keeps handing out
+    backends built from the old checkout, and the symptom is remote from the
+    cause: a directive tool reports success while the gateway logs
+    ``not_derivable``. This line puts the two revisions side by side and names
+    the command that replaces the daemon. A mismatch IS an issue: nothing about
+    it is a valid configuration choice.
+    """
+    try:
+        from kiro_crew.code_fingerprint import code_fingerprint
+        from kiro_crew.mcp_gateway.daemon_control import describe_daemon
+
+        info = describe_daemon()
+    except Exception:
+        return
+    if info is None:
+        print("  mcp gateway daemon: ⏹ not running (pooling off, or no session has started one)")
+        return
+    mine = code_fingerprint()
+    owner = (
+        "no owner recorded"
+        if info.owner_pid <= 0
+        else f"owner pid {info.owner_pid} {'alive' if info.owner_alive else 'GONE'}"
+    )
+    if info.fingerprint == mine:
+        print(f"  mcp gateway daemon: ✅ pid {info.pid}, same code as this install ({owner})")
+        return
+    theirs = info.fingerprint or "unknown (pre-fingerprint build)"
+    print(
+        f"  mcp gateway daemon: ❌ pid {info.pid} runs code {theirs}; this install is {mine} ({owner})"
+    )
+    _print_wrapped(
+        "The daemon outlived a code change and its pooled MCP servers speak the "
+        "old revision's wire shapes (session directives, app calls). Run "
+        "`kirocrew restart`, which stops the daemon along with the gateway so the "
+        "replacement spawns its own."
+    )
+    issues.append("MCP gateway daemon runs a different code revision than this install")
+
+
 def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
     """Report whether strict-identity tools have a working identity channel.
 
@@ -2995,6 +3038,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_path_launcher()
     _doctor_trust_root()
     _doctor_strict_identity(cfg)
+    _doctor_mcp_gateway_daemon(issues)
 
     # ── Credentials (AWS / credential-vending MCP) ──
     # After identity, before the agent-facing sections: this is the answer to

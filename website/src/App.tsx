@@ -116,7 +116,7 @@ import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
 import DeveloperPage from './pages/DeveloperPage'
 import SchedulePage from './pages/SchedulePage'
-import { useUpdateSubscription } from './hooks/useUpdateSubscription'
+import { useUpdateSubscription, type UpdateState } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
@@ -150,6 +150,11 @@ import FeedbackPill from './components/FeedbackPill'
 import KiroAccountModal, { type KiroAccountUsage } from './components/KiroAccountModal'
 import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 
+import {
+  canShowStartupVideo,
+  markStartupVideoHandled,
+  startupVideoHandledThisLaunch,
+} from './components/startupVideoGate'
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
 import { appNotificationBadges, isAppNavId, mergeAppBadges } from './appNotificationBadges'
@@ -169,6 +174,11 @@ import { countUpdatables, registryQueryFn, type UpdatableInstalledRow } from './
 // mount gate at the render site means the chunk is fetched exactly when it
 // can render.
 const UpdateFoundModal = lazy(() => import('./components/UpdateFoundModal'))
+// Lazy for the same reason as the popup above: the startup feature clip pulls in
+// a video element and the whole share-card graph, and most launches never show
+// it. The policy that decides whether this chunk is ever fetched lives in
+// `startupVideoGate`, which is eagerly imported and tiny.
+const StartupVideoModal = lazy(() => import('./components/StartupVideoModal'))
 // The dialog is lazy; the renderer registry it consults is NOT (imported at the
 // top of this file). The nav rail decides whether to show the "Connect your
 // phone" row before this chunk is ever fetched, so a predicate hiding inside it
@@ -1308,6 +1318,16 @@ export default function App() {
   // returned none, policy denied all, seam degraded) hides the row entirely —
   // the endpoint is the authority, the frontend never guesses.
   const [mobileConnectOpen, setMobileConnectOpen] = useState(false)
+  // The dialog is a transient overlay opened from a rail row that does not
+  // navigate (path="#"), so a navigation — clicking another nav tab or
+  // switching chat sessions — must dismiss it, the same as Escape or a
+  // backdrop click. Its open flag lives here at the owner rather than in the
+  // modal, so nothing inside the modal sees navigation. Key this off
+  // location.key, not location.pathname: switching between untitled /chat
+  // sessions changes only the key/query, so a pathname dep would leave the
+  // dialog stranded over the newly selected session. location.key changes on
+  // every history entry, so this closes it on ANY navigation at once.
+  useEffect(() => { setMobileConnectOpen(false) }, [location.key])
   const mobileConnectQuery = useQuery({
     queryKey: ['mobile-connect-methods'],
     queryFn: api.mobileConnectMethods,
@@ -2168,6 +2188,10 @@ export default function App() {
   const [kiroUsageOpen, setKiroUsageOpen] = useState(false)
   const [changes, setChanges] = useState('')
   const [showChangelog, setShowChangelog] = useState(false)
+  // Has the changelog effect below reached a verdict for this launch? It decides
+  // asynchronously, so "no changelog is showing" is not the same claim as "no
+  // changelog is going to show" — the startup-video gate needs the second one.
+  const [changelogDecided, setChangelogDecided] = useState(false)
   const [autoUpdate, setAutoUpdate] = useState(true)
   const [fullChangelog, setFullChangelog] = useState('')
   const [showFull, setShowFull] = useState(false)
@@ -2705,9 +2729,9 @@ export default function App() {
   useEffect(() => {
     if (!version || version === '—') return
     const lastSeen = localStorage.getItem('mc-last-version')
-    if (lastSeen === version) return
+    if (lastSeen === version) { setChangelogDecided(true); return }
     // First visit — no baseline to diff, just record current version
-    if (!lastSeen) { safeSetItem('mc-last-version', version); return }
+    if (!lastSeen) { safeSetItem('mc-last-version', version); setChangelogDecided(true); return }
     // Version changed — show the sections in `lastSeen < v <= version`, and
     // nothing else. Both bounds are load-bearing, and the missing UPPER one is
     // the reported bug: `main` is bumped a minor ahead of the released line and a
@@ -2738,8 +2762,107 @@ export default function App() {
       // is the normal state on a dev build. Say nothing: the modal exists to
       // deliver notes, and one carrying someone else's is worse than none.
       if (text) { setChanges(text); setShowChangelog(true) }
-    }).catch(() => {}).finally(() => safeSetItem('mc-last-version', version))
+    }).then(() => {
+      // Stamp the version ONLY on a response we actually read. The old `finally`
+      // stamped it either way, so a single failed fetch retired that version's
+      // release notes for good -- there is no second chance once the baseline says
+      // the user has seen them.
+      safeSetItem('mc-last-version', version)
+      setChangelogDecided(true)
+    }).catch(() => {
+      // A failure is not an answer. The notes may still be waiting, so leave the
+      // baseline alone for the next launch to retry, and do NOT mark the changelog
+      // decided: the startup video yields this launch rather than opening on a
+      // guess about what the user was owed.
+      setChangelogDecided(false)
+    })
   }, [version])  
+
+  // ---------------------------------------------------------------- Startup
+  // feature-intro video. Sequencing policy lives in `startupVideoGate`; this is
+  // the wiring that feeds it and the two pieces of state it drives.
+
+  // Whether UpdateModal is claiming the screen. It self-gates on the shared
+  // ['update-state'] cache rather than on a prop, so the only honest way to ask
+  // is to read the same cache with the same condition it uses.
+  const { data: desktopUpdateState } = useQuery<UpdateState | null>({
+    queryKey: ['update-state'],
+    queryFn: () => null,
+    enabled: false, // populated by useUpdateSubscription, below
+    staleTime: Infinity,
+  })
+  const updateStaged = !!desktopUpdateState
+    && desktopUpdateState.state === 'downloaded'
+    && !desktopUpdateState.replayed
+
+  // Governance for the share entry: the SAME query key and the same `=== true`
+  // test the chat surface uses, so one policy answer drives both and a
+  // mid-session swap invalidates both at once. No new scope, no new flag.
+  const { data: startupShareCfg } = useQuery<{ social_share_enabled?: boolean }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: () => api.dashboardConfig(),
+    staleTime: 30_000,
+  })
+  const socialShareOn = startupShareCfg?.social_share_enabled === true
+
+  // A verdict is a durable per-user write, so a session that keeps nothing does
+  // not get asked. Read off the ACTIVE slot, matching where `memory_mode` is
+  // authoritative everywhere else.
+  const activeSlotMemoryMode = useAppSelector(
+    s => s.dashboard.slots.find(x => x.key === s.chat.activeSlot)?.memory_mode,
+  )
+  // The slot list is filled by a fetch that lands AFTER mount. Until it does, the
+  // active slot resolves to nothing and `activeSlotMemoryMode` is undefined --
+  // which reads as "not incognito" and is the wrong answer to act on. This flag is
+  // the store's own record that the list is authoritative.
+  const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
+
+  // Is any part of first-run still owed? Read from the AUTHORITATIVE flags rather
+  // than from `showOnboarding` / `showAgentImport` / `showPrivacy`, which an effect
+  // sets. In the commit that flips `themeBootReady` that effect has only SCHEDULED
+  // its update, so those three still read false while first-run is about to claim
+  // the launch -- and the video would open beside Agent Import on a brand-new
+  // install's first screen. These three are what that effect derives from, so they
+  // are already correct in the same commit.
+  const onboardingOwed = !importOnboarded || !privacyAcked || !onboarded
+
+  // Latched, not sampled: an interruption that has already been dismissed still
+  // spends the launch. Sampling would let the video open the instant the user
+  // closed the changelog, which is the back-to-back pair the policy forbids.
+  const [startupInterruptionSeen, setStartupInterruptionSeen] = useState(false)
+  useEffect(() => {
+    if (showChangelog || updateAvailable || updateStaged
+      || showOnboarding || showAgentImport || showPrivacy) {
+      setStartupInterruptionSeen(true)
+    }
+  }, [showChangelog, updateAvailable, updateStaged, showOnboarding, showAgentImport, showPrivacy])
+
+  const [startupVideoOpen, setStartupVideoOpen] = useState(false)
+  const [startupVideoDone, setStartupVideoDone] = useState(false)
+  // The gate is consulted ONLY while the modal is closed, and the decision is
+  // latched into state. Re-evaluating it against a live condition would let a
+  // late-arriving update notice unmount a clip the user is in the middle of
+  // watching — worse than the collision the policy is protecting against.
+  useEffect(() => {
+    if (startupVideoOpen || startupVideoDone) return
+    if (!canShowStartupVideo({
+      // Either an interruption already appeared this launch, or first-run is still
+      // owed and is about to. Both spend the launch.
+      interruptionShown: startupInterruptionSeen || onboardingOwed,
+      // Three separate authorities, and the video waits for ALL of them: onboarding's
+      // three modals are decided by the `themeBootReady` effect above, the changelog
+      // decides across its own fetch, and the slot list decides whether this session
+      // keeps anything. An absent answer from any of them is not a negative one.
+      settled: themeBootReady && changelogDecided && slotsLoaded,
+      memoryMode: activeSlotMemoryMode,
+      handledThisLaunch: startupVideoHandledThisLaunch(),
+    })) return
+    markStartupVideoHandled()
+    setStartupVideoOpen(true)
+  }, [
+    startupVideoOpen, startupVideoDone, startupInterruptionSeen, onboardingOwed,
+    themeBootReady, changelogDecided, slotsLoaded, activeSlotMemoryMode,
+  ])
 
   // Browser tab title badge — sums every built-in surface's badge (chat,
   // orchestrated, notifications, secretary, ...) plus the orthogonal
@@ -3703,6 +3826,14 @@ export default function App() {
       {updateAvailable && (
         <Suspense fallback={null}>
           <UpdateFoundModal />
+        </Suspense>
+      )}
+      {startupVideoOpen && !startupVideoDone && (
+        <Suspense fallback={null}>
+          <StartupVideoModal
+            shareEnabled={socialShareOn}
+            onClose={() => setStartupVideoDone(true)}
+          />
         </Suspense>
       )}
       {mobileConnectOpen && (

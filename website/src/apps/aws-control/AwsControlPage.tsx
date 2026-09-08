@@ -490,6 +490,7 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
   useEffect(() => {
     onDraftChange(hasDraft)
   }, [hasDraft, onDraftChange])
+  const [query, setQuery] = useState('')
 
   const availableQ = useAvailableProfilesQuery()
 
@@ -505,7 +506,32 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
   })
 
   const data = availableQ.data
-  const unregistered = (data?.profiles ?? []).filter((p) => !p.registered)
+  const unregistered = useMemo(
+    () => (data?.profiles ?? []).filter((p) => !p.registered),
+    [data],
+  )
+  // Client-side filter over the profile name, which is the only thing there is
+  // to choose by: a profile's account is unknown until it is probed, and the
+  // list can legitimately run to the discovery cap, so an unfiltered column of
+  // checkboxes is unreadable on a machine whose profiles come from a
+  // provisioning tool and share a long prefix.
+  const trimmed = query.trim()
+  const needle = trimmed.toLowerCase()
+  // A TICKED profile stays listed even when it does not match. Register acts on
+  // the tick set, not on what is on screen, so filtering a ticked row out of
+  // sight is how an operator registers a profile they never saw -- the same
+  // trust error the name-keyed `checked` set above exists to prevent.
+  const visible = useMemo(() => {
+    if (!needle) return unregistered
+    return unregistered.filter(
+      (p) => p.name.toLowerCase().includes(needle) || checked.has(p.name),
+    )
+  }, [unregistered, needle, checked])
+  // True only when the filter is actually holding a ticked row on screen that it
+  // would otherwise have hidden -- the one case where the list disagrees with
+  // what was typed, so it is the only case that gets a sentence.
+  const keepsSelected =
+    needle.length > 0 && visible.some((p) => !p.name.toLowerCase().includes(needle))
   const capReached = data ? data.registeredCount >= data.max : false
   // Disabled unless at least one box is ticked AND there is still headroom under
   // the registry cap — the backend enforces the cap too, but the button should
@@ -583,22 +609,48 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
               <p className="mb-2 text-[13px] text-muted">
                 {i18nT('apps.awsControl.page.add_accounts_intro')}
               </p>
-              <ul className="flex flex-col gap-1" data-testid="add-accounts-list">
-                {unregistered.map((p) => (
-                  <li key={p.name}>
-                    <label className="flex items-center gap-2 text-[13px] text-text-strong cursor-pointer">
-                      <Checkbox
-                        checked={checked.has(p.name)}
-                        onChange={() => toggle(p.name)}
-                        aria-label={p.name}
-                        data-testid="add-accounts-checkbox"
-                        data-name={p.name}
-                      />
-                      <span className="font-mono">{p.name}</span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
+              <SearchInput
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={i18nT('apps.awsControl.page.add_accounts_search_placeholder')}
+                aria-label={i18nT('apps.awsControl.page.add_accounts_search_placeholder')}
+                className="mb-2 w-full sm:w-64"
+                data-testid="add-accounts-search"
+              />
+              {/* Above the list, not below it: the list can run to the discovery
+                  cap, so a note under it is a note nobody reads -- and its whole
+                  job is to explain a row the reader is looking at right now. */}
+              {keepsSelected && (
+                <p className="mb-2 text-[12px] text-muted" data-testid="add-accounts-kept-selected">
+                  {i18nT('apps.awsControl.page.add_accounts_search_keeps_selected')}
+                </p>
+              )}
+              {visible.length === 0 ? (
+                // The profiles are there, the filter hid them. Lighter than the
+                // none-left sentence above, which asserts the opposite.
+                <FilteredEmpty
+                  query={trimmed}
+                  onClear={() => setQuery('')}
+                  testId="add-accounts-search-empty"
+                />
+              ) : (
+                <ul className="flex flex-col gap-1" data-testid="add-accounts-list">
+                  {visible.map((p) => (
+                    <li key={p.name}>
+                      <label className="flex items-center gap-2 text-[13px] text-text-strong cursor-pointer">
+                        <Checkbox
+                          checked={checked.has(p.name)}
+                          onChange={() => toggle(p.name)}
+                          aria-label={p.name}
+                          data-testid="add-accounts-checkbox"
+                          data-name={p.name}
+                        />
+                        <span className="font-mono">{p.name}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
 
               {capReached && (
                 <p className="mt-2 text-[12px] text-warn" data-testid="add-accounts-cap">

@@ -399,6 +399,15 @@ _CREW_SECRET_LEAVES: list[str] = [
     # files. The dashboard and workflow service open it directly and remain able
     # to create, list, update, and execute definitions.
     "workflow_library",
+    # The crew appearance library: packs the user imported and a crew wears.
+    # Only the gateway's owner-gated ``/api/appearances`` routes open it, and
+    # they open it directly, so fencing it costs nothing in-process. Left off
+    # this list, an agent's file tools could rewrite a manifest or erase the art
+    # on any host: the sandbox bind-mask covers the Linux shell plane only, and
+    # this list is what stops ``fs_write``/``fs_read`` on Windows and macOS.
+    # Recovery is a re-import, but a prompt-injected agent corrupting user data
+    # is the mainline threat these leaves exist for.
+    "appearance-library",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

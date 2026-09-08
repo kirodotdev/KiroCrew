@@ -570,12 +570,33 @@ class TestTheRealTree:
         Both tests below independently re-derive `checker.main`'s per-file
         `scan_path` results over the same `src/kiro_crew` tree; walking and
         re-parsing every file twice per test is what made this class slow.
+
+        Narrowed through ``source_corpus.candidate_sources`` rather than a bare
+        `rglob` + re-read + re-parse of every module: `_lockdown_target` can only
+        report a violation from a call to one of the lockdown primitives
+        (`restrict_to_owner` / `chmod_safe` / `chmod` / `fchmod_safe` / `fchmod`),
+        so a file whose text contains none of those names cannot possibly match
+        and is never a false negative to skip. `candidate_sources` shares the
+        one-time corpus read (and its NFKC-normalised copy) with every other
+        ratchet in the suite instead of re-reading `src/` from disk here.
         """
-        src = REPO_ROOT / "src" / "kiro_crew"
+        from source_corpus import candidate_sources  # noqa: PLC0415
+
         found: list[tuple[str, int, str, str]] = []
-        for py in sorted(src.rglob("*.py")):
-            found.extend(checker.scan_path(py, REPO_ROOT))
-        return tuple(found)
+        for path, text in candidate_sources(
+            require_any=("restrict_to_owner", "chmod_safe", "chmod", "fchmod_safe", "fchmod")
+        ):
+            # Same relative-to convention as `scan_path` (relative to REPO_ROOT,
+            # e.g. `src/kiro_crew/...`), so a KNOWN_UNCONVERTED key built from
+            # this scan matches one built from `checker.main`.
+            rel = (
+                path.relative_to(REPO_ROOT).as_posix()
+                if path.is_relative_to(REPO_ROOT)
+                else path.as_posix()
+            )
+            for line, fn, expr in checker.scan_source(text):
+                found.append((rel, line, fn, expr))
+        return tuple(sorted(found))
 
     def test_src_has_no_unclassified_violation(self) -> None:
         """Same pass/fail as `checker.main(["check", <src dir>])`, off the cached scan."""

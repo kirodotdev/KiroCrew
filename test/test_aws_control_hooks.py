@@ -70,11 +70,15 @@ class TestRunOnceEarlyReturns:
     """Each guard makes the loop fail CLOSED: a missing precondition is a log
     line and a return, never an unconfirmed AWS call. One test per guard."""
 
-    def test_no_registered_profile_skips(self):
-        # With no default profile resolved there is no account to back up, so
-        # the loop must return before probing identity.
+    def test_no_healthy_registered_key_skips(self):
+        # With no working key resolved there is nothing the loop may run under,
+        # so it must return before probing identity. The resolution is the one
+        # the grant was recorded against, so a key it rejects is a key the
+        # consent gate would refuse anyway.
         with (
-            mock.patch.object(hooks.deploy_profiles, "resolve_profile", return_value=None),
+            mock.patch.object(
+                hooks.accounts_mod, "resolve_default_account_profile", AsyncMock(return_value=None)
+            ),
             mock.patch.object(hooks.aws_consent, "probe_identity") as probe,
         ):
             _run(hooks._run_once())
@@ -86,7 +90,9 @@ class TestRunOnceEarlyReturns:
         # returns before the due-check.
         with (
             mock.patch.object(
-                hooks.deploy_profiles, "resolve_profile", return_value=("p", "us-west-2")
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
             ),
             mock.patch.object(
                 hooks.aws_consent,
@@ -103,7 +109,9 @@ class TestRunOnceEarlyReturns:
         # both, so this distinct branch must also return before due-check.
         with (
             mock.patch.object(
-                hooks.deploy_profiles, "resolve_profile", return_value=("p", "us-west-2")
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
             ),
             mock.patch.object(
                 hooks.aws_consent,
@@ -121,7 +129,9 @@ class TestRunOnceEarlyReturns:
         # never even asked to spend money.
         with (
             mock.patch.object(
-                hooks.deploy_profiles, "resolve_profile", return_value=("p", "us-west-2")
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
             ),
             mock.patch.object(
                 hooks.aws_consent,
@@ -140,7 +150,9 @@ class TestRunOnceEarlyReturns:
         # revoked grant produces no S3 read and no upload.
         with (
             mock.patch.object(
-                hooks.deploy_profiles, "resolve_profile", return_value=("p", "us-west-2")
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
             ),
             mock.patch.object(
                 hooks.aws_consent,
@@ -160,7 +172,9 @@ class TestRunOnceEarlyReturns:
         # snapshot backup (and before the "invoked" audit).
         with (
             mock.patch.object(
-                hooks.deploy_profiles, "resolve_profile", return_value=("p", "us-west-2")
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
             ),
             mock.patch.object(
                 hooks.aws_consent,
@@ -185,7 +199,9 @@ class TestRunOnceCancellation:
     def test_cancelled_backup_is_audited_and_reraised(self):
         with (
             mock.patch.object(
-                hooks.deploy_profiles, "resolve_profile", return_value=("p", "us-west-2")
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
             ),
             mock.patch.object(
                 hooks.aws_consent,

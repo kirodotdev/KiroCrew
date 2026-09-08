@@ -1,7 +1,7 @@
 """The ``agent_backend`` governance scope — additive over a floor, applied at boot.
 
 Two questions decide whether a harness can be selected, and these tests pin the seam
-between them: ``acp_backends.selectable_backends`` answers "can this BUILD serve it"
+between them: ``agent_sdk.backends.selectable_backends`` answers "can this BUILD serve it"
 (a capability fact, not governable) and this scope answers "may THIS DEPLOYMENT
 select it".
 
@@ -22,8 +22,8 @@ import dataclasses
 
 import pytest
 
-from kiro_crew import acp_backends
 from kiro_crew import agent_backend_governance as abg
+from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
 from kiro_crew.platform.bootstrap import build_default_context
@@ -39,7 +39,10 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(gp, "_PROFILES_DIR", d)
     gp.reset_store()
     # Both registry sets are process-global module state; restore them so one test's
-    # recompute cannot leak into the next.
+    # recompute cannot leak into the next. Reached through ``agent_sdk.backends``,
+    # the module that DEFINES the pair: the ``kiro_crew.acp_backends`` shim
+    # re-exports the public names only, because a second binding to a mutable set
+    # is how two views of one registry start disagreeing.
     baseline = set(acp_backends._baseline)
     selectable = set(acp_backends._selectable)
     yield

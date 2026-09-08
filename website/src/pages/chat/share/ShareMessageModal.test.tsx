@@ -24,8 +24,49 @@ describe('ShareMessageModal', () => {
         messageText={over.messageText ?? 'Triaged 47 issues overnight and opened two PRs.'}
         prevUserText={over.prevUserText}
         shareEnabled={over.shareEnabled ?? true}
+        copy={over.copy}
       />,
     )
+
+  it('uses the chat wording when no copy override is given', () => {
+    // The load-bearing half for every existing call site: the defaults ARE the chat
+    // strings, so omitting `copy` must change nothing about this dialog.
+    renderModal({ prevUserText: 'How many issues did you triage?' })
+    expect(screen.getByText('Turn this reply into a share card you can post anywhere.'))
+      .toBeInTheDocument()
+    expect(screen.getByText('Include my question')).toBeInTheDocument()
+  })
+
+  it('lets a non-chat host replace the two strings that name the shared thing', () => {
+    // A surface sharing something that is not a reply needs its own wording; the chat
+    // defaults assert a reply and a question it does not have.
+    renderModal({
+      prevUserText: 'Feature videos',
+      copy: {
+        description: 'Turn this feature video into a share card you can post anywhere.',
+        includeQuestion: 'Include the video title',
+      },
+    })
+    expect(screen.getByText('Turn this feature video into a share card you can post anywhere.'))
+      .toBeInTheDocument()
+    expect(screen.getByText('Include the video title')).toBeInTheDocument()
+    // The defaults must be gone, not merely joined.
+    expect(screen.queryByText('Turn this reply into a share card you can post anywhere.'))
+      .not.toBeInTheDocument()
+    expect(screen.queryByText('Include my question')).not.toBeInTheDocument()
+  })
+
+  it('leaves the sharing mechanics copy alone when overridden', () => {
+    // Only the two subject-naming strings are parameterised. The export controls and
+    // the policy/limit copy describe the mechanics and are identical on every surface.
+    renderModal({
+      prevUserText: 'Feature videos',
+      copy: { description: 'Custom subtitle', includeQuestion: 'Custom checkbox' },
+    })
+    expect(screen.getByText('Share to social media')).toBeInTheDocument()
+    expect(screen.getByTestId('share-download')).toBeInTheDocument()
+    expect(screen.getByTestId('share-x')).toBeInTheDocument()
+  })
 
   it('renders the card with the message excerpt and a prefilled caption', () => {
     renderModal()
@@ -34,6 +75,25 @@ describe('ShareMessageModal', () => {
     expect(caption.value).toContain(SHARE_REPO_URL)
     // The template interpolates {{productName}} rather than hardcoding it.
     expect(caption.value).toMatch(/^Kiro Crew /)
+  })
+
+  it('seeds the post text from a host caption and hands THAT to the composer', async () => {
+    // `messageText` only reaches the card image. The composers and the clipboard
+    // receive `caption`, so a host whose subject is not a chat reply has to be
+    // able to replace the default sentence, or the post carries the wrong words
+    // while the image carries the right ones.
+    const tab = { opener: {} as unknown, location: { href: '' } }
+    vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
+    vi.stubGlobal('ClipboardItem', class { constructor(_items: unknown) {} })
+    Object.defineProperty(navigator, 'clipboard', { value: { write: vi.fn().mockResolvedValue(undefined) }, configurable: true })
+    renderModal({ copy: { caption: 'Feature videos: a clip per feature https://docs.example/x' } })
+    const caption = screen.getByRole('textbox', { name: 'Post text' }) as HTMLTextAreaElement
+    expect(caption.value).toBe('Feature videos: a clip per feature https://docs.example/x')
+    expect(caption.value).not.toMatch(/just did this for me/)
+    fireEvent.click(screen.getByTestId('share-x'))
+    await waitFor(() => expect(tab.location.href).toBe(
+      `https://x.com/intent/post?text=${encodeURIComponent('Feature videos: a clip per feature https://docs.example/x')}`,
+    ))
   })
 
   it('pairs the question by default and drops it when unchecked', () => {

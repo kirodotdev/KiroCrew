@@ -343,6 +343,27 @@ class TestProjectsAdd:
         # Was also appended to _CFG
         assert len(server._CFG["projects"]) == 1
 
+    def test_register_valid_folder_persists_under_the_pinned_data_dir(
+        self, isolated_queue, tmp_path, monkeypatch
+    ):
+        """The registry write lands under the `DATA_DIR` this test pinned, not
+        under whatever real home was captured when the module was imported.
+        A `CONFIG_FILE` frozen from `DATA_DIR` at import ignores every later
+        repoint of `DATA_DIR`, so registering a project rewrites the operator's
+        real ~/.kiro/crew/apps/design-tweak/data/config.json -- this pins the
+        derive-at-access seam that keeps the write under the isolated dir."""
+        proj_dir = tmp_path / "webapp"
+        proj_dir.mkdir()
+        monkeypatch.setattr(server, '_detect_dev_servers', lambda root: [])
+        h, rec = _post("/projects", {"path": str(proj_dir)})
+        h._h_projects_add()
+        assert rec.code == 200
+        registry = server.request_state.config_file(server)
+        assert registry == server.DATA_DIR / "config.json"
+        assert registry.is_relative_to(isolated_queue.parent)
+        saved = json.loads(registry.read_text("utf-8"))
+        assert saved["projects"][0]["path"] == str(proj_dir.resolve())
+
     def test_refuses_sensitive_path_ssh(self, isolated_queue, monkeypatch):
         """_valid_root refuses paths containing .ssh; without this, the preview
         would serve private keys over HTTP."""

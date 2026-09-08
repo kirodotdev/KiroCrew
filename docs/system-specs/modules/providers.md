@@ -7,7 +7,7 @@ concrete subclass, the adapter a shared-runtime session is swapped onto once
 `AcpRuntime` is up.
 `agent.provider` is fixed to `"acp"` (enum `["acp"]`) — the provider is not the
 harness selector. **Which harness that one provider drives is a separate
-decision, taken from `acp_backends.py`**: `agent.acp_backend` names a backend id
+decision, taken from `agent_sdk/backends.py`**: `agent.acp_backend` names a backend id
 and `BASELINE_SELECTABLE_BACKENDS` decides which ids an operator may choose.
 Several are selectable on a plain public build, so "one provider" never meant
 "one backend".
@@ -29,12 +29,12 @@ Several are selectable on a plain public build, so "one provider" never meant
             │ AcpProvider │
             │ acp.py      │
             └──────┬──────┘
-                   │  backend id from acp_backends.py
+                   │  backend id from agent_sdk/backends.py
         ┌──────────┼──────────┬──────────┐
      kiro-cli   claude-acp   KAS      codex-acp
 ```
 
-`acp_backends.py` is the selection authority: it defines the ids, the membership
+`agent_sdk/backends.py` is the selection authority: it defines the ids, the membership
 floor (`ACP_BACKENDS_KNOWN`), the selectable baseline, and every capability set a
 backend opts into. Do not re-describe that seam here —
 [harness-parity.md](harness-parity.md) holds the invariants that keep the Kiro
@@ -153,7 +153,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 ```
 
 - `agent.provider` is fixed to `"acp"` (enum `["acp"]`); the provider is not a choice.
-- `agent.acp_backend` is the harness choice, resolved through `acp_backends.resolve_selected_backend`.
+- `agent.acp_backend` is the harness choice, resolved through `agent_sdk.backends.resolve_selected_backend` (the top-level `acp_backends` module is a re-export shim kept for existing call sites).
 - `create_provider_factory()` returns a `Callable` that builds an `AcpProvider` for the resolved backend.
 
 An agent spec's model is consumed by kiro-cli before Kiro Crew reaches

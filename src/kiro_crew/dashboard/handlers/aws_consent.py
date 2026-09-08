@@ -106,16 +106,50 @@ async def _effective_target(service: str) -> tuple[str, str]:
         return _vc.aws_profile, _vc.region
 
     if service in (aws_consent.SERVICE_S3, aws_consent.SERVICE_COST_EXPLORER):
-        # AWS Control's paid services run against the deploy profile registry's
-        # default entry — the same resolution the engine will use for the call
-        # itself, so the confirmation names the account that would really bill.
-        # No registered profile resolves to the empty profile (the CLI default
-        # chain), which the card labels explicitly rather than hiding.
+        # AWS Control's paid services run against a HEALTHY key of the account
+        # the deploy profile registry's default entry names, chosen by
+        # ``accounts._pick_profile`` — the same resolution the engine uses for
+        # the call itself, so the confirmation names the key that would really
+        # bill. That resolver also owns the degraded answer (name the registry
+        # default so the card can say why nothing is authorizable) and the
+        # redaction both branches need, which is why this handler reads the
+        # registry through it rather than beside it.
+        #
+        # Reading the registry default DIRECTLY is not equivalent, though it
+        # looks it: the operation filters to healthy keys and prefers the
+        # default only AMONG those. A default key that does not resolve would
+        # bind the card to a key with no account while every operation runs fine
+        # under the account's healthy sibling — and since ``Confirm and enable``
+        # requires a resolved account, that state cannot be confirmed at all: a
+        # working account with no way to grant it consent. Going through the one
+        # policy function is what keeps the card and the call from drifting.
+        #
+        # Cost: that resolution reads the app's account snapshot, which probes
+        # every registered key when cold. It is amortized rather than added --
+        # the snapshot is five-minute cached and the only surface rendering these
+        # two cards loads it first anyway -- and paying it is the point, since
+        # health is exactly what a registry-only read cannot see.
+        from kiro_crew.apps.builtins.aws_control.backend import accounts as aws_accounts
         from kiro_crew.deploy import profiles as deploy_profiles
 
-        resolved = await asyncio.to_thread(deploy_profiles.resolve_profile, "")
+        try:
+            resolved = await aws_accounts.resolve_consent_target()
+        except Exception:
+            # That resolution probes the whole registry through the AWS CLI. A
+            # failure there must not take the consent surface down with it, so
+            # it degrades to the empty profile below.
+            logger.warning(
+                "could not resolve a key for %s; naming the provider default chain",
+                service,
+                exc_info=True,
+            )
+            resolved = None
         if resolved is not None:
             return resolved
+        # No registered profile resolves to the empty profile (the CLI default
+        # chain), which the card labels explicitly rather than hiding. Both
+        # values here are constants, so nothing agent-authored reaches the
+        # response on this branch.
         return "", deploy_profiles.DEFAULT_REGION
 
     from kiro_crew.config.loader import KiroCrewConfig

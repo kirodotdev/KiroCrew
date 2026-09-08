@@ -29,12 +29,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.appearance_packs import DEFAULT_PACK, safe_pack_id
 from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
 
 logger = logging.getLogger(__name__)
 
-#: The built-in ghost's id. Referenced by the renderer, so it is a contract.
-DEFAULT_PACK = "kiro-ghost"
+#: The built-in ghost's id lives in ``kiro_crew.appearance_packs`` (re-exported
+#: above) so the dashboard can name it without importing this app package.
 
 #: Custom packs live one directory each, named by id, under this subdirectory.
 PACKS_DIRNAME = "appearances"
@@ -77,21 +78,15 @@ def _safe_id(raw: Any) -> str | None:
     """Validate a pack id as a single safe path segment.
 
     A pack id becomes a directory name, so this is the boundary that stops
-    ``../`` or an absolute path from escaping the packs directory. Rejecting is
-    correct here rather than sanitising: a caller sending a traversal is not making
-    a typo, and silently rewriting it would hide that.
+    ``../`` or an absolute path from escaping the packs directory.
+
+    The rule itself lives in :mod:`kiro_crew.appearance_packs` because the
+    config loader needs it too: ``agents.*.avatar`` may name a pack, and a value
+    it stores must be one this store can look up. Keeping one copy is what makes
+    that true — importing this module from ``config/sections.py`` would invert
+    the dependency and pull the app's tree into every config load.
     """
-    if not isinstance(raw, str):
-        return None
-    ident = raw.strip()
-    if not ident or len(ident) > 64:
-        return None
-    if ident in (".", ".."):
-        return None
-    # Letters, digits, dash and underscore only — no separators, no dots.
-    if not all(c.isalnum() or c in "-_" for c in ident):
-        return None
-    return ident
+    return safe_pack_id(raw)
 
 
 class AppearanceStore:

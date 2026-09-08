@@ -50,12 +50,23 @@ export const isNotFoundError = (e: unknown): boolean =>
   typeof e === 'object' && e !== null && (e as { status?: unknown }).status === 404
 
 /**
+ * A body whose first markup is a document type: both doctype spellings, plus a
+ * bare `<html>` from a proxy that emits none. Deliberately does NOT match every
+ * `<`-leading body, so an XML error envelope still reaches the caller whole.
+ */
+const HTML_DOCUMENT_START = /^<(?:!doctype\s|html[\s>])/i
+
+/**
  * Map raw edge/proxy error bodies to a human-readable message. A dashboard
  * served through Builder Tunnels sits behind API Gateway, whose throttle
  * response is the opaque `{"message":"Rate exceeded","throttlingReasons":null}`
  * — rendering that verbatim in an error card is a terrible UX. The mapped
  * message only ever shows after the QueryClient's 429 retry ladder
  * (api/queryClient.ts) is exhausted.
+ *
+ * Returns `''` for a body carrying no human message, which is the signal every
+ * caller already turns into `HTTP <status>` — so that wording stays decided in
+ * one place. The raw body remains on `ApiError.body` for diagnostics.
  */
 export const friendlyErrText = (status: number, body: string): string => {
   if (status === 429) {
@@ -72,6 +83,9 @@ export const friendlyErrText = (status: number, body: string): string => {
       if (typeof msg === 'string' && msg.trim()) return msg
     } catch { /* not JSON — fall through to raw body */ }
   }
+  // An error PAGE has no message field to unwrap, so returning it verbatim put
+  // `<!DOCTYPE html><html><head><meta charset="utf…` in the dashboard's topbar.
+  if (HTML_DOCUMENT_START.test(trimmed)) return ''
   return body
 }
 

@@ -245,13 +245,19 @@ def test_cc_models_serves_harvested_catalog_with_verbatim_wire_ids(tmp_path: Pat
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
     from kiro_crew.dashboard.handlers.agents import _cc_models
     from kiro_crew.providers.acp import AcpProvider
 
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
     client._capture_available_models(SESSION_NEW_RESPONSE)
     provider = MagicMock(spec=AcpProvider)
-    provider.is_claude_backend = True
+    # ``_advertised_cc_models`` selects on
+    # ``SessionCapabilities.resolves_model_from_advertised_list``, and
+    # ``capabilities_of`` requires a real record: a ``MagicMock(spec=...)``'s
+    # attributes are all truthy, so an attribute-shaped flag would let this double
+    # claim every capability at once.
+    provider.capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
     provider.available_models.return_value = client.available_models()
     state = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: [provider]))
     request = MagicMock()

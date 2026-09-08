@@ -2179,6 +2179,41 @@ export type WakaTimeStats = {
   }
 }
 
+/** One feature-intro clip, as GET /api/feature-videos/next reports it.
+ *  `src`/`poster` are SAME-ORIGIN relative paths under
+ *  `/app-assets/feature-videos/` — the backend names the asset it shipped, so
+ *  the modal never composes a URL and cannot be pointed at a third-party host
+ *  by a config value. */
+export interface FeatureVideo {
+  id: string
+  /** Which dashboard feature the clip introduces — the per-feature key the
+   *  backend dedupes on, so a verdict survives the clip being re-cut under a
+   *  new id. */
+  feature: string
+  title: string
+  description: string
+  src: string
+  poster: string
+  duration_s: number
+  /** Docs FILENAME, as the backend's catalog stores it (`"feature-tips.md"`) --
+   *  not a URL, and unlike `tipsNext` no resolved `doc_link` ships beside it.
+   *  Resolve it with `tipDocHref` from `utils/docsLink`, which validates the
+   *  filename shape and returns the public docs URL. */
+  doc?: string
+}
+
+/** GET /api/feature-videos/next.
+ *
+ *  `video: null` is the steady state, not an error — it is what the endpoint
+ *  returns once every clip has been seen or dismissed, which for most launches
+ *  is always. `enabled` is the operator kill switch, reported separately so a
+ *  disabled install still answers 200 rather than making the client read a
+ *  failure as a policy. */
+export interface FeatureVideoNext {
+  video: FeatureVideo | null
+  enabled: boolean
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
@@ -3436,6 +3471,24 @@ export const api = {
   themes: () => fetch('/api/themes').then(j),
   // Dashboard config
   dashboardConfig: () => fetch('/api/dashboard/config').then(j),
+  // Feature intro videos (startup). This GET carries METADATA only — the clip
+  // itself is fetched by the <video> element, and only after the modal opens,
+  // so a launch that shows nothing costs one small JSON round trip.
+  //
+  // `sessionKey` MUST carry the active slot's key (`dashboard:<slot>`). Both routes
+  // call the server's `_is_restricted_session`, and that guard treats the shared
+  // `dashboard:ui` default as NOT restricted (`_shared.py:1668`) -- so omitting the
+  // key makes the server's own incognito/temporary check unreachable, and the only
+  // thing left standing between a session that keeps nothing and a PERMANENT verdict
+  // is the dashboard's client-side gate. Same cooperative-honesty contract as
+  // `mobileLoginLink` above.
+  featureVideoNext: (sessionKey?: string) =>
+    get('/api/feature-videos/next', sessionKey).then(j) as Promise<FeatureVideoNext>,
+  /** Permanent per-video verdict, not a snooze: `seen` retires the clip on
+   *  completion or an explicit acknowledgement, `dismissed` retires it on a
+   *  close, and the backend never offers that video again after either. */
+  featureVideoFeedback: (id: string, status: 'seen' | 'dismissed', sessionKey?: string) =>
+    post('/api/feature-videos/feedback', { id, status }, sessionKey).then(j) as Promise<{ ok: true }>,
   updateDashboardConfig: (body: object) => put('/api/dashboard/config', body).then(j),
   createTheme: (body: object) => post('/api/themes', body).then(j),
   installTheme: (source: { type: 'local'; path: string } | { type: 'github'; url: string }) =>

@@ -4906,6 +4906,8 @@
         "add_accounts_title": "添加账户",
         "add_accounts_summary": "注册本机更多的 AWS 配置文件",
         "add_accounts_intro": "这些本地 AWS 配置文件尚未注册。你添加的每一个都会成为其账户下的一个密钥。",
+        "add_accounts_search_placeholder": "搜索配置文件",
+        "add_accounts_search_keeps_selected": "你选中的配置文件即使不匹配也会留在列表里。",
         "add_accounts_none": "所有本地配置文件都已注册。",
         "add_accounts_unsupported": "在 Windows 上，AWS Control 无法访问本机的 AWS 配置文件：访问 AWS 需要 Linux 或 macOS shell。请在 WSL (Windows Subsystem for Linux) 中运行 {{productName}} 网关，然后注册你在其中配置的 AWS 配置文件。",
         "add_accounts_count_other": "已注册 {{count}} / {{max}}",
@@ -7349,6 +7351,15 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "拖动以截取区域 · 松开即附加 · Esc 取消",
       "drag_to_select_the_screen_region_to_capture": "拖动以选择要截取的屏幕区域",
       "screen_capture_drag_the_area_you_want_it_attache": "屏幕截图 — 拖出你想要的区域；松开后自动附加"
+    },
+    "startupVideoModal": {
+      "close": "关闭",
+      "feature_intro": "功能介绍",
+      "got_it": "知道了",
+      "media_failed": "无法加载功能视频",
+      "share": "共享",
+      "share_description": "把这个功能视频变成可以发布到任何地方的分享卡片。",
+      "share_include_title": "包含视频标题"
     },
     "tagManagerList": {
       "change_color": "更改{{name}}的颜色",
@@ -9869,6 +9880,7 @@
       "disconnected_locally": "已在本地断开。请在服务商处撤销访问权限，以彻底取消授权。",
       "documentation": "文档",
       "finish_approving_in_browser": "请在浏览器中完成授权…",
+      "approval_opened_in_default_browser": "已在默认浏览器中打开授权页面…",
       "invalid_return_address": "请粘贴浏览器中的完整 http://127.0.0.1:PORT/?code=… 地址。",
       "managed_by_connections": "由“连接”管理",
       "mcp_servers": "MCP 服务器",

@@ -283,8 +283,18 @@ class TestSingleFileMissingMarker:
         store.db.commit()
 
         watcher = _watcher(store)
-        # The duplicate gate's shape: returns a terminal job id, writes no status.
-        watcher.pipeline.ingest_file = AsyncMock(return_value="dupe-job-id")
+
+        # The duplicate gate's shape: returns a terminal job id, writes no status,
+        # and reports the refusal through on_duplicate inside its transaction
+        # (ingestion._skip_as_duplicate) -- the latch the watcher reads to tell a
+        # terminal dedup from a rolled-back partial ingest.
+        async def _dupe_gate(path, **kwargs):
+            on_duplicate = kwargs.get("on_duplicate")
+            if on_duplicate is not None:
+                on_duplicate("text-hash-held-by-another-source")
+            return "dupe-job-id"
+
+        watcher.pipeline.ingest_file = AsyncMock(side_effect=_dupe_gate)
         await watcher._scan()
 
         watcher.pipeline.ingest_file.assert_awaited_once()

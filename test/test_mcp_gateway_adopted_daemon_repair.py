@@ -46,10 +46,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.code_fingerprint import code_fingerprint as _real_code_fingerprint
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import manager as mgr
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.gatewayd import resolvable_target_stems
+
+#: The fingerprint every fake pong in this module carries. The REAL one, because
+#: the end-to-end test spawns a real daemon from this same checkout and the
+#: manager compares against its own process; a fake constant would make every
+#: fit incumbent read as running different code, which is a separate concern
+#: pinned in test_mcp_gateway_daemon_lifecycle.py.
+_FP = _real_code_fingerprint()
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32", reason="observes a socket file and lock being released"
@@ -284,7 +292,7 @@ class TestRepairOrAdopt:
         asked = AsyncMock(return_value=mgr._RELEASED)
         monkeypatch.setattr(manager, "_request_stand_down", asked)
         assert await manager._repair_or_adopt(["CORE"]) == mgr._SPAWN
-        asked.assert_awaited_once_with(["CORE"])
+        asked.assert_awaited_once_with(["CORE"], stale_code=False, orphaned=False)
 
     @pytest.mark.asyncio
     async def test_a_refusing_incumbent_is_still_adopted(
@@ -384,7 +392,12 @@ class TestAdoptedDriftRecheck:
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         asked = AsyncMock(return_value=mgr._SPAWN)
         monkeypatch.setattr(manager, "_repair_or_adopt", asked)
-        assert await manager._reconcile_adopted({"type": "pong", "targets": ["CORE"]}) is False
+        assert (
+            await manager._reconcile_adopted(
+                {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
+            )
+            is False
+        )
         asked.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -407,7 +420,7 @@ class TestAdoptedDriftRecheck:
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         asked = AsyncMock(return_value=mgr._ADOPT)
         monkeypatch.setattr(manager, "_repair_or_adopt", asked)
-        pong = {"type": "pong", "targets": []}
+        pong = {"type": "pong", "targets": [], "fingerprint": _FP}
 
         assert await manager._reconcile_adopted(pong) is False
         assert asked.await_count == 1, "the first call assesses"
@@ -434,10 +447,13 @@ class TestAdoptedDriftRecheck:
 
         async def _spawned() -> dict:
             manager._process = ours
-            return {"type": "pong", "targets": ["CORE"]}
+            return {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
 
         monkeypatch.setattr(manager, "_spawn_and_confirm", AsyncMock(side_effect=_spawned))
-        assert await manager._reconcile_adopted({"type": "pong", "targets": []}) is True
+        assert (
+            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _FP})
+            is True
+        )
         assert manager._adopted is False, "we own the daemon now"
         assert manager.is_running
 
@@ -465,7 +481,10 @@ class TestAdoptedDriftRecheck:
         monkeypatch.setattr(manager, "_repair_or_adopt", AsyncMock(return_value=verdict))
         spawn = AsyncMock()
         monkeypatch.setattr(manager, "_spawn_and_confirm", spawn)
-        assert await manager._reconcile_adopted({"type": "pong", "targets": []}) is False
+        assert (
+            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _FP})
+            is False
+        )
         assert manager._adopted is True
         spawn.assert_not_awaited()
 
@@ -493,14 +512,21 @@ class TestAdoptedDriftRecheck:
         monkeypatch.setattr(manager, "_repair_or_adopt", AsyncMock(return_value=mgr._SPAWN))
         # A foreign daemon answering (flock loser exits rc=0, so _process stays
         # unusable) vs the spawn failing outright.
-        reply = None if outcome == "nothing_serves" else {"type": "pong", "targets": ["CORE"]}
+        reply = (
+            None
+            if outcome == "nothing_serves"
+            else {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
+        )
         monkeypatch.setattr(manager, "_spawn_and_confirm", AsyncMock(return_value=reply))
         watchdogs: list[object] = []
         monkeypatch.setattr(
             manager, "_adopt_incumbent", lambda: watchdogs.append("started") or True
         )
 
-        assert await manager._reconcile_adopted({"type": "pong", "targets": []}) is True
+        assert (
+            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _FP})
+            is True
+        )
         assert manager._adopted is True, "must return to the adopted branch"
         assert manager._process is None
         assert not watchdogs, "must not re-enter _adopt_incumbent (it starts a watchdog)"
@@ -527,7 +553,10 @@ class TestAdoptedDriftRecheck:
 
         asked = AsyncMock(return_value=mgr._SPAWN)
         monkeypatch.setattr(manager, "_repair_or_adopt", asked)
-        assert await manager._reconcile_adopted({"type": "pong", "targets": []}) is False
+        assert (
+            await manager._reconcile_adopted({"type": "pong", "targets": [], "fingerprint": _FP})
+            is False
+        )
         asked.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -549,7 +578,7 @@ class TestAdoptedDriftRecheck:
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         manager._adopted = True
         manager._process = None
-        pong = {"type": "pong", "targets": []}
+        pong = {"type": "pong", "targets": [], "fingerprint": _FP}
         pings = 0
 
         async def _ping() -> dict:
@@ -615,7 +644,7 @@ class TestAdoptedDriftRecheck:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["CORE"]}),
+            AsyncMock(return_value={"type": "pong", "targets": ["CORE"], "fingerprint": _FP}),
         )
         seen: list[float] = []
 
@@ -680,7 +709,7 @@ class TestAdoptedDriftRecheck:
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         manager._adopted = True
         manager._process = None
-        pong = {"type": "pong", "targets": []}
+        pong = {"type": "pong", "targets": [], "fingerprint": _FP}
         monkeypatch.setattr(manager, "_ping_payload", AsyncMock(return_value=pong))
         monkeypatch.setattr(
             manager,
@@ -720,7 +749,7 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["PDF"]}),
+            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP}),
         )
         asked = AsyncMock(return_value=mgr._RELEASED)
         monkeypatch.setattr(manager, "_request_stand_down", asked)
@@ -743,7 +772,7 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["PDF"]}),
+            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP}),
         )
         monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._RELEASED))
         proc = MagicMock()
@@ -752,7 +781,7 @@ class TestElection:
 
         async def _spawn() -> dict[str, Any]:
             manager._process = proc
-            return {"type": "pong", "targets": ["CORE"]}
+            return {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
 
         monkeypatch.setattr(manager, "_spawn_and_confirm", _spawn)
         try:
@@ -772,7 +801,7 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(side_effect=[None, {"type": "pong", "targets": ["PDF"]}]),
+            AsyncMock(side_effect=[None, {"type": "pong", "targets": ["PDF"], "fingerprint": _FP}]),
         )
         stood_down = AsyncMock(return_value=mgr._RELEASED)
         monkeypatch.setattr(manager, "_request_stand_down", stood_down)
@@ -784,15 +813,15 @@ class TestElection:
         async def _spawn() -> dict[str, Any]:
             rounds.append(1)
             if len(rounds) == 1:
-                return {"type": "pong", "targets": ["PDF"]}  # lost the flock
+                return {"type": "pong", "targets": ["PDF"], "fingerprint": _FP}  # lost the flock
             manager._process = proc
-            return {"type": "pong", "targets": ["CORE"]}
+            return {"type": "pong", "targets": ["CORE"], "fingerprint": _FP}
 
         monkeypatch.setattr(manager, "_spawn_and_confirm", _spawn)
         try:
             assert await manager._start_locked() is True
             assert len(rounds) == 2, "a foreign stale daemon must force round two"
-            stood_down.assert_awaited_once_with(["CORE"])
+            stood_down.assert_awaited_once_with(["CORE"], stale_code=False, orphaned=False)
             assert manager.is_running
         finally:
             if manager._watchdog is not None:
@@ -806,10 +835,10 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["PDF"]}),
+            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP}),
         )
         monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._RELEASED))
-        spawn = AsyncMock(return_value={"type": "pong", "targets": ["PDF"]})
+        spawn = AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP})
         monkeypatch.setattr(manager, "_spawn_and_confirm", spawn)
 
         with caplog.at_level(logging.ERROR, logger=mgr.logger.name):
@@ -830,7 +859,7 @@ class TestElection:
         monkeypatch.setattr(
             manager,
             "_ping_payload",
-            AsyncMock(return_value={"type": "pong", "targets": ["PDF"]}),
+            AsyncMock(return_value={"type": "pong", "targets": ["PDF"], "fingerprint": _FP}),
         )
         monkeypatch.setattr(manager, "_request_stand_down", AsyncMock(return_value=mgr._DRAINING))
         spawned = AsyncMock(side_effect=RuntimeError("must not spawn into a held lock"))

@@ -1490,6 +1490,16 @@ export function useWebSocket() {
               const buf = chunkBufRef.current
               let entry = buf.get(cs)
               if (!entry) { entry = { content: '', lastSeq: undefined, thinking: '' }; buf.set(cs, entry) }
+              // Idempotency guard: drop a replayed/repeated chunk (seq <= lastSeq).
+              // WS delivery is at-least-once (reconnect replay, retry re-stream), so a
+              // chunk can arrive twice. missedChunkMarker below only flags FORWARD gaps
+              // (curSeq - prevSeq - 1 > 0), so a repeat slips through and its content is
+              // appended a second time with no marker — the silent mid-stream "stutter".
+              // chat_done deletes the buffer entry, so lastSeq resets each turn and a
+              // fresh turn's seq is never suppressed.
+              if (entry.lastSeq !== undefined && data.seq !== undefined && data.seq <= entry.lastSeq) {
+                break
+              }
               // Cross-chunk gap detection via the shared missedChunkMarker,
               // single-sourced with the reducer so the two copies can't drift.
               if (entry.lastSeq !== undefined && data.seq !== undefined) {

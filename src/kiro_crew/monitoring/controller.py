@@ -21,6 +21,7 @@ from kiro_crew.monitoring.models import (
     MonitorObservation,
     MonitorObservationStatus,
     MonitorState,
+    MonitorVerdict,
     ProviderErrorKind,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -43,7 +44,7 @@ class _Service(Protocol):
         *,
         now: float,
         config_generation: int,
-    ) -> MonitorDecision: ...
+    ) -> MonitorVerdict: ...
 
     async def record_monitor_dispatch_failure(
         self,
@@ -112,7 +113,13 @@ class MonitorController:
         self._clock = clock
         self._provider = provider or GitHubPullRequestProvider()
 
-    async def tick(self, loop: _Loop, *, now: float) -> MonitorDecision:
+    async def tick(self, loop: _Loop, *, now: float) -> MonitorVerdict:
+        """Run one probe and return its verdict.
+
+        A verdict produced without probing -- a recorded outcome, an
+        undelivered wake still in flight -- carries no entries, because nothing
+        was observed on this tick.
+        """
         state = getattr(loop, "monitor", None)
         if state is None:
             raise ValueError("structured monitor state is required")
@@ -127,19 +134,19 @@ class MonitorController:
                     state.last_wake_fingerprint,
                     now=now,
                 )
-            return MonitorDecision.STOP_BLOCKED
+            return MonitorVerdict(decision=MonitorDecision.STOP_BLOCKED)
         if state.wake_in_flight:
             deadline = state.completion_evidence_deadline
             if state.wake_delivery is MonitorDispatchResult.BUSY:
                 if now < state.next_probe_at:
-                    return MonitorDecision.NO_CHANGE
+                    return MonitorVerdict(decision=MonitorDecision.NO_CHANGE)
                 if monitor_budget_reason(state, now=now):
                     await self._service.record_monitor_dispatch_busy(
                         loop.id,
                         state.last_wake_fingerprint,
                         now=now,
                     )
-                    return MonitorDecision.STOP_BUDGET
+                    return MonitorVerdict(decision=MonitorDecision.STOP_BUDGET)
                 return await self._dispatch_claimed(loop, state, now=now)
             if (
                 state.wake_delivery is MonitorDispatchResult.DISPATCHED
@@ -151,7 +158,7 @@ class MonitorController:
                     state.last_wake_fingerprint,
                     now=now,
                 )
-            return MonitorDecision.NO_CHANGE
+            return MonitorVerdict(decision=MonitorDecision.NO_CHANGE)
         config_generation = state.config_generation
         target = state.target
         previous_observation = deepcopy(state.last_observation)
@@ -173,15 +180,15 @@ class MonitorController:
                     reason_code="provider_transient",
                 ),
             )
-        decision = await self._service.apply_monitor_probe(
+        verdict = await self._service.apply_monitor_probe(
             loop.id,
             result,
             now=now,
             config_generation=config_generation,
         )
-        if decision is not MonitorDecision.WAKE_ACTIONABLE:
-            return decision
-        return await self._dispatch_claimed(loop, state, now=now)
+        if verdict.decision is not MonitorDecision.WAKE_ACTIONABLE:
+            return verdict
+        return await self._dispatch_claimed(loop, state, now=now, entries=verdict.entries)
 
     async def _dispatch_claimed(
         self,
@@ -189,8 +196,14 @@ class MonitorController:
         state: MonitorState,
         *,
         now: float,
-    ) -> MonitorDecision:
-        """Deliver one persisted claim or schedule its typed recovery path."""
+        entries: tuple[MonitorObservation, ...] = (),
+    ) -> MonitorVerdict:
+        """Deliver one persisted claim or schedule its typed recovery path.
+
+        *entries* are the observations that produced the claim, carried through
+        so the delivered verdict still names its evidence. A retry of a claim
+        persisted on an earlier tick has none to carry.
+        """
         envelope = format_monitor_wake(
             monitor_id=loop.id,
             target=state.target,
@@ -204,7 +217,7 @@ class MonitorController:
             loop.id,
             state.last_wake_fingerprint,
         ):
-            return MonitorDecision.STOP_BLOCKED
+            return MonitorVerdict(decision=MonitorDecision.STOP_BLOCKED, entries=entries)
         try:
             delivered = await self._dispatch(loop, envelope)
         except asyncio.CancelledError:
@@ -238,7 +251,7 @@ class MonitorController:
                 state.last_wake_fingerprint,
                 now=self._clock(),
             )
-        return MonitorDecision.WAKE_ACTIONABLE
+        return MonitorVerdict(decision=MonitorDecision.WAKE_ACTIONABLE, entries=entries)
 
 
 def format_monitor_wake(

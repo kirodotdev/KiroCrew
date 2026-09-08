@@ -4991,6 +4991,8 @@
         "add_accounts_title": "অ্যাকাউন্ট যোগ করুন",
         "add_accounts_summary": "এই মেশিনের আরও AWS প্রোফাইল নিবন্ধন করুন",
         "add_accounts_intro": "এই লোকাল AWS প্রোফাইলগুলি এখনও নিবন্ধিত নয়। আপনি যেগুলি যোগ করবেন, প্রতিটি তার অ্যাকাউন্টের অধীনে একটি কী হয়ে যাবে।",
+        "add_accounts_search_placeholder": "প্রোফাইল খুঁজুন",
+        "add_accounts_search_keeps_selected": "তুমি যে প্রোফাইলগুলো বেছে নিয়েছ, সেগুলো মিল না থাকলেও তালিকায় থেকে যায়।",
         "add_accounts_none": "সব লোকাল প্রোফাইল ইতিমধ্যেই নিবন্ধিত।",
         "add_accounts_unsupported": "Windows-এ AWS Control এই মেশিনের AWS প্রোফাইলে পৌঁছাতে পারে না: AWS অ্যাকসেসের জন্য Linux বা macOS শেল দরকার। WSL (Windows Subsystem for Linux)-এ {{productName}} গেটওয়ে চালান, তারপর সেখানে সেট করা প্রোফাইলগুলো রেজিস্টার করুন।",
         "add_accounts_count_one": "{{max}}টির মধ্যে {{count}}টি নিবন্ধিত",
@@ -7460,6 +7462,15 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "কোনো অংশ ক্যাপচার করতে ড্র্যাগ করুন · সংযুক্ত করতে ছেড়ে দিন · বাতিল করতে Esc",
       "drag_to_select_the_screen_region_to_capture": "ক্যাপচার করার জন্য স্ক্রিনের অংশটি ড্র্যাগ করে নির্বাচন করুন",
       "screen_capture_drag_the_area_you_want_it_attache": "স্ক্রিন ক্যাপচার — আপনি যে অংশটি চান সেটি ড্র্যাগ করুন; ছেড়ে দিলেই তা স্বয়ংক্রিয়ভাবে সংযুক্ত হবে"
+    },
+    "startupVideoModal": {
+      "close": "বন্ধ করুন",
+      "feature_intro": "ফিচার পরিচিতি",
+      "got_it": "বুঝেছি",
+      "media_failed": "ফিচার ভিডিওটি লোড করা যায়নি",
+      "share": "ভাগ করো",
+      "share_description": "এই ফিচার ভিডিওকে শেয়ার কার্ডে পরিণত করো যা যেকোনো জায়গায় পোস্ট করা যায়।",
+      "share_include_title": "ভিডিওর শিরোনাম যোগ করো"
     },
     "tagManagerList": {
       "change_color": "{{name}} এর রং পরিবর্তন করুন",
@@ -10020,6 +10031,7 @@
       "disconnected_locally": "স্থানীয়ভাবে সংযোগ বিচ্ছিন্ন হয়েছে। অনুমতি পুরোপুরি বাতিল করতে প্রদানকারীর সাইটে অ্যাক্সেস প্রত্যাহার করুন।",
       "documentation": "ডকুমেন্টেশন",
       "finish_approving_in_browser": "ব্রাউজারে অনুমোদন সম্পন্ন করুন…",
+      "approval_opened_in_default_browser": "অনুমোদন আপনার ডিফল্ট ব্রাউজারে খোলা হয়েছে…",
       "invalid_return_address": "ব্রাউজার থেকে সম্পূর্ণ http://127.0.0.1:PORT/?code=… ঠিকানাটি পেস্ট করুন।",
       "managed_by_connections": "Connections দ্বারা পরিচালিত",
       "mcp_servers": "MCP সার্ভার",

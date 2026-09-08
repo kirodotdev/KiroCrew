@@ -459,15 +459,29 @@ export default function MembersPage() {
   }, [members])
   // Display order before the search filter — this is what "the first member"
   // means for the default-open below, so a typed filter never changes which
-  // member a fresh visit lands on.
-  const orderedMembers = useMemo(
-    () =>
-      [...members].sort(
-        (a, b) =>
-          (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name),
-      ),
-    [members],
-  )
+  // member a fresh visit lands on. The ORDER is committed per MEMBERSHIP, not
+  // per refetch: the roster query refetches on every server refresh frame, on
+  // window focus and on staleness, and re-sorting when a last_active_ts
+  // advances would move rows under the cursor mid-click — opening a different
+  // member's durable pinned thread. Row CONTENT (star, last-message preview,
+  // presence) still updates live from every refetch; only the ordering is held
+  // until a member is added, removed or renamed, which re-sorts from scratch.
+  const committedOrderRef = useRef<string[]>([])
+  const orderedMembers = useMemo(() => {
+    const byName = new Map(members.map((m) => [m.name, m]))
+    const prev = committedOrderRef.current
+    const sameMembership = prev.length === byName.size && prev.every((n) => byName.has(n))
+    const names = sameMembership
+      ? prev
+      : [...members]
+          .sort(
+            (a, b) =>
+              (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name),
+          )
+          .map((m) => m.name)
+    committedOrderRef.current = names
+    return names.map((n) => byName.get(n)).filter((m): m is MemberRosterRow => !!m)
+  }, [members])
   const sortedMembers = useMemo(() => {
     const q = filter.trim().toLowerCase()
     return orderedMembers.filter(

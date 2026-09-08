@@ -5153,6 +5153,8 @@
         "add_accounts_title": "Добавить аккаунты",
         "add_accounts_summary": "Зарегистрировать больше профилей AWS с этого компьютера",
         "add_accounts_intro": "Эти локальные AWS-профили ещё не зарегистрированы. Каждый добавленный профиль становится ключом своего аккаунта.",
+        "add_accounts_search_placeholder": "Поиск профилей",
+        "add_accounts_search_keeps_selected": "Выбранные профили остаются в списке, даже если они не соответствуют фильтру.",
         "add_accounts_none": "Все локальные профили уже зарегистрированы.",
         "add_accounts_unsupported": "В Windows AWS Control не может обратиться к профилям AWS этого компьютера: для доступа к AWS нужна оболочка Linux или macOS. Запустите шлюз {{productName}} в WSL (Windows Subsystem for Linux) и зарегистрируйте настроенные там профили.",
         "add_accounts_count_one": "{{count}} из {{max}} зарегистрирован",
@@ -7682,6 +7684,15 @@
       "drag_to_capture_an_area_release_to_attach_esc_to": "Выделите область перетаскиванием · отпустите, чтобы вложить · Esc — отмена",
       "drag_to_select_the_screen_region_to_capture": "Перетащите, чтобы выбрать область экрана для захвата",
       "screen_capture_drag_the_area_you_want_it_attache": "Снимок экрана — выделите нужную область; она вложится автоматически при отпускании"
+    },
+    "startupVideoModal": {
+      "close": "Закрыть",
+      "feature_intro": "Знакомство с функцией",
+      "got_it": "Понятно",
+      "media_failed": "Не удалось загрузить видео о функции",
+      "share": "Поделиться",
+      "share_description": "Превратите это видео о функции в карточку, которую можно опубликовать где угодно.",
+      "share_include_title": "Добавить название видео"
     },
     "tagManagerList": {
       "change_color": "Изменить цвет {{name}}",
@@ -10322,6 +10333,7 @@
       "disconnected_locally": "Локальное подключение удалено. Отзовите доступ у поставщика, чтобы полностью отменить разрешение.",
       "documentation": "Документация",
       "finish_approving_in_browser": "Завершите подтверждение в браузере…",
+      "approval_opened_in_default_browser": "Подтверждение открыто в браузере по умолчанию…",
       "invalid_return_address": "Вставьте полный адрес http://127.0.0.1:PORT/?code=… из браузера.",
       "managed_by_connections": "Управляется Подключениями",
       "mcp_servers": "MCP-серверы",

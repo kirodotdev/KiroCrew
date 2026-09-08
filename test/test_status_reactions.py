@@ -1106,3 +1106,68 @@ class TestConcurrentSwapsAreSerialized:
         sink.live.add("eyes")
         await ladder._swap_emoji(None)
         assert sink.live == set()
+
+
+class TestImportDoesNotCreateTheDataHome:
+    """Importing the handler reads reaction overrides but must not ``mkdir`` the home.
+
+    ``_PHASE_EMOJIS`` is built at import from ``slack.reactions``. Loading the
+    config resolves ``config_dir()``, which CREATES ``~/.kiro/crew`` -- so a plain
+    import (every test collector does one, through ``test/conftest.py``) wrote to the
+    operator's real home. With no ``config.json`` there are no overrides to apply, so
+    the import peeks for the file and loads only when it already exists.
+    """
+
+    _PROBE = (
+        "import os, sys, traceback\n"
+        "def hook(ev, args):\n"
+        "    if ev == 'os.mkdir' and str(args[0]).startswith(sys.argv[1]):\n"
+        "        sys.stderr.write('mkdir %s\\n' % args[0])\n"
+        "        sys.stderr.write(''.join(traceback.format_stack(limit=12)[:-1]))\n"
+        "sys.addaudithook(hook)\n"
+        "import json\n"
+        "import kiro_crew.slack.handler as h\n"
+        "from kiro_crew.config import paths\n"
+        "print(json.dumps(h._PHASE_EMOJIS))\n"
+        "sys.exit(1 if paths._default_home().exists() != (sys.argv[2] == 'seeded') else 0)\n"
+    )
+
+    def _import_in_a_fresh_interpreter(self, tmp_path, *, seeded: bool):
+        import json
+        import os
+        import subprocess
+        import sys
+
+        home = tmp_path / "home"
+        home.mkdir()
+        if seeded:
+            data = home / ".kiro" / "crew"
+            data.mkdir(parents=True)
+            (data / "config.json").write_text(
+                json.dumps({"slack": {"reactions": {"thinking": "brain"}}}), encoding="utf-8"
+            )
+        env = {k: v for k, v in os.environ.items() if k != "KIROCREW_HOME"}
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        proc = subprocess.run(
+            # ``-B``: the child imports the source package; without it the import
+            # leaves ``__pycache__`` in the checkout.
+            [sys.executable, "-B", "-c", self._PROBE, str(home), "seeded" if seeded else "bare"],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout.strip().splitlines()[-1]), home
+
+    def test_a_fresh_interpreter_import_leaves_an_absent_home_absent(self, tmp_path):
+        emojis, home = self._import_in_a_fresh_interpreter(tmp_path, seeded=False)
+        assert not (home / ".kiro").exists()
+        assert emojis["thinking"] == handler_mod._DEFAULT_PHASE_EMOJIS["thinking"]
+
+    def test_an_existing_config_still_supplies_the_overrides(self, tmp_path):
+        emojis, _ = self._import_in_a_fresh_interpreter(tmp_path, seeded=True)
+        assert emojis["thinking"] == "brain"
