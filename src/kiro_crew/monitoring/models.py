@@ -8,11 +8,15 @@ they can be persisted and evaluated without starting an agent turn.
 from __future__ import annotations
 
 import json
+import logging
 import math
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 MONITOR_STATE_VERSION = 1
 DEFAULT_MONITOR_RUNTIME_SECS = 14_400
@@ -303,6 +307,104 @@ class MonitorVerdict:
         for entry in self.entries:
             if not isinstance(entry, MonitorObservation):
                 raise ValueError("every verdict entry must be a MonitorObservation")
+
+
+@dataclass(frozen=True)
+class MonitorProbeResult:
+    """What one probe learned about ONE subject, in terms the engine can read.
+
+    Names no host. ``canonical`` holds that subject's durable facts -- shaped by
+    the kind that produced them and opaque to the decision engine, which only
+    ever persists and compares it -- and ``observation`` is the generic
+    classification the engine acts on.
+
+    This is a RECORD rather than a bare list of per-check rows on purpose. A host
+    that publishes its own overall verdict, distinct from the rows a probe
+    enumerates, needs somewhere to put it, and a defaulted field added to a
+    record reaches every caller without changing this type's shape or any
+    signature that names it. A protocol returning a bare sequence would have to
+    change its return type instead, which is the cost this shape avoids.
+    """
+
+    canonical: dict[str, object]
+    observation: MonitorObservation
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.observation, MonitorObservation):
+            raise ValueError("observation must be a MonitorObservation")
+        if not isinstance(self.canonical, dict):
+            raise ValueError("canonical must be a dict")
+
+
+class MonitorProbe(Protocol):
+    """The external probe boundary, shared by every path that observes a subject.
+
+    PLURAL by contract even where an implementation loops internally: it takes a
+    sequence of subjects and returns one result per subject. A monitored kind
+    whose host answers for many subjects in one call -- most review and CI hosts
+    do -- can then satisfy this without the signature changing, and a caller that
+    wants one subject passes a one-element sequence.
+
+    The returned mapping is keyed by the subject string AS PASSED IN, not by any
+    identity the host derives from it. A caller can only look up what it asked
+    for, and a host is free to normalize a subject for its own use without that
+    reshaping the mapping its caller has to read.
+
+    Nothing in this signature names a host. That is what lets a second kind
+    satisfy the same boundary.
+    """
+
+    def probe(
+        self,
+        subjects: Sequence[str],
+        *,
+        previous_observations: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> Mapping[str, MonitorProbeResult]: ...
+
+
+def transient_probe_failure() -> MonitorProbeResult:
+    """The result a probe that could not answer usably is treated as returning."""
+    return MonitorProbeResult(
+        canonical={},
+        observation=MonitorObservation(
+            "",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=ProviderErrorKind.TRANSIENT,
+            reason_code="provider_transient",
+        ),
+    )
+
+
+def resolve_probe_result(results: object, subject: str) -> MonitorProbeResult:
+    """Take one subject's result out of a probe's mapping, or fail closed.
+
+    A plural boundary lets a provider answer for a SUBSET of what it was asked,
+    and lets it answer with the wrong shape. Neither is a verdict: an absent
+    subject leaves no observation to decide from, and the decision engine reads
+    attributes off whatever it is handed, so an untyped value would fail deep
+    inside it rather than at the boundary.
+
+    EVERY consumer of the boundary resolves through here, so the paths cannot
+    disagree about what an unusable answer means -- a guard in one consumer and a
+    bare ``KeyError`` in the other is the same hazard handled two ways.
+
+    The unusable case is logged HERE, not by the caller. A synthesized fallback and
+    a provider's own correctly-classified transient both carry ``PROVIDER_ERROR``
+    and both carry ``provider_transient``, so a caller testing the status cannot
+    tell them apart and would report an ordinary rate limit as "no usable result".
+    This function is the only place that knows which branch it took.
+    """
+    if not isinstance(results, Mapping):
+        logger.error(
+            "structured monitor probe answered with %s, not a mapping",
+            type(results).__name__,
+        )
+        return transient_probe_failure()
+    result = results.get(subject)
+    if not isinstance(result, MonitorProbeResult):
+        logger.error("structured monitor probe gave no usable result for %r", subject)
+        return transient_probe_failure()
+    return result
 
 
 @dataclass

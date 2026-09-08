@@ -3,25 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import fields
-from typing import Protocol
 
 from kiro_crew.monitoring.decision import (
     decide_monitor,
     monitor_budget_reason,
     terminal_decision_for_outcome,
 )
-from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResult
 from kiro_crew.monitoring.models import (
     MonitorDecision,
     MonitorObservationStatus,
     MonitorOutcome,
+    MonitorProbe,
     MonitorState,
     MonitorVerdict,
     ProviderErrorKind,
     is_finite_non_negative_number,
+    resolve_probe_result,
 )
 
 ShadowStatePersistence = Callable[[MonitorState], Awaitable[None]]
@@ -31,20 +31,9 @@ class ShadowWakeDeliveryRefused(RuntimeError):
     """Raised when a caller asks the persistence-only path to wake a session."""
 
 
-class GitHubShadowProvider(Protocol):
-    """External probe boundary required by the shadow controller."""
-
-    def probe(
-        self,
-        raw_target: str,
-        *,
-        previous_observation: Mapping[str, object] | None = None,
-    ) -> GitHubPullRequestProbeResult: ...
-
-
 async def run_shadow_probe(
     state: MonitorState,
-    provider: GitHubShadowProvider,
+    provider: MonitorProbe,
     persist: ShadowStatePersistence,
     *,
     now: float,
@@ -78,11 +67,12 @@ async def run_shadow_probe(
         await _persist_and_publish(state, staged, persist)
         return MonitorVerdict(decision=MonitorDecision.STOP_BUDGET)
 
-    result = await asyncio.to_thread(
+    results = await asyncio.to_thread(
         provider.probe,
-        state.target,
-        previous_observation=deepcopy(state.last_observation),
+        (state.target,),
+        previous_observations={state.target: deepcopy(state.last_observation)},
     )
+    result = resolve_probe_result(results, state.target)
     staged = deepcopy(state)
     verdict = decide_monitor(staged, result.observation, now=now)
     decision = verdict.decision

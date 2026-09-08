@@ -8,7 +8,7 @@ import json
 import re
 import subprocess
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any
@@ -20,6 +20,7 @@ from kiro_crew.monitoring.models import (
     MAX_MONITOR_CHECK_IDENTITY_CHARS,
     MonitorObservation,
     MonitorObservationStatus,
+    MonitorProbeResult,
     ProviderErrorKind,
 )
 from kiro_crew.security import redact
@@ -115,12 +116,15 @@ class GitHubPullRequestResponse:
 
 
 @dataclass(frozen=True)
-class GitHubPullRequestProbeResult:
-    """Canonical durable facts and their generic monitor classification."""
+class GitHubPullRequestProbeResult(MonitorProbeResult):
+    """One pull request's canonical facts, plus the typed response behind them.
+
+    The engine reads only what :class:`MonitorProbeResult` declares. ``response``
+    is this kind's own detail and stays here rather than on the shared type,
+    which is the line every future kind gets to draw for itself.
+    """
 
     response: GitHubPullRequestResponse | None
-    canonical: dict[str, object]
-    observation: MonitorObservation
 
 
 class GitHubPullRequestProvider:
@@ -137,8 +141,26 @@ class GitHubPullRequestProvider:
 
     def probe(
         self,
-        raw_target: str,
+        subjects: Sequence[str],
         *,
+        previous_observations: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> Mapping[str, GitHubPullRequestProbeResult]:
+        """Return one canonical review-ready observation per subject.
+
+        GitHub answers for one pull request per call, so this loops. The loop is
+        an implementation detail of this kind: the boundary is plural so a host
+        that answers for many subjects at once needs no signature change, and so
+        that adding one later is not a breaking change for every caller.
+
+        Keyed by the subject string as passed, so a caller can always look up
+        what it asked for.
+        """
+        previous = previous_observations or {}
+        return {subject: self._probe_one(subject, previous.get(subject)) for subject in subjects}
+
+    def _probe_one(
+        self,
+        raw_target: str,
         previous_observation: Mapping[str, object] | None = None,
     ) -> GitHubPullRequestProbeResult:
         """Return one canonical review-ready observation."""

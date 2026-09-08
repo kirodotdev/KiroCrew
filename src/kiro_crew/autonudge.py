@@ -39,7 +39,7 @@ from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Iterator
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
 
 from kiro_crew import irq, platform_compat, probes, shutdown_event
 from kiro_crew.atomic_write import replace_with_retry
@@ -65,6 +65,7 @@ from kiro_crew.monitoring.models import (
     MonitorDispatchResult,
     MonitorObservationStatus,
     MonitorOutcome,
+    MonitorProbeResult,
     MonitorState,
     MonitorVerdict,
     monitor_state_from_dict,
@@ -73,9 +74,6 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.probes import targets
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
-
-if TYPE_CHECKING:
-    from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProbeResult
 
 logger = logging.getLogger(__name__)
 
@@ -2374,7 +2372,7 @@ class AutoNudgeService:
     async def apply_monitor_probe(
         self,
         monitor_id: str,
-        result: GitHubPullRequestProbeResult,
+        result: MonitorProbeResult,
         *,
         now: float,
         config_generation: int,
