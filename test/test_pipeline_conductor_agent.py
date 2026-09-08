@@ -425,7 +425,7 @@ class TestFleetProbe:
 
         A real host resolves ``/proc/<pid>/exe`` to the binary the process is
         actually running, which for every honest process is what ``argv[0]`` names.
-        The wrapper exemption requires that kernel answer and no longer accepts
+        The wrapper exemption requires that kernel answer and rejects
         ``argv[0]`` alone, so a fake /proc that omits ``exe`` now models a process
         hiding its identity rather than an ordinary one -- which would make the
         option-parsing tests assert the spoof path instead of the case they are
