@@ -886,3 +886,74 @@ governed, audited agent path.
 `python3 -m kiro_crew.connections.l1_smoke --report /tmp/l1.json` (under a
 pipx/venv install, use that environment's interpreter). `--min-exercised 1`
 reproduces the lane's gate; `--concurrency`/`--timeout` are in `--help`.
+
+## Default-on launch: flag semantics and the traps they set
+
+Shipped 2026-09-07 (#9148 honest transport-error copy, #9149 default-on flip).
+The gallery is governed by one config key, `connections_ui`, with launch
+semantics pinned by `test/test_connections_ui_flag.py`:
+
+- **Absent** → the gallery renders (launch default; `loader.py` field
+  `default=True` and the `load()` fallback agree — the flip changed BOTH, and a
+  frontend-only flip ships dark because the backend materializes its answer
+  into every masked config GET).
+- **Explicit `false`** → the one deliberate opt-out. Honored everywhere.
+- **Non-bool garbage** → falls back to the default (on), never to off.
+
+### Caveat: pre-launch configs carry a materialized `false`
+
+Builds older than the flip **materialized** `connections_ui: false` into every
+`config.json` they saved — the key was the opt-in gate then, so its presence
+is noise, not a choice. After upgrading, that stale key reads as a deliberate
+opt-out and the gallery is EMPTY with nothing in the logs. This hit the
+project owner's own gateway on launch day.
+
+Diagnosis: `grep '"connections_ui"' ~/.kiro/crew/config.json` on a gateway
+that shows no gallery. Fix: delete the key (the default then applies) and
+restart. A migration that strips pre-launch materialized `false` — safe
+because pre-launch only `true` was ever a deliberate act — is proposed but
+NOT yet built; until it lands, every beta upgrade support case starts here.
+
+### Caveat: a new provider's display name must join the DNT lists
+
+A registry entry whose `launch_gate_passed` is true renders its `name` as
+plain text on the `capabilities-mcp` surface. The en-XA render gate counts
+any Latin run it does not recognize as an untranslated leak, so **adding a
+provider requires adding its display name** to BOTH `website/src/i18n/glossary.json`
+(`dnt`) and `ALWAYS_LATIN` in `website/scripts/lib/render-scan.mjs`, with a
+truth-table row in `website/src/i18n/renderScan.test.ts`. The launch set
+(Notion, Linear, Atlassian, Stripe, Vercel) landed exactly this way.
+
+Two edges: a provider held behind `launch_gate_passed: false` (Superhuman
+Mail at launch) never renders and must NOT be pre-added — the glossary's
+near-miss detector would then police a name nothing displays; and when
+editing `ALWAYS_LATIN`, keep pre-existing tokens on their original lines —
+the brand gate scans ADDED lines, and reflowing the `'KiroCrew'` literal onto
+a new line fails it (cost one CI round at launch).
+
+### Caveat: flag-default changes regenerate the config baseline
+
+Any change to a config field default (including this flag) invalidates the
+committed `config-baseline.json`; regenerate with
+`python3 scripts/generate_config_baseline.py` in the same commit or
+`test_config_baseline.py` fails the shard.
+
+### Caveat: the i18n render gate hides inside the E2E job
+
+The CI job named `E2E (stub ACP backend, offline)` runs the i18n render-time
+gate as a step BEFORE the Playwright suite. When that gate fails, Playwright
+is skipped and the job's log looks empty except for `exit code 1` — which
+reads as infra flake. Check the step list (`gh api .../actions/jobs/<id>`)
+before rerunning blind: at launch this signature cost two blind reruns before
+the real finding (the DNT leak above) surfaced.
+
+### Needs-attention copy is evidence-based
+
+The card's failure copy distinguishes provider rejection from transport
+trouble via `errorIndicatesProviderRejection` (`ConnectionsPage.tsx`,
+token-boundary matching): only auth-shaped evidence renders "no longer
+valid"; timeouts and TLS/port noise render `connection_unreachable` copy with
+the retry framing. A new provider whose failure strings are unusual should
+get rows in the classifier truth table in
+`ConnectionsPage.coverage.test.tsx`. Known expected state: GitLab connected
+with zero tools = the documented GitLab Duo prerequisite, not a defect.
