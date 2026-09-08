@@ -363,14 +363,46 @@ export function evaluateAutoPin(args: {
    *  gives: skipping leaves follow armed, so the next growth yanks the reader
    *  from wherever the restore just put them. */
   restoreGate?: boolean
+  /** Has hardware input -- wheel / touch / pointer / a scrolling key -- reached
+   *  the scroller since we last placed the reader at the bottom?
+   *
+   *  False means the reader has done nothing, so a gap that opened while they
+   *  rest on our last write was opened by content -- a row settling from its
+   *  estimate, a code-block stand-in swapping for the highlighted block, the
+   *  top spacer repricing -- and is a gap WE owe them, not one they chose.
+   *
+   *  The idle rule below cannot tell those apart from distance alone, and it
+   *  errs toward release, which was invisible wherever the browser's native
+   *  scroll anchoring quietly carried the reader through the growth. WebKit has
+   *  no scroll anchoring at all, so on an iPhone every entry into an idle
+   *  session paid the whole post-pin reprice as a displacement and then had
+   *  follow released on top of it: the transcript opened a viewport or more
+   *  above the end with nothing streaming to bring it back.
+   *
+   *  Defaults to `true` = assume the reader may have moved, which is the
+   *  release-leaning legacy behaviour for a caller that has no input signal. */
+  readerMovedSinceWrite?: boolean
 }): AutoPinResult {
   const { stick, geom, lastWriteTop } = args
   const epsilon = args.epsilon ?? SELF_SCROLL_EPSILON
   const viewportShrink = Math.max(0, args.viewportShrink ?? 0)
   const runActive = args.runActive ?? true
+  const readerMovedSinceWrite = args.readerMovedSinceWrite ?? true
   const target = bottomTarget(geom)
   if (args.restoreGate) return { pin: false, stick: false, target }
   if (!stick) return { pin: false, stick: false, target }
+  // The reader is resting exactly where we last put them and has given no input
+  // since, so any gap is content settling under them -- carry them back, live
+  // turn or not. Both conditions are load-bearing. Position alone would read our
+  // own write as consent for a reader who wheeled up and happened to stop on it;
+  // input alone would drag back a programmatic reveal -- a search hit, a pinned
+  // prompt, find-in-page -- whose scroll event has not dispatched yet when a
+  // height commit lands, since none of those touch the scroller's input
+  // listeners. A reveal moves scrollTop off our write; a reprice does not.
+  const restingOnOurWrite = lastWriteTop >= 0 && Math.abs(geom.scrollTop - lastWriteTop) <= epsilon
+  if (!readerMovedSinceWrite && restingOnOurWrite) {
+    return { pin: distanceFromBottom(geom) > atBottomEpsilon(), stick: true, target }
+  }
   // Idle: release rather than merely skip the pin. Skipping would leave follow
   // armed, so the next turn to start would yank this reader to the bottom from
   // wherever they had settled — the same defect one event later.
@@ -379,14 +411,14 @@ export function evaluateAutoPin(args: {
   // opposite answers: a reader who scrolled up should be released, while a
   // reader the CONTENT moved away from should be carried back.
   if (!runActive && distanceFromBottom(geom) > atBottomEpsilon()) {
-    // Released, and deliberately WITHOUT an exception for "the reader is resting on
-    // our own last write". Reading our own write as consent is an automatic action
-    // authorizing itself: the tempting case -- a late tail image or a spacer reprice
-    // pushing the bottom away from a reader who never moved -- is indistinguishable
-    // from the case this rule exists for, and treating it as follow is what sprang a
-    // parked reader down to content they had not asked to see. With nothing running
-    // there is no output to follow, so the honest outcome is to leave them where they
-    // are and let a real downward gesture, or the next turn, re-arm this.
+    // Released. The question this branch cannot answer from geometry -- did the
+    // reader open this gap, or did the content -- is answered ABOVE by
+    // `readerMovedSinceWrite`: reaching here means input or an unexplained
+    // scroll has been seen since our last positioning, so a reader who is now
+    // above the bottom while nothing runs is one who left it. Reading our own
+    // last write as consent would be an automatic action authorizing itself;
+    // the only evidence that the reader never moved is the absence of input,
+    // and that is what the branch above requires.
     return { pin: false, stick: false, target }
   }
   // Release only on a genuine user scroll-UP: scrollTop dropped below our last

@@ -103,18 +103,42 @@ function mountGrownBelow(runActive: boolean, growPx: number) {
 }
 
 describe('automatic pin requires a live run', () => {
-  it('idle: content growing below the fold does not spring the reader down to it', () => {
+  it('idle: content growing below the fold does not spring a reader who has moved down to it', () => {
     const { view, el, state, writes, bottom } = mountGrownBelow(false, 120)
     const parked = state.scrollTop
+    // The reader touched the scroller since we last placed them (a wheel that
+    // moved nothing is enough): the gap is no longer provably ours, and with
+    // nothing running there is no output to follow.
+    act(() => { el.dispatchEvent(new Event('wheel')) })
+    // Step the hardware clock past the gesture-settle window, or the RO path
+    // declines to evaluate at all (a gesture in flight outranks any pin) and the
+    // idle rule is never reached. `performance.now` is not under the fake timers.
+    const afterGesture = performance.now() + 1000
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(afterGesture)
     const ro = FakeRO.instances[FakeRO.instances.length - 1]
     act(() => { ro.fire([{ target: el }]) })
     act(() => { vi.advanceTimersByTime(600) })
+    nowSpy.mockRestore()
 
     expect(state.scrollTop).toBe(parked)
     expect(writes.filter((w) => Math.abs(w - bottom()) < 2)).toEqual([])
     // Released, not merely skipped — leaving follow armed would hand the same
     // yank to whichever turn starts next.
     expect(view.result.current.getFollow()).toBe(false)
+  })
+
+  it('idle: the same growth under a reader who has NOT moved is carried back', () => {
+    // No input since the entry pin, resting on it to the pixel: every pixel of
+    // the gap is content settling, and the reader is kept at the end. This is
+    // what native scroll anchoring did silently on Chromium; WebKit has none,
+    // and releasing here is how a phone opened idle sessions above their end.
+    const { view, el, state, bottom } = mountGrownBelow(false, 120)
+    const ro = FakeRO.instances[FakeRO.instances.length - 1]
+    act(() => { ro.fire([{ target: el }]) })
+    act(() => { vi.advanceTimersByTime(600) })
+
+    expect(state.scrollTop).toBe(bottom())
+    expect(view.result.current.getFollow()).toBe(true)
   })
 
   it('running: the same growth IS followed', () => {

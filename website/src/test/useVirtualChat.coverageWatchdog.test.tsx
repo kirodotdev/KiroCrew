@@ -13,9 +13,12 @@ const getKey = (it: Item) => it.id
 const mkItems = (n: number, p = 'm'): Item[] =>
   Array.from({ length: n }, (_, i) => ({ id: `${p}-${i}`, text: `row ${i}` }))
 
-function Harness({ items, scrollerRef }: {
+function Harness({ items, scrollerRef, tailChrome = 0 }: {
   items: Item[]
   scrollerRef: RefObject<HTMLDivElement | null>
+  /** Height of page chrome sharing the scroller BELOW the rows (footer, tail
+   *  spacer) -- the shape the chat page mounts. */
+  tailChrome?: number
 }) {
   const v = useVirtualChat<Item>({
     items, sessionId: 'watchdog', getKey, overscan: 2, externalScrollerRef: scrollerRef,
@@ -29,6 +32,7 @@ function Harness({ items, scrollerRef }: {
       ))}
       <div data-spacer="after" style={{ height: v.offsetAfter }} />
       <div ref={v.bottomSentinelRef} data-sentinel="bottom" />
+      {tailChrome > 0 && <div data-chrome="tail" style={{ height: tailChrome }} />}
     </div>
   )
 }
@@ -229,5 +233,35 @@ describe('viewport-coverage watchdog', () => {
       })
     }
     expect(mountedSpan(el).join(',')).toBe(before)
+  })
+
+  it('a reader at the bottom with page chrome below the rows is covered: no write per tick', async () => {
+    // The chat page mounts a footer / tail spacer under the last row inside the
+    // same scroller, so a reader parked at the bottom always has more viewport
+    // below the last row than the slack allows. That is not uncovered list --
+    // there is no row left to mount -- yet it read as such and force-pinned
+    // every tick: a same-value write that re-armed follow the idle rule had
+    // released and, on WebKit, cut every momentum tail short.
+    const scrollerRef = { current: null as HTMLDivElement | null }
+    const items = mkItems(200)
+    render(<Harness items={items} scrollerRef={scrollerRef as RefObject<HTMLDivElement | null>} tailChrome={40} />)
+    const el = scrollerRef.current as HTMLDivElement
+    restore = installFakeLayout(el)
+    // Record every positioning write from here on. jsdom has no Element.scrollTo,
+    // so the hook writes scrollTop directly; route both through one recorder.
+    let top = 0
+    const writes: number[] = []
+    Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = v; writes.push(v) } })
+    await act(async () => {
+      el.scrollTop = el.scrollHeight - CLIENT
+      el.dispatchEvent(new Event('scroll'))
+      await vi.advanceTimersByTimeAsync(600)
+    })
+    expect(el.scrollHeight - el.scrollTop - CLIENT).toBe(0)
+    writes.length = 0
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1200 + 3 * 500) // outwait the yield, then three ticks
+    })
+    expect(writes).toEqual([])
   })
 })

@@ -126,13 +126,29 @@ describe('pre-paint bottom pin and the composer', () => {
     expect(writes.filter((w) => w > parked)).toEqual([])
   })
 
-  it('does not re-target the bottom when nothing is running', () => {
-    // Isolates the idle rule on THIS path: the viewport is unchanged, so the
-    // shrink freeze cannot be what holds the reader. Content grew below the fold
-    // with nobody scrolling, which is the state where follow is still armed and
-    // the reader is no longer at the bottom.
-    const { view, state, writes } = mountAtBottom(false, 'idle')
+  it('carries a STILL reader back when content grows under them with nothing running', () => {
+    // Viewport unchanged, no turn, no input: content grew below the fold with
+    // nobody scrolling. Follow is still armed and the reader is no longer at the
+    // bottom -- but every pixel of that gap is ours, so the idle rule must not
+    // read it as the reader having left. This is the entry case on WebKit, which
+    // has no native scroll anchoring to absorb a post-pin reprice: releasing here
+    // left the transcript open a viewport above the end with nothing to bring it
+    // back.
+    const { view, state, writes, bottom } = mountAtBottom(false, 'idle-still')
+    state.scrollHeight += 300
+    landHeightCommit(view)
+
+    expect(state.scrollTop).toBe(bottom())
+    expect(writes).toContain(bottom())
+  })
+
+  it('does not re-target the bottom when nothing is running and the reader has moved', () => {
+    // Same growth, but the reader touched the scroller since we last placed
+    // them. With nothing running there is no output to follow, so the gap is
+    // theirs to keep: the idle rule releases rather than yanking them down.
+    const { view, el, state, writes } = mountAtBottom(false, 'idle-moved')
     const parked = state.scrollTop
+    act(() => { el.dispatchEvent(new Event('wheel')) })
     state.scrollHeight += 300
     landHeightCommit(view)
 
