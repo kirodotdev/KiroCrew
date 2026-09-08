@@ -138,8 +138,11 @@ describe('the shell cache refresh is scoped to the shell', () => {
 // coming from the cache above so no reload escapes it. Hence the retry, and hence
 // these tests: the SW is the only layer that runs when the app cannot boot, so
 // staleShellHeal (a boot-time probe) can never reach this failure.
-/** Drive one asset request with a scripted fetch, and report the attempts made. */
-function assetRequest(steps: Array<number | 'throw'>): {
+/** Drive one retryable request with a scripted fetch, and report the attempts. */
+function assetRequest(
+  steps: Array<number | 'throw'>,
+  path = '/assets/App-abc123.js',
+): {
   result: Promise<{ status?: number }>
   attempts: () => number
 } {
@@ -171,7 +174,7 @@ function assetRequest(steps: Array<number | 'throw'>): {
   )
   let captured: Promise<{ status?: number }> = Promise.resolve({})
   listeners.fetch({
-    request: { method: 'GET', url: ORIGIN + '/assets/App-abc123.js', mode: 'no-cors' },
+    request: { method: 'GET', url: ORIGIN + path, mode: 'no-cors' },
     respondWith: (p: Promise<{ status?: number }>) => { captured = p },
   })
   return { result: captured, attempts: () => calls }
@@ -221,5 +224,29 @@ describe('hashed-asset 5xx retry', () => {
     const r = assetRequest([502, 'throw'])
     expect((await r.result).status).toBe(502)
     expect(r.attempts()).toBe(3)
+  })
+
+  it('retries a /vendor module stub, which is boot-critical too', async () => {
+    // index.html carries an import map pointing bare specifiers at /vendor/*.mjs.
+    // A document that imports one cannot boot without it, so leaving this prefix
+    // out would let a 502 on react.mjs reproduce the same dead page on the
+    // standalone app-window documents.
+    const r = assetRequest([502, 200], '/vendor/react.mjs')
+    expect((await r.result).status).toBe(200)
+    expect(r.attempts()).toBe(2)
+  })
+})
+
+describe('what deliberately gets no retry', () => {
+  it('takes over /vendor, which boot depends on', () => {
+    expect(intercepts('/vendor/react.mjs', 'no-cors')).toBe(true)
+    expect(intercepts('/vendor/kirocrew-app-sdk.mjs', 'no-cors')).toBe(true)
+  })
+
+  it('leaves fonts and sprites alone — they cost looks, not boot', () => {
+    // Skipped on purpose, not by omission: a font or sprite that fails makes the
+    // page plainer, it does not stop it running, so it earns no retry attempts.
+    expect(intercepts('/fonts/Inter-Regular.woff2', 'no-cors')).toBe(false)
+    expect(intercepts('/sprites/icons.svg', 'no-cors')).toBe(false)
   })
 })

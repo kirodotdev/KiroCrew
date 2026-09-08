@@ -1,6 +1,7 @@
 // Minimal service worker for PWA installability.
-// Network-first for the SPA shell; hashed assets go to the network with a bounded
-// 5xx retry; everything else goes straight to network.
+// Network-first for the SPA shell; boot-critical modules (hashed /assets and the
+// /vendor import-map stubs) go to the network with a bounded 5xx retry;
+// everything else goes straight to network.
 //
 // Cache contains ONLY the shell (/ and /index.html). No other responses are
 // cached — hashed assets rely on HTTP immutable caching, and app/API routes
@@ -30,10 +31,11 @@ self.addEventListener('activate', e => {
   self.clients.claim()
 })
 
-// ── Hashed-asset retry ──────────────────────────────────────────────
-// Assets are still NOT cached here — the immutable HTTP cache owns them. What
-// this adds is a bounded retry, because one 502 on a module script is not a
-// degraded page, it is a dead one.
+// ── Boot-critical module retry ──────────────────────────────────────
+// Nothing is cached here — the immutable HTTP cache owns hashed assets, and the
+// /vendor stubs have stable filenames. What this adds is a bounded retry, because
+// one 502 on a module a document imports is not a degraded page, it is a dead
+// one.
 //
 // A page load asks for the entire module graph at once, and the hop in front of
 // the gateway has a lower real concurrency ceiling than it advertises:
@@ -104,8 +106,24 @@ self.addEventListener('fetch', e => {
     e.respondWith(fetchAssetWithRetry(e.request))
     return
   }
-  // Vendor shims, fonts, sprites — stable filenames, no SW caching needed
-  if (url.pathname.startsWith('/vendor/')) return
+  // Vendor module stubs get the SAME retry as hashed assets, and for the same
+  // reason. `index.html` carries an import map pointing bare specifiers at
+  // /vendor/*.mjs (react, react-dom, react-dom/client, react/jsx-runtime, the app
+  // SDK, its ui entry, lucide-react), each a 0.2-1.0 KB stub. Any document that
+  // imports one cannot boot without it, so a single 502 there is the same dead
+  // page this retry exists to prevent. The dashboard SPA itself is not the
+  // exposed surface — it has no /vendor/ modulepreload and bundles React into
+  // /assets/vendor-react-*.js — but the standalone app-window documents are, and
+  // they are same-origin so this worker controls them. Nothing is cached here
+  // either. (A sandboxed widget iframe has an opaque origin and is not
+  // SW-controlled at all, so it is unaffected either way.)
+  if (url.pathname.startsWith('/vendor/')) {
+    e.respondWith(fetchAssetWithRetry(e.request))
+    return
+  }
+  // Fonts and sprites are skipped deliberately, not by omission: a font or icon
+  // sprite that fails degrades the page's looks, it does not stop it booting, so
+  // it does not earn retry attempts.
   if (url.pathname.startsWith('/fonts/')) return
   if (url.pathname.startsWith('/sprites/')) return
   // Backend-served brand assets: the sidebar logo + favicon (/logo.png) and the
