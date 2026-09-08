@@ -27,6 +27,24 @@ atomic with that claim. A stale ledger is reversible; deleting a successor's
 resumable state is not. Standalone `purge()` / `purge_matching()` remain explicit
 synchronous maintenance primitives, not part of the history-delete request path.
 
+The same history-delete funnel separately releases cron ownership. The single
+delete performs a strict cron-owner scan before unlink and another after it; bulk
+clear batches both scans. `_delete_history_session()` binds the exact owner keys
+from that scan and a readable `linked_session_key` into the immutable
+`_HistoryDeleteClaim` while holding the canonical-plus-legacy transcript lock
+set. `_remove_slot_for_history_key()` first revalidates the captured slot,
+transcript, task and session generation, then cancels the old turn and conditionally
+destroys only that manager generation. After those awaits it rechecks both live
+slots and SessionManager's live/reserved keys, and hands only the proven retired
+owner keys to `CronService.release_jobs_owned_by()`. Pins, ledgers and autocompact overrides are
+preserved; cron release is allowed because its exact ownership was established
+before unlink rather than inferred from a lossy filename fold. Known cron-store
+failures (`cron_store_unreadable`, `cron_store_busy`, and for an unreadable
+transcript `cron_ownership_unknown`) leave the row intact with a 409; bulk clear
+reports per-row unreadable claims in `undeletable`. Other post-unlink errors log
+the by-id recovery command (`kirocrew cron adopt <id> --release`). See
+[learn-cron-dashboard](learn-cron-dashboard.md).
+
 ## 3. State record and bounded writes
 
 `session_ledger._empty_state()` defines the state fields:

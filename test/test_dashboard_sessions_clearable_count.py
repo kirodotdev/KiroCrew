@@ -102,6 +102,7 @@ def _fake_state(
     state = MagicMock()
     state.conversation_log = conv_log
     state._slots = slots or {}
+    state.crons = None
     state.push_slots_update = MagicMock()
     state.push_refresh = MagicMock()
     return state, deleted_keys
@@ -155,7 +156,7 @@ def test_open_tab_is_excluded_and_reported_as_skipped() -> None:
     k1, k2 = _history_key_for("chat-1"), _history_key_for("chat-2")
     state, _ = _fake_state([{"key": k1}, {"key": k2}], slots={"chat-1": _FakeSlot("chat-1")})
 
-    clearable, skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == [k2]
     assert skipped == 1
@@ -164,7 +165,7 @@ def test_open_tab_is_excluded_and_reported_as_skipped() -> None:
 def test_pinned_session_is_excluded() -> None:
     state, _ = _fake_state([{"key": "a"}, {"key": "b"}], metadata={"a": {"pinned": True}})
 
-    clearable, skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == ["b"]
     assert skipped == 1
@@ -174,10 +175,10 @@ def test_unreadable_metadata_is_excluded() -> None:
     """A transient read failure must not read as permission to delete."""
     state, _ = _fake_state([{"key": "a"}, {"key": "b"}], unreadable_keys={"a"})
 
-    clearable, skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, skipped, unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == ["b"]
-    assert skipped == 1
+    assert (skipped, unreadable) == (0, ["a"])
 
 
 def test_unexpected_metadata_failure_is_excluded() -> None:
@@ -185,16 +186,16 @@ def test_unexpected_metadata_failure_is_excluded() -> None:
     genuinely unexpected failure must still not read as permission to delete."""
     state, _ = _fake_state([{"key": "a"}, {"key": "b"}], raising_keys={"a"})
 
-    clearable, skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, skipped, unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == ["b"]
-    assert skipped == 1
+    assert (skipped, unreadable) == (0, ["a"])
 
 
 def test_rows_without_a_key_are_ignored() -> None:
     state, _ = _fake_state([{"key": ""}, {}, {"key": "b"}])
 
-    clearable, _skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, _skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == ["b"]
 
@@ -228,14 +229,18 @@ async def test_unparseable_metadata_is_excluded_from_count_and_bulk_delete(
     with patch("kiro_crew.dashboard.handlers.sel"):
         resp = await api_sessions_clear(_request(state))
     assert resp.status == 200
-    assert json.loads(resp.body)["cleared"] == 0
+    clear_body = json.loads(resp.body)
+    assert clear_body["cleared"] == 0
+    assert clear_body["undeletable"] == [{"id": "malformed", "code": "cron_ownership_unknown"}]
     assert await asyncio.to_thread(log.delete_session, "malformed", skip_pinned=True) is None
     assert path.read_bytes() == before
 
 
 @pytest.mark.asyncio
-async def test_an_individual_delete_can_remove_unparseable_metadata(tmp_path) -> None:
-    """A corrupt session excluded from bulk clear still has an explicit recovery path."""
+async def test_an_individual_delete_excludes_and_reports_unparseable_metadata(
+    tmp_path,
+) -> None:
+    """A corrupt session stays intact when its owner metadata cannot be read."""
     log = ConversationLog(base_dir=tmp_path)
     await asyncio.to_thread(log.append, "malformed", "user", "hello")
     await asyncio.to_thread(log.append, "keep", "user", "keep this conversation")
@@ -243,6 +248,7 @@ async def test_an_individual_delete_can_remove_unparseable_metadata(tmp_path) ->
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[0] = "{this is not json"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    before = path.read_bytes()
     survivor = tmp_path / "keep.jsonl"
     survivor_before = survivor.read_bytes()
     assert await asyncio.to_thread(log.get_metadata_status, "malformed") == ({}, False)
@@ -259,15 +265,15 @@ async def test_an_individual_delete_can_remove_unparseable_metadata(tmp_path) ->
     ) as remove_slot:
         response = await api_session_delete(request)
 
-    assert response.status == 200
-    assert json.loads(response.body) == {"ok": True}
-    assert not path.exists()
+    body = json.loads(response.body)
+    assert response.status == 409
+    assert body["ok"] is False
+    assert body["code"] == "cron_ownership_unknown"
+    assert path.read_bytes() == before
     assert survivor.read_bytes() == survivor_before
-    remove_slot.assert_awaited_once()
-    assert remove_slot.await_args.args == (state, "malformed")
-    claim = remove_slot.await_args.kwargs["delete_claim"]
-    assert claim.slot is None
-    state.push_refresh.assert_called_once_with("history")
+    remove_slot.assert_not_awaited()
+    state.push_slots_update.assert_not_called()
+    state.push_refresh.assert_not_called()
 
 
 # ── one selector: the count and the delete agree ──
@@ -289,7 +295,7 @@ async def test_count_and_bulk_delete_resolve_the_same_set() -> None:
     metadata = {k_pinned: {"pinned": True}}
 
     state, _ = _fake_state(sessions, slots=slots, metadata=metadata)
-    counted, _skipped = _clearable_history_keys(state, state.conversation_log)
+    counted, _skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     delete_state, deleted = _fake_state(sessions, slots=slots, metadata=metadata)
     with (

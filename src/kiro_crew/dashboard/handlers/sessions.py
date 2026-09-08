@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Collection
 
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -27,7 +27,11 @@ from aiohttp import web
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew import session_directive
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
+
+# The migration module owns the pre-migration leftover-tab spelling.
+from kiro_crew.channel_transcript_migration import _orphan_target_stem
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, cron_owner_matches
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
@@ -50,6 +54,7 @@ from kiro_crew.history import (
     _archive_dir,
     is_incognito_transcript,
     transcript_lock_stems,
+    transcript_stem,
     transcript_stems,
 )
 from kiro_crew.llm_helpers import run_bg_oneliner
@@ -1286,9 +1291,340 @@ async def api_session_detail(request: web.Request) -> web.Response:
     return web.json_response(messages)
 
 
+async def _owner_keys_bound_to_transcript(crons: Any, keys: Collection[str]) -> dict[str, set[str]]:
+    """Per history key, the STORE-side owner keys whose transcript is that row.
+
+    Returns ``{history key: exact owner keys}``. Raises ``CronStoreBusy`` (past the
+    shared bounded backoff) and ``CronStoreUnreadable`` — the store's own two ways
+    of saying it cannot be seen — so the caller refuses the delete with a distinct
+    code for each. Any other failure is logged and answers ``{}``: unknown, proceed
+    loudly.
+
+    The transcript's ``linked_session_key`` is the funnel's primary source for a
+    channel session's exact owner key, but it cannot be the only one. Two states
+    have a channel-owned job and NO such metadata, and neither is an error:
+
+    * the ORDERING WINDOW — ``cron_add`` stamps the channel key on the job in one
+      transaction while the slot save publishes ``linked_session_key`` in
+      another, so a delete landing between them reads absent metadata over a job
+      that is already owned.
+    * a LEGACY transcript written before that metadata existed at all.
+
+    In both, "absent" means "not recorded here", not "no owner to lose" — and
+    absent is also the ordinary state of every dashboard session, so refusing the
+    delete is not available as an answer. So the binding is resolved from the
+    OTHER side: the store knows each job's exact owner key, and this row's own
+    transcript stem says which owner keys name THIS conversation. A job whose
+    owner folds onto that stem owns this row, and its exact key -- the spelling
+    the release needs and the stem cannot reconstruct (``_safe_key`` maps every
+    ``:`` to ``_``) -- is right there on the job.
+
+    Matched on the row's OWN stem, never a stripped one. An owner matches when
+    this row's stem is one of the filenames THAT owner logs under -- its canonical
+    stem or, for a Slack thread predating the ``slack:<ts>`` key, the bare
+    ``thread_ts`` stem ``ConversationLog._path`` still falls back to (hence
+    ``transcript_stems``: the canonical stem alone misses a legacy transcript's
+    owner silently, and the delete then strands it). What this deliberately does
+    NOT do is strip a ``dashboard_`` prefix off the ROW to reach ``slack_<ts>``,
+    even though ``dashboard_slack_<ts>`` is a real shape for a pre-migration
+    leftover tab whose conversation IS ``slack:<ts>``: the stripped form names a
+    DIFFERENT session, derived from a string a client chose (``POST
+    /api/chat/slots`` takes the slot name), so honouring it releases a LIVE
+    channel session's jobs when an unrelated dashboard row is deleted for being
+    spelled like it.
+
+    No marker on the transcript can license that fold. ``linked_session_key`` and
+    ``channel_origin`` both live on the metadata line of an AGENT-WRITABLE file,
+    so an agent that can create the lookalike transcript can write the marker onto
+    it — a marker-gated fold is as reachable as an ungated one, one step longer.
+    Nor is there a server-side record to consult instead: the absent-metadata case
+    is precisely the SLOTLESS one, so there is no live slot holding provenance.
+
+    Hence the rule this function fails closed on: provenance for a destructive
+    CROSS-SESSION action must come from outside agent-writable storage, and where
+    none exists the action is not inferred. The cost is a genuinely channel-born
+    leftover keeping a job owned by a session that is gone — bounded, visible
+    (:func:`_warn_unprovable_channel_binding` names the owner, the candidate ids
+    and the recovery command) and RECOVERABLE by id with ``kirocrew cron adopt
+    <id> --release``. A forged release is none of those things.
+
+    A PRESENT ``linked_session_key`` is a different question and is still
+    honoured: :func:`_linked_session_key_for_history_key` asks whether the claim
+    the row already carries is about ITSELF, comparing the agent-written value
+    against the route-derived history key. That comparison can only NARROW what a
+    row reaches, never widen it to a session the row does not name.
+
+    Swept for EVERY delete rather than only when metadata is absent. Knowing it
+    is absent means having read it, and that read lives inside the same lock hold
+    as the unlink (see :func:`_delete_history_session`) precisely so no
+    writer can land a key between them; splitting the hold to decide whether to
+    sweep would reopen that window to save one cache-warm read. When metadata IS
+    present the sweep simply agrees with it, and a duplicate candidate costs
+    nothing: ``release_jobs_owned_by`` re-resolves ownership and liveness inside
+    the store lock, so nothing here can release a job the store disagrees about.
+
+    Reads through ``owner_keys_async`` — a STRICT locked scan that reloads through
+    ``_sync_for_write`` and RAISES on either store failure. Neither cache-shaped
+    read can be used here, and the distinction is the whole point of the sweep:
+    ``list_jobs`` lags a cross-process write by up to one timer poll, and
+    ``list_jobs_async`` locks but DEGRADES — it swallows ``CronStoreBusy`` to
+    return the cache, and syncs through ``_sync()``, whose ``_load`` flattens an
+    unreadable store to an empty job list. Both answer "no owners" for a store
+    that could not be read, which is the one answer this caller must not accept:
+    it is about to destroy the last record of the binding.
+
+    Only the STORE's own two ways of saying "you cannot see me" fail CLOSED, and
+    each PROPAGATES so the caller can name the cause: sustained ``CronStoreBusy``
+    (retried on the shared backoff first) and ``CronStoreUnreadable``. In those the
+    job set is unknown rather than empty, so the caller refuses instead of
+    unlinking the last record of a binding it could not check, and answers with a
+    code and remedy specific to the cause — a busy store wants a retry, an
+    unreadable one wants the file repaired, and the by-id CLI cannot help with
+    either. An UNEXPECTED exception is different in kind: not the store's verdict
+    but a defect or an environment failure this sweep never named (a mock in a
+    test, an ``OSError`` off a network mount), on a read that fronts EVERY history
+    delete and the bulk clear. Refusing on it would let one cron-read fault block
+    all history deletion, so the unknown case proceeds LOUDLY: the exception, the
+    session keys and the by-id recovery command are logged at WARNING, no owner is
+    released on the strength of a read that did not happen, and the delete goes
+    ahead. That is the strand-and-recover posture
+    :func:`_warn_unprovable_channel_binding` already takes — a job left owned by a
+    departed session is bounded, visible and recoverable by id, and the
+    alternative here is unbounded. An object with no ``owner_keys_async`` is a
+    different case entirely and is quiet: nothing to sweep, nothing withheld.
+
+    The stranded-binding warning is emitted only where the row's name suggests a
+    binding this refuses to infer, which is rare — a leftover-shaped row with a
+    matching owner in the store — so the ordinary delete pays nothing for it.
+    """
+    wanted = [k for k in keys if k]
+    reader = getattr(crons, "owner_keys_async", None)
+    if crons is None or not wanted or reader is None:
+        return {}
+    owners: set[str] = set()
+    for attempt in range(_CRON_RELEASE_ATTEMPTS):
+        try:
+            owners = {str(owner) for owner in await reader() if owner}
+        except CronStoreBusy:
+            if attempt + 1 < _CRON_RELEASE_ATTEMPTS:
+                await asyncio.sleep(_CRON_RELEASE_BACKOFF_SECS * (attempt + 1))
+                continue
+            logger.warning("History delete: cron store busy, owner sweep not performed")
+            raise
+        except CronStoreUnreadable as exc:
+            logger.warning("History delete: cron owner sweep not performed: %s", exc)
+            raise
+        except Exception as exc:
+            # Unknown, proceed loudly -- see the docstring. Not the store's own
+            # verdict, and this sweep fronts every history delete, so the fault
+            # is named with its recovery rather than allowed to block them all.
+            logger.warning(
+                "History delete: cron owner sweep failed unexpectedly for %s (%s: %s); cron "
+                "ownership is unknown and the delete proceeds, so a job owned by this session "
+                "may be left owned by a session that no longer exists — release it by id with "
+                "`kirocrew cron adopt <id> --release` (`kirocrew cron list` shows the "
+                "owners)",
+                ", ".join(wanted),
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            return {}
+        break
+    found: dict[str, set[str]] = {}
+    for history_key in wanted:
+        stem = transcript_stem(history_key)
+        matched = {owner for owner in owners if stem in transcript_stems(owner)}
+        if matched:
+            found[history_key] = matched
+        # Not folded in: the stripped stem names ANOTHER session, on the strength
+        # of this row's name alone. Say so instead, so the strand is recoverable.
+        stripped = _orphan_target_stem(stem)
+        if stripped:
+            unprovable = {owner for owner in owners if stripped in transcript_stems(owner)}
+            if unprovable:
+                _warn_unprovable_channel_binding(crons, unprovable, history_key)
+    return found
+
+
+async def _owner_keys_after_unlink(crons: Any, keys: Collection[str]) -> dict[str, set[str]]:
+    """The post-unlink owner re-sweep: the pre-sweep's read, the opposite failure direction.
+
+    Both permanent-delete paths take :func:`_owner_keys_bound_to_transcript` twice:
+    once BEFORE the unlink, when a store that cannot be seen refuses the delete,
+    and once AFTER it has committed, to catch the one arrival the first pass
+    cannot see. The pre-sweep knows only the jobs that existed when it scanned,
+    and a channel ``cron_add`` commits under its own store lock: a job born
+    between the scan and the unlink is stamped with a key the delete retires, and
+    the store's add-time guard does not cover it (it resolves a ``cron:`` parent
+    id; a channel key names no job). The single delete explains the window and
+    why the two locks are not spanned; the bulk clear pays ONE such read for the
+    whole batch, so *keys* is a collection.
+
+    Here the rows are already gone, so refusing is not available. The store's own
+    two failures -- busy past the shared backoff, unreadable -- are therefore
+    named LOUDLY instead: the deleted rows, the cause and the by-id recovery
+    (``cron adopt <id> --release``), at WARNING, and the caller releases what the
+    pre-sweep found. That is the stance the sweep itself takes on an unexpected
+    error, and the strand is bounded and recoverable by id. An add landing after
+    this pass is the ordinary stranded case the release already reports.
+    """
+    try:
+        return await _owner_keys_bound_to_transcript(crons, keys)
+    except (CronStoreBusy, CronStoreUnreadable) as exc:
+        logger.warning(
+            "History delete: %s deleted, but the post-delete owner scan could not read the "
+            "cron store (%s), so a job created during the delete may still be owned "
+            "by a deleted session — release it by id with `kirocrew cron adopt <id> --release` "
+            "(`kirocrew cron list` shows the owners)",
+            ", ".join(key for key in keys if key),
+            exc,
+        )
+        return {}
+
+
+def _stranded_job_ids(crons: Any, owner_keys: set[str]) -> list[str]:
+    """Ids of jobs owned by *owner_keys*, for a warning to NAME. Never decides.
+
+    Cache-only (``list_jobs``) and never raises ``CronStoreBusy``, so this
+    diagnostic cannot fail for the same reason a release just did. Its staleness
+    is acceptable precisely because nothing acts on it — see
+    ``CronService.release_jobs_owned_by``, which re-resolves ownership inside the
+    store lock. Answers ``[]`` rather than propagating, since a warning that
+    raises replaces the message an operator needs with a traceback.
+    """
+    try:
+        return sorted(
+            job.id
+            for job in crons.list_jobs(include_disabled=True)
+            if getattr(job, "session_key", "")
+            and any(
+                cron_owner_matches(getattr(job, "session_key", ""), target) for target in owner_keys
+            )
+        )
+    except Exception:
+        logger.warning("History delete: could not enumerate stranded cron jobs", exc_info=True)
+        return []
+
+
+def _warn_unprovable_channel_binding(crons: Any, owner_keys: set[str], history_key: str) -> None:
+    """Name a binding the sweep declined to infer, and how to finish it by hand.
+
+    Fires when the deleted row's name STRIPS to a channel stem that some job in
+    the store is actually owned under. Either the row is that channel
+    conversation's leftover tab file and the job is now genuinely orphaned, or the
+    row is an unrelated dashboard session that merely shares the spelling — and
+    nothing durable distinguishes them, because every marker that could lives in
+    the same agent-writable file as the name (see
+    :func:`_owner_keys_bound_to_transcript`).
+
+    Refusing to guess is the safe half; saying nothing would not be. An
+    unrecoverable strand is one nobody was told about, so this logs the owner, the
+    candidate ids and the one command that completes the release, turning a silent
+    conservatism into a documented manual step.
+    """
+    stranded = _stranded_job_ids(crons, owner_keys)
+    logger.warning(
+        "History delete: %s strips to a channel stem owning cron job(s), but nothing outside the "
+        "agent-writable transcript proves this row IS that conversation, so ownership was NOT "
+        "released for owner(s) %s; job(s) %s may now be owned by a session that no longer exists "
+        "— release them with `kirocrew cron adopt <id> --release`",
+        history_key,
+        ", ".join(sorted(owner_keys)),
+        ", ".join(stranded) if stranded else "unknown (store not readable from cache)",
+    )
+
+
+#: Machine-readable codes for a delete the cron-ownership check REFUSES. Each names
+#: a distinct cause with a distinct remedy, and the dashboard client keys its
+#: localized message on the code rather than rendering the English ``error``.
+CRON_STORE_UNREADABLE_CODE = "cron_store_unreadable"
+CRON_STORE_BUSY_CODE = "cron_store_busy"
+CRON_OWNERSHIP_UNKNOWN_CODE = "cron_ownership_unknown"
+
+
+class _OwnerKeyUnreadable(Exception):
+    """A delete REFUSED because the exact cron owner key of the row cannot be read.
+
+    Raised by :func:`_delete_history_session` with the row intact. It is
+    an exception rather than a ``None`` result so the bulk clear can tell this
+    refusal apart from the ``None`` a pinned row answers under ``skip_pinned``,
+    and report it by id with :data:`CRON_OWNERSHIP_UNKNOWN_CODE`.
+    """
+
+
+def _cron_store_refusal(exc: Exception, **counts: Any) -> web.Response:
+    """409 for a delete whose owner sweep could not SEE the cron store, by cause.
+
+    ``CronStoreUnreadable`` carries the store path and the repair route in its
+    own message (``CronService._unreadable_error`` is the one wording every
+    surface reads verbatim), so that text is surfaced as-is. The ``kirocrew
+    cron adopt`` CLI is deliberately NOT named here: it reads the same file,
+    so on an unreadable store it cannot work either. ``CronStoreBusy`` is
+    contention and wants nothing but a retry. Neither is a filesystem failure of
+    the delete, so neither is ``200 {ok: false}`` -- a 409 is what the dashboard
+    client rejects on, which is what keeps the refused row in the sidebar.
+    ``counts`` lets the bulk clear carry its ``cleared``/``skipped``/``failed``
+    tallies beside the refusal, for callers that read the body.
+    """
+    if isinstance(exc, CronStoreUnreadable):
+        code = CRON_STORE_UNREADABLE_CODE
+        error = (
+            "the cron store could not be read, so cron ownership could not be checked "
+            f"and nothing was deleted: {exc}"
+        )
+    else:
+        code = CRON_STORE_BUSY_CODE
+        error = (
+            "the cron store is busy, so cron ownership could not be checked and nothing "
+            "was deleted; retry in a moment."
+        )
+    if not counts:
+        return web.json_response({"ok": False, "error": error, "code": code}, status=409)
+    return web.json_response(
+        {
+            "ok": False,
+            "error": error,
+            "code": code,
+            "cleared": counts.get("cleared", 0),
+            "skipped": counts.get("skipped", 0),
+            "failed": counts.get("failed", 0),
+        },
+        status=409,
+    )
+
+
+def _cron_ownership_unknown_refusal(crons: Any, owner_keys: Collection[str]) -> web.Response:
+    """409 for a row whose transcript metadata could not be read.
+
+    Here the remedy IS the CLI plus transcript repair: the store is readable,
+    the row is not, so the operator releases candidate jobs by id, repairs the
+    row's metadata, and retries. ``owner_keys`` are the owners the store-side
+    sweep bound to this row ahead of the read, and the message names their job
+    ids when the cache can list them -- a cache-only listing that decides nothing
+    (see :func:`_stranded_job_ids`).
+    """
+    stranded = _stranded_job_ids(crons, set(owner_keys)) if owner_keys else []
+    ids = f" (candidate job id(s): {', '.join(stranded)})" if stranded else ""
+    return web.json_response(
+        {
+            "ok": False,
+            "error": (
+                "the cron jobs this session owns could not be determined because its "
+                "transcript metadata is unreadable, so deleting it would leave them owned "
+                "by nobody. Release candidate jobs with `kirocrew cron adopt <id> --release`"
+                f"{ids} -- `kirocrew cron list` shows the owners -- repair the "
+                "transcript metadata, then delete the session again."
+            ),
+            "code": CRON_OWNERSHIP_UNKNOWN_CODE,
+        },
+        status=409,
+    )
+
+
 @dataclass(frozen=True)
 class _HistoryDeleteClaim:
-    """Slot and manager ownership observed before the transcript unlink awaits."""
+    """Slot, manager, and exact cron ownership captured before transcript unlink."""
 
     registry_key: str | None
     slot: Any | None
@@ -1298,6 +1634,7 @@ class _HistoryDeleteClaim:
     path_match_verified: bool
     complete: bool
     slot_task: Any | None = None
+    cron_owner_keys: frozenset[str] = frozenset()
 
 
 def _history_delete_candidate_keys(key: str) -> tuple[str, ...]:
@@ -1409,20 +1746,203 @@ def _resolve_history_delete_claim(
     return _HistoryDeleteClaim(None, None, None, None, 0, True, claim.complete)
 
 
+def _linkable_stems_for_history_key(key: str) -> set[str]:
+    """Every filename stem a row named *key* may legitimately be LINKED as.
+
+    ``slot_history_key`` returns ``linked_session_key`` verbatim as the slot's
+    transcript key whenever it is set, so the binding is not a free-form pointer:
+    a row carrying a linked key must BE that key's own transcript. That makes the
+    expected relationship checkable from the history key alone, which is what
+    :func:`_linked_session_key_for_history_key` needs — the history key arrives
+    from the route or the session list and is not attacker-writable, while the
+    metadata value is.
+
+    Only the row's CANONICAL stem. A leftover-shaped name is deliberately NOT
+    stripped to reach the channel session it is spelled like: ``dashboard:slack_
+    <ts>`` is not the session ``slack:<ts>``, so admitting the stripped form would
+    WIDEN the row to a session it does not name -- and since the transcript store
+    is agent-writable, a forged ``linked_session_key`` on a lookalike file would
+    then release a LIVE channel session's cron ownership on any history delete.
+    That is the same stance :func:`_owner_keys_bound_to_transcript` takes on the
+    store side, for the same reason, so the two cannot disagree about what a row
+    may reach.
+
+    The bare ``thread_ts`` stem a Slack thread predating the canonical
+    ``slack:<ts>`` key still logs under needs no entry here: it is contributed on
+    the VALUE side by ``transcript_stems``, where ``ConversationLog._path``'s
+    fallback lives.
+
+    A genuinely channel-born leftover therefore keeps its job owned by a session
+    that is gone. That cost is bounded, visible -- the sweep's
+    :func:`_warn_unprovable_channel_binding` names the owner, the candidate job
+    ids and the command -- and RECOVERABLE by id through ``kirocrew cron adopt
+    <id> --release``. A forged release is none of those things.
+
+    Scoped to VALIDATING a link the row already carries: the row is CLAIMING a
+    binding, and the check asks only whether the claim is about itself, comparing
+    the agent-written value against the route-derived key. Restricted to the
+    canonical stem, that comparison can only ever NARROW what this row reaches.
+    """
+    stems = {transcript_stem(key)}
+    orphan_of = _orphan_target_stem(transcript_stem(key))
+    if orphan_of:
+        # A leftover-shaped row is NOT the channel session it is spelled like, so
+        # the claim is refused rather than honoured. Warned about, not silent: the
+        # sweep's _warn_unprovable_channel_binding names the owner, the candidate
+        # job ids and the by-id recovery command.
+        logger.warning(
+            "History delete: session %s is spelled like a leftover of %r; a link it carries "
+            "cannot license releasing that session's jobs, so only its own key is accepted",
+            key,
+            orphan_of,
+        )
+    return stems
+
+
+def _linked_session_key_for_history_key(log: Any, key: str) -> tuple[str, bool]:
+    """``(exact session key or "", metadata was READABLE)`` for a history row.
+
+    A channel-born tab persists ``linked_session_key`` in its transcript
+    metadata because nothing recreates that binding on restart. Cron jobs the
+    session created are stamped with THAT key, not with any ``dashboard:``
+    spelling of the transcript name, so it is the only string that can match
+    their owner — and after the transcript is unlinked there is nowhere left to
+    read it from.
+
+    Reads through ``get_metadata_status``, not ``get_metadata``, and reports the
+    readability flag rather than folding it away. The two cases the caller has to
+    tell apart both answer ``""``:
+
+    * **ABSENT** — no metadata line, or a metadata line carrying no
+      ``linked_session_key`` (readable ``True``). ``{}`` is this case, not a
+      quieter malformed one: it is the store's own answer for a row with no
+      metadata line and for a first line that is not metadata-typed. There is no
+      owner key to lose, so the delete proceeds.
+    * **UNREADABLE** — an existing metadata line that could not be read, or that
+      came back in a shape this cannot trust: a partial write, a prior ENOSPC,
+      on-disk corruption, an agent-edited transcript (readable ``False``,
+      including every exception this raises). The row MAY name a cron owner, and
+      the unlink destroys the only copy, so deleting here strands that ownership
+      with nothing left to notice it — :func:`_warn_stranded_cron_ownership`
+      fires only when a release FAILS, never when the key was never read. The
+      caller refuses the delete instead.
+
+    A successful read is NOT automatically a trustworthy one. Two payloads are
+    reported unreadable rather than folded into the absent case, because each
+    would otherwise answer ``""`` (or a key that should never have been honoured)
+    and let the delete proceed on a row that may well name an owner:
+
+    * a payload that is not a ``dict`` at all — a bare string, a list, a scalar.
+      The store's contract is a mapping, so anything else means the line was
+      salvaged, hand-edited or partially written, and its ``linked_session_key``
+      is unreadable rather than absent.
+    * a ``linked_session_key`` present but not a ``str``. The only writer
+      (``slot_projection``) persists a string field, so a mapping or a list here
+      is corruption; ``str()``-ing it would mint a key that matches no job, and
+      the release would report success having matched nothing.
+
+    A ``linked_session_key`` that does not name THIS row (see
+    :func:`_linkable_stems_for_history_key`) is a third case, and deliberately
+    not an unreadable one: it answers ``("", True)`` with a warning, so the
+    delete proceeds and releases nothing on account of the claim. The transcript
+    store is agent-writable, so the value is untrusted INPUT to a privileged
+    action -- whatever it names is fed to ``release_jobs_owned_by`` as a retired
+    owner, and left unvalidated an agent that can write metadata would point its
+    own row at a VICTIM session and have this delete clear the cron ownership of
+    the victim. Dropping the claim keeps that closed. Refusing the delete did
+    more than that: the mismatch is a property of the file, so a legitimate
+    pre-migration leftover tab (``dashboard_slack_<ts>``) was refused identically
+    on every retry, and the 409 remedy (release by id, delete again) could never
+    clear it.
+    """
+    try:
+        reader = getattr(log, "get_metadata_status", None)
+        meta, readable = reader(key) if reader is not None else (log.get_metadata(key), True)
+    except Exception:
+        logger.warning("History delete: metadata read failed for %s", key, exc_info=True)
+        return "", False
+    if not readable:
+        return "", False
+    if not isinstance(meta, dict):
+        logger.warning(
+            "History delete: metadata for %s is not a mapping (%s); treating it as unreadable",
+            key,
+            type(meta).__name__,
+        )
+        return "", False
+    linked = meta.get("linked_session_key")
+    if linked is not None and not isinstance(linked, str):
+        logger.warning(
+            "History delete: linked_session_key for %s is a %s, not a string; treating the "
+            "metadata as unreadable",
+            key,
+            type(linked).__name__,
+        )
+        return "", False
+    if linked and not set(transcript_stems(linked)) & _linkable_stems_for_history_key(key):
+        # NOT the unreadable case. The row is readable and makes a claim this
+        # funnel will not honour -- a stem mismatch is "I will not act on this",
+        # not "I cannot read this row". Refusing the delete here made a
+        # legitimate pre-migration leftover tab (``dashboard_slack_<ts>``)
+        # permanently undeletable: the mismatch is a property of the file, so
+        # every retry and the 409 remedy itself read it identically. The claim is
+        # dropped instead: the delete proceeds and releases NOTHING on its
+        # account, so the other session keeps its jobs; a genuine leftover keeps
+        # its strand, which the sweep names with the by-id recovery command.
+        logger.warning(
+            "History delete: session %s claims linked_session_key %r, which is not the "
+            "session this transcript belongs to -- a row can only be linked to the session "
+            "whose transcript it IS. The claim is not honoured: the row is deleted without "
+            "releasing any cron job owned by %r; a job it really owned is recoverable by "
+            "id (the owner sweep warning names the command).",
+            key,
+            linked,
+            linked,
+        )
+        return "", True
+    return (linked or ""), True
+
+
 def _delete_history_session(
     log: ConversationLog,
     key: str,
     claim: _HistoryDeleteClaim,
     *,
     skip_pinned: bool = False,
+    exact_owner_keys: Collection[str] = (),
 ) -> tuple[bool | None, _HistoryDeleteClaim]:
-    """Resolve ambiguous ownership and delete under one off-loop transcript lock."""
+    """Bind slot and cron ownership, then unlink under one transcript lock."""
     # ``delete_session`` re-enters one of these locks on the same worker thread.
     # Acquire every stable stem in deterministic order so canonical Slack restore
     # and a legacy-file delete cannot synchronize on different sidecars.
     try:
         with log.locked_stems(transcript_lock_stems(key)):
             resolved_claim = _resolve_history_delete_claim(log, key, claim)
+            linked, readable = _linked_session_key_for_history_key(log, key)
+            if not readable:
+                logger.error(
+                    "History delete REFUSED for %s: its metadata is unreadable, so the exact "
+                    "cron owner key cannot be read and deleting the transcript would strand "
+                    "any cron job it owns under a key no session can ever present again. "
+                    "The session was NOT deleted. Release its jobs by hand first with "
+                    "`kirocrew cron adopt <id> --release` (`kirocrew cron list` shows the "
+                    "owners), repair the transcript metadata, then delete it again.",
+                    key,
+                )
+                raise _OwnerKeyUnreadable(key)
+            owner_keys = {owner for owner in exact_owner_keys if owner}
+            if (
+                resolved_claim.complete
+                and resolved_claim.path_match_verified
+                and resolved_claim.session_key
+            ):
+                owner_keys.add(resolved_claim.session_key)
+            if linked:
+                owner_keys.add(linked)
+            resolved_claim = replace(
+                resolved_claim,
+                cron_owner_keys=frozenset(owner_keys),
+            )
             if skip_pinned:
                 result = log.delete_session(key, skip_pinned=True)
             else:
@@ -1439,16 +1959,39 @@ async def api_session_delete(request: web.Request) -> web.Response:
     key = request.match_info["key"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
+
+    # Freeze the slot/transcript/manager route before the first await. The strict
+    # cron-store scan establishes exact owner keys independently of that route.
     delete_claim = _capture_history_delete_claim(state, key)
-    # delete_session enters _locked (flock acquire + os.close); offload off the
-    # loop so a wedged cross-process peer can't freeze chat/WS/heartbeat.
-    ok, delete_claim = await asyncio.to_thread(
-        _delete_history_session,
-        state.conversation_log,
-        key,
-        delete_claim,
-    )
+    crons = getattr(state, "crons", None)
+    try:
+        swept = await _owner_keys_bound_to_transcript(crons, (key,))
+    except (CronStoreBusy, CronStoreUnreadable) as exc:
+        return _cron_store_refusal(exc)
+
+    # Resolve ambiguous slot ownership and read linked_session_key inside the
+    # same canonical-plus-legacy lock set, before the unlink destroys either
+    # piece of evidence. An unreadable owner claim refuses with the row intact.
+    try:
+        ok, delete_claim = await asyncio.to_thread(
+            _delete_history_session,
+            state.conversation_log,
+            key,
+            delete_claim,
+            exact_owner_keys=swept.get(key, ()),
+        )
+    except _OwnerKeyUnreadable:
+        return _cron_ownership_unknown_refusal(crons, swept.get(key, ()))
+
     if ok:
+        # Catch a job created after the strict pre-scan but before the unlink.
+        # The row is already gone, so a failed second scan is loud but cannot
+        # refuse; the pre-unlink owner claim still proceeds to cleanup.
+        after = await _owner_keys_after_unlink(crons, (key,))
+        delete_claim = replace(
+            delete_claim,
+            cron_owner_keys=(delete_claim.cron_owner_keys | frozenset(after.get(key, ()))),
+        )
         try:
             await _remove_slot_for_history_key(state, key, delete_claim=delete_claim)
         except Exception:
@@ -1456,6 +1999,72 @@ async def api_session_delete(request: web.Request) -> web.Response:
         state.push_slots_update()
         state.push_refresh("history")
     return web.json_response({"ok": ok})
+
+
+# A release that loses the store-lock race is not recoverable later: the session
+# is already gone, nothing re-runs this funnel, and the job's owner key can never
+# be presented again. CronStoreBusy is transient contention (a large atomic save
+# on network storage, the CLI process, the off-loop batch worker), so a short
+# bounded backoff clears essentially every real case; past that the failure is
+# reported loudly instead of dropped.
+_CRON_RELEASE_ATTEMPTS = 3
+_CRON_RELEASE_BACKOFF_SECS = 0.2
+
+
+def _warn_stranded_cron_ownership(crons: Any, owner_keys: set[str], reason: str) -> None:
+    """Name the owner and the jobs whose ownership could not be released."""
+    stranded = _stranded_job_ids(crons, owner_keys)
+    logger.warning(
+        "History delete: cron ownership release FAILED (%s) after %d attempt(s) for owner(s) %s; "
+        "job(s) %s may still be owned by a session that no longer exists — release them with "
+        "`kirocrew cron adopt <id> --release`",
+        reason,
+        _CRON_RELEASE_ATTEMPTS,
+        ", ".join(sorted(owner_keys)),
+        ", ".join(stranded) if stranded else "unknown (store not readable from cache)",
+    )
+
+
+async def _release_cron_ownership(crons: Any, owner_keys: set[str]) -> list[str]:
+    """Release every cron job owned by a RETIRED key among ``owner_keys``.
+
+    Delegates to :meth:`CronService.release_jobs_owned_by`, which resolves BOTH
+    decisions inside the store lock on its freshly reloaded state: which keys name
+    a retired principal, and which jobs still carry one of them. Nothing is
+    filtered here, deliberately — every candidate key goes down. Reading either
+    decision from ``list_jobs`` would read a cache with up to one timer-poll
+    interval of cross-process staleness, and both answers are then wrong in a way
+    that strands jobs this funnel will never revisit: a job re-adopted since the
+    read gets its new owner cleared, and a cron deleted by the CLI inside the
+    window is called live so its children are never released.
+
+    :class:`CronStoreBusy` is retried with a bounded backoff. Any failure that
+    outlives the retries — sustained contention, or an unreadable store that
+    ``_sync_for_write`` refuses to write over — is surfaced by
+    :func:`_warn_stranded_cron_ownership` naming the owner and the candidate job
+    ids, because nothing re-runs this funnel and the deleted session can never
+    present its key again. Returns the ids released (empty when there was nothing
+    to release, and when the release ultimately failed).
+    """
+    keys = {k for k in owner_keys if k}
+    if crons is None or not keys:
+        return []
+    reason = "cron store busy"
+    for attempt in range(_CRON_RELEASE_ATTEMPTS):
+        try:
+            return await crons.release_jobs_owned_by(keys)
+        except CronStoreBusy:
+            if attempt + 1 < _CRON_RELEASE_ATTEMPTS:
+                await asyncio.sleep(_CRON_RELEASE_BACKOFF_SECS * (attempt + 1))
+        except Exception as exc:
+            # Not contention, so a retry cannot help (an unreadable store, a
+            # failed save). Still report it through the recovery path rather than
+            # letting the caller's generic handler log it without the ids or the
+            # command that fixes it.
+            reason = f"{type(exc).__name__}: {exc}"
+            break
+    _warn_stranded_cron_ownership(crons, keys, reason)
+    return []
 
 
 async def _remove_slot_for_history_key(
@@ -1514,12 +2123,31 @@ async def _remove_slot_for_history_key(
             except Exception:
                 logger.warning(
                     "History delete: current slot session owner unreadable for %s; "
-                    "skipping session destroy",
+                    "preserving destructive cleanup",
                     key,
                     exc_info=True,
                 )
                 return True
         return False
+
+    def live_runtime_owns_session(session_key: str) -> bool:
+        """Fail safe when a slot or SessionManager runtime still owns the key."""
+        if live_slot_owns_session(session_key):
+            return True
+        canonical_session_key = canonical_key(session_key)
+        try:
+            manager_keys = state.sessions.session_keys()
+            return any(
+                canonical_key(manager_key) == canonical_session_key for manager_key in manager_keys
+            )
+        except Exception:
+            logger.warning(
+                "History delete: current SessionManager owners unreadable for %s; "
+                "preserving cron ownership",
+                key,
+                exc_info=True,
+            )
+            return True
 
     if slot:
         cancelled = state.cancel_questions_for_slot(slot.key)
@@ -1562,55 +2190,78 @@ async def _remove_slot_for_history_key(
     # scan, so deleting those sidecars cannot be made atomic here. Preserve them:
     # stale state is reversible, while deleting a successor's state is not.
 
+    # Cron ownership is different from the independent sidecars above: every key
+    # here came from the strict store scan or from linked_session_key while the
+    # transcript lock was held. Re-check the live slot and SessionManager
+    # registry after the teardown awaits, then compare-and-clear only those exact
+    # retired owners in the cron store's own lock. A successor already presenting
+    # one of the keys keeps it.
+    proven_owner_keys = {owner for owner in claim.cron_owner_keys if owner}
+    releasable_owner_keys = {
+        owner for owner in proven_owner_keys if not live_runtime_owns_session(owner)
+    }
+    preserved_owner_keys = proven_owner_keys - releasable_owner_keys
+    if preserved_owner_keys:
+        logger.info(
+            "History delete: current runtime owner(s) still present for %s; preserving cron "
+            "ownership for %s",
+            key,
+            ", ".join(sorted(preserved_owner_keys)),
+        )
+    try:
+        released = await _release_cron_ownership(
+            getattr(state, "crons", None), releasable_owner_keys
+        )
+    except Exception:
+        logger.warning("History delete: cron ownership release failed for %s", key, exc_info=True)
+    else:
+        if released:
+            logger.info(
+                "History delete: released %d cron job(s) for %s: %s",
+                len(released),
+                key,
+                ", ".join(released),
+            )
+
 
 async def api_sessions_clear(request: web.Request) -> web.Response:
-    """DELETE /api/sessions — permanently delete closed history sessions only.
-
-    Skips sessions currently open in the sidebar (any slot in
-    ``state._slots``) and sessions with ``pinned=True`` on disk.
-    Bulk-archiving open unpinned/idle sessions is out of scope here.
-    """
+    """DELETE /api/sessions — permanently delete closed history sessions only."""
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
 
-    # Bind after the None guard so mypy's narrowing carries into the closure.
     log = state.conversation_log
+    clearable, skipped, unreadable = await asyncio.to_thread(_clearable_history_keys, state, log)
 
-    # ONE selector, shared with the clearable-count endpoint, so the number a
-    # confirmation displays is the set this loop takes rather than a second
-    # opinion about it. It takes no age cutoff because this path accepts
-    # none: a filtered count would report a subset of what this loop then
-    # permanently unlinks.
-    # It globs and stats every session file, so it stays off the event loop.
-    clearable, skipped = await asyncio.to_thread(_clearable_history_keys, state, log)
+    # One strict owner scan covers the whole selection. A known cron-store
+    # failure refuses before any transcript is unlinked.
+    crons = getattr(state, "crons", None)
+    try:
+        swept = await _owner_keys_bound_to_transcript(crons, clearable)
+    except (CronStoreBusy, CronStoreUnreadable) as exc:
+        return _cron_store_refusal(exc, cleared=0, skipped=skipped, failed=0)
 
     count = 0
     failed = 0
     cleanup_claims: list[tuple[str, _HistoryDeleteClaim]] = []
+    undeletable: list[dict[str, str]] = [
+        {"id": key, "code": CRON_OWNERSHIP_UNKNOWN_CODE} for key in unreadable
+    ]
     for key in clearable:
-        # Re-check per iteration: a resume publishing a slot during the selector's
-        # scan OR during an earlier delete-await now appears here. The selector
-        # returns a snapshot; this is the guard that keeps a tab opened mid-loop
-        # from being deleted out from under the user, so it must stay in the loop
-        # rather than move into the selector.
+        # Re-check per iteration so a tab opened during an earlier await wins.
         if key in _open_slot_transcript_keys(state):
             skipped += 1
             continue
 
         delete_claim = _capture_history_delete_claim(state, key)
         try:
-            # Offload off the event loop — delete_session enters the transcript
-            # mutation lock and cross-process flock.
-            # skip_pinned=True makes the pin-check-and-delete atomic so a
-            # concurrent pin cannot sneak in between the metadata read and the
-            # unlink. The invariant (lock, real test) now lives in history.py.
             result, delete_claim = await asyncio.to_thread(
                 _delete_history_session,
                 log,
                 key,
                 delete_claim,
                 skip_pinned=True,
+                exact_owner_keys=swept.get(key, ()),
             )
             if result is None:
                 skipped += 1
@@ -1619,15 +2270,28 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
                 count += 1
             else:
                 failed += 1
+        except _OwnerKeyUnreadable:
+            undeletable.append({"id": key, "code": CRON_OWNERSHIP_UNKNOWN_CODE})
         except Exception:
             failed += 1
             logger.warning("api_sessions_clear: delete raised for %s", key, exc_info=True)
+
     if cleanup_claims:
+        # One post-unlink scan catches owners created anywhere in the batch
+        # window. Extend each immutable claim before its fenced cleanup runs.
+        after = await _owner_keys_after_unlink(
+            crons, [cleanup_key for cleanup_key, _claim in cleanup_claims]
+        )
         cleanup_tasks = [
             _remove_slot_for_history_key(
                 state,
                 cleanup_key,
-                delete_claim=delete_claim,
+                delete_claim=replace(
+                    delete_claim,
+                    cron_owner_keys=(
+                        delete_claim.cron_owner_keys | frozenset(after.get(cleanup_key, ()))
+                    ),
+                ),
             )
             for cleanup_key, delete_claim in cleanup_claims
         ]
@@ -1635,16 +2299,28 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     if count:
         state.push_slots_update()
         state.push_refresh("history")
-    logger.info("api_sessions_clear: cleared=%d skipped=%d failed=%d", count, skipped, failed)
+    logger.info(
+        "api_sessions_clear: cleared=%d skipped=%d failed=%d undeletable=%d",
+        count,
+        skipped,
+        failed,
+        len(undeletable),
+    )
     return web.json_response(
-        {"ok": failed == 0, "cleared": count, "skipped": skipped, "failed": failed}
+        {
+            "ok": failed == 0,
+            "cleared": count,
+            "skipped": skipped,
+            "failed": failed,
+            "undeletable": undeletable,
+        }
     )
 
 
 def _clearable_history_keys(
     state: DashboardState,
     log: Any,
-) -> tuple[list[str], int]:
+) -> tuple[list[str], int, list[str]]:
     """The history sessions a bulk clear would remove.
 
     ONE implementation, shared by ``api_sessions_clear`` and the clearable-count
@@ -1660,12 +2336,14 @@ def _clearable_history_keys(
     delete itself grows one, and then both sides grow it together through this
     function.
 
-    Returns ``(clearable, skipped)``. A session is skipped when it is reachable as
-    an open tab, when its metadata says ``pinned``, or when that metadata could not
-    be read — the same exclusions ``delete_session(..., skip_pinned=True)``
-    applies, so the two agree. Present but unparseable metadata is unreadable:
-    ``get_metadata_status`` returns ``({}, False)``, so both the preview and
-    the delete exclude it rather than treating missing identity as permission.
+    Returns ``(clearable, skipped, unreadable)``. A session is skipped when it is
+    reachable as an open tab or when its metadata says ``pinned``. A session whose
+    metadata could not be read is excluded and listed in ``unreadable`` by key,
+    rather than folded into a count the caller cannot act on. Present but
+    unparseable metadata is unreadable: ``get_metadata_status`` returns
+    ``({}, False)``, so both the preview and delete exclude it rather than treating
+    missing identity as permission. The bulk clear reports those rows by id and
+    code; the single delete refuses them with 409 ``cron_ownership_unknown``.
 
     Reads the filesystem (``list_sessions`` globs and stats every session file),
     so callers offload it off the event loop.
@@ -1674,6 +2352,7 @@ def _clearable_history_keys(
 
     clearable: list[str] = []
     skipped = 0
+    unreadable: list[str] = []
     for row in log.list_sessions():
         key = row.get("key", "")
         if not key:
@@ -1693,13 +2372,20 @@ def _clearable_history_keys(
         except Exception:
             # Not reachable through get_metadata_status's documented returns; a
             # genuinely unexpected failure must not read as permission to delete.
-            skipped += 1
+            unreadable.append(key)
             continue
-        if not readable or not isinstance(meta, dict) or meta.get("pinned"):
+        if not readable or not isinstance(meta, dict):
+            # Reported by key rather than folded into ``skipped``: the single
+            # delete refuses this row with 409 cron_ownership_unknown, and a
+            # clear that only said "skipped: N" hid which rows can never be
+            # cleared and why (the by-id remedy needs the id).
+            unreadable.append(key)
+            continue
+        if meta.get("pinned"):
             skipped += 1
             continue
         clearable.append(key)
-    return clearable, skipped
+    return clearable, skipped, unreadable
 
 
 async def api_sessions_clearable_count(request: web.Request) -> web.Response:
@@ -1726,7 +2412,7 @@ async def api_sessions_clearable_count(request: web.Request) -> web.Response:
             {"error": "no conversation log", "code": "count_unavailable"}, status=400
         )
 
-    clearable, _skipped = await asyncio.to_thread(
+    clearable, _skipped, _unreadable = await asyncio.to_thread(
         _clearable_history_keys, state, state.conversation_log
     )
     return web.json_response({"sessions": len(clearable)})

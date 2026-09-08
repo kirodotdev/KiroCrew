@@ -29,11 +29,13 @@ consumers refuse the operation; the legacy `get_metadata()` projection still
 returns an empty dictionary for callers that only display history.
 
 Bulk clear excludes transcripts whose metadata cannot be read, including Global
-V1 transcripts. Their owner and pinned state cannot safely be inferred. An owner
-can still delete an exact session through the sidebar's individual Delete action
-(`DELETE /api/sessions/{key}`); that explicit deletion does not require metadata
-parsing and leaves other sessions untouched. This is the recovery path for a
-damaged transcript, without weakening the identity checks on scoped bulk clear.
+V1 transcripts. Their owner and pinned state cannot safely be inferred. An exact
+sidebar delete (`DELETE /api/sessions/{key}`) still bypasses bulk identity and
+pin selection, but it now reads `linked_session_key` while holding the transcript
+lock because that field may be the only exact cron owner key. Unreadable metadata
+therefore returns `409 cron_ownership_unknown` with the row intact; the operator
+must release any candidate jobs, repair the metadata, and retry. A readable exact
+delete leaves every other session untouched.
 
 ### Composition and source ownership
 
