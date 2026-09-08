@@ -87,23 +87,26 @@ class TestAgentCanRewrite:
     """Ownership, not current mode bits, decides whether a path is rewritable: the
     owner of a 0555 directory can chmod it writable in one syscall."""
 
-    def test_a_directory_the_caller_owns_is_rewritable_even_at_mode_0555(self, tmp_path):
+    def test_a_directory_the_caller_owns_is_rewritable_even_at_mode_0555(self, tmp_path, request):
         d = tmp_path / "bin"
         d.mkdir()
         d.chmod(0o555)
+        request.addfinalizer(lambda: d.chmod(0o755))
         assert terminal._agent_can_rewrite(str(d), os.geteuid()) is True
 
-    def test_a_directory_owned_by_someone_else_is_not(self, tmp_path):
+    def test_a_directory_owned_by_someone_else_is_not(self, tmp_path, request):
         d = tmp_path / "bin"
         d.mkdir()
         d.chmod(0o555)
+        request.addfinalizer(lambda: d.chmod(0o755))
         assert terminal._agent_can_rewrite(str(d), os.geteuid() + 1) is False
 
-    def test_a_rewritable_ancestor_taints_the_path(self, tmp_path):
+    def test_a_rewritable_ancestor_taints_the_path(self, tmp_path, request):
         outer = tmp_path / "outer"
         inner = outer / "bin"
         inner.mkdir(parents=True)
         inner.chmod(0o555)
+        request.addfinalizer(lambda: inner.chmod(0o755))
         # The caller owns `outer`, so it can rename it and substitute everything
         # underneath, whatever `inner`'s own bits say.
         assert terminal._agent_can_rewrite(str(inner), os.geteuid()) is True
@@ -123,8 +126,17 @@ class TestResolveFenceShells:
         stand in for a system one without needing root to create it."""
         monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
 
-    def _sysdir(self, tmp_path, names):
-        """A read-only directory of read-only executables, like /usr/bin."""
+    def _sysdir(self, tmp_path, names, request=None):
+        """A read-only directory of read-only executables, like /usr/bin.
+
+        Restores the directory to a writable mode on teardown via a finalizer:
+        left at 0o555, pytest's own tmp_path cleanup cannot unlink entries
+        inside it, so it renames the tree to a `garbage-<uuid>` directory under
+        the shared pytest temp root and leaves it there forever. `request` is
+        optional so a caller with no fixture request (there are none left, but
+        this keeps the helper safe to call standalone) still gets a directory,
+        just without the guaranteed restore.
+        """
         d = tmp_path / "bin"
         d.mkdir(parents=True)
         for name in names:
@@ -132,39 +144,41 @@ class TestResolveFenceShells:
             p.write_text("#!/bin/sh\n")
             p.chmod(0o555)
         d.chmod(0o555)
+        if request is not None:
+            request.addfinalizer(lambda: d.chmod(0o755))
         return d
 
-    def test_reports_shells_beside_the_launched_one(self, tmp_path, monkeypatch):
-        d = self._sysdir(tmp_path, ("bash", "zsh", "fish"))
+    def test_reports_shells_beside_the_launched_one(self, tmp_path, monkeypatch, request):
+        d = self._sysdir(tmp_path, ("bash", "zsh", "fish"), request)
         self._foreign_uid(monkeypatch)
         found = terminal._resolve_fence_shells(str(d / "bash"))
         assert found == {
             "bash": str(d / "bash"), "zsh": str(d / "zsh"), "fish": str(d / "fish"),
         }
 
-    def test_ignores_a_shell_in_another_directory(self, tmp_path, monkeypatch):
-        d = self._sysdir(tmp_path, ("bash",))
-        elsewhere = self._sysdir(tmp_path / "other", ("fish",))
+    def test_ignores_a_shell_in_another_directory(self, tmp_path, monkeypatch, request):
+        d = self._sysdir(tmp_path, ("bash",), request)
+        elsewhere = self._sysdir(tmp_path / "other", ("fish",), request)
         assert (elsewhere / "fish").exists()
         self._foreign_uid(monkeypatch)
         assert terminal._resolve_fence_shells(str(d / "bash")) == {"bash": str(d / "bash")}
 
-    def test_probes_the_directory_rather_than_the_search_path(self, tmp_path, monkeypatch):
-        shims = self._sysdir(tmp_path / "s", ("fish",))
-        d = self._sysdir(tmp_path / "r", ("bash", "fish"))
+    def test_probes_the_directory_rather_than_the_search_path(self, tmp_path, monkeypatch, request):
+        shims = self._sysdir(tmp_path / "s", ("fish",), request)
+        d = self._sysdir(tmp_path / "r", ("bash", "fish"), request)
         monkeypatch.setenv("PATH", str(shims))
         self._foreign_uid(monkeypatch)
         found = terminal._resolve_fence_shells(str(d / "bash"))
         assert found["fish"] == str(d / "fish")
 
-    def test_offers_nothing_from_a_directory_the_gateway_user_owns(self, tmp_path):
+    def test_offers_nothing_from_a_directory_the_gateway_user_owns(self, tmp_path, request):
         # The swap window, and the Homebrew/workspace prefix case: the caller owns
         # this directory, so read-only mode bits are one chmod from irrelevant.
-        d = self._sysdir(tmp_path, ("bash", "fish"))
+        d = self._sysdir(tmp_path, ("bash", "fish"), request)
         assert terminal._resolve_fence_shells(str(d / "bash")) == {}
 
-    def test_skips_a_world_writable_candidate(self, tmp_path, monkeypatch):
-        d = self._sysdir(tmp_path, ("bash",))
+    def test_skips_a_world_writable_candidate(self, tmp_path, monkeypatch, request):
+        d = self._sysdir(tmp_path, ("bash",), request)
         d.chmod(0o755)
         (d / "fish").write_text("#!/bin/sh\n")
         (d / "fish").chmod(0o757)  # anyone may overwrite it before invocation
@@ -174,9 +188,9 @@ class TestResolveFenceShells:
         assert "fish" not in found
         assert found == {"bash": str(d / "bash")}
 
-    def test_skips_a_symlinked_candidate(self, tmp_path, monkeypatch):
-        d = self._sysdir(tmp_path, ("bash",))
-        target = self._sysdir(tmp_path / "elsewhere", ("fish",))
+    def test_skips_a_symlinked_candidate(self, tmp_path, monkeypatch, request):
+        d = self._sysdir(tmp_path, ("bash",), request)
+        target = self._sysdir(tmp_path / "elsewhere", ("fish",), request)
         d.chmod(0o755)
         (d / "fish").symlink_to(target / "fish")
         d.chmod(0o555)

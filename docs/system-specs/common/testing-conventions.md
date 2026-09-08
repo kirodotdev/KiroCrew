@@ -676,6 +676,125 @@ Two things the survey CANNOT tell you, both of which misled the first pass:
   exposes `_clear_caches()` for a module-scoped teardown, because ~160 MB of parsed source
   held for the life of the worker is paid by every later test on it.
 
+The second full-run audit (five backend + five frontend runs against a clean `main`)
+found these further classes. Each one passed on the host that wrote it.
+
+- **A thread count that rises is not yet a leak.** The per-test census flagged `+3` to
+  `+8` threads on dozens of tests. Classified, every one was either a process-wide
+  singleton pool warming up for the first time on that worker (`mc-gov`, `mc-embed`,
+  `mc-subproc`, `sel-writer` — bounded, by design, and shared by every later test) or a
+  loop's default executor thread still winding down after `loop.close()`'s
+  `shutdown(wait=False)`. Neither grows without bound, and the worker end state is a
+  dozen threads. Stopping a singleton per test to make the number go down is the
+  round-one anti-pattern in reverse: it costs every later test a cold pool. Report a
+  thread leak only when the SAME test, repeated, keeps adding threads.
+- **The systemd user manager is host state.** `sandbox.cgroup_scope_argv` wraps a spawn
+  in `systemd-run --user --scope --slice=kirocrew-agents-<token>.slice`, and the token is a
+  hash of the data home. The floor pins a fresh `KIROCREW_HOME` per test, so every test
+  (and every `kirocrew` CLI child a test spawned, which probes for itself) that reached the
+  wrapper created a NEW transient slice — and systemd never garbage-collects a slice. Five
+  runs left 4,000+ `kirocrew-agents-*.slice` units loaded in the operator's user manager,
+  and a late reconcile thread ran a real `systemctl --user set-property` on the operator's
+  agents slice after its test's monkeypatch was undone. Fix: the rootdir conftest runs the
+  whole session with no systemd user session (`XDG_RUNTIME_DIR` and
+  `DBUS_SESSION_BUS_ADDRESS` removed — the probe's own documented gate, inherited by
+  children, and CI parity). The one test that needs real enforcement opts in with the
+  `real_user_session` fixture, which stops the slice it created on teardown. A test that
+  wants to talk to the real user manager has to name it.
+- **`Path.home()` is not pinned, and a resolver that reads it reads the operator.** The pod
+  boot test staged the operator's real `~/.local/share/kiro-cli` sign-in store into the pod
+  home and then resolved and SPAWNED the real kiro-cli from `known_kiro_cli_dirs(Path.home())`
+  — it passed alone and returned `EX_CONFIG` in every full run, because an earlier test on
+  the worker had poisoned the sandbox probe. A dashboard-server fixture `mkdir`+`chmod`ed the
+  real `~/.kiro/crew-auth-staging` through `KiroPrerequisiteService(home=Path.home())`. The
+  data-home pin cannot reach either: they hang off HOME, not `KIROCREW_HOME`. A test whose
+  code path resolves anything from the operator's HOME pins `pathlib.Path.home` (the
+  classmethod) and `HOME` to a fake host home under `tmp_path`; a HOME-relative constant that
+  production must keep (the sandbox hides `~/.kiro/crew-auth-staging` by that spelling) is
+  rebound per test through the rootdir conftest's `_SHARED_KIRO_PATHS` table instead, which
+  works even for a RELATIVE constant because `pathlib` drops the left operand when the right
+  one is absolute.
+- **A resolver that is unpinned ON PURPOSE.** `PodConfig.load()` roots `pods_dir` at the
+  DEFAULT data home so a pod process finds the host's plane rather than its own
+  `KIROCREW_HOME`; the pin therefore cannot reach it. Two refusal tests wrote
+  `<name>.refused` into the operator's real `~/.kiro/crew/pods` — and were red on the
+  macOS runner, where that directory does not exist and a best-effort note silently
+  vanishes. A deliberately host-rooted resolver needs its own lever in every test that
+  reaches it (`KIROCREW_POD_ROOT`, `KIROCREW_POD_ENV_DIR` under `tmp_path`).
+- **A constant derived from a patchable one at import.** `design_tweak`'s `CONFIG_FILE` was
+  computed from `DATA_DIR` at import; tests (and every pin) repoint `DATA_DIR`, so the
+  registry write still landed in the operator's real app config and left it pointing at a
+  pytest tmp path. Derive it at access time (a module `__getattr__`, or a function), and add
+  a test that the written file sits under the pinned dir.
+- **`monkeypatch.undo()` unwinds the FIXTURE's pins too.** A test that called `undo()` on
+  the same `monkeypatch` its fixture had used to pin `KIROCREW_HOME` unpinned the data home
+  mid-test, and its trailing `empty_trash()` wrote the real `~/.kiro/crew/trash` lock. Scope
+  an ad hoc patch with `pytest.MonkeyPatch.context()`; never `undo()` a shared instance.
+- **A fire-and-forget task drains after the pin.** `_start_channel_transports()` detaches
+  `_replay_spooled_inbound()` on purpose; the test never awaited it, so it resolved
+  `data_home()` after teardown and created the real `~/.kiro/crew/inbound-spool`. The
+  drain `_shutdown()` already performs (cancel + `wait_for`) belongs in the test's teardown
+  too — the same rule as the daemon-thread breadcrumb above, one layer up.
+- **A read-only directory under `tmp_path` outlives the run.** A test `chmod`ed a
+  directory to `0o555` and never restored it; pytest's `rm_rf` cannot unlink inside it,
+  renames the tree to `/tmp/pytest-of-<user>/garbage-<uuid>/` and leaves it there forever,
+  one per run. Restore the mode in a finalizer (`request.addfinalizer`).
+- **A process-wide descriptor census is not a leak check.** Three tests compared
+  `len(os.listdir("/proc/self/fd"))` before and after, or re-probed a closed fd with
+  `os.fstat`; the xdist worker has ten-plus live threads (executors, the SEL writer) that
+  open and close descriptors of their own, and a freed fd NUMBER is reissued to any of
+  them. Assert the code's own open/close pairing: spy (wrap, never stub) the primitive the
+  code uses (`os.open`, `tempfile.mkstemp`, `open_write_nofollow`, `os.close`) and assert
+  every descriptor it opened was closed — or, for ordering, that the pinned fd's FIRST
+  `os.close` happened before `rmtree` was entered. `test/test_bench_download_fd.py`,
+  `test/test_session_image_repair.py` and `test/test_meetings_audio_import.py` are the shapes.
+- **A module-global task set gathered across loops, second half.** Round one pruned tasks
+  whose loop was CLOSED; a task from another still-live loop slipped through and
+  `asyncio.gather` raised `attached to a different loop` once in five runs. Drain only what
+  the running loop can await (`task.get_loop() is asyncio.get_running_loop()`); the test
+  module carries the filter, since production never drains the set.
+- **A test about a cold cache must make it cold.** `TestColdCacheModelFallback` asserted
+  three fallback pushes, but `model_registry._ADVERTISED_MODELS` is a module global another
+  test on the worker had warmed, so the id folded to the served spelling and one push went
+  out. Pin the premise (`monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})`).
+- **A probe that depends on the venv's own packaging.** `_pip_install_channel_available()`
+  reads `importlib.util.find_spec("pip")`; a uv-created venv ships no `pip` module, so two
+  tests that meant to exercise the PEP 668 branch failed on every uv host. Pin every probe
+  the function reads, not just the one the test is about.
+- **A test-only import that CREATES the data home.** `test/conftest.py` imports
+  `slack.handler`, which built `_PHASE_EMOJIS` by calling `KiroCrewConfig.load()` at import —
+  and loading resolves `config_dir()`, which `mkdir`s `~/.kiro/crew`. Import-time reads of
+  the data home peek first (`peek_data_home()`) and load only when the file already exists.
+- **Bytecode written into the checkout by import-by-path.** Loading a script with
+  `spec_from_file_location` + `exec_module` writes `__pycache__` beside it —
+  `packaging/signing/`, `.github/scripts/`. Wrap the `exec_module` in a scoped
+  `sys.dont_write_bytecode = True`.
+- **Unbounded `lru_cache`s in a script under test.** `scripts/leaf_test_scope.py` caches the
+  text of every `.py` it scans, exactly right for one CLI run and wrong for a long-lived
+  worker; the test module clears them at module teardown.
+- **Electron: an unref'd backstop timer, and a lazy binary download.** `stopGatewayGracefully`
+  bounded a never-settling tree kill with a `setTimeout(...).unref()`; an unref'd timer
+  cannot keep the loop alive, so when nothing else was pending the loop drained before the
+  backstop fired — 26 `node:test` cases cancelled on Node 22 (the declared floor), passing
+  on the Node 24 CI runner by accident. A backstop the caller awaits must hold the loop.
+  And `require("electron")` in a plain Node process runs `electron/index.js`, which
+  DOWNLOADS the binary into `node_modules` when `dist/` is absent (electron 43 has no
+  postinstall), so four test files raced the network on a fresh checkout. The `test` script
+  now preloads `website/electron/test/_preload.cjs`, which sets `ELECTRON_OVERRIDE_DIST_PATH`
+  before any source loads. Details: [website/docs/testing.md](../../../website/docs/testing.md).
+- **The basetemp can sit INSIDE a guarded root.** A Kiro Crew agent session sets `TMPDIR`
+  to its scratch dir under `~/.kiro/crew/scratch/`, so pytest's basetemp — and every
+  correctly pinned home — resolves inside the real `~/.kiro` while touching nothing of the
+  operator's. The sessions-dir fence and `test_host_isolation_floor.py`'s guard therefore
+  treat this run's own basetemp and `tempfile` root as test-owned (`_test_owned_roots`)
+  and still catch a pin that escapes to the real tree. Sixteen tests were red in every
+  agent-driven run before this.
+
+Two ways to see all of the above on your own machine: run a touched file under
+`trace_home.py`-style tracing (an `sys.addaudithook` that prints the stack of every
+write under the real home — the recipe is in "The measurement" above), and compare
+`systemctl --user list-units --all | grep -c kirocrew-agents` before and after a run.
+
 ### Coverage that only looks like coverage
 
 - `AsyncMock()` for an object with SYNC methods: every sync call site then gets a

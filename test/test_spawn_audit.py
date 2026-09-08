@@ -75,6 +75,8 @@ import ast
 import functools
 from pathlib import Path
 
+from source_corpus import candidate_sources, parsed_candidates
+
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
 
@@ -1459,13 +1461,19 @@ def _collect_first_party_flag_sites() -> frozenset[str]:
     ``sandbox.py`` is excluded by design: it OWNS the parameter (``wrap_argv``
     defines it; ``sandboxed_spawn_argv`` threads it through), so its internal
     forwarding is the mechanism under audit, not a spawn site.
+
+    Parses only files whose text already contains ``first_party_fixed_argv``
+    (``test/source_corpus.py``'s shared, narrowed read) instead of re-``rglob``
+    + re-``read_text``-ing the whole tree: the literal must appear verbatim for
+    a keyword of that name to exist, so no candidate is dropped. Cached like
+    the sibling scans, and released with the rest of the corpus by
+    ``test/conftest.py::_release_source_corpus_after_module`` at module end.
     """
     out: set[str] = set()
-    for path in _SRC_ROOT.rglob("*.py"):
+    for path, source in candidate_sources(require_all=(_FIRST_PARTY_KWARG,)):
         rel = path.relative_to(_SRC_ROOT).as_posix()
         if rel == "sandbox.py" or _is_bundled_skill_asset(path):
             continue
-        source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, str(path))
         funcs = [
             n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -1523,18 +1531,24 @@ def _collect_spawn_functions() -> dict[str, str]:
     function containing a subprocess spawn. ``<module>`` marks a module-level
     spawn (no enclosing function).
 
-    Cached: all six audit tests derive from this one rglob+ast.parse scan of
-    the whole source tree (~2s), so re-scanning per test multiplies pure
-    duplicated wall-clock. The source tree cannot change mid-run and callers
-    only read the mapping, so a shared instance is safe.
+    Cached: all six audit tests derive from this one scan, so re-scanning per
+    test multiplies pure duplicated wall-clock. The source tree cannot change
+    mid-run and callers only read the mapping, so a shared instance is safe.
+    Parses only files whose text already contains one of the spawn attribute
+    or bare-name tokens (``test/source_corpus.py``'s shared, narrowed read)
+    instead of a private ``rglob`` + ``read_text`` of the whole tree: the
+    matched ``ast.Call`` always spells one of these tokens verbatim in the
+    source, so narrowing cannot drop a real spawn site. Released with the rest
+    of the corpus by ``test/conftest.py::_release_source_corpus_after_module``
+    at module end.
     """
     out: dict[str, str] = {}
-    for path in _SRC_ROOT.rglob("*.py"):
+    needles = tuple(_SPAWN_ATTRS | _SPAWN_NAMES)
+    for path, source in candidate_sources(require_any=needles):
         # A skill's own helper scripts are not gateway runtime code paths --
         # see ``_is_bundled_skill_asset`` for why they are out of scope.
         if _is_bundled_skill_asset(path):
             continue
-        source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, str(path))
         funcs = [
             n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -1790,10 +1804,9 @@ def test_bundled_skill_assets_are_not_imported():
     }
 
     offenders: list[str] = []
-    for path in _SRC_ROOT.rglob("*.py"):
+    for path, _source, tree in parsed_candidates():
         if _is_bundled_skill_asset(path):
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
         rel = path.relative_to(_SRC_ROOT).as_posix()
         for node in ast.walk(tree):
             names: list[str] = []

@@ -574,8 +574,17 @@ class TestSttPrereqCommands:
 class TestPipInstallChannel:
     @pytest.fixture(autouse=True)
     def _not_bundled(self, monkeypatch):
-        """Pin the desktop-bundle probe; the bundled case has its own test."""
+        """Pin the desktop-bundle and pip-module probes so this class describes
+        the environment it claims to test rather than inheriting the host's —
+        a uv-created venv (the default for `uv venv`) ships no `pip` module, so
+        an unpinned `find_spec("pip")` returns None on this host and every test
+        below that isn't otherwise exercising that branch would misfire."""
         monkeypatch.setattr(shared_mod.platform_compat, "is_bundled_interpreter", lambda: False)
+        monkeypatch.setattr(
+            shared_mod.importlib.util,
+            "find_spec",
+            lambda name, *a, **kw: object() if name == "pip" else None,
+        )
 
     def test_bundled_desktop_interpreter_has_no_channel(self, monkeypatch) -> None:
         """A pip install into the desktop app's code-signed bundle breaks
@@ -587,11 +596,10 @@ class TestPipInstallChannel:
     def test_pipless_interpreter_has_no_channel(self, monkeypatch) -> None:
         """uv tool installs and some pipx layouts ship no `pip` module, so
         `<python> -m pip` fails immediately — the command must not be shown."""
-        real = shared_mod.importlib.util.find_spec
         monkeypatch.setattr(
             shared_mod.importlib.util,
             "find_spec",
-            lambda name, *a: None if name == "pip" else real(name, *a),
+            lambda name, *a, **kw: None,
         )
         assert core_mod._pip_install_channel_available() is False
 

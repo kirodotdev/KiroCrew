@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -19,6 +18,7 @@ from pathlib import Path
 import pytest
 import yaml
 from installer_test_helpers import run_bounded
+from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "packaging" / "signing" / "cli-manifest.py"
@@ -780,10 +780,9 @@ def test_kms_signer_requires_matching_non_exportable_key_and_verifies_output(
         stderr=subprocess.DEVNULL,
     ).stdout
 
-    spec = importlib.util.spec_from_file_location("cli_manifest_test_helper", HELPER)
-    assert spec is not None and spec.loader is not None
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
+    # Import-by-path writes bytecode beside the source unless suppressed; the
+    # helper does the suppression, so no __pycache__ lands in packaging/signing/.
+    helper = load_skill_script("cli_manifest_test_helper", HELPER)
 
     key_arn = "arn:aws:kms:us-west-2:000000000000:key/test"
     aws_calls: list[list[str]] = []

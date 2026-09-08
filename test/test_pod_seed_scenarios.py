@@ -354,8 +354,58 @@ class TestBootAppliesTheScenario:
 
     @pytest.fixture
     def booted(self, tmp_path: Path, monkeypatch):
-        """Run ``boot`` for a pod with SEED=<value>; return (rc, home, argv)."""
+        """Run ``boot`` for a pod with SEED=<value>; return (rc, home, argv).
+
+        ``boot`` reaches two host-derived resolvers on every call, not just on
+        a real pod host: ``_seed_pod_os_home`` stages the OPERATOR's real
+        ``~/.local/share/kiro-cli`` / ``~/.local/share/amazon-q`` sign-in store
+        via ``_runtime_auth_store_mappings`` -> ``identity_stores.store_mappings
+        (sys.platform, Path.home(), os.environ)``, and
+        ``_probe_pod_child_bootstrap`` resolves and SPAWNS whatever real
+        kiro-cli ``kiro_cli.resolve_kiro_cli`` finds under ``Path.home()``
+        (``acp.client._resolve_kiro_bin`` defaults ``home=None`` to
+        ``Path.home()``). Both read the classmethod, not an
+        ``os.path.expanduser`` call, so pinning it here is what keeps every
+        test in this class from touching the operator's real credentials or
+        spawning their real CLI. ``HOME`` is pinned too because
+        ``build_pod_env`` copies ``os.environ.get("HOME", str(Path.home()))``
+        into the pod's own environment, and ``XDG_DATA_HOME`` is cleared
+        because ``identity_stores._source_root`` honours it as an override on
+        the *source* side of the mapping, which would otherwise still point at
+        a real store even under a fake home. ``KIROCREW_KIRO_BIN`` is cleared
+        because ``build_pod_env`` also inherits the operator's whole
+        ``os.environ`` and an override there is deliberately honoured by
+        ``find_kiro_cli_candidates`` ahead of every directory search. ``PATH``
+        is pinned to an empty directory for the same inheritance reason:
+        ``known_kiro_cli_dirs``'s inherited-PATH branch keeps every entry of
+        the REAL ``PATH`` verbatim (``env.augmented_path`` only APPENDS
+        home-templated extras), so a real kiro-cli install directory sitting
+        on the operator's actual ``PATH`` -- independent of ``home`` -- would
+        still resolve and get spawned even with ``Path.home()`` pinned.
+        """
         monkeypatch.setattr(rt, "IS_MACOS", False)
+        fake_host_home = tmp_path / "fake-host-home"
+        fake_host_home.mkdir()
+        empty_path_dir = tmp_path / "empty-path"
+        empty_path_dir.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: fake_host_home))
+        monkeypatch.setenv("HOME", str(fake_host_home))
+        monkeypatch.setenv("PATH", str(empty_path_dir))
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
+        # `known_kiro_cli_dirs` keys on the REAL `sys.platform`, not on the
+        # patched `rt.IS_MACOS`, and on darwin it appends the fixed install
+        # prefixes (`/opt/homebrew/bin`, `/usr/local/bin`) that derive from
+        # neither the pinned home nor the emptied PATH -- so a brew-installed
+        # kiro-cli on a macOS developer host would still resolve and be spawned.
+        # Confine the search to the fake home so the resolver has nothing to find.
+        from kiro_crew import kiro_cli
+
+        monkeypatch.setattr(
+            kiro_cli,
+            "known_kiro_cli_dirs",
+            lambda platform_name, home, environ, **_kw: [str(home / ".local" / "bin")],
+        )
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "envs"))
         checkout = tmp_path / "co"
@@ -378,7 +428,25 @@ class TestBootAppliesTheScenario:
             cfg = PodConfig.load()
             rt.write_env_file(cfg, "wt", {"CHECKOUT": str(checkout), "SEED": seed_value})
             rc = rt.boot(cfg, "wt")
-            return rc, cfg.home_dir("wt"), captured
+            home = cfg.home_dir("wt")
+            # The fake host home never had a kiro-cli sign-in store, so the
+            # child-viability probe must report PROBE_UNAVAILABLE (no real
+            # kiro-cli resolved) rather than finding and spawning the
+            # operator's real binary -- and the staged os-home's identity-
+            # store tree (``.local/share/...``, where the real store would
+            # have been copied to) must be empty, holding no files copied in
+            # from the fake host's non-existent store. The ``.aws/sso/cache``
+            # sibling is excluded: it is unconditionally created EMPTY by
+            # ``_seed_pod_os_home`` for the pod's OWN future grants and is not
+            # host-derived.
+            os_home = home / "os-home"
+            staged_store_root = os_home / ".local" / "share"
+            if staged_store_root.is_dir():
+                assert not any(p.is_file() for p in staged_store_root.rglob("*")), (
+                    f"pod os-home staged host-derived files under {staged_store_root}; "
+                    "the fake host home should have had nothing to copy"
+                )
+            return rc, home, captured
 
         return _run
 
@@ -395,6 +463,27 @@ class TestBootAppliesTheScenario:
         assert captured["argv"][0].endswith(rt.prov.venv_bin(Path(".")).name)
         assert captured["env"]["KIROCREW_HOME"] == str(home)
         assert "seeded home from scenario 'minimal'" in capsys.readouterr().out
+
+    def test_the_child_probe_finds_no_real_host_kiro_cli(self, booted) -> None:
+        """The fixture's fake host home must starve the child-viability probe.
+
+        An unpinned ``Path.home()`` here lets
+        ``_probe_pod_child_bootstrap`` resolve and spawn whatever kiro-cli is
+        really installed on the operator's machine. With the fake home in
+        place ``resolve_kiro_cli`` must find nothing under it, so the boot
+        reaches ``rc == 0`` via ``PROBE_UNAVAILABLE`` rather than by actually
+        launching a real binary.
+        """
+        from kiro_crew import kiro_cli as kiro_cli_mod
+
+        # Confirms the premise directly: nothing under the fake host home (or
+        # any directory a real KIROCREW_KIRO_BIN would point at) resolves to
+        # an executable, so a passing boot below is not silently spawning the
+        # operator's real CLI.
+        assert kiro_cli_mod.resolve_kiro_cli() is None
+        rc, _, captured = booted("minimal")
+        assert rc == 0
+        assert "argv" in captured
 
     def test_the_seeded_config_is_sanitized(self, booted) -> None:
         _, home, _ = booted("minimal")

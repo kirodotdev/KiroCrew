@@ -81,14 +81,54 @@ _GUARDED_ROOTS: tuple[pathlib.Path, ...] = (
 )
 
 
+#: pytest's own basetemp for this run, recorded by :func:`_record_own_basetemp`.
+#:
+#: Whatever the operator's ``TMPDIR`` points at, a path under our basetemp is
+#: test-owned by construction -- the floor's fixtures created it. That matters because
+#: a Kiro Crew agent session sets ``TMPDIR`` to its scratch dir under
+#: ``~/.kiro/crew/scratch/``, so every correctly-pinned home then resolves INSIDE the
+#: guarded ``~/.kiro`` tree while touching nothing of the operator's. The guard asks
+#: whether a pin ESCAPED to the real tree, and a path under our own basetemp did not.
+_OWN_BASETEMP: pathlib.Path | None = None
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _record_own_basetemp(tmp_path_factory):
+    global _OWN_BASETEMP
+    _OWN_BASETEMP = tmp_path_factory.getbasetemp().resolve()
+
+
 def _inside_a_guarded_root(path: pathlib.Path) -> bool:
-    """Whether *path* is, or is under, one of the operator's real guarded paths."""
+    """Whether *path* is, or is under, one of the operator's real guarded paths.
+
+    A path under this run's own basetemp is never "the operator's", even when that
+    basetemp itself sits under a guarded root (see :data:`_OWN_BASETEMP`).
+    """
     resolved = path.resolve()
+    if _OWN_BASETEMP is not None and (
+        resolved == _OWN_BASETEMP or resolved.is_relative_to(_OWN_BASETEMP)
+    ):
+        return False
     for root in _GUARDED_ROOTS:
         candidate = root.resolve()
         if resolved == candidate or resolved.is_relative_to(candidate):
             return True
     return False
+
+
+class TestTheGuardItself:
+    """The guard's two edges, pinned so neither can drift silently."""
+
+    def test_the_real_data_home_is_still_guarded(self) -> None:
+        assert _inside_a_guarded_root(pathlib.Path.home() / ".kiro" / "crew")
+
+    def test_our_own_basetemp_is_test_owned_even_under_a_guarded_root(self, monkeypatch) -> None:
+        """A run whose TMPDIR is a Kiro Crew session scratch dir puts basetemp under
+        ``~/.kiro``; a pin there must read as isolated, not as an escape."""
+        scratch = (pathlib.Path.home() / ".kiro" / "crew" / "scratch" / "runtime-x" / "pytest-0").resolve()
+        monkeypatch.setattr(sys.modules[__name__], "_OWN_BASETEMP", scratch)
+        assert not _inside_a_guarded_root(scratch / "i0" / "1-kirocrew-home")
+        assert _inside_a_guarded_root(pathlib.Path.home() / ".kiro" / "crew")
 
 
 # ── the data home ─────────────────────────────────────────────────────────
@@ -442,7 +482,7 @@ class TestTheKiroSessionsDirIsPinnedForEveryTestpath:
         assert not _inside_a_guarded_root(session_map.kiro_sessions_dir().resolve())
 
     def test_the_pin_is_installed_even_when_paths_was_not_imported_before_setup(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, tmp_path_factory
     ) -> None:
         """The floor imports the leaf itself; it does not wait for a test to.
 
@@ -464,7 +504,7 @@ class TestTheKiroSessionsDirIsPinnedForEveryTestpath:
 
         body = _root._isolate_kiro_sessions_dir
         body = getattr(body, "__wrapped__", body)
-        body(lambda name: tmp_path / name, monkeypatch)
+        body(lambda name: tmp_path / name, monkeypatch, tmp_path_factory)
 
         reimported = importlib.import_module("kiro_crew.config.paths")
         assert reimported is not original, "sys.modules eviction did not take"

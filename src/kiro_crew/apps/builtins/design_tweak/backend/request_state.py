@@ -34,11 +34,17 @@ class RecordTooLarge(ValueError):
     """A queue record would serialize past the reader's byte ceiling."""
 
 
+def config_file(runtime: Any) -> Path:
+    """The project registry path, derived from the CURRENT ``runtime.DATA_DIR``."""
+
+    return runtime.DATA_DIR / "config.json"
+
+
 def load_config(runtime: Any) -> JsonObject:
-    """Load the registry from ``runtime.CONFIG_FILE``, tolerating bad state."""
+    """Load the registry from :func:`config_file`, tolerating bad state."""
 
     try:
-        config = runtime.json.loads(runtime.CONFIG_FILE.read_text("utf-8"))
+        config = runtime.json.loads(config_file(runtime).read_text("utf-8"))
         if isinstance(config, dict):
             config.setdefault("projects", [])
             config.setdefault("activeId", "")
@@ -52,7 +58,7 @@ def load_config(runtime: Any) -> JsonObject:
 def save_config(runtime: Any, config: JsonObject) -> None:
     """Atomically persist the project registry without the queue-record cap."""
 
-    runtime._atomic_write_json(runtime.CONFIG_FILE, config)
+    runtime._atomic_write_json(config_file(runtime), config)
 
 
 def active_project(runtime: Any) -> JsonObject | None:

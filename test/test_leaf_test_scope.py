@@ -189,6 +189,21 @@ def test_the_mention_scan_leaves_a_clean_leaf_alone(clean_leaf: str) -> None:
 # ── corpus gates: tests that read the test/ tree as data ──────────────────────
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _release_the_scripts_corpus_after_module():
+    """Drop ``leaf_test_scope``'s file caches once this module is done with them.
+
+    ``_iter_python_cached`` / ``_read_cached`` are unbounded ``lru_cache``s over
+    every ``.py`` under ``src/``, ``test/`` and ``scripts/`` -- exact within one
+    process, which is why the script has them, but in an xdist worker they would
+    hold the whole tree's source text for the rest of the session, paid by every
+    later test on that worker. The tests here still share the caches with each other.
+    """
+    yield
+    mod._iter_python_cached.cache_clear()
+    mod._read_cached.cache_clear()
+
+
 @pytest.fixture(scope="module")
 def all_corpus_gates() -> list[str]:
     """``corpus_gates(REPO_ROOT)`` is a pure function of the immutable repo tree

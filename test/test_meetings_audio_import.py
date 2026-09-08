@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1077,22 +1078,52 @@ class TestSnapshotPinning:
         assert ai._open_snapshot_pinned(str(snap), witness) is None
 
     @pytest.mark.asyncio
-    async def test_cleanup_task_closes_the_pin_before_removing_the_directory(self, tmp_path):
+    async def test_cleanup_task_closes_the_pin_before_removing_the_directory(
+        self, tmp_path, monkeypatch
+    ):
         """The descriptor rides the shielded cleanup task and is closed in the
         same worker thread BEFORE ``rmtree`` — never on the event loop (the
         AUTOSDE no-blocking-call rule names ``os.close``, GPT review r22), and
-        before the removal because the held handle would block it on Windows."""
+        before the removal because the held handle would block it on Windows.
+
+        Asserted by SPYING on the two calls in the worker, not by re-probing the
+        fd afterwards: under xdist this worker process has other threads
+        (executors, the SEL writer) opening and closing descriptors of their
+        own, so a freed fd NUMBER can be reissued to any of them before the
+        assertion runs and ``os.fstat(fd)`` succeeds again on a stranger's file
+        — the ``/proc/self/fd``-census flake in another shape. The FIRST
+        ``os.close`` of this number is necessarily ours (nobody else holds it
+        until we release it), and ``rmtree`` must be entered only after it.
+        """
         snap_dir = tmp_path / "snapdir"
         snap_dir.mkdir()
         snap = snap_dir / "recording.wav"
         snap.write_bytes(b"x")
         fd = os.open(str(snap), os.O_RDONLY)
 
+        pin_closed = threading.Event()
+        real_close = os.close
+
+        def _spy_close(fd_arg: int, /) -> None:
+            if fd_arg == fd:
+                pin_closed.set()
+            real_close(fd_arg)
+
+        rmtree_saw_pin_closed: list[bool] = []
+        real_rmtree = ai.shutil.rmtree
+
+        def _spy_rmtree(*args: Any, **kwargs: Any) -> None:
+            rmtree_saw_pin_closed.append(pin_closed.is_set())
+            real_rmtree(*args, **kwargs)
+
+        monkeypatch.setattr(ai.os, "close", _spy_close)
+        monkeypatch.setattr(ai.shutil, "rmtree", _spy_rmtree)
+
         await ai._remove_snapshot_dir(None, str(snap_dir), fd)
 
         assert not snap_dir.exists()
-        with pytest.raises(OSError):
-            os.fstat(fd)  # closed by the cleanup worker, not leaked
+        assert pin_closed.is_set()  # closed by the cleanup worker, not leaked
+        assert rmtree_saw_pin_closed == [True]  # and closed BEFORE the removal began
 
 
 # ---------------------------------------------------------------------------

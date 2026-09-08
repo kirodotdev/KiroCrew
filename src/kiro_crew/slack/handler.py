@@ -49,7 +49,7 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
-from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
 from kiro_crew.context import (
     ContextBuilder,
     build_cancelled_turn_preamble,
@@ -298,8 +298,16 @@ def _build_phase_emojis(
     return result, unknown
 
 
+# Import-time, so it must not CREATE anything: ``KiroCrewConfig.load()`` resolves
+# ``config_dir()``, which mkdirs the data home, and this module is imported by
+# every test collector and by read-only tools. With no ``config.json`` on disk
+# there are no overrides to read, so peek first and load only when the file --
+# and therefore the directory -- already exists.
 try:
-    _overrides = KiroCrewConfig.load().slack.reactions
+    if (peek_data_home() / "config.json").is_file():
+        _overrides = KiroCrewConfig.load().slack.reactions
+    else:
+        _overrides = {}
 except Exception:
     logger.warning("Failed to load reaction overrides from config; using defaults", exc_info=True)
     _overrides = {}

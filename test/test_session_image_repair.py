@@ -12,9 +12,11 @@ imported at module level with no skipif guard.
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -867,6 +869,13 @@ class TestReplacementTranscriptIsLockedDown:
         Same descriptor-ownership hazard as the backup path: the raw fd is ours
         until fdopen takes it, and Windows refuses to unlink a file with an open
         handle -- which would leave a .tmp behind on every failed repair.
+
+        Asserted by tracking the exact descriptor `tempfile.mkstemp` hands back
+        and confirming it is closed, rather than by a process-wide `/proc/self/fd`
+        census: the census counts descriptors opened and closed by the xdist
+        worker's own background threads too, so it flakes independently of
+        whether THIS repair leaked anything. Tracking the one fd this call path
+        owns is deterministic and still fails if the close is ever dropped.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])
@@ -878,15 +887,26 @@ class TestReplacementTranscriptIsLockedDown:
             raise OSError("icacls failed")
 
         monkeypatch.setattr(sir.platform_compat, "restrict_to_owner", boom)
-        fds_before = len(os.listdir("/proc/self/fd")) if os.path.isdir("/proc/self/fd") else None
+
+        opened: list[int] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def tracking_mkstemp(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            opened.append(fd)
+            return fd, name
+
+        monkeypatch.setattr(tempfile, "mkstemp", tracking_mkstemp)
 
         with pytest.raises(OSError, match="icacls failed"):
             sir.apply_repair(p, lines, backup=False, expect=report.source_stat)
 
         assert p.read_bytes() == before  # transcript untouched
         assert not list(tmp_path.glob("*.tmp"))
-        if fds_before is not None:
-            assert len(os.listdir("/proc/self/fd")) <= fds_before
+        assert len(opened) == 1
+        with pytest.raises(OSError) as info:
+            os.fstat(opened[0])
+        assert info.value.errno == errno.EBADF, "the temp file's descriptor was leaked"
 
 
 class TestBackupIsNeverOverwritten:
@@ -962,29 +982,45 @@ class TestBackupIsNeverOverwritten:
         remove. If the fd outlived that, Windows would refuse the unlink (open
         handle) and the stranded empty sidecar would make every later --apply
         raise BackupExistsError -- a permanent block created by a failure that
-        changed nothing. Asserted by count of open descriptors as well as by the
-        absent file, because a leak is invisible from the filesystem alone.
+        changed nothing.
+
+        Asserted by tracking the exact descriptor `os.open` hands back for the
+        sidecar and confirming it is closed, rather than by a process-wide
+        `/proc/self/fd` census: the census counts descriptors opened and closed
+        by the xdist worker's own background threads too, so it flakes
+        independently of whether THIS repair leaked anything.
         """
         p = tmp_path / "s.jsonl"
         _write_transcript(p, [_prompt_record((3000, 1200))])
         report, lines = sir.scan_file(p)
         assert lines is not None
+        sidecar = p.with_suffix(".jsonl.pre-image-repair.bak")
 
         def boom(_path):
             raise OSError("icacls failed")
 
         monkeypatch.setattr(sir.platform_compat, "restrict_to_owner", boom)
 
-        fds_before = len(os.listdir("/proc/self/fd")) if os.path.isdir("/proc/self/fd") else None
+        opened: list[int] = []
+        real_open = os.open
+
+        def tracking_open(target, *args, **kwargs):
+            fd = real_open(target, *args, **kwargs)
+            if str(target) == str(sidecar):
+                opened.append(fd)
+            return fd
+
+        monkeypatch.setattr(os, "open", tracking_open)
 
         with pytest.raises(OSError, match="icacls failed"):
             sir.apply_repair(p, lines, backup=True, expect=report.source_stat)
 
-        sidecar = p.with_suffix(".jsonl.pre-image-repair.bak")
         assert not sidecar.exists()  # nothing stranded to block the retry
         assert not list(tmp_path.glob("*.tmp"))
-        if fds_before is not None:
-            assert len(os.listdir("/proc/self/fd")) <= fds_before  # no leak
+        assert len(opened) == 1
+        with pytest.raises(OSError) as info:
+            os.fstat(opened[0])
+        assert info.value.errno == errno.EBADF, "the sidecar's descriptor was leaked"
 
         # And the retry it would have blocked now works.
         monkeypatch.undo()

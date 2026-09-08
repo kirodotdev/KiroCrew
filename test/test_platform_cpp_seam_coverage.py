@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 import pytest
+from source_corpus import source_texts
 
 import kiro_crew
 from kiro_crew.config.loader import KiroCrewConfig
@@ -163,12 +164,21 @@ def _parsed_core_source_files() -> List[Tuple[Path, ast.AST]]:
     paid once per test session — via ``parsed_core_files`` below — instead of once
     per scanner. A file that fails to parse is skipped here, matching the
     defensive behavior both callers previously implemented individually.
+
+    Reads from ``test/source_corpus.py``'s shared, already-cached text of the
+    whole tree instead of a private ``rglob`` + ``read_text``: this scanner's
+    exclusion set (``platform``/``_vendor``) is a subset of files the corpus
+    already read for the other AST ratchets in this worker, so filtering the
+    shared list avoids a second full-tree read the corpus already paid for.
     """
+    core = set(_core_source_files())
     parsed: List[Tuple[Path, ast.AST]] = []
-    for path in _core_source_files():
+    for path, text in source_texts():
+        if path not in core:
+            continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
+            tree = ast.parse(text)
+        except SyntaxError:  # pragma: no cover - defensive
             continue
         parsed.append((path, tree))
     return parsed

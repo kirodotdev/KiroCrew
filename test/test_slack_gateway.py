@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -8718,6 +8719,18 @@ class TestChannelSkipReasonAtTransportStart:
 
         monkeypatch.setattr(gw, "_channel_transport_permitted", lambda member: False)
         await orch._start_channel_transports()
+        # `_start_channel_transports` detaches `_replay_spooled_inbound` as a
+        # background task on purpose (a slow platform send must not hold the
+        # gateway's start open), so it can still be resolving `data_home()` on
+        # the event loop after this test's `KIROCREW_HOME` pin is torn down —
+        # the same "background worker resolves its path when it runs" class as
+        # the safety-override breadcrumb publisher. Drain it here the same way
+        # `_shutdown()` does, so no write happens once the pin is gone.
+        replay = orch._inbound_replay_task
+        if replay is not None and not replay.done():
+            replay.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(replay, timeout=1.0)
 
     def _channel_records(self, caplog) -> list[logging.LogRecord]:
         names = {f"kiro_crew.{c}.gateway" for c in _UNCREDENTIALED_CHANNEL_TYPES}

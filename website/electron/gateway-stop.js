@@ -312,10 +312,14 @@ async function stopGatewayGracefully(
   if (treeKillInFlight) {
     await Promise.race([
       treeKillInFlight,
-      new Promise((r) => {
-        const t = setTimeout(r, timeoutMs);
-        if (typeof t.unref === "function") t.unref();
-      }),
+      // Deliberately NOT unref()'d. This function is awaited by its caller on a
+      // shutdown path (quit / auto-update), so a live timer here is exactly what
+      // should hold the process open until the backstop fires or the tree kill
+      // settles. An unref'd timer cannot keep the event loop alive on its own;
+      // once nothing else is pending (the common case in a test process, and any
+      // real caller once this is the last outstanding thing) the loop drains and
+      // resolves the surrounding Promise.race before the backstop ever runs.
+      new Promise((r) => { setTimeout(r, timeoutMs); }),
     ]);
   }
 }

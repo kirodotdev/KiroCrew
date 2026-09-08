@@ -304,6 +304,28 @@ one is a rule:
   the work is real and how it is bounded (the frame budgets), and leave the file-wide
   `testTimeout` alone for everything else.
 
+A later audit ran the Electron `node:test` suite five times on Node 22 — the declared
+floor (`engines.node >=22`), while CI runs 24 — and added two rules:
+
+- **A backstop timer the caller awaits must keep the loop alive.**
+  `stopGatewayGracefully` raced a never-settling tree kill against
+  `setTimeout(...).unref()`. An unref'd timer cannot hold the event loop on its own, so
+  the moment nothing else was pending the loop drained and the surrounding
+  `Promise.race` never resolved; `node --test` then reported "Promise resolution is
+  still pending but the event loop has already resolved" and cancelled every later
+  test in the file (26 of 38). It passed on Node 24 only because that runner happened
+  to keep something else alive. `unref()` a timer only when the process exiting early
+  is the desired outcome — never on a path that is itself awaited.
+- **`require("electron")` in a Node test process downloads the binary.** Outside
+  Electron, `node_modules/electron/index.js` returns the executable path and, when
+  `dist/` is absent, runs `install.js` — a network download and an extract into
+  `node_modules`. Electron 43 has no postinstall, so a fresh `npm ci` leaves `dist/`
+  absent and four test files raced the download concurrently ("File exists (os error
+  17)"). The `test` script preloads `website/electron/test/_preload.cjs` via
+  `node --require`, which sets `ELECTRON_OVERRIDE_DIST_PATH` before any source loads;
+  with that variable set `index.js` returns a path without touching the network. A test
+  never needs the real binary — if yours seems to, it is testing Electron, not our code.
+
 ## Manual procedures
 
 A few flows are deliberately not automated. They are documented rather than

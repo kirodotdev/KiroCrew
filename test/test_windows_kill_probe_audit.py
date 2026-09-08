@@ -36,6 +36,8 @@ import ast
 import functools
 from pathlib import Path
 
+from source_corpus import candidate_sources
+
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
 # ``file::function`` sites allowed to keep a raw signal-0 probe, with the reason
@@ -90,17 +92,22 @@ def _enclosing_functions(tree: ast.AST) -> list[tuple[str, ast.AST]]:
 def _find_raw_probes() -> dict[str, tuple[int, ...]]:
     """Map ``file::function`` -> line numbers of raw signal-0 probes.
 
-    Cached: the rglob + ast.parse of the whole tree is the same answer for
-    every one of this module's three tests, and the source tree cannot change
-    mid-run. Values are tuples so a cached entry cannot be mutated in place.
+    Cached: the scan is the same answer for every one of this module's three
+    tests, and the source tree cannot change mid-run. Values are tuples so a
+    cached entry cannot be mutated in place. Parses only files whose text
+    already contains ``.kill(`` (``test/source_corpus.py``'s shared, narrowed
+    read) instead of a private ``rglob`` + ``read_text`` of the whole tree: an
+    ``os.kill(pid, 0)`` call always spells ``.kill(`` verbatim, so narrowing
+    cannot drop a real probe. Released with the rest of the corpus by
+    ``test/conftest.py::_release_source_corpus_after_module`` at module end.
     """
     found: dict[str, list[int]] = {}
-    for path in sorted(_SRC_ROOT.rglob("*.py")):
+    for path, source in sorted(candidate_sources(require_any=(".kill(",))):
         rel = path.relative_to(_SRC_ROOT).as_posix()
         if rel.startswith("_vendor/"):
             continue  # vendored third-party code is excluded from all linters
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = ast.parse(source)
         except (SyntaxError, UnicodeDecodeError):
             continue
         funcs = _enclosing_functions(tree)

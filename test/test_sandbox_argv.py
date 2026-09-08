@@ -2470,10 +2470,15 @@ class TestCgroupScopeArgv:
             assert sb._default_max_memory_mb() == sb._CGROUP_FALLBACK_MAX_MEMORY_MB
 
     @pytest.mark.skipif(sys.platform != "linux", reason="cgroup v2 scope enforcement is Linux-only")
+    @pytest.mark.usefixtures("real_user_session")
     def test_real_pids_max_enforced_when_available(self):
         """If this host actually has cgroup delegation, the scope must ENFORCE
         pids.max — a child under a tiny TasksMax cannot fork past it. Skips
-        cleanly where delegation is unavailable (the probe returns False)."""
+        cleanly where delegation is unavailable (the probe returns False).
+
+        The floor runs the suite without a systemd user session, so this is the
+        one test that opts back in (``real_user_session``), and that fixture stops
+        the transient slice the real ``systemd-run`` creates."""
         import kiro_crew.sandbox as sb
 
         self._reset_probe()

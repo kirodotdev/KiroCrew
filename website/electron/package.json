@@ -7,7 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/*.test.js mochi/test/*.test.js crew-companion/test/*.test.js",
+    "test": "node --require ./test/_preload.cjs --test test/*.test.js mochi/test/*.test.js crew-companion/test/*.test.js",
     "postinstall": "node scripts/patch-nsis-template.js",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
