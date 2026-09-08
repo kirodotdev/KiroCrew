@@ -3659,8 +3659,8 @@ class ContextBuilder:
                 )
 
         # Dashboard-generated context ($skill bodies and a consented theme
-        # persona) used to be appended after the user's text. Carry it through
-        # an explicit prefix channel so the authoritative user slice can own EOF.
+        # persona) travels through an explicit prefix channel rather than being
+        # appended after the user's text, so the authoritative user slice owns EOF.
         if request_prefix_context:
             parts.append(_neutralize_structural_markers(request_prefix_context))
 
