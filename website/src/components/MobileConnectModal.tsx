@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -51,6 +51,22 @@ export default function MobileConnectModal({
   // The repo's modal keyboard contract: focus-in on mount, focus-restore on
   // close, Tab trapped inside the dialog, Escape dismisses.
   useDialogFocusTrap(dialogRef, onClose)
+  // Dismiss on any pointer-down OUTSIDE the dialog — the backdrop, the main
+  // content, AND the nav rail, which renders ABOVE the backdrop so a click on
+  // empty sidebar space never reaches the backdrop's own handler (the dead zone
+  // this closes). A nav row's own click still fires, so clicking a tab both
+  // dismisses and navigates. Attached from an effect (after mount) so the very
+  // click that opened the dialog — already dispatched before this runs — cannot
+  // immediately close it; capture phase so a child that stops propagation can't
+  // hide the outside click from us.
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      const dialog = dialogRef.current
+      if (dialog && !dialog.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [onClose])
 
   const hasQr = kinds.includes('tailnet_qr')
   // Only renderers whose kind this deployment actually offers: the endpoint has
@@ -62,7 +78,6 @@ export default function MobileConnectModal({
     <div
       className="fixed inset-0 z-50 bg-bg/80 backdrop-blur-sm flex items-center justify-center animate-rise"
       role="presentation"
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
         ref={dialogRef}

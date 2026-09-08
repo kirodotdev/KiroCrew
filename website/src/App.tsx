@@ -1308,6 +1308,16 @@ export default function App() {
   // returned none, policy denied all, seam degraded) hides the row entirely —
   // the endpoint is the authority, the frontend never guesses.
   const [mobileConnectOpen, setMobileConnectOpen] = useState(false)
+  // The dialog is a transient overlay opened from a rail row that does not
+  // navigate (path="#"), so a navigation — clicking another nav tab or
+  // switching chat sessions — must dismiss it, the same as Escape or a
+  // backdrop click. Its open flag lives here at the owner rather than in the
+  // modal, so nothing inside the modal sees navigation. Key this off
+  // location.key, not location.pathname: switching between untitled /chat
+  // sessions changes only the key/query, so a pathname dep would leave the
+  // dialog stranded over the newly selected session. location.key changes on
+  // every history entry, so this closes it on ANY navigation at once.
+  useEffect(() => { setMobileConnectOpen(false) }, [location.key])
   const mobileConnectQuery = useQuery({
     queryKey: ['mobile-connect-methods'],
     queryFn: api.mobileConnectMethods,
