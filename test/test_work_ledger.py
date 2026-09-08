@@ -1417,6 +1417,104 @@ def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
         assert (item.worker_session_key == WORKER) == ((key, item_id) == binding)
 
 
+def test_the_guards_tolerate_a_prefixed_leaf_resolve(monkeypatch):
+    """A leaf resolve that comes back extended-length-prefixed must not refuse.
+
+    ``ntpath.realpath`` keeps Windows' ``\\\\?\\`` prefix when its prefix-strip
+    re-check races a concurrent swap of the same file -- exactly what a losing
+    ``bind`` sees while the winner replaces the binding record it is composing
+    the path of. A guard that compares that prefixed child against an
+    unprefixed parent reads the spelling as an escape and turns a clean
+    ``already_bound`` refusal into ``invalid_value``, which is Windows-only
+    because POSIX ``realpath`` has no prefix re-check. The guards therefore go
+    through ``resolved_within``, which strips the prefix from BOTH sides before
+    comparing. POSIX cannot produce the prefixed spelling natively, so this
+    simulates it where it arises: ``Path.resolve`` returning the
+    extended-length form of the correct answer.
+    """
+    import kiro_crew.session_ledger as sl
+
+    original_resolve = Path.resolve
+
+    def prefixing(self: Path, *args, **kwargs) -> Path:
+        real = original_resolve(self, *args, **kwargs)
+        text = str(real)
+        # Only a drive-absolute spelling can legally carry the prefix; POSIX
+        # paths get a synthetic one through _plain's own contract instead.
+        return Path(f"\\\\?\\{text}") if text[1:2] == ":" else real
+
+    # The pure half: _plain must strip both prefix spellings.
+    assert sl._plain(Path("\\\\?\\C:\\store\\bindings\\w.json")) == Path(
+        "C:\\store\\bindings\\w.json"
+    )
+    assert sl._plain(Path("\\\\?\\UNC\\host\\share\\x")) == Path("\\\\host\\share\\x")
+
+    # The integration half: both guards answer a real path, not a refusal,
+    # when every resolve is prefixed the way the Windows race spells it.
+    monkeypatch.setattr(Path, "resolve", prefixing)
+    assert wl.binding_path(WORKER).name == f"{wl._store_name(WORKER)}.json"
+    assert wl.conductor_dir(CONDUCTOR).name == wl._store_name(CONDUCTOR)
+    # And hostile keys are still refused with the guards' own code.
+    with pytest.raises(wl.WorkLedgerError) as excinfo:
+        wl.conductor_dir("evil/../key")
+    assert excinfo.value.code == wl.CODE_INVALID_VALUE
+    with pytest.raises(wl.WorkLedgerError) as excinfo:
+        wl.binding_path("has\0null")
+    assert excinfo.value.code == wl.CODE_INVALID_VALUE
+
+
+def test_a_planted_link_at_a_guarded_leaf_is_refused(tmp_path):
+    """A pre-planted symlink at either guard's composed leaf must be refused.
+
+    ``resolved_within`` resolves the composed leaf, so a link whose target sits
+    outside the base lands outside the resolved base and reads as an escape.
+    This pins that the shared-helper path keeps the containment the guards had
+    when each spelled the check inline. Skipped where symlinks cannot be
+    created (Windows without privilege), matching how the defense is exercised
+    there; the prefix-tolerance half has its own test above.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim.json").write_text("{}", encoding="utf-8")
+
+    linked_dir = wl._work_ledger_root() / wl._store_name(CONDUCTOR)
+    linked_dir.parent.mkdir(parents=True, exist_ok=True)
+    linked_binding = wl.bindings_dir() / f"{wl._store_name(WORKER)}.json"
+    linked_binding.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        linked_dir.symlink_to(outside, target_is_directory=True)
+        linked_binding.symlink_to(outside / "victim.json")
+    except OSError:
+        pytest.skip("cannot create symlinks on this platform/account")
+    with pytest.raises(wl.WorkLedgerError) as excinfo:
+        wl.conductor_dir(CONDUCTOR)
+    assert excinfo.value.code == wl.CODE_INVALID_VALUE
+    with pytest.raises(wl.WorkLedgerError) as excinfo:
+        wl.binding_path(WORKER)
+    assert excinfo.value.code == wl.CODE_INVALID_VALUE
+
+
+def test_the_guards_share_one_containment_helper(monkeypatch):
+    """Both guards must route through ``session_ledger.resolved_within``.
+
+    The helper is where the prefix-stripped, single-base-resolve comparison
+    lives; a guard that re-inlines its own two-``resolve()`` comparison
+    silently reintroduces the Windows race the helper exists to close, with
+    every existing test still green on POSIX. Patching the helper to refuse
+    and watching both guards refuse is what makes the routing itself a tested
+    property rather than a convention.
+    """
+    import kiro_crew.work_ledger as wl_module
+
+    monkeypatch.setattr(wl_module, "resolved_within", lambda base, name: None)
+    with pytest.raises(wl.WorkLedgerError) as excinfo:
+        wl.binding_path(WORKER)
+    assert excinfo.value.code == wl.CODE_INVALID_VALUE
+    with pytest.raises(wl.WorkLedgerError) as excinfo:
+        wl.conductor_dir(CONDUCTOR)
+    assert excinfo.value.code == wl.CODE_INVALID_VALUE
+
+
 def test_acquiring_a_lock_does_not_truncate_the_lock_file():
     """The lock-file open must be WRITABLE but MUST NOT truncate.
 
