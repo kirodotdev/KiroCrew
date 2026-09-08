@@ -31,6 +31,7 @@ import atexit
 import faulthandler
 import importlib
 import importlib.machinery
+import json
 import logging
 import os
 import queue
@@ -55,6 +56,7 @@ from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.env import git_build_info
 from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator
+from kiro_crew.knowledge import store as knowledge_store
 from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.log_redaction import install_log_redaction
@@ -576,10 +578,93 @@ def _diagnostic_port(gw_kwargs: dict) -> int | None:
         return None
 
 
+def _knowledge_stats(args) -> None:
+    """``kirocrew knowledge stats [--json]`` -- read-only counts, no repair verb."""
+
+    db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
+    as_json = bool(getattr(args, "json", False))
+    if not db_path.exists():
+        sel().log_tool_invocation(
+            session_key="cli", source="cli", tool_name="knowledge_stats", outcome="not_configured"
+        )
+        if as_json:
+            print(json.dumps({"error": "not_configured"}))
+        else:
+            print("Knowledge Library is not configured (no knowledge.db). Ingest documents first.")
+        return
+    # Read-only means the FILE is opened read-only. A normal open runs the
+    # schema migration, whose orphan sweep takes the writer lock and deletes
+    # itemless source rows -- a write this verb must not make. The trade is
+    # that a library behind this schema is reported, not repaired here.
+    store = KnowledgeStore.open_read_only(str(db_path))
+    try:
+        stats = store.aggregate_stats()
+    except knowledge_store.sqlite3.OperationalError as exc:
+        if "no such" not in str(exc):
+            raise
+        sel().log_tool_invocation(
+            session_key="cli", source="cli", tool_name="knowledge_stats", outcome="schema_behind"
+        )
+        if as_json:
+            print(json.dumps({"error": "schema_behind", "detail": str(exc)}))
+        else:
+            print(
+                f"Knowledge database is behind this schema ({exc}). Stats opens it "
+                "read-only and does not migrate; start the gateway or run "
+                "`kirocrew knowledge dedup --apply` once to migrate it, then retry."
+            )
+        return
+    finally:
+        store.db.close()
+    sel().log_tool_invocation(
+        session_key="cli",
+        source="cli",
+        tool_name="knowledge_stats",
+        outcome="success",
+        metadata={"sources": stats.sources, "documents": stats.documents, "items": stats.items},
+    )
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "sources": stats.sources,
+                    "documents": stats.documents,
+                    "items": stats.items,
+                    "per_source": [
+                        {
+                            "id": s.source_id,
+                            "name": s.name,
+                            "documents": s.documents,
+                            "items": s.items,
+                        }
+                        for s in stats.per_source
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return
+    print(
+        f"Knowledge Library: {stats.sources} source(s), "
+        f"{stats.documents} document(s), {stats.items} item(s)"
+    )
+    if not stats.per_source:
+        return
+    # Width from the data, so a long source name does not wrap the count columns.
+    name_width = max(len(s.name) for s in stats.per_source)
+    print(f"\n  {'SOURCE'.ljust(name_width)}  {'DOCS':>6}  {'ITEMS':>6}")
+    for s in stats.per_source:
+        print(f"  {s.name.ljust(name_width)}  {s.documents:>6}  {s.items:>6}")
+
+
 def _knowledge(args) -> None:
-    """``kirocrew knowledge dedup [--apply]`` -- collapse cross-source duplicate docs."""
-    if getattr(args, "knowledge_action", None) != "dedup":
-        print("Usage: kirocrew knowledge dedup [--apply]")
+    """``kirocrew knowledge dedup|stats`` -- duplicate collapse and read-only counts."""
+    action = getattr(args, "knowledge_action", None)
+    if action == "stats":
+        _knowledge_stats(args)
+        return
+    if action != "dedup":
+        print("Usage: kirocrew knowledge dedup [--apply] | kirocrew knowledge stats [--json]")
         return
     apply = bool(getattr(args, "apply", False))
     db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
@@ -589,9 +674,29 @@ def _knowledge(args) -> None:
         )
         print("Knowledge Library is not configured (no knowledge.db). Ingest documents first.")
         return
-    store = KnowledgeStore(str(db_path))
+    if apply:
+        store = KnowledgeStore(str(db_path))
+    else:
+        # The dry run promises "no changes", and an ordinary open breaks that
+        # promise before the sweep starts: the constructor runs the schema
+        # migration, whose orphan reap deletes itemless source rows. So the
+        # preview opens the file read-only (SQLite mode=ro) and only --apply
+        # takes the migrating, writing open.
+        store = KnowledgeStore.open_read_only(str(db_path))
     try:
         results = dedup_sweep(store, apply=apply)
+    except knowledge_store.sqlite3.OperationalError as exc:
+        if apply or "no such" not in str(exc):
+            raise
+        sel().log_tool_invocation(
+            session_key="cli", source="cli", tool_name="knowledge_dedup", outcome="schema_behind"
+        )
+        print(
+            f"Knowledge database is behind this schema ({exc}). The dry run opens it "
+            "read-only and does not migrate; start the gateway or run "
+            "`kirocrew knowledge dedup --apply` once to migrate it, then retry."
+        )
+        return
     finally:
         store.db.close()
     sel().log_tool_invocation(
@@ -1708,6 +1813,12 @@ Examples:
         "--apply",
         action="store_true",
         help="Apply the deletions (default: dry-run preview that changes nothing)",
+    )
+    kn_stats = kn_sub.add_parser(
+        "stats", help="Count sources, documents and items in the knowledge library (read-only)"
+    )
+    kn_stats.add_argument(
+        "--json", action="store_true", help="Emit the counts as JSON instead of a table"
     )
 
     # secrets — encrypted vault maintenance. Only the migration importer lives
