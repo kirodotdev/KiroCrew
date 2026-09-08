@@ -134,9 +134,10 @@ port into the CSRF allowlist — see
 
 ### Non-fatal warnings you can ignore
 
-- **`ffmpeg: not found`** — only needed for speech-to-text. Drop a static ffmpeg
-  build into `~/.local/bin` (it's not in the AL2023 repos; Kiro Crew auto-detects
-  it).
+- **`ffmpeg: not found`**: only needed for speech-to-text. Install ffmpeg into
+  `/usr/local/bin` (a location Kiro Crew searches; it's not in the AL2023 repos),
+  or fetch a decoder from the dashboard Speech-to-Text card
+  (Settings > Voice, then Download now).
 - **`Vector Memory … vendored runtime failed to load`** — the in-process embedding
   runtime couldn't load its shared library on this host; memory falls back
   gracefully and keeps working. Safe to ignore unless you specifically rely on
