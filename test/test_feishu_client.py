@@ -106,15 +106,24 @@ class _FakeEventDispatcherHandler:
 
 
 class _FakeWSClient:
-    """Stub for lark.ws.Client -- start() blocks on an event, stop() sets it."""
+    """Stub for lark.ws.Client with the SDK's module-global loop behavior."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.constructed_thread_id = threading.get_ident()
+        self.constructed_loop = asyncio.get_event_loop()
         self._stop_event = threading.Event()
+        self._started_event = threading.Event()
         self.started = False
         self.stopped = False
+        self.started_loop: asyncio.AbstractEventLoop | None = None
 
     def start(self) -> None:
         self.started = True
+        ws_client_mod = sys.modules["lark_oapi.ws.client"]
+        self.started_loop = ws_client_mod.loop  # type: ignore[attr-defined]
+        self._started_event.set()
+        if self.started_loop is not None and self.started_loop.is_running():
+            raise RuntimeError("This event loop is already running")
         self._stop_event.wait(timeout=2.0)
 
     def stop(self) -> None:
@@ -129,6 +138,44 @@ class _FakeWSClientRaising(_FakeWSClient):
         self.stopped = True
         self._stop_event.set()
         raise RuntimeError("ws stop boom")
+
+
+class _FakeWSClientWithoutStop:
+    """Model lark-oapi 1.7.x: module loop, async disconnect, no stop()."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.constructed_thread_id = threading.get_ident()
+        self.constructed_loop = asyncio.get_event_loop()
+        self._auto_reconnect = True
+        self._started_event = threading.Event()
+        self.started = False
+        self.disconnected = False
+        self.started_loop: asyncio.AbstractEventLoop | None = None
+        self._waiter: asyncio.Future[None] | None = None
+
+    def start(self) -> None:
+        self.started = True
+        ws_client_mod = sys.modules["lark_oapi.ws.client"]
+        self.started_loop = ws_client_mod.loop  # type: ignore[attr-defined]
+        self._started_event.set()
+        if self.started_loop is None:
+            raise RuntimeError("SDK event loop was not configured")
+        if self.started_loop.is_running():
+            raise RuntimeError("This event loop is already running")
+        self._waiter = self.started_loop.create_future()
+        self.started_loop.run_until_complete(self._waiter)
+
+    async def _disconnect(self) -> None:
+        self.disconnected = True
+        if self._waiter is not None and not self._waiter.done():
+            self._waiter.set_result(None)
+
+
+class _FakeWSClientInitRaising:
+    """Fail during SDK construction after the receiver loop is installed."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("ws init boom")
 
 
 class _FakeWS:
@@ -198,7 +245,13 @@ def _fake_lark_sdk():
     lark_mod.Client = _FakeRestClient  # type: ignore[attr-defined]
     lark_mod.LogLevel = _FakeLogLevel  # type: ignore[attr-defined]
     lark_mod.EventDispatcherHandler = _FakeEventDispatcherHandler  # type: ignore[attr-defined]
-    lark_mod.ws = _FakeWS  # type: ignore[attr-defined]
+
+    ws_mod = types.ModuleType("lark_oapi.ws")
+    ws_mod.Client = _FakeWSClient  # type: ignore[attr-defined]
+    ws_client_mod = types.ModuleType("lark_oapi.ws.client")
+    ws_client_mod.loop = None  # type: ignore[attr-defined]
+    ws_mod.client = ws_client_mod  # type: ignore[attr-defined]
+    lark_mod.ws = ws_mod  # type: ignore[attr-defined]
 
     im_v1_mod = types.ModuleType("lark_oapi.api.im.v1")
     im_v1_mod.ReplyMessageRequest = _FakeReplyMessageRequest  # type: ignore[attr-defined]
@@ -208,11 +261,20 @@ def _fake_lark_sdk():
     im_mod = types.ModuleType("lark_oapi.api.im")
 
     originals = {}
-    keys = ["lark_oapi", "lark_oapi.api", "lark_oapi.api.im", "lark_oapi.api.im.v1"]
+    keys = [
+        "lark_oapi",
+        "lark_oapi.ws",
+        "lark_oapi.ws.client",
+        "lark_oapi.api",
+        "lark_oapi.api.im",
+        "lark_oapi.api.im.v1",
+    ]
     for k in keys:
         originals[k] = sys.modules.get(k)
 
     sys.modules["lark_oapi"] = lark_mod
+    sys.modules["lark_oapi.ws"] = ws_mod
+    sys.modules["lark_oapi.ws.client"] = ws_client_mod
     sys.modules["lark_oapi.api"] = api_mod
     sys.modules["lark_oapi.api.im"] = im_mod
     sys.modules["lark_oapi.api.im.v1"] = im_v1_mod
@@ -857,6 +919,54 @@ class TestStart:
         client._thread.join(timeout=1.0)
         assert not client._thread.is_alive()
 
+    @pytest.mark.asyncio
+    async def test_start_rebinds_sdk_loop_to_receiver_thread(self) -> None:
+        """The SDK must not drive the gateway's already-running event loop."""
+        from kiro_crew.feishu.client import LarkClient
+
+        gateway_loop = asyncio.get_running_loop()
+        gateway_thread_id = threading.get_ident()
+        ws_client_mod = sys.modules["lark_oapi.ws.client"]
+        ws_client_mod.loop = gateway_loop  # type: ignore[attr-defined]
+
+        client = LarkClient(app_id="a", app_secret="s")
+        await client.start()
+        await asyncio.wait_for(
+            asyncio.to_thread(client._ws_client._started_event.wait),
+            timeout=1.0,
+        )
+
+        assert client._thread.is_alive()
+        assert client._ws_client.constructed_thread_id == client._thread.ident
+        assert client._ws_client.constructed_thread_id != gateway_thread_id
+        assert client._ws_client.constructed_loop is client._ws_loop
+        assert client._ws_client.started_loop is client._ws_loop
+        assert client._ws_client.started_loop is not gateway_loop
+
+        await client.close()
+        client._thread.join(timeout=1.0)
+        assert not client._thread.is_alive()
+
+    @pytest.mark.asyncio
+    async def test_start_propagates_sdk_constructor_failure(self) -> None:
+        """A constructor failure is reported and leaves no receiver loop alive."""
+        from kiro_crew.feishu.client import LarkClient
+
+        lark_mod = sys.modules["lark_oapi"]
+        original_client = lark_mod.ws.Client  # type: ignore[attr-defined]
+        lark_mod.ws.Client = _FakeWSClientInitRaising  # type: ignore[attr-defined]
+        try:
+            client = LarkClient(app_id="a", app_secret="s")
+            with pytest.raises(RuntimeError, match="initialization failed"):
+                await client.start()
+            client._thread.join(timeout=1.0)
+
+            assert client._ws_client is None
+            assert client._ws_loop is None
+            assert not client._thread.is_alive()
+        finally:
+            lark_mod.ws.Client = original_client  # type: ignore[attr-defined]
+
 
 # ---------------------------------------------------------------------------
 # Tests: health transitions (on_state_change)
@@ -965,6 +1075,31 @@ class TestClose:
         # Thread should exit since stop() sets the event
         client._thread.join(timeout=1.0)
         assert not client._thread.is_alive()
+
+    @pytest.mark.asyncio
+    async def test_close_supports_sdk_without_public_stop(self) -> None:
+        """lark-oapi 1.7.x closes through _disconnect on its worker loop."""
+        from kiro_crew.feishu.client import LarkClient
+
+        lark_mod = sys.modules["lark_oapi"]
+        original_client = lark_mod.ws.Client  # type: ignore[attr-defined]
+        lark_mod.ws.Client = _FakeWSClientWithoutStop  # type: ignore[attr-defined]
+        try:
+            client = LarkClient(app_id="a", app_secret="s")
+            await client.start()
+            await asyncio.wait_for(
+                asyncio.to_thread(client._ws_client._started_event.wait),
+                timeout=1.0,
+            )
+
+            await client.close()
+            client._thread.join(timeout=1.0)
+
+            assert client._ws_client.disconnected is True
+            assert client._ws_client._auto_reconnect is False
+            assert not client._thread.is_alive()
+        finally:
+            lark_mod.ws.Client = original_client  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_ws_stop_is_offloaded_off_the_event_loop_thread(self) -> None:

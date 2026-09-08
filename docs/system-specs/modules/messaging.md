@@ -4196,7 +4196,18 @@ setting their phone carries, so it is a product decision and not a parity gap.
 connection (a daemon thread pushing normalized `LarkInbound` frames into the
 async event loop via `run_coroutine_threadsafe`); outbound is REST reply
 anchored to the inbound `message_id` (via `run_in_executor` so it never
-blocks the event loop). `lark-oapi` is an OPTIONAL dependency declared as the
+blocks the event loop). The SDK caches its WebSocket event loop in a module
+global when imported, while Kiro Crew imports it on the gateway loop and runs
+`ws.Client.start()` in the receiver thread. The receiver therefore owns a
+separate event loop, rebinds the SDK global, and constructs the client there
+before `start()`; otherwise constructor-time helpers remain bound to the gateway
+loop and the SDK calls `run_until_complete()` on that already-running loop. Shutdown
+uses a public synchronous `stop()` when a future SDK provides one, and falls
+back on current lark-oapi 1.x's async `_disconnect()` on the receiver loop with
+auto-reconnect disabled. In both cases the receiver cancels pending SDK tasks
+and closes its loop before the daemon thread exits.
+
+`lark-oapi` is an OPTIONAL dependency declared as the
 `[feishu]` extra in `setup.cfg` and lazily imported inside the client module;
 `maybe_start_feishu` catches `ImportError` and logs a skip so a missing
 library never takes down the gateway. No public webhook endpoint is required.
@@ -4223,8 +4234,13 @@ by an `await`.
 
 **Security model.** `authorize` is deny-by-default against
 `feishu.allowed_open_ids` (frozen at construction); every denial is
-SEL-audited (`source="feishu"`). Group-chat access is an explicit opt-in
-gated on BOTH `allow_group=True` AND the group's `chat_id` appearing in
+SEL-audited (`source="feishu"`). The Feishu app needs
+`im:message.p2p_msg:readonly` to receive direct-message events and
+`im:message:send_as_bot` to reply; enabling groups additionally needs
+`im:message.group_at_msg.include_bot:readonly`. The broad `im:message` grant
+alone does not activate p2p event delivery in the current Feishu console.
+Group-chat access is an explicit opt-in gated on BOTH `allow_group=True` AND
+the group's `chat_id` appearing in
 `allowed_group_ids`; every other context is denied with a SEL audit record
 (`denied_group_not_allowed`). `FEISHU_APP_SECRET` is on the sandbox agent env
 denylist.
