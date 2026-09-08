@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.acp.session_handle import WatchdogSettings
 
 
@@ -1615,7 +1616,7 @@ class TestDiscardReaping:
         pid_one = _make_provider()
         pid_one._client = SimpleNamespace(_pid=1)
 
-        with patch("kiro_crew.session_pid.platform_compat.kill_pid") as mock_kill:
+        with patch("kiro_crew.session_pid.platform_compat.kill_process_tree") as mock_kill:
             _sync_kill_provider(mock_provider)
             _sync_kill_provider(pid_one)
 
@@ -1631,7 +1632,9 @@ class TestDiscardReaping:
         proc = subprocess.Popen(["sleep", "300"])
         try:
             provider = _make_provider()
-            provider._client = SimpleNamespace(_pid=proc.pid)
+            start_id = platform_compat.get_process_start_id(proc.pid)
+            assert start_id is not None
+            provider._client = SimpleNamespace(_pid=proc.pid, _start_id=start_id)
             # Bookkeeping lies: claims dead while the OS process is alive
             provider.is_process_alive = MagicMock(return_value=False)
             provider.shutdown = AsyncMock()  # "ran" but killed nothing
@@ -1660,7 +1663,9 @@ class TestDiscardReaping:
         try:
             provider = _make_provider()
             # Mimic an ACP provider: the tracked PID lives at provider._client._pid
-            provider._client = SimpleNamespace(_pid=proc.pid)
+            start_id = platform_compat.get_process_start_id(proc.pid)
+            assert start_id is not None
+            provider._client = SimpleNamespace(_pid=proc.pid, _start_id=start_id)
             provider.is_process_alive = MagicMock(side_effect=lambda: proc.poll() is None)
             provider.shutdown = AsyncMock()  # graceful close that kills nothing
 

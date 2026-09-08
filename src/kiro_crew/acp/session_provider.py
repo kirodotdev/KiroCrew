@@ -861,5 +861,10 @@ class AcpSessionProvider(LLMProvider):
 
     @property
     def _start_time(self) -> int | None:
-        """Process start time (for PID recycle detection)."""
+        """POSIX process start time used by escaped-child cleanup."""
         return getattr(self._runtime, "_start_time", None)
+
+    @property
+    def _start_id(self) -> str | None:
+        """Cross-platform root identity used by deferred tree teardown."""
+        return getattr(self._runtime, "_start_id", None)

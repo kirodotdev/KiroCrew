@@ -28,7 +28,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | File lock | `file_lock(fd, exclusive=)` / `acquire_lock`+`release_lock` / `try_acquire_lock` | `fcntl.flock` |
 | Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)` | `os.kill(pid, 0)` (kills on Windows!) |
 | Kill a process | `kill_pid(pid, sig)` | `os.kill(pid, sig)` |
-| Kill a tree | `kill_process_tree(pid, sig)` | `os.killpg(os.getpgid(pid), sig)` |
+| Kill a tree | `kill_process_tree(pid, sig, pgid=...)`; resolve `pgid` once before a TERM→KILL escalation when the group leader may be reaped. Use `kill_process_tree_pinned(pid, start_id, sig)` on Windows when the PID outlives its immediate owner. | `os.killpg(os.getpgid(pid), sig)` |
 | Parent PID | `get_ppid(pid)` | `/proc` read / libproc |
 | Session process identity | `get_process_start_id(pid)`; Windows uses query-only creation FILETIME, Linux start ticks, macOS libproc microseconds | caller-supplied PID or a bare PID without its creation identity |
 | Linux execution-boundary equality | `process_namespaces_match(pid, reference_pid)`; compares user and mount namespace inodes with incarnation checks; `None` on unreadable or unsupported platforms | absent current ancestry as proof that a process is unconfined |

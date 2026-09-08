@@ -3879,7 +3879,8 @@ class AcpClient:
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
-        self._start_time: int | None = None  # process start time for PID recycling detection
+        self._start_time: int | None = None  # POSIX escaped-child identity
+        self._start_id: str | None = None  # cross-platform root identity for deferred teardown
         # Names THIS spawn of the child, not the session it serves: a resume
         # re-uses the session id on a brand-new process (see ensure_ready's
         # session/load path), so the session id cannot distinguish the process
@@ -6559,6 +6560,10 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        # Record the process incarnation while the subprocess object still names
+        # this spawn. Deferred cancellation cleanup must never authorize a tree
+        # kill from the bare PID after the OS may have recycled it.
+        self._start_id = platform_compat.get_process_start_id(self._pid)
         # Minted with the process it names, random rather than pid-derived: a
         # pid can be reused by the OS, and the start-time disambiguator is not
         # readable on every platform, so equality on a fresh random id is the
