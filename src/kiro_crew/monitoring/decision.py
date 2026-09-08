@@ -14,6 +14,7 @@ from kiro_crew.monitoring.models import (
     MonitorObservationStatus,
     MonitorOutcome,
     MonitorState,
+    MonitorVerdict,
     ProviderErrorKind,
 )
 
@@ -27,8 +28,28 @@ def decide_monitor(
     observation: MonitorObservation,
     *,
     now: float,
-) -> MonitorDecision:
+) -> MonitorVerdict:
     """Return the only controller effect permitted for an observation.
+
+    The effect is returned inside a :class:`MonitorVerdict` so it arrives with
+    the observations it was rendered against. Every path here judged exactly one
+    observation, so the verdict names that one; a probe reporting several
+    independent conditions fills the same tuple with several entries without
+    changing this signature or any caller.
+    """
+    return MonitorVerdict(
+        decision=_decide_effect(state, observation, now=now),
+        entries=(observation,),
+    )
+
+
+def _decide_effect(
+    state: MonitorState,
+    observation: MonitorObservation,
+    *,
+    now: float,
+) -> MonitorDecision:
+    """Select the effect alone.
 
     Budget checks lead because a spent bound must never buy one additional
     unattended turn. Provider failures are classified without a model. For a

@@ -998,7 +998,7 @@ async def test_shadow_graphql_error_without_data_persists_new_primary_facts() ->
 
     decision = await run_shadow_probe(state, provider, persist, now=1_100.0)
 
-    assert decision is MonitorDecision.RETRY_PROVIDER
+    assert decision.decision is MonitorDecision.RETRY_PROVIDER
     assert state.last_observation["head_revision"] == _HEAD
     assert state.last_observation["review_threads_complete"] is False
     assert state.last_fingerprint != "safe-fingerprint"
@@ -1298,7 +1298,7 @@ def test_changed_head_is_explicitly_actionable_even_when_new_facts_are_green() -
     assert current.observation.head_changed is True
     assert current.observation.status is MonitorObservationStatus.SUCCESS
     assert current.observation.fingerprint != previous.observation.fingerprint
-    assert decide_monitor(state, current.observation, now=1_001.0) is (
+    assert decide_monitor(state, current.observation, now=1_001.0).decision is (
         MonitorDecision.WAKE_ACTIONABLE
     )
 
@@ -1322,7 +1322,10 @@ def test_missing_current_head_is_pending_without_a_changed_head_wake() -> None:
 
     assert result.observation.status is MonitorObservationStatus.PENDING
     assert result.observation.head_changed is False
-    assert decide_monitor(state, result.observation, now=1_001.0) is MonitorDecision.RECORD_ONLY
+    assert (
+        decide_monitor(state, result.observation, now=1_001.0).decision
+        is MonitorDecision.RECORD_ONLY
+    )
 
 
 @pytest.mark.parametrize(
@@ -1352,7 +1355,7 @@ def test_terminal_pull_request_state_precedes_a_head_revision_change(
     )
 
     assert result.observation.head_changed is False
-    assert decide_monitor(state, result.observation, now=1_001.0) is expected
+    assert decide_monitor(state, result.observation, now=1_001.0).decision is expected
 
 
 class _FailureRunner:
@@ -1579,7 +1582,7 @@ async def test_shadow_probe_persists_observation_decision_and_metrics_without_a_
 
     decision = await run_shadow_probe(state, provider, persist, now=1_100.0)
 
-    assert decision is MonitorDecision.WAKE_ACTIONABLE
+    assert decision.decision is MonitorDecision.WAKE_ACTIONABLE
     assert state.last_decision is MonitorDecision.WAKE_ACTIONABLE
     assert state.probe_count == 1
     assert state.provider_error_count == 0
@@ -1624,7 +1627,7 @@ async def test_shadow_provider_error_persists_only_fixed_error_metrics() -> None
 
     decision = await run_shadow_probe(state, provider, persist, now=1_100.0)
 
-    assert decision is MonitorDecision.RETRY_PROVIDER
+    assert decision.decision is MonitorDecision.RETRY_PROVIDER
     assert state.last_observation == previous
     assert state.last_fingerprint == "safe-fingerprint"
     assert state.probe_count == 1
@@ -2020,7 +2023,8 @@ async def test_shadow_budget_gate_stops_before_provider_execution() -> None:
 
     decision = await run_shadow_probe(state, Provider(), persist, now=1_100.0)
 
-    assert decision is MonitorDecision.STOP_BUDGET
+    assert decision.decision is MonitorDecision.STOP_BUDGET
+    assert decision.entries == (), "a gate that precedes the probe observed nothing"
     assert probes == 0
     assert len(snapshots) == 1
     assert state.outcome is MonitorOutcome.BUDGET
@@ -2067,7 +2071,7 @@ async def test_shadow_terminal_probe_persists_terminal_outcome_without_rearming(
 
     decision = await run_shadow_probe(state, provider, persist, now=1_100.0)
 
-    assert decision is MonitorDecision.STOP_SUCCESS
+    assert decision.decision is MonitorDecision.STOP_SUCCESS
     assert state.outcome is MonitorOutcome.SUCCESS
     assert state.stopped_reason == "pull_request_merged"
     assert state.stopped_at == 1_100.0
@@ -2102,7 +2106,8 @@ async def test_shadow_terminal_state_never_probes_again_or_changes_outcome() -> 
 
     decision = await run_shadow_probe(state, Provider(), persist, now=10_000.0)
 
-    assert decision is MonitorDecision.STOP_SUCCESS
+    assert decision.decision is MonitorDecision.STOP_SUCCESS
+    assert decision.entries == (), "a recorded outcome is replayed, not re-observed"
     assert probes == 0
     assert persists == 0
     assert state.outcome is MonitorOutcome.SUCCESS

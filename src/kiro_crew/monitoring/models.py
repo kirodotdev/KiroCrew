@@ -258,6 +258,53 @@ class MonitorObservation:
             raise ValueError("supplemental_provider_error must be a ProviderErrorKind")
 
 
+@dataclass(frozen=True)
+class MonitorVerdict:
+    """One decision and the observations it was rendered against.
+
+    The decision is a *field* rather than the return value of the decision
+    engine. A bare :class:`MonitorDecision` is an effect SELECTOR: it says what
+    the controller should do, and nothing about what it saw. The evidence is not
+    unreachable -- ``monitoring.controller.format_monitor_wake`` rebuilds both
+    the changed facts and the wake text downstream, from
+    ``MonitorState.last_observation`` and ``MonitorState.wake_instructions`` --
+    but it is reachable only by re-deriving it from persisted state the verdict
+    never named.
+
+    That indirection is what keeps a subject reduced to one comparable
+    fingerprint: a consumer obliged to rebuild the evidence itself cannot be
+    handed a list it never asked for, so a second entry has nowhere to go.
+    Naming the evidence on the verdict is what removes the re-derivation.
+
+    ``entries`` is plural from the start. A subject that reports several
+    independent conditions -- a failing check, a stale review stamp, an
+    un-dispositioned finding -- is the reason this type exists, even though a
+    single-subject probe fills it with exactly one entry today.
+
+    There is deliberately no operator-facing text field here. Delivery composes
+    the wake envelope from durable state in
+    ``monitoring.controller.format_monitor_wake``, so a text field on the verdict
+    would be a second way to say the same thing with nothing reading it. The
+    change that gives such a field a reader is the one that should add it, where
+    a single test can show the text being produced AND consumed.
+
+    Nothing here may name a provider. A fact meaningful to only one monitored
+    kind belongs on that kind's observation, never on the shared verdict.
+    """
+
+    decision: MonitorDecision
+    entries: tuple[MonitorObservation, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.decision, MonitorDecision):
+            raise ValueError("decision must be a MonitorDecision")
+        if not isinstance(self.entries, tuple):
+            raise ValueError("entries must be a tuple")
+        for entry in self.entries:
+            if not isinstance(entry, MonitorObservation):
+                raise ValueError("every verdict entry must be a MonitorObservation")
+
+
 @dataclass
 class MonitorState:
     """Restart-durable state for one structured monitor."""

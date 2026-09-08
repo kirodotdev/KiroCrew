@@ -153,7 +153,7 @@ async def test_unchanged_probe_dispatches_zero_turns_and_persists_deadline(tmp_p
 
     decision = await controller.tick(loop, now=120.0)
 
-    assert decision is MonitorDecision.NO_CHANGE
+    assert decision.decision is MonitorDecision.NO_CHANGE
     dispatched.assert_not_awaited()
     write_snapshot.assert_awaited_once()
     assert loop.next_due_ts == loop.monitor.next_probe_at == 180.0
@@ -171,7 +171,7 @@ async def test_retry_backoff_is_bounded_and_dispatches_zero_turns(tmp_path):
     first = await controller.tick(loop, now=120.0)
     second = await controller.tick(loop, now=135.0)
 
-    assert first is second is MonitorDecision.RETRY_PROVIDER
+    assert first.decision is second.decision is MonitorDecision.RETRY_PROVIDER
     dispatched.assert_not_awaited()
     assert loop.monitor is not None
     assert loop.next_due_ts == loop.monitor.next_probe_at == 165.0
@@ -189,7 +189,7 @@ async def test_unexpected_provider_failure_persists_retry_without_dispatch(tmp_p
 
     decision = await controller.tick(loop, now=120.0)
 
-    assert decision is MonitorDecision.RETRY_PROVIDER
+    assert decision.decision is MonitorDecision.RETRY_PROVIDER
     dispatched.assert_not_awaited()
     assert loop.monitor is not None
     assert loop.next_due_ts == loop.monitor.next_probe_at == 135.0
@@ -298,7 +298,7 @@ async def test_terminal_transition_queued_during_claim_persistence_prevents_disp
     decision = await tick
     await terminal
 
-    assert decision is MonitorDecision.STOP_BLOCKED
+    assert decision.decision is MonitorDecision.STOP_BLOCKED
     dispatched.assert_not_awaited()
     assert not loop.active
     assert loop.monitor is not None
@@ -649,7 +649,7 @@ async def test_supplemental_provider_failures_advance_the_bounded_error_streak(t
         config_generation=loop.monitor.config_generation,
     )
 
-    assert first is MonitorDecision.RETRY_PROVIDER
+    assert first.decision is MonitorDecision.RETRY_PROVIDER
     assert loop.monitor.provider_error_count == 1
     assert loop.monitor.consecutive_provider_errors == 1
     assert loop.monitor.last_provider_error is ProviderErrorKind.TRANSIENT
@@ -662,7 +662,7 @@ async def test_supplemental_provider_failures_advance_the_bounded_error_streak(t
         config_generation=loop.monitor.config_generation,
     )
 
-    assert second is MonitorDecision.STOP_BLOCKED
+    assert second.decision is MonitorDecision.STOP_BLOCKED
     assert loop.monitor.provider_error_count == 2
     assert loop.monitor.consecutive_provider_errors == 2
     assert loop.monitor.outcome is MonitorOutcome.BLOCKED
@@ -923,7 +923,7 @@ async def test_terminal_claim_expiry_clears_only_the_correlation(tmp_path):
 
     decision = await controller.tick(loop, now=evidence_deadline)
 
-    assert decision is MonitorDecision.STOP_BLOCKED
+    assert decision.decision is MonitorDecision.STOP_BLOCKED
     assert loop.monitor.outcome is MonitorOutcome.USER_STOP
     assert not loop.monitor.wake_in_flight
     assert loop.monitor.completion_evidence_deadline == 0.0
@@ -950,7 +950,7 @@ async def test_session_close_claim_expiry_clears_only_the_correlation(tmp_path):
     assert service._timers.get(loop.id) is not None
     decision = await controller.tick(loop, now=evidence_deadline)
 
-    assert decision is MonitorDecision.STOP_BLOCKED
+    assert decision.decision is MonitorDecision.STOP_BLOCKED
     assert loop.monitor.outcome is MonitorOutcome.SESSION_CLOSE
     assert not loop.monitor.wake_in_flight
     assert loop.monitor.completion_evidence_deadline == 0.0
@@ -1185,7 +1185,7 @@ async def test_restored_accepted_claim_without_delivery_retries_as_busy(tmp_path
     assert loop.monitor is not None
     assert loop.monitor.wake_delivery is MonitorDispatchResult.BUSY
     retry_at = loop.monitor.next_probe_at
-    assert await controller.tick(loop, now=retry_at) is MonitorDecision.WAKE_ACTIONABLE
+    assert (await controller.tick(loop, now=retry_at)).decision is MonitorDecision.WAKE_ACTIONABLE
     dispatched.assert_awaited_once()
     service.stop()
 
@@ -1200,7 +1200,7 @@ async def test_untyped_dispatch_result_fails_closed_without_orphaning_claim(tmp_
 
     decision = await controller.tick(loop, now=120.0)
 
-    assert decision is MonitorDecision.WAKE_ACTIONABLE
+    assert decision.decision is MonitorDecision.WAKE_ACTIONABLE
     assert loop.monitor is not None
     assert loop.monitor.outcome is MonitorOutcome.TARGET_UNAVAILABLE
     assert not loop.monitor.wake_in_flight
@@ -1255,7 +1255,7 @@ async def test_busy_stop_clears_claim_and_allows_a_fresh_monitor(
 
     decision = await MonitorController(service, dispatched, provider=provider).tick(loop, now=180.0)
 
-    assert decision is MonitorDecision.STOP_BLOCKED
+    assert decision.decision is MonitorDecision.STOP_BLOCKED
     assert provider.previous == []
     dispatched.assert_not_awaited()
     assert loop.monitor.agent_turns == 0
@@ -1362,3 +1362,46 @@ def test_monitor_wake_reports_check_counts_without_provider_labels():
     assert "unknown checks: 1" in envelope
     assert "upload secrets" not in envelope
     assert "provider.example" not in envelope
+
+
+@pytest.mark.asyncio
+async def test_a_probed_verdict_names_its_observation_and_an_unprobed_one_does_not(tmp_path):
+    """Entries record what was observed, so a tick that observes nothing has none.
+
+    A recorded outcome short-circuits before the provider is reached. Reporting
+    an entry there would attribute evidence to a tick that never gathered any.
+    """
+    result = _result(MonitorObservationStatus.PENDING)
+    service, loop, controller = await _armed(
+        tmp_path,
+        result=result,
+        dispatch=AsyncMock(),
+    )
+
+    probed = await controller.tick(loop, now=120.0)
+
+    assert probed.entries == (result.observation,)
+
+    await service.stop_monitor(loop.id, now=121.0)
+    unprobed = await controller.tick(loop, now=122.0)
+
+    assert unprobed.decision is MonitorDecision.STOP_BLOCKED
+    assert unprobed.entries == ()
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_delivered_wake_keeps_the_evidence_that_claimed_it(tmp_path):
+    """Dispatch must not drop the entries on the way to the session."""
+    result = _result(MonitorObservationStatus.ACTIONABLE)
+    service, loop, controller = await _armed(
+        tmp_path,
+        result=result,
+        dispatch=AsyncMock(return_value=MonitorDispatchResult.DISPATCHED),
+    )
+
+    verdict = await controller.tick(loop, now=120.0)
+
+    assert verdict.decision is MonitorDecision.WAKE_ACTIONABLE
+    assert verdict.entries == (result.observation,)
+    service.stop()

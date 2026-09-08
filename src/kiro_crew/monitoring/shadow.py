@@ -19,6 +19,7 @@ from kiro_crew.monitoring.models import (
     MonitorObservationStatus,
     MonitorOutcome,
     MonitorState,
+    MonitorVerdict,
     ProviderErrorKind,
     is_finite_non_negative_number,
 )
@@ -48,8 +49,12 @@ async def run_shadow_probe(
     *,
     now: float,
     wake_delivery: bool = False,
-) -> MonitorDecision:
-    """Probe and persist one decision without acquiring a delivery capability."""
+) -> MonitorVerdict:
+    """Probe and persist one decision without acquiring a delivery capability.
+
+    A verdict returned before the probe runs carries no entries: refusing a
+    monitor for a recorded outcome or a spent budget observes nothing.
+    """
     if wake_delivery:
         raise ShadowWakeDeliveryRefused("wake delivery is unavailable in shadow mode")
     if state.kind != "github_pull_request" or state.objective != "review_ready":
@@ -61,7 +66,7 @@ async def run_shadow_probe(
 
     terminal = terminal_decision_for_outcome(state.outcome)
     if terminal is not None:
-        return terminal
+        return MonitorVerdict(decision=terminal)
     budget_reason = monitor_budget_reason(state, now=now)
     if budget_reason:
         staged = deepcopy(state)
@@ -71,7 +76,7 @@ async def run_shadow_probe(
         staged.stopped_at = now
         staged.next_probe_at = 0.0
         await _persist_and_publish(state, staged, persist)
-        return MonitorDecision.STOP_BUDGET
+        return MonitorVerdict(decision=MonitorDecision.STOP_BUDGET)
 
     result = await asyncio.to_thread(
         provider.probe,
@@ -79,7 +84,8 @@ async def run_shadow_probe(
         previous_observation=deepcopy(state.last_observation),
     )
     staged = deepcopy(state)
-    decision = decide_monitor(staged, result.observation, now=now)
+    verdict = decide_monitor(staged, result.observation, now=now)
+    decision = verdict.decision
     staged.probe_count += 1
     staged.last_probe_at = now
     staged.last_decision = decision
@@ -108,7 +114,7 @@ async def run_shadow_probe(
     else:
         staged.next_probe_at = now + staged.cadence_secs
     await _persist_and_publish(state, staged, persist)
-    return decision
+    return verdict
 
 
 async def _persist_and_publish(
