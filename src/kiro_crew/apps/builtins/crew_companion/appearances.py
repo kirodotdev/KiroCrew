@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.appearance_packs import DEFAULT_PACK, safe_pack_id
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
 
 logger = logging.getLogger(__name__)
@@ -74,17 +75,6 @@ class PackMeta:
         }
 
 
-#: Windows reserves these device names, and the reservation applies to the STEM, so
-#: ``nul.svg`` names the NUL device exactly as ``nul`` does. The two failure modes
-#: differ and both are bad: writing to a reserved name SUCCEEDS and silently
-#: discards every byte, while creating a directory with one fails outright.
-_WINDOWS_RESERVED_STEMS = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{n}" for n in range(1, 10)}
-    | {f"lpt{n}" for n in range(1, 10)}
-)
-
-
 def _is_windows_reserved(name: str) -> bool:
     """True when ``name`` collides with a Windows device name.
 
@@ -94,7 +84,7 @@ def _is_windows_reserved(name: str) -> bool:
     validator that answers differently per host makes the same bundle valid and
     invalid at once. One rule for all hosts is the cheaper contract.
     """
-    return name.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_STEMS
+    return name.split(".", 1)[0].casefold() in WINDOWS_DEVICE_STEMS
 
 
 def _safe_id(raw: Any) -> str | None:

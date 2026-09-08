@@ -304,20 +304,6 @@ def detect_dev_servers(runtime: Any, root: Any, probe: bool = True) -> list[dict
     return out
 
 
-def foreign_detection_available(runtime: Any) -> bool:
-    """Whether a dev server the USER started can be matched to a project root.
-
-    Adopting a FOREIGN listener needs port -> pid -> working directory, and both
-    halves come from ``lsof`` here.  Probing for the binary is the honest test:
-    it reports the same answer on Windows (no ``lsof``) and on a POSIX host that
-    never installed it, instead of hard-coding a platform list that would go
-    stale the moment another source lands.  Starting the project's OWN dev server
-    does not go through this — see :func:`owned_listener`.
-    """
-
-    return runtime.trusted_system_bin("lsof") is not None
-
-
 def dev_log_ports(runtime: Any, log_path: str) -> list[int]:
     """Loopback ports a dev server announced in its own captured output.
 

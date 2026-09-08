@@ -376,7 +376,10 @@ async def _git(*args: str) -> tuple[int, str, str]:
     Routed through ``sandboxed_spawn_argv`` for OS filesystem isolation, because the
     remote URL and branch come from config an agent can influence and git reads its own
     config files on the way. This is the chokepoint ``test/test_spawn_audit.py`` requires.
-    Never raises on a non-zero exit — the caller decides what that means.
+    Never raises on a non-zero exit — the caller decides what that means. The one
+    exception: a TRANSIENT sandbox refusal (cold backend-probe cache) still raises
+    ``SandboxUnavailableError`` rather than becoming an rc, so ``sync_safely``'s bounded
+    retry can fire on it; every other refusal becomes rc=126.
 
     Resource limits come from ``create_subprocess_limited``, NOT from
     ``preexec_fn=resource_limit_preexec()``. This is an ASYNC spawn, and a ``preexec_fn``
@@ -398,15 +401,19 @@ async def _git(*args: str) -> tuple[int, str, str]:
             [_GIT_BINARY, *_COMMIT_IDENTITY, *args], _prepare=sandboxed_spawn_argv
         )
     except SandboxUnavailableError as exc:
-        # The sandbox fail-closed, so git never ran. Turned into a non-zero rc rather than
-        # left to propagate, because the prep call sits OUTSIDE the try below: an exception
-        # here escaped every caller's rc handling and reached `sync_safely`, which logs it
-        # and returns the bare string "pull errored" — an operator on Windows got no reason
-        # at all. rc=126 joins the family already in use here (124 timeout, 127 no binary).
-        # A TRANSIENT refusal keeps its own wording: `sync_safely` retries once when it sees
-        # "transient"/"retry", and that retry must not be suppressed by our own text.
+        # The sandbox fail-closed, so git never ran. A non-transient refusal is turned
+        # into a non-zero rc rather than left to propagate, because the prep call sits
+        # OUTSIDE the try below: an exception here escaped every caller's rc handling
+        # and reached `sync_safely`, which logs it and returns the bare string
+        # "pull errored" — an operator on Windows got no reason at all. rc=126 joins
+        # the family already in use here (124 timeout, 127 no binary).
+        # A TRANSIENT refusal is re-raised instead: `sync_safely`'s except-Exception
+        # clause retries once on it, and that retry must not be suppressed by turning
+        # it into an rc here — the retry exists because the cache-warm fault clears in
+        # milliseconds and rc=126 would fail the whole sync for something that was never
+        # a real refusal.
         if exc.kind == "transient":
-            return 126, "", f"could not start git: {exc}"
+            raise
         _sandbox_refusal = _SANDBOX_REFUSAL_DETAIL
         logger.warning("ops-mission-control: ledger sync git spawn refused by sandbox: %s", exc)
         return 126, "", _SANDBOX_REFUSAL_DETAIL

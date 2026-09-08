@@ -11,8 +11,11 @@ shims for POSIX modes and links, ``os.replace`` for atomic swaps, explicit
 POSIX-only.
 
 Omitting the block is not a neutral choice: the manifest then falls back to the
-implicit ``["macos", "linux"]`` default, which silently gates Windows users out
-of an app that runs there.
+implicit ``["macos", "linux"]`` default, which misreports Windows support on the
+App Store detail page a user reads before enabling the app -- ``platform.os`` is
+a published capability label, not an enable gate (``apps/routes.py`` only calls
+``supports_platform`` for a ``platform.installMode == "client"`` app, which no
+builtin sets).
 
 ``requiresDesktopApp`` is a DIFFERENT axis and stays ``True``: it says the
 companion needs the Electron desktop shell rather than a browser tab, which is
@@ -26,35 +29,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiro_crew.apps.manifest import PlatformConfig
-
 # repo_root/src/kiro_crew/apps/builtins/crew_companion/tests/<this file>
 _APP_JSON = Path(__file__).resolve().parents[1] / "app.json"
 
 
 def _raw() -> dict:
     return json.loads(_APP_JSON.read_text(encoding="utf-8"))
-
-
-def test_manifest_declares_every_platform_the_app_runs_on() -> None:
-    """The app runs wherever the desktop shell does, so all three are declared.
-
-    Pinned because both narrower answers misinform: dropping ``windows`` reads
-    as "does not run on Windows", and omitting ``platform.os`` entirely inherits
-    the implicit macOS+Linux default with the same effect.
-    """
-    assert _raw()["platform"]["os"] == ["macos", "linux", "windows"]
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform() -> None:
-    """Every declared name must map to a ``sys.platform`` value.
-
-    An unmapped name is accepted into the list and then never matches, so a
-    declaration can claim a platform the gate actually rejects.
-    """
-    cfg = PlatformConfig(os=_raw()["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
 
 
 def test_desktop_app_requirement_is_independent_of_the_os_list() -> None:

@@ -927,24 +927,21 @@ def list_campaigns() -> list[dict]:
 
 
 def delete_campaign(campaign_id: str) -> dict:
-    """Delete a campaign's DB row and its research dir (findings + report)."""
+    """Delete a campaign's research dir (findings + report), then its DB row.
+
+    Directory cleanup runs BEFORE the DB delete, and the row is kept when
+    cleanup fails, so a caller who retries the same id gets a real retry of
+    the cleanup instead of ``{"error": "campaign not found"}`` against an
+    already-vanished row. Windows refuses to unlink a file another process
+    still holds open (POSIX allows it), so a live worker session's handle on
+    a findings file can make this tree removal fail HALFWAY; the previous
+    ``ignore_errors=True`` swallowed that and deleted the row anyway, leaving
+    orphaned findings with no id left to retry them under.
+    """
     if not _validate_campaign_id(campaign_id):
         return {"error": "invalid campaign_id"}
-    db = _get_db()
-    db.execute("BEGIN")
-    rows = db.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,)).rowcount
-    db.commit()
-    db.close()
-    if rows == 0:
-        return {"error": "campaign not found"}
     d = _safe_campaign_dir(campaign_id)
-    residual = False
     if d and d.exists():
-        # Windows refuses to unlink a file another process still holds open (POSIX
-        # allows it), so a live worker session's handle on a findings file can make
-        # this tree removal fail HALFWAY. ``ignore_errors=True`` swallowed that:
-        # the DB row was gone while findings stayed on disk as invisible orphans.
-        # Collect the failures instead and report them to the caller.
         failures: list[str] = []
 
         def _on_error(_func: Any, path: Any, _exc: BaseException) -> None:
@@ -952,15 +949,22 @@ def delete_campaign(campaign_id: str) -> dict:
 
         shutil.rmtree(d, onexc=_on_error)
         if failures:
-            residual = True
             logger.warning(
-                "auto_research: campaign %s deleted from the database but %d path(s) "
-                "could not be removed (a process may still hold them open); they will "
-                "be retried on the next delete of this id",
+                "auto_research: campaign %s directory cleanup left %d path(s) "
+                "behind (a process may still hold them open); the database row "
+                "is kept so retrying this delete will try cleanup again",
                 campaign_id,
                 len(failures),
             )
-    return {"id": campaign_id, "deleted": True, "residual": residual}
+            return {"error": "cleanup incomplete", "residual": True}
+    db = _get_db()
+    db.execute("BEGIN")
+    rows = db.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,)).rowcount
+    db.commit()
+    db.close()
+    if rows == 0:
+        return {"error": "campaign not found"}
+    return {"id": campaign_id, "deleted": True, "residual": False}
 
 
 # --- Watchdog ---

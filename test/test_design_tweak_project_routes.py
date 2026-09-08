@@ -872,7 +872,7 @@ class TestPickFolder:
     def test_non_darwin_returns_501(self, isolated_queue, monkeypatch):
         """Off macOS the picker returns a structured error rather than trying to
         spawn osascript; failure means Linux/Windows users see a raw crash."""
-        monkeypatch.setattr(server._sys, 'platform', 'linux')
+        monkeypatch.setattr(server, 'IS_MACOS', False)
         h, rec = _post("/pick-folder")
         h._h_pick_folder()
         assert rec.code == 501
@@ -881,7 +881,7 @@ class TestPickFolder:
     def test_picker_unavailable(self, isolated_queue, monkeypatch):
         """If trusted_system_bin returns None (osascript not at expected path),
         the handler returns a structured error, not a crash."""
-        monkeypatch.setattr(server._sys, 'platform', 'darwin')
+        monkeypatch.setattr(server, 'IS_MACOS', True)
         monkeypatch.setattr(server, 'trusted_system_bin', lambda name: None)
         # Release the lock if test isolation left it acquired
         if server._PICK_LOCK.locked():
@@ -894,7 +894,7 @@ class TestPickFolder:
     def test_picker_timeout(self, isolated_queue, monkeypatch):
         """A timed-out picker returns 408 rather than hanging; failure means the
         backend thread is blocked forever by a stuck dialog."""
-        monkeypatch.setattr(server._sys, 'platform', 'darwin')
+        monkeypatch.setattr(server, 'IS_MACOS', True)
         monkeypatch.setattr(server, 'trusted_system_bin', lambda name: '/usr/bin/osascript')
 
         def _timeout_run(*args, **kwargs):
@@ -911,7 +911,7 @@ class TestPickFolder:
     def test_picker_canceled(self, isolated_queue, monkeypatch):
         """A user-cancelled dialog returns ok=False/canceled=True; failure means
         cancellation is reported as an error and the UI shows an alert."""
-        monkeypatch.setattr(server._sys, 'platform', 'darwin')
+        monkeypatch.setattr(server, 'IS_MACOS', True)
         monkeypatch.setattr(server, 'trusted_system_bin', lambda name: '/usr/bin/osascript')
 
         result = subprocess.CompletedProcess(
@@ -928,7 +928,7 @@ class TestPickFolder:
     def test_picker_returns_path(self, isolated_queue, monkeypatch):
         """A successful pick returns the chosen path; failure means the folder
         registration flow is completely broken."""
-        monkeypatch.setattr(server._sys, 'platform', 'darwin')
+        monkeypatch.setattr(server, 'IS_MACOS', True)
         monkeypatch.setattr(server, 'trusted_system_bin', lambda name: '/usr/bin/osascript')
 
         result = subprocess.CompletedProcess(
@@ -946,7 +946,7 @@ class TestPickFolder:
     def test_picker_concurrent_lock(self, isolated_queue, monkeypatch):
         """Only one picker can be open at a time; a second attempt returns 409;
         failure means two dialogs stack invisibly and the user is confused."""
-        monkeypatch.setattr(server._sys, 'platform', 'darwin')
+        monkeypatch.setattr(server, 'IS_MACOS', True)
         # Acquire the lock to simulate a picker already running
         server._PICK_LOCK.acquire()
         try:
@@ -960,7 +960,7 @@ class TestPickFolder:
     def test_picker_oserror(self, isolated_queue, monkeypatch):
         """An OSError from subprocess is caught and reported; failure means the
         backend crashes on a permission-denied spawn."""
-        monkeypatch.setattr(server._sys, 'platform', 'darwin')
+        monkeypatch.setattr(server, 'IS_MACOS', True)
         monkeypatch.setattr(server, 'trusted_system_bin', lambda name: '/usr/bin/osascript')
 
         def _raise_os_error(*args, **kwargs):

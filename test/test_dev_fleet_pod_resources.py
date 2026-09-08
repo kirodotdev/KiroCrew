@@ -296,6 +296,7 @@ async def test_home_size_cached_within_ttl(monkeypatch, _cfg):
 
     unit = "kirocrew-pod@alpha.service"
     # t=1000: first call runs du.
+    monkeypatch.setattr(runtime, "_trusted_bin", lambda name: "/usr/bin/du")
     assert await fleet_state._pod_home_size(_cfg, "alpha", unit, 1000.0) == 123456
     assert calls["n"] == 1
     # t=1000+30 (< TTL 60): served from cache, du NOT re-run.
@@ -325,6 +326,7 @@ async def test_home_size_goes_through_the_routed_chokepoint(monkeypatch, _cfg):
         return 0, "1\t.\n", ""
 
     monkeypatch.setattr(runtime, "_run_cmd", _fake_run_cmd)
+    monkeypatch.setattr(runtime, "_trusted_bin", lambda name: "/usr/bin/du")
     raw = MagicMock()
     monkeypatch.setattr(subprocess, "run", raw)
     await fleet_state._pod_home_size(_cfg, "alpha", "kirocrew-pod@alpha.service", 1.0)

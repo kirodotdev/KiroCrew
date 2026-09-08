@@ -499,7 +499,7 @@ def read_settings(owner: str, repo: str, root: Path | None = None) -> dict[str, 
     if path.is_file():
         try:
             stored = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return out
         if isinstance(stored, dict):
             ttl = _validated_ttl_hours(stored.get("claim_ttl_hours"))
@@ -558,7 +558,7 @@ def list_crews(
             continue
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
         if not isinstance(rec, dict):
             continue
@@ -577,7 +577,7 @@ def read_crew(
         return None
     try:
         rec = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return _coerce_crew(rec) if isinstance(rec, dict) else None
 
@@ -792,7 +792,7 @@ def read_work_item(
         return None
     try:
         rec = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return rec if isinstance(rec, dict) else None
 
@@ -807,7 +807,7 @@ def list_work_items(
     for path in sorted(d.glob("*.json")):
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
         if not isinstance(rec, dict):
             continue
@@ -1336,7 +1336,7 @@ def read_skips(owner: str, repo: str, root: Path | None = None) -> dict[str, dic
         return {}
     try:
         stored = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
     if not isinstance(stored, dict):
         return {}

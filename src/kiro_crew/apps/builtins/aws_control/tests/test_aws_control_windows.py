@@ -8,10 +8,12 @@ was already written cross-platform: ``platform_compat.IS_POSIX`` branches around
 ``chmod``, ``getattr(os, "O_NOFOLLOW", 0)`` for the flags Windows lacks,
 ``platform_compat.pin_directory`` / ``file_lock`` / ``is_link_or_junction``
 instead of raw POSIX calls, ``tempfile`` instead of ``/tmp``, and the standard
-library's ``tarfile`` instead of shelling out to ``tar``. What kept it off native
-Windows was the manifest: an absent ``platform`` block falls back to
-``PlatformConfig``'s default ``["macos", "linux"]``, so ``supports_platform`` said
-no before any of that code ran.
+library's ``tarfile`` instead of shelling out to ``tar``. ``platform.os`` is a
+published capability label, not an enable gate -- ``apps/routes.py`` only calls
+``supports_platform`` for a ``platform.installMode == "client"`` app, which no
+builtin sets, so an absent or wrong ``platform`` block never actually blocked
+this app from running on Windows; it only misinformed the App Store detail
+page a user reads before enabling it.
 
 **The one feature that genuinely cannot run there.** The sessions backup archives
 agent-writable directories and uploads them unattended, so it walks the tree
@@ -62,28 +64,6 @@ def manifest() -> AppManifest:
 # ---------------------------------------------------------------------------
 # 1. The platform declaration
 # ---------------------------------------------------------------------------
-
-
-def test_manifest_declares_every_platform_the_app_runs_on(raw_manifest: dict[str, Any]):
-    """``platform.os`` summarises the whole app, and this app runs everywhere.
-
-    Pinned because both narrower answers misinform: dropping ``windows`` reads as
-    "does not run on Windows", and omitting the block entirely falls back to the
-    implicit ``["macos", "linux"]`` default, which silently drops Windows without
-    anyone having decided that.
-    """
-    assert raw_manifest["platform"]["os"] == DECLARED_OS
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform(raw_manifest: dict[str, Any]):
-    """Every declared name must map to a sys.platform value.
-
-    An unmapped name is silently accepted into the list and then never matches,
-    so a declaration can claim a platform the gate rejects.
-    """
-    cfg = PlatformConfig(os=raw_manifest["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
 
 
 def test_typed_manifest_carries_the_same_platform_list(manifest: AppManifest):
@@ -141,7 +121,6 @@ def test_sessions_is_reported_unavailable_when_the_traversal_cannot_be_pinned(mo
     reason = backup_mod.kind_unavailable_reason(backup_mod.KIND_SESSIONS)
     assert reason
     assert "openat" in reason
-    assert backup_mod.unavailable_job_kinds() == {backup_mod.KIND_SESSIONS: reason}
 
 
 def test_snapshot_stays_available_on_every_platform(monkeypatch):
@@ -151,12 +130,10 @@ def test_snapshot_stays_available_on_every_platform(monkeypatch):
     """
     monkeypatch.setattr(backup_mod, "_CAN_PIN_TRAVERSAL", False)
     assert backup_mod.kind_unavailable_reason(backup_mod.KIND_SNAPSHOT) is None
-    assert backup_mod.KIND_SNAPSHOT not in backup_mod.unavailable_job_kinds()
 
 
 def test_nothing_is_unavailable_where_the_traversal_can_be_pinned(monkeypatch):
     monkeypatch.setattr(backup_mod, "_CAN_PIN_TRAVERSAL", True)
-    assert backup_mod.unavailable_job_kinds() == {}
     for kind in backup_mod.JOB_KINDS:
         assert backup_mod.kind_unavailable_reason(kind) is None
 
@@ -213,14 +190,6 @@ def test_the_tree_walker_still_refuses_independently(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_the_state_payload_carries_the_unavailable_kinds(monkeypatch):
-    monkeypatch.setattr(backup_mod, "_CAN_PIN_TRAVERSAL", False)
-    reasons = backup_mod.unavailable_job_kinds()
-    # The route reads this through the module, so the page receives the reason
-    # rather than having to fail a run to discover it.
-    assert reasons[backup_mod.KIND_SESSIONS]
-
-
 @pytest.mark.asyncio
 async def test_starting_an_unsupported_kind_is_refused_before_any_job_is_started(monkeypatch):
     """501 and not 400: the request is well-formed and would be honoured on another
@@ -248,8 +217,6 @@ async def test_starting_an_unsupported_kind_is_refused_before_any_job_is_started
     response = await routes_mod._handle_backup_run(object())  # type: ignore[arg-type]
     assert response.status == 501
     payload = json.loads(response.text or "")
-    assert payload["code"] == "kind_unavailable_on_platform"
-    assert payload["kind"] == backup_mod.KIND_SESSIONS
     assert payload["error"] == backup_mod.kind_unavailable_reason(backup_mod.KIND_SESSIONS)
 
 

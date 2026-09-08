@@ -34,7 +34,6 @@ from kiro_crew.apps.builtins.meetings.backend.routes._common import (
     field_str_list,
     json_body,
 )
-from kiro_crew.pinned_fs import supports_pinned_walk
 
 logger = logging.getLogger("kirocrew.app.meetings")
 
@@ -112,46 +111,6 @@ def _known_task_ids() -> set[str]:
     return {row["id"] for row in taskprov.available_task_providers()}
 
 
-# The exact ``code`` ``handle_import_audio`` answers with when the platform cannot
-# do a pinned walk. Published here so the frontend can key off the same string it
-# would otherwise only learn from a failed request; a drift test asserts the import
-# route still raises this literal.
-IMPORT_UNSUPPORTED_CODE = "import_unsupported_on_platform"
-
-
-def _audio_import_capability() -> dict[str, Any]:
-    """Whether ``POST .../meetings/{id}/import`` can run on THIS platform.
-
-    Published for the same reason the provider registries are: the backend is what
-    refuses, so the backend must also be what says so in advance. Without this the
-    Import control is a dead affordance — the user chooses a recording and only then
-    collects a bare 501.
-
-    The capability native Windows lacks is pinned traversal (``dir_fd`` plus
-    ``O_NOFOLLOW``), and that refusal is deliberate rather than a gap to close:
-    without a directory descriptor there is no race-free way to open a
-    user-supplied path, and on Windows an ancestor junction planted after any check
-    makes the open itself reach a UNC target and fire outbound SMB authentication.
-    ``routes/audio_import.py:handle_import_audio`` carries the full ruling.
-
-    Answered on the event loop rather than through a thread hop: the probe is two
-    ``hasattr`` calls and a set membership test, and touches no filesystem.
-    """
-    if supports_pinned_walk():
-        return {"supported": True, "code": "", "reason": ""}
-    return {
-        "supported": False,
-        "code": IMPORT_UNSUPPORTED_CODE,
-        "reason": (
-            "Importing an existing recording is not available on this platform. It "
-            "needs pinned directory-descriptor traversal (dir_fd with O_NOFOLLOW) to "
-            "open the file you pick without a swap race, and this platform does not "
-            "provide it. Everything else is unaffected: live transcription, notes, "
-            "the diagram, action items, translation and the calendar reader."
-        ),
-    }
-
-
 async def handle_get_config(request: web.Request) -> web.Response:
     config = await asyncio.to_thread(store.read_config, data_root(request))
     return web.json_response(
@@ -160,10 +119,6 @@ async def handle_get_config(request: web.Request) -> web.Response:
             "task_providers": taskprov.available_task_providers(),
             "calendar_providers": cal.available_calendar_providers(),
             "stt_providers": [{"id": k.STT_PROVIDER_KIROCREW, "label": "Kiro Crew speech-to-text"}],
-            # A platform capability, not a setting: the import route refuses where
-            # pinned traversal is unavailable, and the UI has to know that BEFORE it
-            # offers the control rather than after a 501.
-            "audio_import": _audio_import_capability(),
             # Served from here rather than hardcoded in the frontend, for the same
             # reason the provider registries are: the backend is what validates the
             # saved value, so it must also be what publishes the accepted set.

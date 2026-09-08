@@ -41,6 +41,7 @@ from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
 from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config.paths import config_dir
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.sel import sel
@@ -568,25 +569,26 @@ _gh_cache: dict[str, Any] = {"value": None, "at": 0.0}
 def _windows_gh_candidates() -> list[str]:
     """Fixed GitHub-CLI install roots on Windows. PATH is still NOT consulted.
 
-    Mirrors ``git_ops._windows_git_bin_dirs``: the machine-wide install under
-    ``%ProgramFiles%``, ``%ProgramW6432%`` (where a 64-bit install lands when the
-    host interpreter is 32-bit and ``%ProgramFiles%`` resolves to the x86 tree),
-    and winget's per-user root under ``%LOCALAPPDATA%\\Programs``. These are fixed
-    install roots, not workspace-writable ones, so the no-PATH-hijack property
-    ``_find_gh``'s docstring relies on is preserved.
+    Only the machine-wide install roots: ``%ProgramFiles%`` and
+    ``%ProgramW6432%`` (where a 64-bit install lands when the host interpreter
+    is 32-bit and ``%ProgramFiles%`` resolves to the x86 tree). Both need an
+    admin-elevated installer to write to, matching the no-PATH-hijack property
+    ``_find_gh``'s docstring relies on.
 
-    Without this, ``app.json``'s own promise that a private clone needs "a PAT or
-    authenticated gh" held only half on Windows: a user who had run
-    ``gh auth login`` got a clone failure with no stated cause.
+    Deliberately NOT ``%LOCALAPPDATA%\\Programs`` (winget's per-user install
+    root): unlike Program Files, it sits inside the user's own profile and is
+    writable by anything running as that user -- including this agent. Trusting
+    a ``gh.exe`` planted there would let it run unsandboxed the next time a
+    vault operation mints a gh-derived token, with the backend's PAT and proxy
+    secret in scope. A user who installed gh per-user only (no admin rights)
+    still authenticates via a stored PAT; this is a narrower gh-derived-auth
+    surface on Windows, not a hard requirement.
     """
     roots: list[str] = []
     for var in ("ProgramFiles", "ProgramW6432"):
         value = os.environ.get(var)
         if value and value not in roots:
             roots.append(value)
-    localappdata = os.environ.get("LOCALAPPDATA")
-    if localappdata:
-        roots.append(os.path.join(localappdata, "Programs"))
     return [os.path.join(root, "GitHub CLI", "gh.exe") for root in roots]
 
 
@@ -720,15 +722,6 @@ async def vault_path(vault: dict[str, Any], rel: Optional[str] = None) -> Path:
 #: never walks, so the note silently disappears from the app instead of erroring.
 _UNPORTABLE_CHARS = frozenset('<>:"|?*')
 
-#: Win32 device names, reserved with or without an extension — ``NUL.md`` opens
-#: the null device rather than creating a note, and a save to it is a silent
-#: no-op the user cannot tell from success.
-_RESERVED_STEMS = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{digit}" for digit in "123456789"}
-    | {f"lpt{digit}" for digit in "123456789"}
-)
-
 
 def _reject_unportable_component(part: str, field: str) -> None:
     """Refuse one path component Win32 cannot represent. Raises ``ApiError`` 400.
@@ -755,7 +748,7 @@ def _reject_unportable_component(part: str, field: str) -> None:
             400,
             code="path_not_a_note",
         )
-    if part.split(".", 1)[0].lower() in _RESERVED_STEMS:
+    if part.split(".", 1)[0].lower() in WINDOWS_DEVICE_STEMS:
         raise ApiError(
             f"{field} uses '{part}', a name Windows reserves for a device",
             400,

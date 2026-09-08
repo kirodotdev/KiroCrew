@@ -2219,14 +2219,6 @@ async def _handle_backup_status(request: web.Request) -> web.Response:
         "nightly": await asyncio.to_thread(backup_mod.nightly_enabled, account),
         "runs": await asyncio.to_thread(backup_mod.last_runs, account),
         "jobs": await asyncio.to_thread(_account_jobs, account),
-        # Which kinds this HOST cannot run, and why, so the page can offer the
-        # button as disabled-with-a-reason instead of live. Sent on every read,
-        # including the cheap non-`remote` one the page polls, because a
-        # capability does not depend on reaching AWS -- and a page that learned
-        # this only from a failed run would have to fail once to find out.
-        # Empty on POSIX; on Windows it carries `sessions`, which needs `openat`
-        # to archive agent-writable directories safely.
-        "unavailableKinds": backup_mod.unavailable_job_kinds(),
         "remote": None,
     }
     # The remote listing is OPT-IN, because this endpoint is now polled. Its
@@ -2294,8 +2286,7 @@ async def _handle_backup_run(request: web.Request) -> web.Response:
     unavailable = backup_mod.kind_unavailable_reason(kind)
     if unavailable is not None:
         return web.json_response(
-            {"error": unavailable, "code": "kind_unavailable_on_platform", "kind": kind},
-            status=501,
+            {"error": unavailable, "code": "kind_unavailable_on_platform"}, status=501
         )
     sdk = get_job_sdk(backup_mod.APP_NAME)
     if sdk is None:

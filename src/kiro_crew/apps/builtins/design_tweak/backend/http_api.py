@@ -765,27 +765,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": f"not a readable folder: {raw}"})
         candidates = rt._detect_dev_servers(root)
         html = [candidate for candidate in candidates if candidate["servesHtml"]]
-        # An empty list means two different things and the panel has to be able to
-        # tell them apart: "nothing is running" versus "this host cannot look".
-        # Adopting a dev server the USER started needs port -> pid -> working
-        # directory, which needs `lsof` — absent on Windows, and on any POSIX host
-        # that never installed it. Starting the project's OWN dev server is not
-        # affected, so the note points there rather than reporting a bare zero.
-        available = rt._foreign_detection_available()
-        payload: dict[str, Any] = {
-            "ok": True,
-            "root": str(root),
-            "candidates": candidates,
-            "suggested": html[0]["url"] if len(html) == 1 else "",
-            "detectionAvailable": available,
-        }
-        if not available:
-            payload["note"] = (
-                "Auto-detecting an already-running dev server needs `lsof`, which "
-                "this host does not have. Press Dev server to start the project's "
-                "own dev server, or enter its URL directly."
-            )
-        return self._json(200, payload)
+        return self._json(
+            200,
+            {
+                "ok": True,
+                "root": str(root),
+                "candidates": candidates,
+                "suggested": html[0]["url"] if len(html) == 1 else "",
+            },
+        )
 
     def _h_projects_preview_url(self) -> None:
         rt = self.runtime

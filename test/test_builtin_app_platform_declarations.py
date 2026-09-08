@@ -1,28 +1,34 @@
 """Every builtin app states its platform support out loud.
 
-`PlatformConfig.os` defaults to `["macos", "linux"]` (`apps/manifest.py`), and
-`apps/routes.py` gates enable on `supports_platform(sys.platform)`. Those two
-facts together mean an app that simply omits the `platform` block has DECLARED
-that it does not run on Windows — indistinguishable, to a reader or to the App
-Store, from a deliberate exclusion. Before this module 22 of 24 builtins were in
-exactly that state, and none of them was there on purpose.
+What `platform.os` IS, for a builtin, is a user-facing CLAIM: the sole non-test
+consumer of a builtin's value is `website/src/pages/AppDetailPage.tsx`, which
+renders it on the App Store detail page. What it is NOT is an enable gate.
+`apps/routes.py` reads it once, through `_client_install_manifest()`, which
+returns None unless `platform.installMode == "client"` — and no builtin sets
+that. `handle_enable_app`'s own docstring says it outright: "nothing else on the
+enable path consults that field". A builtin whose block is absent is therefore
+enableable on every platform the gateway runs on, Windows included.
+
+That is why the invariant pinned here is about HONESTY, not access. The default is
+`["macos", "linux"]` (`apps/manifest.py`), so an app that omits the block
+silently publishes "does not run on Windows" — indistinguishable, to a reader,
+from a deliberate statement. Twenty-two of twenty-four builtins were publishing
+exactly that, and none of them meant it.
 
 So the invariant pinned here is not "every app supports Windows". It is that no
 app's Windows stance is an accident:
 
-* every builtin declares `platform.os` EXPLICITLY (`test_every_builtin_declares
-  _platform_os_explicitly`);
+* every builtin declares `platform.os` EXPLICITLY, which turns the label into a
+  statement someone made (`test_every_builtin_declares_platform_os_explicitly`);
 * every declared name resolves to a real `sys.platform` value, so a typo like
-  `"win32"` or `"Windows"` cannot sit in a manifest silently never matching
-  (`test_every_declared_platform_name_resolves`);
-* an app that withholds `windows` is listed below with a written reason, which
-  is what makes the exclusion reviewable (`test_windows_exclusions_are_declared
-  _with_a_reason`).
+  `"win32"` or `"Windows"` cannot sit in a manifest looking authoritative while
+  matching nothing (`test_every_declared_platform_name_resolves`);
+* an app that ships `tests/` is a package, which is a collection-level invariant
+  no single app's suite can see (`test_every_app_with_tests_is_a_package`).
 
-The companion fact this file also pins is the one that decides what "supported
-on Windows" actually buys, because it is easy to get backwards. It is NOT
-"does the app shell out to a tool". It is whether the gateway must spawn a
-BACKEND CHILD PROCESS for the app:
+The companion fact this file pins is the one that decides what "runs on Windows"
+actually costs, because it is easy to get backwards. It is NOT "does the app shell
+out to a tool". It is whether the gateway must spawn a BACKEND CHILD PROCESS:
 
 * no `backend`, or `backend.hooks` only -> the code runs inside the gateway
   process and spawns nothing, so the absent Windows sandbox backend is not on
@@ -31,12 +37,13 @@ BACKEND CHILD PROCESS for the app:
   `sandbox.wrap_argv` WITHOUT the `first_party_fixed_argv` carve-out, and Kiro
   Crew has no native Windows sandbox backend, so on native Windows that spawn
   needs the operator's `agent.sandbox_allow_unsandboxed_exec=true` (or
-  `agent.sandbox='off'`). `dev_fleet` shipped with `windows` declared while in
-  this group, which is the precedent that the condition is accepted rather than
-  disqualifying.
+  `agent.sandbox='off'`). `dev_fleet` ships with `windows` declared while in this
+  group, which is the precedent that this is a documented prerequisite rather
+  than grounds for publishing "does not run here".
 
-`test_apps_needing_a_backend_child_are_pinned` keeps that second list honest, so
-a future app cannot join it unnoticed and quietly inherit the requirement.
+`test_apps_needing_a_backend_child_are_pinned` keeps that list honest, so a
+future app cannot join it unnoticed and inherit the prerequisite without the docs
+being updated alongside.
 """
 
 from __future__ import annotations
@@ -49,11 +56,6 @@ import pytest
 
 from kiro_crew.apps.execution import _BUILTINS_DIR
 from kiro_crew.apps.manifest import PlatformConfig
-
-#: Apps that deliberately withhold a platform, with the reason. An entry here is
-#: a reviewed decision; an app missing from BOTH this mapping and the `windows`
-#: declaration fails `test_every_builtin_declares_platform_os_explicitly`.
-_PLATFORM_EXCLUSIONS: dict[str, dict[str, str]] = {}
 
 #: Apps whose manifest declares `backend.entryPoint`, so the gateway spawns a
 #: separate backend process for them. On native Windows that spawn is gated on
@@ -149,27 +151,6 @@ def test_every_declared_platform_name_resolves(app: str, manifests: dict[str, di
 def test_valid_os_names_match_the_resolver() -> None:
     """Keep `_VALID_OS_NAMES` from drifting away from the real mapping."""
     assert _VALID_OS_NAMES == frozenset(PlatformConfig._OS_TO_PLATFORM)
-
-
-@pytest.mark.parametrize("app", _app_ids())
-def test_windows_exclusions_are_declared_with_a_reason(
-    app: str, manifests: dict[str, dict]
-) -> None:
-    """Withholding Windows is allowed; withholding it silently is not."""
-    declared = manifests[app]["platform"]["os"]
-    if "windows" in declared:
-        assert app not in _PLATFORM_EXCLUSIONS, (
-            f"{app} declares windows but is still listed in _PLATFORM_EXCLUSIONS; "
-            f"remove the stale entry."
-        )
-        return
-    entry = _PLATFORM_EXCLUSIONS.get(app)
-    assert entry is not None, (
-        f"{app} does not declare `windows`. If that is deliberate, add it to "
-        f"_PLATFORM_EXCLUSIONS with a `reason` naming the specific technical "
-        f"blocker, so the exclusion is reviewable instead of implicit."
-    )
-    assert entry.get("reason"), f"{app}'s _PLATFORM_EXCLUSIONS entry needs a non-empty reason"
 
 
 def test_apps_needing_a_backend_child_are_pinned(manifests: dict[str, dict]) -> None:

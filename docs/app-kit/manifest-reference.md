@@ -806,21 +806,31 @@ Control how KiroCrew manages the app:
 | `platform.clientInstall.shell` | string | | One-liner for local install |
 | `platform.clientInstall.postInstall` | string | | Command to run after install |
 
-#### `platform.os` — Windows is opt-in, and silence means "no"
+#### `platform.os` — a published claim, and silence publishes "no"
 
-`platform.os` is the gate `apps/routes.py` enables an app against
-(`PlatformConfig.supports_platform(sys.platform)`), so a name absent from the
-list is a name the app cannot be enabled on. The default is
-`["macos", "linux"]`, which means **an app that omits the `platform` block
-declares that it does not run on Windows** — not that it is untested there.
+For a **server-mode** app (every builtin), `platform.os` is a user-facing CLAIM,
+not an access control. It is rendered on the App Store detail page
+(`website/src/pages/AppDetailPage.tsx`), and that is its only non-test consumer.
+`apps/routes.py` reads it once, via `_client_install_manifest()`, which returns
+`None` unless `platform.installMode == "client"`; `handle_enable_app`'s docstring
+states the rest outright — "nothing else on the enable path consults that field".
+So omitting the block does **not** stop the app being enabled anywhere.
 
-That default is deliberate: widening it would promise Windows on behalf of every
-existing app. But it also means the omission is indistinguishable from an
-intentional exclusion, so declare the block explicitly and say what you mean:
+What it does do is publish something untrue. The default is
+`["macos", "linux"]`, so **an app that omits the `platform` block tells every
+Windows user that it does not run there** — indistinguishable from a deliberate
+statement, and wrong if the app in fact runs fine.
+
+Declare the block explicitly and make it say what you mean:
 
 ```json
 { "platform": { "os": ["macos", "linux", "windows"] } }
 ```
+
+For a `platform.installMode: "client"` app the field DOES gate behaviour: the
+`onEnable` script is skipped with `onEnable.skipped: "unsupported_platform"` when
+the gateway's OS is not listed, because that script addresses a separately
+distributed desktop application.
 
 Two things decide whether your app can honestly claim `windows`:
 
@@ -838,9 +848,9 @@ Two things decide whether your app can honestly claim `windows`:
    spawned through `sandbox.wrap_argv` without the first-party carve-out, and
    Kiro Crew has no native Windows sandbox backend — so on native Windows that
    spawn needs the operator's `agent.sandbox_allow_unsandboxed_exec=true` (or
-   `agent.sandbox='off'`). Declaring `windows` is still correct; state the
-   requirement in your app's copy so the dependency is not a surprise. See
-   `docs/guides/windows-install.md` and
+   `agent.sandbox='off'`). That is a documented prerequisite, not a reason to
+   publish "does not run here": state it in your app's `configuration` copy so
+   the dependency is not a surprise. See `docs/guides/windows-install.md` and
    `docs/system-specs/common/platform-compat.md`.
 
 When `installMode` is `"client"`, the App Store shows copy-paste terminal

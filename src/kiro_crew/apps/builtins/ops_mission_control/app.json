@@ -77,8 +77,7 @@
   "dependencies": {
     "optionalCommands": [
       "aws",
-      "gh",
-      "git"
+      "gh"
     ]
   },
   "crons": [

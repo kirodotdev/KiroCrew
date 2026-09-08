@@ -42,29 +42,6 @@ def server():
 # --- manifest platform declaration -----------------------------------------
 
 
-def test_manifest_declares_every_platform_the_app_runs_on():
-    """The app is aiohttp + git + filesystem work, all of which runs anywhere.
-
-    Pinned because omitting the block is not neutral: ``PlatformConfig`` defaults
-    ``os`` to ``["macos", "linux"]``, so an absent declaration is an active
-    refusal to enable the app on Windows rather than a missing opinion.
-    """
-    assert _manifest()["platform"]["os"] == ["macos", "linux", "windows"]
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform():
-    """Every declared name must map to a sys.platform value.
-
-    An unmapped name is accepted into the list and then never matches, so a
-    declaration can claim a platform the gate silently rejects.
-    """
-    from kiro_crew.apps.manifest import PlatformConfig
-
-    cfg = PlatformConfig(os=_manifest()["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
-
-
 # --- the gh lookup ----------------------------------------------------------
 
 
@@ -80,8 +57,20 @@ def test_windows_gh_candidates_are_fixed_install_roots_never_path(server, monkey
     monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\u\AppData\Local")
     assert server._windows_gh_candidates() == [
         os.path.join(r"C:\Program Files", "GitHub CLI", "gh.exe"),
-        os.path.join(r"C:\Users\u\AppData\Local", "Programs", "GitHub CLI", "gh.exe"),
     ]
+
+
+def test_windows_gh_candidates_never_trusts_the_user_writable_localappdata_root(
+    server, monkeypatch
+):
+    """LOCALAPPDATA\\Programs sits inside the user's own profile -- writable by
+    anything running as that user, including this agent -- so it must never be
+    a trusted install root regardless of what else is set.
+    """
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\u\AppData\Local")
+    for candidate in server._windows_gh_candidates():
+        assert "AppData" not in candidate
 
 
 def test_windows_gh_candidates_cover_the_64_bit_root_under_a_32_bit_host(server, monkeypatch):

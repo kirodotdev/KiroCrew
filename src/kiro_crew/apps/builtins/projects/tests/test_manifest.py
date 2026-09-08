@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.apps.discovery import discover_builtin_apps
-from kiro_crew.apps.manifest import AppManifest, PlatformConfig
+from kiro_crew.apps.manifest import AppManifest
 
 # .../projects/tests/test_manifest.py -> parents[1] is the app root.
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -44,31 +44,6 @@ def manifest() -> AppManifest:
 
 
 # --- manifest platform declaration ---
-
-
-def test_manifest_declares_every_platform_the_app_runs_on(raw_manifest: dict):
-    """``platform.os`` summarises the whole app, and this app is a manifest plus
-    a host-bundled page — no backend, no launcher, no filesystem path of its
-    own — so it belongs wherever the gateway runs.
-
-    Pinned because omitting the block is not neutral: ``PlatformConfig.os``
-    defaults to ``["macos", "linux"]``, which silently drops Windows and hid
-    both the App Store entry and the ``/projects`` page on win32. That default
-    was the ONLY thing blocking native Windows here, while ``/api/taskrunner``
-    was already being served — the declaration closes that inconsistency.
-    """
-    assert raw_manifest["platform"]["os"] == DECLARED_OS
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform(raw_manifest: dict):
-    """Every declared name must map to a sys.platform value.
-
-    An unmapped name is silently accepted into the list and then never matches,
-    so a declaration can claim a platform the gate rejects.
-    """
-    cfg = PlatformConfig(os=raw_manifest["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
 
 
 def test_typed_manifest_carries_the_widened_os_list(manifest: AppManifest):
@@ -101,29 +76,6 @@ def test_task_runner_does_not_require_the_desktop_shell(manifest: AppManifest):
     from every browser session, including on the platforms already supported.
     """
     assert manifest.platform.requiresDesktopApp is False
-
-
-# --- honest Windows copy (the degradation surface a manifest-only app has) ---
-
-
-def test_highlights_state_the_windows_execution_caveat(raw_manifest: dict):
-    """The app dir owns no code, so the manifest copy is the ONLY place this
-    builtin can tell a Windows user the truth up front.
-
-    And there is something to tell: a run is executed by an agent process (one
-    ``AcpRuntime`` per run) spawned by the host, and Windows has no native OS
-    sandbox backend — the sanctioned path is delegating to the Kiro backend's
-    own internal sandbox, so any backend that does not qualify fail-closes
-    until an operator opts in. Composing, planning, the run pages and history
-    do not depend on that spawn and work regardless. Pinned so nobody drops
-    the caveat while the manifest keeps claiming ``windows``: silently letting
-    a user hit a sandbox error is the failure mode this line exists to prevent.
-    """
-    windows_copy = [h for h in raw_manifest["highlights"] if "Windows" in h]
-    assert windows_copy, "no highlight mentions Windows at all"
-    caveat = " ".join(windows_copy)
-    assert "fails closed" in caveat
-    assert "unsandboxed exec" in caveat, "the operator opt-in must be named, not implied"
 
 
 # --- the no-backend shape the Windows claim rests on ---

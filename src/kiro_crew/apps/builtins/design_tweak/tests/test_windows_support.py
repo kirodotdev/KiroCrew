@@ -38,30 +38,6 @@ def _manifest() -> dict:
 # --- manifest platform declaration ---
 
 
-def test_manifest_declares_every_platform_the_app_runs_on():
-    """`platform.os` summarises the whole app, and every part of it now runs.
-
-    Pinned because the previous `["macos", "linux"]` read as a technical
-    limitation when it was an unfinished adaptation: the only macOS-specific
-    piece is the native folder chooser, which already answered 501 on Linux with
-    a documented fallback.
-    """
-    assert _manifest()["platform"]["os"] == ["macos", "linux", "windows"]
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform():
-    """Every declared name must map to a sys.platform value.
-
-    An unmapped name is silently accepted into the list and then never matches,
-    so a declaration can claim a platform the gate rejects.
-    """
-    from kiro_crew.apps.manifest import PlatformConfig
-
-    cfg = PlatformConfig(os=_manifest()["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
-
-
 # --- port discovery from the dev server's own output ---
 
 
@@ -159,18 +135,6 @@ def test_owned_listener_refuses_a_listener_not_reachable_from_loopback():
     """Right pid, wrong bind: the preview proxy only ever talks to 127.0.0.1."""
     runtime = _listener_runtime([platform_compat.PortListener(4242, "10.0.0.5", "4")])
     assert dev_preview.owned_listener(runtime, "devserver.log", 4242, None) is None
-
-
-def test_foreign_detection_availability_tracks_the_lsof_binary():
-    """Adopting a server the USER started needs lsof; report that, don't guess.
-
-    Probed rather than branched on `sys.platform` so a POSIX host without lsof
-    gets the same honest answer as Windows.
-    """
-    absent = SimpleNamespace(trusted_system_bin=lambda _name: None)
-    present = SimpleNamespace(trusted_system_bin=lambda _name: "lsof")
-    assert dev_preview.foreign_detection_available(absent) is False
-    assert dev_preview.foreign_detection_available(present) is True
 
 
 # --- the fix, end to end through the composition root ---

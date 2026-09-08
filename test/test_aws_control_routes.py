@@ -3123,6 +3123,8 @@ class TestBackupEndpoints:
         a key that names none, and the reconciliation of a run left behind by a
         dead gateway -- lives in ``test_aws_control_backup_job.py``.
         """
+        from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
+
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()
         req = _request("POST", f"/backup/{ACCOUNT}/run", match_info={"account": ACCOUNT})
@@ -3139,6 +3141,13 @@ class TestBackupEndpoints:
             _consent_ok(),
             _drive_found(),
             mock.patch.object(routes_mod, "get_job_sdk", return_value=fake),
+            # The platform-availability pre-check (kind_unavailable_reason) is
+            # its own guard with its own dedicated tests in
+            # test_aws_control_windows.py; this helper is about the claim/
+            # dispatch mechanics for a kind that IS available, so the guard
+            # must read as satisfied here too, including on the Windows CI
+            # shard where the real value is False.
+            mock.patch.object(backup_mod, "_CAN_PIN_TRAVERSAL", True),
         ):
             resp = asyncio.run(
                 handlers[("POST", "/backup/{account}/run")](req)  # type: ignore[operator]

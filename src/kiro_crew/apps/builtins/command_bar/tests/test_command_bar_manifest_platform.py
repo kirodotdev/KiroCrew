@@ -2,16 +2,20 @@
 
 Command Bar is overlay-only: the manifest declares no page, no backend entry point and
 no cron, and every line of behaviour lives in the browser bundle under
-``website/src/apps/command-bar/``. ``platform.os`` therefore gates nothing but the
-GATEWAY host's OS -- and the gateway runs natively on Windows.
+``website/src/apps/command-bar/``. ``platform.os`` is a published capability
+label, not an enable gate: ``apps/routes.py`` and ``apps/registry.py`` only call
+``supports_platform`` for a ``platform.installMode == "client"`` app, which no
+builtin -- including this one -- sets, so the declared OS list never actually
+gated anything here.
 
-Pinned because the failure it guards was silent. ``platform.os`` defaults to
-``["macos", "linux"]`` (``kiro_crew/apps/manifest.py``), and this app is default-ON and
-``replaces`` quick-search rather than adding a surface of its own. On a native Windows
-host the platform gate did not merely hide an optional app: it left the user on the
-legacy palette with nowhere in the UI to reach the launcher, while this same manifest's
-``configuration`` copy promised "press Cmd+K or Ctrl+K". Ctrl+K is the Windows/Linux
-binding, so the copy advertised Windows while the default rejected it.
+Pinned because the failure it guarded against was silent even though the
+mechanism was misdiagnosed. ``platform.os`` defaults to ``["macos", "linux"]``
+(``kiro_crew/apps/manifest.py``), and this app is default-ON and ``replaces``
+quick-search rather than adding a surface of its own. Declaring the omitted
+default on a Windows host would have misreported the app as unsupported on the
+App Store detail page, while this same manifest's ``configuration`` copy
+promised "press Cmd+K or Ctrl+K". Ctrl+K is the Windows/Linux binding, so the
+copy advertised Windows while the stale declaration would have denied it.
 """
 
 from __future__ import annotations
@@ -28,29 +32,6 @@ _DECLARED_OS = ["macos", "linux", "windows"]
 
 def _manifest() -> dict[str, Any]:
     return json.loads(_APP_JSON.read_text(encoding="utf-8"))
-
-
-def test_manifest_declares_every_platform_the_app_runs_on() -> None:
-    """The declaration must be explicit, and must name all three.
-
-    Both narrower answers misinform: omitting the block falls back to the implicit
-    ``["macos", "linux"]`` default, which silently drops Windows, and naming only
-    ``windows`` would read as "does not run on macOS".
-    """
-    assert _manifest()["platform"]["os"] == _DECLARED_OS
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform() -> None:
-    """Every declared name must map to a sys.platform value.
-
-    An unmapped name is accepted into the list and then never matches, so a declaration
-    can claim a platform the gate rejects.
-    """
-    from kiro_crew.apps.manifest import PlatformConfig
-
-    cfg = PlatformConfig(os=_manifest()["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
 
 
 def test_windows_admission_rests_on_the_app_contributing_no_host_side_code() -> None:

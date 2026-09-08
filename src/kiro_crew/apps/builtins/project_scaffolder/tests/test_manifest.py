@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.apps.discovery import discover_builtin_apps
-from kiro_crew.apps.manifest import AppManifest, PlatformConfig
+from kiro_crew.apps.manifest import AppManifest
 
 # .../project_scaffolder/tests/test_manifest.py -> parents[1] is the app root.
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -43,30 +43,6 @@ def manifest() -> AppManifest:
 
 
 # --- manifest platform declaration -------------------------------------------
-
-
-def test_manifest_declares_every_platform_the_app_runs_on(raw_manifest: dict):
-    """``platform.os`` summarises the whole app, and the whole app is a manifest
-    plus a page in the host bundle — no backend entry point, no subprocess, no
-    POSIX-only API — so it runs wherever the gateway runs.
-
-    Pinned because omitting the block is not neutral: ``PlatformConfig.os``
-    defaults to ``["macos", "linux"]``, which silently drops Windows and hides
-    the app from the App Store on win32. That default was the ONLY thing
-    blocking native Windows here.
-    """
-    assert raw_manifest["platform"]["os"] == DECLARED_OS
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform(raw_manifest: dict):
-    """Every declared name must map to a sys.platform value.
-
-    An unmapped name is silently accepted into the list and then never matches,
-    so a declaration can claim a platform the gate rejects.
-    """
-    cfg = PlatformConfig(os=raw_manifest["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
 
 
 def test_typed_manifest_carries_the_widened_os_list(manifest: AppManifest):

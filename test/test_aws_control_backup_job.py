@@ -437,6 +437,12 @@ def _enabled_owner_env():
         ),
         mock.patch.object(routes_mod.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
         mock.patch.object(routes_mod.storage_mod, "find_drive", return_value=BUCKET),
+        # The platform-availability pre-check (kind_unavailable_reason) is its own
+        # guard with its own dedicated tests in test_aws_control_windows.py; the
+        # tests using this helper are about job-dispatch mechanics for a kind
+        # that IS available, so this guard must read as satisfied everywhere,
+        # including on the Windows CI shard where the real value is False.
+        mock.patch.object(backup, "_CAN_PIN_TRAVERSAL", True),
     )
 
 

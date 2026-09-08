@@ -138,26 +138,37 @@ the request schema and the reporting protocol.
 
 ## Platform notes
 
-macOS, Linux, and Windows. Two pieces degrade off macOS/POSIX, both of them into
-a path the app already ships rather than into an error:
+macOS, Linux, and Windows. `platform.os` in a builtin's manifest is a published
+capability claim, not an enablement gate — see "Windows" below for what that
+means here.
+
+Two pieces degrade off macOS/POSIX, both of them into a path the app already
+ships rather than into an error:
 
 - **Native folder chooser** (`POST /pick-folder`, AppleScript) is macOS-only. On
-  Linux and Windows it answers `501` with `code: "picker_unsupported"` and the
-  panel falls back to typing the folder path, which registers a project
-  identically.
+  Linux and Windows it answers `501` and the panel falls back to typing the
+  folder path, which registers a project identically.
 - **Adopting a dev server you started yourself** needs port → pid → working
-  directory, and that needs `lsof`. Without it (Windows, or any POSIX host that
-  never installed it) `/detect-dev-server` reports
-  `detectionAvailable: false` plus a note instead of a bare empty list. Starting
-  the project's **own** dev server is unaffected: the pid is already known, so
-  the port comes from the dev server's own output and is then verified against
-  the listener table. You can also always point a project at a dev-server URL
-  yourself.
+  directory, and that needs `lsof`. Starting the project's **own** dev server
+  is unaffected: the pid is already known, so the port comes from the dev
+  server's own output and is then verified against the listener table. You can
+  also always point a project at a dev-server URL yourself.
 
 Everything else — static folder preview, the injecting reverse proxy, the overlay,
 and the whole request/queue lifecycle — is platform-neutral. Note that the dev
 script itself is spawned directly, **not** through Kiro Crew's sandbox, on every
 platform.
+
+### Windows
+
+`app.json` declares `platform.os` including `windows`. The app's own Python is
+already cross-platform (`platform_compat` branches, no POSIX-only calls), but
+the spawned dev server's OS-level process tree management (`kill_process_tree`,
+port listener enumeration via `find_port_listeners`) has not been exercised on
+native Windows in this change — that verification is follow-up work, not shipped
+here. `lsof`-based discovery for a user-started server is simply unavailable on
+Windows today (no fallback exists yet), which the "Dev-server discovery" row
+above already covers.
 
 ## Coming from the external `poke-and-prose` app
 

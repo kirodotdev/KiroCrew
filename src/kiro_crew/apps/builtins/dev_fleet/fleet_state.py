@@ -15,6 +15,7 @@ from typing import Any
 from kiro_crew.apps.builtins.dev_fleet import live, repository, runtime
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.platform_compat import is_link_or_junction
 
 # --- build-pending detection (server-side truth) ---
 _START_EPOCH = time.time()
@@ -890,11 +891,18 @@ def _dir_size_bytes(path: str) -> int | None:
     "not measured" was the truth, on a figure app.json's highlights advertise as
     working on any platform. This walk is the portable equivalent.
 
-    Never follows a symlink or a reparse point (``follow_symlinks=False`` on both
-    the directory test and the stat), so a junction cannot make it recurse
-    forever or count a tree twice, and a hard-linked file is counted once. Any
-    unreadable subtree is skipped rather than aborting the measurement; only a
-    root that is not a directory at all is unmeasurable and reports None.
+    Never follows a symlink or a reparse point into a recursive walk. A junction
+    is a reparse point, not a symlink, so ``follow_symlinks=False`` on the
+    directory test alone does not exclude it -- ``is_dir()`` still reports True
+    for one, so this checks :func:`platform_compat.is_link_or_junction` before
+    pushing any directory entry onto the walk stack. Without that check, a
+    junction could make the walk recurse forever (there is no cycle guard or
+    timeout on this walk otherwise), or walk through an ancestor-style
+    junction's target -- e.g. one pointing at a network share -- resolving paths
+    and authenticating as this process. A hard-linked FILE is still counted
+    once via the ``(st_dev, st_ino)`` dedup below. Any unreadable subtree is
+    skipped rather than aborting the measurement; only a root that is not a
+    directory at all is unmeasurable and reports None.
 
     Returns APPARENT size, where ``du`` reports ALLOCATED blocks, so the two can
     differ by the slack of the last block per file. That is acceptable for a
@@ -915,6 +923,15 @@ def _dir_size_bytes(path: str) -> int | None:
         for entry in entries:
             try:
                 if entry.is_dir(follow_symlinks=False):
+                    # A junction is a reparse point, not a symlink, so
+                    # follow_symlinks=False alone does not exclude it --
+                    # is_dir() still reports True and a naive push would walk
+                    # THROUGH the junction's target with no cycle guard and
+                    # no timeout on this walk. is_link_or_junction() checks
+                    # the reparse tag directly, so it catches what
+                    # follow_symlinks cannot.
+                    if is_link_or_junction(entry.path):
+                        continue
                     stack.append(entry.path)
                     continue
                 st = entry.stat(follow_symlinks=False)
@@ -939,15 +956,19 @@ async def _measure_dir_bytes(path: str, timeout: int) -> int | None:
     """Size of *path* in bytes: ``du -sb`` where it resolves, else the walk.
 
     The ``du`` branch is preferred where available so measured numbers do not
-    change on the hosts that already had them.
+    change on the hosts that already had them. A ``du`` that IS available but
+    fails (permission error, path gone mid-measurement) reports None rather than
+    falling back to the walk -- a failed measurement must read as "not measured",
+    never silently re-measured a different way with a different meaning.
     """
     if runtime._trusted_bin("du") is not None:
         rc, stdout, _ = await runtime._run_cmd(["du", "-sb", path], timeout=timeout)
-        if rc == 0:
-            try:
-                return int(stdout.split()[0])
-            except (ValueError, IndexError):
-                return None
+        if rc != 0:
+            return None
+        try:
+            return int(stdout.split()[0])
+        except (ValueError, IndexError):
+            return None
     return await _walk_dir_bytes(path)
 
 
@@ -956,14 +977,18 @@ async def _measure_dir_mb(path: str, timeout: int) -> int | None:
 
     None means NOT MEASURED and must never be rendered as 0 -- see
     :func:`_dir_size_bytes` for why that distinction is the point of this helper.
+    A ``du`` that IS available but fails reports None, same reasoning as
+    :func:`_measure_dir_bytes`: the walk is the FALLBACK for a host with no
+    ``du``, not a second attempt after a real one failed.
     """
     if runtime._trusted_bin("du") is not None:
         rc, stdout, _ = await runtime._run_cmd(["du", "-sm", path], timeout=timeout)
-        if rc == 0:
-            try:
-                return int(stdout.split()[0])
-            except (ValueError, IndexError):
-                return None
+        if rc != 0:
+            return None
+        try:
+            return int(stdout.split()[0])
+        except (ValueError, IndexError):
+            return None
     size = await _walk_dir_bytes(path)
     return None if size is None else size // (1024 * 1024)
 

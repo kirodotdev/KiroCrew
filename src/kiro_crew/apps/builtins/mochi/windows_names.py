@@ -18,15 +18,7 @@ on Windows while naming two everywhere else.
 
 from __future__ import annotations
 
-#: Legacy DOS device names. Windows reserves each of these in EVERY directory,
-#: and reserves them WITH an extension too, so ``con.json`` is as unusable as
-#: ``con``. Lowercase because the comparison lowercases; the reservation itself
-#: is case-insensitive.
-_RESERVED_STEMS = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{n}" for n in range(1, 10)}
-    | {f"lpt{n}" for n in range(1, 10)}
-)
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 
 #: Windows strips these from the end of a path segment, so a name ending in one
 #: resolves to a DIFFERENT name than the one requested.
@@ -47,4 +39,4 @@ def is_windows_reserved(segment: str) -> bool:
     if segment[-1] in _STRIPPED_TRAILING:
         return True
     stem = segment.partition(".")[0]
-    return stem.lower() in _RESERVED_STEMS
+    return stem.lower() in WINDOWS_DEVICE_STEMS

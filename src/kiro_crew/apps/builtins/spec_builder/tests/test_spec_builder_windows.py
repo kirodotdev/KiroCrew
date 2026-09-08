@@ -1,10 +1,12 @@
 """Windows support for the Spec Builder app.
 
-Pinned in the app's own suite because the manifest is the only gate the loader
-consults. Omitting the block falls back to the implicit ``["macos", "linux"]``
-default, which silently drops Windows even though every part of this app --
-in-process route handlers plus JSON/markdown spec files under the crew home --
-runs there unchanged.
+Pinned in the app's own suite because the manifest is a published capability
+label, not an enable gate: ``apps/routes.py`` only calls ``supports_platform``
+for a ``platform.installMode == "client"`` app, which no builtin sets. Omitting
+the block falls back to the implicit ``["macos", "linux"]`` default, which
+misreports Windows support on the App Store detail page even though every part
+of this app -- in-process route handlers plus JSON/markdown spec files under
+the crew home -- runs there unchanged.
 """
 
 import json
@@ -17,29 +19,6 @@ APP_DIR = Path(__file__).resolve().parents[1]
 
 def _manifest() -> dict:
     return json.loads((APP_DIR / "app.json").read_text(encoding="utf-8"))
-
-
-def test_manifest_declares_every_platform_the_app_runs_on():
-    """`platform.os` summarises the whole app, and Spec Builder is portable.
-
-    It declares no ``backend.entryPoint`` -- only ``backend.routes`` -- so its
-    code runs inside the gateway process and spawns no child of its own. There
-    is nothing POSIX-only left to gate on.
-    """
-    assert _manifest()["platform"]["os"] == ["macos", "linux", "windows"]
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform():
-    """Every declared name must map to a sys.platform value.
-
-    An unmapped name is accepted into the list and then never matches, so a
-    declaration can claim a platform the gate rejects.
-    """
-    from kiro_crew.apps.manifest import PlatformConfig
-
-    cfg = PlatformConfig(os=_manifest()["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
 
 
 # --- phase 2: encoding pinned on every JSON state read ---

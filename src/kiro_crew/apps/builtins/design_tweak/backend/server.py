@@ -612,10 +612,6 @@ def _cwd_for_pids(pids: list[int]) -> dict[int, str]:
     return dev_preview.cwd_for_pids(runtime, pids)
 
 
-def _foreign_detection_available() -> bool:
-    return dev_preview.foreign_detection_available(runtime)
-
-
 def _dev_log_ports(log_path: str) -> list[int]:
     return dev_preview.dev_log_ports(runtime, log_path)
 
@@ -819,19 +815,6 @@ def _start_dev_proc(project_id: str, root: Path) -> dict:
         "ok": False,
         "error": f"`{' '.join(cmd)}` did not start listening within {_START_TIMEOUT}s.",
     }
-    if not _foreign_detection_available():
-        # Carried as its own field, not folded into `error`, so the message the
-        # panel already renders is unchanged and this is purely additive.
-        result["hint"] = (
-            "This host has no `lsof`, so the port could only be read from the dev "
-            "server's own output — and it printed no http://localhost:PORT line "
-            "before the timeout. Start the dev server in your own terminal, then "
-            "press Dev server to connect to it by URL."
-        )
-        try:
-            result["log"] = log.read_text("utf-8", errors="replace")[-800:]
-        except OSError:
-            pass
     return result
 
 
@@ -843,20 +826,11 @@ class Handler(http_api.Handler):
 
         if not IS_MACOS:
             # Honest degradation rather than a dead end: the panel's manual path
-            # field registers a project identically, so name that fallback here
-            # instead of leaving the caller holding a bare 501. `code` is the
-            # machine-readable half so the panel can branch without string
-            # matching. This is the path Linux has always taken; Windows now
-            # joins it rather than being excluded over it.
-            return self._json(
-                501,
-                {
-                    "error": "native picker is macOS-only",
-                    "code": "picker_unsupported",
-                    "hint": "Type or paste the project folder path instead — it "
-                    "registers the project identically.",
-                },
-            )
+            # field registers a project identically, so this refuses on every
+            # non-macOS host rather than only where the native chooser is absent.
+            # This is the path Linux has always taken; Windows now joins it rather
+            # than being excluded over it.
+            return self._json(501, {"error": "native picker is macOS-only"})
         if not _PICK_LOCK.acquire(blocking=False):
             return self._json(409, {"error": "a folder picker is already open"})
         try:

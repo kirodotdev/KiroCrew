@@ -3,10 +3,12 @@
 Two things are pinned here.
 
 1. The manifest's ``platform.os`` declaration. Without a ``platform`` block the
-   manifest inherits ``PlatformConfig``'s default ``["macos", "linux"]``, and
-   ``apps/routes.py`` gates enablement on ``supports_platform(sys.platform)`` — so
-   the app was rejected on win32 without anyone having decided that. Nothing in
-   the app is POSIX-specific: the backend is stdlib-only, binds loopback
+   manifest inherits ``PlatformConfig``'s default ``["macos", "linux"]``, which is
+   published on the App Store detail page — so the app told every Windows user it
+   does not run there, without anyone having decided that. It is a claim, not a
+   gate: ``apps/routes.py`` consults the field only for a
+   ``platform.installMode: "client"`` app, and no builtin is one. Nothing in this
+   app is POSIX-specific either: the backend is stdlib-only, binds loopback
    explicitly, spawns no external process, and builds every path through
    ``os.path``.
 
@@ -66,23 +68,6 @@ def manifest() -> AppManifest:
 # --------------------------------------------------------------------------- #
 
 
-def test_manifest_declares_every_platform_the_app_runs_on(raw_manifest: dict) -> None:
-    """Both narrower answers misinform: dropping ``windows`` reads as "does not run
-    on Windows", and omitting the block falls back to the implicit
-    ``["macos", "linux"]``, which drops Windows without a decision being made.
-    """
-    assert raw_manifest["platform"]["os"] == DECLARED_OS
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform(raw_manifest: dict) -> None:
-    """An unmapped platform name is accepted into the list and then never matches,
-    so a declaration can claim a platform the gate silently rejects.
-    """
-    cfg = PlatformConfig(os=raw_manifest["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
-
-
 def test_typed_manifest_carries_the_same_platform_list(manifest: AppManifest) -> None:
     # The gates read the typed value; humans read the file. They must not disagree.
     assert manifest.platform.os == DECLARED_OS
@@ -99,9 +84,8 @@ def test_the_implicit_default_would_have_excluded_windows() -> None:
 
 def test_discovery_serializes_the_platform_declaration() -> None:
     """``PlatformConfig.to_dict()`` emits ``os`` only when it differs from the
-    default, so a regression to ``["macos", "linux"]`` does not merely change the
-    value — it removes the key, and the App Store detail page then renders no
-    platform row at all.
+    default, so the declaration reaching the App Store payload is what proves the
+    detail page can render "Windows" at all — the field's one real consumer.
     """
     entry = next((a for a in discover_builtin_apps() if a.get("name") == APP_NAME), None)
     assert entry is not None, f"{APP_NAME!r} not discovered"

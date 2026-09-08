@@ -48,28 +48,6 @@ def manifest() -> AppManifest:
 # ---------------------------------------------------------------------------
 
 
-def test_manifest_declares_every_platform_the_app_runs_on(raw_manifest: dict):
-    """``platform.os`` summarises the whole app, and this app is manifest + UI only.
-
-    Pinned because both narrower answers misinform: dropping ``windows`` reads as
-    "does not run on Windows", and omitting the block entirely falls back to the
-    implicit ``["macos", "linux"]`` default, which silently drops Windows without
-    anyone having decided that.
-    """
-    assert raw_manifest["platform"]["os"] == DECLARED_OS
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform(raw_manifest: dict):
-    """Every declared name must map to a sys.platform value.
-
-    An unmapped name is silently accepted into the list and then never matches,
-    so a declaration can claim a platform the gate rejects.
-    """
-    cfg = PlatformConfig(os=raw_manifest["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
-
-
 def test_typed_manifest_carries_the_same_platform_list(manifest: AppManifest):
     # The raw JSON and the parsed manifest must not disagree: the gates read the
     # typed value, while humans read the file.

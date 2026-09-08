@@ -810,22 +810,6 @@ def kind_unavailable_reason(kind: str) -> str | None:
     return None
 
 
-def unavailable_job_kinds() -> dict[str, str]:
-    """Every kind this platform cannot run, mapped to its reason.
-
-    Empty on POSIX. ``JOB_KINDS`` itself is deliberately NOT filtered: the kind
-    stays registered so a run record already in the store keeps resolving, and
-    so an unknown kind and an unsupported one give the caller different answers
-    instead of collapsing into one "invalid" reply.
-    """
-    reasons: dict[str, str] = {}
-    for kind in JOB_KINDS:
-        reason = kind_unavailable_reason(kind)
-        if reason is not None:
-            reasons[kind] = reason
-    return reasons
-
-
 def make_job_runner(sdk: Any, kind: str) -> Any:
     """Build the Job SDK runner for ``kind``. Registered once, at app startup.
 

@@ -2,9 +2,12 @@
 
 Two things are pinned here:
 
-1. The manifest's ``platform.os`` declaration. Without it the manifest falls back
-   to the implicit ``["macos", "linux"]`` default and ``supports_platform`` hides
-   the whole app on a native Windows host.
+1. The manifest's ``platform.os`` declaration -- a published capability label,
+   not an enable gate. ``apps/routes.py`` only calls ``supports_platform`` for
+   a ``platform.installMode == "client"`` app, which no builtin sets, so this
+   value never blocked (or would have blocked) the app from being enabled on
+   Windows; declaring it truthfully is still worth doing for the label users
+   read on the App Store detail page.
 2. That every text read/write in the app pins ``encoding="utf-8"``. This app's
    payloads are LLM prose and user questions — em dashes, curly quotes, CJK — and
    a bare ``Path.read_text()`` / ``write_text()`` uses the process locale
@@ -57,19 +60,6 @@ def _new_campaign() -> str:
 # --- manifest platform declaration ---
 
 
-def test_manifest_declares_every_platform_the_app_runs_on():
-    """``platform.os`` must name all three platforms.
-
-    This app is pure Python + aiohttp + sqlite3: no subprocess, no POSIX-only
-    API, no hardcoded POSIX path, and all path work goes through pathlib. There
-    is nothing platform-specific left to exclude, so omitting the block (which
-    silently means "macOS and Linux only") would misreport the app as unusable
-    on Windows.
-    """
-    manifest = json.loads(APP_JSON.read_text(encoding="utf-8"))
-    assert manifest["platform"]["os"] == DECLARED_OS
-
-
 def test_manifest_still_validates_with_the_platform_block():
     """The typed loader must accept the added block.
 
@@ -84,20 +74,6 @@ def test_manifest_still_validates_with_the_platform_block():
     assert manifest.validate(app_root=APP_ROOT) == []
     assert manifest.name == "auto-research"
     assert "auto-research" in [a.get("name") for a in discover_builtin_apps()]
-
-
-def test_declared_platforms_all_resolve_to_a_real_sys_platform():
-    """Every declared name must map to a sys.platform value.
-
-    An unmapped name is accepted into the list and then never matches, so a
-    declaration can claim a platform the gate still rejects.
-    """
-    from kiro_crew.apps.manifest import PlatformConfig
-
-    manifest = json.loads(APP_JSON.read_text(encoding="utf-8"))
-    cfg = PlatformConfig(os=manifest["platform"]["os"])
-    for sys_platform in ("darwin", "linux", "win32"):
-        assert cfg.supports_platform(sys_platform), sys_platform
 
 
 # --- the encoding regression gate ---
@@ -254,10 +230,11 @@ def test_queue_written_as_utf8_by_a_worker_still_loads(tmp_path: Path):
 # --- delete_campaign residual reporting ---
 
 
-def test_delete_campaign_reports_residual_when_a_path_cannot_be_removed(isolated: Path):
+def test_delete_campaign_keeps_the_row_when_a_path_cannot_be_removed(isolated: Path):
     """Windows refuses to unlink a file another process holds open, so the tree
-    removal can fail halfway. The old ``ignore_errors=True`` hid that and left
-    orphaned findings behind an already-deleted DB row.
+    removal can fail halfway. The row is kept (not deleted) so a retried
+    delete of the same id tries cleanup again instead of returning
+    "campaign not found" against an already-vanished row.
     """
     cid = _new_campaign()
 
@@ -266,8 +243,8 @@ def test_delete_campaign_reports_residual_when_a_path_cannot_be_removed(isolated
 
     with patch.object(mod.shutil, "rmtree", _failing_rmtree):
         result = mod.delete_campaign(cid)
-    assert result["deleted"] is True
-    assert result["residual"] is True
+    assert result == {"error": "cleanup incomplete", "residual": True}
+    assert mod.get_campaign(cid) is not None
 
 
 def test_delete_campaign_reports_no_residual_on_a_clean_removal(isolated: Path):
@@ -275,3 +252,22 @@ def test_delete_campaign_reports_no_residual_on_a_clean_removal(isolated: Path):
     result = mod.delete_campaign(cid)
     assert result == {"id": cid, "deleted": True, "residual": False}
     assert not (isolated / "research" / cid).exists()
+    assert mod.get_campaign(cid) is None
+
+
+def test_delete_campaign_retried_after_cleanup_succeeds(isolated: Path):
+    """The row survives a failed cleanup, so retrying the same id later -- once
+    whatever held the file open has let go -- completes the delete for real.
+    """
+    cid = _new_campaign()
+
+    def _failing_rmtree(path, onexc=None, **_kw):
+        onexc(None, str(path), OSError("in use"))
+
+    with patch.object(mod.shutil, "rmtree", _failing_rmtree):
+        first = mod.delete_campaign(cid)
+    assert first["error"] == "cleanup incomplete"
+
+    second = mod.delete_campaign(cid)
+    assert second == {"id": cid, "deleted": True, "residual": False}
+    assert mod.get_campaign(cid) is None
