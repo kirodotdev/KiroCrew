@@ -359,6 +359,28 @@ element, and animating the icon itself would restart that animation and desync i
 from the other layer. If your loader swaps artwork on a timer, animate a stable
 wrapper for the same reason.
 
+### Installed packs: custom loader art
+
+`registerThemeBranding()` is compiled-theme only. An **installed pack** (a
+`theme.json` dropped in via Settings) reaches the loader through **files**, not
+code:
+
+- **`loaderIcons`** — the allowlisted stock symbols (Level 1), as above.
+- **`loader/*.png` `.webp` `.gif` `.svg`** — ship your **own images** (Level 1).
+  Ship **one** and it renders on its own; ship **2–8** and the stock carousel
+  cycles them. Animated WebP/APNG/GIF and animated SVG **self-animate** inside
+  the `<img>`, so a single fully-authored loop is a first-class loader. Ordered
+  by filename; each is served with a strict Content-Type + `nosniff` under the
+  sandboxed asset CSP (`default-src 'none'; sandbox`), referenced only as an
+  `<img>`. SVG is safe here for the same reason `logo.svg` is: an `<img>`-loaded
+  SVG runs in the browser's **secure static/animated mode** — scripts disabled,
+  external references not fetched — so it cannot run code or beacon out, while
+  its SMIL/CSS animation still plays. A count outside 1–8 fails install.
+
+Precedence, highest first: compiled `loader` → pack `loader/*` images (one on its
+own, 2–8 cycled) → `loaderIcons` (pack manifest, then compiled) → the default
+mascot pool.
+
 Registration is read at module load (see `src/extensions.ts`); registering after
 the shell has rendered does not take effect until the next theme switch.
 

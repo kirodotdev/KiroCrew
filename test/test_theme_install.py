@@ -101,6 +101,12 @@ _VALID_PERSONA = (
 )
 # A minimal but valid MP3 header (ID3 or MPEG frame sync) for the audio sniff.
 _VALID_MP3 = b"\xff\xfb\x90\x00" + b"\x00" * 64
+# A valid 1x1 PNG — pack loader images are size-capped, not magic-sniffed, but a
+# real signature keeps the fixture honest.
+_PNG_1PX = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000a49444154789c6360000002000154a24f9b0000000049454e44ae426082"
+)
 
 
 def _make_tiered(
@@ -278,6 +284,58 @@ class TestValidateThemeDir:
         declared = set(re.findall(r"^  ([a-z]+): [A-Z]", frontend, re.MULTILINE))
         assert declared == _THEME_LOADER_ICONS
         assert _THEME_LOADER_ICONS_MAX == len(declared)
+
+    def test_pack_loader_images_accepted_and_described(self, tmp_path: Path) -> None:
+        d = _make_theme(tmp_path, level=1)
+        (d / "loader").mkdir()
+        for i in range(4):
+            (d / "loader" / f"{i}.png").write_bytes(_PNG_1PX)
+        manifest = json.loads((d / "theme.json").read_text("utf-8"))
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["loaderImages"] == [
+            "loader/0.png", "loader/1.png", "loader/2.png", "loader/3.png",
+        ]
+
+    @pytest.mark.parametrize("count", [9, 12])
+    def test_pack_loader_images_out_of_range_rejected(
+        self, tmp_path: Path, count: int
+    ) -> None:
+        d = _make_theme(tmp_path, level=1)
+        (d / "loader").mkdir()
+        for i in range(count):
+            (d / "loader" / f"{i}.png").write_bytes(_PNG_1PX)
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert summary is None
+        assert err is not None and "loader/" in err
+
+    def test_pack_loader_single_image_accepted(self, tmp_path: Path) -> None:
+        # One image is a valid loader on its own (rendered directly, not cycled).
+        d = _make_theme(tmp_path, level=1)
+        (d / "loader").mkdir()
+        (d / "loader" / "spin.webp").write_bytes(_PNG_1PX)
+        manifest = json.loads((d / "theme.json").read_text("utf-8"))
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["loaderImages"] == ["loader/spin.webp"]
+
+    def test_pack_loader_svg_and_gif_accepted(self, tmp_path: Path) -> None:
+        # SVG rides the same <img>-secure-mode asset path as logo.svg; GIF/animated
+        # formats self-animate in the <img>. Both are valid loader images.
+        d = _make_theme(tmp_path, level=1)
+        (d / "loader").mkdir()
+        (d / "loader" / "a.svg").write_text(
+            "<svg xmlns='http://www.w3.org/2000/svg'><circle r='4'/></svg>",
+            encoding="utf-8",
+        )
+        (d / "loader" / "b.gif").write_bytes(_PNG_1PX)
+        manifest = json.loads((d / "theme.json").read_text("utf-8"))
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["loaderImages"] == ["loader/a.svg", "loader/b.gif"]
 
     def test_l2_overlay_asset_rejected(self, tmp_path: Path) -> None:
         d = _make_theme(tmp_path)  # declares level 0 but ships an overlay

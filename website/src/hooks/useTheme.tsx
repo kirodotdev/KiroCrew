@@ -129,6 +129,9 @@ export interface ThemeAssets {
   hasOverrides?: boolean
   /** Stock symbol names for the chat loader's existing carousel. */
   loaderIcons?: ThemeLoaderIconName[]
+  /** Pack-supplied raster loader artwork (Level 1): relative asset paths
+   *  (`loader/<file>.png`), cycled by the stock carousel as <img>s. */
+  loaderImages?: string[]
   // L2 assets: overlays, topbar, audio, persona.
   overlays?: ThemeOverlayDecl[]
   topbar?: ThemeTopbar
