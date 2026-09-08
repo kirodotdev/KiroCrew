@@ -5849,6 +5849,8 @@
       "history_load_failed": "Não foi possível carregar as mensagens desta sessão.",
       "model_list": "Lista de modelos",
       "retry": "Tentar novamente",
+      "stop_failed": "Não foi possível interromper este turno ({{error}}). Pressione Parar novamente.",
+      "stop_failed_network": "Não foi possível contatar o servidor para interromper este turno. Pressione Parar novamente.",
       "session_ready_type_a_message_to_start": "Sessão pronta. Digite uma mensagem para começar.",
       "split_down": "Dividir abaixo",
       "split_right": "Dividir à direita",

@@ -1632,7 +1632,9 @@
       "earlier_messages_unavailable": "Earlier messages are no longer available in this session's history.",
       "forked_from": "Forked from {{name}}",
       "history_load_failed": "Couldn't load this session's messages.",
-      "retry": "Retry"
+      "retry": "Retry",
+      "stop_failed": "Couldn't stop this turn ({{error}}). Press Stop again.",
+      "stop_failed_network": "Couldn't reach the server to stop this turn. Press Stop again."
     },
     "cliPanel": {
       "copied": "Copied",

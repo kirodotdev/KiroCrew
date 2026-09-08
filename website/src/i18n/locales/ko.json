@@ -5663,6 +5663,8 @@
       "history_load_failed": "이 세션의 메시지를 불러올 수 없습니다.",
       "model_list": "모델 목록",
       "retry": "다시 시도",
+      "stop_failed": "이 턴을 중지할 수 없습니다({{error}}). 중지를 다시 누르세요.",
+      "stop_failed_network": "서버에 연결할 수 없어 이 턴을 중지하지 못했습니다. 중지를 다시 누르세요.",
       "session_ready_type_a_message_to_start": "세션이 준비되었습니다. 메시지를 입력하여 시작하세요.",
       "split_down": "아래로 분할",
       "split_right": "오른쪽으로 분할",

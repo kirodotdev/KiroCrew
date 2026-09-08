@@ -4309,12 +4309,16 @@ function ChatInput({
                 )
               ) : stopState === 'soft_pending' ? (
                 <div className="flex items-center gap-1.5">
+                  {/* Pulse floor 0.8 with a faint danger fill: at 0.6 on a
+                      transparent background the light-theme button bottomed
+                      out near white-on-white mid-pulse, and this is the only
+                      force-stop path while a cancel hangs (#9548 UX review). */}
                   <motion.button
-                    className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all"
+                    className="w-8 h-8 rounded-lg bg-danger/10 border-none text-danger hover:bg-danger/20 flex items-center justify-center cursor-pointer transition-all"
                     onClick={onStop}
                     title={i18nT('components.chatInput.force_kill_discards_in_progress_work_and_queued')}
                     aria-label={i18nT('components.chatInput.force_kill_session_discards_in_progress_work_and')}
-                    animate={{ opacity: [0.6, 1, 0.6] }}
+                    animate={{ opacity: [0.8, 1, 0.8] }}
                     transition={{ duration: 1.2, repeat: Infinity }}
                     data-testid="stop-button-pulsing"
                   >

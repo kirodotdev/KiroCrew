@@ -5849,6 +5849,8 @@
       "history_load_failed": "Impossible de charger les messages de cette session.",
       "model_list": "Liste des modèles",
       "retry": "Réessayer",
+      "stop_failed": "Impossible d’arrêter ce tour ({{error}}). Appuyez de nouveau sur Arrêter.",
+      "stop_failed_network": "Impossible de joindre le serveur pour arrêter ce tour. Appuyez de nouveau sur Arrêter.",
       "session_ready_type_a_message_to_start": "Session prête. Saisissez un message pour commencer.",
       "split_down": "Diviser vers le bas",
       "split_right": "Diviser vers la droite",

@@ -5663,6 +5663,8 @@
       "history_load_failed": "このセッションのメッセージを読み込めませんでした。",
       "model_list": "モデルリスト",
       "retry": "再試行",
+      "stop_failed": "このターンを停止できませんでした（{{error}}）。もう一度「停止」を押してください。",
+      "stop_failed_network": "サーバーに接続できず、このターンを停止できませんでした。もう一度「停止」を押してください。",
       "session_ready_type_a_message_to_start": "セッション準備完了。メッセージを入力して開始してください。",
       "split_down": "下に分割",
       "split_right": "右に分割",

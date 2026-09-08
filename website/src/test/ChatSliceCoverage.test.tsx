@@ -1166,6 +1166,94 @@ describe('chatSlice thunks', () => {
     expect(chat(store).stopPressedAt.front).toBe(0)
   })
 
+  /* A Stop press the backend answers with `not running` proves the tab's busy
+   * view was stale: a member DM thread (never the active slot) had kept its
+   * Stop button after a `_done` that never reached it, and every press came
+   * back as this no-op with nothing visible happening (#9547). The answer
+   * settles the client's own run state on whichever path holds it. */
+  it('settles a background slot idle when the backend answers a Stop with not running', async () => {
+    apiMock.stopChatSlot.mockResolvedValueOnce({ ok: true, info: 'not running', already_stopping: false })
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    // A chunk frame for a slot that is NOT active marks it streaming in slotRun.
+    store.dispatch(sseChatMessage({ slot: 'member-a', role: 'chunk', content: 'wor', seq: 1 }))
+    expect(chat(store).slotRun['member-a']?.state).toBe('streaming')
+
+    await store.dispatch(requestStop({ slotId: 'member-a', force: false }))
+    expect(apiMock.stopChatSlot).toHaveBeenCalledWith('member-a')
+    expect(chat(store).slotRun['member-a']?.state).toBe('idle')
+    // The active mirror belongs to another slot and is untouched.
+    expect(chat(store).activeSlot).toBe('front')
+  })
+
+  it('settles the active slot when its Stop is answered with not running', async () => {
+    apiMock.stopChatSlot.mockResolvedValueOnce({ ok: true, info: 'not running', already_stopping: false })
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    store.dispatch(sseChatMessage({ slot: 'front', role: 'chunk', content: 'wor', seq: 1 }))
+    expect(chat(store).slotState).toBe('streaming')
+
+    await store.dispatch(requestStop({ slotId: 'front', force: false }))
+    expect(chat(store).slotState).toBe('idle')
+    expect(chat(store).slotRunning).toBe(false)
+    expect(chat(store).slotStopping).toBe(false)
+  })
+
+  it('leaves the run state alone when the backend reports a stop already in progress', async () => {
+    apiMock.stopChatSlot.mockResolvedValueOnce({ ok: true, info: 'stop already in progress', already_stopping: true })
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    store.dispatch(sseChatMessage({ slot: 'member-a', role: 'chunk', content: 'wor', seq: 1 }))
+    await store.dispatch(requestStop({ slotId: 'member-a', force: false }))
+    expect(chat(store).slotRun['member-a']?.state).toBe('streaming')
+  })
+
+  it('a not-running reply that lands after a NEWER turn started does not idle that turn', async () => {
+    // The reply is delayed until a user frame (a cron/channel injection) has
+    // started a new turn on the slot; the stale answer must be ignored.
+    let release: (v: unknown) => void = () => {}
+    apiMock.stopChatSlot.mockImplementationOnce(() => new Promise((r) => { release = r }))
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    store.dispatch(sseChatMessage({ slot: 'member-a', role: 'chunk', content: 'a', seq: 1 }))
+    const pending = store.dispatch(requestStop({ slotId: 'member-a', force: false }))
+    // New turn begins while the request is in flight.
+    store.dispatch(sseChatMessage({ slot: 'member-a', role: '_done', content: '' }))
+    store.dispatch(sseChatMessage({ slot: 'member-a', role: 'user', content: 'cron says hi', meta: { mid: 'm-new' } }))
+    store.dispatch(sseChatMessage({ slot: 'member-a', role: 'chunk', content: 'b', seq: 1 }))
+    release({ ok: true, info: 'not running', already_stopping: false })
+    await pending
+    expect(chat(store).slotRun['member-a']?.state).toBe('streaming')
+  })
+
+  it('reports a failed stop request instead of swallowing it', async () => {
+    apiMock.stopChatSlot.mockRejectedValueOnce(new Error('offline'))
+    const store = makeStore()
+    const res = await store.dispatch(requestStop({ slotId: 'member-a', force: false }))
+    expect(requestStop.fulfilled.match(res)).toBe(true)
+    expect(res.payload).toEqual({ error: 'offline' })
+    // The press stamp is cleared so a retry is not debounced away.
+    expect(chat(store).stopPressedAt['member-a']).toBe(0)
+  })
+
+  it('reports a 2xx refusal (ok:false) as a failed stop', async () => {
+    apiMock.stopChatSlot.mockResolvedValueOnce({ ok: false, error: 'could not reach the crew running this session to stop it', code: 'remote_stop_unreachable' })
+    const store = makeStore()
+    const res = await store.dispatch(requestStop({ slotId: 'member-a', force: false }))
+    expect(res.payload).toEqual({ error: 'could not reach the crew running this session to stop it' })
+    expect(chat(store).stopPressedAt['member-a']).toBe(0)
+  })
+
+  it('leaves the run state alone when a real stop is accepted', async () => {
+    apiMock.stopChatSlot.mockResolvedValueOnce({ ok: true })
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    store.dispatch(sseChatMessage({ slot: 'member-a', role: 'chunk', content: 'wor', seq: 1 }))
+    await store.dispatch(requestStop({ slotId: 'member-a', force: false }))
+    // Turn end is owned by the `_done` frame the cancel will produce.
+    expect(chat(store).slotRun['member-a']?.state).toBe('streaming')
+  })
+
   it('keeps the user where they are when a create resolves after they moved', async () => {
     apiMock.createChatSlot.mockImplementation(async () => {
       // The user switches away while the POST is in flight.

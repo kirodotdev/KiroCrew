@@ -5849,6 +5849,8 @@
       "history_load_failed": "No se pudieron cargar los mensajes de esta sesión.",
       "model_list": "Lista de modelos",
       "retry": "Reintentar",
+      "stop_failed": "No se pudo detener este turno ({{error}}). Pulsa Detener de nuevo.",
+      "stop_failed_network": "No se pudo contactar con el servidor para detener este turno. Pulsa Detener de nuevo.",
       "session_ready_type_a_message_to_start": "Sesión lista. Escribe un mensaje para empezar.",
       "split_down": "Dividir abajo",
       "split_right": "Dividir a la derecha",
