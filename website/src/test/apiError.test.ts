@@ -37,6 +37,16 @@ describe('toApiError', () => {
     expect(e.message).toBe('upstream said no')
   })
 
+  it('shows HTTP <status> for an edge HTML error page, not its markup', async () => {
+    // What a tunnel or proxy serves while the gateway restarts: the document
+    // reached the message verbatim, so the dashboard topbar rendered the markup.
+    const page = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>502</title></head><body>Bad Gateway</body></html>'
+    const e = await toApiError(res(502, page))
+    expect(e.message).toBe('HTTP 502')
+    expect(e.message).not.toContain('<')
+    expect(e.body).toBe(page)
+  })
+
   it('flags an auth-expiry refusal so callers can drop futile retries', async () => {
     const e = await toApiError(res(403, 'invalid signature', { 'X-Auth-Required': 'true' }))
     expect(e.authRequired).toBe(true)

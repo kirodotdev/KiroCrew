@@ -39,10 +39,19 @@ describe('devFleetApi error shape', () => {
   })
 
   it('falls back to the raw text when the body is not JSON', async () => {
+    mockResponse('upstream refused the connection', 502)
+    const err = await failureOf(api.get('/fleet'))
+    expect(err.status).toBe(502)
+    expect(err.message).toBe('upstream refused the connection')
+  })
+
+  it('shows HTTP <status> for an edge HTML error page rather than its markup', async () => {
     mockResponse('<html>502 Bad Gateway</html>', 502)
     const err = await failureOf(api.get('/fleet'))
     expect(err.status).toBe(502)
-    expect(err.message).toContain('502 Bad Gateway')
+    expect(err.message).toBe('HTTP 502')
+    // The page itself stays readable for diagnostics.
+    expect(err.body).toContain('502 Bad Gateway')
   })
 
   it('falls back to the status when the body is empty', async () => {
