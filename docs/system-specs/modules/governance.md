@@ -2055,6 +2055,33 @@ denials leave the same forensic trail.
   `computer_use.approval` was removed with the rest of the computer-use governance
   model, so `approval_mode` is once again the only row on the `approval` scale and
   its live clamp is still the reserved half.
+- **Windows has no machine-policy managed tier today, so the central ceiling is
+  advisory against a local account.** There is no machine-scoped policy pin on
+  Windows, so `resolve_distribution`
+  ([`src/kiro_crew/platform/policy_distribution.py`](../../../src/kiro_crew/platform/policy_distribution.py))
+  lets a per-setting environment override stand: a standard user can set the
+  `KIROCREW_POLICY_URL` environment variable to a document of their own and
+  replace the whole central rung. Read the Windows guidance accordingly —
+  central distribution is the **recommended substitute, not a guarantee** that a
+  person using the laptop cannot loosen the ceiling. The intended machine-policy
+  managed tier (an `HKLM\SOFTWARE\Policies` registry rung read via `winreg`,
+  which an environment variable cannot redirect) is design-of-record, not
+  shipped; see [the central-governance-ceiling
+  RFC](../../request-for-change/rfc-central-governance-ceiling.md) for that step.
+- **macOS has no machine-policy managed tier today either, and the intended design
+  reads only a Computer-Level / device-channel managed profile as the machine
+  rung.** No managed-profile reader exists on main; see [the
+  central-governance-ceiling
+  RFC](../../request-for-change/rfc-central-governance-ceiling.md) for that step —
+  it is design-of-record, not shipped. The design calls for a managed profile to be
+  deployed at Computer Level (Jamf) or through the device channel (Intune) to be
+  read as the machine tier. A profile deployed at Jamf **User Level** or through
+  Intune's **user channel** would land at a per-user path and would **not** be read
+  as the machine tier, so once built the host would govern from a local tier
+  without raising an error — the same silent-fallback shape as the Windows
+  advisory case above. Whether a user-level profile should be deliberately
+  ignored or read as a lower-than-machine rung is an open design question tracked
+  in that RFC.
 
 > **Capability `profile-absence` semantics (deliberate deviation from spec A.4
 > rule 8).** The spec says a profile that OMITS a capability defaults it to
