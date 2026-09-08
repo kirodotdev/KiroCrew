@@ -626,6 +626,27 @@ class TestScriptHookStoreFire:
         assert len(results) == 0
 
     @pytest.mark.asyncio
+    async def test_fire_matches_additional_tool_name_once(self, hook_store: ScriptHookStore):
+        hook = hook_store.create(
+            {
+                "name": "shell-hook",
+                "event": HOOK_EVENT_PRE_TOOL_USE,
+                "command": "echo matched",
+                "timeout": 30,
+                "matcher": "execute_bash",
+            }
+        )
+
+        results = await hook_store.fire(
+            HOOK_EVENT_PRE_TOOL_USE,
+            tool_name="review repository state",
+            additional_tool_names=("execute_bash", "execute_bash"),
+        )
+
+        assert len(results) == 1
+        assert hook.run_count == 1
+
+    @pytest.mark.asyncio
     async def test_fire_blocking_hook(self, hook_store: ScriptHookStore):
         """Exit code 2 means blocked."""
         hook_store.create(

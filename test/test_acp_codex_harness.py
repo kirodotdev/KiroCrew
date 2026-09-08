@@ -1077,6 +1077,29 @@ class TestWhatTheHandleAdvertisesForCodex:
         )
         assert handle._advertised_model_ids() == ["gpt-5.6"]
 
+    def test_explicit_mcp_is_empty_passes_nonempty_refuses(self):
+        """A caller-supplied MCP array fails closed on mirrored hosts."""
+        rt = AcpRuntime(work_dir="/tmp", acp_backend=ACP_BACKEND_CODEX)
+        rt._refuse_unprojected_mcp_servers([])
+        with pytest.raises(AcpToolGateUnroutable) as exc:
+            rt._refuse_unprojected_mcp_servers([{"name": "brokered", "command": "x"}])
+        assert "cannot mount MCP servers from an explicit array" in str(exc.value)
+
+    def test_a_host_with_no_mirror_is_untouched_by_the_refusal(self):
+        """kiro and KAS reach their servers natively, so the gate must not fire."""
+        for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
+            assert has_mirror(backend) is False
+            rt = AcpRuntime(work_dir="/tmp", acp_backend=backend)
+            rt._refuse_unprojected_mcp_servers([{"name": "brokered", "command": "x"}])
+
+    def test_the_refusal_is_not_retryable(self):
+        """The configuration fact must not consume a reconnect budget."""
+        assert issubclass(AcpToolGateUnroutable, AcpError)
+        rt = AcpRuntime(work_dir="/tmp", acp_backend=ACP_BACKEND_CODEX)
+        with pytest.raises(AcpToolGateUnroutable) as exc:
+            rt._refuse_unprojected_mcp_servers([{"name": "brokered"}])
+        assert not getattr(exc.value, "transient", False)
+
     def test_the_entitlement_probe_reads_the_select_too(self):
         """The probe exists to HEAL a degraded snapshot, so [] is its worst answer.
 
@@ -1259,6 +1282,19 @@ def _codex_session_new_response(sid: str = "sid-codex") -> dict[str, Any]:
 
 
 class TestTheRuntimeSendsCodexNoAgentMode:
+    @pytest.mark.asyncio
+    async def test_explicit_session_mcp_is_refused_before_session_new(self):
+        rt = _codex_runtime()
+
+        with pytest.raises(AcpToolGateUnroutable, match="cannot mount MCP servers"):
+            await rt.create_session(
+                cwd="/w",
+                agent="kirocrew",
+                mcp_servers=[{"name": "editor-mcp", "command": "proxy"}],
+            )
+
+        assert rt._session_queues == {}
+
     @pytest.mark.asyncio
     async def test_no_set_mode_goes_out_for_a_codex_session(self):
         """codex's modes are permission tiers, so a Crew agent id resolves to none.

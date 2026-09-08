@@ -53,6 +53,7 @@ from kiro_crew.acp.types import (
     classify_stop_reason,
 )
 from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
+from kiro_crew.acp_server.locations import extract_tool_locations
 from kiro_crew.agent_discovery import agent_welcome_message, warm_project_agent_names
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
@@ -2970,7 +2971,7 @@ def _tool_meta(event: "LLMEvent") -> dict[str, str] | None:
     redact `event.tool_call_id` before matching against the stored value."""
     if not event.tool_call_id:
         return None
-    return {
+    meta: dict[str, Any] = {
         "tool_call_id": _redact_tool_field(event.tool_call_id),
         "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
         "input": _redact_tool_field(event.tool_input),
@@ -2986,6 +2987,20 @@ def _tool_meta(event: "LLMEvent") -> dict[str, str] | None:
         # optional there, so a row without them still renders.
         **_tool_identity_fields(event),
     }
+    if event.tool_name:
+        meta["tool_name"] = _redact_tool_field(event.tool_name, limit=128)
+    # Editor follow-along ("Zed follows the agent"): the ACP-server adapter
+    # reads these locations off the SSE tool frame (_build_stream_chunk) and
+    # forwards them on the session/update wire. Absent when the tool has no
+    # discoverable file target (bash, network fetches) — the extractor returns
+    # [] and we omit the key so ``_build_stream_chunk`` does the same.
+    locations = extract_tool_locations(
+        getattr(event, "tool_name", "") or "",
+        getattr(event, "raw_tool_params", None),
+    )
+    if locations:
+        meta["locations"] = locations
+    return meta
 
 
 def _tool_call_ws_payload(event: "LLMEvent") -> dict[str, str | bool]:
@@ -5636,6 +5651,7 @@ async def _spawn_admitted_prefetch(
             speculative=True,
             speculative_resume=allow_resume,
             reasoning_effort_override=slot.reasoning_effort or None,
+            session_mcp_servers=slot.session_mcp_servers or None,
         )
     except SpeculativeResumeRefused:
         # Two sources: the entry gate (resumable key, resume not
@@ -8949,6 +8965,7 @@ async def _run_chat(
             if _mirror_link is not None and _mirror_resumes
             else ""
         )
+        _turn_mcp_servers = slot._acp_mcp_servers.get()
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -8963,6 +8980,11 @@ async def _run_chat(
             # direct dashboard turn.
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
+            session_mcp_servers=(
+                _turn_mcp_servers
+                if _turn_mcp_servers is not None
+                else slot.session_mcp_servers or None
+            ),
         )
         _acquired = True
         # A fresh provider can still owe Kiro Crew history after its one-shot
@@ -10404,7 +10426,10 @@ async def _run_chat(
                     _tool_payload,
                 )
                 slot.append(
-                    "tool", f"🔧 {_tool_payload['tool']}", "msg msg-tool", meta=_tool_meta(event)
+                    "tool",
+                    f"🔧 {_tool_payload['tool']}",
+                    "msg msg-tool",
+                    meta=await asyncio.to_thread(_tool_meta, event),
                 )
                 sel().log_tool_invocation(
                     session_key=session_key,
@@ -10629,7 +10654,7 @@ async def _run_chat(
                     # with the same tool_call_id, and we don't want to
                     # overwrite that post-approval marker. Preserve whatever
                     # leading icon (🔧/✅/🚫) the existing message has.
-                    _meta_patch: dict[str, str] = {}
+                    _meta_patch: dict[str, Any] = {}
                     if _input_upd:
                         _meta_patch["input"] = _input_upd
                     # A refinement is the only event carrying the purpose when the
@@ -10639,6 +10664,33 @@ async def _run_chat(
                     # so a live-only fix would lose the purpose on the next reload.
                     if _purpose_upd:
                         _meta_patch["purpose"] = _purpose_upd
+                    # Editor follow-along: kiro-cli streams the Read tool_call
+                    # with empty rawInput and delivers path/start_line only on
+                    # this refinement, so _tool_meta() at the initial event saw
+                    # nothing to extract. Recompute here and patch persisted
+                    # meta so history replay carries it, plus enqueue a
+                    # wire-only tool_update SSE frame so an already-connected
+                    # ACP client (Zed) emits session/update tool_call_update
+                    # with the refined locations.
+                    _locations_upd = await asyncio.to_thread(
+                        extract_tool_locations,
+                        getattr(event, "tool_name", "") or "",
+                        getattr(event, "raw_tool_params", None),
+                    )
+                    if _locations_upd:
+                        _meta_patch["locations"] = _locations_upd
+                        _tool_update_frame: dict[str, Any] = {
+                            "role": "tool_update",
+                            "content": "",
+                            "cls": "",
+                            "ts": "",
+                            "meta": {
+                                "tool_call_id": _tcid_upd,
+                                "locations": _locations_upd,
+                            },
+                        }
+                        slot._pending.append(_tool_update_frame)
+                        slot.event.set()
                     _patched = False
                     _patched_content: str | None = None
                     for m in reversed(slot.messages):
@@ -11287,7 +11339,7 @@ async def _run_chat(
                             "tool",
                             f"🚫 {_deny_title} — {_deny_msg}",
                             "msg msg-tool",
-                            meta=_tool_meta(event),
+                            meta=await asyncio.to_thread(_tool_meta, event),
                         )
                         # Broadcast a visible activity event (mirrors the
                         # auto-approve branch) so the block isn't silent.
@@ -11656,7 +11708,7 @@ async def _run_chat(
                             # redacted `tool_call_id` (the live↔replay join key),
                             # and `input`/`kind` so historical rows open the same
                             # inline detail panel as live ones.
-                            meta=_tool_meta(event),
+                            meta=await asyncio.to_thread(_tool_meta, event),
                         )
                         sel().log_tool_invocation(
                             session_key=session_key,
@@ -11721,7 +11773,7 @@ async def _run_chat(
                             "tool",
                             f"🔧 {_tool_title}",
                             "msg msg-tool",
-                            meta=_tool_meta(event),
+                            meta=await asyncio.to_thread(_tool_meta, event),
                         )
                         sel().log_tool_invocation(
                             session_key=session_key,
@@ -11877,7 +11929,10 @@ async def _run_chat(
                     # provenance-gated steer above.
                     await client.reject_tool(event.request_id)
                     slot.append(
-                        "tool", f"🚫 {_title} (rejected)", "msg msg-tool", meta=_tool_meta(event)
+                        "tool",
+                        f"🚫 {_title} (rejected)",
+                        "msg msg-tool",
+                        meta=await asyncio.to_thread(_tool_meta, event),
                     )
                     # Mark the permission as resolved so UI shows rejection
                     perm_meta: dict[str, str] = {
@@ -12306,7 +12361,10 @@ async def _run_chat(
                         await client.approve_tool(event.request_id)
                         _approved_title = _redact_display_text(event.title)
                         slot.append(
-                            "tool", f"✅ {_approved_title}", "msg msg-tool", meta=_tool_meta(event)
+                            "tool",
+                            f"✅ {_approved_title}",
+                            "msg msg-tool",
+                            meta=await asyncio.to_thread(_tool_meta, event),
                         )
                         sel().log_tool_invocation(
                             session_key=session_key,
@@ -12697,6 +12755,7 @@ async def _run_chat(
                         "todo_update",
                         {"slot": slot.key, "todo": slot.todo_payload()},
                     )
+                    state._broadcast_acp_plan(slot.key, slot.todo_payload())
             elif event.kind == EVENT_SUBAGENT_LIST:
                 # kiro-cli per-subagent state (native use_subagent crews).
                 # Reconcile one Activity card per sub-agent (spawn/done).

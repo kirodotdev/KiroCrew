@@ -749,6 +749,74 @@ class TestEmptyAppDeniedClosed:
             assert any("empty_app_denied" in o for o in outcomes)
 
 
+class TestAcpMessageScope:
+    """The ACP relay is never a browser or app event."""
+
+    @staticmethod
+    def _ws(store: dict[str, Any]) -> MagicMock:
+        ws = MagicMock()
+        ws.get.side_effect = lambda key, default=None: store.get(key, default)
+        return ws
+
+    def test_only_registered_acp_slot_receives_message(self) -> None:
+        from kiro_crew.dashboard.websocket_hub import WebSocketHub
+
+        hub = object.__new__(WebSocketHub)
+        payload = {"slot": "acp-1", "role": "user", "content": "hello", "messageId": "m-1"}
+        acp_ws = self._ws({"_acp_title_subscription": True, "_acp_title_sessions": {"acp-1"}})
+        other_acp_ws = self._ws({"_acp_title_subscription": True, "_acp_title_sessions": {"acp-2"}})
+        dashboard_ws = self._ws({"_is_dashboard_user": True})
+
+        assert hub._ws_client_allowed(acp_ws, "acp_message", payload) is True
+        assert hub._ws_client_allowed(other_acp_ws, "acp_message", payload) is False
+        assert hub._ws_client_allowed(dashboard_ws, "acp_message", payload) is False
+
+    def test_only_registered_acp_slot_receives_plan(self) -> None:
+        from kiro_crew.dashboard.websocket_hub import WebSocketHub
+
+        hub = object.__new__(WebSocketHub)
+        payload = {"slot": "acp-1", "tasks": [], "description": ""}
+        acp_ws = self._ws({"_acp_title_subscription": True, "_acp_title_sessions": {"acp-1"}})
+        other_acp_ws = self._ws({"_acp_title_subscription": True, "_acp_title_sessions": {"acp-2"}})
+        dashboard_ws = self._ws({"_is_dashboard_user": True})
+
+        assert hub._ws_client_allowed(acp_ws, "acp_plan", payload) is True
+        assert hub._ws_client_allowed(other_acp_ws, "acp_plan", payload) is False
+        assert hub._ws_client_allowed(dashboard_ws, "acp_plan", payload) is False
+
+    def test_message_and_plan_payloads_are_context_redacted(self) -> None:
+        from kiro_crew.dashboard import state as state_mod
+        from kiro_crew.dashboard.state import DashboardState
+
+        state = object.__new__(DashboardState)
+        state._send_ws_all = MagicMock()  # type: ignore[method-assign]
+
+        def redact(value: str) -> str:
+            return value.replace("secret", "[REDACTED]")
+
+        with patch.object(state_mod, "redact_via_context", side_effect=redact):
+            state._broadcast_acp_message(
+                "acp-1",
+                "assistant",
+                "message-secret",
+                {"meta": {"mid": "m-1"}},
+            )
+            message = state._send_ws_all.call_args_list[0].args[1]
+            assert message["content"] == "message-[REDACTED]"
+
+            state._broadcast_acp_plan(
+                "acp-1",
+                {
+                    "description": "plan-secret",
+                    "tasks": [{"title": "task-secret", "meta": {"note": "nested-secret"}}],
+                },
+            )
+            plan = state._send_ws_all.call_args_list[1].args[1]
+            assert plan["description"] == "plan-[REDACTED]"
+            assert plan["tasks"][0]["title"] == "task-[REDACTED]"
+            assert plan["tasks"][0]["meta"]["note"] == "nested-[REDACTED]"
+
+
 # ---------------------------------------------------------------------------
 # ``slot_title`` uses ``key`` (not ``slot``) for the slot identifier
 # ---------------------------------------------------------------------------

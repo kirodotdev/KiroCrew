@@ -29,6 +29,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Liveness probe | `pid_exists(pid)` / `pid_liveness(pid)`; `pid_confirmed_absent(pid)` when deletion requires positive absence (Windows access/query errors preserve) | `os.kill(pid, 0)` (kills on Windows!) |
 | Kill a process | `kill_pid(pid, sig)` | `os.kill(pid, sig)` |
 | Kill a tree | `kill_process_tree(pid, sig)` | `os.killpg(os.getpgid(pid), sig)` |
+| Kill a retained isolated process group after its leader exits | `kill_process_group(pgid, sig)` | `os.killpg(pgid, sig)` |
 | Parent PID | `get_ppid(pid)` | `/proc` read / libproc |
 | Session process identity | `get_process_start_id(pid)`; Windows uses query-only creation FILETIME, Linux start ticks, macOS libproc microseconds with a `sysctl KERN_PROC_PID` fallback for a zombie (libproc refuses one; the kernel's zombie list still carries the same `p_start` instant) | caller-supplied PID or a bare PID without its creation identity |
 | macOS zombie state | `darwin_pid_is_zombie(pid)` (`True` / `False` / `None` unreadable; a pid the kernel does not list reads `True`); `darwin_kinfo_proc(pid)` for the record with its start id; `darwin_pgroup_members(pgid)` lists a process group with each member's zombie flag | `pid_exists` as an exit oracle (a zombie is alive to it); `pgroup_exists` as an empty-group oracle (a retained zombie leader keeps it true); `proc_pidinfo` on a zombie |

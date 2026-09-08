@@ -3578,6 +3578,41 @@ class TestHasReaderFlag:
         slot.append("user", "hello")
         assert len(received) == 0
 
+    def test_user_reaches_acp_only_callback(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        browser: list[dict] = []
+        acp: list[tuple[str, str, str, dict]] = []
+        slot._on_message = lambda key, msg: browser.append(msg)
+        slot._on_acp_message = lambda key, role, content, msg: acp.append((key, role, content, msg))
+
+        slot._has_reader = False
+        slot.append("user", "dashboard prompt")
+
+        assert browser == []
+        assert len(acp) == 1
+        key, role, content, row = acp[0]
+        assert (key, role, content) == ("s1", "user", "dashboard prompt")
+        assert row["meta"]["mid"]
+
+    def test_acp_origin_is_task_local(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        rows: list[dict] = []
+        slot._on_acp_message = lambda key, role, content, msg: rows.append(msg)
+
+        token = slot._acp_origin_session_id.set("s1")
+        try:
+            slot.append("user", "editor prompt")
+        finally:
+            slot._acp_origin_session_id.reset(token)
+        slot.append("user", "dashboard steer")
+
+        assert rows[0]["meta"]["_acp_session"] == "s1"
+        assert "_acp_session" not in rows[1]["meta"]
+
     def test_tool_and_permission_broadcast(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -12964,6 +12999,160 @@ class TestWidgetOriginAutoRunGuard:
 
         run_chat_mock.assert_called_once()
         assert "[UI] refresh" in run_chat_mock.call_args[0][2]
+
+
+class TestAcpOrchestratorRelay:
+    @staticmethod
+    def _internal_app(state: DashboardState) -> web.Application:
+        @web.middleware
+        async def _internal(request: web.Request, handler):
+            request["internal_auth"] = True
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, _internal)
+        return app
+
+    @staticmethod
+    def _owner_app(state: DashboardState) -> web.Application:
+        state.owner_id = "owner"
+
+        @web.middleware
+        async def _owner(request: web.Request, handler):
+            request["user"] = "owner"
+            request["app"] = ""
+            request["is_dashboard_user"] = True
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, _owner)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_busy_slot_refuses_acp_send_without_queueing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("acp-busy")
+        gate = asyncio.Event()
+
+        async with TestClient(TestServer(self._internal_app(state))) as client:
+            slot.task = asyncio.create_task(gate.wait())
+            try:
+                response = await client.post(
+                    "/api/chat",
+                    headers={"X-ACP-Session-Id": slot.key},
+                    json={"message": "do not queue", "slot": slot.key},
+                )
+                body = await response.json()
+            finally:
+                gate.set()
+                await slot.task
+
+        assert response.status == 409
+        assert body["code"] == "slot_busy"
+        assert slot.queue_depth == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("auth_kind", ["internal", "owner"])
+    async def test_stale_mcp_owner_cannot_start_acp_turn(self, tmp_path, monkeypatch, auth_kind):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("acp-stale-owner")
+        slot.session_mcp_owner = "adapter-b"
+        slot.session_mcp_servers = [{"name": "second-adapter-proxy"}]
+        run_chat = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat)
+
+        app = self._internal_app(state) if auth_kind == "internal" else self._owner_app(state)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/api/chat",
+                headers={
+                    "X-ACP-Session-Id": slot.key,
+                    "X-ACP-MCP-Owner": "adapter-a",
+                },
+                json={"message": "must not run", "slot": slot.key},
+            )
+            body = await response.json()
+
+        assert response.status == 409
+        assert body["code"] == "mcp_owner_stale"
+        assert slot.messages == []
+        run_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_subagent_hold_refuses_acp_send_without_queueing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for.return_value = [{"id": "child"}]
+        slot = state.get_or_create_slot("acp-held")
+        run_chat = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat)
+
+        async with TestClient(TestServer(self._internal_app(state))) as client:
+            response = await client.post(
+                "/api/chat",
+                headers={"X-ACP-Session-Id": slot.key},
+                json={"message": "do not hold", "slot": slot.key},
+            )
+            body = await response.json()
+
+        assert response.status == 409
+        assert body["code"] == "slot_busy"
+        assert slot.queue_depth == 0
+        run_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_typed_go_clears_origin_before_stage_output(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("acp-go", mode="orchestrator")
+
+        async def _stage(_state, _slot, *, auto_run):
+            assert auto_run is False
+            _slot.append("assistant", "stage output")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._stage_loop", _stage)
+        async with TestClient(TestServer(self._internal_app(state))) as client:
+            response = await client.post(
+                "/api/chat",
+                headers={"X-ACP-Session-Id": slot.key},
+                json={"message": "go", "slot": slot.key},
+            )
+            assert response.status == 200
+        await slot.task
+
+        user = next(row for row in slot.messages if row["role"] == "user")
+        assistant = next(row for row in slot.messages if row["content"] == "stage output")
+        assert user["meta"]["_acp_session"] == slot.key
+        assert "_acp_session" not in assistant["meta"]
+
+    @pytest.mark.asyncio
+    async def test_typed_stop_clears_origin_before_confirmation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.subagents = None
+        slot = state.get_or_create_slot("acp-stop", mode="orchestrator")
+        slot._orch_tracker = MagicMock(has_escalated=True, stopped=False)
+
+        async with TestClient(TestServer(self._internal_app(state))) as client:
+            response = await client.post(
+                "/api/chat",
+                headers={"X-ACP-Session-Id": slot.key},
+                json={"message": "stop", "slot": slot.key},
+            )
+            assert response.status == 200
+
+        slot._orch_tracker.stop.assert_called_once()
+        user = next(row for row in slot.messages if row["role"] == "user")
+        assistant = next(
+            row
+            for row in slot.messages
+            if row["content"] == "🛑 [SYSTEM] Orchestration stopped by user."
+        )
+        assert user["meta"]["_acp_session"] == slot.key
+        assert "_acp_session" not in assistant["meta"]
 
 
 class TestPythonStageLoop:

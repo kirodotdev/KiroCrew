@@ -71,6 +71,8 @@ dev = [
     # repository, so there was no existing one to reuse; pip-audit is PyPA's own
     # and is the tool the removed step used, which keeps the choice boring.
     "pip-audit==2.10.1",
+    # ACP SDK used by the closed-box interoperability tests.
+    "agent-client-protocol==0.12.1",
 ]
 
 [tool.black]

@@ -4,6 +4,18 @@
 
 The ACP layer spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for `kiro-cli acp` or `claude-agent-acp`, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. All protocol constants in `acp/types.py`.
 
+## Gateway-backed ACP session listing
+
+The agent-role server in `acp_server/http_backend.py` exposes dashboard chat
+slots through `session/list`. A request with `cwd` scopes results to that project
+and preserves most-recent-first ordering by `updatedAt`.
+
+Project filtering compares canonical filesystem paths (`realpath` plus platform
+case normalization), not raw strings. Logical and symlinked workspace paths
+therefore match their physical path without rewriting the original `cwd` stored
+on the slot. If canonicalization fails, only an exact raw-string match is
+accepted, so unrelated projects are never included.
+
 ## Backend Selection
 
 `AcpSessionHandle.active_agent` records the mode named by session configuration,
@@ -1038,8 +1050,11 @@ startup rather than hiding an arbitrary project directory.
 
 The current public Codex ACP backend has no direct MCP projection. Private V2
 execution with that backend therefore refuses before allocation and names the
-remedy: choose a member backend that supports direct MCP. Ordinary V1 Codex
-sessions retain their existing behavior.
+remedy: choose a member backend that supports direct MCP. On the ordinary V1
+runtime preview, both shared broker arrays and explicit per-session MCP arrays
+fail closed before `session/new`: transport narrowing cannot replace the mirror's
+agent allowlist and per-tool deny projection, while Codex approves its own tools.
+V1 Codex sessions with no session MCP array retain their existing behavior.
 
 The public provider factory uses `agent.member_acp_backend` for member private
 chat and the configured default backend for Crew work and private background

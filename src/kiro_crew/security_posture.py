@@ -1292,6 +1292,34 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "survives into the output.",
     ),
     (
+        "ACP editor stream",
+        "acp_server/gateway.py",
+        "Gateway session output and error text forwarded to an ACP-aware editor. "
+        "Backend-controlled strings pass through the shared credential and "
+        "exfiltration-URL redactors before crossing the stdio protocol boundary.",
+    ),
+    (
+        "ACP gateway backend failures",
+        "acp_server/http_backend.py",
+        "Gateway HTTP response and transport error text forwarded to an ACP-aware "
+        "editor. Untrusted gateway details pass through the shared credential and "
+        "exfiltration-URL redactors before crossing the stdio protocol boundary.",
+    ),
+    (
+        "ACP session history replay",
+        "acp_server/server.py",
+        "Stored user and assistant text replayed by `session/load` directly to an "
+        "ACP-aware editor. Each row passes through `redact_via_context` before the "
+        "session update crosses the stdio protocol boundary.",
+    ),
+    (
+        "ACP editor MCP child failures",
+        "acp_server/mcp_supervisor.py",
+        "Stderr and launch failures from editor-supplied MCP children can reach "
+        "the editor as ACP errors or the gateway diagnostic log. The supervisor "
+        "applies both shared redactors before retaining or surfacing that text.",
+    ),
+    (
         "AWS Control error responses",
         "apps/builtins/aws_control/backend/routes.py",
         "Error text returned by the aws-control builtin's HTTP surface. The app "
@@ -1359,6 +1387,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # orchestration and reporting names (`_redacted_upload_copy`,
         # `_report_redaction`, `_report_redacted_bundle`).
         "snapshot.py",
+        # Shared ACP location scrubber: it validates and filters path metadata for
+        # the registered gateway/http_backend editor boundary but owns no transport
+        # or audience itself.
+        "acp_server/locations.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",
