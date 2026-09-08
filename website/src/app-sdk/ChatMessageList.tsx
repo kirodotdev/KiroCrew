@@ -7,7 +7,7 @@
  * ChatPage wraps this in Virtuoso for virtualized scrolling.
  * ChatEmbed wraps this in a simple scrollable div.
  */
-import React, { useMemo, useCallback, memo } from 'react'
+import React, { useMemo, useCallback, useLayoutEffect, memo } from 'react'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
 import TurnBlock from '../pages/chat/TurnBlock'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
@@ -63,6 +63,30 @@ export interface ChatMessageListProps {
   /** Extra renderer entries, searched before the built-ins. An entry reusing a
    *  built-in id replaces it; one claiming an undrawn role adds a row type. */
   renderers?: readonly MessageRenderer[]
+  /** Reports the grouped display items this component computed, in the order
+   *  the rows' `data-display-index` numbers them — what the pinned-prompt
+   *  banner (`usePinnedPrompt`) reads to find the prompt above the fold.
+   *  Supplying it (or `hiddenRow`) is what turns row indexing ON: every display
+   *  item is then wrapped in a `data-display-index` block. Off otherwise —
+   *  the wrapper is one extra div per row, and a host that does not read the
+   *  indices should not pay for it (the embed SDK's DOM stays byte-identical).
+   *  Fired from a layout effect, so by the time the host reads it the rows
+   *  carrying those indices are in the DOM — a scroll rAF between commit and a
+   *  passive effect could otherwise read fresh DOM indices against a stale
+   *  list (the same ordering ChatPage keeps for its own `displayItemsRef`). */
+  onDisplayItems?: (items: DisplayItem[]) => void
+  /** The one indexed row to hide: the row whose bubble the pinned-prompt
+   *  banner is currently standing in for. Hidden by `visibility`, not
+   *  `display` — the row must keep its height or the transcript reflows under
+   *  the reader. Matched by message IDENTITY (`ts`) when the row has one, and
+   *  by display index only as the fallback for a message with no ts: the
+   *  index is computed in a scroll frame against a list that a streaming
+   *  append or a turn regroup can shift before this render, so matching on it
+   *  first hid the wrong row (the "two stacked boxes" bug the main chat fixed).
+   *  Deliberately a single hidden-row key, not a per-row style hook: one
+   *  consumer needs exactly this, and the ts-vs-index rule lives here once
+   *  instead of in every host. */
+  hiddenRow?: { ts?: string | null; index: number }
 }
 
 // ── Stable helpers (outside component) ──
@@ -84,7 +108,13 @@ const ChatMessageList = memo(function ChatMessageList({
   renderTool,
   hideCardOwnedOAuth = false,
   renderers,
+  onDisplayItems,
+  hiddenRow,
 }: ChatMessageListProps) {
+  // Row indexing is inferred from the props that consume it, not a separate
+  // flag: a host that reads indices supplies onDisplayItems (and hides through
+  // hiddenRow); one that supplies neither gets the unwrapped DOM.
+  const indexRows = onDisplayItems != null || hiddenRow != null
 
   // Phase 1: Build raw items — skip permissions, group thinking
   const displayItems = useMemo<DisplayItem[]>(() => {
@@ -260,11 +290,25 @@ const ChatMessageList = memo(function ChatMessageList({
 
   // Render a DisplayItem (single, group, or turn)
   const renderDisplayItem = useCallback((item: DisplayItem, i: number) => {
-    if (item.kind === 'turn') {
-      return <TurnBlock key={'turn-' + i} turn={item} renderItem={renderItem} />
-    }
-    return renderItem(item, i)
-  }, [renderItem])
+    const node = item.kind === 'turn'
+      ? <TurnBlock key={'turn-' + i} turn={item} renderItem={renderItem} />
+      : renderItem(item, i)
+    if (!indexRows) return node
+    const hidden = hiddenRow != null && (hiddenRow.ts != null
+      ? (item.kind === 'single' && item.msg.ts === hiddenRow.ts)
+      : hiddenRow.index === i)
+    // A plain block wrapper: it takes the row's own box (padding included), so
+    // its rect IS the row's rect for the geometry that reads it, and it adds no
+    // class of its own so the theming contract on the inner row is untouched.
+    return (
+      <div key={'row-' + i} data-display-index={i} style={hidden ? { visibility: 'hidden' } : undefined}>
+        {node}
+      </div>
+    )
+  }, [renderItem, indexRows, hiddenRow])
+
+  // Layout effect, not passive: see `onDisplayItems`.
+  useLayoutEffect(() => { onDisplayItems?.(displayItems) }, [displayItems, onDisplayItems])
 
   return (
     <>

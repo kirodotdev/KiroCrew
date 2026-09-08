@@ -17,6 +17,9 @@ import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter from '../pages/chat/ChatFooter'
+import PinnedPrompt from '../pages/chat/PinnedPrompt'
+import { usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
+import type { DisplayItem } from '../pages/chat/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
@@ -123,6 +126,23 @@ export default function ChatPane({
   // chat's virtualizer): RO-driven re-pin on any content growth or collapse,
   // released only by a genuine user scroll up, re-armed at the bottom.
   const follow = useChatScrollFollow({ resetKey: slotKey })
+  // Pinned-prompt banner — the same hook the main chat's transcript controller
+  // wears (chat-core P5-d). The pane's transcript is unvirtualized, so the
+  // list to index comes from ChatMessageList (`onDisplayItems` turns its row
+  // indexing on) and the jump back is the hook's in-place glide.
+  const pin = usePinnedPrompt({ scrollerRef: follow.scrollerRef })
+  const { displayItemsRef: pinItemsRef, updatePinnedPrompt, onScrollPin, setPinned, setPinExpanded } = pin
+  const onDisplayItems = useCallback((items: DisplayItem[]) => {
+    pinItemsRef.current = items
+    // A new turn shifts geometry with no scroll event of its own (ChatPage
+    // recomputes on its rendered list for the same reason). Layout-effect
+    // timing: the rows carrying the new indices are already in the DOM.
+    updatePinnedPrompt()
+  }, [pinItemsRef, updatePinnedPrompt])
+  const followOnScroll = follow.onScroll
+  const onScroll = useCallback(() => { followOnScroll(); onScrollPin() }, [followOnScroll, onScrollPin])
+  // A different session starts collapsed with nothing pinned.
+  useEffect(() => { setPinned(null); setPinExpanded(false) }, [slotKey, setPinned, setPinExpanded])
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
@@ -230,6 +250,23 @@ export default function ChatPane({
     window.addEventListener('mc-config-changed', reload)
     return () => { window.removeEventListener('focus', reload); window.removeEventListener('mc-config-changed', reload) }
   }, [])
+  // Same enablement the main chat honours (Settings → Chat → pin last prompt),
+  // read through the hook's ref so the scroll recompute never closes over a
+  // stale config.
+  useEffect(() => {
+    pin.pinEnabledRef.current = chatConfig.pinLastPrompt
+    if (!chatConfig.pinLastPrompt) setPinned(null)
+  }, [chatConfig.pinLastPrompt, pin.pinEnabledRef, setPinned])
+  // The transcript row whose bubble the banner is standing in for. The list
+  // hides it (ts-keyed, index fallback — see ChatMessageList.hiddenRow);
+  // memoised so the memo'd list does not re-render on every pane render.
+  const pinnedState = pin.pinned
+  const pinnedTs = pinnedState?.ts
+  const pinnedIdx = pinnedState?.idx
+  const pinHiddenRow = useMemo(
+    () => (pinnedIdx == null ? undefined : { ts: pinnedTs, index: pinnedIdx }),
+    [pinnedTs, pinnedIdx],
+  )
 
   // Pickers — same hooks/data sources ChatPage uses, but selection targets THIS slot.
   // Subscribes to the store's global refresh so a default-agent write in ANY pane (or
@@ -718,6 +755,34 @@ export default function ChatPane({
         <div className="relative z-[1]">
           <EdgeFade side="top" />
         </div>
+        {/* Pinned-prompt band. Zero-height in flow, so the banner OVERLAYS the
+            scroller's top exactly as the main chat's does under its title row;
+            the fold sentinel's top edge is the line the banner sticks to — the
+            scroller's own top edge here, directly under the pane's title bar,
+            or under the HOST's header in frameless mode (the Members DM), where
+            the pane root is what this band is anchored to, so it can never
+            paint over that header. right-1.5 keeps it off the scrollbar
+            track, as on the main chat. */}
+        <div className="relative z-[2]">
+          <div ref={pin.pinFoldRef} aria-hidden className="h-0" />
+          {pinnedState && (
+            <div className="absolute top-0 left-0 right-1.5 pointer-events-none">
+              <PinnedPrompt
+                text={pinnedState.text}
+                fullText={pinnedState.full}
+                images={pinnedState.images}
+                bodyBeyondPreview={pinnedState.bodyBeyondPreview}
+                pushUp={pinnedState.push}
+                bannerH={pinnedState.bannerH}
+                expanded={pin.pinExpanded}
+                onToggleExpanded={() => setPinExpanded(p => !p)}
+                onJump={() => pin.jumpToPinnedPromptInPlace(pinnedState.idx)}
+                cardRef={pin.pinCardRef}
+                onCollapsedHeight={pin.onPinCollapsedHeight}
+              />
+            </div>
+          )}
+        </div>
 
         {/* stable theming hook 'chat-container' — see website/docs/theming-contract.md */}
         {/* overflow-x-hidden: `overflow-y-auto` alone leaves overflow-x at
@@ -726,7 +791,7 @@ export default function ChatPane({
             gives the WHOLE message list a draggable horizontal scrollbar that
             sits right above the composer. The conversation should never pan
             sideways; wide children scroll within themselves. */}
-        <div ref={follow.scrollerRef} onScroll={follow.onScroll} className="chat-container flex-1 overflow-y-auto overflow-x-hidden py-3 min-h-0">
+        <div ref={follow.scrollerRef} onScroll={onScroll} className="chat-container flex-1 overflow-y-auto overflow-x-hidden py-3 min-h-0">
           <div ref={follow.contentRef}>
           {slotDetailFailed && (
             <div className="mx-4 my-2 flex items-start gap-2">
@@ -753,7 +818,7 @@ export default function ChatPane({
               {i18nT('components.chatPane.earlier_messages_open_session')}
             </button>
           )}
-          <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} />
+          <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} onDisplayItems={onDisplayItems} hiddenRow={pinHiddenRow} />
           {/* The same working indicator the full chat page shows (the ghost-pose
               carousel, theme-swappable via themeBranding): a running turn in a
               pane — a member DM, a split pane — was otherwise invisible between

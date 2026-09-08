@@ -58,6 +58,22 @@ const MORPH_MS = 150
 const MORPH_EASE = 'cubic-bezier(0.2,0,0,1)'
 
 /**
+ * Frame for the prompt's image thumbnails: a solid `bg-muted` plate showing
+ * through the image's own padding. Two things a ring cannot do here:
+ *   - `ring-inset` is painted BELOW an `<img>`'s replaced content, so on an
+ *     opaque image it never shows at all; a 1px outset ring in the border tone
+ *     was measured too faint on the dark card (UX review on #9538: "a black
+ *     square on a dark box that I nearly missed", "looks broken"). The plate is
+ *     a mid-grey in both themes, so a dark screenshot separates from a dark
+ *     card and a white one from a white card regardless of the border tokens.
+ *   - Padding renders the background AROUND the content, so the plate is a
+ *     real frame, not a shadow that an opaque bitmap can cover.
+ * The frame is inside the element's box (sizes below already include it), so
+ * the card's pixel parity with the bubble is untouched.
+ */
+const THUMB_FRAME = 'bg-muted forced-colors:border'
+
+/**
  * The most recent prompt that has scrolled fully behind the band, pinned under
  * the session title.
  *
@@ -265,7 +281,7 @@ export default function PinnedPrompt({
                   // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle event (drop the 404'd src so `shown` falls back to the ImageOff glyph), not a user interaction; there is nothing here for a keyboard to reach
                   <img key={src} src={pinnedImageUrl(src)} alt="" loading="lazy"
                     onError={() => markFailed(src)}
-                    className="h-20 w-auto max-w-[160px] rounded object-cover ring-1 ring-inset forced-colors:border ring-border" />
+                    className={`h-20 w-auto max-w-[160px] rounded object-cover p-0.5 ${THUMB_FRAME}`} />
                 ))}
               </span>
             )}
@@ -310,7 +326,7 @@ export default function PinnedPrompt({
                 // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle event (drop the 404'd src so `shown` falls back to the ImageOff glyph), not a user interaction; there is nothing here for a keyboard to reach
                 <img key={src} src={pinnedImageUrl(src)} alt="" loading="lazy"
                   onError={() => markFailed(src)}
-                  className={`inline-block align-middle mr-1.5 rounded-sm object-cover ring-1 ring-inset forced-colors:border ring-border ${
+                  className={`inline-block align-middle mr-1.5 rounded-sm object-cover p-px ${THUMB_FRAME} ${
                     text ? 'h-[1.4em] w-[1.4em]' : 'h-[2.8em] w-[3.6em]'}`} />
               ))}
               {/* Every image 404'd (deleted/moved file) AND there is no text: hiding

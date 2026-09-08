@@ -96,6 +96,7 @@ Background: P3's ChatEmbed adoption (#8631) mounts the real `ChatInput`, whose s
 | P5-a | `ChatPage.renderMessage` → registry (`resolveRenderer` over `mergeRenderers`; page chrome as host entries) | [#8713](https://github.com/kirodotdev/KiroCrew/pull/8713) | merged |
 | P5-b | One dashboard row set: ChatPage spreads `createTranscriptRenderers`, the factory ChatPane already used; page-specific behaviour becomes factory options | [#8733](https://github.com/kirodotdev/KiroCrew/pull/8733) | merged |
 | P5-c | Delete ChatPage's last private copies of registry rows (`stop_event`, `notice`, `mcp_oauth` drew the same component from the same inputs as the SDK defaults); parity contract now rejects any page-local override of a default outside the spread | #9571 | in review |
+| P5-d | Pinned-prompt banner sinks into `ChatPane` (Crew Members DM, split panes): `usePinnedPrompt` hook extracted from the transcript controller, `ChatMessageList` `onDisplayItems` / `hiddenRow` row-indexing seam | [#9538](https://github.com/kirodotdev/KiroCrew/pull/9538) | in review |
 | P4 | Error hand-off → side panel; `askAgent` default-on | — | after P5-a |
 
 Follow-ups recorded during review, not yet scheduled: route SideChat's four remaining panel-local statuses (queue cancel/edit failure, question-too-long, demotion notice) through the per-slot `sideSendStatus` store channel (#8655 FP); design-critique's `SyntaxError` swallow (its own P2 slot).
