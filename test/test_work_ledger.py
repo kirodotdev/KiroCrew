@@ -1360,12 +1360,21 @@ def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
     # distinguishable from one that ran and died.
     records: dict[str, str] = {key: "never-started" for key, _ in items}
 
+    # ``records`` keeps the COUNTED outcome verbatim ("bound" or the error code) so
+    # the two assertions below count only that. ``details`` keeps, for the same
+    # thread, the field and message behind a WorkLedgerError -- an ``invalid_value``
+    # says nothing about WHICH validator refused or WHAT value it saw. Recording
+    # ``exc.field`` and the message names the choke point for a Windows-shard
+    # occurrence. This is diagnosis, not tolerance: the assertions are unaffected.
+    details: dict[str, str] = {key: "" for key, _ in items}
+
     def bind(key: str, item_id: str) -> None:
         try:
             wl.apply_conductor_action(key, "bind", item_id=item_id, worker_session_key=WORKER)
             records[key] = "bound"
         except wl.WorkLedgerError as exc:
             records[key] = exc.code
+            details[key] = f"field={exc.field!r} msg={exc}"
         except BaseException as exc:  # noqa: BLE001 — diagnostic: never swallow, always name
             records[key] = f"{type(exc).__name__}: {exc}"
 
@@ -1384,7 +1393,9 @@ def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
             records[key] = f"still-running-after-120s (last record: {records[key]})"
 
     outcomes = list(records.values())
-    _detail = "; ".join(f"{key}={records[key]}" for key, _ in items)
+    _detail = "; ".join(
+        f"{key}={records[key]}" + (f" ({details[key]})" if details[key] else "") for key, _ in items
+    )
     assert outcomes.count("bound") == 1, (
         f"expected exactly one thread to bind the worker, got "
         f"{outcomes.count('bound')} — per-thread outcomes: {_detail}"
