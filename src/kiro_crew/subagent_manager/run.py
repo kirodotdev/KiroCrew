@@ -1340,6 +1340,7 @@ class RunEventCoordinator(ManagerComponent):
                     app=info.app or "",
                     tool_kind=event.tool_kind,
                     raw_params=event.raw_tool_params,
+                    diff_path=event.diff_path,
                     command=event.shell_command,
                     is_shell=event.is_shell,
                     mcp_server_name=event.mcp_server_name,

@@ -67,7 +67,12 @@ from kiro_crew.platform.admission import (
 )
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_health import mark_governance_incident
-from kiro_crew.platform.tool_paths import TARGET_PATH_KEYS, target_paths
+from kiro_crew.platform.tool_paths import (
+    TARGET_PATH_KEYS,
+    edit_target_candidates,
+    is_edit_call,
+    target_paths,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -486,6 +491,14 @@ _PATH_ARG_KEYS = TARGET_PATH_KEYS
 # exists so a denial audit is self-explanatory.
 _TRUNCATED_SCAN_ITEM = "\x00<governance:path-scan-truncated-unverifiable>"
 
+#: Same never-permittable construction, for a file-EDIT whose diff content block
+#: names a path that is still RELATIVE after ``~``/env expansion.  Such a path
+#: resolves against the gateway process CWD, not the agent workspace, so no
+#: allow-mode confinement can be verified against it.  Emitting the marker means
+#: an operator ceiling that governs ``filesystem.write`` DENIES the unverifiable
+#: edit, while an ungoverned scope still permits (standalone default preserved).
+_UNANCHORED_TARGET_ITEM = "\x00<governance:edit-target-unanchored-unverifiable>"
+
 
 def _tool_arg_paths(raw_params: Mapping[str, object]) -> Tuple[Tuple[str, ...], bool]:
     """Return every distinct, non-empty path carried under a supported alias,
@@ -510,7 +523,9 @@ def _tool_arg_paths(raw_params: Mapping[str, object]) -> Tuple[Tuple[str, ...], 
 
 
 def classify_tool_args(
-    tool_kind: str, raw_params: Optional[Mapping[str, object]]
+    tool_kind: str,
+    raw_params: Optional[Mapping[str, object]],
+    diff_path: str = "",
 ) -> Tuple[Tuple[str, str], ...]:
     """Map a tool's semantic ``kind`` + real arguments to ``(scope, item)`` pairs.
 
@@ -520,8 +535,16 @@ def classify_tool_args(
     authoritative signal.  Used by the gate to enforce the path/host scopes that a
     title cannot carry:
 
-    * ``kind == "edit"`` with a path argument →
-      ``("filesystem.write", "<path>")``.
+    * ``kind == "edit"`` → ``("filesystem.write", "<path>")`` for every path in
+      the edit's judged target set: the UNION of the params' path spellings and
+      *diff_path*, the path the tool call's diff content block named
+      (:func:`kiro_crew.platform.tool_paths.edit_target_candidates`, the same
+      single source the hooks edit gate consumes).  A backend may stream trusted
+      params that carry no path key and name the file only in that block, so
+      classifying the params alone would hand an ALLOW-mode ``filesystem.write``
+      confinement a pathless edit — the write it exists to confine would never
+      be asked.  A *diff_path* still relative after ``~``/env expansion emits
+      ``_UNANCHORED_TARGET_ITEM`` (see below) instead of a path.
     * ``kind == "read"`` with a path argument →
       ``("filesystem.read", "<path>")``
       (redundant with the ``Reading`` title path, harmless — both must permit).
@@ -561,6 +584,16 @@ def classify_tool_args(
     whole call unconditionally = over-blocks ungoverned hosts and every unrelated
     scope.
 
+    **Unanchored diff path — the same needle, threaded the same way.**  A
+    relative diff-block path resolves against the process CWD, so its membership
+    in an allow-list cannot be established; ``edit_target_candidates`` withholds
+    it and sets ``unanchored``, and this plane emits
+    ``("filesystem.write", _UNANCHORED_TARGET_ITEM)``: a governed
+    ``filesystem.write`` scope denies the unverifiable edit, an ungoverned one
+    permits.  (The hooks edit gate additionally hard-denies the unanchored shape
+    outright for its callers — this marker is the governance plane's own
+    fail-safe reading, not the primary deny.)
+
     Precise semantics of the marker against the two ruleset modes (both correct):
     a PREFIX-BOUNDED ALLOW-mode ceiling (``allow: ['~/workspace/**']`` — confine
     to a workspace, the exact profile the reported bypass targets) does NOT match
@@ -575,18 +608,47 @@ def classify_tool_args(
     resolved ``is_sensitive_path`` keystone in ``hooks`` (which hard-denies ANY
     truncated scan) remains the authoritative guard for the sensitive tiers there.
     """
-    if not raw_params or not isinstance(raw_params, Mapping):
+    params = raw_params if raw_params and isinstance(raw_params, Mapping) else None
+    if is_edit_call(tool_kind, diff_path):
+        # The edit's judged target set is the params∪diff-block union, from the
+        # same helper both edit gates consume — a diff-only edit (params carry
+        # no path key, or no params at all) is classified by the diff block's
+        # path rather than reaching an ALLOW-mode confinement pathless. The
+        # route is ``is_edit_call``: a diff content block is write-plane
+        # evidence whatever the spec-optional ``kind`` field says, so a
+        # kindless (or mislabelled) call carrying one is classified here too.
+        candidates = edit_target_candidates(params, diff_path)
+        edit_pairs: list = [("filesystem.write", path) for path in candidates]
+        if candidates.truncated:
+            edit_pairs.append(("filesystem.write", _TRUNCATED_SCAN_ITEM))
+        if candidates.unanchored:
+            edit_pairs.append(("filesystem.write", _UNANCHORED_TARGET_ITEM))
+        if tool_kind != _KIND_EDIT:
+            # A kindless call routed here by its diff block also keeps the
+            # read pairs the shape-inference fallback applies to kindless
+            # paths — additive only, so no call loses a pair.
+            for path in candidates:
+                edit_pairs.append(("filesystem.read", path))
+        # ADDITIVE for every other classified dimension too: routing a call
+        # here because its frame carried a diff block must never DROP a pair
+        # the pre-route classification would have emitted. A call that also
+        # carries a ``url`` param keeps its ``network.egress`` pair, so a
+        # governed egress ceiling still binds it (a fetch-kind or kindless
+        # call cannot shed egress governance by arriving with a diff block).
+        if params is not None:
+            edit_url = params.get("url") or params.get("uri")
+            if isinstance(edit_url, str) and edit_url:
+                edit_host = _url_host(edit_url)
+                if edit_host:
+                    edit_pairs.append(("network.egress", edit_host))
+        return tuple(edit_pairs)
+    if params is None:
         return ()
     pairs: list = []
-    paths, paths_truncated = _tool_arg_paths(raw_params)
-    url = raw_params.get("url") or raw_params.get("uri")
-    has_command = bool(raw_params.get("command"))  # a shell tool → commands scope
-    if tool_kind == _KIND_EDIT:
-        for path in paths:
-            pairs.append(("filesystem.write", path))
-        if paths_truncated:
-            pairs.append(("filesystem.write", _TRUNCATED_SCAN_ITEM))
-    elif tool_kind == _KIND_READ:
+    paths, paths_truncated = _tool_arg_paths(params)
+    url = params.get("url") or params.get("uri")
+    has_command = bool(params.get("command"))  # a shell tool → commands scope
+    if tool_kind == _KIND_READ:
         for path in paths:
             pairs.append(("filesystem.read", path))
         if paths_truncated:
@@ -3162,6 +3224,7 @@ def gate_decision(
     *,
     tool_kind: str = "",
     raw_params: Optional[Mapping[str, object]] = None,
+    diff_path: str = "",
     mcp_ref: str = "",
     extra_titles: Tuple[str, ...] = (),
 ) -> Decision:
@@ -3172,10 +3235,13 @@ def gate_decision(
     event carries them), the real arguments are ALSO classified
     (:func:`classify_tool_args`) so path/host scopes the title cannot carry —
     ``filesystem.write`` (edit path), ``network.egress`` (fetch host) — are
-    enforced at the same gate.  A title/args pair the gate does not govern is
-    permitted here — an ungoverned scope permits.  When BOTH levels are
-    ungoverned the result permits (the standalone default), so a host with no
-    policy + no profile behaves exactly as today.
+    enforced at the same gate.  ``diff_path`` is the path the tool call's diff
+    content block named (``event.diff_path``); for an edit it joins the
+    classified ``filesystem.write`` target set, so a diff-only edit does not
+    reach an ALLOW-mode confinement pathless.  A title/args pair the gate does
+    not govern is permitted here — an ungoverned scope permits.  When BOTH
+    levels are ungoverned the result permits (the standalone default), so a
+    host with no policy + no profile behaves exactly as today.
 
     ``mcp_ref`` supplies an ALREADY-canonical ``@server`` / ``@server/tool``
     reference for a caller that holds the server and tool as separate trusted
@@ -3207,7 +3273,7 @@ def gate_decision(
     for extra in extra_titles:
         if extra:
             pairs.extend(classify_tool_title(extra))
-    pairs.extend(classify_tool_args(tool_kind, raw_params))
+    pairs.extend(classify_tool_args(tool_kind, raw_params, diff_path))
     if mcp_ref:
         pairs.append(("mcp", mcp_ref))
     # Order-preserving dedupe -- a caller whose title already equals its trusted

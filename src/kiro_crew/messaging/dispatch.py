@@ -310,6 +310,7 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
             agent=agent,
             tool_kind=getattr(event, "tool_kind", "") or "",
             raw_params=getattr(event, "raw_tool_params", None),
+            diff_path=getattr(event, "diff_path", "") or "",
             command=getattr(event, "shell_command", None),
             is_shell=bool(getattr(event, "is_shell", False)),
         )

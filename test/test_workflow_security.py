@@ -40,6 +40,9 @@ class FakeEvent:
     request_id: str = "req-1"
     options: list = field(default_factory=list)
     text: str = ""
+    # Mirrors LLMEvent's diff-content-block path (default ""): the edit gate
+    # reads it on every permission frame, not only behind an edit tool_kind.
+    diff_path: str = ""
 
 
 class FakeProvider:

@@ -61,6 +61,8 @@ from kiro_crew.platform.tool_paths import (  # noqa: F401  (re-exported for call
     _TARGET_PATH_MAX_PATHS,
     TARGET_PATH_KEYS,
     TargetPaths,
+    edit_target_candidates,
+    is_edit_call,
     target_paths,
 )
 from kiro_crew.security import (
@@ -558,6 +560,7 @@ class HookManager:
         app: str = "",
         tool_kind: str = "",
         raw_params: dict | None = None,
+        diff_path: str = "",
         command: str | None = None,
         is_shell: bool = False,
         mcp_server_name: str = "",
@@ -595,6 +598,24 @@ class HookManager:
         tiers a synthesized ``file-search …`` target (``_search_deny_target``) for a
         search-shaped call, whose walked root and depth cap exist ONLY in its
         arguments; a caller that omits ``raw_params`` loses that coverage too.
+
+        ``diff_path`` is the path the tool call's ``{"type": "diff"}`` content
+        block named (``event.diff_path``, cached by ``acp._dispatch`` per scoped
+        toolCallId). A nonempty ``diff_path`` is itself write-plane evidence —
+        the cache is written only when a tool_call frame declares a file
+        change — so the write-protected tier judges any call carrying one (or
+        declaring the ``edit`` kind) by the UNION of the params' path
+        spellings and this path, and denies an empty union: a backend may
+        stream params that carry no path key and name the file only in that
+        block, so the params alone can judge nothing
+        (mirroring ``llm_helpers._edit_target_denial``). Defaults to
+        ``""``: a caller that does not thread it keeps params-only judgement of
+        edits, and an edit-kind call that carries params (any dict, ``{}``
+        included) or a diff block but names no path is denied rather than
+        passed unjudged. Only ``raw_params=None`` with no ``diff_path`` falls
+        through — such an edit has nothing to judge here and keeps the other
+        tiers' coverage, exactly like ``_edit_target_denial``, which an edit
+        with no params never reaches.
 
         ``is_shell`` enforces deny-by-default for shell tools: when a caller
         reports a shell tool (``is_shell=True``) but cannot supply the raw
@@ -770,22 +791,66 @@ class HookManager:
         # ``cp``-dest) are not matched on command text; the OS sandbox is the
         # shell-side control, and this branch covers the file-EDIT tool.
         #
-        # Empty/unknown ``tool_kind`` (the ACP kind field is spec-optional; some
-        # backends omit it) is DELIBERATELY not mirrored here.
+        # The branch routes on ``is_edit_call``: the ``edit`` kind, OR a diff
+        # content block naming a path — the diff block is the edit's target of
+        # record, and only a call declaring a file change carries one, so its
+        # PRESENCE is write-plane evidence however the spec-optional ``kind``
+        # field arrived (empty, or even ``read``). The read allowance below is
+        # keyed on the ABSENCE of a diff block, not on the kind: a kindless
+        # call WITHOUT one stays a read, because
         # ``governance._scopes_for_call`` (platform/governance.py) infers BOTH
-        # filesystem.read AND filesystem.write from a lone ``path`` when the kind
-        # is empty, because it is a *policy intersection* where an ungoverned
-        # scope permits. This gate is a HARD deny, so applying that same shape
-        # inference would also block legitimate config READS that arrive without a
-        # kind — regressing the read-allowance that is the whole point of the
-        # write-only tier. Empty-kind edits are rare (the ACP fs_write tool sets
-        # ``edit``); not hard-denying them keeps the two write-gates from drifting
-        # into a read regression, and the OS sandbox covers the shell surface.
-        if tool_kind == _EDIT_TOOL_KIND and raw_params:
+        # filesystem.read AND filesystem.write from a lone ``path`` when the
+        # kind is empty as a *policy intersection* where an ungoverned scope
+        # permits, while this gate is a HARD deny — applying that shape
+        # inference to diff-less calls would block legitimate config READS,
+        # regressing the read-allowance that is the whole point of the
+        # write-only tier. The OS sandbox covers the shell surface.
+        if is_edit_call(tool_kind, diff_path) and (raw_params is not None or diff_path):
             # Same spelling coverage as the sensitive-path keystone above, for the
             # same reason: the write-protected tier is worthless if a config edit
-            # can name its target under a key the check never reads.
-            for wpath in target_paths(raw_params):
+            # can name its target under a key the check never reads. The judged
+            # set is the UNION of the params' path spellings and the diff content
+            # block's path, computed by the SAME helper the always-enforced tier
+            # uses (``edit_target_candidates``): a backend may stream params that
+            # carry no path key at all and name the file only in that block, so
+            # the params alone can judge nothing.
+            candidates = edit_target_candidates(raw_params, diff_path)
+            if candidates.truncated:
+                # Unreachable while the keystone above denies a truncated walk
+                # first, but this branch keeps its own fail-closed reading so a
+                # reorder above cannot silently turn a partial scan into a pass.
+                return ToolHookResult.deny(
+                    "Blocked: tool arguments too large to verify for sensitive "
+                    "paths (deny-by-default)"
+                )
+            if candidates.unanchored:
+                # The diff block's path is a verbatim backend field. A relative
+                # one resolves against the gateway process CWD, not the agent
+                # workspace, so a workspace symlink can point it at a protected
+                # file no gate would recognize under its unanchored spelling —
+                # deny as unverifiable, same fail-closed shape as truncation.
+                return ToolHookResult.deny(
+                    "Blocked: file edit names a relative target path that "
+                    "cannot be verified (deny-by-default)"
+                )
+            if not candidates:
+                # Mirrored from the always-enforced tier: a declared file edit
+                # whose params and content block together name no target has no
+                # proven target to judge — deny rather than approve blind.
+                # ``raw_params={}`` takes this deny too (the branch enters on
+                # ``is not None``, not truthiness), matching
+                # ``_edit_target_denial``, which selects ANY dict via
+                # ``isinstance`` and denies its empty union — a falsy-guard
+                # skip here would be the fail-open the two-gate parity exists
+                # to prevent. Scoped to the edit kind: the empty/unknown
+                # ``tool_kind`` case above stays a read allowance, and an edit
+                # event carrying ``raw_params=None`` and no diff block never
+                # enters this branch (matching ``_edit_target_denial``, which
+                # such an edit never reaches either).
+                return ToolHookResult.deny(
+                    "Blocked: file edit names no target path to verify (deny-by-default)"
+                )
+            for wpath in candidates:
                 if is_sensitive_write_path(wpath):
                     return ToolHookResult.deny(
                         f"Blocked: modification of write-protected config path: {wpath}"
@@ -942,6 +1007,7 @@ class HookManager:
             app,
             tool_kind,
             raw_params,
+            diff_path=diff_path,
             mcp_ref=governance_mcp_ref,
             extra_titles=(mcp_tool_name,) if mcp_tool_name and mcp_tool_name != tool_name else (),
         )
@@ -1312,6 +1378,7 @@ def _governance_denial(
     app: str,
     tool_kind: str = "",
     raw_params: dict | None = None,
+    diff_path: str = "",
     mcp_ref: str = "",
     extra_titles: tuple[str, ...] = (),
 ) -> str | None:
@@ -1322,6 +1389,11 @@ def _governance_denial(
     display title. It is passed as a reference rather than folded into
     *tool_name* because the title grammar cannot encode every identity; both are
     empty for a non-MCP call with no title, which governs nothing.
+
+    *diff_path* is the diff content block's path for an edit-kind call; it joins
+    the ``filesystem.write`` target set the gate classifies
+    (``classify_tool_args``), so a diff-only edit is judged against an
+    ALLOW-mode write confinement rather than reaching it pathless.
 
     Resolves the active profile (Level 2) for the calling surface and intersects
     it with the boot-frozen ceiling (Level 1).  Fast no-op when the host has
@@ -1351,6 +1423,7 @@ def _governance_denial(
             tool_name,
             tool_kind=tool_kind,
             raw_params=raw_params,
+            diff_path=diff_path,
             mcp_ref=mcp_ref,
             extra_titles=extra_titles,
         )

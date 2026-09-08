@@ -739,6 +739,7 @@ async def _answer_permission(
             agent=gate.agent,
             tool_kind=_kind_text(event),
             raw_params=event.raw_tool_params,
+            diff_path=event.diff_path,
             command=event.shell_command,
             is_shell=event.is_shell,
             mcp_server_name=event.mcp_server_name,

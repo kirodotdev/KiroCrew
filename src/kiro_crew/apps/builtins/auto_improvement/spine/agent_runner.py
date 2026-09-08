@@ -532,6 +532,7 @@ def _governance_denial(ev: object, *, session_key: str, agent: str) -> str:
             app="auto-improvement",
             tool_kind=tool_kind,
             raw_params=getattr(ev, "raw_tool_params", None),
+            diff_path=getattr(ev, "diff_path", "") or "",
             command=command or None,
             # From the EVENT, not derived from the command. `HookManager.on_tool_call` denies
             # when `is_shell and not command` — a shell tool whose command could not be

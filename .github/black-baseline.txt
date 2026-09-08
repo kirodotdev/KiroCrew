@@ -692,7 +692,6 @@ test/test_gatewayd_self_exit.py
 test/test_github_runner.py
 test/test_gitlab_client_coverage.py
 test/test_goal_command.py
-test/test_governance_chokepoints.py
 test/test_governance_policy.py
 test/test_governance_policy_viewer.py
 test/test_handler_cron_list.py

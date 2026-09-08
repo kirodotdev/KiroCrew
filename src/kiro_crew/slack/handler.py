@@ -3626,6 +3626,7 @@ async def handle_message(
                         agent=_agent or "",
                         tool_kind=event.tool_kind,
                         raw_params=event.raw_tool_params,
+                        diff_path=event.diff_path,
                         command=event.shell_command,
                         is_shell=event.is_shell,
                     )
