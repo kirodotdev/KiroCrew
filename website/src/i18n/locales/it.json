@@ -7412,6 +7412,8 @@
       "show_or_focus_the_kiro_crew_window": "Mostra o metti in primo piano la finestra di {{productName}}",
       "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Usa Ctrl (non Option) per le chat da 1 a 9",
+      "browser_reserved_hint": "In una scheda del browser, il browser intercetta queste scorciatoie prima che la pagina le riceva — le alternative funzionano ovunque; l'app desktop supporta entrambe.",
+      "desktop_app_only": "Solo app desktop",
       "panel_toggles": "Attiva/disattiva pannelli",
       "unset": "Non impostato"
     },
@@ -13462,7 +13464,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "Premi i tasti…",
         "search": "Cerca",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Attiva o disattiva le scorciatoie da tastiera a livello globale — {{mod}} + K (questo riferimento) funziona sempre",
+        "turn_keyboard_shortcuts_on_or_off_globally": "Attiva o disattiva le scorciatoie da tastiera a livello globale — {{chord}} (questo riferimento) funziona sempre",
         "use_ctrl_not_option_for_chat_1_9": "Usa ⌃ Ctrl (non ⌥ Option) per le chat 1–9",
         "clear_shortcut": "Cancella",
         "panel_toggles": "Attiva/disattiva pannelli",

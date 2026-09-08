@@ -7412,6 +7412,8 @@
       "show_or_focus_the_kiro_crew_window": "Mostrar ou focar a janela do {{productName}}",
       "use_ctrl_not_option_for_chat_1_9": "Use ⌃ Ctrl (não ⌥ Option) para os chats 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Use Ctrl (não Option) para os chats 1 a 9",
+      "browser_reserved_hint": "Em uma aba do navegador, o navegador captura estes atalhos antes que a página os receba — as alternativas funcionam em qualquer lugar; o aplicativo desktop aceita ambos.",
+      "desktop_app_only": "Somente aplicativo desktop",
       "panel_toggles": "Alternar painéis",
       "unset": "Não definido"
     },
@@ -13462,7 +13464,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "Pressione as teclas…",
         "search": "Pesquisar",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Ativar ou desativar os atalhos de teclado globalmente — {{mod}} + K (esta referência) sempre funciona",
+        "turn_keyboard_shortcuts_on_or_off_globally": "Ativar ou desativar os atalhos de teclado globalmente — {{chord}} (esta referência) sempre funciona",
         "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (não ⌥ Option) para chats 1–9",
         "clear_shortcut": "Limpar",
         "panel_toggles": "Alternar painéis",

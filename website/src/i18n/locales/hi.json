@@ -7302,6 +7302,8 @@
       "show_or_focus_the_kiro_crew_window": "{{productName}} विंडो दिखाएँ या फ़ोकस करें",
       "use_ctrl_not_option_for_chat_1_9": "चैट 1–9 के लिए ⌃ Ctrl (⌥ Option नहीं) का उपयोग करें",
       "use_ctrl_not_option_for_chat_1_to_9": "चैट 1 से 9 के लिए Ctrl (Option नहीं) का उपयोग करें",
+      "browser_reserved_hint": "ब्राउज़र टैब में ये शॉर्टकट पेज तक पहुँचने से पहले ब्राउज़र ले लेता है — विकल्प हर जगह काम करते हैं; डेस्कटॉप ऐप दोनों को समर्थन देता है।",
+      "desktop_app_only": "केवल डेस्कटॉप ऐप",
       "panel_toggles": "पैनल टॉगल",
       "unset": "सेट नहीं है"
     },
@@ -13289,7 +13291,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "कुंजियाँ दबाएँ…",
         "search": "खोजें",
-        "turn_keyboard_shortcuts_on_or_off_globally": "कीबोर्ड शॉर्टकट को पूरे सिस्टम में चालू या बंद करो — {{mod}} + K (यह संदर्भ) हमेशा काम करता है",
+        "turn_keyboard_shortcuts_on_or_off_globally": "कीबोर्ड शॉर्टकट को पूरे सिस्टम में चालू या बंद करो — {{chord}} (यह संदर्भ) हमेशा काम करता है",
         "use_ctrl_not_option_for_chat_1_9": "चैट 1–9 के लिए ⌃ Ctrl (⌥ Option नहीं) का उपयोग करें",
         "clear_shortcut": "साफ़ करें",
         "panel_toggles": "पैनल टॉगल",

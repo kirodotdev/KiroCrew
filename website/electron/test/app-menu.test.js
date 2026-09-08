@@ -127,6 +127,26 @@ test("win/linux: New Window stays macOS-only", () => {
   );
 });
 
+test("win/linux: Window menu is written out with Close on Ctrl+Shift+W", () => {
+  // The stock `windowMenu` role puts Close on Ctrl+W, which the renderer uses for
+  // "close session"; the window close takes the VS Code / Chrome chord instead.
+  const { deps } = makeDeps({ isMac: false });
+  const win = buildMenuTemplate(deps).find((i) => i.id === "window-menu");
+  assert.strictEqual(win.label, "Window");
+  assert.strictEqual(win.role, undefined);
+  assert.deepStrictEqual(
+    win.submenu.map((i) => i.role),
+    ["minimize", "zoom", "close"],
+  );
+  assert.strictEqual(win.submenu[2].accelerator, "Ctrl+Shift+W");
+});
+
+test("mac: Window menu keeps the stock role (no Close entry, so Cmd+W reaches the page)", () => {
+  const { deps } = makeDeps({ isMac: true });
+  const win = buildMenuTemplate(deps).find((i) => i.id === "window-menu");
+  assert.strictEqual(win.role, "windowMenu");
+});
+
 // ── shared structure (both platforms) ──
 
 for (const isMac of [true, false]) {
@@ -135,9 +155,29 @@ for (const isMac of [true, false]) {
   test(`${os}: Edit, View, Connection, Window menus survive the extraction`, () => {
     const { deps } = makeDeps({ isMac });
     const labels = topLabels(buildMenuTemplate(deps));
-    for (const expected of ["editMenu", "View", "Connection", "windowMenu"]) {
+    // macOS keeps the stock role; Windows/Linux write the Window menu out (see
+    // the Ctrl+W test below), so it surfaces by label there.
+    for (const expected of ["editMenu", "View", "Connection", isMac ? "windowMenu" : "Window"]) {
       assert.ok(labels.includes(expected), `${expected} present`);
     }
+  });
+
+  // Cmd/Ctrl+N is "new session" and Cmd/Ctrl+W "close session" in the renderer
+  // (src/lib/shortcutRegistry.ts, #4608). A menu accelerator on either would take
+  // the keystroke before the page saw it, so the menu must leave both unclaimed.
+  test(`${os}: no menu item claims CmdOrCtrl+N or CmdOrCtrl+W`, () => {
+    const { deps } = makeDeps({ isMac });
+    const template = buildMenuTemplate(deps);
+    for (const acc of ["CmdOrCtrl+N", "Cmd+N", "Ctrl+N", "CmdOrCtrl+W", "Cmd+W", "Ctrl+W"]) {
+      assert.strictEqual(findItem(template, (i) => i.accelerator === acc), null, `${acc} unclaimed`);
+    }
+  });
+
+  test(`${os}: New Connection Window… moved to CmdOrCtrl+Alt+N`, () => {
+    const { deps } = makeDeps({ isMac });
+    const item = findItem(buildMenuTemplate(deps), (i) => i.label === "New Connection Window…");
+    assert.ok(item, "New Connection Window… present");
+    assert.strictEqual(item.accelerator, "CmdOrCtrl+Alt+N");
   });
 
   test(`${os}: devtools item keeps its id and starts hidden`, () => {

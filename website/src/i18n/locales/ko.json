@@ -7192,6 +7192,8 @@
       "show_or_focus_the_kiro_crew_window": "{{productName}} 창 표시 또는 포커스",
       "use_ctrl_not_option_for_chat_1_9": "채팅 1–9에는 ⌥ Option이 아니라 ⌃ Ctrl을 사용하세요",
       "use_ctrl_not_option_for_chat_1_to_9": "채팅 1에서 9까지는 Option이 아니라 Ctrl을 사용하세요",
+      "browser_reserved_hint": "브라우저 탭에서는 이 단축키들을 페이지가 받기 전에 브라우저가 가로챕니다. 대체 조합은 어디서나 동작하며, 데스크톱 앱은 둘 다 지원합니다.",
+      "desktop_app_only": "데스크톱 앱 전용",
       "panel_toggles": "패널 표시 전환",
       "unset": "설정 안 됨"
     },
@@ -13114,7 +13116,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "키를 누르세요…",
         "search": "검색",
-        "turn_keyboard_shortcuts_on_or_off_globally": "키보드 단축키를 전체적으로 켜거나 끕니다 — {{mod}} + K(이 도움말)는 항상 동작합니다",
+        "turn_keyboard_shortcuts_on_or_off_globally": "키보드 단축키를 전체적으로 켜거나 끕니다 — {{chord}}(이 도움말)는 항상 동작합니다",
         "use_ctrl_not_option_for_chat_1_9": "채팅 1–9에 ⌥ Option이 아니라 ⌃ Ctrl 사용",
         "clear_shortcut": "지우기",
         "panel_toggles": "패널 표시 전환",

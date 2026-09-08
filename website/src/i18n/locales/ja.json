@@ -7192,6 +7192,8 @@
       "show_or_focus_the_kiro_crew_window": "{{productName}} ウィンドウを表示・フォーカス",
       "use_ctrl_not_option_for_chat_1_9": "チャット 1–9 には ⌃ Ctrl を使用してください (⌥ Option ではなく)",
       "use_ctrl_not_option_for_chat_1_to_9": "チャット 1 から 9 には Ctrl を使用してください (Option ではなく)",
+      "browser_reserved_hint": "ブラウザーのタブでは、これらのショートカットはページに届く前にブラウザーが処理します。代替の組み合わせはどこでも使え、デスクトップアプリでは両方が使えます。",
+      "desktop_app_only": "デスクトップアプリのみ",
       "panel_toggles": "パネルの表示切り替え",
       "unset": "未設定"
     },
@@ -13114,7 +13116,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "キーを押してください…",
         "search": "検索",
-        "turn_keyboard_shortcuts_on_or_off_globally": "キーボードショートカットを全体で有効または無効にします — {{mod}} + K（このリファレンス）は常に有効です",
+        "turn_keyboard_shortcuts_on_or_off_globally": "キーボードショートカットを全体で有効または無効にします — {{chord}}（このリファレンス）は常に有効です",
         "use_ctrl_not_option_for_chat_1_9": "チャット 1～9 に ⌃ Ctrl（⌥ Option ではなく）を使用します",
         "clear_shortcut": "クリア",
         "panel_toggles": "パネルの表示切り替え",

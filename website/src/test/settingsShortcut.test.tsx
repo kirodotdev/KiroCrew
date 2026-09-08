@@ -1,5 +1,5 @@
 /**
- * The "Open settings" chord: ⌘+, on macOS, Alt+, on Windows/Linux.
+ * The "Open settings" chord: ⌘+, on macOS, Ctrl+, on Windows/Linux, Option/Alt+, alias everywhere (registry entry `open-settings`).
  *
  * macOS reserves ⌘+, for Preferences — the desktop app's own "Settings…" menu
  * item already binds `CmdOrCtrl+,` (electron/app-menu.js) — so the in-page
@@ -70,9 +70,13 @@ describe('isSettingsChord — Windows/Linux', () => {
   it('accepts Alt+,', () => {
     expect(isSettingsChord(chord({ altKey: true }), false)).toBe(true)
   })
-  it('rejects Ctrl+, / Meta+, (the shell menu owns CmdOrCtrl+, there)', () => {
-    expect(isSettingsChord(chord({ ctrlKey: true }), false)).toBe(false)
+  it('accepts Ctrl+, (the VS Code convention; the shell menu handles it first in the desktop app, same destination)', () => {
+    expect(isSettingsChord(chord({ ctrlKey: true }), false)).toBe(true)
+  })
+  it('rejects Meta+, and Ctrl+Alt+, misses', () => {
     expect(isSettingsChord(chord({ metaKey: true }), false)).toBe(false)
+    expect(isSettingsChord(chord({ ctrlKey: true, altKey: true }), false)).toBe(false)
+    expect(isSettingsChord(chord({ ctrlKey: true, shiftKey: true }), false)).toBe(false)
   })
   it('rejects a bare comma', () => {
     expect(isSettingsChord(chord(), false)).toBe(false)
@@ -82,17 +86,20 @@ describe('isSettingsChord — Windows/Linux', () => {
 describe('open-settings registry entry', () => {
   const def = DEFAULT_SHORTCUTS.find(s => s.id === 'open-settings')!
 
-  it('binds the platform primary modifier, never both', () => {
+  it('binds the platform primary modifier (⌘, / Ctrl+,) with Option/Alt+, as the alias', () => {
     expect(def.key).toBe(',')
-    expect(!!def.meta).toBe(IS_MAC)
-    expect(!!def.alt).toBe(!IS_MAC)
+    expect(def.meta).toBe(true)
+    expect(def.alt).toBeUndefined()
     expect(def.shift).toBeUndefined()
+    expect(def.aliases).toEqual([{ key: ',', alt: true }])
   })
 
-  it('renders as ⌘, on Mac and Alt + , elsewhere', () => {
+  it('renders as ⌘, on Mac and Ctrl + , elsewhere; the alias as ⌥, / Alt + ,', () => {
     setPlatform('MacIntel')
-    expect(formatShortcut({ ...def, alt: false, meta: true })).toBe('\u2318,')
+    expect(formatShortcut(def)).toBe('\u2318,')
+    expect(formatShortcut({ ...def, alt: true, meta: false })).toBe('\u2325,')
     setPlatform('Win32')
+    expect(formatShortcut(def)).toBe('Ctrl + ,')
     expect(formatShortcut({ ...def, alt: true, meta: false })).toBe('Alt + ,')
   })
 
@@ -121,7 +128,7 @@ describe('useKeyboardShortcuts — settings navigation', () => {
     navigateSpy.mockClear()
   })
 
-  it('runs in a non-Mac jsdom, so Alt+, is the live chord here', () => {
+  it('runs in a non-Mac jsdom, so Ctrl+, is the primary and Alt+, the alias here', () => {
     expect(IS_MAC).toBe(false)
   })
 
@@ -135,6 +142,12 @@ describe('useKeyboardShortcuts — settings navigation', () => {
     // The escape hatch: Settings holds the toggle that re-enables shortcuts.
     setup({ enabled: false })
     fireEvent.keyDown(document, { code: 'Comma', altKey: true })
+    expect(navigateSpy).toHaveBeenCalledWith('/settings')
+  })
+
+  it('Ctrl+, (the primary chord here) navigates to /settings', () => {
+    setup()
+    fireEvent.keyDown(document, { code: 'Comma', ctrlKey: true })
     expect(navigateSpy).toHaveBeenCalledWith('/settings')
   })
 

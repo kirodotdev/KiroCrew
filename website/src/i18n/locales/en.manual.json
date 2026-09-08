@@ -2777,6 +2777,8 @@
       "trace_load_failed": "Couldn’t load this run’s trace."
     },
     "shortcutsModal": {
+      "browser_reserved_hint": "In a browser tab the browser takes these shortcuts before the page sees them — the alternatives work everywhere; the desktop app honours both.",
+      "desktop_app_only": "Desktop app only",
       "panel_toggles": "Panel toggles",
       "unset": "Not set"
     },
@@ -5704,7 +5706,7 @@
         "preset_custom": "Custom",
         "record_prompt": "Press keys…",
         "custom_hint": "Use at least one modifier key.",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{mod}} + K (this reference) always works",
+        "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{chord}} (this reference) always works",
         "clear_shortcut": "Clear",
         "panel_toggles": "Panel toggles",
         "skips_shell_hint": "Works inside the terminal too, so your shell stops receiving this key — do not pick Ctrl+C or Ctrl+R."

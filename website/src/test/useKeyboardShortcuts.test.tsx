@@ -1300,3 +1300,187 @@ describe('useKeyboardShortcuts — stop speaking (Escape)', () => {
     expect(def?.group).toBe('actions')
   })
 })
+
+// ── Registry-dispatched conventional chords (#4608) ─────────────────────────
+//
+// The test platform is not macOS (IS_MAC froze false at module load), so the
+// registry's `mod` resolves to Ctrl here: Ctrl+N is new session, Ctrl+W close
+// session, Ctrl+/ the shortcuts reference, Ctrl+, settings. The Option/Alt
+// chords they replaced stay live as aliases for one release.
+describe('useKeyboardShortcuts — registry chords (conventional defaults + aliases)', () => {
+  const onToggleShortcutsModal = vi.fn()
+  const onNewChat = vi.fn()
+
+  function setup(opts: { enabled?: boolean; disabled?: boolean; activeSlot?: string | null } = {}) {
+    if (opts.enabled === false) localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: opts.activeSlot ?? null, slotHistory: [] } as unknown as RootState['chat'],
+    })
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, disabled: opts.disabled }),
+      { store },
+    )
+    return store
+  }
+
+  function press(init: KeyboardEventInit & { code: string }, target: EventTarget = document): boolean {
+    const event = new KeyboardEvent('keydown', { cancelable: true, bubbles: true, ...init })
+    return !target.dispatchEvent(event) // true when preventDefault() was called
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    onToggleShortcutsModal.mockClear()
+    onNewChat.mockClear()
+  })
+
+  it('Ctrl+N (the ⌘N default) fires new chat and claims the keystroke', () => {
+    setup()
+    expect(press({ code: 'KeyN', ctrlKey: true })).toBe(true)
+    expect(onNewChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('the Alt+Shift+N alias still fires new chat', () => {
+    setup()
+    press({ code: 'KeyN', altKey: true, shiftKey: true })
+    expect(onNewChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('Ctrl+N fires from inside a text field (a chord reached for mid-sentence)', () => {
+    setup()
+    const ta = document.createElement('textarea')
+    document.body.appendChild(ta)
+    ta.focus()
+    press({ code: 'KeyN', ctrlKey: true }, ta)
+    expect(onNewChat).toHaveBeenCalledTimes(1)
+    ta.remove()
+  })
+
+  it('Ctrl+N is suppressed when shortcuts are disabled or the modal is open', () => {
+    setup({ enabled: false })
+    expect(press({ code: 'KeyN', ctrlKey: true })).toBe(false)
+    expect(onNewChat).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl+Shift+N and Ctrl+Alt+N are misses, not Ctrl+N (exact modifier match)', () => {
+    setup()
+    expect(press({ code: 'KeyN', ctrlKey: true, shiftKey: true })).toBe(false)
+    expect(press({ code: 'KeyN', ctrlKey: true, altKey: true })).toBe(false)
+    expect(onNewChat).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl+N yields to an embedded terminal (Ctrl+N is next-history in a shell)', () => {
+    setup()
+    const host = document.createElement('div')
+    host.className = 'xterm'
+    const ta = document.createElement('textarea')
+    host.appendChild(ta)
+    document.body.appendChild(host)
+    expect(press({ code: 'KeyN', ctrlKey: true }, ta)).toBe(false)
+    expect(onNewChat).not.toHaveBeenCalled()
+    host.remove()
+  })
+
+  it('Ctrl+W (the ⌘W default) claims the keystroke for close-session, like Alt+Shift+W', () => {
+    setup({ activeSlot: 'slot-1' })
+    expect(press({ code: 'KeyW', ctrlKey: true })).toBe(true)
+  })
+
+  it('Ctrl+W asks first when the session has a turn in flight, even with confirmCloseSession off; Alt+Shift+W does not', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: true }] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: 'slot-1', slotHistory: [] } as unknown as RootState['chat'],
+    })
+    renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
+    press({ code: 'KeyW', ctrlKey: true })
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    press({ code: 'KeyW', altKey: true, shiftKey: true })
+    expect(confirmSpy).toHaveBeenCalledTimes(1) // alias keeps the shipped behaviour
+    confirmSpy.mockRestore()
+  })
+
+  it('Ctrl+W asks first for an armed goal loop between cycles (slot.running is false there)', () => {
+    // deleteSlot retires the loop; `running` covers only the slot's own turn, so
+    // the gate has to read the same signals the sidebar's Working lane does.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: 'slot-1', slotHistory: [], goalLoops: { 'slot-1': { cycle_count: 2, max_cycles: 0 } } } as unknown as RootState['chat'],
+    })
+    renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
+    press({ code: 'KeyW', ctrlKey: true })
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(store.getState().dashboard.slots.find(s => s.key === 'slot-1')).toBeDefined() // declined → kept
+    confirmSpy.mockRestore()
+  })
+
+  it('Ctrl+W on an idle session honours confirmCloseSession=false (no prompt)', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    setup({ activeSlot: 'slot-1' })
+    press({ code: 'KeyW', ctrlKey: true })
+    expect(confirmSpy).not.toHaveBeenCalled()
+    confirmSpy.mockRestore()
+  })
+
+  it('Ctrl+W yields to an embedded terminal (Ctrl+W is kill-word in a shell)', () => {
+    setup({ activeSlot: 'slot-1' })
+    const host = document.createElement('div')
+    host.className = 'xterm'
+    const ta = document.createElement('textarea')
+    host.appendChild(ta)
+    document.body.appendChild(host)
+    expect(press({ code: 'KeyW', ctrlKey: true }, ta)).toBe(false)
+    host.remove()
+  })
+
+  it('Ctrl+/ (the ⌘/ default) toggles the shortcuts reference, even when shortcuts are disabled', () => {
+    setup({ enabled: false })
+    expect(press({ code: 'Slash', ctrlKey: true })).toBe(true)
+    expect(onToggleShortcutsModal).toHaveBeenCalledTimes(1)
+  })
+
+  it('Ctrl+/ toggles the reference while it is open (disabled=true), so the chord that opened it closes it', () => {
+    setup({ disabled: true })
+    press({ code: 'Slash', ctrlKey: true })
+    expect(onToggleShortcutsModal).toHaveBeenCalledTimes(1)
+  })
+
+  it('the Alt+K alias still toggles the shortcuts reference', () => {
+    setup()
+    press({ code: 'KeyK', altKey: true })
+    expect(onToggleShortcutsModal).toHaveBeenCalledTimes(1)
+  })
+
+  it('a stored override replaces the default AND its aliases', () => {
+    localStorage.setItem('mc-shortcut-overrides', JSON.stringify({ 'new-chat': { key: 'j', mod: true, shift: true } }))
+    setup()
+    press({ code: 'KeyN', ctrlKey: true })
+    press({ code: 'KeyN', altKey: true, shiftKey: true })
+    expect(onNewChat).not.toHaveBeenCalled()
+    press({ code: 'KeyJ', ctrlKey: true, shiftKey: true })
+    expect(onNewChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('an explicit null override unbinds the shortcut entirely', () => {
+    localStorage.setItem('mc-shortcut-overrides', JSON.stringify({ 'new-chat': null }))
+    setup()
+    expect(press({ code: 'KeyN', ctrlKey: true })).toBe(false)
+    press({ code: 'KeyN', altKey: true, shiftKey: true })
+    expect(onNewChat).not.toHaveBeenCalled()
+  })
+
+  it('DEFAULT_SHORTCUTS advertises the conventional chord with the legacy chord as an alias', () => {
+    const newChat = DEFAULT_SHORTCUTS.find(s => s.id === 'new-chat')!
+    expect(newChat.meta).toBe(true)
+    expect(newChat.key).toBe('n')
+    expect(newChat.aliases).toEqual([{ key: 'n', alt: true, shift: true }])
+    expect(newChat.browserReserved).toBe(true)
+    const help = DEFAULT_SHORTCUTS.find(s => s.id === 'shortcuts-modal')!
+    expect(help.meta).toBe(true)
+    expect(help.key).toBe('/')
+    expect(help.aliases).toEqual([{ key: 'k', alt: true }])
+    expect(help.browserReserved).toBeUndefined()
+  })
+})

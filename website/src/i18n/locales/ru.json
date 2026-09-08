@@ -7522,6 +7522,8 @@
       "show_or_focus_the_kiro_crew_window": "Показать окно {{productName}} или переключиться на него",
       "use_ctrl_not_option_for_chat_1_9": "Используйте ⌃ Ctrl (не ⌥ Option) для чатов 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Используйте Ctrl (не Option) для чатов с 1 по 9",
+      "browser_reserved_hint": "Во вкладке браузера эти сочетания перехватывает браузер, прежде чем их увидит страница — альтернативы работают везде; настольное приложение поддерживает оба варианта.",
+      "desktop_app_only": "Только в настольном приложении",
       "panel_toggles": "Переключение панелей",
       "unset": "Не задано"
     },
@@ -13637,7 +13639,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "Нажмите клавиши…",
         "search": "Поиск",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Включить или отключить сочетания клавиш глобально — {{mod}} + K (эта справка) работает всегда",
+        "turn_keyboard_shortcuts_on_or_off_globally": "Включить или отключить сочетания клавиш глобально — {{chord}} (эта справка) работает всегда",
         "use_ctrl_not_option_for_chat_1_9": "Использовать ⌃ Ctrl (а не ⌥ Option) для чатов 1–9",
         "clear_shortcut": "Очистить",
         "panel_toggles": "Переключение панелей",

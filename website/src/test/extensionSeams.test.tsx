@@ -36,6 +36,14 @@ import {
   DEFAULT_SHORTCUTS,
   RESERVED_PANEL_CODES,
 } from '../hooks/useKeyboardShortcuts'
+import { eventKeyToken, registryAltNonShiftKeys } from '../lib/shortcutRegistry'
+
+/** Every `KeyboardEvent.code` a registry Alt chord could name — letters, digits, the punctuation the chords use. */
+const CANDIDATE_CODES = [
+  'Comma', 'Enter', 'Backquote', 'ArrowLeft', 'ArrowRight', 'Slash',
+  ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l => `Key${l}`),
+  ...'123456789'.split('').map(d => `Digit${d}`),
+]
 import { registerTheme, getRegisteredThemes } from '../hooks/useTheme'
 import { registerCapsuleSegment, getCapsuleSegments } from '../apps/capsuleSegments'
 import { registerOverviewStatCards, getOverviewStatCards } from '../pages/overviewStatCards'
@@ -200,6 +208,18 @@ describe('panel shortcut — nav seam', () => {
       if (/code >= 'Digit1'/.test(line)) {
         for (let d = 1; d <= 9; d++) consumed.add(`Digit${d}`)
       }
+    }
+    // The registry-dispatched action chords (⌥K help, ⌥, settings, ⌥↩ focus)
+    // are no longer `code ===` literals in the handler: `matchShortcutEvent`
+    // claims them before panel routing. Their non-shift Alt codes come from the
+    // registry itself, so a chord added or re-aliased there lands in this set
+    // without a handler edit.
+    for (const key of registryAltNonShiftKeys()) {
+      // Token → code is the inverse of `eventKeyToken`; resolved against a
+      // candidate list rather than spelled out so the two cannot disagree.
+      const code = CANDIDATE_CODES.find(c => eventKeyToken({ code: c, key: '' }) === key)
+      expect(code, `registry alt chord key ${key} maps to a code`).toBeDefined()
+      consumed.add(code!)
     }
     // The core panel chords (KeyC/N/P/S) live in CORE_PANEL_MAP, dispatched at
     // the panelMap block itself — not "pre-panel" — so exclude them here.

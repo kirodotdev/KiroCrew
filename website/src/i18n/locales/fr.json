@@ -7412,6 +7412,8 @@
       "show_or_focus_the_kiro_crew_window": "Afficher ou mettre au premier plan la fenêtre {{productName}}",
       "use_ctrl_not_option_for_chat_1_9": "Utilisez ⌃ Ctrl (pas ⌥ Option) pour les conversations 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Utilisez Ctrl (pas Option) pour les conversations 1 à 9",
+      "browser_reserved_hint": "Dans un onglet de navigateur, le navigateur intercepte ces raccourcis avant que la page ne les voie — les alternatives fonctionnent partout ; l'application de bureau prend en charge les deux.",
+      "desktop_app_only": "Application de bureau uniquement",
       "panel_toggles": "Affichage des panneaux",
       "unset": "Non défini"
     },
@@ -13463,7 +13465,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "Appuyez sur les touches…",
         "search": "Rechercher",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Active ou désactive les raccourcis clavier globalement — {{mod}} + K (cette référence) fonctionne toujours",
+        "turn_keyboard_shortcuts_on_or_off_globally": "Active ou désactive les raccourcis clavier globalement — {{chord}} (cette référence) fonctionne toujours",
         "use_ctrl_not_option_for_chat_1_9": "Utiliser ⌃ Ctrl (et non ⌥ Option) pour les chats 1–9",
         "clear_shortcut": "Effacer",
         "panel_toggles": "Affichage des panneaux",

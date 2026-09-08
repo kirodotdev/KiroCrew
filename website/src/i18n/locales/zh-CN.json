@@ -7192,6 +7192,8 @@
       "show_or_focus_the_kiro_crew_window": "显示或聚焦 {{productName}} 窗口",
       "use_ctrl_not_option_for_chat_1_9": "聊天 1–9 请用 ⌃ Ctrl（而非 ⌥ Option）",
       "use_ctrl_not_option_for_chat_1_to_9": "聊天 1 至 9 请用 Ctrl（而非 Option）",
+      "browser_reserved_hint": "在浏览器标签页中，这些快捷键会先被浏览器截获——备用组合键在任何环境都可用；桌面应用两者均支持。",
+      "desktop_app_only": "仅桌面应用",
       "panel_toggles": "面板开关",
       "unset": "未设置"
     },
@@ -13114,7 +13116,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "按下按键…",
         "search": "搜索",
-        "turn_keyboard_shortcuts_on_or_off_globally": "全局开启或关闭键盘快捷键 — {{mod}} + K（此快捷键参考）始终可用",
+        "turn_keyboard_shortcuts_on_or_off_globally": "全局开启或关闭键盘快捷键 — {{chord}}（此快捷键参考）始终可用",
         "use_ctrl_not_option_for_chat_1_9": "聊天 1–9 使用 ⌃ Ctrl（而不是 ⌥ Option）",
         "clear_shortcut": "清除",
         "panel_toggles": "面板开关",

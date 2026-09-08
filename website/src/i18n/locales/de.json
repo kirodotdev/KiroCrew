@@ -7302,6 +7302,8 @@
       "show_or_focus_the_kiro_crew_window": "{{productName}}-Fenster anzeigen oder fokussieren",
       "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden",
       "use_ctrl_not_option_for_chat_1_to_9": "Strg (nicht Option) für Chat 1 bis 9 verwenden",
+      "browser_reserved_hint": "In einem Browser-Tab fängt der Browser diese Tastenkürzel ab, bevor die Seite sie sieht — die Alternativen funktionieren überall; die Desktop-App unterstützt beide.",
+      "desktop_app_only": "Nur Desktop-App",
       "panel_toggles": "Panels umschalten",
       "unset": "Nicht festgelegt"
     },
@@ -13288,7 +13290,7 @@
         "preset_mod_k": "⌘K / Ctrl+K",
         "record_prompt": "Tasten drücken…",
         "search": "Suchen",
-        "turn_keyboard_shortcuts_on_or_off_globally": "Tastenkürzel global ein- oder ausschalten — {{mod}} + K (diese Übersicht) funktioniert immer",
+        "turn_keyboard_shortcuts_on_or_off_globally": "Tastenkürzel global ein- oder ausschalten — {{chord}} (diese Übersicht) funktioniert immer",
         "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden",
         "clear_shortcut": "Leeren",
         "panel_toggles": "Panels umschalten",
