@@ -483,7 +483,7 @@ carry **metadata only** — the probe never emits transcript text:
 
 ```
 🔔 <key>  <age>s <TAG> i=<index> d=<digest12>
-BANNED pid=<pid> rule=<regex> cwd=fleet|unknown
+BANNED pid=<pid> rule=<regex> cwd=fleet|unknown age=<secs|?>s
 OK <n> watched, <m> fired | load/cpu <x> (ok|hot) | mem <n>G | banned <n> | foreign <n> | deliver init-timeout <a>, watchdog <b>
 ```
 
@@ -550,7 +550,7 @@ digest keying, not a defect, and it does not recur.
 | `IDLE` | Intervention ladder (below). |
 | `NOPROGRESS` | The session has produced nothing — no message, no tool row — since you last acted on it, and that mark is at least one `idle_alert_secs` old. Check the **EFFECT, never liveness**: did the artifact appear, did the remote head move, is there a new commit. Effect present → healthy-slow; extend and name the expected completion signal. Effect absent → **route on the line's own age**, because two paths reach this tag and they do not mean the same thing. Within `idle_alert_secs` the transcript is WARM — held alive by inbound traffic the session never answers — and the first move is **not a nudge**, since a nudge is more of the input that produced the reading: enter the intervention ladder at its **Inspect** step. Past `idle_alert_secs` the session is cold as well as unproductive, so `IDLE`'s ladder applies from the top: the classifier ranks this tag below the clock, but the suppression fallback substitutes it for an already-dispositioned report with no age test, so a cold line can carry it. |
 | `GONE` | Transcript missing — treat as reclaim: re-queue the item with evidence. |
-| `BANNED pid=…` | Banned-ops response (below), keyed by the line's OWNERSHIP CLASS: every class is recorded, and a stop is reserved for `cwd=fleet`. Never read this as a single actionable-or-not decision. |
+| `BANNED pid=…` | Banned-ops response (below), keyed by the line's OWNERSHIP CLASS: every class is recorded, and a stop is reserved for `cwd=fleet`. Never read this as a single actionable-or-not decision. Read `age=` to tell the SAME line apart across cycles: an age that GROWS between cycles is one process you have not managed to stop, while a small age under a re-appearing pid is a fresh violation on a recycled number — a bare pid cannot separate those. `age=?s` means the age is unavailable: the process already exited (the expected reading for a short-lived runner), the pid was recycled between the probe's reads (in which case the whole record is stale and `cwd` also drops to `unknown`), or the platform has no `/proc`/`sysconf` to read it from. It never means the process is new. |
 
 The `OK` line's `deliver init-timeout <a>, watchdog <b>` counters are the
 admission instrument, not fleet trivia — see governance.
@@ -725,7 +725,7 @@ a silent drop. Key it on the class instead:
 | Class | Response |
 | --- | --- |
 | `cwd=fleet` | The heavy response: `session_stop` that worker, a ~5min cooldown, then restart it with the targeted-tests directive re-injected in the seed. |
-| `cwd=unknown` | The probe classified, but this one pid's cwd was unreadable. NON-stopping: re-inject the directive to the owning session WITHOUT stopping it, and record the line. Never a stop, never a silent drop. |
+| `cwd=unknown` | The probe could not attribute this line to the fleet: either the pid's cwd was unreadable, or the process incarnation changed between the probe's reads (a recycled pid), so the record's fields cannot be trusted as one process. NON-stopping: re-inject the directive to the owning session WITHOUT stopping it, and record the line. Never a stop, never a silent drop — a stale record can never trigger a stop against an innocent worker. |
 | no `cwd=` field at all | The probe predates classification, so the line carries no ownership. Attempt attribution ONCE at action time (read that pid's cwd): resolved inside a fleet worktree → treat it as `cwd=fleet` and take the stop response above; not resolved → record the count and re-inject the directive fleet-wide as a reminder, stopping nobody. See the legacy-line fallback below. |
 | `cwd=foreign` | Count only. Not the fleet's process to police, and never grounds for stopping a session. |
 

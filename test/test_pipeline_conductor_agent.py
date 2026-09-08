@@ -1701,10 +1701,22 @@ class TestFleetProbe:
 
     def _proc(self, tmp_path: Path, pid: str, argv: bytes, cwd: Path | None) -> Path:
         """One fake ``/proc/<pid>``. ``cwd`` is written as a SYMLINK because that
-        is what the kernel exposes and what the probe reads."""
+        is what the kernel exposes and what the probe reads.
+
+        A ``stat`` file is always written: every live process on a real system
+        has one, and the probe reads its ``starttime`` (field 22) as the process
+        incarnation token that brackets the per-pid reads. A stable ``stat`` here
+        means one incarnation across the scan, so cwd classification is exercised
+        as it is in production; omitting it would model a process that exited
+        mid-scan, which is a different case with its own tests.
+        """
         proc = tmp_path / "proc"
         (proc / pid).mkdir(parents=True, exist_ok=True)
         (proc / pid / "cmdline").write_bytes(argv)
+        # field 1 pid, field 2 comm, field 3 state, then starttime is field 22 --
+        # index 19 in the split after ') ', where index 0 is the state field.
+        stat_tail = ["0"] * 18 + ["1000"] + ["0"] * 30
+        (proc / pid / "stat").write_text(f"{pid} (proc) R " + " ".join(stat_tail) + "\n", "ascii")
         if cwd is not None:
             cwd.mkdir(parents=True, exist_ok=True)
             os.symlink(str(cwd), str(proc / pid / "cwd"))
