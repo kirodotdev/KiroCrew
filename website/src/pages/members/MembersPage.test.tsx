@@ -462,14 +462,24 @@ describe('MembersPage drawer and edit jump', () => {
     }
   })
 
-  it('the roster header has an add-member entry that navigates to the crew manager crews tab', async () => {
+  it('the roster header has an add-member entry that lands on the crew manager\'s create form', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
     // Adding a member IS creating a crew; the crew manager stays the only
     // write path, so the entry is a navigation (destination pinned with the
-    // explicit ?tab=crews, same as the edit affordance).
+    // explicit ?tab=crews, same as the edit affordance). It opens the create
+    // form directly — `new=1` — not the crew list a second click would be
+    // needed on (#9513), and names its origin so the create can return here.
     fireEvent.click(screen.getByTestId('member-add'))
-    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews')
+    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
+  })
+
+  it('the empty roster\'s call to action lands on the same create form as the header "+"', async () => {
+    await renderPage([])
+    const cta = await screen.findByTestId('member-empty-cta')
+    expect(cta).toHaveTextContent('Add member')
+    fireEvent.click(cta)
+    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
   })
 
   it('the drawer renders the recorded activity timeline and honest counters derived from it', async () => {
@@ -1276,6 +1286,92 @@ describe('MembersPage default member, memory and URL', () => {
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
     // The row reflects the selection the URL drove.
     expect(roster().getByText('beta').closest('button')).toHaveAttribute('aria-current', 'true')
+  })
+
+  it('the open row scrolls itself into view, so a member opened by URL is never below the fold', async () => {
+    // happy-dom has no scrollIntoView; install one to observe the call.
+    const scroll = vi.fn()
+    const proto = HTMLElement.prototype as HTMLElement & { scrollIntoView?: (o?: unknown) => void }
+    const had = proto.scrollIntoView
+    proto.scrollIntoView = scroll
+    try {
+      await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=beta' })
+      await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-beta'))
+      const row = roster().getByText('beta').closest('button')!
+      expect(row).toHaveAttribute('aria-current', 'true')
+      expect(scroll).toHaveBeenCalledWith({ block: 'nearest' })
+      // Only the open row asks — the rest of the roster stays where it is.
+      expect(scroll.mock.instances.every((el) => el === row)).toBe(true)
+    } finally {
+      if (had) proto.scrollIntoView = had
+      else delete proto.scrollIntoView
+    }
+  })
+
+  it('a link that outruns the cached roster waits for the refetch instead of calling the member gone', async () => {
+    // The crew manager's create (#9513) invalidates the roster and lands here
+    // with the NEW member's name while the cache still holds the pre-create
+    // list. That is not a gone member — it is a fetch in flight.
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: alphaBeta(), default_agent: 'kirocrew' })
+    ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation(echoThread)
+    function Elsewhere() {
+      const nav = useNavigate()
+      return (
+        <button data-testid="return-with-new-member" onClick={() => nav('/members?member=staging')}>
+          go
+        </button>
+      )
+    }
+    function Leave() {
+      const nav = useNavigate()
+      return (
+        <button data-testid="go-elsewhere" onClick={() => nav('/elsewhere')}>
+          leave
+        </button>
+      )
+    }
+    const { queryClient } = renderWithProviders(
+      <>
+        <Routes>
+          <Route path="/elsewhere" element={<Elsewhere />} />
+          <Route path="/members" element={<MembersPage />} />
+        </Routes>
+        <Leave />
+        <LocationProbe />
+      </>,
+      { route: '/members' },
+    )
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
+    fireEvent.click(screen.getByTestId('go-elsewhere'))
+    await screen.findByTestId('return-with-new-member')
+
+    // The create happened elsewhere: the registry prefix is invalidated and
+    // the next roster read (slow, so the race is observable) has the member.
+    let release: () => void = () => {}
+    ;(api.members as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({ members: [...alphaBeta(), row({ name: 'staging', slug: 'staging' })], default_agent: 'kirocrew' })
+        }),
+    )
+    void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+    fireEvent.click(screen.getByTestId('return-with-new-member'))
+    await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
+
+    // Mid-fetch: the cached roster (no staging) is on screen, but the URL is
+    // NOT rewritten and no one is declared gone.
+    expect(currentUrl()).toBe('/members?member=staging')
+    expect(screen.queryByTestId('member-gone-notice')).toBeNull()
+    expect(screen.queryByTestId('member-gone-roster-notice')).toBeNull()
+
+    await act(async () => {
+      release()
+    })
+    // The fresh roster has the member: their thread opens, still no notice.
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-staging'))
+    expect(currentUrl()).toBe('/members?member=staging')
+    expect(screen.queryByTestId('member-gone-notice')).toBeNull()
   })
 
   it('switching members holds ONE history entry: after walking two members, Back leaves the page in one press', async () => {
