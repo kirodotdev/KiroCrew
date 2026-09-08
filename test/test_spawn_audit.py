@@ -1396,6 +1396,33 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Fixed argv + trusted-directory binary + read-only output ⇒ benign, not
         # routed.
         "voice_reply.py::list_system_voices",
+        # TEST-ONLY, and the spawn IS the thing under test: the crew bundle
+        # curator's contract (PACKAGING-CONTRACT T1) is a COMMAND -- `python -m
+        # packaging.build ... ` printing `SMC_BUNDLE_JSON=<path>` as its last
+        # stdout line -- and the deploy driver invokes it exactly that way. An
+        # in-process call would prove the function works and leave the contract
+        # the driver actually depends on untested. Fixed argv (`sys.executable
+        # -m packaging.build`), no shell=True, cwd is the crew root (which is the
+        # driver's own cwd, and what makes this tree's `packaging` win over the
+        # PyPA distribution for that child), and every path argument is a
+        # tmp_path. Nothing here is agent-derived.
+        "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
+        "::test_cli_build_prints_bundle_json_last_line",
+        "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
+        "::test_cli_plan_writes_template_without_bundle",
+        # TEST-ONLY, and the spawn is the same fixed `sys.executable -m
+        # packaging.build` CLI invocation as its two siblings above — this one
+        # proves the COLD-CACHE property that the child writes no __pycache__
+        # beside the module it imports (nor into the real checkout). No
+        # shell=True; cwd is the test's own tmp_path; the module is made
+        # importable through PYTHONPATH pointing at a `tmp_path` copy of the
+        # package plus CREW_ROOT (via `_child_env`), and every path argument
+        # (--out, --source, the copy root) is a tmp_path. Nothing here is
+        # agent-derived. Sandbox-routing would defeat the test: it exists to
+        # observe where a real interpreter drops bytecode on a real cold cache,
+        # which a scrubbed-env/filesystem-scoped wrapper would move or forbid.
+        "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
+        "::test_cli_subprocess_leaves_no_pycache_in_the_source_tree",
     }
 )
 
