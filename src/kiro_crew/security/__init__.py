@@ -771,11 +771,36 @@ BINARY_MIME_ALLOWLIST: frozenset[str] = frozenset(
 )
 
 
+def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
+    """Apply all redaction passes, reporting what each one removed.
+
+    The same passes in the same order as :func:`redact`, which is the point of
+    it living here: exfiltration URLs run FIRST because that pass matches whole
+    URLs, and a credential replaced ahead of it leaves a placeholder inside one,
+    which the URL matcher then fails to recognise as the shape it is there to
+    catch. A caller that wants the found lists would otherwise hand-sequence
+    the two calls and own that ordering separately -- which several already do,
+    in the reverse order.
+
+    Returns ``(text, credential_warnings, url_warnings)``. Both lists hold the
+    WARNING strings the underlying passes report (``"Redacted credential pattern
+    (20 chars)"``), never the removed values, so a caller can tell the user their
+    content was altered -- and log that fact -- without handling a secret.
+
+    This is the companion-BLIND baseline, like every ``security.redact*`` entry
+    point: it consults no active :class:`CredentialPolicy`. An egress site must
+    finish the text through ``platform.context.redact_via_context`` so a loaded
+    companion's extra patterns apply; use this one for the warnings, or where the
+    baseline is deliberately the subject.
+    """
+    text, urls = redact_exfiltration_urls(text)
+    text, credentials = redact_credentials(text)
+    return text, list(credentials), list(urls)
+
+
 def redact(text: str) -> str:
     """Apply all redaction passes (exfiltration URLs + credentials)."""
-    text = redact_exfiltration_urls(text)[0]
-    text = redact_credentials(text)[0]
-    return text
+    return redact_with_findings(text)[0]
 
 
 # ── Streaming redaction (pentest issue 3) ──

@@ -17,6 +17,7 @@ from kiro_crew.apps.app_storage import AppStorage
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.event_bus import EventBus
 from kiro_crew.apps.job_sdk import JobSDK
+from kiro_crew.apps.scrub_sdk import ScrubSDK
 from kiro_crew.apps.spawn_sdk import SpawnSDK
 
 
@@ -67,6 +68,15 @@ class AppContext:
     spawn: SpawnSDK | None = None
     job: JobSDK | None = None
     health: AppHealthStatus = field(default_factory=AppHealthStatus)
+    # NOT `| None`, unlike every SDK above: those grant a capability and stay None
+    # until the manifest asks for it, while this one only removes sensitive data
+    # from a string the app already holds. An app that had to check for None would
+    # get a silent no-redaction path on the else branch, and an app refused the
+    # seam would ship its own regexes -- the outcome the seam exists to prevent.
+    # See scrub_sdk.ScrubSDK. The default needs no app name to invent because the
+    # SDK carries none, so a hand-built context gets the same scrubber the factory
+    # would hand it rather than one attributed to an app that does not exist.
+    scrub: ScrubSDK = field(default_factory=ScrubSDK)
 
 
 def build_app_context(
@@ -142,4 +152,6 @@ def build_app_context(
         storage=app_storage,
         spawn=spawn_sdk,
         job=job_sdk,
+        # Unconditional: see the field's comment on AppContext.
+        scrub=ScrubSDK(),
     )

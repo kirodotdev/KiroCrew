@@ -446,6 +446,51 @@ Rules:
   cron interval of latency, because a window cannot open and fire within the
   same tick.
 
+### Content Scrubbing (`ctx.scrub`)
+
+Before your app sends content anywhere off the machine — an external document
+store, a ticket, a wiki — run it through `ctx.scrub`. It applies the same
+credential and exfiltration-URL redaction the gateway applies on its own
+boundaries, by reference rather than by copy, so a pattern tightened in a later
+release reaches your app with the wheel.
+
+```python
+result = ctx.scrub.outbound(body)          # may raise; see below
+if result.redacted:
+    ctx.logger.info("scrub removed %d credential(s), %d url(s)",
+                    result.credentials_removed, result.urls_removed)
+publish(result.text)          # only the scrubbed text may leave
+```
+
+`outbound(text) -> ScrubResult` carries `text`, `credentials_removed`,
+`urls_removed` and `redacted`.
+
+You get **counts, not descriptions**, and there is deliberately no way to learn
+which value was removed. That is not an omission to be filled in later: the
+gateway's internal exfiltration warning includes the offending domain and the
+start of the query string, so handing those through would move a secret out of
+your published text and into your logs. Report the fact — "we removed something
+before sending" — rather than rewriting the user's content silently.
+
+Use `redacted` rather than comparing against the original. It can be `True` with
+both counts at zero: on a host running an edition companion, extra patterns apply
+that the base counts do not include. It is never `False` when something was
+removed.
+
+**`outbound` can raise, and you must not swallow it.** On a host whose companion
+fails to compose, it propagates rather than quietly falling back to weaker
+redaction. Abandon the publish when that happens — publishing unredacted is worse
+than not publishing.
+
+`outbound` is the only method, on purpose: neither single pass is exposed alone,
+because an app that wants half a redaction wants something this seam should not
+make easy.
+
+`ctx.scrub` needs **no permission** and is always present: it only removes data, so
+there is nothing to withhold and no `None` branch that could become a silent
+no-redaction path. **Do not copy these patterns into your app** — a set that drifts
+from the gateway's is a control that looks present and is not.
+
 ### Lessons
 
 | Method | Returns | Description |

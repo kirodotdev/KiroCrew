@@ -48,8 +48,7 @@ from kiro_crew.platform.context import current_context, safe_context_call
 from kiro_crew.security import (
     contains_injection,
     is_sensitive_path,
-    redact_credentials,
-    redact_exfiltration_urls,
+    redact_with_findings,
 )
 from kiro_crew.vector_memory import VectorMemoryStore
 
@@ -893,10 +892,8 @@ def _read_text(
 
 def _sanitize_text(text: str, scan: _Scan) -> str:
     bounded = text[:_MAX_TEXT_CHARS]
-    cleaned, warnings = redact_credentials(bounded)
-    scan.secret_count += len(warnings)
-    cleaned, url_warnings = redact_exfiltration_urls(cleaned)
-    scan.secret_count += len(url_warnings)
+    cleaned, credential_warnings, url_warnings = redact_with_findings(bounded)
+    scan.secret_count += len(credential_warnings) + len(url_warnings)
     return cleaned.strip()
 
 
@@ -1338,8 +1335,7 @@ def _skill_package(
         except UnicodeDecodeError:
             scan.diagnostic("skills", "binary_skill_asset_excluded", unsupported=True)
             return None
-        screened, credential_warnings = redact_credentials(text)
-        screened, url_warnings = redact_exfiltration_urls(screened)
+        screened, credential_warnings, url_warnings = redact_with_findings(text)
         scan.secret_count += len(credential_warnings) + len(url_warnings)
         if credential_warnings or url_warnings or screened != text:
             scan.diagnostic("skills", "credential_bearing_skill")

@@ -1351,6 +1351,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # paths in slack/gateway.py and the sub-agent completion path in
         # subagent.py), which are the registered sinks.
         "llm_helpers.py",
+        # The app-facing seam: it OWNS no output. It hands the redaction pass to
+        # an installed app so the app can scrub content at its own boundary, and
+        # the write that follows happens in app code this repo does not inventory.
+        # Registering it as a sink would count an egress path as covered on the
+        # strength of a call the app may never make, which is the overstatement
+        # the panel's count exists to avoid; the app's own boundary is the real
+        # one and is outside this list either way. Not a companion-blind site
+        # despite naming a baseline redactor: it takes the WARNINGS from the
+        # baseline pass and finishes the text through `redact_via_context`, so a
+        # loaded companion's patterns still apply to whatever the app publishes.
+        "apps/scrub_sdk.py",
         # Redacts artifact names/metadata at the point they are STAGED (the
         # pushable list and the S3 meta sidecar), before any response exists.
         # It owns no output of its own — every HTTP response carrying that data

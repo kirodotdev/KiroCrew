@@ -79,6 +79,7 @@ _BASELINE_REDACTORS = frozenset(
         "redact_credentials",
         "redact_exfiltration_urls",
         "redact_and_truncate",
+        "redact_with_findings",
     }
 )
 
@@ -953,7 +954,9 @@ class TestRedactionSinkRegistry:
         pkg = Path(security_posture.__file__).resolve().parent
         # Wrappers that run BOTH scanners internally, so a sink using one is fully
         # covered: StreamRedactor (rolling dual-pass), redact() (the dual-pass
-        # helper), redact_and_truncate() (redact-then-slice, so a credential cannot
+        # helper), redact_with_findings() (the same two passes in the same order,
+        # returning each one's warnings), redact_and_truncate() (redact-then-slice,
+        # so a credential cannot
         # straddle the truncation boundary), redact_via_context() (routes to
         # CredentialPolicy.redact, whose Default delegates to security.redact), and
         # display_safe() (redact_for_display with the exfil+credential redactor,
@@ -961,6 +964,7 @@ class TestRedactionSinkRegistry:
         dual_pass = (
             "StreamRedactor",
             "redact(",
+            "redact_with_findings",
             "redact_tree",
             "redact_and_truncate",
             "redact_via_context",
