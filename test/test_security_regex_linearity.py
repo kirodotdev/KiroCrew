@@ -8,12 +8,12 @@ direction fails.
 
 Covered:
 
-* Mesh-3654 -- ``redact_credentials`` pass 1 was ``for m in
+* ``redact_credentials`` pass 1 was ``for m in
   _CREDENTIAL_PATTERNS.finditer(result): result = result.replace(...)``, which
   rebuilt the whole string per match (O(n^2) on credential-dense text). It is now
   a single ``_CREDENTIAL_PATTERNS.sub(...)``. The redacted text AND the
   ``warnings`` list (content *and* order) must be unchanged.
-* Mesh-3693 -- the sensitive-path regex anchor rewrite. That regex is gone (the
+* The sensitive-path regex anchor rewrite. That regex is gone (the
   shell gate no longer matches paths in command text; the OS sandbox and
   ``is_sensitive_path`` hold the fence), so what remains of the differential is
   the ``is_sensitive_path`` half, which pins that the path gate's verdicts did
@@ -30,7 +30,7 @@ import pytest
 from kiro_crew.security import is_sensitive_path, redact_credentials
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Mesh-3654: redact_credentials pass 1 -- single sub() must be byte-identical
+# redact_credentials pass 1 -- single sub() must be byte-identical
 # ─────────────────────────────────────────────────────────────────────────────
 
 # (input, expected_redacted_text, expected_warnings) captured from the
@@ -125,7 +125,7 @@ def test_pass1_single_sub_is_byte_identical_to_pre_change_loop(
 ) -> None:
     """Pass 1 as one ``sub()`` reproduces the old loop's bytes and warnings.
 
-    Differential for Mesh-3654. ``expected_warnings`` is compared with ``==`` on
+    Differential for the pass-1 rewrite. ``expected_warnings`` is compared with ``==`` on
     the list, so both the CONTENT and the ORDER are pinned -- appending in the
     replacement callback has to keep the left-to-right match order the old
     ``finditer`` loop had.
@@ -161,7 +161,7 @@ def test_pass1_warnings_still_carry_no_secret_bytes() -> None:
 
 
 def test_pass1_is_linear_on_credential_dense_text() -> None:
-    """Complexity guard for Mesh-3654.
+    """Complexity guard for the pass-1 rewrite.
 
     The old shape rebuilt the whole string per match, so redacting N credentials
     in an N-credential string was O(N^2). 4000 credentials (~84 KB) is
@@ -178,7 +178,7 @@ def test_pass1_is_linear_on_credential_dense_text() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Mesh-3693: sensitive-path verdicts -- zero change (DENY surface)
+# sensitive-path verdicts -- zero change (DENY surface)
 # ─────────────────────────────────────────────────────────────────────────────
 
 SENSITIVE_PATH_GOLDEN: list[tuple[str, bool]] = [
@@ -194,7 +194,7 @@ SENSITIVE_PATH_GOLDEN: list[tuple[str, bool]] = [
 
 @pytest.mark.parametrize(("path", "expected"), SENSITIVE_PATH_GOLDEN)
 def test_sensitive_path_verdicts_unchanged_by_anchor_rewrite(path: str, expected: bool) -> None:
-    """Differential for Mesh-3693 on ``is_sensitive_path``."""
+    """Differential for the anchor rewrite on ``is_sensitive_path``."""
     assert bool(is_sensitive_path(path)) is expected
 
 

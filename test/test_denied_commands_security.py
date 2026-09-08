@@ -730,7 +730,7 @@ class TestProductNameAnywhereIsNotADenial:
         for allowed in (
             # The product name in a path, a search pattern, a filename, a
             # redirect target -- each once a match for a subcommand row.
-            "grep -rn kirocrew /Volumes/workplace/kc-wt/x/src",
+            "grep -rn kirocrew /Users/me/kirocrew-wt/x/src",
             "rg update /Users/me/kirocrew-wt/src",
             "ls /Users/me/kirocrew-wt/restart.log",
             "ls test/test_kirocrew_cron_schedule.py",
