@@ -651,8 +651,11 @@ class TestLiveness:
         finally:
             release.set()
         _wait_terminal(sdk, run_id)
-        # The worker recorded the outcome and the live entry is gone.
-        assert sdk.cancelling_and_live_ids() == (frozenset(), frozenset())
+        # The worker recorded the outcome and the live entry is gone. Poll for the
+        # live entry rather than reading it once: `_execute` pops it AFTER its
+        # terminal write lands, so a terminal record does not yet prove the entry
+        # is dropped, and asserting on that instant is a race on a loaded runner.
+        _wait_until(lambda: sdk.cancelling_and_live_ids() == (frozenset(), frozenset()))
 
     def test_stale_running_record_is_not_live(self, sdk: JobSDK) -> None:
         """The issue case: a durable record says ``running``, nothing owns it.
