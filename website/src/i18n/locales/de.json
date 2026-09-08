@@ -5744,7 +5744,8 @@
       "session_control_needs_attention": "Aktion erforderlich",
       "session_control_ready": "Bereit",
       "session_control_chip_label": "{{label}} — {{detail}}",
-      "agent_inherited_default": "Diese Sitzung folgt dem Standard-Agenten ({{name}}). Sie hat keinen eigenen Agenten, ändert sich also mit dem Standard. Zum Anheften klicken."
+      "agent_inherited_default": "Diese Sitzung folgt dem Standard-Agenten ({{name}}). Sie hat keinen eigenen Agenten, ändert sich also mit dem Standard. Zum Anheften klicken.",
+      "model_inherited_default": "Diese Sitzung läuft auf dem Standardmodell ({{name}}). Sie hat kein eigenes Modell, ändert sich also, wenn sich der Standard ändert. Klicken, um eines festzulegen."
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",

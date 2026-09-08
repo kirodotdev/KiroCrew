@@ -515,6 +515,13 @@ interface ChatInputProps {
   agentIsInheritedDefault?: boolean
   agentSource?: string
   modelName?: string
+  /**
+   * True when `modelName` is the model an INHERITING slot actually runs on (the
+   * backend's served default), not a pin. The chip then carries the same
+   * ` · default` marker and explanatory tooltip the agent chip uses for its
+   * inherited case, so a served model does not read as something the user
+   * chose. A pinned chip has nothing to explain. */
+  modelIsInheritedDefault?: boolean
   onAgentClick?: (rect: DOMRect) => void
   onModelClick?: (rect: DOMRect) => void
   onProjectClick?: (rect: DOMRect) => void
@@ -919,6 +926,7 @@ function ChatInput({
   agentName,
   agentLabel,
   agentIsInheritedDefault,
+  modelIsInheritedDefault,
   agentSource,
   modelName,
   onAgentClick,
@@ -4786,9 +4794,33 @@ function ChatInput({
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
               onClick={e => onModelClick(e.currentTarget.getBoundingClientRect())}
               disabled={isRunning}
-              title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_model') : i18nT('components.chatInput.model_2', { name: modelName })}
+              // Inherited default: mirror the agent chip -- ` · default` marker on
+              // the label, and the explanation on hover (title) AND keyboard
+              // focus / screen readers (aria-label), because a bare served id
+              // reads exactly like a pin. A pinned chip keeps the plain hint.
+              title={isRunning
+                ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
+                : modelIsInheritedDefault
+                  ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
+                  : i18nT('components.chatInput.model_2', { name: modelName })}
+              aria-label={isRunning
+                ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
+                : modelIsInheritedDefault
+                  ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
+                  : i18nT('components.chatInput.model_2', { name: modelName })}
             >
-              <span className="truncate max-w-[180px]">{modelName}</span>
+              <span className="truncate max-w-[180px]">
+                {modelName}
+              </span>
+              {modelIsInheritedDefault && (
+                // Outside the truncating span: a long provider-prefixed id must
+                // ellipsize its own tail, never the marker that tells a served
+                // default apart from a pin.
+                <>
+                  <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
+                  <span className="opacity-60 shrink-0">{i18nT('components.agentSelector.default')}</span>
+                </>
+              )}
               {onReasoningEffortClick && !shelfCompact && (
                 <>
                   <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>

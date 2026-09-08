@@ -1128,6 +1128,26 @@ def _agent_fallback_chain() -> tuple[str, ...]:
     return configured_fallback_chain()
 
 
+def _sync_served_model(slot: Any, client: Any) -> None:
+    """Re-read the live session's served model into the slot.
+
+    The slot's ``served_model`` is a cache of a SESSION fact, and three paths
+    change that fact without spawning a session: the explicit live pick
+    (``api_chat_slot_model``), the fallback swap (``_fallback_swap_for_turn``)
+    and the restore probe (``_probe_fallback_restore_for_slot``). Each of them
+    calls this once its ``set_model`` has landed, so the composer chip names
+    the model the next turn runs on rather than the one the session was
+    spawned with. Read through the provider's PUBLIC ``served_model`` accessor
+    -- the AcpProvider wrapper resolves both client shapes and filters the
+    ``auto`` sentinel to ``""`` (chip shows "auto", not a stale concrete id).
+    getattr-guarded on both sides for the minimal slot/client test doubles.
+    """
+    record = getattr(slot, "record_served_model", None)
+    if record is None:
+        return
+    record(str(getattr(client, "served_model", "") or ""))
+
+
 async def _fallback_swap_for_turn(slot: Any, client: Any) -> str | None:
     """Move the slot's live session onto the next usable fallback candidate.
 
@@ -1167,6 +1187,9 @@ async def _fallback_swap_for_turn(slot: Any, client: Any) -> str | None:
         slot._fallback_candidate_idx = fb_state.pos
         if candidate is None:
             return None
+        # The swap moved the LIVE session onto `candidate`; the chip must
+        # follow it, or an inheriting slot keeps naming the primary.
+        _sync_served_model(slot, client)
         if not slot._fallback_primary_model:
             slot._fallback_primary_model = fb_state.primary
             # Snapshot slot.model and the explicit-pick generation at activation.
@@ -1237,6 +1260,9 @@ async def _probe_fallback_restore_for_slot_locked(slot: Any, client: Any) -> Non
     def _heal_backfilled_slot_model() -> None:
         if (slot.model or "") != slot._fallback_slot_model:
             slot.model = slot._fallback_slot_model
+        # The restore moved the LIVE session back onto the primary; the chip
+        # must follow it off the fallback id.
+        _sync_served_model(slot, client)
 
     await probe_fallback_restore(
         client,
@@ -3997,7 +4023,7 @@ async def _consume_pending_reset(
                 # drop it ("unknown" fails open), mirroring
                 # `_reset_slot_session`'s BaseException path. This reset does
                 # not go through that helper, so it owns the drop itself.
-                slot.record_model_withheld(None)
+                slot.forget_session_model_state()
                 logger.warning(
                     "Failed to consume pending project-change reset for slot %s",
                     slot.key,
@@ -4011,7 +4037,7 @@ async def _consume_pending_reset(
                     # leaves the session — and therefore its verdict — live
                     # and accurate, and erasing it would let the dashboard
                     # show a withheld model as available.
-                    slot.record_model_withheld(None)
+                    slot.forget_session_model_state()
                     torn_down = True
                     if slot._pending_reset_history_key == pending_key:
                         slot._pending_reset_history_key = None
@@ -4068,7 +4094,7 @@ async def _consume_pending_reset(
             # reset above: a refusal is a normal outcome on this path (turn in
             # flight -> flag stays armed, session untouched), so dropping before
             # would forget a verdict that is still accurate.
-            slot.record_model_withheld(None)
+            slot.forget_session_model_state()
             if slot._pending_discard_conversation_key == discard_key:
                 slot._pending_discard_conversation_key = None
             # The discarded conversation's MCP report describes a session that no
@@ -6905,6 +6931,15 @@ async def _run_chat(
             # that, and the frontend fails open on it.
             verdict = _pinned_model_verdict(client, slot.model, provider_name)
             slot.record_model_withheld(verdict)
+        if is_new or resumed:
+            # Record what this fresh/reloaded session actually RUNS on, for both
+            # branches above: the inheriting slot (no pin — the first branch,
+            # whose backfill leaves `slot.model` empty on purpose) is the one
+            # whose chip has nothing else to name, and a withheld pin runs on
+            # the same served default. `client` here is the AcpProvider
+            # wrapper (see _sync_served_model for why its PUBLIC accessor is
+            # the only readable source).
+            _sync_served_model(slot, client)
         if verdict:
             withheld_pin = True
             # The session just advertised what this account can run, and the pin
@@ -12468,7 +12503,7 @@ async def _run_chat(
                 # both branches and before the await, so a failed teardown leaves
                 # the slot at "unknown" rather than carrying a verdict it can no
                 # longer vouch for.
-                slot.record_model_withheld(None)
+                slot.forget_session_model_state()
                 try:
                     if needs_conversation_discard:
                         # Poisoned-conversation escalation: clear ONLY the

@@ -277,6 +277,15 @@ export default function ChatPane({
     availableModels,
     _modelsDegraded,
     paneSlot?.model_withheld,
+    paneSlot?.served_model || '',
+  )
+  // What the pin alone would say; differing from `shownModel` means the chip
+  // is naming the served default an inheriting slot runs on (see ChatPage).
+  const _pinShownModel = displayModel(
+    paneSlot?.model || '',
+    availableModels,
+    _modelsDegraded,
+    paneSlot?.model_withheld,
   )
 
   // One-time hydrate of this slot's message history via React Query + the api
@@ -852,6 +861,7 @@ export default function ChatPane({
           agentIsInheritedDefault={!paneSlot?.agent && !!paneEffectiveDefaultAgent}
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
           modelName={shownModel}
+          modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
           contextPct={contextPct}
           contextUsedTokens={contextTokens?.used}
           contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}

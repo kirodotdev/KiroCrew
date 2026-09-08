@@ -880,6 +880,13 @@ export interface ChatSlot {
    *  the absence of an answer, never a denial. DISPLAY only — the pin is
    *  deliberately kept when withheld, so this must not drive a write. */
   model_withheld?: boolean | null
+  /** The model id the live session actually resolved to; `''`/absent when not
+   *  known. A slot with no pin — or one whose pin was withheld — runs on the
+   *  backend's own choice, which the pin cannot name, so this is what lets a
+   *  chip say the model instead of `auto`. DISPLAY only, like
+   *  `model_withheld`: it describes the session, so it must not drive a
+   *  write. */
+  served_model?: string
   /** Remote-execution binding. `executor` is "local" for an ordinary session and
    *  "remote" for one whose turns run on a connected crew; `instance_id` names
    *  that crew. The backend ships BOTH on every slot so "runs locally" is a

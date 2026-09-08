@@ -68,6 +68,7 @@ from kiro_crew.dashboard.chat_runner import (
     _context_usage_payload,
     _run_chat,
     _start_next_queued_turn,
+    _sync_served_model,
     context_entry_expired,
     schedule_eager_spawn,
 )
@@ -3184,7 +3185,7 @@ async def _reset_slot_session(
     except BaseException:
         # Raised or cancelled mid-teardown: the session is in a state this slot
         # cannot vouch for, so neither is its verdict. Unknown fails open.
-        slot.record_model_withheld(None)
+        slot.forget_session_model_state()
         raise
     if _test_interleave is not None:
         # The far side of the pop, ahead of the verdict-gated bookkeeping below.
@@ -3211,7 +3212,7 @@ async def _reset_slot_session(
         # that heuristic WHILE an authoritative answer exists is. Dropping on a
         # decline would throw the authoritative answer away and re-create exactly
         # that.
-        slot.record_model_withheld(None)
+        slot.forget_session_model_state()
         # The MCP session report rides the same gate for the same reason: it
         # describes the session that was just torn down. Clearing is a courtesy
         # delta push -- correctness rests on the identity projector in
@@ -4674,7 +4675,7 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     # one's withhold verdict no longer describes this slot. Only on a performed
     # discard: a refusal above leaves the old conversation (and its verdict) in
     # place.
-    slot.record_model_withheld(None)
+    slot.forget_session_model_state()
     sel().log_api_access(
         caller=request.get("app", "") or "dashboard",
         operation="slot_reset_conversation",
@@ -6441,6 +6442,10 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
                 status=409,
             )
         if went_live:
+            # The live session runs the pick; refresh the slot's served-model
+            # cache from it so an inheriting chip ("auto") does not keep naming
+            # the model the session was spawned with.
+            _sync_served_model(slot, provider)
             _broadcast_context_reset(state, slot.key, provider)
         else:
             # LAST-INSTANT busy re-check — the invariant this handler rests on:
@@ -6471,6 +6476,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
                         "target; skipping the reset under its in-flight turn",
                         name,
                     )
+                    _sync_served_model(slot, recheck)
                     _broadcast_context_reset(state, slot.key, recheck)
                     state.push_slots_update()
                     return web.json_response({"ok": True, "model": model_name})

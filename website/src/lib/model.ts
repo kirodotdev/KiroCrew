@@ -75,6 +75,14 @@ export function normalizeModelKey(name: string): string {
  *  the heuristic only — a verdict does not come from that list, so a stale list
  *  says nothing about it.
  *
+ *  `effective` is the id the live session resolved to, and it is consulted ONLY
+ *  when everything above lands on `auto`. `auto` is the truthful answer for a
+ *  slot that inherits (no pin, or a withheld one) but it names nothing a user
+ *  can recognise, while the session is running one specific model. So that one
+ *  case is replaced by the model's own picker row — an id the list does not
+ *  carry stays `auto`, since a chip matching no row is worse than the honest
+ *  sentinel. Every other answer is returned untouched.
+ *
  *  This is a DISPLAY decision only. Never feed the result into a write — a
  *  lossy label must not become persisted state (see ChatPage's pin-to-agent
  *  row, which writes the slot's real model).
@@ -84,6 +92,28 @@ export function displayModel(
   models: { name: string }[],
   degraded = false,
   withheld: boolean | null | undefined = null,
+  effective = '',
+): string {
+  const shown = displayPinnedModel(pinned, models, degraded, withheld)
+  if (shown !== 'auto') return shown
+  const inherited = normalizeModelKey(effective)
+  if (!inherited || inherited === 'auto') return shown
+  const row = models.find(m => normalizeModelKey(m.name) === inherited)
+  return row ? row.name : shown
+}
+
+/** The pin-only half of `displayModel`: what the PIN alone says to display.
+ *
+ *  Split out so the inherited-model substitution above is a single post-step on
+ *  one answer (`auto`) rather than a branch inside each verdict path, and so a
+ *  caller that must judge the PIN itself — the pin-to-agent row, through
+ *  `pinIsWithheld` — can still get the unsubstituted answer.
+ */
+function displayPinnedModel(
+  pinned: string,
+  models: { name: string }[],
+  degraded: boolean,
+  withheld: boolean | null | undefined,
 ): string {
   const key = normalizeModelKey(pinned)
   if (!key || key === 'auto') return 'auto'

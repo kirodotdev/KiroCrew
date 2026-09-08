@@ -5651,7 +5651,8 @@
       "session_control_needs_attention": "要対応",
       "session_control_ready": "準備完了",
       "session_control_chip_label": "{{label}} — {{detail}}",
-      "agent_inherited_default": "このセッションはデフォルトエージェント（{{name}}）に従います。独自のエージェントを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。"
+      "agent_inherited_default": "このセッションはデフォルトエージェント（{{name}}）に従います。独自のエージェントを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
+      "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",

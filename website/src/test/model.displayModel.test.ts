@@ -125,6 +125,44 @@ describe('displayModel with the backend verdict', () => {
     expect(displayModel('', list, false, false)).toBe('auto')
     expect(displayModel('auto', list, false, false)).toBe('auto')
   })
+
+  it('names the model an unpinned slot actually inherited', () => {
+    // `auto` is truthful for an unpinned slot but names nothing the user can
+    // recognise, while the session is running one specific model. The list's
+    // own spelling is returned, so the picker row still highlights.
+    expect(displayModel('', list, false, null, 'CLAUDE-SONNET-5')).toBe('claude-sonnet-5')
+    expect(displayModel('auto', list, false, null, 'claude-sonnet-5')).toBe('claude-sonnet-5')
+  })
+
+  it('names the model a WITHHELD pin fell back to', () => {
+    // The pin is dead and the session runs the backend's choice; naming that
+    // choice beats naming `auto`, which is equally not the pin.
+    expect(displayModel('claude-opus-5', list, false, true, 'claude-sonnet-5')).toBe(
+      'claude-sonnet-5',
+    )
+  })
+
+  it('stays on auto for an inherited id the list does not carry', () => {
+    // A chip matching no picker row is worse than the honest sentinel.
+    expect(displayModel('', list, false, null, 'glm-5')).toBe('auto')
+  })
+
+  it('leaves every non-auto answer untouched', () => {
+    // The substitution is a post-step on `auto` only: a pin that displays as
+    // itself must not be relabelled by what the session happens to run.
+    expect(displayModel('claude-sonnet-5', list, false, null, 'claude-opus-4.8')).toBe(
+      'claude-sonnet-5',
+    )
+    expect(displayModel('claude-opus-5', list, true, null, 'claude-sonnet-5')).toBe(
+      'claude-opus-5',
+    )
+  })
+
+  it('ignores an absent or auto inherited id', () => {
+    for (const inherited of ['', '   ', 'auto', 'default']) {
+      expect(displayModel('', list, false, null, inherited)).toBe('auto')
+    }
+  })
 })
 
 describe('pinIsWithheld', () => {

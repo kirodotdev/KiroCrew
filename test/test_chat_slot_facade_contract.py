@@ -21,6 +21,7 @@ _TO_DICT_KEYS = (
     "effective_agent",
     "model",
     "model_withheld",
+    "served_model",
     "reasoning_effort",
     "mode",
     "surface",

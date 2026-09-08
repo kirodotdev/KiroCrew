@@ -4021,6 +4021,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     availableModels,
     _modelsDegraded,
     currentSlot?.model_withheld,
+    // Names the backend's own choice when the slot inherits, so the chip is not
+    // a bare `auto` for a session running one specific model.
+    currentSlot?.served_model,
+  )
+  // The same answer WITHOUT that substitution, for the pin-to-agent row: that
+  // row asks about the PIN, and it must stay disabled for a withheld one even
+  // now that the chip names the model the session inherited instead.
+  const _pinShownModel = displayModel(
+    currentSlot?.model || resolvedModel || '',
+    availableModels,
+    _modelsDegraded,
+    currentSlot?.model_withheld,
   )
   // Context-window fallback for a peer-bound session BEFORE its first turn. Once a
   // turn has run the real number arrives with the relayed `context_usage` frame and
@@ -7644,6 +7656,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               agentIsInheritedDefault={!currentSlot?.agent && !!effectiveDefaultAgent}
               agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
               modelName={shownModel}
+              // The served default is shown exactly when the pin alone would
+              // have read `auto`; that is the inherited case the marker names.
+              modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
               onAgentClick={provider.capabilities.agentTemplates ? (rect) => { setAgentBtnRect(rect); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect) => { setModelBtnRect(rect); setModelDropdown(!modelDropdown) }}
               onProjectClick={(rect) => {
@@ -7839,7 +7854,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 }}
                 agentName={_modelPinAgent}
                 pinModelName={_modelPinActive || 'auto'}
-                pinModelUnavailable={pinIsWithheld(_modelPinActive, shownModel)}
+                pinModelUnavailable={pinIsWithheld(_modelPinActive, _pinShownModel)}
                 pinnedToAgent={_modelPinPinned}
                 onPinToAgent={() => {
                   setModelDropdown(false)

@@ -3230,6 +3230,7 @@ class _ChatSlot:
         "model",
         "_model_withheld",
         "_model_withheld_for",
+        "served_model",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -3414,6 +3415,10 @@ class _ChatSlot:
         # when any of slot.model's writers re-pins the slot.
         self._model_withheld: bool = False
         self._model_withheld_for: str = ""
+        # The model id the live session resolved to, for a slot that is
+        # inheriting rather than pinning. "" = unknown. Written through
+        # `record_served_model`.
+        self.served_model: str = ""
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
         # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
         self.reasoning_effort: str = ""
@@ -4678,6 +4683,38 @@ class _ChatSlot:
             return
         self._model_withheld = withheld
         self._model_withheld_for = self.model or ""
+
+    def record_served_model(self, model_id: str | None) -> None:
+        """Record the model id the live session actually resolved to.
+
+        The counterpart to :meth:`record_model_withheld` for the case that
+        verdict cannot describe: an INHERITED model. A slot pinned to nothing —
+        or one whose pin was withheld — runs on whatever the backend assigned,
+        and the pin alone cannot name it, so the composer chip can only say
+        "auto". This carries the id the session reports, so the chip can name
+        the model a turn will actually use.
+
+        ``None``/``""`` forgets it (back to unknown) — what a session teardown
+        does, since the id describes that session and not the slot. Unlike the
+        withhold verdict it is NOT pinned to ``slot.model``: it answers a
+        question about the SESSION, which the pin does not determine.
+
+        DISPLAY only. Never a write source: the persisted pin stays whatever the
+        user chose.
+        """
+        self.served_model = model_id or ""
+
+    def forget_session_model_state(self) -> None:
+        """Drop every fact that described the session being torn down.
+
+        The withhold verdict and the served model id are a PAIR: both describe
+        the session that advertised the list, not the slot, so a teardown that
+        forgets one and keeps the other labels the next session with the
+        previous one's answer. Every teardown site calls this one method so a
+        site added later cannot drop half the pair.
+        """
+        self.record_model_withheld(None)
+        self.record_served_model(None)
 
     @property
     def is_restricted(self) -> bool:

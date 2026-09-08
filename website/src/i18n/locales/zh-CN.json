@@ -5651,7 +5651,8 @@
       "session_control_needs_attention": "需要处理",
       "session_control_ready": "就绪",
       "session_control_chip_label": "{{label}} — {{detail}}",
-      "agent_inherited_default": "此会话跟随默认代理（{{name}}）。它没有自己的代理，因此默认代理变化时它也会变化。点击可固定一个。"
+      "agent_inherited_default": "此会话跟随默认代理（{{name}}）。它没有自己的代理，因此默认代理变化时它也会变化。点击可固定一个。",
+      "model_inherited_default": "此会话运行在默认模型（{{name}}）上。它没有自己的模型，因此默认模型变化时它也会变化。点击可固定一个。"
     },
     "chatPane": {
       "agent_list": "代理列表",

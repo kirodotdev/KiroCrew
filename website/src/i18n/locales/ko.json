@@ -5651,7 +5651,8 @@
       "session_control_needs_attention": "확인 필요",
       "session_control_ready": "준비됨",
       "session_control_chip_label": "{{label}} — {{detail}}",
-      "agent_inherited_default": "이 세션은 기본 에이전트({{name}})를 따릅니다. 자체 에이전트가 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요."
+      "agent_inherited_default": "이 세션은 기본 에이전트({{name}})를 따릅니다. 자체 에이전트가 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
+      "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요."
     },
     "chatPane": {
       "agent_list": "에이전트 목록",

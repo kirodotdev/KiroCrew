@@ -6896,6 +6896,24 @@ class TestPinnedModelWithheld:
         slot.record_model_withheld(False)
         assert slot.to_dict()["model_withheld"] is False
 
+    def test_served_model_is_unknown_until_a_session_reports_one(self):
+        slot = _ChatSlot("s1")
+        # Nothing has run, so nothing can name the model a turn would use. The
+        # frontend keeps showing `auto` on this.
+        assert slot.to_dict()["served_model"] == ""
+
+    def test_served_model_is_carried_and_forgotten_with_the_session(self):
+        """It describes the SESSION, so a teardown drops it.
+
+        Unlike the withhold verdict it is not pinned to `slot.model`: an
+        inheriting slot has no pin to pin it to.
+        """
+        slot = _ChatSlot("s1")
+        slot.record_served_model("gpt-5.6-sol")
+        assert slot.to_dict()["served_model"] == "gpt-5.6-sol"
+        slot.record_served_model(None)
+        assert slot.to_dict()["served_model"] == ""
+
     def test_verdict_is_reported_only_for_the_model_it_was_computed_for(self):
         """Re-pinning must invalidate the verdict without anyone remembering to.
 
@@ -6955,9 +6973,10 @@ class TestPinnedModelWithheld:
                 # returns False when a turn is in flight), so the trailing half is
                 # the wider one.
                 window = "\n".join(lines[max(0, i - 12) : i + 23])
-                assert "record_model_withheld(None)" in window, (
+                assert "forget_session_model_state()" in window, (
                     f"{module.__name__}:{i + 1} replaces the session the withhold "
-                    f"verdict describes without dropping it -> {lines[i].strip()}"
+                    f"verdict and served model describe without dropping them -> "
+                    f"{lines[i].strip()}"
                 )
 
     @pytest.mark.asyncio
@@ -7102,6 +7121,63 @@ class TestPinnedModelWithheld:
         # GET /api/models" as "not entitled" (#1819).
         assert slot.model_withheld is True
         assert slot.to_dict()["model_withheld"] is True
+
+    @pytest.mark.asyncio
+    async def test_run_chat_records_the_served_model_of_an_unpinned_slot(
+        self, tmp_path, monkeypatch
+    ):
+        """The inheriting slot is the one whose chip has nothing else to name.
+
+        `slot.model == ""` takes the backfill branch (which keeps the slot
+        unpinned on purpose), so the served model must be recorded OUTSIDE the
+        pinned-verdict branch. And it must be read through the provider's public
+        `served_model` accessor: `client` is the AcpProvider wrapper, which has
+        no `_resolved_model_id` — a private-field read would store `""` forever
+        and the chip would keep saying `auto`.
+        """
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(input_tokens=3, output_tokens=4))]
+        state = TestTokenPersistenceBackfill._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot.model = ""  # inheriting: no pin
+
+        client = AsyncMock()
+        client.context_usage_pct = MagicMock(return_value=10.0)
+        client.is_claude_backend = False
+        client.available_models = MagicMock(
+            return_value=[{"modelId": "auto"}, {"modelId": "gpt-5.6-sol"}]
+        )
+        # The wrapper's public accessor is the ONLY thing that names the served
+        # model; the ACP-private field is not on this shape.
+        client.served_model = "gpt-5.6-sol"
+        del client._resolved_model_id
+        inner = MagicMock()
+        inner._model = ""  # the session still inherits; only the wire was fixed
+        client.client = inner
+
+        async def _stream(msg):
+            del msg
+            for ev in events:
+                yield ev
+
+        client.stream = _stream
+        client.stream_command = _stream
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        async def _fake_persist(k, m, e, provider="", **kwargs):
+            del k, m, e, provider, kwargs
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.persist_token_record_async", _fake_persist
+        )
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert slot.model == "", "an inheriting slot must stay unpinned"
+        assert slot.to_dict()["served_model"] == "gpt-5.6-sol"
 
     @pytest.mark.asyncio
     async def test_run_chat_records_an_entitled_pin_as_not_withheld(self, tmp_path, monkeypatch):
@@ -18330,6 +18406,33 @@ class TestRunChatModelFallback:
     _TRANSIENT = "Prompt error: {'message': 'Internal error: API Error: Internal server error'}"
 
     @pytest.mark.asyncio
+    async def test_fallback_swap_refreshes_the_served_model_cache(self, tmp_path, monkeypatch):
+        """The swap moves the LIVE session onto the candidate without a spawn,
+        so the spawn-time cache would keep naming the primary; it must follow
+        the provider's served model instead."""
+        from kiro_crew.dashboard.chat_runner import _fallback_swap_for_turn
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._agent_fallback_chain",
+            lambda: ("fallback-model",),
+        )
+        state = self._make_state(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        slot.record_served_model("primary-model")
+
+        class _Client:
+            served_model = "primary-model"
+
+            async def set_model(self, target):
+                self._model = target
+                self.served_model = target
+
+        client = _Client()
+        candidate = await _fallback_swap_for_turn(slot, client)
+        assert candidate == "fallback-model"
+        assert slot.served_model == "fallback-model"
+
+    @pytest.mark.asyncio
     async def test_fallback_swap_serialises_on_the_pick_lock(self, tmp_path, monkeypatch):
         """REGRESSION (GPT finding on c97f2f2d): the swap awaits set_model, and
         an explicit pick landing during that await could be overwritten and
@@ -19992,6 +20095,50 @@ class TestSlotModelSwitchContextBroadcast:
                 "reset": True,
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_live_switch_to_auto_refreshes_the_served_model_cache(self, tmp_path):
+        """REGRESSION (GPT finding on 33ef1122e): ``slot.served_model`` was
+        written only at spawn, so selecting Auto on a warm, preserved session
+        left the concrete id the session was spawned with in the cache and the
+        composer chip kept naming the OLD model as "the default". After the live
+        switch lands the cache follows the provider -- ``""`` here, because
+        AcpProvider collapses the ``auto`` sentinel (chip reads "auto")."""
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(models=("auto", "claude-opus-4.8"))
+        provider.served_model = ""
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.record_served_model("claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": "auto"})
+
+        assert resp.status == 200
+        provider.client.set_model.assert_awaited_once_with("auto")
+        state.sessions.reset.assert_not_awaited()
+        assert slot.served_model == ""
+
+    @pytest.mark.asyncio
+    async def test_live_switch_to_a_pin_refreshes_the_served_model_cache(self, tmp_path):
+        # Pin -> pin: the cache names the model the live session runs NOW.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(models=("auto", "claude-opus-4.8", "gpt-5.6-sol"))
+        provider.served_model = "gpt-5.6-sol"
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        slot = state.get_or_create_slot("a", model="claude-opus-4.8")
+        slot.record_served_model("claude-opus-4.8")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"})
+
+        assert resp.status == 200
+        provider.client.set_model.assert_awaited_once_with("gpt-5.6-sol")
+        assert slot.served_model == "gpt-5.6-sol"
 
     @pytest.mark.asyncio
     async def test_reset_fallback_broadcasts_token_clearing_event(self, tmp_path):
