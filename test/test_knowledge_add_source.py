@@ -256,8 +256,18 @@ def _make_pick_app(store, local_only=True):
     return app
 
 
-def _fake_request(local_only=True):
-    return SimpleNamespace(app={"local_only": local_only})
+def _fake_request(local_only=True, remote="127.0.0.1", headers=None):
+    """A request the REAL ``is_direct_local_request`` can judge.
+
+    It reads ``request.remote`` and ``request.headers``, so the stand-in has to
+    carry both rather than only ``app``. Patching the helper out instead would
+    leave the gate asserted against a mock of itself; supplying a genuine
+    loopback peer with no forwarding headers exercises the real predicate, and
+    the proxied cases below only have to add one header to flip it.
+    """
+    return SimpleNamespace(
+        app={"local_only": local_only}, remote=remote, headers=headers or {}
+    )
 
 
 class TestFolderPickerAvailable:
@@ -276,6 +286,44 @@ class TestFolderPickerAvailable:
     def test_fail_closed_when_local_only_unset(self, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
         assert _folder_picker_available(SimpleNamespace(app={})) is False
+
+    def test_unavailable_when_a_proxy_forwarded_the_request(self, monkeypatch):
+        """`local_only` describes the GATEWAY, not the requester.
+
+        The gateway binds loopback and remote access is delivered by a same-host
+        tunnel or reverse proxy, so a remote user's request arrives from
+        127.0.0.1 with ``local_only`` still True. Opening a native dialog for it
+        would put a modal on the gateway operator's screen -- not the
+        requester's -- and hold it there for up to ``_FOLDER_DIALOG_TIMEOUT``,
+        driven by someone else entirely.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        proxied = _fake_request(local_only=True, headers={"X-Forwarded-For": "203.0.113.7"})
+
+        assert _folder_picker_available(proxied) is False
+
+    def test_unavailable_when_the_peer_is_not_loopback(self, monkeypatch):
+        """A directly-bound non-loopback peer is remote however `local_only` reads."""
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+
+        assert _folder_picker_available(_fake_request(remote="203.0.113.7")) is False
+
+    def test_the_forwarding_header_is_what_flips_it(self, monkeypatch):
+        """Guard the guard: the two requests differ ONLY by that one header.
+
+        Without this, `test_unavailable_when_a_proxy_forwarded_the_request`
+        could be passing because the fixture is malformed rather than because
+        the gate noticed the proxy.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+
+        assert _folder_picker_available(_fake_request(local_only=True)) is True
+        assert (
+            _folder_picker_available(
+                _fake_request(local_only=True, headers={"X-Forwarded-For": "203.0.113.7"})
+            )
+            is False
+        )
 
 
 class TestRunFolderDialog:
