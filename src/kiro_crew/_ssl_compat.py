@@ -92,6 +92,9 @@ def _ensure_ssl_certs() -> None:
     if os.environ.get("SSL_CERT_FILE"):
         return
 
+    if sys.platform == "win32":
+        return
+
     if sys.platform == "darwin":
         _inject_macos_system_trust()
 
