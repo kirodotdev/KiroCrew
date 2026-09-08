@@ -626,23 +626,25 @@ The markers are the **only** gate:
   failing this gate closed on healthy reviews.
 - GPT 5.6 emits `[GPT-REVIEWED] <sha>` / `[BLOCK-MERGE] <sha>`. When the provider
   *refuses* the request — declines to review the diff because of what it contains,
-  as opposed to crashing or timing out — the **same-repo lane** publishes a distinct
+  as opposed to crashing or timing out — both GPT lanes publish a distinct
   terminal state: the synthetic verdict body names the refusal in prose (no
   reviewed marker, so the gate still fails closed), and the classification rides
   the verdict assembly's `refused` step output. There is deliberately no refusal
   marker in the body — the body on the clean path is model prose, and a marker
   would invite prose-grepping, so a review that merely quotes the refusal wording
-  cannot be reclassified. The gate's message names human adjudication
-  (`/ai-review override`) instead of advising a re-run: the refusal is caused by
-  the reviewed content and is empirically sticky — 12 consecutive identical
-  refusals across 10 heads were measured on one PR — so a re-run is not a workable
-  remedy. A failed pass is classified as refused only when the provider's own
-  error line appears line-anchored in the tail of that pass's captured stream,
-  because the stream also carries PR-controlled text (the prompt embeds the PR
-  title/body, and the reviewer echoes the diff). Without the distinction, every
-  security fix whose evidence is a working exploit read as a permanently
-  re-runnable crash (#8685). The fork GPT lane (`fork-gpt-review.yml`) still
-  reports only the generic incomplete state and is tracked separately.
+  cannot be reclassified. The refusal is caused by the reviewed content and is
+  empirically sticky — 12 consecutive identical refusals across 10 heads were
+  measured on one PR — so neither lane advises a re-run. The remedy each lane
+  names is the one that exists for it: the same-repo gate names human
+  adjudication (`/ai-review override`), while the fork lane
+  (`fork-gpt-review.yml`) resolves no override record, so its refused comment
+  and check-run title route to direct maintainer review instead of naming a
+  command that cannot clear that check. A failed pass is classified as refused
+  only when the provider's own error line appears line-anchored in the tail of
+  that pass's captured stream, because the stream also carries PR-controlled
+  text (the prompt embeds the PR title/body, and the reviewer echoes the diff).
+  Without the distinction, every security fix whose evidence is a working
+  exploit read as a permanently re-runnable crash (#8685).
 - Design and UX emit `Design-Verdict:` / `UX-Verdict: PASS | CONCERNS | BLOCK`,
   parsed from a header line.
 

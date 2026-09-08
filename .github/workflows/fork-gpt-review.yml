@@ -449,6 +449,23 @@ jobs:
           # away dies on a named timeout instead of mid-call on an expired
           # token, which reads as a model failure and buries the real cause.
           PASS_WALL: 55m
+          # The provider's own refusal line, verbatim from the CLI's error
+          # output including its line-leading "ERROR: " prefix. A refusal and
+          # a crash both arrive as rc != 0 or an empty pass file, but they
+          # mean opposite things: a crash is fixed by re-running, while a
+          # refusal is caused by what the diff IS and is empirically sticky
+          # across re-runs. This line is the only way to tell them apart. The
+          # classification below matches it ANCHORED at line start and only
+          # in the TAIL of the captured stream, because the stream carries
+          # PR-controlled text with even less trust than the same-repo lane's
+          # (the prompt embeds the fork author's title/body as nonce-wrapped
+          # data, and the reviewer echoes the diff -- which, for any PR
+          # touching this file, contains this very string): an unanchored
+          # whole-stream match would let an echoed copy of the signature
+          # reclassify an ordinary crash as a refusal. The text must stay
+          # free of regex metacharacters -- it is interpolated into an
+          # anchored grep pattern. Keep in sync with codex-review.yml.
+          REFUSAL_SIGNATURE: "ERROR: This request has been flagged for potentially high-risk cyber activity"
         # Pass 1 generates candidates; its output is never posted or gated
         # directly -- the falsification pass below emits the only verdict the
         # comment and gate consume. Mirrors codex-review.yml's two-pass design.
@@ -649,6 +666,7 @@ jobs:
           # form survives any future change to what this lane checks out.
           rm -f codex-failed-passes
           : > codex-failed-passes
+          rm -f "$RUNNER_TEMP/codex-refused-passes"
           BASE_PROMPT="$(cat /tmp/fork-codex-prompt.md)"
           PROMPT=$(printf '%s\n\n%s\n' "$BASE_PROMPT" \
             "DISCOVERY PASS: inspect the full current diff and report every candidate that meets the FINDING BAR. This is candidate generation, not the final verdict.")
@@ -661,13 +679,28 @@ jobs:
           # credentials (zizmor github-env). The path is under RUNNER_TEMP
           # because the manifest that produced it was materialized from the
           # BASE commit, not from this checkout -- see "Install review CLI".
+          #
+          # The CLI's combined stream is tee'd into RUNNER_TEMP (never the
+          # checkout, so a PR cannot plant a symlink at its name) because a
+          # failed pass is classified below by the provider's own words --
+          # only the captured output can tell a refusal from a crash.
           timeout "$PASS_WALL" \
             "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
             --sandbox read-only \
             --output-last-message "codex-pass-1.md" \
-            "$PROMPT" || rc=$?
+            "$PROMPT" 2>&1 | tee "$RUNNER_TEMP/codex-pass-1-log.txt" || rc=$?
           if [ "$rc" -ne 0 ] || [ ! -s codex-pass-1.md ]; then
-            echo "::warning::GPT 5.6 fork review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
+            # Anchored + tail-scoped on purpose: the provider emits the
+            # refusal line at column 0 as the stream's final act, while an
+            # echoed copy of the signature (a diff hunk, quoted prose) is
+            # neither line-leading nor reliably last. The 4000-byte tail fits
+            # a single pipe buffer, so the grep cannot SIGPIPE the tail.
+            if tail -c 4000 "$RUNNER_TEMP/codex-pass-1-log.txt" | grep -q "^$REFUSAL_SIGNATURE"; then
+              echo "::warning::GPT 5.6 fork review pass 1 was refused by the provider (exit ${rc}); the verdict will name the refusal instead of advising a re-run."
+              printf ' 1' >> "$RUNNER_TEMP/codex-refused-passes"
+            else
+              echo "::warning::GPT 5.6 fork review pass 1 did not complete (exit ${rc}); the verdict will fail closed."
+            fi
             printf ' 1' >> codex-failed-passes
           fi
 
@@ -706,6 +739,11 @@ jobs:
           DISCOVERY_OUTPUT_MAX_BYTES: "50000"
           PASS_WALL: 55m
           HEAD: ${{ steps.pr.outputs.head_sha }}
+          # Same signature and same anchored/tail-scoped matching as the
+          # discovery pass: a failed pass carrying it was REFUSED, not
+          # crashed, and the verdict assembly below reports that as its own
+          # terminal state. Keep in sync with codex-review.yml.
+          REFUSAL_SIGNATURE: "ERROR: This request has been flagged for potentially high-risk cyber activity"
         # Pass 2 tries to KILL pass 1's candidates and emits the only verdict the
         # comment and gate consume. Both calls are required: if either failed, no
         # verdict is published and the gate fails closed.
@@ -752,25 +790,67 @@ jobs:
 
           rm -f codex-pass-2.md
           rc=0
+          # tee'd into RUNNER_TEMP for the same reason as pass 1: the captured
+          # stream is what classifies a failed pass as refused vs crashed.
           timeout "$PASS_WALL" \
             "$RUNNER_TEMP/review-cli/node_modules/.bin/codex" exec \
             --sandbox read-only \
             --output-last-message "codex-pass-2.md" \
-            "$PROMPT" || rc=$?
+            "$PROMPT" 2>&1 | tee "$RUNNER_TEMP/codex-pass-2-log.txt" || rc=$?
           if [ "$rc" -ne 0 ] || [ ! -s codex-pass-2.md ]; then
-            echo "::warning::GPT 5.6 fork review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
+            if tail -c 4000 "$RUNNER_TEMP/codex-pass-2-log.txt" | grep -q "^$REFUSAL_SIGNATURE"; then
+              echo "::warning::GPT 5.6 fork review pass 2 was refused by the provider (exit ${rc}); the verdict will name the refusal instead of advising a re-run."
+              printf ' 2' >> "$RUNNER_TEMP/codex-refused-passes"
+            else
+              echo "::warning::GPT 5.6 fork review pass 2 did not complete (exit ${rc}); the verdict will fail closed."
+            fi
             failed_passes="${failed_passes} 2"
           fi
 
+          refused_passes="$(cat "$RUNNER_TEMP/codex-refused-passes" 2>/dev/null || true)"
+          refused="false"
           if [ -n "$failed_passes" ]; then
-            {
-              echo "> **Incomplete review:** pass(es)${failed_passes} did not complete."
-              echo
-              echo "The pass-2 verdict was not published because both calls are required. Re-run the workflow for a complete review."
-            } > codex-review-output.md
+            if [ -n "$refused_passes" ]; then
+              # A refusal is not a crash: the provider declined because of
+              # what the reviewed content IS, and measured refusals of this
+              # class recur identically across re-runs, so advising a re-run
+              # points the operator at a remedy that has never been observed
+              # to work. Publish a distinct terminal state -- it still carries
+              # no [GPT-REVIEWED] marker, so the check-run still fails closed
+              # and a declined review can never read as an approval -- that
+              # names the refusal. The refusal dominates a mixed failure (one
+              # pass refused, the other crashed) because a re-run only helps
+              # if the refusal does not recur. Unlike codex-review.yml, the
+              # remedy text names direct maintainer review rather than
+              # /ai-review override: this lane resolves no override record
+              # (see "the fork lane has no override" below), so promising
+              # that command here would route a maintainer to a clearance
+              # path that cannot clear this check.
+              refused="true"
+              {
+                echo "> **Reviewer refused:** the provider declined to review this diff (pass(es)${refused_passes})."
+                echo
+                echo "The refusal is caused by the reviewed content, not by a transient failure, so a re-run is very unlikely to produce a verdict. A declined review is not an approval: a maintainer must review this change directly."
+              } > codex-review-output.md
+            else
+              {
+                echo "> **Incomplete review:** pass(es)${failed_passes} did not complete."
+                echo
+                echo "The pass-2 verdict was not published because both calls are required. Re-run the workflow for a complete review."
+              } > codex-review-output.md
+            fi
           else
             cp codex-pass-2.md codex-review-output.md
           fi
+          # The refusal classification travels as a step OUTPUT, never by
+          # re-grepping codex-review-output.md downstream: on the clean path
+          # that file is verbatim model prose, so a review that merely QUOTED
+          # a refusal phrase (say, while reviewing this workflow) would
+          # otherwise reclassify a completed verdict. There is deliberately
+          # no refusal marker in the body itself — the prose names the
+          # refusal for human readers, and a marker nothing may parse would
+          # only invite a future step to start grepping model prose for it.
+          echo "refused=$refused" >> "$GITHUB_OUTPUT"
 
           # Gate the adjudication pass below on the verdict THIS step produced,
           # so a clean PR never pays for it. Mirrors codex-review.yml.
@@ -1232,6 +1312,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
           HEAD: ${{ steps.pr.outputs.head_sha }}
+          REFUSED: ${{ steps.gpt_pass2.outputs.refused }}
           ADJ_DECISION: ${{ steps.adj.outputs.decision }}
           ADJ_NOTE: ${{ steps.adj.outputs.note }}
         run: |
@@ -1239,6 +1320,15 @@ jobs:
           [ -z "${PR:-}" ] && { echo "no PR resolved; skipping comment"; exit 0; }
           MARKER="<!-- codex-ai-review -->"
           kind="incomplete"; verdict="⚠️ review incomplete"; note=""
+          # $REFUSED is the verdict assembly's step output, never a grep of
+          # the review body: on the clean path that body is model prose, and
+          # a review merely QUOTING the refusal wording must not reclassify a
+          # completed verdict. The assembly only ever emits refused=true on a
+          # run whose body it wrote itself, with no [GPT-REVIEWED] marker, so
+          # the completed-verdict branch below can never race this one.
+          if [ "${REFUSED:-}" = "true" ]; then
+            kind="refused"; verdict="⛔ reviewer refused this diff"
+          fi
           if [ -s codex-review-output.md ] && grep -Fq "[GPT-REVIEWED] $HEAD" codex-review-output.md; then
             if grep -Fq "[BLOCK-MERGE] $HEAD" codex-review-output.md; then
               # Rendered from the SAME parsed decision the check-run acts on,
@@ -1277,6 +1367,12 @@ jobs:
               sed -E 's/\[BLOCK-MERGE\]([[:space:]]+[0-9a-fA-F]{7,40})/[BLOCK-MERGE-DOWNGRADED]\1/g' codex-review-output.md
               echo
               echo "</details>"
+            elif [ "$kind" = "refused" ]; then
+              # No override command here, deliberately: this lane resolves no
+              # override record, and its comment carries no override command
+              # (see the fence text below). The honest remedy on a fork PR is
+              # a maintainer reading the change itself.
+              echo "_The provider declined to review this commit; the refusal text is in the Fork GPT 5.6 Review job logs. It is caused by the diff's own content: re-runs have not been observed to clear this class of refusal. A declined review is not an approval — a maintainer must review this change directly._"
             else
               echo "_No completed GPT verdict for this commit; see the Fork GPT 5.6 Review job logs._"
               # REPORTING ONLY. Without this, a review that ran to completion but
@@ -1491,11 +1587,25 @@ jobs:
           HEAD: ${{ steps.pr.outputs.head_sha || github.event.workflow_run.head_sha }}
           CHECK_ID: ${{ steps.check.outputs.id }}
           PR: ${{ steps.pr.outputs.pr }}
+          REFUSED: ${{ steps.gpt_pass2.outputs.refused }}
           ADJ_DECISION: ${{ steps.adj.outputs.decision }}
           ADJ_NOTE: ${{ steps.adj.outputs.note }}
         run: |
           set -uo pipefail
           conclusion="failure"; title="review incomplete"; extra=""
+          # A refusal is its own terminal state, distinct from a crash. Still
+          # fail CLOSED -- a declined review is not an approval, and passing
+          # here would turn the provider's content filter into a bypass of
+          # the repo's own review requirement -- but the required check's
+          # title must name the true cause: "review incomplete" tells a
+          # maintainer to re-run, and re-runs have not been observed to clear
+          # this class. $REFUSED is the verdict assembly's step output for
+          # THIS run; the assembly only ever emits refused=true on a run
+          # whose marker-less body it wrote itself, so the completed-verdict
+          # branch below can never override this title with a stale verdict.
+          if [ "${REFUSED:-}" = "true" ]; then
+            title="reviewer refused this diff"
+          fi
           if [ -s codex-review-output.md ] && grep -Fq "[GPT-REVIEWED] $HEAD" codex-review-output.md; then
             if grep -Fq "[BLOCK-MERGE] $HEAD" codex-review-output.md; then
               # [BLOCK-MERGE] is relaxed by exactly one thing: a fully reconciled

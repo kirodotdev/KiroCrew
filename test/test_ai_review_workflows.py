@@ -7402,3 +7402,317 @@ class TestModelStepsRunAfterTheCredentialFilesAreScrubbed:
             env={**os.environ, "RUNNER_TEMP": str(tmp_path / "absent")},
         )
         assert proc.returncode == 0, proc.stderr
+
+
+class TestForkGptRefusalTerminalState:
+    """The fork GPT lane's port of the refusal/crash distinction (#8739).
+
+    Fork PRs are where an untrusted working exploit is most likely to arrive,
+    so this lane needs the distinction most: a provider refusal is caused by
+    what the diff IS and recurs identically across re-runs, while a crash is
+    fixed by re-running. The port mirrors ``codex-review.yml``'s classification
+    (line-anchored signature match in the tail of the tee'd stream, refusal
+    riding the assembly's ``refused`` step output, never a body grep) with one
+    deliberate difference: this lane resolves no ``/ai-review override``
+    record, so its refused copy routes to direct maintainer review instead of
+    naming a command that cannot clear this check. The comment/check-run
+    publication path differs from the same-repo lane (marker comment plus
+    check-run, no exit-1 gate step), so the refused kind is pinned on both.
+    """
+
+    HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+    @staticmethod
+    def _pass_step(name: str) -> dict:
+        doc = yaml.safe_load(_workflow("fork-gpt-review.yml"))
+        for step in list(doc["jobs"].values())[0]["steps"]:
+            if step.get("name") == name:
+                return step
+        raise AssertionError(f"step not found: {name}")
+
+    def test_refusal_is_classified_where_rc_is_captured(self) -> None:
+        workflow = _workflow("fork-gpt-review.yml")
+        discovery_step = workflow[
+            workflow.index("- name: GPT 5.6 review (discovery pass)") : workflow.index(
+                "- name: GPT 5.6 review (falsification pass)"
+            )
+        ]
+        review_step = workflow[
+            workflow.index("- name: GPT 5.6 review (falsification pass)") : workflow.index(
+                "- name: Redact credential shapes"
+            )
+        ]
+        for step, n in ((discovery_step, 1), (review_step, 2)):
+            # The signature can only be matched against output that was
+            # captured; the CLI's combined stream is tee'd where rc is
+            # captured, into RUNNER_TEMP so a PR cannot plant a symlink at
+            # the log's name. The match is line-anchored and tail-scoped
+            # because the stream carries PR-controlled text with even less
+            # trust than the same-repo lane's: the prompt embeds the fork
+            # author's title/body as nonce-wrapped data, and the reviewer
+            # echoes the diff — which, for a PR touching the workflow itself,
+            # contains the signature verbatim. An unanchored whole-stream
+            # match would let an echoed copy reclassify an ordinary crash as
+            # a refusal.
+            assert f'tee "$RUNNER_TEMP/codex-pass-{n}-log.txt"' in step
+            assert "REFUSAL_SIGNATURE:" in step
+            assert (
+                f'tail -c 4000 "$RUNNER_TEMP/codex-pass-{n}-log.txt" | grep -q "^$REFUSAL_SIGNATURE"'
+                in step
+            )
+            assert f"printf ' {n}' >> \"$RUNNER_TEMP/codex-refused-passes\"" in step
+        # A stale refusal record from an earlier run of the same job must not
+        # classify a fresh failure, so the record is re-initialized with the
+        # crash record.
+        assert 'rm -f "$RUNNER_TEMP/codex-refused-passes"' in discovery_step
+        # The signature is interpolated into an anchored grep pattern, so it
+        # must carry the provider's line-leading prefix and stay free of
+        # basic-regex metacharacters.
+        signature = self._pass_step("GPT 5.6 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
+        assert signature.startswith("ERROR: ")
+        assert re.search(r"[.*\[\]^$\\]", signature) is None
+
+    def test_signature_stays_in_sync_with_the_same_repo_lane(self) -> None:
+        # Both lanes classify against the same provider's error line. A
+        # signature that drifts between them would silently split the refusal
+        # semantics: one lane names the refusal while the other advises the
+        # futile re-run for the identical event.
+        fork_doc = yaml.safe_load(_workflow("fork-gpt-review.yml"))
+        same_doc = yaml.safe_load(_workflow("codex-review.yml"))
+
+        def _signatures(doc: dict) -> set[str]:
+            return {
+                step["env"]["REFUSAL_SIGNATURE"]
+                for job in doc["jobs"].values()
+                for step in job["steps"]
+                if isinstance(step.get("env"), dict) and "REFUSAL_SIGNATURE" in step["env"]
+            }
+
+        fork_signatures = _signatures(fork_doc)
+        same_signatures = _signatures(same_doc)
+        assert len(fork_signatures) == 1, "fork lane passes must share one signature"
+        assert fork_signatures == same_signatures
+
+    def _classify(self, tmp_path: Path, log: str) -> str:
+        """Run the fork discovery pass's failure-classification block against a
+        fabricated captured stream and return the refused-passes record."""
+        bash = _bash()
+        if bash is None:
+            pytest.skip("classification requires Bash")
+        step = self._pass_step("GPT 5.6 review (discovery pass)")
+        script = step["run"]
+        snippet = script[script.index('if [ "$rc" -ne 0 ]') :]
+        runner_temp = tmp_path / "rt"
+        runner_temp.mkdir()
+        (runner_temp / "codex-pass-1-log.txt").write_text(log, encoding="utf-8")
+        result = subprocess.run(
+            [bash, "-c", f"set -uo pipefail\nrc=124\n{snippet}"],
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "RUNNER_TEMP": str(runner_temp),
+                "REFUSAL_SIGNATURE": step["env"]["REFUSAL_SIGNATURE"],
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        record = runner_temp / "codex-refused-passes"
+        return record.read_text(encoding="utf-8") if record.exists() else ""
+
+    def test_provider_emitted_refusal_line_classifies_as_refused(self, tmp_path: Path) -> None:
+        signature = self._pass_step("GPT 5.6 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
+        log = f"some progress output\n{signature}.\nLearn more here: https://example.invalid\n"
+        assert self._classify(tmp_path, log) == " 1"
+
+    def test_echoed_signature_in_pr_controlled_text_stays_a_crash(self, tmp_path: Path) -> None:
+        # This lane hands the model MORE attacker-controlled text than the
+        # same-repo lane: the fork author's PR title/body ride the prompt as
+        # nonce-wrapped data, and the reviewer echoes the diff. A fork author
+        # can therefore WRITE the signature into their description or diff —
+        # quoted or indented, never line-leading — and a crash on such a PR
+        # must stay a crash: mislabeling it as refused tells a maintainer the
+        # re-run that would have worked is futile.
+        signature = self._pass_step("GPT 5.6 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
+        log = f'+          REFUSAL_SIGNATURE: "{signature}"\n> quoted: {signature}\n'
+        assert self._classify(tmp_path, log) == ""
+
+    def test_signature_outside_the_stream_tail_stays_a_crash(self, tmp_path: Path) -> None:
+        # The provider emits the refusal as the stream's final act. A copy of
+        # the line early in a long stream (echoed content scrolled past) must
+        # not classify a later, unrelated crash.
+        signature = self._pass_step("GPT 5.6 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
+        log = f"{signature}.\n" + ("x" * 80 + "\n") * 100
+        assert self._classify(tmp_path, log) == ""
+
+    def _assemble_verdict(
+        self,
+        tmp_path: Path,
+        *,
+        failed_passes: str,
+        refused_passes: str | None,
+        pass2: str | None,
+    ) -> tuple[str, str]:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("verdict assembly requires Bash")
+        script = _step_script(
+            _workflow("fork-gpt-review.yml"), "GPT 5.6 review (falsification pass)"
+        )
+        snippet = script[
+            script.index("refused_passes=") : script.index("# Gate the adjudication pass below")
+        ]
+        runner_temp = tmp_path / "rt"
+        runner_temp.mkdir()
+        gh_output = tmp_path / "gh-output"
+        gh_output.write_text("", encoding="utf-8")
+        if refused_passes is not None:
+            (runner_temp / "codex-refused-passes").write_text(refused_passes, encoding="utf-8")
+        if pass2 is not None:
+            (tmp_path / "codex-pass-2.md").write_text(pass2, encoding="utf-8")
+        harness = f"set -uo pipefail\nfailed_passes='{failed_passes}'\n{snippet}\ncat codex-review-output.md\n"
+        result = subprocess.run(
+            [bash, "-c", harness],
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "HEAD": self.HEAD,
+                "RUNNER_TEMP": str(runner_temp),
+                "GITHUB_OUTPUT": str(gh_output),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout, gh_output.read_text(encoding="utf-8")
+
+    def test_refused_pass_publishes_its_own_terminal_state(self, tmp_path: Path) -> None:
+        out, gh_output = self._assemble_verdict(
+            tmp_path, failed_passes=" 2", refused_passes=" 2", pass2=None
+        )
+        assert "Reviewer refused" in out
+        # The refusal must not read as a completed review, must not prescribe
+        # the re-run that has never been observed to work, and deliberately
+        # carries NO machine marker: classification rides the step output.
+        assert "[GPT-REVIEWED]" not in out
+        assert "[GPT-REFUSED]" not in out
+        assert "Re-run the workflow" not in out
+        # The fork-specific remedy: this lane resolves no override record, so
+        # its refused body must NOT name /ai-review override — the same-repo
+        # lane's remedy — and must route to direct maintainer review instead.
+        assert "/ai-review override" not in out
+        assert "review this change directly" in out
+        # Downstream classification rides this output, never a body grep.
+        assert "refused=true" in gh_output
+
+    def test_crashed_pass_keeps_the_rerunnable_incomplete_state(self, tmp_path: Path) -> None:
+        out, gh_output = self._assemble_verdict(
+            tmp_path, failed_passes=" 1", refused_passes=None, pass2=None
+        )
+        assert "Incomplete review" in out
+        assert "Re-run the workflow" in out
+        assert "refused=false" in gh_output
+
+    def test_refusal_dominates_a_mixed_failure(self, tmp_path: Path) -> None:
+        # Pass 1 crashed AND pass 2 was refused: a re-run only helps if the
+        # refusal does not recur, so the refusal is what the maintainer is
+        # told about.
+        out, gh_output = self._assemble_verdict(
+            tmp_path, failed_passes=" 1 2", refused_passes=" 2", pass2=None
+        )
+        assert "Reviewer refused" in out
+        assert "Re-run the workflow" not in out
+        assert "refused=true" in gh_output
+
+    def test_clean_run_still_publishes_pass_2_verbatim(self, tmp_path: Path) -> None:
+        verdict = f"all good\n[GPT-REVIEWED] {self.HEAD}\n"
+        out, gh_output = self._assemble_verdict(
+            tmp_path, failed_passes="", refused_passes=None, pass2=verdict
+        )
+        assert f"[GPT-REVIEWED] {self.HEAD}" in out
+        assert "refused=false" in gh_output
+
+    def test_refused_run_never_modifies_an_existing_comment(self, tmp_path: Path) -> None:
+        # A refused run is verdict-less exactly like an incomplete one, so the
+        # guarded upsert's no-touch transition (#8292/#8344) must cover it:
+        # with an existing bot comment present, the run makes no edit of any
+        # kind. The refused body carries no "[GPT-REVIEWED] <head>" proof
+        # marker, so the shared guarded_comment_upsert withholds it -- this
+        # test pins that the refusal classification rides that path rather
+        # than growing a posting branch of its own.
+        vis = TestReviewLaneVerdictVisibility()
+        lane = next(entry for entry in _GUARDED_LANES if entry["id"] == "fork-gpt")
+        calls, result = vis._run_step(
+            lane,
+            tmp_path,
+            existing_body=vis._verdict_body(lane, vis.OLD),
+            kind="refused",
+            extra_env={"REFUSED": "true"},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        assert not (calls / "patch-calls.txt").exists()
+        assert not (calls / "patched-body.md").exists()
+        assert not (calls / "created-body.md").exists()
+        stdout = result.stdout.decode()
+        assert "left existing comment #123 untouched" in stdout
+
+    def test_refused_run_with_no_existing_comment_creates_the_refused_placeholder(
+        self, tmp_path: Path
+    ) -> None:
+        # The check-run title alone cannot say WHY the gate is red, so the
+        # first comment a refusal creates must carry the refused verdict and
+        # the fork-honest remedy: no override command (this lane resolves no
+        # override record), no re-run advice. Creation is legitimate here
+        # because the lookup SUCCEEDED and found nothing -- there is no
+        # verdict to lose.
+        vis = TestReviewLaneVerdictVisibility()
+        lane = next(entry for entry in _GUARDED_LANES if entry["id"] == "fork-gpt")
+        calls, result = vis._run_step(
+            lane,
+            tmp_path,
+            existing_body=None,
+            kind="refused",
+            extra_env={"REFUSED": "true"},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        created = (calls / "created-body.md").read_text(encoding="utf-8")
+        assert created.startswith(str(lane["marker"]))
+        assert "⛔ reviewer refused this diff" in created
+        assert "review this change directly" in created
+        assert "/ai-review override" not in created
+        assert "Re-run the workflow" not in created
+        assert not (calls / "patch-calls.txt").exists()
+        assert not (calls / "patched-body.md").exists()
+
+    def test_refused_classification_rides_step_outputs_into_both_publishers(self) -> None:
+        # The comment step and the fail-closed finalize step each read the
+        # assembly's `refused` step OUTPUT through their env, never a grep of
+        # the body: on the clean path the body is model prose, and a verdict
+        # that merely QUOTES the refusal wording must not be reclassified.
+        comment_env = self._pass_step("Post/update summary comment")["env"]
+        finalize_env = self._pass_step("Finalize check-run (fail closed)")["env"]
+        expected = "${{ steps.gpt_pass2.outputs.refused }}"
+        assert comment_env["REFUSED"] == expected
+        assert finalize_env["REFUSED"] == expected
+
+        workflow = _workflow("fork-gpt-review.yml")
+        comment_step = _step_script(workflow, "Post/update summary comment")
+        assert 'if [ "${REFUSED:-}" = "true" ]; then' in comment_step
+        assert 'kind="refused"' in comment_step
+
+        finalize_step = _step_script(workflow, "Finalize check-run (fail closed)")
+        # The required check stays a FAILURE — a declined review is not an
+        # approval — but its title names the true cause instead of the
+        # re-run advice "review incomplete" implies.
+        assert 'if [ "${REFUSED:-}" = "true" ]; then' in finalize_step
+        assert 'title="reviewer refused this diff"' in finalize_step
+        refused_branch = finalize_step[
+            finalize_step.index('if [ "${REFUSED:-}" = "true" ]; then') : finalize_step.index(
+                "if [ -s codex-review-output.md ]"
+            )
+        ]
+        assert "conclusion=" not in refused_branch
