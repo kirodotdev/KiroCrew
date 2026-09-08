@@ -149,6 +149,25 @@ def test_the_legacy_banner_still_classifies():
     assert is_auth_failure_output("Not Logged In") is True
 
 
+def test_the_kas_engine_not_signed_in_wording_classifies():
+    """The KAS engine reports a refused or absent credential in its own words.
+
+    Measured on the wire against kiro-cli 2.21.0's v3 relay with the host
+    answering ``_kiro/auth/getAccessToken`` with an error: ``session/prompt``
+    fails ``-32000`` with this sentence. It must land on the sign-in prompt,
+    not be shown as a raw backend error.
+    """
+    from kiro_crew.acp.client import is_auth_failure_output
+
+    assert (
+        is_auth_failure_output(
+            "Kiro could not load the available models because you are not signed in. "
+            "Please sign in and retry."
+        )
+        is True
+    )
+
+
 def test_noise_lines_are_not_flagged_individually():
     """Each healthy line must be silent on its own, not merely in aggregate."""
     from kiro_crew.acp.client import is_auth_failure_output

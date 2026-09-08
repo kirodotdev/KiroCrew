@@ -107,6 +107,9 @@ with no row here.
      - pre-session registry query (whether the dashboard may skip a session reset)
    * - ``ACP_BACKENDS_STRUCTURED_REFUSAL``
      - driver-internal (whether the metadata refusal parser is consulted)
+   * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
+     - driver-internal (whether the reader loop may answer the engine's
+       ``_kiro/auth/getAccessToken`` from Crew's own vault)
 
 The two non-set tables ``SessionCapabilities`` also translates are
 :func:`model_registry_namespace` (the model-id namespace) and
@@ -520,13 +523,16 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # child when that store starts naming a different account: a harness
 # authenticated some other way must not be recycled on a store it never reads.
 # KAS is a member: it is spawned as ``kiro-cli acp --agent-engine v3
-# --auth-method cli`` (see :mod:`kiro_crew.acp.kas_transport`), and that
-# ``--auth-method cli`` is precisely the demonstration this set waits for — the
-# relay resolves every access token from kiro-cli's own store, so a logout that
-# invalidates the kiro backend invalidates a running KAS relay identically.
-# Excluding it would let a KAS session keep serving turns on the previous
-# account's credentials. Positive membership rather than "not claude"
-# (harness-parity H5).
+# --auth-method cli`` (see :mod:`kiro_crew.acp.kas_transport`) unless Crew's own
+# vault holds an identity, and that ``--auth-method cli`` is precisely the
+# demonstration this set waits for — the relay resolves every access token from
+# kiro-cli's own store, so a logout that invalidates the kiro backend
+# invalidates a running KAS relay identically. Excluding it would let a KAS
+# session keep serving turns on the previous account's credentials. In the
+# Crew-owned spawn (ACP_BACKENDS_HOST_AUTH_CALLBACK) a recycle on kiro-cli logout
+# is harmless — the replacement re-probes the vault and comes back Crew-owned —
+# so membership stays conservative rather than being made spawn-dependent.
+# Positive membership rather than "not claude" (harness-parity H5).
 #
 # codex-acp is excluded: it signs in through its own credentials file, so a
 # kiro-cli logout says nothing about whether a running codex session is still
@@ -644,6 +650,22 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # reason payload is added HERE with a parser, rather than by widening the
 # metadata reader to guess at every notification's shape.
 ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends whose child may ask THIS host for an access token over the
+# ``_kiro/auth/getAccessToken`` connection-level request, to be answered from Kiro
+# Crew's own credential vault (:mod:`kiro_crew.auth`). KAS is the member: when Crew
+# holds a signed-in identity of its own it spawns the relay WITHOUT
+# ``--auth-method cli`` (see :func:`kiro_crew.acp.kas_transport.build_kas_argv`),
+# which leaves the engine's credential callback on the wire for Crew to answer.
+# Membership is what authorizes the runtime to hand a credential to a child at
+# all; a request with that method from any non-member is answered
+# method-not-found like every other ownerless request, never with a token.
+# Positive membership rather than ``== ACP_BACKEND_KAS`` in the shared runtime
+# (harness-parity H5). Distinct from ACP_BACKENDS_KIRO_IDENTITY_STORE on purpose:
+# "may be handed Crew's credential" and "is invalidated by a kiro-cli logout" are
+# different properties, and a member here that is spawned in cli-owned mode (no
+# Crew identity stored) never receives the callback in the first place.
+ACP_BACKENDS_HOST_AUTH_CALLBACK = frozenset({ACP_BACKEND_KAS})
 
 
 # ── How a harness is made to ask ──

@@ -2416,7 +2416,30 @@ def _report_kas_backend(issues: list[str]) -> None:
         issues.append("KAS backend selected but kiro-cli is not installed")
         return
 
-    print(f"  relay:       ✅ {' '.join(build_kas_argv(binary))}")
+    # Same decision the runtime makes at spawn: Crew owns auth when its own
+    # vault holds an identity, kiro-cli otherwise. Reported so the operator sees
+    # which credential the next KAS process will actually draw on. Deferred
+    # import: this module is on the dashboard's boot path and kiro_crew.auth
+    # brings the cryptography wheel with it (see kas_host_auth's module doc).
+    from kiro_crew.auth.bridge import describe_vault_identity, vault_holds_identity
+
+    host_auth = vault_holds_identity()
+    print(f"  relay:       ✅ {' '.join(build_kas_argv(binary, host_auth=host_auth))}")
+    print(
+        "  auth owner:  "
+        + (
+            "Kiro Crew vault (signed in through Kiro Crew)"
+            if host_auth
+            else "kiro-cli credential store (--auth-method cli)"
+        )
+    )
+    # The fields the owner decision reads, so a vault that will fail its first
+    # callback (expired, nothing to renew it) is visible here rather than as a
+    # broken spawn. Printed whenever something is stored, including the case the
+    # probe rejected -- that is exactly the one worth seeing.
+    identity_line = describe_vault_identity()
+    if identity_line:
+        print(f"  crew vault:  {identity_line}")
     help_text = _kas_relay_help(binary)
     if help_text is None:
         # The probe itself failed, so nothing is known either way. Advisory: a

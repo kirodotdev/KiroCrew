@@ -1,10 +1,14 @@
 # KAS-Mode Auth Module
 
-> Status: implemented (pre-integration). The auth subsystem exists under
-> `src/kiro_crew/auth/` with unit tests; it is not yet wired into a live KAS-embedded
-> runtime (that runtime does not exist in this tree — `bridge.py` is the seam it will
-> bind to). Until KAS mode ships, `agent.provider` remains `acp` and kiro-cli owns
-> login; this spec describes what replaces that dependency.
+> Status: implemented and wired to the KAS relay. The auth subsystem lives under
+> `src/kiro_crew/auth/` with unit tests. Its runtime consumer is
+> `src/kiro_crew/acp/kas_host_auth.py`: when the vault holds an identity, the KAS
+> backend spawns `kiro-cli acp --agent-engine v3` WITHOUT `--auth-method cli`, so the
+> engine's `_kiro/auth/getAccessToken` request reaches Kiro Crew, and `AcpRuntime`
+> answers it from `KasAuthProvider.get_access_token_callback()`. With no identity
+> stored the spawn keeps `--auth-method cli` and kiro-cli owns login exactly as
+> before. kiro-cli remains the ACP service either way; Crew never spawns the KAS
+> bundle itself.
 
 ## Why this exists
 
@@ -270,5 +274,29 @@ access token.
   begin/poll routes. A desktop (loopback-transport) sign-in therefore has no server
   entry point yet; the chooser must force device transport, or a begin-loopback route
   must land, before the loopback path is wired into the app root.
-- Wiring `KasAuthProvider` into an actual embedded-KAS runtime (the runtime and its ACP
-  bridge do not exist in this tree yet; `bridge.py` is the seam).
+- Wiring `KasAuthProvider` to the running engine is done through the kiro-cli relay
+  (`acp/kas_host_auth.py` + the `_kiro/auth/getAccessToken` handler on
+  `AcpRuntime`'s reader loop). Verified end-to-end against a real kiro-cli release
+  (2.21.0, isolated `HOME` so kiro-cli's own store was empty): `kiro-cli acp
+  --agent-engine v3` with no `--auth-method` → the engine's credential request is the
+  first frame the host receives → host answers with a real OIDC credential →
+  `initialize`, `session/new`, `session/prompt` complete with `stopReason=end_turn`
+  and the model's reply (`getAccessToken_calls=1`). The refused path was measured
+  the same way: with the host answering every callback `-32000 "not signed in to
+  Kiro Crew"`, the engine does not wedge — `initialize` and `session/new` still
+  complete, it re-asks on each attempt, and `session/prompt` fails `-32000` with its
+  own "not signed in … Please sign in and retry" (`ModelRegistryUnauthenticatedError`
+  / `TokenExpiredError`), which `acp/client.py`'s auth-failure vocabulary now
+  recognizes so the dashboard renders the sign-in prompt rather than a raw error.
+- A Crew sign-out deletes the vault entry under the identity's refresh lock and
+  retires running identity-store processes (`dashboard/handlers/kas_login.py`), so
+  neither a refresh in flight nor a process holding the old access token in memory
+  outlives the logout.
+- Known limit: the spawn-time probe (`auth/bridge.vault_holds_identity`) accepts a
+  stored identity whose access token is live or which carries a refresh token; it
+  cannot know without a network call that an issuer will reject that refresh token.
+  A persistently rejected one surfaces as a failed callback (the engine's sign-in
+  prompt) and is shown by `kirocrew doctor` (`crew vault:` line); signing out clears
+  it and the next spawn is kiro-cli-owned. Automatic demotion to cli-owned after a
+  persistent refresh failure is not implemented.
+- Mounting `KasLoginGate` at the app root.

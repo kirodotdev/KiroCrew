@@ -109,14 +109,18 @@ id); that is deferred to the session-lifecycle work, not the display path.
 
 
 **KAS is served by kiro-cli's own ACP relay.** Kiro Crew spawns
-`kiro-cli acp --agent-engine v3 --auth-method cli` and speaks ordinary ACP to it;
-the relay forwards frames to KAS in both directions. Two consequences worth
-knowing:
+`kiro-cli acp --agent-engine v3` and speaks ordinary ACP to it; the relay
+forwards frames to KAS in both directions. Two consequences worth knowing:
 
-- **Credentials stay in kiro-cli.** `--auth-method cli` makes the relay resolve
-  access tokens from kiro-cli's own store, so Kiro Crew never handles a KAS
-  token. This works on any machine where `kiro-cli login` has succeeded; sign in
-  with kiro-cli before switching.
+- **Credentials come from one of two places, chosen per spawn.** If you have
+  signed in through Kiro Crew's own login (the KAS login gate), Kiro Crew is the
+  engine's auth owner: the relay is started without `--auth-method`, the engine
+  asks Kiro Crew for an access token over its `_kiro/auth/getAccessToken`
+  callback, and Kiro Crew answers from its encrypted vault (the refresh token
+  never leaves Kiro Crew). Otherwise Kiro Crew adds `--auth-method cli` and the
+  relay resolves tokens from kiro-cli's own store — this works on any machine
+  where `kiro-cli login` has succeeded. A sign-in or sign-out takes effect on the
+  next KAS process, not on one already running.
 - **No KAS assets to locate.** Kiro Crew does not read kiro-cli's extracted KAS
   bundle or its Node runtime, so there is nothing to point at and no override to
   set. What it does need is a kiro-cli new enough to offer `--agent-engine v3`;

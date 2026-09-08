@@ -1842,7 +1842,7 @@ _RE_AUTH_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:401|403)\b", re.
 _RE_SESSION_EXPIRED = re.compile(
     r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out"
     r"|login\s+(?:has\s+)?expired|authentication\s+(?:has\s+)?expired"
-    r"|not\s+logged\s+in|not\s+authenticated"
+    r"|not\s+logged\s+in|not\s+authenticated|not\s+signed\s+in"
     r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required)\b",
     re.IGNORECASE,
 )

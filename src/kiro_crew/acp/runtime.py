@@ -58,7 +58,16 @@ from kiro_crew.acp.kas_agents import (
     KasAgentTranslationError,
     build_kas_custom_agents,
 )
-from kiro_crew.acp.kas_transport import build_kas_argv
+from kiro_crew.acp.kas_host_auth import (
+    HostAuthCallbackError,
+    answer_get_access_token,
+    vault_holds_identity_off_loop,
+)
+from kiro_crew.acp.kas_transport import (
+    KAS_AUTH_CALLBACK_ERROR_CODE,
+    METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
+    build_kas_argv,
+)
 from kiro_crew.acp.session_handle import (
     AcpRequestTimeout,
     AcpRuntimeDead,
@@ -71,6 +80,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_POD_HOME_REMAP,
@@ -721,6 +731,16 @@ class AcpRuntime:
         # later sessions inherit the claiming crew, not the pool's spawn state.
         self._crew_agent = crew_agent
         self._acp_backend = acp_backend
+        # Whether THIS process was spawned with Crew as the engine's auth owner
+        # (relay started without ``--auth-method cli`` because the Crew vault
+        # held an identity at spawn). Decided once in _resolve_spawn_argv and
+        # read by the reader loop: a credential callback is answered from the
+        # vault only on a process that was spawned expecting it.
+        self._kas_host_auth = False
+        # First answered credential callback per runtime is logged at INFO as a
+        # positive "the engine is drawing its credential from Crew" signal; later
+        # ones (the engine refreshes ahead of expiry) drop to DEBUG.
+        self._kas_host_auth_logged = False
         if model is not None:
             if not MODEL_ID_RE.match(model):
                 raise ValueError(
@@ -1118,7 +1138,20 @@ class AcpRuntime:
             kas_bin = await _resolve_kiro_bin_for_spawn(environ=spawn_environ, home=spawn_home)
             if not kas_bin:
                 raise AcpRuntimeError(await self._kiro_cli_missing(spawn_environ, spawn_home))
-            return build_kas_argv(kas_bin)
+            # Auth owner: Crew when its own vault holds a signed-in identity,
+            # kiro-cli otherwise. Decided per spawn so a sign-in or sign-out in
+            # the dashboard takes effect on the next process, and remembered on
+            # the instance so the reader loop answers the engine's credential
+            # callback only on a process that was started expecting Crew to.
+            # The probe reads the vault (file IO) off the loop and never raises.
+            self._kas_host_auth = await vault_holds_identity_off_loop()
+            if self._kas_host_auth:
+                logger.info(
+                    "KAS auth owner=crew — Crew vault holds an identity; relay spawned "
+                    "without --auth-method cli (agent=%s)",
+                    self._agent or "<none>",
+                )
+            return build_kas_argv(kas_bin, host_auth=self._kas_host_auth)
 
         kiro_bin = await _resolve_kiro_bin_for_spawn(environ=spawn_environ, home=spawn_home)
         if not kiro_bin:
@@ -1273,10 +1306,13 @@ class AcpRuntime:
             # KIRO_API_KEY is kiro-cli's own MODEL credential for its v2
             # agent loop, so only the kiro backend is handed it. KAS takes the
             # strip branch even though its process is now a kiro-cli (the ACP
-            # relay): the v3 engine authenticates from kiro-cli's OIDC store via
-            # --auth-method cli and never reads this variable, so injecting it
-            # would widen credential exposure for a consumer that does not
-            # exist. Unchanged from when KAS was a bare Node process.
+            # relay): the v3 engine authenticates either from kiro-cli's OIDC
+            # store (--auth-method cli) or from Crew's vault over the
+            # _kiro/auth/getAccessToken callback, and in BOTH shapes this
+            # variable must be absent — the engine gives an API key in its
+            # environment precedence over the callback, so leaving it set would
+            # silently override the credential the operator signed in with.
+            # Unchanged from when KAS was a bare Node process.
             if self._acp_backend == ACP_BACKEND_KIRO:
                 inject_kiro_cli_api_key(env)
             else:
@@ -2157,13 +2193,41 @@ class AcpRuntime:
                     continue
 
                 # Inbound server→client REQUEST (method + id, no result/error).
-                # Crew answers no connection-level request of its own: the KAS
-                # engine's credential callback (_kiro/auth/getAccessToken) is
-                # served by kiro-cli's relay, not by this host (see
-                # :mod:`kiro_crew.acp.kas_transport`). A request that still
-                # arrives without a sessionId is therefore unroutable and is
-                # answered -32601 by _answer_ownerless_request below, rather
-                # than being left to hang.
+                # The one connection-level request Crew answers itself is the
+                # KAS engine's credential callback (_kiro/auth/getAccessToken),
+                # and only on a process spawned with Crew as the auth owner
+                # (see _resolve_spawn_argv / kas_transport.build_kas_argv). It
+                # carries no sessionId — the first one arrives before
+                # session/new has even returned — so it is handled here, OFF
+                # this loop: resolving and possibly refreshing a token must not
+                # block stdout demux for every other multiplexed session. On a
+                # cli-owned spawn the frame never arrives; on any other backend
+                # it falls through to the -32601 ownerless answer below rather
+                # than ever being paid with a credential (membership in
+                # ACP_BACKENDS_HOST_AUTH_CALLBACK is the authorization).
+                if (
+                    msg.id is not None
+                    and msg.result is None
+                    and msg.error is None
+                    and msg.is_method(METHOD_KAS_AUTH_GET_ACCESS_TOKEN)
+                    and self._kas_host_auth
+                    and self._acp_backend in ACP_BACKENDS_HOST_AUTH_CALLBACK
+                ):
+                    # Same bounded progress-or-dead admission as permission
+                    # answers: this is a request, so the counted-drop path that
+                    # is valid for notifications is not — and it shares the one
+                    # answer-task set so the combined total stays under the real
+                    # resource ceiling.
+                    if not await self._wait_for_answer_capacity(msg, request_kind="KAS auth"):
+                        continue
+                    _auth_task = asyncio.ensure_future(self._answer_get_access_token(msg.id))
+                    self._answer_tasks.add(_auth_task)
+                    _auth_task.add_done_callback(self._answer_tasks.discard)
+                    continue
+                # Any other request that arrives without a sessionId is
+                # unroutable and is answered -32601 by
+                # _answer_ownerless_request below, rather than being left to
+                # hang.
 
                 # Route notifications by sessionId
                 session_id = (msg.params or {}).get("sessionId")
@@ -2347,6 +2411,50 @@ class AcpRuntime:
             # crash) so a trickle that never reached the interval is still
             # accounted for instead of vanishing with the task.
             self._flush_dropped_frames()
+
+    async def _answer_get_access_token(self, request_id: int | str) -> None:
+        """Answer the engine's ``_kiro/auth/getAccessToken`` from Crew's vault.
+
+        Runs OFF the reader loop. The response is built by
+        :func:`kiro_crew.acp.kas_host_auth.answer_get_access_token` (resolve,
+        refresh under the cross-process lock, refresh token withheld) and
+        handed straight to the engine — never cached here, never logged. On any
+        failure the engine is sent a JSON-RPC error, which it treats as an
+        expired credential and turns into its sign-in prompt, rather than being
+        left to hang on the callback. Only reached for a process spawned with
+        Crew as auth owner (the reader-loop guard); the INFO line is the positive
+        "engine is drawing its credential from Crew" signal, logged once per
+        runtime and only AFTER a response was actually written, so a callback
+        that failed never counts as served.
+        """
+        try:
+            result = await answer_get_access_token()
+        except HostAuthCallbackError as exc:
+            # str(exc) is token-free by construction (see kas_host_auth).
+            logger.warning("KAS auth callback failed: %s", exc)
+            try:
+                await self.send_error(request_id, KAS_AUTH_CALLBACK_ERROR_CODE, str(exc))
+            except AcpRuntimeDead:
+                pass
+            return
+        try:
+            await self.send_response(request_id, result)
+        except AcpRuntimeDead:
+            # Process gone before the answer could be written; nothing to do.
+            return
+        if not self._kas_host_auth_logged:
+            self._kas_host_auth_logged = True
+            logger.info(
+                "KAS auth callback served from Crew vault — agent=%s (PID %s)",
+                self._agent or "<none>",
+                self._pid,
+            )
+        else:
+            logger.debug(
+                "KAS auth callback served from Crew vault — agent=%s (PID %s)",
+                self._agent or "<none>",
+                self._pid,
+            )
 
     async def _answer_ownerless_request(self, request_id: int | str, method: str) -> None:
         """Answer a server→client request that names no session with -32601.

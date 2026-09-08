@@ -197,6 +197,48 @@ async def test_logout_ok_and_invalid_identity():
     assert _body(resp)["code"] == "invalid_identity"
 
 
+async def test_logout_retires_running_identity_store_runtimes():
+    """A sign-out sweeps running KAS processes that were spawned on the vault's
+    identity (same remedy as an external kiro-cli logout); a sweep failure is
+    logged, not surfaced -- the credential is already gone."""
+
+    class _Sessions:
+        def __init__(self, fail=False):
+            self.calls = 0
+            self.fail = fail
+
+        async def retire_kiro_identity_sessions(self):
+            self.calls += 1
+            if self.fail:
+                raise RuntimeError("sweep exploded")
+            return ["k1"], True
+
+    req = _FakeRequest(_StubService(), {"identity": "social"})
+    req.app["state"].sessions = _Sessions()
+    resp = await api_kas_login_logout(req)
+    assert resp.status == 200
+    assert req.app["state"].sessions.calls == 1
+
+    req = _FakeRequest(_StubService(), {"identity": "social"})
+    req.app["state"].sessions = _Sessions(fail=True)
+    resp = await api_kas_login_logout(req)
+    assert resp.status == 200
+    assert _body(resp) == {"ok": True}
+
+    # A failed delete never reaches the sweep: nothing to retire for.
+    from kiro_crew.auth.store import TokenStoreError
+
+    class _BrokenStoreService(_StubService):
+        async def logout(self, identity):
+            raise TokenStoreError("boom")
+
+    req = _FakeRequest(_BrokenStoreService(), {"identity": "social"})
+    req.app["state"].sessions = _Sessions()
+    resp = await api_kas_login_logout(req)
+    assert resp.status == 500
+    assert req.app["state"].sessions.calls == 0
+
+
 async def test_credential_mutations_reject_non_owner():
     # begin/poll/logout mutate the machine-global Kiro credential, so a non-owner
     # dashboard caller must get an audited 403 and never reach the service.

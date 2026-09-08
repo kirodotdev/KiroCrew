@@ -1621,9 +1621,11 @@ def strip_kiro_cli_api_key(env: MutableMapping[str, str]) -> MutableMapping[str,
 
     "Foreign process" is no longer the right framing for KAS: Crew reaches it
     through kiro-cli's ACP relay, so the child IS a kiro-cli. The strip still
-    applies because the v3 engine resolves its tokens from kiro-cli's OIDC store
-    (``--auth-method cli``) and never reads this variable — the test is what the
-    child's engine consumes, not which binary it is.
+    applies because the v3 engine resolves its tokens either from kiro-cli's
+    OIDC store (``--auth-method cli``) or from Crew's own vault over its
+    ``_kiro/auth/getAccessToken`` callback, and an API key in its environment
+    would take precedence over both — the test is what the child's engine
+    consumes, not which binary it is.
 
     Matches the platform env-key convention (exact on POSIX, case-folded on
     Windows) so a differently-cased Windows spelling cannot slip past. Mutates

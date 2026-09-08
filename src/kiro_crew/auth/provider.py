@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
-from kiro_crew.auth.refresh import ensure_fresh
+from kiro_crew.auth.refresh import IdentitySignedOut, ensure_fresh
 from kiro_crew.auth.store import KasToken, TokenStore
 
 logger = logging.getLogger(__name__)
@@ -35,20 +35,41 @@ class KasAuthProvider:
     is picked up.
     """
 
-    def __init__(self, store: TokenStore, *, session: aiohttp.ClientSession | None = None) -> None:
+    def __init__(
+        self,
+        store: TokenStore,
+        *,
+        session: aiohttp.ClientSession | None = None,
+        allow_env_api_key: bool = True,
+    ) -> None:
+        """``allow_env_api_key`` controls the ``KIRO_API_KEY`` headless bypass.
+
+        Default on, matching KAS's own EnvAuthProvider for an in-process host. A
+        consumer that answers for the VAULT specifically -- the relay's
+        ``_kiro/auth/getAccessToken`` callback -- passes ``False``: there, an
+        ambient environment key must not stand in for an identity the operator
+        just signed out of, and the engine would send it with the wrong token
+        type anyway (it is not an OIDC bearer).
+        """
         self._store = store
         self._session = session
+        self._allow_env_api_key = allow_env_api_key
 
     async def _session_or_temp(self):
         if self._session is not None:
             return self._session, False
         return aiohttp.ClientSession(), True
 
+    def _env_api_key(self) -> str | None:
+        if not self._allow_env_api_key:
+            return None
+        return os.environ.get("KIRO_API_KEY") or None
+
     async def current(self) -> KasToken:
         """Resolve + refresh the active token, or raise NotAuthenticated."""
         # KIRO_API_KEY is a headless bypass matching KAS's EnvAuthProvider: a raw bearer
         # with no refresh and no profile ARN (region falls back us-east-1).
-        api_key = os.environ.get("KIRO_API_KEY")
+        api_key = self._env_api_key()
         # Vault reads do file IO (plus owner-only key checks) — off the
         # event loop.
         token = await asyncio.to_thread(self._store.resolve)
@@ -65,6 +86,11 @@ class KasAuthProvider:
         session, temp = await self._session_or_temp()
         try:
             return await ensure_fresh(self._store, token, session=session)
+        except IdentitySignedOut as exc:
+            # A logout landed between the resolve above and the refresh: the same
+            # verdict as an empty vault, so callers (the KAS callback) render the
+            # sign-in prompt rather than a refresh error.
+            raise NotAuthenticated("signed out during refresh") from exc
         finally:
             if temp:
                 await session.close()
@@ -78,7 +104,7 @@ class KasAuthProvider:
         return (await self.current()).profile_arn
 
     def is_authenticated(self) -> bool:
-        return self._store.resolve() is not None or bool(os.environ.get("KIRO_API_KEY"))
+        return self._store.resolve() is not None or bool(self._env_api_key())
 
     def read_token(self) -> dict | None:
         """Non-refreshing peek at auth_method / provider (KAS readToken)."""

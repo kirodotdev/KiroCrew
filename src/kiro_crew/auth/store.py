@@ -22,13 +22,19 @@ import enum
 import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
 
-from kiro_crew.platform_compat import is_link_or_junction, make_owner_only_dir
+from kiro_crew.platform_compat import (
+    acquire_lock,
+    is_link_or_junction,
+    make_owner_only_dir,
+    release_lock,
+)
 from kiro_crew.secrets import SecretVault
 
 logger = logging.getLogger(__name__)
@@ -151,18 +157,60 @@ class TokenStore:
         make_owner_only_dir(self._kas_dir)
         return self._kas_dir / f"refresh-{identity}.lock"
 
-    def save(self, token: KasToken) -> None:
+    def _with_refresh_lock(self, identity: str, action: Callable[[], None]) -> None:
+        """Run ``action`` while holding the identity's refresh lock (:meth:`lock_path`).
+
+        The same flock :func:`kiro_crew.auth.refresh.ensure_fresh` holds across its
+        HTTP round-trip and ``save``, so a vault WRITE from anywhere else -- a sign-in
+        landing a new account in the slot, a sign-out deleting it -- is ordered
+        against an in-flight refresh instead of interleaving with it. Blocks until a
+        peer's refresh releases (POSIX flock; a bounded poll on Windows that raises
+        rather than proceeding unserialized); lock failures are ``TokenStoreError``.
+        """
+        try:
+            fd = os.open(str(self.lock_path(identity)), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as err:
+            raise TokenStoreError(f"could not take the refresh lock for {identity}") from err
+        try:
+            try:
+                acquire_lock(fd, exclusive=True)
+            except OSError as err:
+                raise TokenStoreError(f"could not take the refresh lock for {identity}") from err
+            try:
+                action()
+            finally:
+                release_lock(fd)
+        finally:
+            os.close(fd)
+
+    def save(self, token: KasToken, *, hold_refresh_lock: bool = True) -> None:
         """Write ``token`` for its identity into the vault (encrypted at rest).
 
         Raises ``ValueError`` for an unknown identity kind and ``TokenStoreError``
         when the vault itself cannot be written.
+
+        Runs under the identity's refresh lock by default, so a sign-in that lands a
+        NEW account in a slot cannot be overwritten by a refresh of the OLD one that
+        was already in flight: the refresher's ``save`` and this one are ordered, and
+        whichever lands second is the state the vault keeps -- a sign-in landing after
+        the refresh wins; one landing before it makes the refresher's in-lock re-read
+        see the new token and skip its stale write. ``hold_refresh_lock=False`` is
+        for the ONE caller that already holds the lock (the refresher itself); taking
+        it again on a second descriptor would self-deadlock.
         """
         name = self._entry(token.identity)
         self._assert_unlinked()
-        try:
-            self._vault.set_sync(name, token.to_json())
-        except (OSError, ValueError, TypeError, AttributeError) as err:
-            raise TokenStoreError(f"could not persist KAS token {token.identity}") from err
+
+        def _write() -> None:
+            try:
+                self._vault.set_sync(name, token.to_json())
+            except (OSError, ValueError, TypeError, AttributeError) as err:
+                raise TokenStoreError(f"could not persist KAS token {token.identity}") from err
+
+        if hold_refresh_lock:
+            self._with_refresh_lock(token.identity, _write)
+        else:
+            _write()
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - logs the identity slug only, never the token value
         logger.debug("saved KAS token for identity=%s", token.identity)
 
@@ -210,13 +258,26 @@ class TokenStore:
         success — the caller (the logout handler) turns a raised ``TokenStoreError``
         into a coded error, rather than a false HTTP 200 while the bearer token
         still sits in the store. ``ValueError`` still means a bad identity kind.
+
+        The delete runs under the identity's refresh lock (:meth:`lock_path`, the
+        same flock :func:`kiro_crew.auth.refresh.ensure_fresh` holds across its
+        HTTP round-trip and ``save``). Unserialized, a refresh that began before
+        the logout could persist a renewed token AFTER the delete and the logout
+        would report success while a live credential sat in the vault. Ordered
+        either way the outcome is right: refresh-then-delete leaves nothing, and
+        delete-then-refresh makes the refresher's in-lock re-read find nothing and
+        stop (it never re-persists the token it was handed).
         """
         name = self._entry(identity)
         self._assert_unlinked()
-        try:
-            self._vault.delete_sync(name)
-        except (OSError, ValueError, TypeError, AttributeError) as err:
-            raise TokenStoreError(f"could not delete KAS token {identity}") from err
+
+        def _remove() -> None:
+            try:
+                self._vault.delete_sync(name)
+            except (OSError, ValueError, TypeError, AttributeError) as err:
+                raise TokenStoreError(f"could not delete KAS token {identity}") from err
+
+        self._with_refresh_lock(identity, _remove)
 
     def resolve(self) -> KasToken | None:
         """Return the highest-priority stored token (External > Builder > Social).

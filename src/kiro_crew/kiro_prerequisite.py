@@ -1079,6 +1079,43 @@ def identity_fingerprint(path: Path) -> str:
     return hashlib.sha256("\n".join(sorted(parts)).encode()).hexdigest()
 
 
+#: Separator between the kiro-cli store's fingerprint and the Crew vault's in the
+#: combined identity string. Only present when the vault holds an identity, so a
+#: host with no Crew sign-in fingerprints exactly as before.
+_CREW_VAULT_FINGERPRINT_SEP = "+crew:"
+
+
+def _crew_vault_fingerprint() -> str:
+    """The Crew vault's own identity digest, or ``""`` when it holds nothing.
+
+    Deferred import: ``kiro_crew.auth`` brings the ``cryptography`` wheel, which
+    must stay off this module's import graph (it is on the gateway's boot path)
+    and is loaded here on the first identity read instead. Never raises; the
+    bridge helper reports an unreadable vault as empty. Blocking file IO -- the
+    caller already runs on a worker thread.
+    """
+    from kiro_crew.auth.bridge import vault_identity_fingerprint
+
+    return vault_identity_fingerprint()
+
+
+def _combine_identity_fingerprints(cli: str, crew_vault: str) -> str:
+    """One fingerprint over BOTH credential sources a running child may have loaded.
+
+    kiro-cli's store answers for the kiro backend and for a KAS relay spawned
+    cli-owned; the Crew vault answers for a KAS relay spawned Crew-owned
+    (:mod:`kiro_crew.acp.kas_host_auth`). A sign-out in EITHER must read as an
+    identity change, so the per-turn sweep retires -- and keeps re-sweeping until
+    it completes -- children that loaded the previous identity, whichever source
+    it came from. The vault component is appended only when present, so a host
+    with no Crew sign-in keeps the kiro-cli-only fingerprint byte-for-byte and
+    ``""`` still means "no identity anywhere".
+    """
+    if not crew_vault:
+        return cli
+    return f"{cli}{_CREW_VAULT_FINGERPRINT_SEP}{crew_vault}"
+
+
 def _claim_digest(value: object) -> str:
     """Hash one claim value so no credential material can leave the reader."""
 
@@ -2425,10 +2462,12 @@ class KiroPrerequisiteService:
                         "identity as absent instead of reading the fixed anchor",
                         self._platform,
                     )
-                return _AUTH_FINGERPRINT_ABSENT
-            return identity_fingerprint(
-                kiro_identity_store_path(self._platform, self._home, self._environ)
-            )
+                cli = _AUTH_FINGERPRINT_ABSENT
+            else:
+                cli = identity_fingerprint(
+                    kiro_identity_store_path(self._platform, self._home, self._environ)
+                )
+            return _combine_identity_fingerprints(cli, _crew_vault_fingerprint())
 
         try:
             fingerprint = await asyncio.to_thread(_read)
