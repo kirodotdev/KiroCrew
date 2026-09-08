@@ -359,6 +359,39 @@ def _report(rel: str, found: list[tuple[int, str]]) -> None:
         print(f"  {rel}:{line}: {text}")
 
 
+def _grown_error(
+    rel: str,
+    recorded: int,
+    count: int,
+    found: list[tuple[int, str]],
+    added: dict[str, set[int]] | None,
+) -> str:
+    """The grown-count error line, worded by where the matched lines sit.
+
+    A match on one of this diff's added lines keeps the licensing wording:
+    the diff places a marker on a line it authors. Zero matches on added
+    lines reads as base-branch drift, so the wording must not accuse the
+    diff. The judgment is only as good as ``added``: it reflects committed
+    added lines, and ``None`` means added-line scope is unavailable, so
+    keep the stricter wording rather than assert inherited drift on a
+    guess.
+    """
+    if added is not None:
+        added_lines = added.get(rel, set())
+        if all(line not in added_lines for line, _ in found):
+            return (
+                f"::error file={rel}::history narration in comments grew from "
+                f"{recorded} to {count} on the base branch; this diff adds none "
+                "of the matched lines. Rewording the matched lines is what "
+                "clears it. See docs/system-specs/common/code-style.md."
+            )
+    return (
+        f"::error file={rel}::history narration in comments grew from "
+        f"{recorded} to {count}. The baseline carries the "
+        "existing lines; it does not license new ones."
+    )
+
+
 def run_gate(baseline_path: Path, write: bool) -> int:
     # Baseline first, before the several-thousand-file scan: an absent baseline is
     # a refusal in BOTH modes, and paying for the scan to reach it would make the
@@ -399,11 +432,7 @@ def run_gate(baseline_path: Path, write: bool) -> int:
         )
         _report(rel, violations[rel])
     for rel in grown:
-        print(
-            f"::error file={rel}::history narration in comments grew from "
-            f"{baseline[rel]} to {current[rel]}. The baseline carries the "
-            "existing lines; it does not license new ones."
-        )
+        print(_grown_error(rel, baseline[rel], current[rel], violations[rel], added))
         _report(rel, violations[rel])
     for rel, found in added_line_offenders.items():
         print(

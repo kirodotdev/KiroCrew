@@ -261,6 +261,63 @@ class TestVerdicts:
         assert new == ["src/x.py"]
 
 
+class TestGrownWording:
+    """The grown-count message must accuse only a diff that adds marker lines."""
+
+    def test_grown_with_no_marker_on_added_lines_reads_as_inherited_drift(self) -> None:
+        # The count exceeds baseline on the base branch while this diff adds
+        # none of the matched lines: the wording must not accuse the diff.
+        message = gate._grown_error(
+            "src/x.py", 2, 3, [(1, "a"), (2, "b"), (3, "c")], {"src/x.py": {90}}
+        )
+        assert "this diff adds none of the matched lines" in message
+        assert "does not license new ones" not in message
+        assert "docs/system-specs/common/code-style.md" in message
+
+    def test_grown_with_a_marker_on_an_added_line_keeps_the_licensing_wording(self) -> None:
+        message = gate._grown_error(
+            "src/x.py", 2, 3, [(1, "a"), (2, "b"), (3, "c")], {"src/x.py": {3}}
+        )
+        assert "does not license new ones" in message
+        assert "adds none of the matched lines" not in message
+
+    def test_unavailable_added_line_scope_keeps_the_stricter_wording(self) -> None:
+        # Without added-line scope the two cases cannot be told apart, so the
+        # message must not assert inherited drift on a guess.
+        message = gate._grown_error("src/x.py", 2, 3, [(1, "a"), (2, "b"), (3, "c")], None)
+        assert "does not license new ones" in message
+
+    def test_a_file_absent_from_the_added_map_reads_as_inherited_drift(self) -> None:
+        # Added-line scope exists but records no added lines for this file:
+        # every match sits on a line the diff did not add.
+        message = gate._grown_error("src/x.py", 1, 2, [(1, "a"), (2, "b")], {"src/y.py": {5}})
+        assert "this diff adds none of the matched lines" in message
+
+    def test_run_gate_hands_added_line_scope_to_the_grown_wording(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The helper's branch is only real if run_gate feeds it the added map;
+        # wiring None there would keep every grown message on the licensing
+        # wording with the helper's own tests still green.
+        baseline = tmp_path / "baseline.json"
+        baseline.write_text(json.dumps({"files": {"src/x.py": 1}}), encoding="utf-8")
+
+        class Scope:
+            def changed_paths(self) -> tuple[set[str], str]:
+                return {"src/x.py"}, "stub"
+
+            def added_lines(self, label: str) -> dict[str, set[int]]:
+                return {"src/x.py": {90}}
+
+        monkeypatch.setattr(gate, "_scan", lambda targets: {"src/x.py": [(1, "a"), (2, "b")]})
+        monkeypatch.setattr(gate, "_load_scope", lambda: Scope())
+        assert gate.run_gate(baseline, write=False) == 1
+        assert "this diff adds none of the matched lines" in capsys.readouterr().out
+
+
 class TestBaselineIsShrinkOnly:
     def test_refresh_lowers_counts(self) -> None:
         assert gate._shrunken_baseline({"src/x.py": 5}, {"src/x.py": 2}) == {"src/x.py": 2}
