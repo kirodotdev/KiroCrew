@@ -46,6 +46,37 @@ registrations, and
 `test_aws_control_app.py::TestDriveGuards.test_consent_refusal_answers_409_before_any_aws_call`
 pins refusal before the drive handler calls AWS.
 
+The confirmation surface and the operations resolve the same key, through one
+policy. `accounts.resolve_default_account_profile` is the strict form: the
+registry default picks the ACCOUNT, and `accounts._pick_profile` picks the key
+within it — healthy first, the default preferred only among the healthy ones,
+which is exactly what `_resolve_target` gives a request-driven operation. The
+nightly backup loop (`hooks.py::_run_once`) calls it and skips the wake on None,
+because a caller about to spend money must read "no working key" as "not now".
+`accounts.resolve_consent_target` is the DISPLAY form the consent handler
+(`dashboard/handlers/aws_consent.py::_effective_target`) calls for S3 and Cost
+Explorer: same resolution, but with no working key it names the registry default
+anyway so the card reports the credential error instead of rendering nothing.
+That fallback reads the agent-writable registry directly, so it is `_safe_field`
+scrubbed on the resolver's side of the return — the profile charset admits the
+shape of an access key id, and the handler emits `profile` and `region` in its
+JSON. If the resolver itself raises (it spawns the AWS CLI), the handler degrades
+to the empty profile and `DEFAULT_REGION`, both module constants, rather than to
+an unscrubbed read.
+Resolving the default directly is a dead end: the card bound to an unhealthy
+default has no account to confirm, `Confirm and enable` requires one, and the
+account's healthy sibling key keeps serving every operation — a working account
+with no way to authorize it. The same read in the unattended loop is worse than a
+dead end, because the grant names the healthy key while the loop resolves the
+broken one, so the backup skips on every wake with only a log line.
+`test_aws_control_app.py::TestConsentTargetTracksTheOperation` pins the shared
+resolution as an equality against `resolve_account_profile`, the key the nightly
+loop gates on, the fallback scrub, and each degraded state.
+The surface stays one grant per service, so the account the default names is
+still the account a confirmation applies to; a grant recorded for one account
+and used under another fails closed in `aws_consent.is_granted`, and the gate's
+own row names the account it would bill so the mismatch is visible.
+
 Registration is reversible from the same surface. `POST /profiles/unregister`
 drops the named profiles from the registry and nothing else: it never reaches
 `deploy.profiles.create_aws_profile` (the module's one `aws configure` writer)

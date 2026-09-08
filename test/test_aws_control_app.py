@@ -19,8 +19,10 @@ The properties that must hold before anything billable ever ships on this app:
    attacker-shaped names are never echoed into a guidance card.
 5. **The consent enum grew without changing the mechanism**: ``s3``/``ce``
    are gated services with labels, and their (profile, region) target resolves
-   from the deploy registry default — the same resolution the engine will use
-   for the calls those grants authorize.
+   through the SAME healthy-first policy the engine uses for the calls those
+   grants authorize — the registry default picks the account, ``_pick_profile``
+   picks the key, and only a state with no working key at all falls back to
+   naming the default so the card can still explain itself.
 """
 
 from __future__ import annotations
@@ -161,6 +163,29 @@ def _entry(name: str, region: str = "us-east-1", account: str = "") -> dict:
     return {"name": name, "region": region, "account": account, "verified_at": "", "note": ""}
 
 
+def _snapshot_of(
+    registry: dict,
+    identities: dict[str, aws_consent.Identity],
+    kind: str = accounts_mod.KIND_SSO,
+) -> dict:
+    """Build a real account snapshot from a registry plus canned probe results.
+
+    Goes through ``list_accounts`` rather than hand-writing the payload so the
+    grouping, the default marking and the recorded-account fallback under test
+    are the module's own, not the fixture's.
+    """
+
+    async def probe(profile: str, region: str, **_kw) -> aws_consent.Identity:
+        return identities[profile]
+
+    with (
+        mock.patch.object(accounts_mod.deploy_profiles, "load_registry", return_value=registry),
+        mock.patch.object(accounts_mod.aws_consent, "probe_identity", side_effect=probe),
+        mock.patch.object(accounts_mod, "classify_profile", AsyncMock(return_value=kind)),
+    ):
+        return asyncio.run(accounts_mod.list_accounts(refresh=True))
+
+
 # ---------------------------------------------------------------------------
 # Aggregation
 # ---------------------------------------------------------------------------
@@ -168,17 +193,7 @@ def _entry(name: str, region: str = "us-east-1", account: str = "") -> dict:
 
 class TestAggregation:
     def _snapshot(self, registry: dict, identities: dict[str, aws_consent.Identity]) -> dict:
-        async def probe(profile: str, region: str, **_kw) -> aws_consent.Identity:
-            return identities[profile]
-
-        with (
-            mock.patch.object(accounts_mod.deploy_profiles, "load_registry", return_value=registry),
-            mock.patch.object(accounts_mod.aws_consent, "probe_identity", side_effect=probe),
-            mock.patch.object(
-                accounts_mod, "classify_profile", AsyncMock(return_value=accounts_mod.KIND_SSO)
-            ),
-        ):
-            return asyncio.run(accounts_mod.list_accounts(refresh=True))
+        return _snapshot_of(registry, identities)
 
     def test_profiles_group_by_resolved_account(self):
         snap = self._snapshot(
@@ -427,17 +442,6 @@ class TestConsentExtension:
         assert aws_consent.SERVICE_POLLY in aws_consent.GATED_SERVICES
         assert aws_consent.SERVICE_TRANSCRIBE in aws_consent.GATED_SERVICES
 
-    def test_effective_target_resolves_deploy_registry_default(self):
-        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
-        from kiro_crew.deploy import profiles as deploy_profiles
-
-        with mock.patch.object(
-            deploy_profiles, "resolve_profile", return_value=("acct-key", "eu-west-1")
-        ):
-            for service in (aws_consent.SERVICE_S3, aws_consent.SERVICE_COST_EXPLORER):
-                target = asyncio.run(consent_handlers._effective_target(service))
-                assert target == ("acct-key", "eu-west-1")
-
     def test_effective_target_names_the_default_chain_when_registry_is_empty(self):
         from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
         from kiro_crew.deploy import profiles as deploy_profiles
@@ -447,6 +451,264 @@ class TestConsentExtension:
         # Empty profile = the CLI default chain, which the card labels
         # explicitly (credential_source names it); the region still defaults.
         assert target == ("", deploy_profiles.DEFAULT_REGION)
+
+
+class TestConsentTargetTracksTheOperation:
+    """The card must bind to the key the operation would actually run under.
+
+    One policy, three readers: the consent card, the HTTP routes and the nightly
+    backup loop all take a HEALTHY key of the account the registry default names.
+    A second, unfiltered resolution is what these cases guard against — an
+    unhealthy default binds the card to a key with no resolvable account,
+    ``Confirm and enable`` refuses without one, and an account whose healthy
+    sibling key serves every operation then cannot be granted consent at all. The
+    same read in the nightly loop turns that into a silent forever-skip.
+    """
+
+    #: One account, two keys: the registry default is broken, its sibling works.
+    #: This is the shape that deadlocks when health filtering is skipped.
+    ACCOUNT = "111122223333"
+
+    def _broken_default_snapshot(self) -> dict:
+        return _snapshot_of(
+            _registry(
+                [
+                    _entry("broken", region="us-east-1", account=self.ACCOUNT),
+                    _entry("good", region="eu-west-1"),
+                ],
+                default="broken",
+            ),
+            {
+                "broken": _identity(False, detail="ExpiredToken: the security token expired"),
+                "good": _identity(True, account=self.ACCOUNT, arn="arn:good"),
+            },
+        )
+
+    def test_a_broken_default_does_not_hide_the_accounts_healthy_key(self):
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
+
+        snapshot = self._broken_default_snapshot()
+        with mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)):
+            target = asyncio.run(consent_handlers._effective_target(aws_consent.SERVICE_S3))
+        assert target == ("good", "eu-west-1")
+
+    def test_the_card_and_the_operation_resolve_the_same_key(self):
+        """The invariant, asserted as an equality rather than a literal.
+
+        A change to the resolution policy has to move both sides or fail here —
+        the drift this class exists to catch.
+        """
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
+
+        snapshot = self._broken_default_snapshot()
+        with mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)):
+            operation = asyncio.run(accounts_mod.resolve_account_profile(self.ACCOUNT))
+            for service in (aws_consent.SERVICE_S3, aws_consent.SERVICE_COST_EXPLORER):
+                card = asyncio.run(consent_handlers._effective_target(service))
+                assert card == operation
+
+    def test_a_healthy_default_still_wins_over_its_siblings(self):
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
+
+        snapshot = _snapshot_of(
+            _registry([_entry("first"), _entry("chosen", region="ap-south-1")], default="chosen"),
+            {
+                "first": _identity(True, account=self.ACCOUNT),
+                "chosen": _identity(True, account=self.ACCOUNT),
+            },
+        )
+        with mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)):
+            target = asyncio.run(consent_handlers._effective_target(aws_consent.SERVICE_S3))
+        assert target == ("chosen", "ap-south-1")
+
+    def test_another_accounts_healthy_key_is_never_substituted(self):
+        """Health filtering must not walk out of the account the default names.
+
+        Picking any healthy key in the registry would let the card offer a
+        confirmation for someone else's account — a wrong bill, not a dead end.
+        """
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
+        from kiro_crew.deploy import profiles as deploy_profiles
+
+        snapshot = _snapshot_of(
+            _registry(
+                [_entry("broken", account=self.ACCOUNT), _entry("elsewhere")], default="broken"
+            ),
+            {
+                "broken": _identity(False, detail="ExpiredToken"),
+                "elsewhere": _identity(True, account="444455556666"),
+            },
+        )
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
+            mock.patch.object(
+                deploy_profiles, "resolve_profile", return_value=("broken", "us-east-1")
+            ),
+        ):
+            target = asyncio.run(consent_handlers._effective_target(aws_consent.SERVICE_S3))
+        assert target == ("broken", "us-east-1")
+
+    def test_nothing_healthy_still_names_the_default_so_the_card_can_explain(self):
+        """The fallback still names a key, so the card can render its error.
+
+        With no working key there is no operation to agree with, so the honest
+        surface is the default's own STS error — that is what tells the reader
+        the account has to be reconnected.
+        """
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
+        from kiro_crew.deploy import profiles as deploy_profiles
+
+        snapshot = _snapshot_of(
+            _registry([_entry("broken", account=self.ACCOUNT)], default="broken"),
+            {"broken": _identity(False, detail="ExpiredToken")},
+        )
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
+            mock.patch.object(
+                deploy_profiles, "resolve_profile", return_value=("broken", "us-east-1")
+            ),
+        ):
+            for service in (aws_consent.SERVICE_S3, aws_consent.SERVICE_COST_EXPLORER):
+                target = asyncio.run(consent_handlers._effective_target(service))
+                assert target == ("broken", "us-east-1")
+
+    def test_a_default_that_resolves_to_no_account_falls_back_too(self):
+        """A default in the unresolved pseudo-row names no account to filter within."""
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
+        from kiro_crew.deploy import profiles as deploy_profiles
+
+        snapshot = _snapshot_of(
+            _registry([_entry("mystery"), _entry("good")], default="mystery"),
+            {
+                "mystery": _identity(False, detail="no credentials"),
+                "good": _identity(True, account=self.ACCOUNT),
+            },
+        )
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
+            mock.patch.object(
+                deploy_profiles, "resolve_profile", return_value=("mystery", "us-east-1")
+            ),
+        ):
+            target = asyncio.run(consent_handlers._effective_target(aws_consent.SERVICE_S3))
+        assert target == ("mystery", "us-east-1")
+
+    def test_the_fallback_scrubs_a_credential_shaped_profile_name(self):
+        """The registry is agent-writable, and its charset is an access key's shape.
+
+        The snapshot path is scrubbed as it is built; the fallback reads the
+        registry directly, so it has to be scrubbed on the same side of the
+        return or a profile named after a secret reaches the card's JSON verbatim.
+        """
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
+        from kiro_crew.deploy import profiles as deploy_profiles
+
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        snapshot = _snapshot_of(
+            _registry([_entry(secret, account=self.ACCOUNT)], default=secret),
+            {secret: _identity(False, detail="ExpiredToken")},
+        )
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
+            mock.patch.object(
+                deploy_profiles, "resolve_profile", return_value=(secret, "us-east-1")
+            ),
+        ):
+            profile, region = asyncio.run(
+                consent_handlers._effective_target(aws_consent.SERVICE_S3)
+            )
+        assert secret not in profile
+        assert profile == "[REDACTED: credential]"
+        assert region == "us-east-1"
+
+    def test_a_failed_probe_sweep_degrades_instead_of_failing_the_surface(self):
+        """The sweep spawns the AWS CLI; it must not be able to 500 the card.
+
+        The degraded answer is the provider default chain, whose two values are
+        module constants — with the resolver unreachable there is no scrubbed
+        registry read to fall back on, and an unscrubbed one must not take its
+        place.
+        """
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
+        from kiro_crew.deploy import profiles as deploy_profiles
+
+        with mock.patch.object(
+            accounts_mod,
+            "resolve_consent_target",
+            AsyncMock(side_effect=RuntimeError("no sandbox")),
+        ):
+            target = asyncio.run(consent_handlers._effective_target(aws_consent.SERVICE_S3))
+        assert target == ("", deploy_profiles.DEFAULT_REGION)
+
+    def test_the_nightly_loop_runs_under_the_key_the_grant_names(self):
+        """The unattended path is the one nobody watches fail.
+
+        The loop's consent check compares the grant against the key it is about
+        to use, so a loop resolving the raw default while the grant names the
+        account's healthy sibling skips on every wake, forever, with only a log
+        line to say so.
+        """
+        from kiro_crew.apps.builtins.aws_control import hooks
+
+        snapshot = self._broken_default_snapshot()
+        gated: list[tuple[str, str]] = []
+
+        async def refuse_and_log(service: str, *, profile: str, region: str) -> bool:
+            gated.append((profile, region))
+            return False  # stop before any AWS work; the argv is what is pinned
+
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
+            mock.patch.object(
+                hooks.aws_consent,
+                "probe_identity",
+                AsyncMock(return_value=aws_consent.Identity(ok=True, account=self.ACCOUNT)),
+            ),
+            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
+            mock.patch.object(hooks.aws_consent, "refuse_and_log", refuse_and_log),
+        ):
+            asyncio.run(hooks._run_once())
+            operation = asyncio.run(accounts_mod.resolve_account_profile(self.ACCOUNT))
+
+        assert gated == [("good", "eu-west-1")]
+        assert gated[0] == operation
+
+    def test_the_nightly_loop_skips_when_no_key_is_healthy(self):
+        from kiro_crew.apps.builtins.aws_control import hooks
+
+        snapshot = _snapshot_of(
+            _registry([_entry("broken", account=self.ACCOUNT)], default="broken"),
+            {"broken": _identity(False, detail="ExpiredToken")},
+        )
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
+            mock.patch.object(hooks.aws_consent, "probe_identity") as probe,
+            mock.patch.object(hooks.backup_mod, "due_for_nightly") as due,
+            mock.patch.object(hooks, "_audit") as audit,
+        ):
+            asyncio.run(hooks._run_once())
+        # No probe, no due-check, no consent check, no audit: there is no key to
+        # run under, so the loop stops before it can name one.
+        probe.assert_not_called()
+        due.assert_not_called()
+        audit.assert_not_called()
+
+    def test_the_voice_services_do_not_touch_the_account_snapshot(self):
+        """Polly and Transcribe read their own config; only s3/ce use the registry."""
+        from kiro_crew.dashboard.handlers import aws_consent as consent_handlers
+        from kiro_crew.slack.handler import _vc
+
+        swept = AsyncMock(side_effect=AssertionError("voice must not sweep the registry"))
+        with (
+            mock.patch.object(accounts_mod, "list_accounts", swept),
+            mock.patch.object(_vc, "aws_profile", "voice"),
+            mock.patch.object(_vc, "region", "eu-west-1"),
+        ):
+            assert asyncio.run(consent_handlers._effective_target("polly")) == (
+                "voice",
+                "eu-west-1",
+            )
+        swept.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1955,7 +2217,9 @@ class TestRound22Hardening:
 
         with (
             mock.patch.object(
-                hooks.deploy_profiles, "resolve_profile", return_value=("p", "us-west-2")
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
             ),
             mock.patch.object(
                 hooks.aws_consent,
@@ -1984,7 +2248,9 @@ class TestRound22Hardening:
 
         with (
             mock.patch.object(
-                hooks.deploy_profiles, "resolve_profile", return_value=("p", "us-west-2")
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
             ),
             mock.patch.object(
                 hooks.aws_consent,

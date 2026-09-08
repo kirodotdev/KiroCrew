@@ -8,8 +8,9 @@ a log line, never an unconfirmed charge), and the drive is tag-discovered
 per run rather than trusted from memory.
 
 The loop runs against the REGISTRY DEFAULT account only — the same account
-the consent card confirms. Multi-account nightly schedules arrive with the
-per-account grant store (spec §9).
+the consent card confirms, resolved through the same healthy-first policy, so
+the grant it checks names the key it runs under. Multi-account nightly
+schedules arrive with the per-account grant store (spec §9).
 """
 
 from __future__ import annotations
@@ -20,9 +21,9 @@ import logging
 from typing import Any
 
 from kiro_crew import aws_consent
+from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
 from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
 from kiro_crew.apps.builtins.aws_control.backend import storage as storage_mod
-from kiro_crew.deploy import profiles as deploy_profiles
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -55,13 +56,25 @@ def _audit(operation: str, resources: str, outcome: str, *, error: str = "") -> 
 
 async def _run_once() -> None:
     """One due-check + backup attempt. Every failure is a log line, not a crash."""
-    resolved = await asyncio.to_thread(deploy_profiles.resolve_profile, "")
+    # Same resolution the consent card and the HTTP handlers use, so the key this
+    # unattended loop runs under is the key the grant was recorded for. A raw
+    # registry-default read would pick an unhealthy default over the account's
+    # working sibling, and then skip on every wake -- silently, since nobody is
+    # watching a 03:00 loop. The STRICT variant: with no working key there is
+    # nothing to back up, so the loop stops rather than naming one it cannot use.
+    # Costs one probe sweep per wake (free STS calls, concurrency-bounded,
+    # snapshot-cached); the correct key is worth it.
+    resolved = await accounts_mod.resolve_default_account_profile()
     if resolved is None:
-        logger.info("aws-control nightly: no registered profile; skipping")
+        # Covers both "nothing registered" and "the default account has no
+        # working key"; the accounts pane is where the difference is visible.
+        logger.info("aws-control nightly: no healthy registered key; skipping")
         return
     profile, region = resolved
     # Backup state is keyed per account, so the loop resolves which
-    # account the default profile is actually pointing at right now.
+    # account the default profile is actually pointing at right now. The snapshot
+    # above has a TTL, so this live probe is what the account id may be trusted
+    # from -- the same rule the HTTP path's ``_resolve_target`` follows.
     identity = await aws_consent.probe_identity(profile, region)
     if not identity.ok or not identity.account:
         logger.info("aws-control nightly: account unresolved; skipping")
