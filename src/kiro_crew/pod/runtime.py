@@ -41,7 +41,7 @@ from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
 from kiro_crew.platform_compat import (
     IS_LINUX,
     IS_MACOS,
-    IS_POSIX,
+    IS_WINDOWS,
     find_port_listeners,
     listening_pid_tool_available,
     loopback_owner_pids,
@@ -49,6 +49,7 @@ from kiro_crew.platform_compat import (
 from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import unit as unit_mod
+from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import (
     EXIT_PROVISIONING,
     EXIT_REFUSED_UNRECOVERABLE,
@@ -913,14 +914,20 @@ def require_backend() -> None:
     """Gate on whatever service manager THIS host uses for pods.
 
     Dispatches instead of replacing :func:`require_systemd`: that function is
-    still the systemd gate with its own contract and messages, so Linux and
-    Windows behaviour is provably unchanged by the macOS work — on any non-darwin
-    host this is exactly ``require_systemd()``.
+    still the systemd gate with its own contract and messages, so Linux
+    behaviour is provably unchanged by the macOS and Windows work — on any host
+    that is neither darwin nor win32 this is exactly ``require_systemd()``.
     """
     if IS_MACOS:
         try:
             launchd.require_backend()
         except launchd.LaunchdError as exc:  # translate to the pod error type
+            raise PodError(str(exc)) from exc
+        return
+    if IS_WINDOWS:
+        try:
+            win_backend.require_backend()
+        except win_backend.WindowsTaskError as exc:  # translate to the pod error type
             raise PodError(str(exc)) from exc
         return
     require_systemd()
@@ -939,6 +946,8 @@ def is_active(cfg: PodConfig, name: str) -> bool:
             # Fail closed as the documented pod error, not a traceback: the
             # probe REFUSES to call a pod absent when launchctl cannot answer.
             raise PodError(str(exc)) from exc
+    if IS_WINDOWS:
+        return win_backend.is_active(cfg, name)
     cp = systemctl("is-active", "--quiet", pod_unit(cfg, name))
     return cp.returncode == 0
 
@@ -960,9 +969,16 @@ def main_pid(cfg: PodConfig, name: str) -> int | None:
     ask" must leave the question open. ``systemctl show`` prints ``MainPID=0``
     for a dead or unknown unit and still exits 0, so an output with no
     ``MainPID`` line at all is the honest signal that the query itself failed.
+
+    Windows has no ``exec``, so the gateway there is the wrapper's CHILD rather
+    than its replacement; :func:`kiro_crew.pod.windows.supervise_gateway` records
+    that child's pid plus its creation identity, which restores the same
+    "MainPID is the process that bound the port" property this docstring rests on.
     """
     if IS_MACOS:
         return launchd.main_pid(cfg, name)
+    if IS_WINDOWS:
+        return win_backend.main_pid(cfg, name)
     cp = systemctl("show", pod_unit(cfg, name), "-p", "MainPID")
     for ln in cp.stdout.splitlines():
         if ln.startswith("MainPID="):
@@ -985,10 +1001,15 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
 
     On macOS launchd exposes no restart counter; see
     :func:`kiro_crew.pod.launchd.unit_state` for how the crash signal is
-    preserved without one.
+    preserved without one. Windows Task Scheduler exposes neither a restart
+    counter nor a restart policy, and its status output is localized; see
+    :func:`kiro_crew.pod.windows.unit_state` for the two recorded facts the
+    same signal is derived from there.
     """
     if IS_MACOS:
         return launchd.unit_state(cfg, name)
+    if IS_WINDOWS:
+        return win_backend.unit_state(cfg, name)
     cp = systemctl("show", pod_unit(cfg, name), "-p", "ActiveState", "-p", "NRestarts")
     state, restarts = "unknown", 0
     for ln in cp.stdout.splitlines():
@@ -1005,10 +1026,14 @@ def recent_journal(cfg: PodConfig, name: str, lines: int = 30) -> str:
     """Tail the pod's log — surface a boot failure's real cause.
 
     launchd has no journal, so on macOS this tails the files the pod's plist
-    routes stdout/stderr to. Same contract, different mechanism.
+    routes stdout/stderr to. Task Scheduler has none either, so on Windows this
+    tails the files the generated ``.cmd`` wrapper redirects into. Same
+    contract, different mechanism.
     """
     if IS_MACOS:
         return launchd.recent_journal(cfg, name, lines=lines)
+    if IS_WINDOWS:
+        return win_backend.recent_journal(cfg, name, lines=lines)
     # journalctl is a sibling of systemctl, not routed through it — gate it too,
     # or this one call still raises a bare FileNotFoundError off-Linux.
     require_systemd()
@@ -1029,6 +1054,8 @@ def active_names(cfg: PodConfig) -> set[str]:
             return launchd.active_names(cfg)
         except launchd.LaunchdError as exc:
             raise PodError(str(exc)) from exc
+    if IS_WINDOWS:
+        return win_backend.active_names(cfg)
     pat = f"{cfg.unit_prefix}@*.service"
     cp = systemctl("list-units", pat, "--state=active", "--no-legend", "--plain", "--no-pager")
     rx = re.compile(rf"{re.escape(cfg.unit_prefix)}@(.+)\.service")
@@ -1270,6 +1297,13 @@ def start_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
             launchd.write_plist(cfg, name)
             return launchd.start(cfg, name)
 
+        if IS_WINDOWS:
+            # Same reasoning as macOS: the wrapper script and the task are both
+            # re-created on every start, so neither can go stale against a moved
+            # worktree, and the mutex serializes against a concurrent stop of the
+            # same name whose script unlink and HOME sweep would race this write.
+            return win_backend.start(cfg, name)
+
         # Self-heal a stale installed unit before booting it: the template bakes
         # an absolute kirocrew path at install time (a pruned worktree leaves it
         # failing EXEC 203), and a unit installed by an older build can still
@@ -1366,6 +1400,8 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     with pod_name_mutex(cfg, name):
         if IS_MACOS:
             return _stop_pod_launchd(cfg, name)
+        if IS_WINDOWS:
+            return _stop_pod_windows(cfg, name)
         # A unit installed by an OLDER build still carries the destructive
         # ExecStopPost, and `systemctl stop` runs it before our drain — deleting
         # the HOME under the pod's own live processes, which is the exact defect
@@ -1519,6 +1555,66 @@ def _stop_pod_launchd(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=cp.stdout or "", stderr="")
 
 
+def _stop_pod_windows(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
+    """The Windows half of :func:`stop_pod` — called with the name mutex held.
+
+    Structurally the launchd path, because the two platforms have the same shape
+    of problem: no cgroup to drain, so the surviving-writer hazard is handled by
+    sweeping a grace window rather than by observing a container empty. What
+    differs is only what "confirmed stopped" means —
+    :func:`kiro_crew.pod.windows.stop` proves it by watching the SUPERVISED PID
+    die (and escalating to a pinned tree kill if it will not), because Task
+    Scheduler's own status output is localized and its ``/End`` reaches only the
+    task's own process.
+    """
+    # windows.stop() is authoritative: rc 0 means the gateway is confirmed gone
+    # AND the task is deleted. A non-zero rc means one of those could not be
+    # confirmed — in that case do NOT touch the HOME: it may belong to a live
+    # gateway.
+    cp = win_backend.stop(cfg, name)
+    if cp.returncode != 0:
+        return cp
+    leftover = resolved_pod_home(cfg, name)
+    # Observe the FULL window — no early exit on a clean sample. But DO exit the
+    # moment the name is claimed by a NEW pod: a new `up` writes the wrapper
+    # script BEFORE creating the task, so script presence is the claim marker for
+    # any writer that bypasses the mutex. Deliberately a pure filesystem check,
+    # for the same reason the macOS path is: probing the service manager here
+    # would shell out on every sweep and break on hosts without schtasks (the
+    # unit suites run this path on Linux and macOS CI).
+    for _ in range(6):
+        if win_backend.task_script_path(cfg, name).exists():
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=RECLAIMED_MARKER, stderr=""
+            )
+        cleanup_home(cfg, name)
+        time.sleep(0.5)
+    if win_backend.task_script_path(cfg, name).exists():
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=RECLAIMED_MARKER, stderr=""
+        )
+    cleanup_home(cfg, name)
+    # The recorded boot result is per-pod state like the wrapper script, so it
+    # must not outlive the pod: a stale non-zero code would make the NEXT `up` of
+    # this name read as already-failed before its own boot recorded anything.
+    try:
+        win_backend.result_path(cfg, name).unlink(missing_ok=True)
+    except OSError:
+        pass
+    if leftover.exists():
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=cp.stdout or "",
+            stderr=(
+                f"pod stopped but its isolated HOME keeps reappearing at "
+                f"{leftover} — a process is still writing there, so teardown "
+                "is incomplete. Remove it by hand and report this."
+            ),
+        )
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=cp.stdout or "", stderr="")
+
+
 def orphan_homes(cfg: PodConfig) -> list[str]:
     """Pod HOMEs left on disk with no live pod and no installed definition.
 
@@ -1545,9 +1641,12 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
         if p.name in live:
             continue
         # macOS writes a per-pod plist at `up` and drops it at `down`, so its
-        # presence means the pod is installed rather than orphaned. systemd's
-        # template unit is machine-wide, so liveness is the only signal there.
+        # presence means the pod is installed rather than orphaned. Windows does
+        # the same with its per-pod `.cmd` wrapper. systemd's template unit is
+        # machine-wide, so liveness is the only signal there.
         if IS_MACOS and launchd.plist_path(cfg, p.name).exists():
+            continue
+        if IS_WINDOWS and win_backend.task_script_path(cfg, p.name).exists():
             continue
         out.append(p.name)
     return sorted(out)
@@ -1557,8 +1656,10 @@ def install_backend(cfg: PodConfig) -> tuple[str, subprocess.CompletedProcess | 
     """Install whatever machine-wide definition the backend needs.
 
     systemd needs one template unit + a daemon-reload. launchd has no template
-    concept — each pod's plist is written at ``up`` — so there is nothing to
-    install, and saying so is better than writing a file that does nothing.
+    concept — each pod's plist is written at ``up`` — and neither does Task
+    Scheduler, whose per-pod ``.cmd`` wrapper and task are both created at ``up``.
+    So on both of those there is nothing to install, and saying so is better than
+    writing a file that does nothing.
 
     Returns ``(message, reload_result)``. Raises :class:`PodError` only for an
     unusable host, and does so BEFORE writing anything, so an unsupported
@@ -1579,6 +1680,13 @@ def install_backend(cfg: PodConfig) -> tuple[str, subprocess.CompletedProcess | 
         return (
             "nothing to install on macOS: launchd has no template units, so each "
             "pod's agent plist is written at `kirocrew pod up <worktree>`.",
+            None,
+        )
+    if IS_WINDOWS:
+        return (
+            "nothing to install on Windows: Task Scheduler has no template tasks, "
+            "so each pod's task and its .cmd wrapper are created at "
+            "`kirocrew pod up <worktree>`.",
             None,
         )
     dst = unit_mod.unit_path(cfg)
@@ -1663,8 +1771,10 @@ def _pod_recorded_pid(cfg: PodConfig, name: str, port: int) -> int | None:
 
     Fails CLOSED on every way of not knowing -- no record, no start identity (a
     pod whose checkout predates the binding), or a host that will not report a
-    start time at all, which includes a Windows box with no implementation. An
-    unproven record must read as "no record", never as one that agrees.
+    start time at all. An unproven record must read as "no record", never as one
+    that agrees. Windows is NOT in that last group: ``pid_start_token`` reads the
+    process creation ``FILETIME`` there, which is what lets a pod on that platform
+    prove ownership at all.
     """
     record = run_marker.read_pid_record_path(_pod_pid_record_path(cfg, name, port))
     if record is None:
@@ -1737,9 +1847,17 @@ def port_owner(cfg: PodConfig, name: str, port: int) -> str:
 
     Listener attribution is still never sufficient ON ITS OWN: a pid that holds
     the port but has no fresh record behind it stays :data:`OWNER_UNPROVEN`.
+
+    **Windows reaches this the same way**, which it did not before pods had a
+    backend there. The proof needs exactly two things, and both now answer on
+    win32: ``run_marker.pid_start_token`` has a Windows leg (the process creation
+    ``FILETIME``, read through a query-only handle), and :func:`main_pid` reads the
+    pid ``windows.supervise_gateway`` records. Keeping the old blanket refusal here
+    would not have been strictness, it would have been unsatisfiable — ``pod up``
+    mints a token and :func:`mint_token` requires positive proof, so every healthy
+    Windows pod would have been refused its own credential forever. Listener
+    corroboration works there too (``netstat`` via ``trusted_system_bin``).
     """
-    if not IS_POSIX:
-        return OWNER_UNPROVEN
     try:
         recorded = _pod_recorded_pid(cfg, name, port)
         ours = main_pid(cfg, name)
@@ -2880,7 +2998,11 @@ def terminal_exit_code(cfg: PodConfig, name: str, code: int) -> int:
         return code
     if not IS_MACOS:
         # systemd exempts these codes via RestartPreventExitStatus, so the honest
-        # code is also the non-looping one there. Nothing to translate.
+        # code is also the non-looping one there. Windows Task Scheduler has no
+        # restart policy at all -- a task whose action exits non-zero is recorded
+        # with that result and stays down -- so the honest code is already
+        # terminal, and `windows.unit_state` reads that recorded result as the
+        # crash signal. Nothing to translate on either.
         return code
     if refusal_reason(cfg, name) is None:
         print(
@@ -3570,8 +3692,9 @@ def _probe_pod_child_bootstrap(pod_env: dict[str, str]) -> None:
 
 def boot(cfg: PodConfig, name: str) -> int:
     """Boot the isolated gateway for pod *name*, converting EVERY refusal into a
-    recorded terminal exit. Returns an exit code on failure; on success it
-    ``exec``s and does not return.
+    recorded terminal exit. Returns an exit code on failure; on POSIX it ``exec``s
+    on success and does not return, while on Windows — which has no ``exec`` — it
+    supervises the gateway and returns its exit code once it ends.
 
     **This wrapper is the class closure for "a refusal that escapes the boot path
     with a non-terminal exit".** A ``raise PodError`` is neither a bare return nor
@@ -3590,8 +3713,11 @@ def boot(cfg: PodConfig, name: str) -> int:
     frame, and a refusal added tomorrow is recorded and given a terminal code
     without anyone remembering to route it.
 
-    ``execve`` replaces the process on the success path, so nothing after the body
-    can run and the wrapper costs the happy path nothing.
+    ``execve`` replaces the process on the POSIX success path, so nothing after the
+    body can run and the wrapper costs the happy path nothing. On Windows the body
+    returns the supervised gateway's own exit code instead; that code is not in
+    :data:`TERMINAL_BOOT_EXIT_CODES`, so it flows out untranslated and the wrapper
+    still only ever converts refusals.
 
     **Name validation happens BEFORE the guard, deliberately.** The wrapper records
     every refusal it catches, and ``_record_refusal`` derives its path from *name* --
@@ -3811,5 +3937,14 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
         )
     if approval:
         argv += ["--approval", approval]
+    if IS_WINDOWS:
+        # Windows has no exec. CPython's os.execve there SPAWNS and terminates the
+        # caller, which would break this path twice: the pid would change (so
+        # `main_pid` could no longer name the process that bound the port) and the
+        # scheduled task's own process would exit while the gateway kept running
+        # orphaned, with Task Scheduler reporting the task finished. Supervise the
+        # gateway as a child instead and return its exit code, which keeps every
+        # caller's contract identical and the wrapper alive as its parent.
+        return win_backend.supervise_gateway(cfg, name, bin_path, argv, pod_env)
     os.execve(str(bin_path), [str(bin_path), *argv], pod_env)
     return 0  # unreachable on success

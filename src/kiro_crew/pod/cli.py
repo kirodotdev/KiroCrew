@@ -474,8 +474,10 @@ def _down(cfg: PodConfig, args: argparse.Namespace) -> None:
         # fatal: a reclaim that could not finish must not report success.
         # On macOS it is always fatal, because a loaded-but-dead agent has no pid
         # (was_up False) yet still needs its unload CONFIRMED before anything is
-        # torn down.
-        if cp.returncode != 0 and (was_up or had_home or rt.IS_MACOS):
+        # torn down. Windows is the same shape: a task whose gateway already died
+        # leaves no supervised pid, so `was_up` is False while the task itself is
+        # still registered and must be deleted before the HOME is reclaimed.
+        if cp.returncode != 0 and (was_up or had_home or rt.IS_MACOS or rt.IS_WINDOWS):
             _audit("pod.down", "failure", f"name={name}", error=f"stop rc={cp.returncode}")
             _die(f"stopping pod {name} failed: {(cp.stderr or '').strip()}")
         if rt.RECLAIMED_MARKER in (cp.stdout or ""):
@@ -828,8 +830,11 @@ def _prune_one_decide(cfg: PodConfig, name: str) -> tuple[str, str, str, str]:
                 )
             # macOS: a per-pod plist means "installed" (a name mid-`up`), not
             # orphaned — same predicate orphan_homes applies, re-checked at
-            # delete time for writers that bypass the mutex.
+            # delete time for writers that bypass the mutex. Windows: its
+            # per-pod `.cmd` wrapper carries exactly the same meaning.
             if rt.IS_MACOS and rt.launchd.plist_path(cfg, name).exists():
+                return "skipped", "pod is now installed", "denied", "pod is now installed"
+            if rt.IS_WINDOWS and rt.win_backend.task_script_path(cfg, name).exists():
                 return "skipped", "pod is now installed", "denied", "pod is now installed"
             cp = rt.stop_pod(cfg, name)
             if cp.returncode != 0:
@@ -995,9 +1000,9 @@ def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
     # Gate before exec'ing the log mechanism — on an unsupported host this would
     # otherwise raise a bare FileNotFoundError instead of the documented refusal.
     rt.require_backend()
-    if rt.IS_MACOS:
-        # launchd has no journal; the plist routes stdout/stderr to files and
-        # recent_journal tails them.
+    if rt.IS_MACOS or rt.IS_WINDOWS:
+        # Neither launchd nor Task Scheduler has a journal; the plist / the .cmd
+        # wrapper route stdout/stderr to files and recent_journal tails them.
         print(rt.recent_journal(cfg, name, args.lines))
         return
     subprocess.run(
@@ -1056,7 +1061,9 @@ def _run_internal(cfg: PodConfig, args: argparse.Namespace) -> None:
     # when the refusal note actually landed, so a refusal that could not be recorded
     # keeps its honest non-zero instead of looking like a clean exit. Do NOT call
     # ``launchd.launchd_exit_code`` directly here; it states the platform semantics
-    # but knows nothing about whether the record exists.
+    # but knows nothing about whether the record exists. Windows needs no
+    # translation at all (Task Scheduler never restarts a non-zero exit), which
+    # ``kiro_crew.pod.windows.windows_exit_code`` states and a test pins.
     exit_code = rt.terminal_exit_code(cfg, args.name, rc)
     if exit_code != rc:
         print(

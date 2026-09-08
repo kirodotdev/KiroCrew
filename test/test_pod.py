@@ -1549,18 +1549,16 @@ class TestPortOwner:
     """
 
     @pytest.fixture(autouse=True)
-    def _posix(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Pin the POSIX branch, for the same reason the module pins ``IS_MACOS``.
+    def _recorded_pid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Stand in for a pid record that PROVED fresh.
 
-        ``port_owner`` returns ``OWNER_UNPROVEN`` on a non-POSIX host before it
-        consults any of the helpers these tests patch, so on Windows the decision
-        cases FAILED (`'unproven' == 'pod'`) while the four that expect
-        ``OWNER_UNPROVEN`` passed VACUOUSLY -- they would have passed whatever the
-        logic did. Pinning it makes the branch under test explicit and asserts the
-        same contract on every platform. ``test_non_posix_is_unproven`` sets it
-        False itself, which still wins: this fixture runs first.
+        This used to also pin ``rt.IS_POSIX`` True, because ``port_owner``
+        returned ``OWNER_UNPROVEN`` on a non-POSIX host before consulting any
+        helper — so on Windows the decision cases FAILED and the ones expecting
+        ``OWNER_UNPROVEN`` passed VACUOUSLY. That platform gate is gone: both facts
+        the proof needs now answer on win32, so every case below exercises the
+        real branch on every platform and there is nothing left to pin.
         """
-        monkeypatch.setattr(rt, "IS_POSIX", True)
         # Every positive ownership verdict requires the gateway's pid sidecar to
         # agree with the service manager's MainPID. Patching the reader stands in
         # for a record that PROVED fresh (it answers ``None`` otherwise), which is
@@ -1648,11 +1646,32 @@ class TestPortOwner:
         )
         assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_UNPROVEN
 
-    def test_non_posix_is_unproven(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(rt, "IS_POSIX", False)
-        monkeypatch.setattr(
-            rt, "listening_pid_tool_available", lambda: pytest.fail("must not be reached")
-        )
+    def test_windows_can_prove_ownership_because_both_facts_now_answer(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows used to be refused here by a blanket ``not IS_POSIX`` return.
+
+        That was unsatisfiable rather than strict: ``pod up`` mints a token and
+        ``mint_token`` requires positive proof, so every healthy Windows pod
+        would have been refused its own credential forever. The proof needs
+        exactly two facts and both answer on win32 now — ``pid_start_token`` reads
+        the process creation FILETIME, and ``main_pid`` reads the pid the Task
+        Scheduler wrapper's ``supervise_gateway`` records.
+        """
+        monkeypatch.setattr(rt, "IS_WINDOWS", True)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda c, n, p: 4242)
+        monkeypatch.setattr(rt, "main_pid", lambda c, n: 4242)
+        monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: False)
+        assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_POD
+
+    def test_a_windows_pod_with_no_agreeing_record_is_still_unproven(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opening the platform gate must not weaken the proof itself."""
+        monkeypatch.setattr(rt, "IS_WINDOWS", True)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda c, n, p: None)
+        monkeypatch.setattr(rt, "main_pid", lambda c, n: 4242)
+        monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: False)
         assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_UNPROVEN
 
     def test_an_unaskable_service_manager_is_unproven(

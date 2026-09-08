@@ -8,13 +8,14 @@ from pathlib import Path
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
+from kiro_crew.platform_compat import IS_POSIX
 from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod.config import PodConfig
 
 pytestmark = pytest.mark.skipif(
-    not rt.IS_POSIX,
+    not IS_POSIX,
     reason="pod drop-in lifecycle requires POSIX descriptor traversal",
 )
 
@@ -300,7 +301,7 @@ class TestUpVerifiesTheSeedLanded:
         # look at: the override is what routes the boot to the right binary.
         assert str(unit_mod.dropin_path(pod_plane, "wt")) in err
 
-    @pytest.mark.skipif(not rt.IS_POSIX, reason="pods require POSIX descriptor traversal")
+    @pytest.mark.skipif(not IS_POSIX, reason="pods require POSIX descriptor traversal")
     def test_the_requested_scenario_present_is_silent(
         self, pod_plane: PodConfig, capsys: pytest.CaptureFixture
     ) -> None:
@@ -308,7 +309,7 @@ class TestUpVerifiesTheSeedLanded:
         pod_cli._verify_seed_landed(pod_plane, "wt", "minimal", home_was_populated=False)
         assert capsys.readouterr().err == ""
 
-    @pytest.mark.skipif(not rt.IS_POSIX, reason="pods require POSIX descriptor traversal")
+    @pytest.mark.skipif(not IS_POSIX, reason="pods require POSIX descriptor traversal")
     def test_a_different_scenario_in_a_fresh_home_still_fails(
         self, pod_plane: PodConfig, capsys: pytest.CaptureFixture
     ) -> None:

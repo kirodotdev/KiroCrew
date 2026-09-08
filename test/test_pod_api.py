@@ -298,7 +298,6 @@ class TestPodRecordFreshness:
     @pytest.fixture
     def cfg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PodConfig:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        monkeypatch.setattr(rt, "IS_POSIX", True)
         return PodConfig.load()
 
     def test_an_unattributable_loopback_listener_still_proves_our_pod(
@@ -474,7 +473,6 @@ class TestPodUnprovenRemediation:
     @pytest.fixture
     def cfg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PodConfig:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        monkeypatch.setattr(rt, "IS_POSIX", True)
         return PodConfig.load()
 
     def test_no_record_at_all_is_told_to_restart(self, cfg: PodConfig) -> None:
@@ -533,7 +531,6 @@ class TestPodPidAttestation:
         deny the credential to every healthy pod on a minimal Linux box forever.
         """
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        monkeypatch.setattr(rt, "IS_POSIX", True)
         live = os.getpid()
         monkeypatch.setattr(rt, "main_pid", lambda cfg, name: live)
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: False)
@@ -551,7 +548,6 @@ class TestPodPidAttestation:
     ) -> None:
         """The historical one-line format cannot prove it is not a crash leftover."""
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        monkeypatch.setattr(rt, "IS_POSIX", True)
         live = os.getpid()
         monkeypatch.setattr(rt, "main_pid", lambda cfg, name: live)
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: False)
@@ -563,7 +559,6 @@ class TestPodPidAttestation:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        monkeypatch.setattr(rt, "IS_POSIX", True)
         _pin_start_token(monkeypatch, 4242, _START_TOKEN_FOR_4242)
         monkeypatch.setattr(rt, "main_pid", lambda cfg, name: 4242)
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: True)
@@ -580,7 +575,6 @@ class TestPodPidAttestation:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        monkeypatch.setattr(rt, "IS_POSIX", True)
         monkeypatch.setattr(rt, "main_pid", lambda cfg, name: 4242)
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: True)
         monkeypatch.setattr(
@@ -594,7 +588,6 @@ class TestPodPidAttestation:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        monkeypatch.setattr(rt, "IS_POSIX", True)
         _pin_start_token(monkeypatch, 4242, _START_TOKEN_FOR_4242)
         monkeypatch.setattr(rt, "main_pid", lambda cfg, name: 4242)
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: True)
@@ -612,7 +605,6 @@ class TestPodPidAttestation:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recorded: str
     ) -> None:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        monkeypatch.setattr(rt, "IS_POSIX", True)
         _pin_start_token(monkeypatch, 4242, _START_TOKEN_FOR_4242)
         monkeypatch.setattr(rt, "main_pid", lambda cfg, name: 4242)
         monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: False)
@@ -621,12 +613,24 @@ class TestPodPidAttestation:
             _write_record(cfg, "demo", 7999, f"{recorded}\n", _START_TOKEN_FOR_4242)
         assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_UNPROVEN
 
-    def test_non_posix_stays_unproven_without_touching_host_tools(
+    def test_windows_is_asked_the_same_question_as_every_other_host(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(rt, "IS_POSIX", False)
-        monkeypatch.setattr(rt, "main_pid", lambda cfg, name: pytest.fail("must not run"))
-        assert rt.port_owner(PodConfig.load(), "demo", 7999) == rt.OWNER_UNPROVEN
+        """``port_owner`` used to refuse win32 outright, before consulting anything.
+
+        That was unsatisfiable rather than strict: ``pod up`` mints a token and
+        ``mint_token`` requires positive proof, so a healthy Windows pod could
+        never earn its own credential. Both facts the proof needs answer there
+        now, so the platform gate is gone and the freshness rule alone decides.
+        A record that cannot prove itself is still UNPROVEN, on every host.
+        """
+        monkeypatch.setattr(rt, "IS_WINDOWS", True)
+        monkeypatch.setattr(rt, "listening_pid_tool_available", lambda: False)
+        cfg = PodConfig.load()
+        assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_UNPROVEN
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda c, n, p: 4242)
+        monkeypatch.setattr(rt, "main_pid", lambda c, n: 4242)
+        assert rt.port_owner(cfg, "demo", 7999) == rt.OWNER_POD
 
 
 class TestPodApiSecurityPosture:
