@@ -89,160 +89,300 @@ class KnowledgeWatcher:
         sweep_budget = self._sweep_chunk_budget()
         sweep_chunks_used = 0
 
-        # Folder sources (local_folder, obsidian_vault)
-        folder_rows = await self._store_rows(
-            "SELECT id, uri, source_type, properties, sync_status FROM sources "
-            "WHERE source_type IN ({})".format(
-                ",".join("?" for _ in FOLDER_SOURCE_TYPES)
-            ),
-            tuple(FOLDER_SOURCE_TYPES),
-        )
-        for row in folder_rows:
-            # Global budget exhausted — defer remaining sources to next sweep.
-            if sweep_budget and sweep_chunks_used >= sweep_budget:
-                logger.info(
-                    "Sweep chunk budget exhausted (%d/%d); deferring %s to next sweep",
-                    sweep_chunks_used, sweep_budget, row["uri"],
-                )
-                break
-            try:
-                source = dict(row)
-                props = self._parse_props(source.get("properties"))
-                # Read from the sync_status COLUMN, the single source of truth
-                # the dashboard and SyncScheduler also read. This used to read a
-                # copy inside the properties JSON, so a pause recorded only in
-                # the column still walked and delete-reconciled the whole folder
-                # every sweep.
-                if source.get("sync_status") in ("paused", "pending_confirmation"):
-                    continue
-                # Every folder source is one the user added by hand, and it is
-                # paced: the whole folder still arrives -- newest files first,
-                # the rest on later sweeps -- but pointing the Library at a
-                # source repo no longer spends the whole bill before anyone can
-                # look at it.
-                budget = folder_chunk_budget(props)
+        async def _scan_folder_sources() -> None:
+            nonlocal sweep_chunks_used
 
-                # Apply global budget as an additional cap on the per-source budget.
-                if sweep_budget:
-                    remaining = sweep_budget - sweep_chunks_used
-                    if budget is None:
-                        budget = remaining
-                    else:
-                        budget = min(budget, remaining)
-
-                stats = await self._folder_watcher.scan_source(
-                    source,
-                    chunk_budget=budget,
-                    embed_priority=PRIORITY_BULK,
-                )
-                # Track consumed chunks against global budget.
-                sweep_chunks_used += stats.get("chunks_ingested", 0)
-                if stats.get("error"):
-                    logger.warning("Folder scan error for %s: %s", source["uri"], stats["error"])
-                elif any(stats.get(k, 0) for k in ("new", "changed", "deleted")):
+            # Folder sources (local_folder, obsidian_vault)
+            folder_rows = await self._store_rows(
+                "SELECT id, uri, source_type, properties, sync_status FROM sources "
+                "WHERE source_type IN ({})".format(
+                    ",".join("?" for _ in FOLDER_SOURCE_TYPES)
+                ),
+                tuple(FOLDER_SOURCE_TYPES),
+            )
+            for row in folder_rows:
+                # Global budget exhausted — defer remaining sources to next sweep.
+                if sweep_budget and sweep_chunks_used >= sweep_budget:
                     logger.info(
-                        "Folder scan %s: +%d ~%d -%d",
-                        source["uri"],
-                        stats.get("new", 0),
-                        stats.get("changed", 0),
-                        stats.get("deleted", 0),
+                        "Sweep chunk budget exhausted (%d/%d); deferring %s to next sweep",
+                        sweep_chunks_used, sweep_budget, row["uri"],
                     )
-            except Exception:
-                logger.exception("Error scanning folder source %s", row["uri"])
+                    break
+                try:
+                    source = dict(row)
+                    props = self._parse_props(source.get("properties"))
+                    # Read from the sync_status COLUMN, the single source of truth
+                    # the dashboard and SyncScheduler also read. Reading a copy
+                    # inside the properties JSON instead would let a pause recorded
+                    # only in the column keep walking and delete-reconciling the
+                    # whole folder every sweep.
+                    if source.get("sync_status") in ("paused", "pending_confirmation"):
+                        continue
+                    # Every folder source is one the user added by hand, and it is
+                    # paced: the whole folder still arrives -- newest files first,
+                    # the rest on later sweeps -- so pointing the Library at a
+                    # source repo cannot spend the whole bill before anyone can
+                    # look at it.
+                    budget = folder_chunk_budget(props)
 
-        # Single-file sources (local_file)
-        rows = await self._store_rows(
-            "SELECT id, uri, properties, sync_status FROM sources "
-            "WHERE source_type = 'local_file'"
-        )
+                    # Apply global budget as an additional cap on the per-source budget.
+                    if sweep_budget:
+                        remaining = sweep_budget - sweep_chunks_used
+                        if budget is None:
+                            budget = remaining
+                        else:
+                            budget = min(budget, remaining)
 
-        for row in rows:
-            try:
-                uri = row["uri"]
-                if not uri or uri.startswith(("upload://", "code://", "http://", "https://")):
-                    continue
-                if is_sensitive_path(uri):
-                    logger.warning("Skipping sensitive path: %s", uri)
-                    continue
-                if not Path(uri).exists():
-                    # Mark missing in the COLUMN. Writing it into the properties
-                    # JSON instead left the row's visible state stale -- the
-                    # Library renders the column, so a file that had vanished
-                    # went on showing 'synced'. ``if_sync_status`` because the
-                    # value under test came from the snapshot at the top of the
-                    # sweep: a row a manual sync has moved since is left alone
-                    # and re-examined next sweep.
-                    if row["sync_status"] != "missing":
+                    stats = await self._folder_watcher.scan_source(
+                        source,
+                        chunk_budget=budget,
+                        embed_priority=PRIORITY_BULK,
+                    )
+                    # Track consumed chunks against global budget.
+                    sweep_chunks_used += stats.get("chunks_ingested", 0)
+                    if stats.get("error"):
+                        logger.warning("Folder scan error for %s: %s", source["uri"], stats["error"])
+                    elif any(stats.get(k, 0) for k in ("new", "changed", "deleted")):
+                        logger.info(
+                            "Folder scan %s: +%d ~%d -%d",
+                            source["uri"],
+                            stats.get("new", 0),
+                            stats.get("changed", 0),
+                            stats.get("deleted", 0),
+                        )
+                except Exception:
+                    logger.exception("Error scanning folder source %s", row["uri"])
+
+        async def _scan_single_file_sources() -> None:
+            nonlocal sweep_chunks_used
+
+            # Single-file sources (local_file), least-recently-ATTEMPTED first.
+            # Every served row — committed, deduped, oversized, or failed — stamps
+            # ``sweep_attempted_at`` into its properties, so it rotates to the
+            # back of the next sweep and rows still waiting rise toward the front:
+            # under sustained budget contention the sweep makes progress across
+            # ALL sources, and a persistently failing row cannot hold the front
+            # spot and starve the rest — its retry comes around once per rotation.
+            # ``last_synced`` is the fallback key for rows this ordering has never
+            # served; an empty key (never attempted, never synced) sorts first,
+            # which is also the right priority. No new cursor state or schema —
+            # both keys are ISO timestamps the sweep already maintains.
+            rows = await self._store_rows(
+                "SELECT id, uri, properties, sync_status, last_synced FROM sources "
+                "WHERE source_type = 'local_file'"
+            )
+
+            def _attempt_order_key(row) -> tuple:
+                # ``sweep_attempted_at`` lives in the properties JSON, which
+                # ``store.import_bundle`` accepts verbatim from external content —
+                # so its type is untrusted. A non-string value degrades to the
+                # ``last_synced`` fallback (a typed TEXT column) rather than
+                # poisoning the mixed-type sort and crashing the whole sweep.
+                stamped = self._parse_props(row["properties"]).get("sweep_attempted_at")
+                if not isinstance(stamped, str):
+                    stamped = None
+                return (stamped or row["last_synced"] or "", row["id"])
+
+            rows = sorted(rows, key=_attempt_order_key)
+
+            deferred = 0
+            for row in rows:
+                try:
+                    uri = row["uri"]
+                    if not uri or uri.startswith(("upload://", "code://", "http://", "https://")):
+                        continue
+                    if is_sensitive_path(uri):
+                        logger.warning("Skipping sensitive path: %s", uri)
+                        continue
+                    if not Path(uri).exists():
+                        # Mark missing in the COLUMN. Writing it into the properties
+                        # JSON instead left the row's visible state stale -- the
+                        # Library renders the column, so a file that had vanished
+                        # went on showing 'synced'. ``if_sync_status`` because the
+                        # value under test came from the snapshot at the top of the
+                        # sweep: a row a manual sync has moved since is left alone
+                        # and re-examined next sweep.
+                        if row["sync_status"] != "missing":
+                            await asyncio.to_thread(
+                                self.store.update_source, row["id"],
+                                sync_status="missing", if_sync_status=row["sync_status"])
+                        continue
+
+                    # Global budget exhausted — defer this source's read and ingest
+                    # to the next sweep. Deliberately BELOW the existence check and
+                    # a ``continue`` rather than the folder loop's ``break``, so the
+                    # zero-cost 'missing' marker above still lands for every row
+                    # even on a sweep whose folder sources spent the whole budget.
+                    # Deferral leaves the row's mtime/content_hash bookkeeping
+                    # untouched, so the next sweep sees it as changed and resumes
+                    # from it. This gate is what bounds the loop: without it a
+                    # library with many changed local_file sources re-ingests all
+                    # of them in one unpaced burst -- the burst the sweep budget
+                    # exists to spread.
+                    if sweep_budget and sweep_chunks_used >= sweep_budget:
+                        deferred += 1
+                        continue
+
+                    mtime = os.stat(uri).st_mtime
+                    props = self._parse_props(row["properties"])
+                    stored_mtime = props.get("mtime", 0)
+                    # A row that reads 'missing' has been away, and the mtime gate
+                    # cannot speak for it: a restore preserving the archived mtime
+                    # (cp -p, rsync -t, tar -x) puts different content on disk under
+                    # an mtime that never advanced, so the gate reports 'unchanged'
+                    # about a file it has not read. Deletion is exactly the event
+                    # that breaks the mtime heuristic, so read the content instead.
+                    if mtime > stored_mtime or row["sync_status"] == "missing":
+                        # Check content hash to avoid re-ingesting touched-but-unchanged files
+                        content_hash = await asyncio.get_running_loop().run_in_executor(
+                            None, self._hash_file, Path(uri)
+                        )
+                        if content_hash != props.get("content_hash"):
+                            logger.info("Source changed: %s", uri)
+                            # Three callbacks the pipeline already offers, so no
+                            # signature change and no blocking get_job_status
+                            # read-back on the event loop:
+                            #
+                            # * ``on_progress`` reports the attempted chunk total
+                            #   once extraction is running -- extract_batch has
+                            #   spent one LLM call per chunk by then, so THAT is
+                            #   the number the sweep budget meters ("caps total
+                            #   extraction calls"). Charging only committed chunks
+                            #   would let a post-extraction partial failure spend
+                            #   the calls while charging nothing.
+                            # * ``on_committed`` fires inside the finalize hop,
+                            #   only on the branch that committed the whole group
+                            #   -- the same latch FolderWatcher detects rollbacks
+                            #   with.
+                            # * ``on_duplicate`` fires when the pre-ingest gate
+                            #   refuses byte-identical content: a terminal success
+                            #   for bookkeeping, though nothing new was written.
+                            committed: list[str] | None = None
+                            refused = False
+                            attempted_chunks = 0
+
+                            def _record_committed(ids: list[str]) -> None:
+                                nonlocal committed
+                                committed = list(ids)
+
+                            def _record_refused(_text_hash: str) -> None:
+                                nonlocal refused
+                                refused = True
+
+                            def _note_extraction(phase: str, done: int, total: int) -> None:
+                                nonlocal attempted_chunks
+                                if phase == "extracting":
+                                    attempted_chunks = int(total)
+
+                            try:
+                                await self.pipeline.ingest_file(
+                                    uri,
+                                    source_id=row["id"],
+                                    namespace=props.get("namespace", "default"),
+                                    embed_priority=PRIORITY_BULK,
+                                    on_progress=_note_extraction,
+                                    on_committed=_record_committed,
+                                    on_duplicate=_record_refused,
+                                )
+                            except FileTooLargeError:
+                                # Warning already logged by the pipeline (names the file
+                                # and the config key). Mark the source errored and skip
+                                # persisting mtime/hash so the file is re-evaluated on
+                                # a later scan -- raising knowledge.max_ingest_file_mb
+                                # (config is read live) then recovers it automatically.
+                                # Stamped as an attempt below, so the oversized row
+                                # rotates to the back instead of being re-hashed at
+                                # the front of every sweep.
+                                await asyncio.to_thread(
+                                    self.store.update_source, row["id"], sync_status="error")
+                                await self._stamp_attempt(row["id"])
+                                continue
+                            except Exception:
+                                # Stamp the attempt even when the pipeline raises:
+                                # the charge in the finally below is real spend,
+                                # and an unstamped row would keep the front of the
+                                # rotation while consuming budget -- exactly the
+                                # starvation the ordering exists to prevent. The
+                                # row-level handler logs the error.
+                                await self._stamp_attempt(row["id"])
+                                raise
+                            finally:
+                                # Charge the attempted extraction count against the
+                                # global sweep budget whatever the commit outcome,
+                                # so both loops draw from one counter and a failed
+                                # finalize cannot make its spend invisible. Runs on
+                                # the FileTooLargeError path too, where it is zero
+                                # (the size guard fires before chunking).
+                                sweep_chunks_used += attempted_chunks
+                            if committed is None and not refused:
+                                # The pipeline rolled back a partial ingest -- it
+                                # invokes on_committed only on the fully-committed
+                                # branch -- and its finalize already marked the
+                                # source 'error'. Leave mtime/content_hash
+                                # unrecorded so a later sweep retries, but stamp
+                                # the attempt: the retry waits its turn behind the
+                                # rows still queued, so a persistently failing row
+                                # is bounded to one served slot per rotation and
+                                # cannot starve the sources behind it.
+                                await self._stamp_attempt(row["id"])
+                                continue
+                        # Merged against the current row inside one worker hop,
+                        # never persisted from this sweep's snapshot: a concurrent
+                        # writer (manual sync, ingest finalize) may have committed
+                        # fresh properties while the ingest ran, and a whole-blob
+                        # write of the snapshot would silently clobber them.
+                        await self._merge_source_props(row["id"], {
+                            "mtime": mtime,
+                            "content_hash": content_hash,
+                            "sweep_attempted_at": datetime.now().isoformat(),
+                        })
+                    if row["sync_status"] == "missing":
+                        # The file is back, so the marker has to come off, and the
+                        # CAS on 'missing' is what decides whether this write is the
+                        # one to do it. An ingestion that ran has already written the
+                        # column -- 'synced' when it stored the document, 'error' on
+                        # a partial write -- and moves the row off 'missing', so this
+                        # no-ops. It fires for the outcome that writes NO status: the
+                        # duplicate gate, which refuses the write because a holder
+                        # already holds this exact document (verified under its write
+                        # lock) and deletes this source's superseded items. Without
+                        # this the marker would sit on a file that is present and
+                        # accounted for. Deliberately LAST, after the read: claiming
+                        # 'synced' before reading the file would leave that claim
+                        # standing if the read then failed -- a failed ingest raises,
+                        # so control never reaches here.
                         await asyncio.to_thread(
                             self.store.update_source, row["id"],
-                            sync_status="missing", if_sync_status=row["sync_status"])
-                    continue
+                            sync_status="synced", if_sync_status="missing")
+                except Exception:
+                    # sqlite3.Row has no .get(): the previous spelling raised
+                    # AttributeError from inside the handler, which replaced the real
+                    # error with a confusing one AND escaped the loop, abandoning
+                    # every source after this one for the rest of the sweep.
+                    logger.exception("Error checking source %s", row["uri"] or row["id"])
+            if deferred:
+                logger.info(
+                    "Sweep chunk budget exhausted (%d/%d); deferred %d local_file "
+                    "source(s) to next sweep", sweep_chunks_used, sweep_budget, deferred,
+                )
 
-                mtime = os.stat(uri).st_mtime
-                props = self._parse_props(row["properties"])
-                stored_mtime = props.get("mtime", 0)
-                # A row that reads 'missing' has been away, and the mtime gate
-                # cannot speak for it: a restore preserving the archived mtime
-                # (cp -p, rsync -t, tar -x) puts different content on disk under
-                # an mtime that never advanced, so the gate reports 'unchanged'
-                # about a file it has not read. Deletion is exactly the event
-                # that breaks the mtime heuristic, so read the content instead.
-                if mtime > stored_mtime or row["sync_status"] == "missing":
-                    # Check content hash to avoid re-ingesting touched-but-unchanged files
-                    content_hash = await asyncio.get_running_loop().run_in_executor(
-                        None, self._hash_file, Path(uri)
-                    )
-                    if content_hash != props.get("content_hash"):
-                        logger.info("Source changed: %s", uri)
-                        try:
-                            await self.pipeline.ingest_file(
-                                uri,
-                                source_id=row["id"],
-                                namespace=props.get("namespace", "default"),
-                                embed_priority=PRIORITY_BULK,
-                            )
-                        except FileTooLargeError:
-                            # Warning already logged by the pipeline (names the file
-                            # and the config key). Mark the source errored and skip
-                            # persisting mtime/hash so the file is re-evaluated on
-                            # the next scan -- raising knowledge.max_ingest_file_mb
-                            # (config is read live) then recovers it automatically.
-                            await asyncio.to_thread(
-                                self.store.update_source, row["id"], sync_status="error")
-                            continue
-                        # Re-read props after ingest (ingest may update them)
-                        source = await asyncio.to_thread(
-                            self.store.get_source_by_uri, uri)
-                        if source:
-                            props = self._parse_props(source.get("properties"))
-                    props["mtime"] = mtime
-                    props["content_hash"] = content_hash
-                    await asyncio.to_thread(
-                        self.store.update_source, row["id"], properties=json.dumps(props))
-                if row["sync_status"] == "missing":
-                    # The file is back, so the marker has to come off, and the
-                    # CAS on 'missing' is what decides whether this write is the
-                    # one to do it. An ingestion that ran has already written the
-                    # column -- 'synced' when it stored the document, 'error' on
-                    # a partial write -- and moves the row off 'missing', so this
-                    # no-ops. It fires for the outcome that writes NO status: the
-                    # duplicate gate, which refuses the write because a holder
-                    # already holds this exact document (verified under its write
-                    # lock) and deletes this source's superseded items. Without
-                    # this the marker would sit on a file that is present and
-                    # accounted for. Deliberately LAST, after the read: claiming
-                    # 'synced' before reading the file would leave that claim
-                    # standing if the read then failed -- a failed ingest raises,
-                    # so control never reaches here.
-                    await asyncio.to_thread(
-                        self.store.update_source, row["id"],
-                        sync_status="synced", if_sync_status="missing")
-            except Exception:
-                # sqlite3.Row has no .get(): the previous spelling raised
-                # AttributeError from inside the handler, which replaced the real
-                # error with a confusing one AND escaped the loop, abandoning
-                # every source after this one for the rest of the sweep.
-                logger.exception("Error checking source %s", row["uri"] or row["id"])
+        # Alternate which population spends the shared budget first, on the
+        # sweep counter's parity. Folders and single files draw from one
+        # counter, so whichever runs first can exhaust it; a fixed order would
+        # let sustained folder churn (a folder source pointed at an
+        # actively-changing repo, the exact case folder pacing exists for)
+        # defer every local_file row on every sweep, with no recovery until
+        # the churn subsides. Alternation gives each population first claim
+        # on the full budget every other sweep, so sustained pressure from
+        # one side delays the other by at most one sweep, never permanently.
+        # Ordering is the only thing that changes: each loop's own charging,
+        # per-source caps, and deferral bookkeeping are identical either way.
+        if self._sweep_count % 2:
+            await _scan_single_file_sources()
+            await _scan_folder_sources()
+        else:
+            await _scan_folder_sources()
+            await _scan_single_file_sources()
 
         # After file-level reconciliation, self-heal vectors left stale by an
         # embedding-setup change (model/budget) -- the file gates above never fire
@@ -250,6 +390,43 @@ class KnowledgeWatcher:
         await self._maybe_reembed_stale()
         self._sweep_count += 1
         await self._maybe_dedup_sweep()
+
+    async def _merge_source_props(self, source_id: str, updates: dict) -> None:
+        """Read-merge-write the source's properties in ONE worker hop.
+
+        ``update_source`` replaces the whole properties blob, so persisting a
+        dict snapshot taken earlier in the sweep would silently clobber
+        whatever a concurrent writer (a manual sync, an ingest finalize)
+        committed to the same source since the snapshot — and the window
+        spans a full ingest attempt. Reading the CURRENT row and applying
+        only the named keys inside the same worker hop keeps every other
+        field as the latest writer left it. ``store.db`` is a per-thread
+        connection, so the read and the write share the hop's own connection.
+        """
+
+        def _apply() -> None:
+            row = self.store.db.execute(
+                "SELECT properties FROM sources WHERE id = ?", (source_id,)).fetchone()
+            if row is None:
+                # Source deleted concurrently; nothing to stamp.
+                return
+            props = self._parse_props(row["properties"])
+            props.update(updates)
+            self.store.update_source(source_id, properties=json.dumps(props))
+
+        await asyncio.to_thread(_apply)
+
+    async def _stamp_attempt(self, source_id: str) -> None:
+        """Persist the attempt timestamp that rotates a served row to the back.
+
+        Written WITHOUT mtime/content_hash, so the row still reads as changed
+        and is retried -- just behind every row that has waited longer. This is
+        what keeps a persistently failing source from holding the front of the
+        sweep order while its charged attempts consume the budget. Merged
+        against the current row (never a snapshot), so only this key changes.
+        """
+        await self._merge_source_props(
+            source_id, {"sweep_attempted_at": datetime.now().isoformat()})
 
     @staticmethod
     def _sweep_chunk_budget() -> int:
@@ -436,12 +613,21 @@ class KnowledgeWatcher:
 
     @staticmethod
     def _parse_props(raw) -> dict:
+        """The source's properties as a dict, whatever shape is stored.
+
+        Always a dict: a legacy row can hold a JSON value that parses to a
+        non-dict (``"[]"``, a string, a number), and callers chain ``.get``
+        straight onto the result — inside the sweep's sort key that raise
+        aborts the entire sweep, every interval, with no self-correction.
+        A non-dict parse reads as empty instead.
+        """
         if isinstance(raw, str):
             try:
-                return json.loads(raw)
+                parsed = json.loads(raw)
             except Exception:
                 return {}
-        return raw or {}
+            return parsed if isinstance(parsed, dict) else {}
+        return raw if isinstance(raw, dict) else {}
 
     @staticmethod
     def _hash_file(path: Path) -> str:

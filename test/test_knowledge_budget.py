@@ -8,8 +8,12 @@ Covers:
 - extraction_pool_size in LLMPool
 """
 import asyncio
+import json
+import os
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from kiro_crew.config.loader import KnowledgeConfig
 
@@ -103,6 +107,375 @@ class TestSweepChunkBudget:
         with patch("kiro_crew.knowledge.watcher.KiroCrewConfig") as mock_cfg:
             mock_cfg.load.return_value.knowledge.sweep_chunk_budget = 0
             assert KnowledgeWatcher._sweep_chunk_budget() == 0
+
+
+# --- Single-file (local_file) sweep budget ---
+#
+# The folder loop checks the global sweep budget before every source and charges
+# scan_source's chunks_ingested back after each scan. The single-file local_file
+# loop shares that counter: without the gate, a library with many changed
+# local_file sources re-ingests everything in one unpaced burst — and a source
+# registered with no mtime/content_hash bookkeeping reads as changed to every
+# sweep, so the burst repeats until each such source is read.
+
+
+def _single_file_watcher(store, budget: int, chunks_per_file: int = 1, commit: bool = True):
+    """A KnowledgeWatcher whose pipeline reports ``chunks_per_file`` per ingest.
+
+    The fake ``ingest_file`` reports extraction progress through ``on_progress``
+    (the attempted count the watcher charges) and, when ``commit`` is true, the
+    committed chunk ids through ``on_committed`` — the same callbacks the real
+    pipeline invokes. ``commit=False`` models a post-extraction partial failure:
+    the LLM calls were spent but the pipeline rolled the write back and never
+    invoked ``on_committed``.
+    """
+    from kiro_crew.knowledge.watcher import KnowledgeWatcher
+
+    pipeline = MagicMock()
+    pipeline.embedder = None
+    ingested_uris: list[str] = []
+
+    async def fake_ingest(path, **kwargs):
+        ingested_uris.append(path)
+        on_progress = kwargs.get("on_progress")
+        if on_progress is not None:
+            for i in range(chunks_per_file):
+                on_progress("extracting", i + 1, chunks_per_file)
+        if commit:
+            on_committed = kwargs.get("on_committed")
+            if on_committed is not None:
+                on_committed(
+                    [f"item-{len(ingested_uris)}-{i}" for i in range(chunks_per_file)])
+            # The real finalize hop stamps last_synced on the source; the
+            # watcher's least-recently-synced-first ordering rotates on it.
+            sid = kwargs.get("source_id")
+            if sid:
+                store.update_source(
+                    sid, last_synced=f"2026-01-01T00:00:{len(ingested_uris):02d}")
+        return "job-id"
+
+    pipeline.ingest_file = AsyncMock(side_effect=fake_ingest)
+    watcher = KnowledgeWatcher(store=store, pipeline=pipeline)
+    watcher._maybe_reembed_stale = AsyncMock()  # type: ignore[method-assign]
+    watcher._maybe_dedup_sweep = AsyncMock()  # type: ignore[method-assign]
+    watcher._sweep_chunk_budget = lambda: budget  # type: ignore[method-assign]
+    return watcher, ingested_uris
+
+
+def _add_local_files(store, tmp_path, count: int) -> list[str]:
+    """Register ``count`` changed local_file sources (no mtime/hash recorded).
+
+    No stored mtime/content_hash is exactly the state a deferred explicit
+    import leaves behind, so every one of these reads as changed to the sweep.
+    """
+    sids = []
+    for i in range(count):
+        f = tmp_path / f"doc{i}.md"
+        f.write_text(f"# doc {i}")
+        sids.append(store.add_source(f"doc{i}.md", "local_file", str(f)))
+    return sids
+
+
+def _props_of(store, sid: str) -> dict:
+    raw = store.db.execute(
+        "SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()["properties"]
+    return json.loads(raw or "{}")
+
+
+class TestSingleFileSweepBudget:
+    @pytest.fixture()
+    def store(self, tmp_path):
+        from kiro_crew.knowledge.store import KnowledgeStore
+
+        s = KnowledgeStore(str(tmp_path / "knowledge.db"))
+        yield s
+        s.close()
+
+    @pytest.mark.asyncio
+    async def test_sweep_stops_at_budget(self, store, tmp_path):
+        """A sweep over many changed local_file sources stops at the budget."""
+        _add_local_files(store, tmp_path, 5)
+        watcher, ingested = _single_file_watcher(store, budget=2, chunks_per_file=1)
+
+        await watcher._scan()
+
+        assert len(ingested) == 2
+
+    @pytest.mark.asyncio
+    async def test_attempted_chunk_count_is_charged(self, store, tmp_path):
+        """The charge is the per-file attempted chunk count, not one per file.
+
+        Budget 10 with 6 chunks per file: after the first file 6 < 10 so the
+        second still runs; after the second 12 >= 10 so the third is deferred.
+        (On the commit path attempted == committed, so this also pins the
+        committed count.)
+        """
+        _add_local_files(store, tmp_path, 3)
+        watcher, ingested = _single_file_watcher(store, budget=10, chunks_per_file=6)
+
+        await watcher._scan()
+
+        assert len(ingested) == 2
+
+    @pytest.mark.asyncio
+    async def test_deferred_sources_keep_no_bookkeeping_and_resume(self, store, tmp_path):
+        """Deferral records no mtime/content_hash, so the next sweep resumes.
+
+        Asserted as a partition (exactly two ingested, the rest untouched)
+        rather than by identity: the driving query has no ORDER BY, so which
+        two rows a sweep reaches first is a query-plan detail, not a contract.
+        """
+        sids = _add_local_files(store, tmp_path, 4)
+        watcher, ingested = _single_file_watcher(store, budget=2, chunks_per_file=1)
+
+        await watcher._scan()
+
+        assert len(ingested) == 2
+        with_bookkeeping = [sid for sid in sids if "mtime" in _props_of(store, sid)]
+        assert len(with_bookkeeping) == 2
+        for sid in sids:
+            props = _props_of(store, sid)
+            if sid in with_bookkeeping:
+                assert "content_hash" in props
+            else:
+                assert "mtime" not in props, "a deferred source must stay resumable"
+                assert "content_hash" not in props
+
+        # The next sweep (fresh budget) picks up where this one stopped.
+        await watcher._scan()
+        assert len(ingested) == 4
+
+    @pytest.mark.asyncio
+    async def test_folder_loop_consumption_defers_single_files(self, store, tmp_path):
+        """Both loops share one counter: a folder that spends the whole budget
+        leaves nothing for the single-file loop's ingests that sweep."""
+        folder = tmp_path / "vault"
+        folder.mkdir()
+        store.add_source("vault", "local_folder", str(folder))
+        _add_local_files(store, tmp_path, 2)
+
+        watcher, ingested = _single_file_watcher(store, budget=5, chunks_per_file=1)
+        watcher._folder_watcher.scan_source = AsyncMock(  # type: ignore[method-assign]
+            return_value={"chunks_ingested": 5})
+
+        await watcher._scan()
+
+        assert ingested == []
+
+    @pytest.mark.asyncio
+    async def test_zero_budget_leaves_the_sweep_unbounded(self, store, tmp_path):
+        """budget=0 disables the bound, matching the folder loop's contract."""
+        _add_local_files(store, tmp_path, 4)
+        watcher, ingested = _single_file_watcher(store, budget=0, chunks_per_file=100)
+
+        await watcher._scan()
+
+        assert len(ingested) == 4
+
+    @pytest.mark.asyncio
+    async def test_exhausted_budget_still_marks_vanished_files_missing(self, store, tmp_path):
+        """Zero-cost status upkeep survives budget exhaustion.
+
+        The gate defers reads and ingests with a per-row ``continue`` below the
+        existence check, never a loop-level ``break``, so a vanished file's
+        'missing' marker still lands on a sweep whose folder sources spent the
+        whole budget.
+        """
+
+        folder = tmp_path / "vault"
+        folder.mkdir()
+        store.add_source("vault", "local_folder", str(folder))
+        gone = tmp_path / "gone.md"
+        gone.write_text("# gone")
+        sid = store.add_source("gone.md", "local_file", str(gone))
+        store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (sid,))
+        store.db.commit()
+        gone.unlink()
+
+        watcher, ingested = _single_file_watcher(store, budget=5, chunks_per_file=1)
+        watcher._folder_watcher.scan_source = AsyncMock(  # type: ignore[method-assign]
+            return_value={"chunks_ingested": 5})
+
+        await watcher._scan()
+
+        assert ingested == []
+        status = store.db.execute(
+            "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()["sync_status"]
+        assert status == "missing"
+
+    @pytest.mark.asyncio
+    async def test_contended_sweeps_rotate_across_sources(self, store, tmp_path):
+        """Under sustained contention every source makes progress.
+
+        The sweep orders local_file rows least-recently-synced first, and a
+        served source's fresh ``last_synced`` moves it behind rows still
+        waiting — so even when every source changes every sweep and the budget
+        admits one file per sweep, three sweeps serve three DIFFERENT sources
+        rather than re-serving whichever row a stable query order puts first.
+        """
+        paths = [tmp_path / f"doc{i}.md" for i in range(3)]
+        _add_local_files(store, tmp_path, 3)
+        watcher, ingested = _single_file_watcher(store, budget=1, chunks_per_file=1)
+
+        for sweep in range(3):
+            # Every file changes before every sweep: new content, newer mtime.
+            for p in paths:
+                p.write_text(f"# rev {sweep} of {p.name}")
+                os.utime(p, (2_000_000_000 + sweep, 2_000_000_000 + sweep))
+            await watcher._scan()
+
+        assert len(ingested) == 3
+        assert len(set(ingested)) == 3, (
+            "a contended sweep must rotate, not re-serve the same source")
+
+    @pytest.mark.asyncio
+    async def test_folder_churn_cannot_permanently_starve_single_files(self, store, tmp_path):
+        """Sustained folder churn delays a changed local_file by at most one sweep.
+
+        The two populations alternate which spends the shared budget first, so
+        a folder that consumes the entire budget on every sweep still leaves
+        the next sweep's first claim to the single-file rows — deferral is
+        recoverable without waiting for the folder churn to subside.
+        """
+        folder = tmp_path / "vault"
+        folder.mkdir()
+        store.add_source("vault", "local_folder", str(folder))
+        _add_local_files(store, tmp_path, 1)
+
+        watcher, ingested = _single_file_watcher(store, budget=5, chunks_per_file=1)
+        # The folder consumes the WHOLE budget on every single sweep.
+        watcher._folder_watcher.scan_source = AsyncMock(  # type: ignore[method-assign]
+            return_value={"chunks_ingested": 5})
+
+        await watcher._scan()  # folders first: budget exhausted, file deferred
+        assert ingested == []
+        await watcher._scan()  # single files first: the deferred file ingests
+
+        assert len(ingested) == 1
+
+    @pytest.mark.asyncio
+    async def test_bookkeeping_merges_against_concurrent_writes(self, store, tmp_path):
+        """The persist is a read-merge-write of the CURRENT row, not a snapshot.
+
+        The watcher reads a source's properties at the top of the sweep, and a
+        full ingest can run between that read and the bookkeeping write. A key
+        a concurrent writer (a manual sync) commits in that window must
+        survive the watcher's write — a whole-blob write of the sweep's
+        snapshot would silently clobber it.
+        """
+        sids = _add_local_files(store, tmp_path, 1)
+        watcher, ingested = _single_file_watcher(store, budget=0, chunks_per_file=1)
+
+        orig_ingest = watcher.pipeline.ingest_file.side_effect
+
+        async def ingest_with_concurrent_write(path, **kwargs):
+            # A concurrent manual sync lands mid-ingest.
+            row = store.db.execute(
+                "SELECT properties FROM sources WHERE id = ?", (sids[0],)).fetchone()
+            props = json.loads(row["properties"] or "{}")
+            props["concurrent_key"] = "must-survive"
+            store.update_source(sids[0], properties=json.dumps(props))
+            return await orig_ingest(path, **kwargs)
+
+        watcher.pipeline.ingest_file = AsyncMock(side_effect=ingest_with_concurrent_write)
+
+        await watcher._scan()
+
+        props = _props_of(store, sids[0])
+        assert props.get("concurrent_key") == "must-survive"
+        assert "mtime" in props and "content_hash" in props
+        assert "sweep_attempted_at" in props
+
+    @pytest.mark.asyncio
+    async def test_non_dict_properties_do_not_crash_the_sweep(self, store, tmp_path):
+        """A legacy row whose properties JSON parses to a non-dict reads as {}.
+
+        ``_parse_props`` feeds the sort key, which chains ``.get`` onto the
+        result — a stored ``"[]"`` would otherwise raise ``AttributeError``
+        inside ``sorted()`` and abort the whole sweep every interval with no
+        self-correction. The poison row participates as if it had no
+        properties, and every other source still ingests.
+        """
+        legacy = tmp_path / "legacy.md"
+        legacy.write_text("# legacy")
+        sid = store.add_source("legacy.md", "local_file", str(legacy))
+        store.db.execute("UPDATE sources SET properties = '[]' WHERE id = ?", (sid,))
+        store.db.commit()
+        _add_local_files(store, tmp_path, 1)
+        watcher, ingested = _single_file_watcher(store, budget=0, chunks_per_file=1)
+
+        await watcher._scan()
+
+        assert len(ingested) == 2, "both sources ingest; the sweep must not crash"
+
+    @pytest.mark.asyncio
+    async def test_corrupt_attempt_stamp_does_not_crash_the_sweep(self, store, tmp_path):
+        """A non-string ``sweep_attempted_at`` degrades to the fallback key.
+
+        ``store.import_bundle`` accepts a source's properties JSON verbatim
+        from external content, so the stamp's type is untrusted: a numeric
+        value must not poison the mixed-type sort and abort the sweep before
+        any single-file reconciliation runs — it reads as never-attempted and
+        the row sorts by ``last_synced`` instead.
+        """
+        poisoned = tmp_path / "poisoned.md"
+        poisoned.write_text("# poisoned")
+        store.add_source(
+            "poisoned.md", "local_file", str(poisoned),
+            properties={"sweep_attempted_at": 123})
+        _add_local_files(store, tmp_path, 1)
+        watcher, ingested = _single_file_watcher(store, budget=0, chunks_per_file=1)
+
+        await watcher._scan()
+
+        assert len(ingested) == 2, "both sources ingest; the sweep must not crash"
+
+    @pytest.mark.asyncio
+    async def test_failing_source_does_not_starve_later_sources(self, store, tmp_path):
+        """A persistently failing row rotates like any served row.
+
+        A partial-ingest failure charges its spent extraction calls but never
+        advances ``last_synced`` (only the committed branch writes it), so an
+        ordering keyed on last_synced alone re-serves the failing row first
+        every sweep while its charge exhausts the budget — later changed
+        sources never run. The attempt stamp is what breaks that: the failed
+        row's retry waits its turn behind the rows still queued.
+        """
+        _add_local_files(store, tmp_path, 3)
+        watcher, ingested = _single_file_watcher(
+            store, budget=1, chunks_per_file=1, commit=False)
+
+        for _ in range(3):
+            await watcher._scan()
+
+        assert len(ingested) == 3
+        assert len(set(ingested)) == 3, (
+            "each contended sweep must serve a source the failing row was not")
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_charges_and_stays_resumable(self, store, tmp_path):
+        """A rolled-back ingest still charges its spent extraction calls, and
+        keeps no bookkeeping so the next sweep can retry it.
+
+        The pipeline invokes ``on_committed`` only on the fully-committed
+        branch; extraction already spent one LLM call per chunk by then. If the
+        watcher charged only committed chunks, repeated post-extraction
+        failures would spend without bound; if it persisted mtime/content_hash
+        anyway, the changed file would never be re-read.
+        """
+        sids = _add_local_files(store, tmp_path, 3)
+        watcher, ingested = _single_file_watcher(
+            store, budget=4, chunks_per_file=2, commit=False)
+
+        await watcher._scan()
+
+        # Charged 2 attempted chunks per failed ingest: 2, then 4 >= 4 — the
+        # third source is deferred, so the failure loop is budget-bounded.
+        assert len(ingested) == 2
+        # And nothing was recorded, so every source stays retryable.
+        for sid in sids:
+            assert "mtime" not in _props_of(store, sid)
+            assert "content_hash" not in _props_of(store, sid)
 
 
 # --- Pool size from config ---
