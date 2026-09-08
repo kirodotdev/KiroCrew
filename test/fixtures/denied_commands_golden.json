@@ -403,9 +403,9 @@
   },
   {
     "id": "local-destructive-chmod-777",
-    "pattern": "chmod(?: -[a-z][a-z]?[a-z]?)?(?: --recursive)?(?: -[a-z])* 777.*",
+    "pattern": "chmod(?: -[a-z][a-z]?[a-z]?)?(?: --recursive)?(?: -[a-z])* 0?777.*",
     "category": "local-destructive",
-    "description": "Blocks chmod 777, which grants world read/write/execute permissions and creates a serious security exposure. Packed (-Rv), split (-R -v), and --recursive spellings match, with runs of single-letter flags allowed around them."
+    "description": "Blocks chmod 777, which grants world read/write/execute permissions and creates a serious security exposure. Packed (-Rv), split (-R -v), --recursive, and leading-zero (0777) spellings match, with runs of single-letter flags allowed around them."
   },
   {
     "id": "local-destructive-chmod-usr",

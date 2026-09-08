@@ -8689,6 +8689,9 @@ class TestChmod777FlagVariantsStayDenied:
             "chmod -v --recursive 777 ~",
             "chmod -f -R 777 ~",
             "chmod -Rv --recursive -v -v 777 ~",
+            # Leading-zero octal is the same mode.
+            "chmod 0777 ~",
+            "chmod -R 0777 ~",
             # A quoted program is the same program; an empty word is elided
             # by the third view -- both reach the rule.
             '"chmod" -R 777 ~',
