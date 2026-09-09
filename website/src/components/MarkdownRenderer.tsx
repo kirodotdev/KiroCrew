@@ -1538,6 +1538,12 @@ const MD_COMPONENTS: Components = {
     if (lang === 'mermaid') return <MermaidBlock code={codeStr} />
     if (lang === 'excalidraw') return <ExcalidrawBlock code={codeStr} />
 
+    // No `sourceStartLine` here: top-level fences never reach react-markdown
+    // (the block assembler extracts them first — see `renderBlock`'s 'code'
+    // case, which is the commentable path). A fence that DOES land here is
+    // nested (blockquote / list), where block-relative sourcepos does not map
+    // to a document line without the block-offset dance — so nested fences
+    // stay non-commentable rather than growing a gutter that can't anchor.
     return <CodeBlock code={codeStr} lang={lang} complete={true} />
   },
   pre({ children }) { return <>{children}</> },
@@ -3882,7 +3888,11 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
         const mdNode = <MarkdownContentCard content={block.content} lang={block.language} />
         return smooth ? <SmoothResize enabled={!block.complete}>{mdNode}</SmoothResize> : mdNode
       }
-      const node = <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} />
+      // `sourceStartLine` (the block's first content line in the raw source)
+      // is the handle line-anchored code commenting keys on — see
+      // codeComments.ts. Only meaningful where source positions are on
+      // (artifact pages); chat renders without them and stays inert.
+      const node = <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} sourceStartLine={sourcePos ? block.startLine : undefined} />
       // Height-grow only — streaming code renders as one plain <pre> text node
       // so per-line content animation isn't applied here.
       return smooth ? <SmoothResize enabled={!block.complete}>{node}</SmoothResize> : node

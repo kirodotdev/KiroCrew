@@ -6,9 +6,10 @@
  * look/behavior of code and diff rendering is decided.
  */
 import { useId, useMemo } from 'react'
-import type { BaseCodeOptions, FileContents, SupportedLanguages } from '@pierre/diffs'
+import type { FileContents, LineAnnotation, SupportedLanguages } from '@pierre/diffs'
 import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, setCustomExtension } from '@pierre/diffs'
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
+import type { FileOptions } from '@pierre/diffs/react'
 import { getOrCreateWorkerPoolSingleton } from '@pierre/diffs/worker'
 import { useIsDark } from '../hooks/useIsDark'
 import { usePlainDiff } from '../hooks/usePlainDiff'
@@ -299,9 +300,12 @@ export function PierreShell({ children, disabled }: { children: React.ReactNode;
   )
 }
 
-export function PierreCodeImpl({ file, options, className, langHint, scrollClassName }: {
+export function PierreCodeImpl({ file, options, className, langHint, scrollClassName, lineAnnotations, renderAnnotation, renderGutterUtility }: {
   file: FileContents
-  options?: BaseCodeOptions
+  /** Full `FileOptions` surface: interaction options (line selection, gutter
+   *  utility, hover callbacks) ride alongside the base code options and are
+   *  merged over the shared defaults the same way. */
+  options?: FileOptions<unknown>
   className?: string
   /** Markdown fence tag; resolved to a highlightable language (falling back
    *  to plain text) when the file has no explicit `lang`. */
@@ -313,6 +317,11 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
    *  IntersectionObserver root. Omit it for snippet surfaces, which are short
    *  and already inside someone else's scroller. */
   scrollClassName?: string
+  /** Line-pinned annotation rows + their renderer — passed through to the
+   *  React `File` top-level props (they are NOT options; see FileProps). */
+  lineAnnotations?: LineAnnotation<unknown>[]
+  renderAnnotation?: (annotation: LineAnnotation<unknown>) => React.ReactNode
+  renderGutterUtility?: (getHoveredLine: () => { lineNumber: number } | undefined) => React.ReactNode
 }) {
   const dark = useIsDark()
   const poolBroken = useWorkerPoolBroken()
@@ -330,7 +339,17 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
       ? withLang
       : { ...withLang, cacheKey: contentCacheKey(withLang.name, withLang.contents, surfaceId + ':file') }
   }, [file, langHint, surfaceId])
-  const code = <File className={className} file={resolvedFile} options={resolved} disableWorkerPool={poolBroken} />
+  const code = (
+    <File
+      className={className}
+      file={resolvedFile}
+      options={resolved}
+      disableWorkerPool={poolBroken}
+      lineAnnotations={lineAnnotations}
+      renderAnnotation={renderAnnotation}
+      renderGutterUtility={renderGutterUtility}
+    />
+  )
   // Not gated on the plain-diff preference: this is a whole-FILE surface, and
   // "plain diffs" is a choice about diffs. Its highlighting is also the case
   // workers earn their keep on, so switching them off here would move the
