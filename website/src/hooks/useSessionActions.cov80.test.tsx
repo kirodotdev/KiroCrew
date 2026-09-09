@@ -49,7 +49,8 @@ import {
   readPinnedSessionOrder,
   reconcilePinnedSessionOrder,
 } from '../utils/pinnedSessionOrder'
-import { pinMutationKeysInFlight, useSessionActions } from './useSessionActions'
+import { useSessionActions } from './useSessionActions'
+import { readPinMutationKeysInFlight } from '../utils/pinMutationsInFlight'
 
 const KEY = 'zzq-slot-1'
 
@@ -156,9 +157,9 @@ describe('togglePin', () => {
     const { result } = harness()
     act(() => result.current.togglePin(KEY))
     expect(slot()?.pinned).toBe(true)
-    expect(pinMutationKeysInFlight()).toEqual([KEY])
+    expect(readPinMutationKeysInFlight()).toEqual([KEY])
     await waitFor(() => expect(slot()?.pinned).toBe(false))
-    expect(pinMutationKeysInFlight()).toEqual([])
+    expect(readPinMutationKeysInFlight()).toEqual([])
   })
 
   it('rolls back a rejected pin after an unrelated slot update', async () => {
@@ -392,7 +393,7 @@ describe('togglePin', () => {
     await waitFor(() => expect(apiMock.setSlotPin).toHaveBeenCalledWith(b, false))
     const natural = [a, c]
     const naturalSet = new Set(natural)
-    const pending = pinMutationKeysInFlight().filter(key => !naturalSet.has(key))
+    const pending = readPinMutationKeysInFlight().filter(key => !naturalSet.has(key))
     const reordered = movePinnedSession(
       reconcilePinnedSessionOrder(readPinnedSessionOrder(), [...natural, ...pending]),
       a,
@@ -600,7 +601,7 @@ describe('togglePin', () => {
     act(() => result.current.togglePin(KEY))
     await waitFor(() => expect(apiMock.setSlotPin).toHaveBeenCalledWith(KEY, true))
     const natural = [a, c]
-    const pending = pinMutationKeysInFlight()
+    const pending = readPinMutationKeysInFlight()
     persistPinnedSessionOrder(movePinnedSession(
       reconcilePinnedSessionOrder(readPinnedSessionOrder(), [...natural, ...pending]),
       a,

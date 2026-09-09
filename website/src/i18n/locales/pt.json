@@ -7752,6 +7752,7 @@
       "unknown_error": "Erro desconhecido"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "Seguir a ordenação (todas as fixadas)",
       "bring_back_to_main": "Trazer de volta para a janela principal",
       "close_session": "Fechar sessão",
       "copy_link": "Copiar link",
