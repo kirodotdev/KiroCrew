@@ -132,8 +132,8 @@ class TestConvertedSites:
         assert isinstance(meta, dict) and meta.get("mid"), "delivery must carry meta.mid"
         assert meta.get("kind") == "compaction"
 
-    def test_crew_chat_frame_meta_carries_mid(self) -> None:
-        """crew_chat's deliberate manual frame now ships the appended row's mid."""
+    def test_manual_frame_meta_carries_mid(self) -> None:
+        """A deliberate manual frame ships the appended row's mid (the retired crew dispatcher was the first such site)."""
         # Mirror the site's exact sequence: append(broadcast=False) then a frame
         # built from the APPENDED row's meta (not the pre-append dict).
         state = _StateStub()

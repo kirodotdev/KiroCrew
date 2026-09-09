@@ -456,7 +456,7 @@ what the composer renders:
   is reopened, and the worker's binding stays valid meanwhile. Its reports simply
   go unread until someone takes the item over or stops it.
 - **Some targets are out of bounds by design.** Incognito/temporary sessions,
-  app-scoped sessions, channel-linked or mirrored sessions, crew-mode sessions,
+  app-scoped sessions, channel-linked or mirrored sessions,
   and sessions in another workspace are all refused by the shared guard. Plan
   work items onto plain persistent dashboard sessions only.
 - **Shell is for the bundled script only, and the evaluator runs no command you

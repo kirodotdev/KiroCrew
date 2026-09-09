@@ -472,11 +472,11 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
     expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
   })
 
-  it('keeps crew-mode answers out of the collapse pane', () => {
-    // Crew Mode inverts this component's core assumption: every forwarded
+  it('keeps legacy crew-mode answers out of the collapse pane', () => {
+    // Read-only compat for transcripts the retired Crew Mode wrote: every forwarded
     // completion is the FINAL answer for a different topic, so "last assistant
     // message is the conclusion" would bury real answers behind the toggle.
-    // Marked via the persisted `crew-reply` class so it survives a reload.
+    // Marked via the persisted `crew-reply` class so it survives a reload; nothing writes it any more.
     const items: TurnItem[] = [
       { kind: 'single', msg: { role: 'assistant', content: 'Got it — working on that.', cls: 'msg msg-a', ts: '1' }, idx: 0 },
       { kind: 'single', msg: { role: 'assistant', content: "Here's what's in flight: three topics running right now.", cls: 'msg msg-a crew-reply', ts: '2' }, idx: 1 },

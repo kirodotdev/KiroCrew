@@ -1029,7 +1029,7 @@ def mint_row_mid() -> str:
 
     The ONE place the ``meta.mid`` format is spelled. ``_ChatSlot.append`` mints
     the id for a row that enters a dashboard window, and the dashboard
-    dual-writers (``cron_inject``, ``workflow_inject``, ``crew_chat``) read it back
+    dual-writers (``cron_inject``, ``workflow_inject``) read it back
     off that append to stamp their durable copy (``row_mid``). A writer with no
     slot to mint from -- a channel dispatcher persisting a turn it ran on its own
     session -- has to mint the id itself, and it must produce the SAME shape,

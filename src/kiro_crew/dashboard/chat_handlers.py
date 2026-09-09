@@ -60,6 +60,7 @@ from kiro_crew.dashboard.chat_persistence import (
     COLOR_HEX_RE,
     _attach_variants,
     _rehydrate_slot_title,
+    _restored_mode,
     _validate_autocompact_pct,
     get_reasoning_effort_values,
     save_slot_off_loop,
@@ -276,15 +277,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     requested_mode = body.get("mode")
     if not isinstance(requested_mode, str) or requested_mode not in _CREATABLE_MODES:
         requested_mode = ""
-    if requested_mode == "crew" and slot_name:
-        # Same boundary as api_chat_slot_create: a caller-supplied name whose
-        # normalized key cannot host a crew store must not become a crew slot
-        # (its first crew message would 500). Dropped rather than refused —
-        # auto-create is a convenience path, not the crew entry point.
-        from kiro_crew.crew_chat import is_crew_capable_slot_key
-
-        if not is_crew_capable_slot_key(_normalize_slot_key(slot_name)):
-            requested_mode = ""
 
     # member-* keys are RESERVED for member DM threads, which are born only
     # through POST /api/members/{slug}/thread. Auto-creating one here (e.g. a
@@ -656,37 +648,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             attachments=attachment_meta(user_meta),
         )
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
-
-    # ── Crew Mode dispatch (RFC orchestrator-chat-sessions) ─────────
-    # MUST precede the hold-users gate below: crew topics ARE background
-    # sub-agents, so the hold would swallow every message the moment one
-    # topic runs — killing the mode's whole point (parallel ingress). Crew
-    # messages are durable queue entries, not turns; the CrewOrchestrator
-    # acks instantly and routes them to topic sub-sessions.
-    if getattr(slot, "mode", "") == "crew":
-        _crew = getattr(state, "crew", None)
-        if _crew is None:
-            return web.json_response(
-                {"error": "crew mode unavailable", "code": "crew_unavailable"}, status=503
-            )
-        # Do NOT append the user message here. `ingest` shows it only after the
-        # queue entry is durable: a visible message with no queue entry (process
-        # exit during a cold-store build) is a request that can never resume.
-        _refusal = await _crew.ingest(
-            slot,
-            message,
-            user_meta=_redact_meta(user_meta) if user_meta else None,
-        )
-        if _refusal:
-            # Crew declined this ingress (app-owned session). Answering 200 told
-            # a programmatic caller its message was accepted for work that will
-            # never run — the transcript note it posts is not visible to an API
-            # caller, so the refusal has to reach the status line too.
-            return web.json_response(
-                {"error": "crew mode is not available for this session", "code": _refusal},
-                status=409,
-            )
-        return web.json_response({"ok": True, "slot": slot.key, "crew": True})
 
     # Queue a message typed while background sub-agents are still running for
     # this slot. The slot.running queue path above covers the mid-turn case;
@@ -2299,11 +2260,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
 # allowlist (chat_folders._VALID_MODES) and the fork override allowlist
 # (chat_fork): "design-critique" is an app-worker mode assigned at birth by the
 # Design Critique app's openSlot() — the custom mode keeps its throwaway dc-*
-# slots off the chat sidebar, which renders only "", "orchestrator" and "crew"
+# slots off the chat sidebar, which renders only "" and "orchestrator"
 # (ChatPage.tsx filteredSlots). Switching an existing session INTO an app-worker
 # mode, or forking one with it as an override, is not a real flow, so those two
 # allowlists deliberately stay narrower — do not "sync" them to this one.
-_CREATABLE_MODES = ("", "orchestrator", "crew", "design-critique")
+_CREATABLE_MODES = ("", "orchestrator", "design-critique")
 
 
 async def api_chat_slot_create(request: web.Request) -> web.Response:
@@ -2424,14 +2385,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     _mode = body.get("mode", "")
     if _mode not in _CREATABLE_MODES:
         return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
-    # A crew-bound session runs PLAIN chat only. A non-plain mode (crew,
-    # orchestrator, design-critique) is consumed by an EARLIER dispatch branch in
-    # ``api_chat`` — the orchestrator stage loop, the crew store — not by the
-    # remote arm, which only replaces the plain ``_run_chat`` dispatch. So a
-    # remote slot created with ``mode="crew"`` would run that mode's tools and
-    # filesystem work on THIS machine instead of the crew the user picked. Refused
-    # here, alongside the other pre-peer validations above, so a rejected mode never
-    # costs the user an orphaned ``create_peer_slot`` session.
+    # A crew-bound session runs PLAIN chat only. A non-plain mode (orchestrator,
+    # design-critique) is consumed by an EARLIER dispatch branch in ``api_chat``
+    # — the orchestrator stage loop — not by the remote arm, which only replaces
+    # the plain ``_run_chat`` dispatch. So a remote slot created with a mode
+    # would run that mode's tools and filesystem work on THIS machine instead of
+    # the crew the user picked. Refused here, alongside the other pre-peer
+    # validations above, so a rejected mode never costs the user an orphaned
+    # ``create_peer_slot`` session.
     if instance_id and _mode:
         return web.json_response(
             {
@@ -2440,26 +2401,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    # Same boundary as the mode-switch endpoint: a slot whose name folds to
-    # nothing but dots has no crew store, so accepting `mode="crew"` here would
-    # hand back a tab that 500s on its first message. Only a CALLER-SUPPLIED name
-    # can be that: an omitted name is generated by `get_or_create_slot` and is
-    # always storable. Checked on the NORMALIZED form, which is the key the store
-    # is built from — the raw body name is not what `CrewStore` ever sees.
-    if _mode == "crew" and name:
-        # Deferred: this module is imported when the dashboard package is, which
-        # the gateway does on its boot path, and crew is a dashboard-only
-        # subsystem. Only a crew request pays for it.
-        from kiro_crew.crew_chat import is_crew_capable_slot_key
-
-        if not is_crew_capable_slot_key(_normalize_slot_key(str(name))):
-            return web.json_response(
-                {
-                    "error": "this session name cannot run crew mode",
-                    "code": "crew_unsupported_slot",
-                },
-                status=400,
-            )
     # A member-* name is RESERVED for DM threads (born only through the member
     # thread endpoint); `get_or_create_slot` below rejects it with a ValueError
     # that becomes a 409. That rejection has to happen BEFORE the peer write, not
@@ -9125,8 +9066,12 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     if _member_binding is None:
         if meta.get("agent"):
             slot.agent = meta["agent"]
-        if meta.get("mode") and meta["mode"] != members_mod.DM_SLOT_MODE:
-            slot.mode = meta["mode"]
+        # Same fold as the two persistence loaders: a retired mode (``crew``)
+        # comes back as plain chat, so the ``surface`` this handler returns is
+        # one the chat page can render rather than a value it dropped.
+        _mode = _restored_mode(meta.get("mode"))
+        if _mode and _mode != members_mod.DM_SLOT_MODE:
+            slot.mode = _mode
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("project"):

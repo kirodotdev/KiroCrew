@@ -90,7 +90,6 @@ def test_human_typed_enqueue_stamps_admission_snapshot(tmp_path):
         "linked": False,
         "mirrored": False,
         "mirror_identity": "",
-        "crew": False,
         "ephemeral": False,
         "app": False,
         "unattended": False,
@@ -373,7 +372,7 @@ def test_malformed_snapshot_fails_closed():
 
 
 def test_workspace_change_invalidates_admission(tmp_path):
-    """`authorize_target`'s seventh refusal is `workspace_mismatch`, and
+    """`authorize_target`'s sixth refusal is `workspace_mismatch`, and
     `slot.workspace` is mutable while a queue waits (the agent-switch endpoint
     re-derives it): a prompt admitted under workspace A must not run with
     workspace B's memory, lessons and project context."""
@@ -616,13 +615,12 @@ async def test_drain_strips_snapshot_from_the_persisted_row(tmp_path, monkeypatc
 # and it belongs in `_NON_CONTAINMENT_REFUSALS` with a reason.
 
 # Target-side containment refusals, mapped to the snapshot key that re-asserts
-# each one at drain time. `workspace_mismatch` is the seventh (see
+# each one at drain time. `workspace_mismatch` is the sixth (see
 # `test_workspace_change_invalidates_admission`); it is an identity rather than
 # a boolean, but it is still a constraint the drain compares.
 _TARGET_CONTAINMENT_REFUSALS = {
     "linked_session_target": "linked",
     "mirrored_target": "mirrored",
-    "crew_mode_target": "crew",
     "ephemeral_target": "ephemeral",
     "app_scoped_target": "app",
     "unattended_target": "unattended",
@@ -699,7 +697,7 @@ def test_the_parse_finds_the_refusals_it_is_asked_to_pin():
     """
     codes = _authorize_target_refusal_codes()
     assert len(codes) >= len(_TARGET_CONTAINMENT_REFUSALS) + len(_NON_CONTAINMENT_REFUSALS)
-    assert "workspace_mismatch" in codes, "the seventh refusal must be visible to the parse"
+    assert "workspace_mismatch" in codes, "the sixth refusal must be visible to the parse"
 
 
 def test_every_refusal_is_classified():

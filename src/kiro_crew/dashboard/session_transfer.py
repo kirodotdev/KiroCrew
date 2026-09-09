@@ -690,7 +690,7 @@ async def build_transfer_bundle_async(
     ``append_if_absent`` copy into the window and advances the boundary, so the
     counter is honest by the time the tail is snapshotted. A caller that bundled
     WITHOUT flushing could not use this slice — a durable injector
-    (``cron_inject``, ``workflow_inject``, ``crew_chat``) puts the same row into
+    (``cron_inject``, ``workflow_inject``) puts the same row into
     the window and onto disk without a save, so the boundary would start one row
     too early and ship the injection twice. There is deliberately no such
     caller: this is the only builder, and it always flushes.

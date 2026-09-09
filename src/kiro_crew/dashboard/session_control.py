@@ -549,7 +549,6 @@ _CONTAINMENT_CHANGE_LABELS = {
     "linked": "the session was linked to a channel",
     "mirrored": "the session gained an outbound channel mirror",
     "mirror_retarget": "the session's outbound mirror was retargeted to a different channel",
-    "crew": "the session was switched to crew mode",
     "ephemeral": "the session became incognito/temporary",
     "app": "the session became app-scoped",
     "unattended": "the session became unattended",
@@ -608,7 +607,6 @@ def containment_snapshot(
     snap: dict[str, Any] = {
         "linked": bool(getattr(slot, "linked_session_key", "")),
         "mirrored": on_probe_failure if probed is None else bool(probed),
-        "crew": getattr(slot, "mode", "") == "crew",
         "ephemeral": getattr(slot, "memory_mode", "persistent") != "persistent",
         "app": bool(getattr(slot, "_app", "")),
         "unattended": str(getattr(slot, "key", "")).startswith(UNATTENDED_SLOT_PREFIXES),
@@ -670,7 +668,7 @@ def newly_held_constraints(
     destroy user speech on a supported flow (``api_chat`` applies no linked
     refusal to composer input). A NEW outbound mirror is never exempt — the
     message's author does not control mirror links, so it still drops. Every
-    other constraint — crew, ephemeral, app, unattended, workspace — applies
+    other constraint — ephemeral, app, unattended, workspace — applies
     to directive entries too.
     """
     recorded: dict[str, Any] = {}
@@ -1525,19 +1523,6 @@ def authorize_target(
         # that channel's content back and a stop would act on a conversation
         # other people are party to.
         raise deny("sessions mirrored to a channel are not addressable", "mirrored_target")
-    if getattr(slot, "mode", "") == "crew":
-        # A crew session's ingress is NOT a turn. `/api/chat` routes it to
-        # `state.crew.ingest`, which makes the message a durable queue entry and
-        # fans it out to topic sub-sessions; the orchestrator acks instantly and
-        # the message is only shown once the entry is durable. Delivering here as
-        # a turn instead would run generic work that is neither queued nor routed
-        # -- accepted, apparently fine, and silently outside the mode.
-        #
-        # Refused rather than emulated, for the same reason a channel-linked
-        # target is: a target whose turn lifecycle differs needs its own
-        # handling rather than a second, drifting copy of the orchestrator's
-        # rules.
-        raise deny("crew-mode sessions are not addressable", "crew_mode_target")
 
     # The caller's own isolation gates it too, and for the same reasons the
     # target's does: an incognito or temporary session is one the user asked to

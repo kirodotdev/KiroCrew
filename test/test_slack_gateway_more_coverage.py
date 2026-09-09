@@ -731,29 +731,6 @@ class TestAutoMigrateMemory:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestInitCrew:
-    """Crew mode is optional: a construction failure disables it silently."""
-
-    def test_orchestrator_failure_disables_crew_mode(self, caplog):
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        ds.crew = None
-        orch.dashboard_state = ds
-        with caplog.at_level("WARNING"):
-            with patch(
-                "kiro_crew.crew_chat.CrewOrchestrator", side_effect=RuntimeError("bad wiring")
-            ):
-                orch._init_crew()
-        assert "crew mode disabled" in caplog.text
-
-    def test_no_dashboard_state_skips_crew_setup(self):
-        orch = _make_orchestrator()
-        orch.dashboard_state = None
-        with patch("kiro_crew.crew_chat.CrewOrchestrator") as ctor:
-            orch._init_crew()
-        ctor.assert_not_called()
-
-
 class TestInitMcpDiscovery:
     """Configured MCP servers are logged at boot for diagnosability."""
 

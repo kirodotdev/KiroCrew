@@ -396,7 +396,7 @@ watches, and that cost grows with the loop's own history.
   target began a turn on your message; `started: false` means it queued. Neither
   says the work succeeded — acceptance is still the domain assertion's job.
 - **Some targets are out of bounds by design.** Incognito/temporary sessions,
-  app-scoped sessions, channel-linked or mirrored sessions, crew-mode sessions,
+  app-scoped sessions, channel-linked or mirrored sessions,
   and sessions in another workspace are all refused by the shared guard. Plan
   work items onto plain persistent dashboard sessions only.
 - **Shell is for the bundled scripts only, and the evaluator runs no command

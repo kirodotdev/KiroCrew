@@ -949,10 +949,10 @@ class TestBindingAuthorization:
             ({"mode": "bogus"}, "invalid_mode"),
             ({"memory_mode": "bogus"}, None),
             # A crew-bound create carrying ANY non-plain mode is refused before the
-            # peer write (F3): the mode guard fires ahead of the crew-capable-name
+            # peer write (F3): the mode guard fires ahead of every later name
             # check, so a crew-bound session can never host mode-specific work that
             # would run on THIS machine.
-            ({"name": "...", "mode": "crew"}, "remote_mode_unsupported"),
+            ({"name": "...", "mode": "orchestrator"}, "remote_mode_unsupported"),
         ],
         ids=["mode", "memory_mode", "remote_mode_unsupported"],
     )
@@ -3438,7 +3438,7 @@ class TestRemoteSessionIsPlainChatOnly:
         slot = _remote_slot("chat-1")
         state._slots[slot.key] = slot
         async with TestClient(TestServer(_mode_app(state))) as client:
-            resp = await client.patch("/api/chat/slots/chat-1/mode", json={"mode": "crew"})
+            resp = await client.patch("/api/chat/slots/chat-1/mode", json={"mode": "orchestrator"})
             assert resp.status == 409
             assert (await resp.json())["code"] == "remote_mode_unsupported"
         # The mode is left plain — the switch changed nothing.

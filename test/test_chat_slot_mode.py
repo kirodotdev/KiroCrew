@@ -109,6 +109,7 @@ class TestChatSlotMode:
         slot = _ChatSlot("test")
         # Simulate a running session by giving it an undone task
         import asyncio
+
         slot.task = asyncio.ensure_future(asyncio.sleep(999))
         assert slot.running
         state = _mock_state(slot)
@@ -130,7 +131,7 @@ class TestChatSlotMode:
 
     @pytest.mark.asyncio
     async def test_busy_check_asks_about_the_linked_session(self):
-        """Crew dispatch spawns under the slot's LINKED session, and
+        """Subagents spawn under the slot's LINKED session, and
         `has_pending_work_for` matches `parent_session_key` exactly. Asking about
         `dashboard:<tab>` for a channel-linked slot reports idle while that
         slot's subagents are still running, flipping the execution model out from
@@ -146,7 +147,8 @@ class TestChatSlotMode:
         with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.patch(
-                    "/api/chat/slots/test/mode", json={"mode": "crew"},
+                    "/api/chat/slots/test/mode",
+                    json={"mode": "orchestrator"},
                 )
         assert asked == ["slack:1785370133.085469"]
         # And the answer is honoured: pending work refuses the switch.
@@ -168,3 +170,41 @@ class TestChatSlotMode:
                 assert resp.status == 200
                 assert slot.mode == ""
                 assert slot._auto_run is False
+
+    @pytest.mark.asyncio
+    async def test_crew_is_no_longer_a_switchable_mode(self):
+        """Crew Mode retired: the switch endpoint refuses it like any unknown
+        mode, so no session can be steered back into a dispatch path that no
+        longer exists."""
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.patch("/api/chat/slots/test/mode", json={"mode": "crew"})
+        assert resp.status == 400
+        assert slot.mode == ""
+
+
+class TestRetiredModeRestore:
+    """A slot persisted under a retired mode comes back as plain chat.
+
+    The transcript is the user's record and still renders; only the
+    mode-specific dispatch went with the mode. No migration, no deletion.
+    """
+
+    def test_crew_restores_as_plain_chat(self):
+        from kiro_crew.dashboard.chat_persistence import _restored_mode
+
+        assert _restored_mode("crew") == ""
+
+    @pytest.mark.parametrize("raw", ["orchestrator", "design-critique", "member"])
+    def test_live_modes_pass_through(self, raw):
+        from kiro_crew.dashboard.chat_persistence import _restored_mode
+
+        assert _restored_mode(raw) == raw
+
+    @pytest.mark.parametrize("raw", ["", None, 42, ["crew"]])
+    def test_non_string_or_empty_is_plain_chat(self, raw):
+        from kiro_crew.dashboard.chat_persistence import _restored_mode
+
+        assert _restored_mode(raw) == ""

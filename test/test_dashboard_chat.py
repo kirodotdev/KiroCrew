@@ -1062,9 +1062,9 @@ class TestApiChatModeForwarding:
         assert slot is not None
         assert slot.mode == "design-critique"
         # The leak this guards against: the sidebar allowlist admits surfaces
-        # "", "orchestrator" and "crew" — the recreated worker must not
+        # "" and "orchestrator" — the recreated worker must not
         # serialize one of those.
-        assert slot.mode not in ("", "orchestrator", "crew")
+        assert slot.mode not in ("", "orchestrator")
 
     async def test_bogus_mode_is_dropped(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -1092,22 +1092,22 @@ class TestApiChatModeForwarding:
         assert slot is not None
         assert slot.mode == ""
 
-    async def test_crew_mode_dropped_for_crew_incapable_name(self, tmp_path, monkeypatch):
-        """Same boundary api_chat_slot_create enforces with a 400: a name whose
-        normalized key cannot host a crew store (e.g. a Win32 device basename)
-        must not become a crew slot via auto-create. Here it is dropped, not
-        refused — the slot is created with the default mode instead."""
+    async def test_retired_crew_mode_is_dropped(self, tmp_path, monkeypatch):
+        """Crew Mode retired: a caller still sending ``mode: "crew"`` (an old
+        client, a saved script) gets an ordinary slot, not an error — the mode
+        is absent from ``_CREATABLE_MODES``, so it is dropped like any other
+        unknown value."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
         await self._post_chat(
             state,
-            {"message": "hello", "slot": "CON", "mode": "crew"},
+            {"message": "hello", "slot": "old-crew-client", "mode": "crew"},
         )
 
-        created = [s for k, s in state._slots.items() if k.lower() == "con"]
-        assert created, "slot should still be created, just without crew mode"
-        assert created[0].mode == ""
+        slot = state._slots.get("old-crew-client")
+        assert slot is not None, "slot should still be created, just as plain chat"
+        assert slot.mode == ""
 
     async def test_mode_ignored_for_existing_slot(self, tmp_path, monkeypatch):
         """Repeating mode on send() must be safe when the slot survived: an

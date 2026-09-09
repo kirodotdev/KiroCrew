@@ -423,8 +423,8 @@ def _now_iso() -> str:
 
 #: Directory naming is :func:`kiro_crew.session_ledger._store_name` -- readable
 #: fold plus ``sha256[:8]`` -- imported rather than copied. ``session_ledger``
-#: imports only the three modules this one already imports, so the leaf-module
-#: argument that justifies ``crew_chat``'s own copy does not apply here.
+#: imports only the three modules this one already imports, so there is no
+#: import-graph reason to keep a private copy of the fold here.
 
 #: The only shape an item id may have — ``it_`` plus the eight hex chars
 #: :func:`mint_item_id` produces.

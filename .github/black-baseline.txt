@@ -173,7 +173,6 @@ src/kiro_crew/connections/l0_probe.py
 src/kiro_crew/connections/l0_record.py
 src/kiro_crew/connections/registry.py
 src/kiro_crew/connections/tool_aliases.py
-src/kiro_crew/crew_chat.py
 src/kiro_crew/cron_history.py
 src/kiro_crew/dashboard/cautious_boot.py
 src/kiro_crew/dashboard/channel_folders.py
@@ -485,7 +484,6 @@ test/test_chat_nav.py
 test/test_chat_slot_create_folder.py
 test/test_chat_slot_end_wait.py
 test/test_chat_slot_interrupt.py
-test/test_chat_slot_mode.py
 test/test_chat_slot_reasoning_effort.py
 test/test_chat_tags.py
 test/test_chat_title.py
@@ -519,8 +517,6 @@ test/test_continuable_followups.py
 test/test_crash_dump_store.py
 test/test_crash_guard.py
 test/test_credential_scrub_sync.py
-test/test_crew_chat.py
-test/test_crew_http.py
 test/test_cron.py
 test/test_cron_acp_retry.py
 test/test_cron_approval_mode.py
@@ -649,7 +645,6 @@ test/test_embeddings.py
 test/test_enable_embeddings_faiss.py
 test/test_enterprise.py
 test/test_env.py
-test/test_ephemeral_sessions.py
 test/test_eval_harness.py
 test/test_events_forward.py
 test/test_external_registry.py

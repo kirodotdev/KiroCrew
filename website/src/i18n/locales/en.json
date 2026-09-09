@@ -6425,7 +6425,6 @@
       "drop_here_to_remove_from_folder": "Drop here to remove from folder",
       "drop_to_reference_session": "Drop to reference this session",
       "duplicate": "Duplicate",
-      "experimental": "Experimental",
       "failed_to_load_preview": "Failed to load preview.",
       "filter": "Filter",
       "filter_manage_tags": "Filter & manage tags",
@@ -6507,8 +6506,6 @@
       "untagged": "+ untagged",
       "will_be_moved_to_older_sessions": "will be moved to older sessions.",
       "within": "Within",
-      "crew_mode": "Crew Mode — topics run in parallel sub-sessions",
-      "crew": "Crew",
       "autopilot_desc": "One job, done in steps — it plans first, you approve, then it runs stage by stage."
     },
     "contextBreakdown": {

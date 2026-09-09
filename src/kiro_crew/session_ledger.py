@@ -98,12 +98,10 @@ _STATE_FILE = "state.json"
 _KEY_FILE = "slot_key"
 _LOCK_FILE = ".lock"
 
-#: Identical fold to ``crew_chat._store_name`` — kept in lockstep so a slot
-#: key and its stores share one spelling family. Reimplemented rather than
-#: imported: ``crew_chat`` drags the whole crew orchestrator import graph into
-#: what must stay a leaf module usable from the gateway boot path. The fold
-#: shapes only the READABLE half of a directory name; identity is the digest
-#: over the exact key.
+#: Fold for the READABLE half of a store directory name (it originated as the
+#: Crew Mode store's fold and outlived that mode; ``work_ledger`` imports this
+#: copy). Kept in a leaf module usable from the gateway boot path. Identity is
+#: the digest over the exact key, never this fold.
 _STORE_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 _STORE_NAME_READABLE_MAX = 80
 

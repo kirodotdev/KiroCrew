@@ -305,7 +305,7 @@ class TestRefusalRollbackHardening:
             # While THIS request's save awaits, a concurrent writer commits
             # and is acknowledged; then this save is refused. The stale
             # rollback must not erase the newer value.
-            target.mode = "crew"
+            target.mode = "design-critique"
             return False
 
         with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop", _concurrent_writer_wins):
@@ -314,7 +314,7 @@ class TestRefusalRollbackHardening:
                     "/api/chat/slots/test/mode", json={"mode": "orchestrator"}
                 )
                 assert resp.status == 409
-        assert slot.mode == "crew"
+        assert slot.mode == "design-critique"
 
     @pytest.mark.asyncio
     async def test_tags_rebind_while_waiting_on_lock_is_refused_before_mutation(

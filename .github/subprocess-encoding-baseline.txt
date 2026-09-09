@@ -73,7 +73,6 @@
 1 test/test_config_paths.py
 3 test/test_connections_mint.py
 1 test/test_connections_tool_aliases.py
-2 test/test_crew_chat.py
 1 test/test_deploy_round16_fixes.py
 1 test/test_deploy_round1_fixes.py
 1 test/test_deploy_round29_fixes.py

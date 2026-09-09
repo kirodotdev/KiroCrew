@@ -11,7 +11,7 @@ per-instance (`connection_method`) — see §13.
 > top-header switcher group ("Remote Instances" / "Switch instance"), and the
 > keyboard shortcuts. This is deliberately distinct from the product name
 > **Kiro Crew** and from an agent **crew** (an assistant with its own
-> workspace/memory — `kiroCrewAgentsPage`, "Crew Mode"). Earlier UI copy called
+> workspace/memory — `kiroCrewAgentsPage`, the Crew Members page). Earlier UI copy called
 > this feature "Remote Crew"; that wording was retired in favour of "instance" to
 > match the code and config it already sits on (`/api/instances`,
 > `instances.json`, `InstancesPanel`, EC2 `instance_id` / `ssm_target`). Only the

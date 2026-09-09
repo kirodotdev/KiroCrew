@@ -165,10 +165,10 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         )
     prompt = body.get("prompt")
     mode_override = body.get("mode")
-    if mode_override is not None and mode_override not in ("", "orchestrator", "crew"):
+    if mode_override is not None and mode_override not in ("", "orchestrator"):
         return web.json_response(
             {
-                "error": "mode must be '', 'orchestrator' or 'crew'",
+                "error": "mode must be '' or 'orchestrator'",
                 "code": "invalid_mode",
             },
             status=400,
