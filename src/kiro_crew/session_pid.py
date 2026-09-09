@@ -508,9 +508,8 @@ def _periodic_pid_sweep(my_gw_pid: int, active_pids: set[int]) -> tuple[set[str]
         # timer while `_track_session_pid` is contending for the same lock, which
         # is exactly the interleaving a truncating open turns into a crash.
         # Kept inline rather than routed through `platform_compat.open_lock_file`:
-        # this fd takes a SHARED (read) lock and is held across the try/finally
-        # below, not a `with` block -- the with-scoped helper serves exclusive
-        # acquisition only, so forcing this through it would change behaviour.
+        # this fd is held across the try/finally below, not a `with` block, so a
+        # with-scoped opener that closes the fd at block exit does not fit.
         lock_path.touch(exist_ok=True)
         lock_fd = open(lock_path, "r+")
     except OSError:

@@ -191,10 +191,8 @@ class _McpFileLockSync:
     def __enter__(self) -> None:
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _MCP_LOCK_PATH.touch(exist_ok=True)
-        # Non-truncating "r+", see :class:`_McpFileLock` and
-        # platform_compat.open_lock_file (GH-9248). Kept inline for the same
-        # reason: self._fd outlives __enter__/__exit__, so the with-scoped
-        # helper cannot hold it.
+        # Non-truncating "r+", kept inline for the same reason as
+        # :class:`_McpFileLock` above.
         fd = open(_MCP_LOCK_PATH, "r+")
         try:
             platform_compat.acquire_lock(fd.fileno(), exclusive=True)
