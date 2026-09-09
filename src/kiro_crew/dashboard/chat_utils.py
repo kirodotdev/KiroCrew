@@ -2248,6 +2248,51 @@ def classify_empty_turn(activity: EmptyTurnActivity) -> str:
     return EMPTY_CAUSE_OTHER
 
 
+def should_notice_unfinished_todo(
+    *,
+    pending_todo_items: int,
+    stop_reason: str,
+    end_turn_reason: str,
+    prompt_depth: int,
+    is_cancelled: bool,
+    refusal_reasons: list,
+    in_stage_execution: bool = False,
+    terminal_question_posted: bool = False,
+    handoff_pending: bool = False,
+    subagents_attached: bool = False,
+    stop_in_progress: bool = False,
+    stop_generation_unchanged: bool = True,
+    queue_empty: bool = True,
+    no_pending_steers: bool = True,
+) -> bool:
+    """Whether a normal ``end_turn`` with open TODO items must stay unlanded.
+
+    Notice-only: the runner never schedules a turn on this answer, it declines to
+    record success and tells the user which items are open. The evidence is the
+    model's own TODO for the CURRENT turn (``pending_todo_items`` > 0); assistant
+    prose is never inspected and a turn with no TODO is not judged.
+
+    User-control exits and confirmed handoffs win. ``handoff_pending`` is the
+    runner's read of slot and loop STATE — a conversation reset pending at the
+    turn boundary, or an auto-nudge / monitor loop active on the slot — and
+    ``subagents_attached`` is its live sub-agent probe (which fails closed toward
+    "attached"). Neither is inferred from a tool call: a refused ``spawn_run``
+    attaches nothing and a failed ``monitor_start`` arms nothing, so their open
+    items stay this turn's to finish.
+    """
+    if pending_todo_items <= 0:
+        return False
+    if handoff_pending or subagents_attached:
+        return False
+    if stop_in_progress or not stop_generation_unchanged or not queue_empty:
+        return False
+    if not no_pending_steers or terminal_question_posted:
+        return False
+    if is_cancelled or refusal_reasons or in_stage_execution:
+        return False
+    return stop_reason == end_turn_reason and prompt_depth == 0
+
+
 def should_recover_promise_only(
     *,
     stop_reason: str,

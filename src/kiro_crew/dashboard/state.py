@@ -3345,6 +3345,8 @@ class _ChatSlot:
         "_promise_only_retries",
         "_promise_only_stop_gen",
         "_compaction_continue_retries",
+        "_todo_work_generation",
+        "_todo_owner_generation",
         "_batch_rejected",
         "_batch_rejected_cause",
         "_compaction_failed_retries",
@@ -3595,6 +3597,12 @@ class _ChatSlot:
         # None = the agent has never used its todo tool in this slot, which the
         # UI renders as "no pill" rather than "an empty list".
         self._todo: dict[str, Any] | None = None
+        # A TODO speaks for the user turn that produced it. Every non-synthetic
+        # message starts a new generation and the snapshot records which one it
+        # belongs to, so an abandoned list from an earlier request cannot make an
+        # unrelated later turn read as unfinished.
+        self._todo_work_generation: int = 0
+        self._todo_owner_generation: int = -1
         # What THIS slot's agent session reported about its MCP servers, as
         # published by the ACP layer at session init and updated by later
         # registration frames. None = this slot has no live session that
@@ -4190,12 +4198,35 @@ class _ChatSlot:
     def _stopping(self, value: bool) -> None:
         self._stop_state = "soft_pending" if value else "idle"
 
+    def begin_todo_work_turn(self) -> None:
+        """Start a new user-authored turn; only a TODO written in it counts for it."""
+        self._todo_work_generation = getattr(self, "_todo_work_generation", 0) + 1
+        self._todo_owner_generation = -1
+
+    def pending_todo_count(self) -> int:
+        """Incomplete tasks in the TODO the CURRENT turn produced, else 0.
+
+        A list from an earlier generation is not this turn's evidence, so it
+        counts for nothing here even while it stays visible in the pill.
+        """
+        if getattr(self, "_todo_owner_generation", -1) != getattr(self, "_todo_work_generation", 0):
+            return 0
+        if not isinstance(self._todo, dict):
+            return 0
+        return sum(
+            1
+            for task in self._todo.get("tasks", [])
+            if isinstance(task, dict) and not task.get("completed")
+        )
+
     def set_todo(self, todo: dict[str, Any] | None) -> bool:
         """Replace the slot's TODO snapshot. Returns True when it changed.
 
         The return value gates the live websocket push so an unchanged list —
         common, because a single turn can echo the same snapshot on several
         tool results — does not fan a redundant broadcast out to every socket.
+        Every snapshot, changed or not, is stamped with the current work
+        generation: it is the turn that produced it that may be judged by it.
         """
         normalised: dict[str, Any] | None = None
         if isinstance(todo, dict):
@@ -4204,6 +4235,8 @@ class _ChatSlot:
                 "description": str(todo.get("description") or ""),
                 "tasks": list(tasks) if isinstance(tasks, list) else [],
             }
+        if normalised is not None:
+            self._todo_owner_generation = getattr(self, "_todo_work_generation", 0)
         if normalised == self._todo:
             return False
         self._todo = normalised

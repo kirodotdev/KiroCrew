@@ -299,6 +299,45 @@ send time.
   outcome and skips the entire empty-response ladder. Delivery failures keep the
   normal behavior so the model can fall back to a plain-text question.
 
+  **Open TODO items at end_turn (notice-only).** Ordinary non-empty text is not
+  proof that tool-backed work finished. The evidence the runner trusts is the
+  model's OWN native TODO list for the CURRENT turn: at a normal top-level
+  `end_turn`, if that list still has incomplete items, the turn is not recorded
+  as a success, is not consolidated, and a notice names how many items are open
+  and asks the user to send a message to continue or redirect the work. Nothing
+  is scheduled on it — deliberately, like the leaked-tool-call arm: the TODO is
+  model-written, possibly from content the model read, and a continuation
+  injected on it would carry runtime authority into any session where tools run
+  without a prompt (slot trust, yolo, or a static agent tool allowlist, the last
+  invisible at this layer). The promise-only arm keeps its own pre-existing
+  one-shot continuation and is not changed by this, and neither is the
+  empty-response ladder: the arm judges only a turn that ended WITH an answer
+  (the incident shape), so a tool-only turn with an empty final segment still
+  takes the ladder's recovery. A turn with NO TODO is not judged: the runner
+  does not guess from tool counts or prose, so the packaged prompt's instruction
+  to keep a TODO for multi-step work is what makes the evidence exist. That is
+  an accepted blind spot — a model that skipped the TODO and stopped early
+  still lands — and it is measured rather than hidden: a multi-tool turn that
+  ends with an answer and no TODO for this turn logs one WARNING with closed
+  fields (slot key, tool count), so the blind spot's size is readable in the
+  gateway log. Every non-synthetic message — a user message, a `[Subagent
+  completion event]`, a cron notification, a monitor wake — starts a new work
+  generation (`_ChatSlot.begin_todo_work_turn`); `set_todo` stamps each snapshot
+  with the generation that produced it, and `pending_todo_count` reads only a
+  current-generation list, so an abandoned list from an earlier request stays
+  visible in the pill but cannot flag an unrelated later turn. Explicit handoffs
+  win, read from STATE and never from the tool call: attached sub-agents
+  (`subagents_attached`, failing closed toward "attached"), the question card
+  actually shown, an active auto-nudge or monitor loop on the slot, an armed
+  sub-agent synthesis turn (`_pending_synthesis`: the completion turn that
+  updated the TODO is not the one that finishes the items), or a pending
+  conversation reset each suppress the notice, because the next step belongs to
+  something else; a refused `spawn_run` attaches nothing and a failed
+  `monitor_start` arms nothing, so their open items stay the turn's own.
+  Stop/cancel/refusal, stage execution, queued user input and pending steers
+  suppress it too. The channel transports and the other `record_success` call
+  sites are unchanged. No assistant vocabulary is classified.
+
   **Turn-end diagnostics.** The branch emits ONE privacy-safe WARNING per empty
   verdict, after the rung is chosen, naming a closed `cause` and `rung` plus
   booleans: `provider_empty`, `tool_only`, `thinking_only`, `visible_partial`,

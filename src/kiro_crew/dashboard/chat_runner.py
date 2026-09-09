@@ -328,6 +328,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     should_continue_after_compaction,
     should_notice_leaked_tool_call,
     should_notice_mixed_turn_leak,
+    should_notice_unfinished_todo,
     should_recover_promise_only,
     subagents_attached,
 )
@@ -374,6 +375,40 @@ def _bind_private_slot_memory(
             "Open the member from Members or create a new conversation for private memory."
         )
     bind_private_session_store(session_key, memory_store)
+
+
+def _handoff_in_effect(slot: "_ChatSlot") -> bool:
+    """Whether this slot's next step already belongs to something else: a
+    conversation reset or discard is pending at the turn boundary, a sub-agent
+    synthesis turn is armed, or an auto-nudge / monitor loop is active on the
+    slot.
+
+    Read from STATE, never from the tool call that asked for it. A
+    ``reset_conversation`` that was refused leaves no pending key, and a
+    ``monitor_start`` that failed to arm leaves no active loop, so both keep the
+    turn's open TODO items squarely the turn's own — which is what lets the
+    open-items notice still fire for them. Sub-agents are the third handoff and
+    have their own probe (``subagents_attached``); a question card is the fourth
+    and is confirmed by the card actually showing (``_terminal_question_posted``).
+    ``_pending_synthesis`` covers the gap between the last sub-agent completion
+    and the synthesis turn the runner dispatches for it: the completion turn that
+    updated the TODO is not the one that finishes the items, the synthesis is.
+    """
+    if (
+        getattr(slot, "_pending_reset_history_key", None)
+        or getattr(slot, "_pending_discard_conversation_key", None)
+        or getattr(slot, "_pending_synthesis", False)
+    ):
+        return True
+    try:
+        service = get_instance()
+    except Exception:  # pragma: no cover — an unreadable loop store is no loop
+        logger.debug("auto-nudge instance probe failed", exc_info=True)
+        return False
+    if service is None:
+        return False
+    loop = service.get_by_slot(slot.key)
+    return bool(loop is not None and getattr(loop, "active", False))
 
 
 def _empty_auto_continue_enabled() -> bool:
@@ -6613,6 +6648,10 @@ async def _run_chat(
     # `_compaction_continue_retries` on this very turn, un-spending the one-shot
     # and letting a continuation that overflows again recover forever.
     _recovering_compaction = False
+    # Set when a normal terminal left items of THIS turn's TODO open. Notice-only:
+    # nothing is scheduled on it, but like _noticed_leak the turn is not recorded
+    # as a success and does not trigger consolidation.
+    _unfinished_work = False
     # Set when the turn ended with a tool-call block leaked into its text and
     # the notice was surfaced. Same un-landed semantics as
     # _recovering_promise: the turn announced work it never did, so it must not
@@ -6673,6 +6712,12 @@ async def _run_chat(
     # because that text is the user's; the queue entry distinguishes the two so a
     # user who types a marker verbatim still counts as ordinary user speech.
     _is_synthetic = _synthetic_payload or message.startswith(SUBAGENT_SYNTHESIS_PREFIX)
+    if not _is_synthetic:
+        # getattr-guarded like the sibling slot reads: the real _ChatSlot always
+        # carries it, but minimal test stubs may not.
+        _begin_work_turn = getattr(slot, "begin_todo_work_turn", None)
+        if _begin_work_turn is not None:
+            _begin_work_turn()
 
     # ── Slash commands: detect early, before session acquisition ──
     first_word = message.split()[0] if message.strip() else ""
@@ -11206,7 +11251,28 @@ async def _run_chat(
                     refusal_card_text(_turn_refusal, streamed_text=assistant_text),
                     "msg msg-err",
                 )
-        elif _stop_reason == STOP_REASON_REFUSAL:
+        # A stub slot with no TODO state reads as nothing open.
+        _pending_todos = int(getattr(slot, "pending_todo_count", lambda: 0)())
+        # Diagnostic only, for the blind spot the open-items arm below cannot see:
+        # a multi-tool turn that ended with an answer and NO TODO for this turn is
+        # not judged, so its completion is unknown. One WARNING per such turn,
+        # closed fields only (slot key, tool count) — no prompt, no text, no tool
+        # arguments — so the size of the blind spot is measurable in the log.
+        if (
+            _answer_text
+            and _stop_reason == STOP_REASON_END_TURN
+            and _prompt_depth == 0
+            and _turn_tool_calls >= 2
+            and getattr(slot, "_todo_owner_generation", -1)
+            != getattr(slot, "_todo_work_generation", 0)
+        ):
+            logger.warning(
+                "Turn for slot %s ended after %d tool call(s) with no TODO for this "
+                "turn; completion not judged",
+                slot.key,
+                _turn_tool_calls,
+            )
+        if not _answer_text and _stop_reason == STOP_REASON_REFUSAL:
             # Model-side content refusal with no accompanying text: Anthropic's
             # bare `refusal` stop reason (passed through by every harness), or
             # the Kiro service's filter when kiro-cli surfaced only the
@@ -11304,8 +11370,63 @@ async def _run_chat(
             # continuation sat in the queue.
             slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
             _recovering_compaction = True
+        # Only a turn that ENDED WITH AN ANSWER is judged here — the incident
+        # shape ("Yes.", "Understood. Continuing without pausing." after tool
+        # work). A turn whose final segment is empty belongs to the
+        # empty-response ladder below, whose recovery fires on the emptiness and
+        # pre-dates this arm; it is not shadowed.
         elif (
-            _stop_reason != STOP_REASON_CANCELLED
+            _answer_text
+            and not _armed_final
+            and should_notice_unfinished_todo(
+                pending_todo_items=_pending_todos,
+                stop_reason=_stop_reason,
+                end_turn_reason=STOP_REASON_END_TURN,
+                prompt_depth=_prompt_depth,
+                is_cancelled=(_stop_reason == STOP_REASON_CANCELLED),
+                refusal_reasons=_refusal_reasons,
+                in_stage_execution=slot._in_stage_execution,
+                terminal_question_posted=_terminal_question_posted,
+                # An explicit handoff — a card, spawned sub-agents, an armed loop, a
+                # pending reset — ends the turn on purpose with items open, so it is
+                # not unfinished work. Both are read from STATE, not from the tool
+                # call: a refused spawn_run attaches nothing and a failed
+                # monitor_start arms nothing, so their open items stay this turn's.
+                # The sub-agent probe fails closed toward "attached", so an unreadable
+                # registry lands rather than flags.
+                handoff_pending=_handoff_in_effect(slot),
+                subagents_attached=subagents_attached(state, slot, session_key, "unfinished_work"),
+                stop_in_progress=_should_suppress_requeue(slot),
+                stop_generation_unchanged=(
+                    getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+                ),
+                queue_empty=not _has_user_queued_followup(slot),
+                no_pending_steers=(not getattr(slot, "_pending_steers", None)),
+            )
+        ):
+            # NOTICE-ONLY by design, like the leaked-tool-call arm above it. The
+            # TODO is model-written, possibly from content the model read; a
+            # continuation injected on it would carry runtime authority into any
+            # session where tools run without a prompt (slot trust, yolo, or a
+            # static agent tool allowlist — the last invisible at this layer, so
+            # no fail-closed downgrade exists). So nothing is scheduled: the turn
+            # is not recorded as a success, the user sees which items are open,
+            # and the next message is theirs.
+            _unfinished_work = True
+            logger.info(
+                "Turn for slot %s ended with %d TODO item(s) open; not recording success",
+                slot.key,
+                _pending_todos,
+            )
+            slot.append(
+                "notice",
+                f"⚠️ This turn ended with {_pending_todos} TODO item(s) still open. "
+                "Send a message to continue or redirect the work.",
+                "msg msg-info",
+            )
+        elif (
+            not _answer_text
+            and _stop_reason != STOP_REASON_CANCELLED
             and not _produced_visible_output
             and not _terminal_question_posted
             and not _refusal_reasons
@@ -11800,6 +11921,7 @@ async def _run_chat(
             not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _unfinished_work
             and not _noticed_leak
         ):
             # A non-zero stall budget reaching this reset on an OK turn is a
@@ -11873,6 +11995,7 @@ async def _run_chat(
             not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _unfinished_work
             and not _noticed_leak
             and not _is_monitor_wake
         ):
@@ -11885,6 +12008,7 @@ async def _run_chat(
             and not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _unfinished_work
             and not _noticed_leak
         ):
             # An unacted turn (promise-only, or a tool call leaked as text) is
