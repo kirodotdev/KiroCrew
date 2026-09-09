@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, fireEvent, within } from '@testing-library/react'
 import type { ChatSlot } from '../types'
 import SessionFlyout, { FLYOUT_MAX_ROWS, toggleClip, FULL_CLIP } from '../pages/chat/SessionFlyout'
-import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY } from '../utils/pinnedSessionOrder'
+import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, PINNED_SESSION_ORDER_MANUAL_KEY } from '../utils/pinnedSessionOrder'
 
 /** The framer-motion props this mock READS; every other prop is copied through
  *  to the plain DOM element untouched, which is what the index signature is for. */
@@ -104,7 +104,18 @@ describe('SessionFlyout ordering', () => {
     expect(rowKeys(container)).toEqual(['k-mid', 'k-new', 'k-old'])
   })
 
+  it('ignores a stored order while no reorder has been recorded', () => {
+    // No PINNED_SESSION_ORDER_MANUAL_KEY: a stored order is pin bookkeeping, not a preference.
+    const pins = SLOTS.map(item => slot({ ...item, pinned: true }))
+    localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['k-new', 'k-old', 'k-mid']))
+    const { container } = mount({ slots: pins })
+    expect(rowKeys(container)).not.toEqual(['k-new', 'k-old', 'k-mid'])
+  })
+
   it('uses persisted manual rank for pinned rows and refreshes on same-tab reorder', () => {
+    // Rank is a stated preference now, so the marker is what makes a stored order MANUAL.
+    // Without it a stored order is just membership bookkeeping and the sort key governs.
+    localStorage.setItem(PINNED_SESSION_ORDER_MANUAL_KEY, '1')
     const pins = SLOTS.map(item => slot({ ...item, pinned: true }))
     localStorage.setItem(PINNED_SESSION_ORDER_KEY, JSON.stringify(['k-old', 'k-mid', 'k-new']))
     const { container } = mount({ slots: pins })

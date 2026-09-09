@@ -1,6 +1,7 @@
 import * as React from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop } from 'lucide-react'
+import { Pencil, Circle, Pin, ArrowDownUp, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
@@ -10,6 +11,7 @@ import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { useAppSelector } from '../store'
+import { PINNED_SESSION_ORDER_CHANGED_EVENT, forgetPinnedSessionOrderManual, readPinnedSessionOrderIsManual } from '../utils/pinnedSessionOrder'
 import { selectSlotSubagents } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
@@ -111,6 +113,18 @@ export default function SessionActionsMenu({
   const isUnread = useAppSelector(s => s.dashboard.unreadSlots.includes(slotKey))
   const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
   const isPinned = !!slot?.pinned
+  const [pinnedOrderIsManual, setPinnedOrderIsManual] = useState(readPinnedSessionOrderIsManual)
+  useEffect(() => {
+    const refresh = () => {
+      setPinnedOrderIsManual(readPinnedSessionOrderIsManual())
+    }
+    window.addEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
+    window.addEventListener('storage', refresh)
+    return () => {
+      window.removeEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
+      window.removeEventListener('storage', refresh)
+    }
+  }, [])
   const isRunning = !!slot?.running
   // Reload is also refused while sub-agent children are attached (the reset
   // would tear down their shared runtime) — mirror that in the disable so a
@@ -146,6 +160,11 @@ export default function SessionActionsMenu({
       <Item key="pin" onSelect={() => togglePin(slotKey)}>
         <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
       </Item>,
+      ...(isPinned && pinnedOrderIsManual ? [
+        <Item key="follow-sort" onSelect={() => forgetPinnedSessionOrderManual()}>
+          <ArrowDownUp size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.follow_sort_order')}
+        </Item>,
+      ] : []),
       <Item key="mode" onSelect={() => toggleMode(slotKey)}>
         <Zap size={13} className="shrink-0 text-muted" /> {slot?.mode === 'orchestrator' ? i18nT('components.sessionActionsMenu.switch_to_chat') : i18nT('components.sessionActionsMenu.switch_to_autopilot')}
       </Item>,

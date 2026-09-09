@@ -7331,6 +7331,7 @@
       "unknown_error": "Unbekannter Fehler"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "Sortierung folgen (alle angepinnten)",
       "bring_back_to_main": "Zurück ins Hauptfenster holen",
       "close_session": "Sitzung schließen",
       "copy_link": "Link kopieren",
@@ -11141,6 +11142,7 @@
     "localStorageDebug": {
       "all_keys": "Alle Schlüssel",
       "by_category": "Nach Kategorie",
+      "bytes_suffix": "B",
       "clear": "Leeren",
       "clear_old_caches": "Alte Caches leeren",
       "delete_cached_scroll_positions_from_old_sessions": "Zwischengespeicherte Zeilenhöhen und gespeicherte Lesepositionen alter Sitzungen löschen (sicher — wird beim Scrollen neu aufgebaut)",

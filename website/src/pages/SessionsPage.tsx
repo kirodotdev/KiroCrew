@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Plus, MessagesSquare } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
-import { readPinnedSessionOrder } from '../utils/pinnedSessionOrder'
+import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, PINNED_SESSION_ORDER_MANUAL_KEY, readPinnedSessionOrder, readPinnedSessionOrderIsManual } from '../utils/pinnedSessionOrder'
 import { api } from '../api/client'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { timeAgo } from '../utils/timeAgo'
@@ -102,19 +102,37 @@ export default function SessionsPage() {
     })
   }, [visible, chip, query, unread])
 
+  // The arrangement can change in another tab, or in the sidebar beside this page, so the rank
+  // has to be state the memo depends on -- reading storage inside it leaves this list stale.
+  const [pinnedRank, setPinnedRank] = useState<Map<string, number> | null>(
+    () => readPinnedSessionOrderIsManual() ? new Map(readPinnedSessionOrder().map((k, i) => [k, i])) : null,
+  )
+  useEffect(() => {
+    const refresh = () => setPinnedRank(
+      readPinnedSessionOrderIsManual() ? new Map(readPinnedSessionOrder().map((k, i) => [k, i])) : null,
+    )
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null
+        || event.key === PINNED_SESSION_ORDER_KEY
+        || event.key === PINNED_SESSION_ORDER_MANUAL_KEY) refresh()
+    }
+    window.addEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
+      window.removeEventListener('storage', onStorage)
+    }
+  }, [])
   const groups = useMemo(() => {
     const now = Date.now()
     const by: Record<PageGroup, ChatSlot[]> = { pinned: [], today: [], yesterday: [], earlier: [] }
     // Pinned slots surface in their own group; unpinned bucket by local day.
     for (const s of filtered) by[s.pinned ? 'pinned' : recencyGroup(lastActivityEpoch(s) * 1000, now)].push(s)
     for (const g of GROUP_ORDER) by[g].sort((a, b) => lastActivityEpoch(b) - lastActivityEpoch(a))
-    // The sidebar's pinned section is MANUALLY ordered (pinnedSessionOrder.ts);
-    // honor the same user-arranged order here so the two surfaces agree.
-    // Keys missing from the stored order keep the recency sort, after ranked ones.
-    const rank = new Map(readPinnedSessionOrder().map((k, i) => [k, i]))
-    by.pinned.sort((a, b) => (rank.get(a.key) ?? Infinity) - (rank.get(b.key) ?? Infinity))
+    // Manually ordered only after an explicit reorder; otherwise recency stands.
+    if (pinnedRank) by.pinned.sort((a, b) => (pinnedRank.get(a.key) ?? Infinity) - (pinnedRank.get(b.key) ?? Infinity))
     return by
-  }, [filtered])
+  }, [filtered, pinnedRank])
 
   const groupLabel: Record<PageGroup, string> = {
     // Same label the sidebar's pinned filter uses, so the two surfaces agree.

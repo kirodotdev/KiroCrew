@@ -197,6 +197,17 @@ export function safeSetItem(key: string, value: string): boolean {
  * sandboxed iframe) throw SecurityError from that getter — so probing outside
  * the try would throw on the very platform the probe exists to survive.
  */
+export function safeRemoveItem(key: string): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false
+    localStorage.removeItem(key)
+    return true
+  } catch (err) {
+    warnDev(key, err)
+    return false
+  }
+}
+
 export function safeGetSessionItem(key: string): string | null {
   try {
     if (typeof sessionStorage === 'undefined') return null
