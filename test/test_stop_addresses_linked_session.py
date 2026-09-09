@@ -34,6 +34,13 @@ class _FakeSlot:
         # is also what a slot rehydrated from disk answers.
         self._active_turn_session_key = ""
         self._stop_state = "idle"
+        # Mirrors the real slot's monotonic stop-initiation counter. The real
+        # `_stop_state` setter bumps it on every idle -> active edge; this fake
+        # has a plain attribute, so the counter never moves. That is the
+        # correct model here: every consumer compares it against a value
+        # captured after the claim (or at resolver creation) within one press,
+        # and those equalities hold identically at any constant.
+        self._stop_generation = 0
         self._stop_event_id = None
         self._stop_escalated_card_id = None
         self._queue: list[dict] = []

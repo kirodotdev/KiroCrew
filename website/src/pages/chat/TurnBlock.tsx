@@ -433,7 +433,17 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   }
 
   // Default: only collapse tool calls
-  const toolCount = items.filter(it => isTool(it, appToolCallIds)).length
+  //
+  // The toggle's count is DISTINCT calls, not tool ROWS: a stopped or
+  // auto-approved call produces TWO rows (the visible 🔧 request pill plus a
+  // hidden ✅/🚫 completion), and counting rows told the reader "2 tool calls"
+  // for one call, right above a group pill counting calls. Counting the
+  // VISIBLE request rows — `isHiddenTool` is the classifier the neighboring
+  // countCollapsedSteps already applies — gives one count per call on modern
+  // and legacy (id-less) transcripts alike, because every call has exactly
+  // one 🔧 row. The FOLD is unchanged — every tool row still collapses; only
+  // the claim about how many calls it hides moved.
+  const toolCount = items.filter(it => isTool(it, appToolCallIds) && !isHiddenTool(it)).length
   if (!turn.complete || toolCount === 0) {
     return <>{items.map((it, i) => renderItem(it, i))}</>
   }

@@ -669,3 +669,62 @@ describe('TurnBlock — reasoning bursts fold into one thinking row', () => {
     expect(roled[0].getAttribute('data-role')).toBe('thinking')
   })
 })
+
+/**
+ * The default-mode collapse summary counts DISTINCT tool calls, not tool ROWS.
+ * A stopped or auto-approved call produces TWO tool rows sharing one
+ * tool_call_id (the visible 🔧 request pill plus a hidden ✅/🚫 completion —
+ * see isHiddenTool), and counting rows told the reader "2 tool calls" for one
+ * call, right above a group pill reporting calls (#9556). Rows without a
+ * tool_call_id (older transcripts) still count one each.
+ */
+describe('TurnBlock — summary counts distinct tool calls', () => {
+  const renderItem = (_it: TurnItem, i: number) => <div data-testid={`d-item-${i}`} />
+  const tool = (content: string, ts: string, tid?: string): TurnItem => ({
+    kind: 'single',
+    msg: { role: 'tool', content, ts, ...(tid ? { meta: { tool_call_id: tid } } : {}) },
+    idx: Number(ts),
+  })
+  const conclusion: TurnItem = {
+    kind: 'single',
+    msg: { role: 'assistant', content: 'Finished the work with plenty of descriptive text to be substantive.', ts: '9' },
+    idx: 9,
+  }
+
+  it('a 🔧/✅ pair sharing one tool_call_id counts as ONE call', () => {
+    const items = [tool('🔧 Running: read_me', '1', 'tc-1'), tool('✅ read_me', '2', 'tc-1'), conclusion]
+    render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} />)
+    expect(screen.getByText('1 tool call')).toBeInTheDocument()
+  })
+
+  it('distinct ids count separately', () => {
+    const items = [
+      tool('🔧 Running: read_me', '1', 'tc-1'),
+      tool('✅ read_me', '2', 'tc-1'),
+      tool('🔧 Running: write_it', '3', 'tc-2'),
+      conclusion,
+    ]
+    render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} />)
+    expect(screen.getByText('2 tool calls')).toBeInTheDocument()
+  })
+
+  it('rows without a tool_call_id keep counting one each', () => {
+    const items = [tool('🔧 Running: a', '1'), tool('🔧 Running: b', '2'), conclusion]
+    render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} />)
+    expect(screen.getByText('2 tool calls')).toBeInTheDocument()
+  })
+
+  it('a LEGACY id-less 🔧/✅ pair also counts as ONE call', () => {
+    // Old transcripts carry the request/result pair with no tool_call_id at
+    // all. The hidden ✅ completion is not a call of its own there either.
+    const items = [tool('🔧 Running: read_me', '1'), tool('✅ read_me', '2'), conclusion]
+    render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} />)
+    expect(screen.getByText('1 tool call')).toBeInTheDocument()
+  })
+
+  it('an id-less row beside an id pair adds one', () => {
+    const items = [tool('🔧 Running: read_me', '1', 'tc-1'), tool('✅ read_me', '2', 'tc-1'), tool('🔧 Running: legacy', '3'), conclusion]
+    render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} />)
+    expect(screen.getByText('2 tool calls')).toBeInTheDocument()
+  })
+})

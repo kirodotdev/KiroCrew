@@ -2071,8 +2071,13 @@ def is_stop_event_row(m: dict) -> bool:
     """
     if m.get("kind") == "stop_event":
         return True
+    # A truthy non-dict `meta` (a corrupt or foreign transcript row) is data,
+    # not a match: `.get` on it would raise into every caller — including the
+    # disk-tail preview walk, which already tolerates unparseable lines,
+    # non-dict rows, and the non-string `cls` refused below. Same guard, same
+    # sibling field.
     meta = m.get("meta") or {}
-    if meta.get("kind") == "stop_event":
+    if isinstance(meta, dict) and meta.get("kind") == "stop_event":
         return True
     # Live window: the discriminator is still JSON inside `cls`. Prefilter on
     # the literal before parsing — this runs from `to_dict()` on the
@@ -3607,8 +3612,12 @@ class _ChatSlot:
         # stop. Holds an id rather than a bool so the marker cannot leak onto a
         # later card: a boolean left set would make the NEXT card's cooperative
         # ack defer to a hard callback that never fires, stranding it at
-        # "stopping". Every card has a fresh uuid, so a stale id simply stops
-        # matching and no card-open path has to remember to clear it.
+        # "stopping". A later press usually mints a fresh uuid, so a stale id
+        # stops matching on its own — with ONE exception: a press that finds a
+        # same-turn orphan RE-ARMS that card under its existing id
+        # (chat_handlers._open_stop_event_card), so that path clears
+        # this marker explicitly, and per-attempt identity for the resolver
+        # callbacks is carried by `_stop_generation` above, not by the card id.
         self._stop_escalated_card_id: str | None = None
         # Set by api_chat_slot_project; consumed in _run_chat instead of
         # inline because the endpoint can be reached from inside the kiro-cli

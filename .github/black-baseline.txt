@@ -1041,7 +1041,6 @@ test/test_spawn_list_redaction.py
 test/test_stable_release_gate.py
 test/test_stale_asset_watchdog.py
 test/test_steering_api.py
-test/test_stop_handler_idempotent.py
 test/test_stop_kill_cancel.py
 test/test_streaming_meta_redaction.py
 test/test_stt_config_atomic.py

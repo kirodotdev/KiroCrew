@@ -3360,6 +3360,155 @@ def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:
     slot._stop_event_id = None
 
 
+def _rearm_stop_event(slot: _ChatSlot, stop_data: dict[str, Any]) -> bool:
+    """Reset an orphaned stop card back to "stopping" in place, same id.
+
+    A new press that finds an orphan must not sweep it and append a fresh row:
+    the pane upserts stop cards by ``meta.id``, so the settled old row plus the
+    new row render as TWO "[Stopped]" chips for one press. Re-arming
+    the existing row keeps the id — and therefore the chip — stable, the same
+    reuse the escalation path performs via ``slot._stop_escalated_card_id``.
+
+    Returns False when no row carries the id (e.g. the window was trimmed), in
+    which case the caller appends the press's one card instead.
+    """
+    stop_id = stop_data["id"]
+    serialized = json.dumps(stop_data)
+    for msg in reversed(slot.messages):
+        cls_val = msg.get("cls", "")
+        if not cls_val:
+            continue
+        try:
+            cls_data = json.loads(cls_val) if isinstance(cls_val, str) else None
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(cls_data, dict) or cls_data.get("kind") != "stop_event":
+            continue
+        if cls_data.get("id") != stop_id:
+            continue
+        msg["cls"] = serialized
+        msg["content"] = serialized
+        slot.invalidate_source_links()
+        slot._dirty = True
+        # Re-broadcast so connected panes transition the existing chip back to
+        # "stopping" — the same channel _resolve_stop_event settles it on.
+        on_msg = getattr(slot, "_on_message", None)
+        if on_msg:
+            try:
+                on_msg(slot.key, msg)
+            except Exception:
+                logger.debug("stop_event re-arm re-broadcast failed", exc_info=True)
+        return True
+    logger.debug("_rearm_stop_event: no matching message for stop_id=%s", stop_id)
+    return False
+
+
+#: Roles that OPEN a turn in the transcript grouping. Mirrors
+#: ``TURN_OPENER_ROLES`` in ``website/src/pages/chat/groupDisplayItems.ts`` —
+#: the two must agree, or a stop chip re-armed "in the same turn" here lands
+#: in a different visual turn there. A ``subagent`` row that is not a parsable
+#: completion is hidden client-side rather than turn-opening; treating it as a
+#: boundary anyway only errs toward append-fresh (the sweep-and-append shape), never
+#: toward a wrong-turn re-arm.
+_TURN_OPENER_ROLES = frozenset({"user", "nudge", "subagent"})
+
+
+def _orphan_in_current_turn(slot: _ChatSlot, stop_id: str) -> bool:
+    """Whether the orphaned stop card is part of the CURRENT turn.
+
+    Walks the window tail: hitting the orphan first means no turn-opening row
+    follows it (same turn — the adjacent-chips shape); hitting a
+    turn-opener first means the next turn began below the orphan. An orphan
+    whose row is gone from the window answers False, which routes the caller
+    to the append fallback it already has.
+    """
+    for msg in reversed(slot.messages):
+        if msg.get("role") in _TURN_OPENER_ROLES:
+            return False
+        # The grouping's SECOND turn-flushing path is not role-based: a
+        # synthesis injection (role "inject" stamped meta.injectKind ==
+        # "synthesis" by _run_pending_synthesis) closes the open batch too —
+        # mirrors isSynthesisInjection in groupDisplayItems.ts, keyed on the
+        # meta wire contract exactly as it is. Plain inject rows
+        # (cron/recovery notes) are passive on both sides and walked past.
+        if msg.get("role") == "inject" and (msg.get("meta") or {}).get("injectKind") == "synthesis":
+            return False
+        cls_val = msg.get("cls", "")
+        if not cls_val or not isinstance(cls_val, str) or "stop_event" not in cls_val:
+            continue
+        try:
+            cls_data = json.loads(cls_val)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(cls_data, dict) and cls_data.get("id") == stop_id:
+            return True
+    return False
+
+
+def _open_stop_event_card(slot: _ChatSlot, state_label: str) -> str:
+    """Open this press's ONE stop card and return its id.
+
+    An orphaned card from a prior attempt is REUSED, not swept. The old
+    "defensive stale-card sweep" resolved the orphan AND appended a fresh row,
+    so one press put two ``stop_event`` rows on the wire and the pane — which
+    upserts by ``meta.id`` — renders two "[Stopped]" chips. Re-arming
+    the existing row in place keeps the single-card-per-press invariant the
+    peer-bound branch of ``stop_slot_turn`` documents, mirroring the
+    escalation path's reuse of the open card rather than minting a second one.
+
+    One helper for both cancel routes (``stop_slot_turn`` and
+    ``api_chat_slot_interrupt``) so the reuse rule cannot drift between them.
+
+    Reuse is scoped to a SAME-TURN orphan: when a ``user`` row follows the
+    orphan, the next turn has begun and re-arming would mutate a row sitting
+    in the previous turn's block — the press's chip would then appear (and
+    transition) in earlier scrollback, attributing the stop to the wrong turn.
+    A cross-turn orphan is settled where it lies and this press's card is
+    appended fresh, which never renders two
+    ADJACENT chips.
+    """
+    stale_id = slot._stop_event_id
+    if stale_id and not _orphan_in_current_turn(slot, stale_id):
+        _resolve_stop_event(slot, "soft")  # settle it where it lies
+        stale_id = None
+    stop_id = stale_id or f"stop-{uuid.uuid4().hex}"
+    slot._stop_event_id = stop_id
+    now_ts = datetime.now(tz=timezone.utc).isoformat()
+    stop_data = {
+        "kind": "stop_event",
+        "id": stop_id,
+        "state": state_label,
+        "outcome": None,
+        "ts_start": now_ts,
+    }
+    # cls must be JSON-encoded so parse_cls_meta() populates meta on the wire.
+    # content mirrors the data for backward-compat with any consumer that only
+    # reads content.
+    stop_msg = json.dumps(stop_data)
+    if not (stale_id and _rearm_stop_event(slot, stop_data)):
+        if stale_id:
+            # The re-arm found no row (lost a race with window trimming):
+            # appending under the REUSED id would upsert into a client still
+            # holding the old row and land the chip in old scrollback — the
+            # failure mode reuse exists to avoid. Mint fresh for the append.
+            stop_id = f"stop-{uuid.uuid4().hex}"
+            slot._stop_event_id = stop_id
+            stop_data["id"] = stop_id
+            stop_msg = json.dumps(stop_data)
+        # No same-turn orphan to re-arm: this press's one card is a fresh
+        # append (a cross-turn or vanished orphan was settled above).
+        slot.append("system", stop_msg, stop_msg)
+    if stale_id and slot._stop_escalated_card_id == stale_id:
+        # A stale escalation marker scoped to the REUSED id would make this
+        # press's cooperative ack defer to a hard callback that already fired
+        # (or never will), stranding the re-armed card at "stopping" — the
+        # exact failure the id-scoped marker exists to remove. A swept card
+        # never hit this because the fresh id could not match; reuse must
+        # clear it explicitly.
+        slot._stop_escalated_card_id = None
+    return stop_id
+
+
 def _make_stop_resolver(
     state: DashboardState, slot: _ChatSlot, outcome: str, card_id: str | None
 ) -> Callable[[], Awaitable[None]]:
@@ -3392,8 +3541,11 @@ def _make_stop_resolver(
     Bind to `card_id`, the specific card this callback was created for, and not
     to whatever card happens to be in flight when it fires. `stop_turn` awaits
     these callbacks, so one can still be pending when teardown resets the stop
-    posture, a new turn starts, and a second stop opens a NEW card. Reading
-    `slot._stop_event_id` at call time would then settle that newer card with
+    posture, a new turn starts, and a second stop opens a card of its own —
+    usually a NEW id, but a same-turn orphan is RE-ARMED under this very id
+    (`_open_stop_event_card`), which is why the id comparison alone is
+    not per-attempt identity; see the generation paragraph below. Reading
+    `slot._stop_event_id` at call time would settle the newer stop's card with
     this older outcome and clear its posture, so the newer stop's own callback
     would find nothing left to settle. Callers pass the id they just assigned.
 
@@ -3401,17 +3553,45 @@ def _make_stop_resolver(
     Such a callback still releases the stop posture; it simply has no card to
     label. Only a mismatching non-None current id means "someone else owns
     this", so only that case returns without touching the slot.
+
+    Also bind `slot._stop_generation`, captured at creation. Card REUSE
+    (`_open_stop_event_card`) makes the id comparison insufficient by
+    construction: a press that re-arms an orphaned card carries the SAME id the
+    prior press's still-pending callback was bound to, so matching ids no
+    longer prove matching stops — the old callback would settle the re-armed
+    card with the old outcome and release the new stop's posture. The
+    generation counts stop INITIATIONS (the `_stop_state` setter bumps it on
+    every idle → active edge and teardown never rewinds it), so "a newer stop
+    has initiated since this callback was created" is exactly `generation !=
+    slot._stop_generation` — and that newer stop's own callbacks own both the
+    card and the posture, including the cardless-posture-release duty above
+    (an initiation that rolls back before binding callbacks, like /interrupt's
+    refused-body branch, resets the posture itself — its CARD, if a prior
+    press's orphan was in flight, can stay at "stopping" until the next press
+    sweeps or re-arms it: the generation is monotonic and never rewound, so
+    the prior resolver bails. That residual is accepted deliberately — the
+    posture is safe, the strand self-corrects on the next press, and settling
+    the card from the rollback would label it with an outcome the still-
+    pending cancel has not produced).
     """
+    generation = slot._stop_generation
 
     async def _resolve() -> None:
         logger.debug(
-            "stop resolver (%s): card_id=%r current=%r stop_state=%r escalated=%r",
+            "stop resolver (%s): card_id=%r current=%r stop_state=%r escalated=%r gen=%d/%d",
             outcome,
             card_id,
             slot._stop_event_id,
             slot._stop_state,
             slot._stop_escalated_card_id,
+            generation,
+            slot._stop_generation,
         )
+        # A newer stop initiated after this callback was created: everything —
+        # the (possibly re-armed, same-id) card AND the posture — belongs to
+        # that stop's own callbacks now. See the generation paragraph above.
+        if generation != slot._stop_generation:
+            return
         # Bail only when a DIFFERENT card is genuinely in flight, because that
         # card belongs to a later stop that owns the posture. Do not bail merely
         # because this attempt has no card: settling a card and releasing the
@@ -3710,26 +3890,10 @@ async def stop_slot_turn(
             )
         )
 
-    # Defensive stale-card sweep: resolve any orphaned stop card from a prior attempt
-    if slot._stop_event_id:
-        _resolve_stop_event(slot, "soft")
-
-    # Insert stop_event message into transcript
-    stop_id = f"stop-{uuid.uuid4().hex}"
-    slot._stop_event_id = stop_id
-    now_ts = datetime.now(tz=timezone.utc).isoformat()
-    stop_data = {
-        "kind": "stop_event",
-        "id": stop_id,
-        "state": "stopping",
-        "outcome": None,
-        "ts_start": now_ts,
-    }
-    # cls must be JSON-encoded so parse_cls_meta() populates meta on the wire.
-    # content mirrors the data for backward-compat with any consumer that only
-    # reads content.
-    stop_msg = json.dumps(stop_data)
-    slot.append("system", stop_msg, stop_msg)
+    # One card per press: re-arm an orphaned card in place or append a fresh
+    # one (see _open_stop_event_card for why sweeping the orphan rendered two
+    # chips).
+    stop_id = _open_stop_event_card(slot, "stopping")
     state.push_slots_update()
     logger.info("Stop: cooperative cancel for slot %s (queue=%d)", name, len(slot._queue))
 
@@ -4119,6 +4283,14 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # has no await between guard and claim; this makes /interrupt match.
     prev_auto_run = slot._auto_run
     slot._stop_state = "soft_pending"
+    # Per-attempt identity for the claim itself. The stand-down guard below
+    # cannot rely on the state VALUE alone: a concurrent /stop can escalate,
+    # settle to idle, and a further press can re-claim "soft_pending" — a
+    # LATER stop wearing the same value. The generation tells the two apart
+    # (`_make_stop_resolver` already establishes it as the only per-attempt
+    # identity that survives card reuse); the claim above bumped it, so any
+    # later initiation moves it again.
+    claim_generation = slot._stop_generation
     slot._auto_run = False
 
     # Optionally promote a specific queue item to front. The except is not a
@@ -4134,46 +4306,73 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     try:
         body, body_err = await read_bounded_json(request, allow_absent=True)
     except Exception:
-        if slot._stop_state == "soft_pending":
+        # Generation-guarded like the stand-down below: "soft_pending" alone
+        # cannot prove the claim is OURS — an escalate-settle-repress sequence
+        # during the await leaves a LATER press's live claim wearing the same
+        # value, and rolling that back would idle its stop mid-cancel and
+        # re-enable auto-run under a real stop.
+        if slot._stop_state == "soft_pending" and slot._stop_generation == claim_generation:
             slot._stop_state = "idle"
             slot._auto_run = prev_auto_run
         raise
     if body_err is not None:
-        if slot._stop_state == "soft_pending":
+        if slot._stop_state == "soft_pending" and slot._stop_generation == claim_generation:
             slot._stop_state = "idle"
             slot._auto_run = prev_auto_run
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     queue_id = body.get("queue_id")
-    if queue_id:
+    if queue_id and slot._stop_generation == claim_generation:
         # Wire-side field is `queue_id`; stored items carry `id` (the key
         # queue_append/queue_insert write and every *_by_id helper matches).
         # The previous inline loop compared item.get("queue_id"), which is
         # None on every production item — a silent no-op that made the
         # "run this next" click land on whatever happened to be at the
         # front of the queue instead of the selected message.
+        #
+        # BEFORE the supersede guard below, and GENERATION-GATED, because the
+        # supersessions differ: a claim superseded benignly (the running turn
+        # ends during the body read, teardown resets the posture, generation
+        # unmoved) must still land the user's "run this next" choice; a claim
+        # superseded by a LATER stop (generation moved) must NOT — that stop's
+        # own /interrupt may have promoted ITS selection, and a stale write
+        # here would overwrite it. Escalation keeps the same generation and a
+        # cleared queue, so promotion there is a harmless no-op.
         slot.queue_promote_by_id(queue_id)
+
+    # A concurrent /stop can supersede our claim during the body await:
+    # escalate it (soft_pending → killing), or escalate-settle-and-be-followed
+    # by a FURTHER press whose fresh claim wears the same "soft_pending" value
+    # — which is why this compares the GENERATION, our claim's per-attempt
+    # identity, not just the state value. Continuing on a superseded claim
+    # would open/reuse a card owned by the other stop — and the reuse path's
+    # marker-clear would erase a LIVE escalation marker, letting a late
+    # cooperative ack relabel the hard kill as a clean stop. The other stop
+    # owns the posture now: stand down and answer like the idempotent-repeat
+    # branch above. `_auto_run` stays disabled — a stop was initiated either
+    # way. This also fires when the superseding stop has ALREADY settled
+    # (state back to "idle"), including the benign case where the running
+    # turn simply ended during the body read; queue promotion already
+    # happened above, so nothing of the user's intent is dropped.
+    if slot._stop_state != "soft_pending" or slot._stop_generation != claim_generation:
+        sel().log_tool_invocation(
+            session_key=_history_key_for(name),
+            agent=getattr(slot, "agent", "") or "kirocrew",
+            source="dashboard",
+            tool_name="dashboard_interrupt",
+            tool_kind="command",
+            outcome="noop",
+            metadata={"slot": name, "reason": "stop claim superseded during body read"},
+        )
+        return web.json_response({"ok": True, "info": "stop already in progress"})
 
     # Stop current turn but preserve the queue so dequeue loop fires
     # (soft_pending already claimed above, before the request-body await)
 
-    # Defensive stale-card sweep
-    if slot._stop_event_id:
-        _resolve_stop_event(slot, "soft")
-
-    # Insert stop_event for UI feedback
-    stop_id = f"stop-{uuid.uuid4().hex}"
-    slot._stop_event_id = stop_id
-    now_ts = datetime.now(tz=timezone.utc).isoformat()
-    stop_data = {
-        "kind": "stop_event",
-        "id": stop_id,
-        "state": "interrupting",
-        "outcome": None,
-        "ts_start": now_ts,
-    }
-    stop_msg = json.dumps(stop_data)
-    slot.append("system", stop_msg, stop_msg)
+    # One card per press: re-arm an orphaned card in place or append a fresh
+    # one (see _open_stop_event_card for why sweeping the orphan rendered two
+    # chips).
+    stop_id = _open_stop_event_card(slot, "interrupting")
     state.push_slots_update()
 
     # Built after the card exists so each resolver is bound to this card.

@@ -734,7 +734,28 @@ Possible `state` values:
 The stop event is inserted at soft-start time with `state: "stopping"` and
 updated in place (same `id`) when the outcome resolves. The updated message
 is re-broadcast via `_on_message` so the frontend `StopEventCard` transitions
-from `stopping` → `stopped`/`stop_failed_reset`.
+from `stopping` → `stopped`/`stop_failed_reset`. A press that finds an
+orphaned card from a prior attempt **in the same turn** (no turn-opening row —
+`user`/`nudge`/`subagent`, mirroring `TURN_OPENER_ROLES` in
+`groupDisplayItems.ts` — after it) RE-ARMS that row in place (same `id`, back to `stopping`) instead of
+resolving it and appending a fresh row — the pane upserts stop cards by
+`meta.id`, so a resolve-plus-append put two chips on screen for one press
+(`_open_stop_event_card` in `chat_handlers.py`, shared by `/stop` and
+`/interrupt`). A cross-turn orphan is settled where it lies and the press's
+card is appended fresh, so the chip lands in the turn the user stopped.
+Because reuse makes card ids non-unique across presses, per-attempt identity
+for the resolver callbacks is carried by the monotonic
+`slot._stop_generation`, not by the card id.
+
+Stop rows are presentation, not conversation: the tail-preview reader
+(`TranscriptReadProjection.last_message_info`, which feeds the Crew Members
+roster subtitle and the session-list preview) skips rows matched by
+`is_stop_event_row` so a transcript ending on a stop never previews the raw
+JSON payload. The skip moves only the preview TEXT: the returned epoch reads
+the newest skipped STOP row (a stop is activity), falling back to the
+previewed row's own timestamp — every other non-previewable row (a quiet
+zero-width-space reply, an empty content row) leaves the timestamp travelling
+with the previewed row, so roster recency ordering is unaffected.
 
 After a cancelled turn, `context.build_cancelled_turn_preamble` reads the
 cancelled user prompt and partial assistant output from this log and

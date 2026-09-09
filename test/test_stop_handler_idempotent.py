@@ -17,6 +17,11 @@ class _FakeSlot:
 
     def __init__(self):
         self._stop_state = "idle"
+        # Mirrors the real slot's monotonic stop-initiation counter. The real
+        # `_stop_state` setter bumps it on every idle -> active edge; this fake
+        # has a plain attribute, so tests that model a second press bump it
+        # explicitly.
+        self._stop_generation = 0
         self._stop_event_id = None
         self._stop_escalated_card_id = None
         self._queue: list[dict] = []
@@ -49,6 +54,13 @@ class _FakeSlot:
 
     def append(self, role, content, cls_meta):
         self.messages.append({"role": role, "content": content, "cls": cls_meta})
+
+    def queue_promote_by_id(self, queue_id):
+        for i, item in enumerate(self._queue):
+            if item.get("id") == queue_id:
+                self._queue.insert(0, self._queue.pop(i))
+                return True
+        return False
 
     def invalidate_source_links(self):
         self.source_links_invalidated += 1
@@ -272,6 +284,281 @@ class TestInterruptHandlerIdempotent:
         assert resp.status == 400
         assert slot._stop_state == "killing"
         assert slot._auto_run is False
+
+    @pytest.mark.asyncio
+    async def test_promotion_lands_even_when_the_claim_was_superseded(self):
+        """ "Run this next" must not be silently dropped by the stand-down.
+
+        A benign interleaving supersedes the claim without any escalation: the
+        running turn ends naturally during the body read, and teardown resets
+        the posture to idle (generation unmoved). On main the promotion landed
+        on this exact interleaving; the stand-down must not regress it —
+        promotion happens BEFORE the supersede check (a no-op against the
+        cleared queue in the genuine escalation case).
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._queue = [{"id": "q1", "content": "first"}, {"id": "q2", "content": "second"}]
+
+        class TurnEndsPayload(BodyStreamPayload):
+            """The running turn ends naturally during the body read."""
+
+            async def iter_chunked(self, n: int):
+                slot._stop_state = "idle"  # teardown; no generation bump
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b'{"queue_id": "q2"}'
+        request.content = TurnEndsPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log = MagicMock()
+            with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
+                resp = await api_chat_slot_interrupt(request)
+        body = json.loads(resp.body)
+
+        assert body.get("ok") is True
+        # The selected message leads the queue despite the stand-down.
+        assert [item["id"] for item in slot._queue] == ["q2", "q1"]
+
+    @pytest.mark.asyncio
+    async def test_stale_interrupt_does_not_overwrite_a_later_selection(self):
+        """Promotion is generation-gated: a superseded claim must not promote.
+
+        Interrupt A stalls in its body read; its turn ends and interrupt B
+        claims a NEWER generation and promotes ITS selection. When A resumes,
+        promoting A's selection would overwrite B's — so A promotes only when
+        the generation still matches its claim. The benign same-generation
+        teardown case (previous test) keeps its promotion.
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._queue = [
+            {"id": "q1", "content": "first"},
+            {"id": "q2", "content": "second"},
+            {"id": "q3", "content": "third"},
+        ]
+
+        class LaterInterruptPayload(BodyStreamPayload):
+            """Interrupt B lands while A reads its body."""
+
+            async def iter_chunked(self, n: int):
+                slot._stop_generation += 1
+                slot._stop_state = "soft_pending"  # B's claim
+                slot.queue_promote_by_id("q2")  # B's selection
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b'{"queue_id": "q3"}'  # A's selection
+        request.content = LaterInterruptPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log = MagicMock()
+            with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
+                resp = await api_chat_slot_interrupt(request)
+        body = json.loads(resp.body)
+
+        assert body.get("info") == "stop already in progress"
+        # B's selection still leads; A's stale promotion never landed.
+        assert [item["id"] for item in slot._queue] == ["q2", "q1", "q3"]
+
+    @pytest.mark.asyncio
+    async def test_later_stops_claim_is_not_mistaken_for_ours(self):
+        """The stand-down compares generation, not just the state value.
+
+        Ordering: /interrupt claims → concurrent /stop escalates, its hard
+        resolver settles to idle → a FURTHER press initiates a fresh soft stop
+        (new generation, same "soft_pending" value) and opens its own live
+        card. The resumed interrupt must not read that later claim as its own
+        and re-arm the other stop's live card to "interrupting".
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._queue = [{"id": "q1", "content": "hello"}]
+
+        class SupersedingPayload(BodyStreamPayload):
+            """Simulates escalate → settle → fresh press during the await."""
+
+            async def iter_chunked(self, n: int):
+                # The fresh press's claim: same value, NEWER generation, its
+                # own live card.
+                slot._stop_generation += 1
+                slot._stop_state = "soft_pending"
+                _seed_stop_card(slot, stop_id="stop-live2")
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b"{}"
+        request.content = SupersedingPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log = MagicMock()
+            with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
+                resp = await api_chat_slot_interrupt(request)
+        body = json.loads(resp.body)
+
+        assert body.get("info") == "stop already in progress"
+        # The later stop's live card is untouched.
+        assert _card_state(slot, "stop-live2") == "stopping"
+        assert slot._stop_event_id == "stop-live2"
+        assert slot._stop_state == "soft_pending"
+
+    @pytest.mark.asyncio
+    async def test_rollback_does_not_wipe_a_later_presses_live_claim(self):
+        """The rollback branches carry the same generation identity.
+
+        The same ABA the stand-down guard closes: our claim is escalated,
+        settled, and a THIRD press re-claims "soft_pending" (new generation)
+        during our body await — then our body read FAILS. A value-only
+        rollback would reset that press's live claim to idle mid-cancel and
+        re-enable auto-run while a real stop is in flight.
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._queue = [{"id": "q1", "content": "hello"}]
+        slot._auto_run = True  # restored-on-rollback value
+
+        class SupersedingPayload(BodyStreamPayload):
+            """Third press claims during the await; then the body is refused."""
+
+            async def iter_chunked(self, n: int):
+                slot._stop_generation += 1
+                slot._stop_state = "soft_pending"  # the third press's claim
+                slot._auto_run = False  # its own disable
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b'["not", "an", "object"]'  # refused by the body guard
+        request.content = SupersedingPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        resp = await api_chat_slot_interrupt(request)
+
+        assert resp.status == 400
+        # The third press's claim survives our rollback.
+        assert slot._stop_state == "soft_pending"
+        assert slot._auto_run is False
+
+    @pytest.mark.asyncio
+    async def test_superseded_claim_does_not_touch_the_live_escalation(self):
+        """An interrupt whose claim was escalated mid-await stands down.
+
+        A concurrent /stop during the body await escalates ``soft_pending`` to
+        ``killing`` and scopes the LIVE escalation marker to the open card.
+        Continuing would re-arm that card and — because the reuse path clears a
+        marker matching the reused id — erase the live escalation, so a late
+        cooperative ack could relabel the hard kill as a clean stop. The
+        escalation owns the stop now; the superseded interrupt answers like
+        the idempotent-repeat branch and touches nothing.
+        """
+        from aiohttp import web
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        slot = _FakeSlot()
+        slot.running = True
+        slot._queue = [{"id": "q1", "content": "hello"}]
+        _seed_stop_card(slot, stop_id="stop-live")
+
+        class EscalatingPayload(BodyStreamPayload):
+            """Body stream that simulates a concurrent /stop escalation."""
+
+            async def iter_chunked(self, n: int):
+                slot._stop_state = "killing"
+                slot._stop_escalated_card_id = "stop-live"
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
+
+        state = _FakeState(slot)
+        app = web.Application()
+        app["state"] = state
+
+        request = MagicMock()
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        raw = b"{}"
+        request.content = EscalatingPayload(raw)
+        request.content_length = len(raw)
+        request.can_read_body = True
+        request.charset = None
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log = MagicMock()
+            with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
+                resp = await api_chat_slot_interrupt(request)
+        body = json.loads(resp.body)
+
+        assert body.get("info") == "stop already in progress"
+        # The live escalation is untouched: marker intact, card not re-armed,
+        # no second card, posture still the hard kill's.
+        assert slot._stop_escalated_card_id == "stop-live"
+        assert _card_state(slot, "stop-live") == "stopping"
+        assert slot._stop_state == "killing"
+        assert len([m for m in slot.messages if "stop_event" in (m.get("cls") or "")]) == 1
 
 
 def _seed_stop_card(slot, stop_id="stop-race"):
@@ -560,6 +847,291 @@ class TestStopCardTeardownRace:
         assert slot._stop_state == "idle"
 
 
+class TestStopReusesOrphanedCard:
+    """One Stop press yields exactly ONE ``stop_event`` row on the wire.
+
+    The old "defensive stale-card sweep" resolved an orphaned card AND appended
+    a fresh one, so a single press put TWO rows on the wire — the pane upserts
+    by ``meta.id``, and two distinct ids render as two "[Stopped]" chips. The
+    fix re-arms the orphaned row in place (same id), mirroring how the
+    escalation path reuses the open card via ``_stop_escalated_card_id`` rather
+    than minting a second one.
+    """
+
+    @staticmethod
+    def _stop_event_rows(slot):
+        rows = []
+        for msg in slot.messages:
+            try:
+                data = json.loads(msg.get("cls") or "")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(data, dict) and data.get("kind") == "stop_event":
+                rows.append(data)
+        return rows
+
+    async def _press(self, state, slot):
+        from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log = MagicMock()
+            with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
+                return await stop_slot_turn(state, slot)
+
+    @pytest.mark.asyncio
+    async def test_stale_card_press_yields_one_row_reusing_its_id(self):
+        """A press that finds an orphan re-arms it: one row, same id."""
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        # "soft" so the handler's outcome == "idle" resolve branch stays out of
+        # the way: the card must be observable in its re-armed state.
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        _seed_stop_card(slot, stop_id="stop-orphan")
+        rebroadcasts = []
+        slot._on_message = lambda key, msg: rebroadcasts.append(msg)
+
+        await self._press(state, slot)
+
+        rows = self._stop_event_rows(slot)
+        assert len(rows) == 1
+        assert rows[0]["id"] == "stop-orphan"
+        assert rows[0]["state"] == "stopping"
+        assert slot._stop_event_id == "stop-orphan"
+        # The re-arm reaches connected panes the same way a resolve does.
+        assert len(rebroadcasts) == 1
+
+    @pytest.mark.asyncio
+    async def test_reuse_clears_a_stale_escalation_marker(self):
+        """A marker scoped to the reused id must not defer the new soft ack.
+
+        With a NEW card the stale marker simply stopped matching (see
+        ``test_escalation_marker_does_not_leak_onto_a_later_card``). Reuse makes
+        the ids EQUAL, so the re-arm has to clear the marker explicitly or this
+        press's cooperative ack defers to a hard callback that already fired,
+        stranding the re-armed card at "stopping".
+        """
+        from kiro_crew.dashboard.chat_handlers import _make_stop_resolver
+
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        _seed_stop_card(slot, stop_id="stop-orphan")
+        slot._stop_escalated_card_id = "stop-orphan"  # prior press escalated
+
+        await self._press(state, slot)
+        assert slot._stop_escalated_card_id is None
+
+        # This press's own cooperative ack settles the re-armed card.
+        await _make_stop_resolver(state, slot, "soft", "stop-orphan")()
+        assert _card_state(slot, "stop-orphan") == "stopped"
+
+    @pytest.mark.asyncio
+    async def test_orphan_id_with_no_row_still_yields_one_row(self):
+        """An orphaned id whose row is gone falls back to a single append.
+
+        With no row in the window there is no chip whose identity needs
+        preserving: the stale posture is settled (clearing the id) and this
+        press appends its one card under a fresh id.
+        """
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        slot._stop_event_id = "stop-vanished"  # id without a matching row
+
+        await self._press(state, slot)
+
+        rows = self._stop_event_rows(slot)
+        assert len(rows) == 1
+        assert rows[0]["id"] == slot._stop_event_id
+        assert rows[0]["id"] != "stop-vanished"
+        assert rows[0]["state"] == "stopping"
+
+    @pytest.mark.asyncio
+    async def test_prior_press_resolver_does_not_settle_the_reused_card(self):
+        """A pending resolver from an EARLIER stop must not touch the reuse.
+
+        Card reuse makes the id guard insufficient by construction: the prior
+        press's callback is bound to the SAME id the new press re-armed, so
+        matching ids cannot prove matching stops. The resolver therefore
+        also binds ``slot._stop_generation`` (bumped by the real ``_stop_state``
+        setter on every idle -> active edge) and bails when a newer stop has
+        initiated since it was created — the newer stop's own callbacks own
+        both the card and the posture. (GPT server-lane blocking finding on
+        head 82d79041f.)
+        """
+        from kiro_crew.dashboard.chat_handlers import _make_stop_resolver
+
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+
+        # Press 1: card opened, resolver bound, then the turn tears down
+        # leaving the card orphaned (posture idle, id still set).
+        _seed_stop_card(slot, stop_id="stop-orphan")
+        slot._stop_generation = 1  # the press's own idle -> active bump
+        resolver_from_press_1 = _make_stop_resolver(state, slot, "hard", "stop-orphan")
+        slot._stop_state = "idle"  # teardown; generation never rewinds
+
+        # Press 2: initiation bumps the generation (real setter behavior),
+        # handler re-arms the orphan under the same id.
+        slot._stop_generation = 2
+        await self._press(state, slot)
+        assert _card_state(slot, "stop-orphan") == "stopping"
+
+        # Press 1's callback lands late: same card id, older generation.
+        await resolver_from_press_1()
+        assert _card_state(slot, "stop-orphan") == "stopping"
+        assert slot._stop_event_id == "stop-orphan"
+        assert slot._stop_state == "soft_pending"
+
+        # Press 2's own resolver (current generation) still settles normally.
+        await _make_stop_resolver(state, slot, "soft", "stop-orphan")()
+        assert _card_state(slot, "stop-orphan") == "stopped"
+        assert slot._stop_state == "idle"
+
+    @pytest.mark.asyncio
+    async def test_cross_turn_orphan_is_settled_and_a_fresh_card_appended(self):
+        """An orphan from a PREVIOUS turn is not re-armed in place.
+
+        Re-arming mutates the row where press 1 appended it — above the
+        intervening user prompt — so the current turn would show no chip and
+        the transition would play out in earlier scrollback, attributing the
+        stop to the wrong turn. Reuse is for the SAME-turn orphan (the adjacent-
+        chips repro); a cross-turn orphan is settled where it
+        lies and this press's card is appended fresh, in this turn.
+        """
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        _seed_stop_card(slot, stop_id="stop-prev-turn")
+        # The next turn began: a user row now sits after the orphan.
+        slot.append("user", "next prompt", "")
+
+        await self._press(state, slot)
+
+        rows = self._stop_event_rows(slot)
+        assert len(rows) == 2
+        states = {r["id"]: r["state"] for r in rows}
+        assert states["stop-prev-turn"] == "stopped"
+        new_id = slot._stop_event_id
+        assert new_id and new_id != "stop-prev-turn"
+        assert states[new_id] == "stopping"
+        # The fresh card is the LAST row — in the turn the user stopped.
+        assert json.loads(slot.messages[-1]["cls"])["id"] == new_id
+
+    @pytest.mark.asyncio
+    async def test_nudge_and_subagent_openers_also_bound_the_reuse(self):
+        """Every turn-opening role is a boundary, not just ``user``.
+
+        A monitor cycle opens its turn with a ``nudge`` row and a queue-drained
+        completion with a ``subagent`` row (TURN_OPENER_ROLES in
+        groupDisplayItems.ts). An orphan above one of those sits in the
+        previous visual turn exactly like one above a user prompt, so re-arming
+        it would put the press's chip in the wrong turn's block.
+        """
+        for opener in ("nudge", "subagent"):
+            slot = _FakeSlot()
+            state = _FakeState(slot)
+            state.sessions.stop_turn = AsyncMock(return_value="soft")
+            _seed_stop_card(slot, stop_id="stop-prev-turn")
+            slot.append(opener, "next turn opener", "")
+
+            await self._press(state, slot)
+
+            rows = self._stop_event_rows(slot)
+            assert len(rows) == 2, opener
+            states = {r["id"]: r["state"] for r in rows}
+            assert states["stop-prev-turn"] == "stopped", opener
+            assert slot._stop_event_id != "stop-prev-turn", opener
+
+    @pytest.mark.asyncio
+    async def test_failed_rearm_mints_a_fresh_id_for_the_append(self):
+        """The append fallback must not reuse the stale id.
+
+        A client's message list is trimmed independently of ``slot.messages``,
+        so a fresh append carrying the OLD id would upsert into a client still
+        holding the old row — landing the chip in old scrollback, the failure
+        mode reuse exists to avoid. When the re-arm cannot find the row, the
+        append mints fresh.
+        """
+        from kiro_crew.dashboard import chat_handlers as ch
+
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        _seed_stop_card(slot, stop_id="stop-orphan")  # same-turn orphan
+        with patch.object(ch, "_rearm_stop_event", return_value=False):
+            await self._press(state, slot)
+
+        rows = self._stop_event_rows(slot)
+        appended = [r for r in rows if r["state"] == "stopping" and r["id"] != "stop-orphan"]
+        assert len(appended) == 1
+        assert slot._stop_event_id == appended[0]["id"]
+
+    @pytest.mark.asyncio
+    async def test_synthesis_injection_also_bounds_the_reuse(self):
+        """The frontend's second turn-flushing path is a boundary too.
+
+        ``isSynthesisInjection`` (groupDisplayItems.ts) closes the open batch
+        for a ``role == "inject"`` row carrying ``meta.injectKind ==
+        "synthesis"`` — the row ``_run_pending_synthesis`` appends when a
+        sub-agent wave completes. An orphan above one is cross-turn even
+        though plain inject rows (cron/recovery notes) are passive.
+        """
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        _seed_stop_card(slot, stop_id="stop-prev-turn")
+        slot.messages.append(
+            {
+                "role": "inject",
+                "content": "synthesis prompt",
+                "cls": "msg msg-inject",
+                "meta": {"injectKind": "synthesis"},
+            }
+        )
+
+        await self._press(state, slot)
+
+        rows = self._stop_event_rows(slot)
+        assert len(rows) == 2
+        states = {r["id"]: r["state"] for r in rows}
+        assert states["stop-prev-turn"] == "stopped"
+        assert slot._stop_event_id != "stop-prev-turn"
+
+    @pytest.mark.asyncio
+    async def test_plain_inject_rows_are_walked_past(self):
+        """A passive inject note (no synthesis kind) is NOT a boundary."""
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+        _seed_stop_card(slot, stop_id="stop-orphan")
+        slot.messages.append(
+            {"role": "inject", "content": "recovery note", "cls": "msg msg-inject"}
+        )
+
+        await self._press(state, slot)
+
+        rows = self._stop_event_rows(slot)
+        assert len(rows) == 1
+        assert rows[0]["id"] == "stop-orphan"
+
+    @pytest.mark.asyncio
+    async def test_fresh_press_appends_exactly_one_card(self):
+        """Control: no orphan means one appended card, as before."""
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+
+        await self._press(state, slot)
+
+        rows = self._stop_event_rows(slot)
+        assert len(rows) == 1
+        assert rows[0]["state"] == "stopping"
+        assert slot._stop_event_id == rows[0]["id"]
+
+
 class TestStopCancelsTheSessionTheTurnRunsOn:
     """Stop must address the session the slot's turns actually run on.
 
@@ -595,8 +1167,9 @@ class TestStopCancelsTheSessionTheTurnRunsOn:
         slot.linked_session_key = "cron:40b4958a"
         state = _FakeState(slot)
 
-        with patch("kiro_crew.dashboard.chat_handlers.sel"), patch(
-            "kiro_crew.dashboard.chat_handlers._reject_pending_approvals"
+        with (
+            patch("kiro_crew.dashboard.chat_handlers.sel"),
+            patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"),
         ):
             await api_chat_slot_stop(self._request(state))
 
@@ -610,8 +1183,9 @@ class TestStopCancelsTheSessionTheTurnRunsOn:
         slot = _FakeSlot()
         state = _FakeState(slot)
 
-        with patch("kiro_crew.dashboard.chat_handlers.sel"), patch(
-            "kiro_crew.dashboard.chat_handlers._reject_pending_approvals"
+        with (
+            patch("kiro_crew.dashboard.chat_handlers.sel"),
+            patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"),
         ):
             await api_chat_slot_stop(self._request(state))
 
@@ -633,8 +1207,9 @@ class TestStopCancelsTheSessionTheTurnRunsOn:
         # bare MagicMock answers truthy — model the absent body explicitly.
         request.can_read_body = False
 
-        with patch("kiro_crew.dashboard.chat_handlers.sel"), patch(
-            "kiro_crew.dashboard.chat_handlers._reject_pending_approvals"
+        with (
+            patch("kiro_crew.dashboard.chat_handlers.sel"),
+            patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"),
         ):
             await api_chat_slot_interrupt(request)
 
