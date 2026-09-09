@@ -348,12 +348,27 @@ def _literal_image_marker(text: str, offset: int, fenced: list[tuple[int, int]])
     )
 
 
+#: Windows extended-length path prefix (``\\?\``). ``os.readlink`` returns a
+#: symlink target in this form, and its ``?`` is part of the prefix, not a URL
+#: query delimiter -- so the query/fragment split below must not run on it.
+_EXTENDED_LENGTH_PREFIX = "\\\\?\\"
+
+
 def strip_url_syntax(raw_dest: str) -> str:
-    """A markdown destination with URL syntax removed, ready for the filesystem.
+    r"""A markdown destination with URL syntax removed, ready for the filesystem.
 
     Drops anything after ``?`` or ``#`` -- a local path has no query or fragment,
     so those would be taken for part of the filename -- and unwraps ``file://``.
+
+    A Windows extended-length path (``\\?\C:\...``, or the share spelling
+    ``\\?\UNC\server\share``) is returned unchanged: its ``?`` belongs to the
+    prefix, not to a query string, and such a path never carries a ``file://``
+    scheme. The full string therefore reaches the UNC gate, where the share,
+    device and object-namespace spellings are refused and a drive-local path is
+    not. Mirrors the fold in ``hooks.validate_file_path``.
     """
+    if raw_dest.startswith(_EXTENDED_LENGTH_PREFIX):
+        return raw_dest
     clean = raw_dest.split("?", 1)[0].split("#", 1)[0]
     if clean.startswith("file://"):
         clean = clean[len("file://") :]
