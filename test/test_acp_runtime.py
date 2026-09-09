@@ -6696,6 +6696,149 @@ async def test_create_session_fails_closed_when_available_modes_empty():
 
 
 @pytest.mark.asyncio
+async def test_create_session_fails_closed_when_spawn_agent_not_advertised():
+    """Guard (A2): the agent `--agent` selected is absent from the advertised
+    modes, so its spec never loaded (missing, or rejected wholesale on an unknown
+    field) and kiro-cli silently fell back to its own default agent. That default
+    mounts none of Kiro Crew's control plane while the global provider mcp.json
+    stays merged, so third-party servers keep working and every Crew tool the
+    injected prompt names -- learn_add among them -- answers "does not exist".
+    No override is passed, which is exactly why Guard (A) cannot catch it."""
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "default", "availableModes": [{"id": "default"}]})
+    # session/new response, then the terminate roundtrip from the fail-closed path
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="spawned with --agent"):
+            await rt.create_session(mcp_servers=[])
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SET_MODE not in methods  # never activated the wrong mode
+    assert METHOD_SESSION_TERMINATE in methods  # created session cleaned up
+    assert "s1" not in rt._session_queues  # unregistered
+
+
+@pytest.mark.asyncio
+async def test_create_session_admits_spawn_agent_when_advertised():
+    """Guard (A2) admits the ordinary case: the spawn agent IS advertised, so the
+    session stands and no set_mode fires (nothing to switch to)."""
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp(
+        {"currentModeId": "kirocrew", "availableModes": [{"id": "kirocrew"}, {"id": "ops"}]}
+    )
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        handle = await rt.create_session(mcp_servers=[])
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SET_MODE not in methods
+    assert METHOD_SESSION_TERMINATE not in methods
+    assert handle.session_id == "s1"
+
+
+@pytest.mark.asyncio
+async def test_create_session_fails_closed_when_current_mode_names_another_agent():
+    """A `currentModeId`-only response naming a DIFFERENT agent is positive evidence
+    of the substitution, so it fails closed even with no advertised list. Admitting
+    a current-mode mismatch would let exactly this response through the
+    compatibility escape: `_mode_available` returns True whenever no list was
+    advertised, so the substituted agent would run with none of Kiro Crew's tools.
+    A live probe of kiro-cli pins the meaning of the field -- a spec that loads is
+    reported as the current mode, and a spec the backend refuses reports the
+    backend's own default instead."""
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    # No availableModes at all -> parse_session_modes reports advertised=False.
+    resp = _new_resp({"currentModeId": "kiro_default"})
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="not the agent this session is running"):
+            await rt.create_session(mcp_servers=[])
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SET_MODE not in methods
+    assert METHOD_SESSION_TERMINATE in methods
+    assert "s1" not in rt._session_queues
+
+
+@pytest.mark.asyncio
+async def test_create_session_spawn_agent_guard_admits_when_no_modes_advertised():
+    """Guard (A2) is judged on the same evidence as Guard (A): a backend that
+    advertises no `modes` list at all (older kiro-cli / offline fake backend) is
+    no evidence of substitution, so the session is admitted."""
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    rt._send_and_await = AsyncMock(side_effect=[_new_resp(None), {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        handle = await rt.create_session(mcp_servers=[])
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SESSION_TERMINATE not in methods
+    assert handle.session_id == "s1"
+
+
+@pytest.mark.asyncio
+async def test_create_session_admits_spawn_agent_named_as_current_mode():
+    """Guard (A2) admits an agent the response names as the CURRENT mode even when
+    the advertised list omits it. The guard asks "did my agent load", not "is the
+    advertised list complete", so a backend that reports the active mode without
+    listing it must not have its session torn down over that gap."""
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "kirocrew", "availableModes": [{"id": "other"}]})
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        handle = await rt.create_session(mcp_servers=[])
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SESSION_TERMINATE not in methods
+    assert handle.session_id == "s1"
+
+
+@pytest.mark.asyncio
+async def test_create_session_spawn_agent_guard_skipped_on_kas_backend():
+    """Guard (A2) is restricted to the backend whose argv carries `--agent`. On KAS
+    the agent travels over the wire and is activated by set_mode, which Guard (A)
+    covers, so an advertised list without the runtime agent must not fail closed
+    here."""
+    from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._acp_backend = ACP_BACKEND_KAS
+    assert (
+        await rt._verify_spawn_agent_active(
+            "s1",
+            _new_resp({"currentModeId": "kas", "availableModes": [{"id": "kas"}]}),
+            override=None,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_session_fails_closed_when_spawn_agent_not_advertised():
+    """Guard (A2) on the resume path. `load_session`'s own check reads `agent`, and
+    its sole caller passes `agent=agent or None`, so a no-override resume reached no
+    check at all — yet a fresh runtime re-reads the spec from disk, so the spawn
+    agent can fail to load on resume exactly as on a cold start."""
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._can_load_session = True
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = {"modes": {"currentModeId": "default", "availableModes": [{"id": "default"}]}}
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="spawned with --agent"):
+            await rt.load_session("/home/u/.kiro/sessions/cli/sid-9.json", "sid-9", cwd="/w")
+    methods = [c.args[0] for c in rt._send_and_await.call_args_list]
+    assert METHOD_SET_MODE not in methods
+    assert METHOD_SESSION_TERMINATE in methods
+
+
+@pytest.mark.asyncio
 async def test_create_session_sets_mode_when_no_modes_advertised():
     """Backward compat: a backend that omits `modes` (older kiro-cli / fake
     backend) still gets set_mode attempted."""

@@ -2879,6 +2879,88 @@ class AcpRuntime:
             return True
         return agent in ids
 
+    async def _verify_spawn_agent_active(
+        self,
+        session_id: str,
+        resp: dict[str, Any],
+        *,
+        override: str | None,
+    ) -> None:
+        """Fail closed when the agent the ``--agent`` flag selected never loaded.
+
+        Guard (A2) — the spawn-flag half of Guard (A) in :meth:`create_session`.
+        ``set_mode`` only ever activates an EXPLICIT override (or, on KAS, the
+        injected default), so on kiro-cli the agent chosen by ``--agent`` — the
+        agent of every ordinary session — reaches no availability check at all.
+        It needs one, because that spec can fail to load silently: kiro-cli
+        validates ``~/.kiro/agents/<agent>.json`` with ``deny_unknown_fields``
+        and, on ANY unknown field, rejects the spec wholesale and runs its own
+        default agent instead. :func:`kiro_crew.agent.migrate_agent_specs` exists
+        to strip the two keys already known to trip it; nothing validates the
+        rest, and a spec written by another tool (or by a product this install
+        superseded) can carry more.
+
+        Nothing downstream notices the substitution. The ``set_mode`` response is
+        never read back, ``currentModeId`` is never re-compared, and
+        :mod:`kiro_crew.acp.mcp_session_report` only LOGS — its own docstring
+        forbids reading a missing report as "not mounted". The session then runs
+        with NONE of Kiro Crew's control plane, while the global provider
+        ``mcp.json`` that Kiro Crew pins off only on specs IT writes stays
+        merged. So third-party MCP servers declared there keep working and every
+        Kiro Crew tool the injected prompt names — ``learn_add`` among them —
+        answers "does not exist", which the agent reports to the user as its
+        memory being unavailable.
+
+        Skipped when an override is requested: Guard (A) checks the agent
+        ``set_mode`` will activate.
+
+        ``currentModeId`` is read as PROOF, in both directions. A live probe of
+        this backend settles what it means: a spec that loads is reported as the
+        current mode AND listed in ``availableModes``, while a spec the backend
+        refuses is absent from the list and ``currentModeId`` names the backend's
+        own default instead. So a non-empty ``currentModeId`` naming something
+        OTHER than the spawn agent is positive evidence of the substitution, and
+        fails closed even when no advertised list came back. Treating a
+        current-mode mismatch as an extra ADMIT is the hole this avoids: a
+        ``currentModeId``-only response naming a substituted agent would otherwise
+        sail through the compatibility escape.
+
+        That escape is therefore narrow. It applies only when the response names
+        NO current mode, where the advertised list is the sole signal and its
+        absence is no evidence of a substitution -- so older kiro-cli and the
+        offline fake backend behave exactly as before.
+
+        Scoped to ``ACP_BACKEND_KIRO`` -- the backend whose argv actually carries
+        ``--agent`` -- and written as a POSITIVE identity test, because an
+        inequality would silently capture every harness added later
+        (harness-parity H5). On KAS the agent travels over the wire as an injected
+        custom agent and is activated by ``set_mode``, which Guard (A) already
+        covers. Scoped on the backend rather than on "the KAS projection came back
+        None" so the same call serves :meth:`load_session`, which never builds
+        that projection.
+        """
+        if override or not self._agent:
+            return
+        if self._acp_backend == ACP_BACKEND_KIRO:
+            spawn_agent = self._agent
+            ids, current, _adv = parse_session_modes(resp)
+            if current:
+                if current == spawn_agent:
+                    return
+            elif self._mode_available(spawn_agent, resp):
+                return
+            await self.terminate_session(session_id)
+            raise AcpRuntimeError(
+                f"Agent {spawn_agent!r} was spawned with --agent but is not the "
+                f"agent this session is running (current mode: "
+                f"{current or '(none reported)'}; advertised: {ids or 'none'}). Its "
+                f"~/.kiro/agents/{spawn_agent}.json is missing, or the backend "
+                f"refused to load it. Refusing to run the backend's own default "
+                f"agent in its place, which would silently drop every Kiro Crew "
+                f"tool the agent's prompt relies on. Run `kirocrew setup "
+                f"--agent-only` to rewrite the agent config."
+            )
+
     async def _kas_custom_agents(
         self, agent: str, *, member_dispatch: bool = False
     ) -> list[dict[str, Any]] | None:
@@ -3096,6 +3178,11 @@ class AcpRuntime:
         # rather than silently leaving the session on kiro-cli's default mode: for
         # a restricted/app agent that would run a BROADER agent than requested (a
         # privilege escalation), so we terminate and raise an actionable error.
+        #
+        # Guard (A2) runs FIRST: the guard below never sees the agent `--agent`
+        # selected, which on kiro-cli is every ordinary session's agent. See
+        # _verify_spawn_agent_active.
+        await self._verify_spawn_agent_active(session_id, resp, override=agent)
         # The agent to ACTIVATE. An explicit request always applies. When a KAS
         # custom agent was injected (``kas_agents`` non-empty) the runtime
         # default must be activated too: KAS has no --agent flag, so an injected
@@ -3390,6 +3477,13 @@ class AcpRuntime:
         # succeeded so kiro-cli holds it; a plain local unregister would leak it
         # in the shared process (and leave the reader routing late transcript-
         # replay frames to an abandoned queue). terminate_session unregisters too.
+        #
+        # Guard (A2), same as create_session: the check below reads `agent`, and
+        # this method's only caller passes `agent=agent or None`, so a resume with
+        # no override reaches no check at all. A fresh runtime resuming a session
+        # re-reads the spec from disk, so the spawn agent can fail to load here
+        # exactly as it can on a cold start.
+        await self._verify_spawn_agent_active(resume_sid, resp, override=agent)
         if agent and self._mode_available(agent, resp):
             # Same reason as create_session: measured before the request goes
             # out, the only moment "queued" and "pre-switch" mean the same thing.
