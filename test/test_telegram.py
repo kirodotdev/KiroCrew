@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, patch
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.dashboard.token_auth import parse_duration
+from kiro_crew.messaging import driver as messaging_driver
 from kiro_crew.messaging.commands import parse_dashboard_ttl
 from kiro_crew.messaging.link import (
     UNBIND_REASON_UNSPECIFIED,
@@ -38,6 +39,7 @@ from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session import BACKGROUND_KEY, _opt_out_key
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.session_map import ConversationOwnershipConflict
+from kiro_crew.telegram import renderer as telegram_renderer
 from kiro_crew.telegram.client import (
     TELEGRAM_CHUNK_LIMIT,
     TELEGRAM_MAX_TEXT,
@@ -1715,14 +1717,68 @@ class TestRenderer:
         assert "<b>after</b>" in out, "prose around it keeps its formatting"
 
     def test_strip_steering_complete_and_unclosed(self) -> None:
-        # Complete marker is removed anywhere in the text.
-        out = _strip_steering("BANANA [STEERING steer-x: rephrase] tail")
+        # Complete marker is removed anywhere in the text. The id is hex because
+        # that is the grammar `messaging.driver` accepts -- the old "steer-x"
+        # fixture was never a frame the driver would have taken.
+        out = _strip_steering("BANANA [STEERING steer-ab12: rephrase] tail")
         assert "STEERING" not in out and out.startswith("BANANA") and out.endswith("tail")
         # UNCLOSED trailing marker (still streaming, no closing "]") is also
         # removed, so the live draft never previews text that on_done strips.
         assert _strip_steering("BANANA\n\n[STEERING steer-abc: interpreted as wanting") == "BANANA"
         # No marker -> unchanged.
         assert _strip_steering("just text") == "just text"
+
+    def test_prose_that_merely_opens_with_the_sentinel_stays(self) -> None:
+        """Opening with the sentinel is not being a marker.
+
+        ``messaging.driver`` already rules that -- it requires ``steer-<id>`` --
+        and so does the dashboard's own parser. A bare ``[STEERING`` class deleted
+        ordinary prose from the delivered message, and because the class does not
+        stop at a line end it ran on to whatever ``]`` came next: here a Markdown
+        link two lines down, taking the text in between with it.
+        """
+        one_line = "Read the [STEERING] section, then [docs](x) for more."
+        assert _strip_steering(one_line) == one_line
+        across_lines = "[STEERING is the feature I mean\n\nsee the [docs](x) for it"
+        assert _strip_steering(across_lines) == across_lines
+
+    def test_a_dashed_steer_id_is_one_frame_to_both_patterns(self) -> None:
+        """``messaging.driver`` accepts ``[0-9a-f-]+`` for the id, so a dashed id
+        is a real frame -- and the two patterns here have to agree about it.
+
+        ``_rotate_at_markers`` reads the summary at the offset the MARKER pattern
+        chose, so an id class the marker accepts and the summary does not leaves
+        the steer chip with no summary at all, which is the only new information
+        that chip carries.
+        """
+        text = "[STEERING steer-a180-ae7f: checked the job id] tail"
+        marker = telegram_renderer._STEER_MARKER_RE.search(text)
+        assert marker is not None
+        summary = telegram_renderer._STEER_SUMMARY_RE.match(text, marker.start())
+        assert summary is not None and summary.group(1) == "checked the job id"
+        assert _strip_steering(text) == "tail"
+
+    def test_the_renderer_patterns_agree_with_the_driver_on_a_frame_corpus(self) -> None:
+        """``messaging.driver`` is the authority on this grammar, so the renderer
+        must not recognise a frame the driver rejects, or reject one it takes."""
+        frames = [
+            "[STEERING steer-ab12: switching to the job id]",
+            "[STEERING steer-a180-ae7f: checked]",
+            "[STEERING steer-ab12: switching to the job id\nand re-running it]",
+            "[STEERING steer-ab12]",
+        ]
+        for frame in frames:
+            assert messaging_driver._STEER_MARKER_RE.match(frame) is not None, frame
+            assert telegram_renderer._STEER_MARKER_RE.fullmatch(frame) is not None, frame
+            assert _strip_steering(f"before {frame} after") == "before  after"
+        not_frames = [
+            "[STEERING]",
+            "[STEERING is the feature I mean]",
+            "[STEERING steer-: nothing]",
+        ]
+        for frame in not_frames:
+            assert messaging_driver._STEER_MARKER_RE.match(frame) is None, frame
+            assert telegram_renderer._STEER_MARKER_RE.search(frame) is None, frame
 
     def _drive(self, events: list[OutputEvent]) -> FakeClient:
         cli = FakeClient()
