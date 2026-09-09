@@ -17,6 +17,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
+    VALID_MEMORY_MODES,
     DashboardState,
     request_slot_origin,
 )
@@ -118,22 +119,19 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             # (CWE-204). The true reason is recorded server-side via SEL above.
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
-    if slot.memory_mode != "persistent":
-        sel().log_api_access(
-            caller=request_app or "dashboard",
-            operation="chat.slot_fork",
-            outcome="denied",
-            source="dashboard",
-            resources=f"slot={name},memory_mode={slot.memory_mode}",
-            error="non-persistent slot",
-        )
-        return web.json_response(
-            {
-                "error": "cannot fork a non-persistent session",
-                "code": "slot_not_persistent",
-            },
-            status=400,
-        )
+    # Incognito and temporary sessions fork like any other. Nothing about a fork
+    # engages what those modes actually guarantee -- no consolidation or lessons
+    # (``is_restricted``), no memory-context injection (``blocks_reads``) -- and
+    # the transcript being copied is already on disk: ``_save_slot_to_history``
+    # has no ``memory_mode`` gate, so the parent's JSONL holds it for tab recovery
+    # (see docs/system-specs/modules/history.md). A refusal here would buy no
+    # privacy; it would only force the user to reselect the mode and lose the
+    # conversation.
+    #
+    # The one thing a fork must never do is LOOSEN the mode: copying an incognito
+    # transcript into a persistent slot would hand content the user marked
+    # no-write to consolidation. So the child inherits the parent's mode below,
+    # and the request body carries no way to pick one.
     if request.body_exists:
         try:
             body = await request.json()
@@ -831,12 +829,45 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     else:
         fork_mode = slot.mode
 
+    # The child inherits the parent's mode, so the parent's value is what the
+    # slot constructor validates against ``VALID_MEMORY_MODES``. The API checks
+    # the field on the way in, but rehydration copies the transcript header's
+    # ``memory_mode`` onto the slot as written, so a hand-edited or partially
+    # written header can leave an unrecognised value on a live parent. That
+    # value is refused HERE, with a code and before any child exists, rather
+    # than raising out of ``_ChatSlot.__init__`` as a 500. Fail closed: a mode
+    # this code cannot read is a memory boundary it cannot honour.
+    inherited_memory_mode = slot.memory_mode
+    if inherited_memory_mode not in VALID_MEMORY_MODES:
+        sel().log_api_access(
+            caller=request_app or "dashboard",
+            operation="chat.slot_fork",
+            outcome="denied",
+            source="dashboard",
+            resources=f"slot={name},memory_mode={inherited_memory_mode!r}",
+            error="source slot memory_mode is not a recognised mode",
+        )
+        return web.json_response(
+            {
+                "error": "the source session's memory mode is not recognised",
+                "code": "fork_source_memory_mode_invalid",
+            },
+            status=409,
+        )
+
     new_slot = state.get_or_create_slot(
         name=None,
         agent=slot.agent,
         workspace=slot.workspace,
         model=slot.model,
         mode=fork_mode,
+        # Inherited at BIRTH, not stamped afterwards: get_or_create_slot is what
+        # registers the child's ``dashboard:`` key as restricted, and every memory
+        # gate (lessons, consolidation, artifact registration) reads that
+        # registry. A later assignment would leave a window where the child of
+        # an incognito parent is a persistent slot. The value is the one
+        # validated above, so the constructor cannot raise on it.
+        memory_mode=inherited_memory_mode,
         app=request_app,
         origin=request_slot_origin(request_app),
         # Human request-layer path: a person forking a conversation. The
@@ -981,7 +1012,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             f"at_index={at_index if at_index is not None else 'last'},"
             f"direction={direction},"
             f"head_count={len(head_messages)},"
-            f"prompt_len={len(prompt)},mode={new_slot.mode}"
+            f"prompt_len={len(prompt)},mode={new_slot.mode},"
+            f"memory_mode={new_slot.memory_mode}"
         ),
     )
     _sync_dashboard_slots(state)
@@ -995,5 +1027,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             "prompt": prompt,
             "folder_id": new_slot.folder_id or None,
             "direction": direction,
+            # The mode the child was born with (always the parent's), so the tab
+            # can render the incognito/temporary badge before the slots refresh.
+            "memory_mode": new_slot.memory_mode,
         }
     )
