@@ -1023,6 +1023,21 @@ class TestGetEmbeddingStatus:
         assert data["available"] is True
         assert (data["total_items"], data["embedded_items"]) == (2, 1)
 
+    @pytest.mark.asyncio
+    async def test_status_takes_no_db_connection_on_the_loop(self, store, monkeypatch):
+        """The dashboard polls this endpoint while open; the COUNTs must run
+        in a worker thread. On the loop, a contended knowledge DB busy-waits
+        every task (watchdog heartbeat included) for the connection's whole
+        busy timeout. Strict mode turns an on-loop take into a raise,
+        which aiohttp surfaces as a 500."""
+        await asyncio.to_thread(store.add_item, "a", "body", "note")
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        async with _client(_make_app(store)) as client:
+            resp = await client.get("/api/knowledge/embedding/status")
+            assert resp.status == 200
+            data = await resp.json()
+        assert (data["total_items"], data["embedded_items"]) == (1, 0)
+
 
 class TestRebuildEmbeddingsJob:
     @pytest.mark.asyncio

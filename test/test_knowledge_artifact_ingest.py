@@ -889,6 +889,33 @@ class TestArtifactKnowledgeSync:
         await sync._reconcile_task
         assert any("arrived while off" in c for c in _contents(kstore, sid))
 
+    @pytest.mark.asyncio
+    async def test_start_takes_no_db_connection_on_the_loop(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """start() runs on the gateway loop at every launch; its get-or-create
+        must run in a worker thread. On the loop, a contended knowledge DB
+        busy-waits every task (watchdog heartbeat included) for the
+        connection's whole busy timeout.
+
+        Strict mode turns an on-loop take into a raise, so this fails loudly
+        if the offload is ever removed. The reconcile pass is stubbed out:
+        this test owns the ``ensure_artifact_source`` seam only.
+        """
+        monkeypatch.setattr(
+            artifact_ingest, "reconcile_artifacts",
+            AsyncMock(return_value=(0, 0, 0)))
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        await sync.start()  # raises OnLoopStoreError if the take is on-loop
+        assert sync._reconcile_task is not None
+        await sync._reconcile_task
+        row = await asyncio.to_thread(
+            kstore.get_source_by_uri, ARTIFACT_SOURCE_URI)
+        assert row is not None, "start() never created the aggregate source"
+
 
 class TestKnowledgeConfigDefaults:
     def test_auto_ingest_defaults_off(self):

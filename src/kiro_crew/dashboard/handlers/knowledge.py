@@ -784,6 +784,30 @@ async def source_counts(request: web.Request) -> web.Response:
     return web.json_response({"counts": counts, "total": total_row[0]})
 
 
+def _source_rows(store, uri_filter: str | None) -> list:
+    """The sources listing with per-source item counts, in one off-loop take.
+
+    Sync on purpose: the dashboard polls the sources list while a source is
+    syncing -- exactly the window in which the knowledge DB is contended --
+    and the LEFT JOIN aggregates over ``items``, which grows without bound.
+    The caller dispatches this to a worker thread; ``store.db`` is
+    thread-local, so the thread gets its own connection.
+    """
+    if uri_filter:
+        resolved_filter = str(Path(uri_filter).resolve()) if uri_filter.startswith('/') else uri_filter
+        return store.db.execute(
+            "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
+            "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
+            "ON s.id = c.source_id WHERE s.uri = ? ORDER BY s.updated_at DESC",
+            (resolved_filter,)
+        ).fetchall()
+    return store.db.execute(
+        "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
+        "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
+        "ON s.id = c.source_id ORDER BY s.updated_at DESC"
+    ).fetchall()
+
+
 async def list_sources(request: web.Request) -> web.Response:
     """GET /api/knowledge/sources.
 
@@ -794,21 +818,7 @@ async def list_sources(request: web.Request) -> web.Response:
     cost surfaces is a credit balance after the fact.
     """
     store = _store(request)
-    uri_filter = request.query.get("uri")
-    if uri_filter:
-        resolved_filter = str(Path(uri_filter).resolve()) if uri_filter.startswith('/') else uri_filter
-        rows = store.db.execute(
-            "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
-            "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
-            "ON s.id = c.source_id WHERE s.uri = ? ORDER BY s.updated_at DESC",
-            (resolved_filter,)
-        ).fetchall()
-    else:
-        rows = store.db.execute(
-            "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
-            "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
-            "ON s.id = c.source_id ORDER BY s.updated_at DESC"
-        ).fetchall()
+    rows = await asyncio.to_thread(_source_rows, store, request.query.get("uri"))
     sources = [dict(r) for r in rows]
     # Aggregate scans plus a size stat per outstanding file, and the dashboard polls
     # this list while a source is syncing -- offloaded so a large folder cannot stall
@@ -1313,14 +1323,25 @@ async def resume_source(request: web.Request) -> web.Response:
     return web.json_response({"status": "scanning"})
 
 
+def _folder_file_rows(store, source_id: str) -> list:
+    """A source's per-file scan state, in one off-loop take.
+
+    Sync on purpose: the dashboard polls this every few seconds during a scan
+    -- exactly the window in which the knowledge DB is contended. The caller
+    dispatches this to a worker thread; ``store.db`` is thread-local, so the
+    thread gets its own connection.
+    """
+    return store.db.execute(
+        "SELECT file_path, status, error_message, mtime, content_hash, item_ids, last_seen "
+        "FROM folder_file_state WHERE source_id = ? ORDER BY last_seen DESC",
+        (source_id,)).fetchall()
+
+
 async def list_source_files(request: web.Request) -> web.Response:
     """GET /api/knowledge/sources/{id}/files -- list files with scan status."""
     store = _store(request)
     source_id = request.match_info["id"]
-    rows = store.db.execute(
-        "SELECT file_path, status, error_message, mtime, content_hash, item_ids, last_seen "
-        "FROM folder_file_state WHERE source_id = ? ORDER BY last_seen DESC",
-        (source_id,)).fetchall()
+    rows = await asyncio.to_thread(_folder_file_rows, store, source_id)
     files = [{"file_path": r["file_path"], "status": r["status"] or "pending",
               "error_message": _redact(r["error_message"]) if r["error_message"] else None,
               "mtime": r["mtime"],
@@ -1735,16 +1756,29 @@ async def import_bundle(request: web.Request) -> web.Response:
 # ---------- Route registration ----------
 
 
-async def get_embedding_status(request: web.Request) -> web.Response:
-    """GET /api/knowledge/embedding/status -- embedding config and progress."""
-    store = _store(request)
-    embedder = request.app.get("knowledge_embedder")
+def _embedding_counts(store) -> tuple[int, int]:
+    """(total active items, active items with a vector) in one off-loop take.
+
+    Sync on purpose: the dashboard polls the status endpoint repeatedly, and
+    running these COUNTs on the gateway loop busy-waits every task (watchdog
+    heartbeat included) whenever the knowledge DB is contended. The caller
+    dispatches this to a worker thread; ``store.db`` is thread-local, so the
+    thread gets its own connection.
+    """
     total = store.db.execute(
         "SELECT COUNT(*) as c FROM items WHERE status = 'active'"
     ).fetchone()["c"]
     embedded = store.db.execute(
         "SELECT COUNT(*) as c FROM items WHERE status = 'active' AND embedding IS NOT NULL"
     ).fetchone()["c"]
+    return total, embedded
+
+
+async def get_embedding_status(request: web.Request) -> web.Response:
+    """GET /api/knowledge/embedding/status -- embedding config and progress."""
+    store = _store(request)
+    embedder = request.app.get("knowledge_embedder")
+    total, embedded = await asyncio.to_thread(_embedding_counts, store)
     # Polled every 30s by the frontend — loop-safe probe.
     available = await embedder.is_available_async() if embedder else False
     return web.json_response({
