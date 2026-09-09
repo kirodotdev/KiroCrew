@@ -578,6 +578,47 @@ def _campaign_dir(campaign_id: str) -> Path:
     return d
 
 
+def _read_campaign_text(path: Path) -> str:
+    """Read campaign prose as UTF-8, without inferring what wrote anything else.
+
+    UTF-8 is the contract: every writer in this module pins it, and in agent
+    mode `FINDINGS.md` is written by the research agent, whose encoding this
+    code has never controlled. A campaign created BEFORE the pin was written
+    with ``locale.getpreferredencoding()``, so on a CJK Windows host its
+    findings may be sitting there in the legacy code page. A strict UTF-8 read
+    would raise ``UnicodeDecodeError`` on it and turn an upgrade into a
+    permanent HTTP 500 on report, fork, export and the knowledge route, so the
+    read must not raise.
+
+    It must also not GUESS. Decoding UTF-8 and retrying with the host code page
+    treats a successful decode as provenance, and it is not one: cp950 ``癒`` is
+    the bytes ``c2 a1``, which are equally valid UTF-8 for ``¡`` -- 899 cp950
+    multi-byte characters have that property -- so a legacy report could be
+    served, and copied into a fork, as Latin mojibake with nothing raised. It
+    would also read provenance out of ambient state, applying the READING host's
+    code page to a file some other host wrote.
+
+    Nothing on disk can break that tie: a campaign directory carries no format
+    or version marker, `status.json` has no schema version, and the campaign row
+    records no writer generation. So the codec is not chosen by trial.
+    ``latin-1`` is total (never raises) and lossless, so a pre-pin file still
+    renders and its characters stay recoverable from the string -- byte-exact up
+    to the universal-newline translation both reads apply, which folds ``\r\n``
+    to ``\n`` and changes nothing else. That is the contract this repository
+    already uses for text of unknown provenance; see
+    ``kiro_crew.knowledge.readers._decode_text_bytes``.
+
+    Nothing here writes. A read path that repairs its own input is how the
+    original bytes stop existing, and on a directory the research agent owns it
+    is also how viewing a report becomes a write primitive. The cost is one
+    extra open on a legacy file, on a route a human triggers.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="latin-1")
+
+
 def _read_text_or_missing(path: Path) -> str | None:
     """Read *path*, or return ``None`` when it does not exist.
 
@@ -588,7 +629,7 @@ def _read_text_or_missing(path: Path) -> str | None:
     downgraded to "no findings yet".
     """
     try:
-        return path.read_text()
+        return _read_campaign_text(path)
     except FileNotFoundError:
         return None
 
@@ -613,7 +654,7 @@ def _write_text(path: Path, text: str) -> None:
     campaign deletion must keep winning (recreating the directory here would
     resurrect a deleted campaign's data).
     """
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
 
 
 def _write_new_cycle_files(pending: list[tuple[Path, str]]) -> bool:
@@ -628,7 +669,7 @@ def _write_new_cycle_files(pending: list[tuple[Path, str]]) -> bool:
         if fpath.exists():
             continue
         fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath.write_text(text)
+        fpath.write_text(text, encoding="utf-8")
         wrote = True
     return wrote
 
@@ -637,10 +678,10 @@ def _copy_parent_findings(src: Path, dst: Path) -> None:
     """Seed a forked campaign with its parent's findings. Blocking; call off-loop."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        content = src.read_text()
+        content = _read_campaign_text(src)
     except FileNotFoundError:
         return
-    dst.write_text(content)
+    dst.write_text(content, encoding="utf-8")
 
 
 def _unlink_if_present(path: Path) -> bool:
@@ -685,7 +726,7 @@ def write_guidance(campaign_id: str, text: str) -> None:
     if not _validate_campaign_id(campaign_id):
         return
     d = _campaign_dir(campaign_id)
-    (d / "guidance.txt").write_text(text)
+    (d / "guidance.txt").write_text(text, encoding="utf-8")
 
 
 def get_findings(campaign_id: str) -> list[dict]:
@@ -1973,7 +2014,7 @@ def _write_brief(cid: str, row: Any) -> None:
             "Wait for all completion events, then synthesize results into your cycle finding. "
             f"If fewer than {pw} sub-questions remain open, spawn only as many as needed.",
         ]
-    _campaign_dir(cid).joinpath("brief.md").write_text("\n".join(lines))
+    _campaign_dir(cid).joinpath("brief.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 # --- RL v2: recursive exploration (emergent sub-questions) ---
@@ -2818,7 +2859,7 @@ def _read_report(campaign_id: str) -> str:
         return ""
     p = d / "FINDINGS.md"
     try:
-        return p.read_text() if p.exists() else ""
+        return _read_campaign_text(p) if p.exists() else ""
     except OSError:
         return ""
 
@@ -2831,7 +2872,7 @@ async def _handle_report(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid campaign ID"}, status=400)
     _audit("campaign_report", cid)
     # FINDINGS.md is agent-authored — redact before serving to the dashboard.
-    report = _redact_finding({"v": _read_report(cid)})["v"]
+    report = _redact_finding({"v": await asyncio.to_thread(_read_report, cid)})["v"]
     return web.json_response({"report": report})
 
 
