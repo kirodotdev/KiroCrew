@@ -9,12 +9,6 @@
  *
  *  This runs on every keystroke in the form, so it is a plain regex pass with no
  *  round trip.
- *
- *  The three pattern sets mirror the ones the cron-cost-optimize skill's scanner
- *  uses to audit jobs that already exist. The two are deliberately separate
- *  copies rather than a shared source: this one judges a prompt a user is still
- *  typing, the scanner judges a job's recorded run history, and only the wording
- *  half is common. Keep them in step by intent, not by import.
  */
 
 /** Work a program can settle with no reasoning.

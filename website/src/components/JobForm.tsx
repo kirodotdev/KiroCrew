@@ -518,6 +518,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
               <div
                 className="flex items-start gap-2 px-3 py-2 rounded-lg bg-accent-subtle text-[12.5px] text-accent"
                 role="note"
+                aria-live="polite"
                 data-testid="jobform-mode-advice"
               >
                 <Zap size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
