@@ -781,3 +781,101 @@ def test_collect_handler_rejects_non_object_body(tmp_path, monkeypatch):
     )
     resp = asyncio.run(dh.api_diagnostics_collect(_CollectReq(["not", "a", "dict"])))
     assert resp.status == 400
+
+
+class TestKiroCliVersionResolution:
+    """#7674: the probe resolves the binary instead of spawning a bare name.
+
+    The decisive case plants a fake executable reachable ONLY through a fixed
+    ``known_kiro_cli_dirs()`` entry (a fake home's ``.local/bin``) while the
+    pinned ``PATH`` excludes it — red on the old bare-name spawn, green
+    through the resolver. Layout is pinned by rebinding the module's
+    ``resolve_kiro_cli`` to the REAL resolver with fixed ``home`` / ``environ``
+    / ``platform_name`` kwargs, so the resolution logic itself stays under
+    test and nothing depends on the test host.
+    """
+
+    @staticmethod
+    def _plant_cli(home: Path, script: str) -> Path:
+        bin_dir = home / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        cli = bin_dir / "kiro-cli"
+        cli.write_text(script)
+        cli.chmod(0o755)
+        return cli
+
+    @staticmethod
+    def _pin_layout(monkeypatch, home: Path, path_dir: Path) -> None:
+        from kiro_crew.kiro_cli import resolve_kiro_cli as real_resolve
+
+        monkeypatch.setattr(
+            diagnostics,
+            "resolve_kiro_cli",
+            lambda: real_resolve(
+                platform_name="linux", home=home, environ={"PATH": str(path_dir)}
+            ),
+        )
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell-script fake executable")
+    def test_binary_absent_from_path_is_still_found(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        self._plant_cli(home, "#!/bin/sh\necho 'kiro-cli 9.9.9'\n")
+        self._pin_layout(monkeypatch, home, tmp_path / "elsewhere")
+        assert diagnostics._kiro_cli_version() == "kiro-cli 9.9.9"
+
+    def test_nothing_resolved_is_exactly_unavailable(self, monkeypatch):
+        monkeypatch.setattr(diagnostics, "resolve_kiro_cli", lambda: None)
+        assert diagnostics._kiro_cli_version() == "unavailable"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell-script fake executable")
+    def test_nonzero_exit_is_not_runnable_not_unavailable(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        self._plant_cli(home, "#!/bin/sh\necho boom >&2\nexit 3\n")
+        self._pin_layout(monkeypatch, home, tmp_path / "elsewhere")
+        assert diagnostics._kiro_cli_version() == "present but not runnable"
+
+    def test_spawn_failure_is_not_runnable_not_unavailable(self, tmp_path, monkeypatch):
+        ghost = str(tmp_path / "ghost" / "kiro-cli")
+        monkeypatch.setattr(diagnostics, "resolve_kiro_cli", lambda: ghost)
+        assert diagnostics._kiro_cli_version() == "present but not runnable"
+
+    def test_raising_spawn_machinery_degrades_to_not_runnable(self, tmp_path, monkeypatch):
+        """Spawn machinery that RAISES beyond OSError must not crash collection.
+
+        The resource-limit / spawn plumbing can raise more than the classic
+        ``(OSError, SubprocessError)`` pair (e.g. a platform-composition error
+        from governance-aware machinery on an un-booted context). Diagnostics
+        must degrade to the not-runnable string — never-raises is the
+        collector's contract, and diagnostics must work precisely when the
+        rest of the system is broken.
+        """
+
+        def _boom(argv, **kw):
+            raise RuntimeError("spawn machinery failed closed")
+
+        monkeypatch.setattr(
+            diagnostics, "resolve_kiro_cli", lambda: str(tmp_path / "kiro-cli")
+        )
+        monkeypatch.setattr(diagnostics, "run_limited", _boom)
+        assert diagnostics._kiro_cli_version() == "present but not runnable"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell-script fake executable")
+    def test_probe_child_env_is_scrubbed(self, tmp_path, monkeypatch):
+        """The probed binary must not inherit credential-bearing env vars.
+
+        The resolver's first candidates live in user-writable install dirs, so
+        the probe hands the child :func:`sandbox.scrub_env` output — a planted
+        binary reads no secrets out of the inherited environment. The fake CLI
+        echoes the sentinel if it can see it; a clean child prints only the
+        version line.
+        """
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "sentinel-must-not-leak")
+        home = tmp_path / "home"
+        self._plant_cli(
+            home,
+            "#!/bin/sh\n"
+            'if [ -n "$AWS_SECRET_ACCESS_KEY" ]; then echo "leaked"; '
+            'else echo "kiro-cli 1.2.3"; fi\n',
+        )
+        self._pin_layout(monkeypatch, home, tmp_path / "elsewhere")
+        assert diagnostics._kiro_cli_version() == "kiro-cli 1.2.3"
