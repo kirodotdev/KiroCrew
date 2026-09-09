@@ -10,8 +10,9 @@ File format (``<data>/dictionary.toml``)::
     correct = "DynamoDB"
     aliases = ["dynamo db", "dynamo d.b."]
 
-Matching is case-insensitive with word boundaries; the longest alias wins so a
-multi-word alias is not shadowed by one of its own prefixes.
+Matching is case-insensitive and bounded to a standalone occurrence (see
+:func:`_bounded_pattern`); the longest alias wins so a multi-word alias is not
+shadowed by one of its own prefixes.
 
 The parse is deliberately paranoid: this file is user-editable AND writable by
 the agent's own file tools, so a malformed or hostile document must degrade to
@@ -46,8 +47,8 @@ from kiro_crew.atomic_write import atomic_write
 
 logger = logging.getLogger("kirocrew.app.meetings")
 
-# An alias is matched with \b…\b, so a regex-special alias must be escaped (it
-# is) and an absurdly long one must be refused (a 10k-char alias compiled 500
+# An alias is matched as a bounded regex, so a regex-special alias must be escaped
+# (it is) and an absurdly long one must be refused (a 10k-char alias compiled 500
 # times is a cheap CPU sink for something the user never intended).
 _MAX_ALIAS_LEN = 120
 _MAX_CORRECT_LEN = 120
@@ -63,6 +64,7 @@ _DICTIONARY_HEADER = "# Domain dictionary for meetings speech-to-text correction
 # `save` can never write, so the corrections applied to live transcripts and the
 # document on disk would disagree until the next reload.
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_WORD_CHAR_RE = re.compile(r"\w")
 
 
 def _literal_replacement(value: str) -> Callable[[re.Match[str]], str]:
@@ -81,6 +83,27 @@ def _literal_replacement(value: str) -> Callable[[re.Match[str]], str]:
     lambda``), and this reads as what it is.
     """
     return lambda _match: value
+
+
+def _bounded_pattern(alias: str) -> str:
+    """Build the standalone-occurrence pattern for *alias*.
+
+    ``\\b`` asserts that a word character sits on exactly ONE side of the position,
+    so it delimits an alias only where the alias's own edge is itself a word
+    character. On an alias that begins or ends with punctuation it asserts the
+    opposite of what the term means: ``\\b\\.net\\b`` requires a word character
+    before the dot, so it skips the standalone ".net" the speaker said and fires
+    inside "asp.net" instead.
+
+    Each edge therefore takes ``\\b`` only when the alias's own character there is a
+    word character, and a lookaround for a neighbouring word character otherwise.
+    On a word-character edge the two spellings are equivalent, so an alias that is
+    entirely alphanumeric keeps exactly the pattern it had.
+    """
+
+    prefix = r"\b" if _WORD_CHAR_RE.match(alias[:1]) else r"(?<!\w)"
+    suffix = r"\b" if _WORD_CHAR_RE.match(alias[-1:]) else r"(?!\w)"
+    return f"{prefix}{re.escape(alias)}{suffix}"
 
 
 class DomainDictionary:
@@ -145,7 +168,9 @@ class DomainDictionary:
         ]
         replacements.sort(key=lambda pair: len(pair[0]), reverse=True)
         for alias, correct in replacements:
-            self._compiled.append((correct, re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE)))
+            self._compiled.append(
+                (correct, re.compile(_bounded_pattern(alias), re.IGNORECASE))
+            )
 
     # -- applying --
 

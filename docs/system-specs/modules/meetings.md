@@ -159,6 +159,14 @@ never overwrites, so user edits survive every restart. A second `on_startup`
 hook launches the calendar poller (below); its `on_cleanup` partner runs before
 the session teardown hook, so no poll tick can pre-create a meeting mid-shutdown.
 
+An alias matches a standalone occurrence, case-insensitively, longest alias first.
+"Standalone" is asserted per edge: `\b` where the alias's own edge character is a
+word character, and a lookaround for a neighbouring word character where it is
+not. `\b` alone cannot express the second case — it asserts a word character on
+exactly one side, so `\b\.net\b` demands one before the dot, skipping the
+standalone ".net" and firing inside "asp.net" instead. Aliases like `c++`, `c#`
+and `.net` are ordinary dictionary entries and have to match what was said.
+
 Dictionary terms and aliases round-trip through UTF-8 TOML, including supplementary
 Unicode characters. Quotes, backslashes, and control characters remain escaped;
 the serializer does not emit JSON surrogate-pair escapes that TOML rejects.

@@ -83,6 +83,58 @@ class TestMatching:
     def test_empty_text_untouched(self, dictionary):
         assert dictionary.correct("") == ""
 
+    @pytest.mark.parametrize(
+        ("alias", "correct", "said", "expected"),
+        [
+            ("c++", "C++", "we used c++ today", "we used C++ today"),
+            ("c#", "C#", "the c# team shipped", "the C# team shipped"),
+            (".net", ".NET", "migrated to .net core", "migrated to .NET core"),
+            ("++x", "++X", "the ++x trick", "the ++X trick"),
+        ],
+    )
+    def test_an_alias_edged_with_punctuation_matches(
+        self, alias: str, correct: str, said: str, expected: str
+    ):
+        """An alias whose first or last character is not a word character.
+
+        `\\b` asserts a word character on exactly one side, so wrapping such an
+        alias in it demanded a word character OUTSIDE the punctuation: "c++",
+        "c#" and ".net" were accepted by the dictionary editor, listed as active
+        terms, and then silently never corrected anything.
+        """
+        d = DomainDictionary()
+        d.load_terms([{"correct": correct, "aliases": [alias]}])
+        assert d.correct(said) == expected
+
+    @pytest.mark.parametrize(
+        ("alias", "said"),
+        [
+            (".net", "asp.net rocks"),
+            ("c#", "objc#tag"),
+            ("c++", "c++11 shipped"),
+        ],
+    )
+    def test_a_punctuation_edged_alias_does_not_match_inside_a_token(
+        self, alias: str, said: str
+    ):
+        """The same `\\b` fired where the term did NOT apply.
+
+        `\\b\\.net\\b` requires a word character before the dot, which is exactly
+        the "asp.net" case, so the standalone term was skipped and the substring
+        was rewritten instead. Both directions have to hold.
+        """
+        d = DomainDictionary()
+        d.load_terms([{"correct": "REPLACED", "aliases": [alias]}])
+        assert d.correct(said) == said
+
+    def test_an_alphanumeric_alias_keeps_its_boundaries(self):
+        """The word-character edges are unchanged: still no match inside a word."""
+        d = DomainDictionary()
+        d.load_terms([{"correct": "AWS", "aliases": ["aws"]}])
+        assert d.correct("aws bill") == "AWS bill"
+        assert d.correct("awsome sauce") == "awsome sauce"
+        assert d.correct("beclaws") == "beclaws"
+
     def test_regex_special_alias_is_literal(self):
         d = DomainDictionary()
         d.load_terms([{"correct": "C++", "aliases": ["c plus plus"]}])
