@@ -195,6 +195,85 @@ class TestInventory:
         assert row["commit"] == SHA, "the row itself survives"
 
 
+class TestResolveRefList:
+    """``screenshotRefs`` resolution, where "absent" and "unreadable" must not
+    collapse: absent leaves the caller's field unset, and an unreadable member
+    is dropped rather than emitted as a ref a browser cannot load."""
+
+    def test_each_member_resolves_against_the_catalog(self):
+        assert oc._resolve_ref_list(["assets/s/1.png", "assets/s/2.png"]) == [
+            "https://apps.crew.kiro.dev/assets/s/1.png",
+            "https://apps.crew.kiro.dev/assets/s/2.png",
+        ]
+
+    def test_an_absolute_member_is_a_client_local_path(self):
+        assert oc._resolve_ref_list(["/app-assets/x/s.png"]) == ["/app-assets/x/s.png"]
+
+    @pytest.mark.parametrize("refs", [None, {}, "assets/s.png", 5, True])
+    def test_a_non_list_answers_empty(self, refs):
+        """A bare string is iterable and would resolve one ref per character, so
+        the list contract is 'a list, or nothing'."""
+        assert oc._resolve_ref_list(refs) == []
+
+    def test_an_unreadable_member_is_dropped_not_emitted(self):
+        """The readable members survive in order; the URL-shaped and traversal
+        members are dropped rather than handed to an ``<img>`` as a guaranteed
+        404. This is the absent-vs-unreadable line the wrapper must hold."""
+        out = oc._resolve_ref_list([
+            "assets/s/1.png",
+            "https://evil.example/x.png",
+            "../secret.png",
+            "assets/s/2.png",
+        ])
+        assert out == [
+            "https://apps.crew.kiro.dev/assets/s/1.png",
+            "https://apps.crew.kiro.dev/assets/s/2.png",
+        ]
+
+    def test_a_list_of_only_unreadable_members_answers_empty(self):
+        """So the caller leaves the field UNSET rather than emitting a
+        present-but-empty gallery."""
+        assert oc._resolve_ref_list(["https://evil.example/x.png", 5, None]) == []
+
+
+class TestInventoryArt:
+    """``heroDetailRef`` and ``screenshotRefs`` reach the row as
+    catalog-hosted URLs, so the detail page for a not-installed catalog app
+    has a wide detail banner and screenshots to render. Their bytes live on
+    the CDN, addressed by the published refs."""
+
+    def test_a_detail_hero_ref_becomes_a_catalog_url(self):
+        (row,) = oc.inventory([catalog_git(heroDetailRef="assets/hero/detail.png")])
+        assert row["heroImageDetail"] == "https://apps.crew.kiro.dev/assets/hero/detail.png"
+        assert "/api/apps/blob" not in row["heroImageDetail"], "never the SSRF-gated proxy"
+
+    def test_an_absolute_detail_hero_ref_is_a_client_local_path(self):
+        (row,) = oc.inventory([catalog_git(heroDetailRef="/app-assets/demo/detail.svg")])
+        assert row["heroImageDetail"] == "/app-assets/demo/detail.svg"
+
+    def test_screenshot_refs_become_catalog_urls(self):
+        (row,) = oc.inventory(
+            [catalog_git(screenshotRefs=["assets/s/1.png", "assets/s/2.png"])]
+        )
+        assert row["screenshots"] == [
+            "https://apps.crew.kiro.dev/assets/s/1.png",
+            "https://apps.crew.kiro.dev/assets/s/2.png",
+        ]
+
+    def test_absent_art_leaves_the_fields_unset(self):
+        """Absent must stay absent: most apps publish neither, and a
+        present-but-empty value would render a titled-but-blank gallery."""
+        (row,) = oc.inventory([catalog_git()])
+        assert "heroImageDetail" not in row
+        assert "screenshots" not in row
+
+    def test_an_unreadable_detail_hero_ref_is_a_swallowed_miss(self):
+        """A URL-shaped ref is dropped, and the field stays UNSET rather than
+        carrying a value the ref contract forbids."""
+        (row,) = oc.inventory([catalog_git(heroDetailRef="https://evil.example/d.png")])
+        assert "heroImageDetail" not in row
+
+
 class TestInstallCoordinatesDoNotTrustTheCache:
     """The cache under the data home is NOT a sensitive path, so the agent's own
     file tools can write it. That is harmless for display copy and unacceptable for
@@ -945,12 +1024,12 @@ class TestTheCacheMayNotIntroduceInventory:
 
     @pytest.mark.asyncio
     async def test_a_poisoned_cache_cannot_relabel_a_fresh_row(self, monkeypatch):
-        """Round 11 stopped the cache INTRODUCING a row; this stops it REWRITING one.
+        """A poisoned cache cannot RELABEL a freshly fetched row.
 
         `annotate` overlays `displayName` and `description` -- exactly what the consent
-        modal renders -- and it used to read the cache, so a poisoned entry could
-        re-label a freshly fetched first-party row while the name-scoped grant executed
-        the real app.
+        modal renders -- from the fresh catalog fetch, never the agent-writable cache,
+        so a poisoned cache entry cannot re-label a first-party row while the
+        name-scoped grant executes the real app.
         """
         real = {
             "name": "demo-app",

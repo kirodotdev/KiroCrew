@@ -1,6 +1,6 @@
 {
   "_comment": "Comments and docstrings that narrate change history, per file, as a match COUNT. The rule they break is in docs/system-specs/common/code-style.md (\"Comments explain the WHY\"); it predates any enforcement, so the tree is recorded here rather than rewritten in one pass. The gate requires every OTHER file to be clean and none of these counts to grow, so this list can only shrink. Do NOT add or raise an entry to make a red gate green: a new offender means the comment should state CURRENT behavior in present tense. Lower and prune with `python3 scripts/check_comment_history.py --write-baseline`, which never adds or raises one.",
-  "_total": 6979,
+  "_total": 6977,
   "files": {
     "src/kiro_crew/__main__.py": 1,
     "src/kiro_crew/acp/_dispatch.py": 8,
@@ -778,7 +778,7 @@
     "test/test_builtin_projects_manifest.py": 2,
     "test/test_builtin_skill_sync_safety.py": 3,
     "test/test_capability_ledger.py": 3,
-    "test/test_catalog_inventory.py": 4,
+    "test/test_catalog_inventory.py": 2,
     "test/test_cc_models_endpoint.py": 3,
     "test/test_chained_full_rotation_overlap.py": 1,
     "test/test_channel_activation.py": 1,

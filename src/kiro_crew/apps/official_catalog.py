@@ -303,6 +303,33 @@ def _resolve_ref(ref: Any) -> str:
     return OFFICIAL_CATALOG_BASE + ref
 
 
+def _resolve_ref_list(refs: Any) -> list[str]:
+    """Resolve a published LIST of asset refs, dropping every unusable one.
+
+    For ``screenshotRefs``. Each member goes through :func:`_resolve_ref`, so a
+    member that is the wrong type, carries a scheme, or tries to traverse is
+    dropped -- the same rule the scalar refs already enforce, applied per entry.
+
+    The absent case and the unreadable case are kept DISTINCT, which is the
+    whole reason this returns a list and the caller sets the field on a truthy
+    result. A non-``list`` input (absent, or a hostile non-list type) answers
+    ``[]``, and a list whose every member is unusable also answers ``[]`` -- so
+    the caller leaves the field UNSET in both, and "no screenshots" never
+    renders as a present-but-empty gallery. A dropped member is a swallowed
+    miss on purpose: the alternative is emitting a ref this client already knows
+    a browser cannot load, which is the guaranteed-404 ``<img>`` this module
+    exists to avoid. Order is preserved for the members that survive; a catalog
+    screenshot list is not index-paired with anything, so dropping one shifts
+    only its own position.
+
+    ``list`` specifically, not any iterable: a bare ``str`` is iterable and
+    would resolve one ref per character.
+    """
+    if not isinstance(refs, list):
+        return []
+    return [resolved for ref in refs if (resolved := _resolve_ref(ref))]
+
+
 def _curated_str(value: Any) -> str:
     """A curated display string, or ``""`` for anything that is not one.
 
@@ -511,6 +538,10 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row["iconUrlDark"] = dark
         if hero := _resolve_ref(entry.get("heroRef")):
             row["heroImage"] = hero
+        if hero_detail := _resolve_ref(entry.get("heroDetailRef")):
+            row["heroImageDetail"] = hero_detail
+        if shots := _resolve_ref_list(entry.get("screenshotRefs")):
+            row["screenshots"] = shots
         if (stars := _curated_stars(entry)) is not None:
             row["stargazersCount"] = stars
         seen.add(name)
@@ -696,6 +727,10 @@ def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
             row["iconUrlDark"] = dark
         if hero := _resolve_ref(entry.get("heroRef")):
             row["heroImage"] = hero
+        if hero_detail := _resolve_ref(entry.get("heroDetailRef")):
+            row["heroImageDetail"] = hero_detail
+        if shots := _resolve_ref_list(entry.get("screenshotRefs")):
+            row["screenshots"] = shots
         # ``stargazersCount`` is deliberately NOT overlaid here. This function
         # matches rows by NAME, and a same-name SEED row can pin a DIFFERENT
         # repository than the catalog entry (seed collisions keep the pin by
@@ -746,6 +781,10 @@ def list_catalog_rows() -> list[dict[str, Any]]:
             row["iconUrlDark"] = dark
         if hero := _resolve_ref(entry.get("heroRef")):
             row["heroImage"] = hero
+        if hero_detail := _resolve_ref(entry.get("heroDetailRef")):
+            row["heroImageDetail"] = hero_detail
+        if shots := _resolve_ref_list(entry.get("screenshotRefs")):
+            row["screenshots"] = shots
         source = entry.get("source")
         if isinstance(source, dict):
             # The source TYPE is a display marker (builtin vs git), not install
