@@ -838,6 +838,7 @@ def atomic_write(
     restrict_on_error: RestrictErrorPolicy = "raise",
     preserve_access_control_from: int | None = None,
     parent_dir_fd: int | None = None,
+    create_only: bool = False,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -934,6 +935,20 @@ def atomic_write(
     from *path*; only the directory it is resolved through is pinned. It is also
     REFUSED alongside *restrict_to_owner*, whose lockdown is applied to the staged
     file by name and so cannot address a descriptor-relative temp.
+
+    *create_only* publishes via ``os.link`` instead of a rename, so the publish
+    step ITSELF is the only-if-absent check: a rename would silently REPLACE
+    whatever is already at *path*, which is exactly the outcome a create-only
+    caller cannot allow two concurrent callers to race into (both see the name
+    as free, the second publish would otherwise destroy the first's file with
+    no evidence anything went wrong). ``os.link`` instead fails atomically with
+    ``FileExistsError`` the instant something else has already claimed the
+    name, which propagates to the caller exactly like any other publish
+    failure -- the temp is reclaimed and *path* is left exactly as the winning
+    writer left it. Mutually exclusive with *preserve_access_control_from*: a
+    fresh create has no existing inode to carry access control from, so asking
+    for both is a caller-confusion error, not a request this can honour by
+    picking one.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -972,6 +987,23 @@ def atomic_write(
             "(pinned_parent_replace_supported() is False on this platform); pass "
             "None to take the by-name floor instead of an unpinned write"
         )
+    if create_only and parent_dir_fd is not None and os.link not in os.supports_dir_fd:
+        # pinned_parent_replace_supported() only probes os.open/os.rename --
+        # the two syscalls every OTHER parent_dir_fd caller needs -- so it says
+        # nothing about linkat. Asked here rather than folded into that shared
+        # probe: widening it would make every rename-only caller start refusing
+        # on a platform that has renameat but not linkat, for a capability none
+        # of them use.
+        raise ValueError(
+            "create_only with parent_dir_fd requires descriptor-relative link "
+            "(os.link is not in os.supports_dir_fd on this platform)"
+        )
+    if create_only and preserve_access_control_from is not None:
+        # A create has no existing inode to carry access control FROM -- these
+        # two are the caller's own "which branch am I in" signal, and asking
+        # for both at once means the call site is confused about that, not
+        # that there is a sensible way to honour both.
+        raise ValueError("create_only has no existing file to preserve_access_control_from")
     # restrict_to_owner wins: fchmod must not widen the file back to the umask
     # default after the lockdown has been applied.
     effective_mode = 0o600 if restrict_to_owner else mode
@@ -1037,7 +1069,26 @@ def atomic_write(
         # cannot double-close if this close is itself what fails.
         fd, open_fd = -1, fd
         os.close(open_fd)
-        if pin is None:
+        if create_only:
+            # os.link, not rename: a link fails atomically with FileExistsError
+            # when *path* already names something, where a rename would just as
+            # atomically REPLACE it -- the one behavior a create-only caller
+            # must never get. This is what actually closes a same-name race
+            # between two concurrent creates: classifying "nothing here yet"
+            # ahead of time and then publishing unconditionally leaves a window
+            # where both callers saw nothing and the second publish silently
+            # destroys the first's file. Making the publish ITSELF the
+            # exists-check removes that window -- exactly one linker can ever
+            # win the name, and the loser's FileExistsError propagates to the
+            # `except BaseException` below, which reclaims the temp the same
+            # way any other publish failure does.
+            if pin is None:
+                os.link(tmp, path)
+                os.unlink(tmp)
+            else:
+                os.link(os.path.basename(tmp), path.name, src_dir_fd=pin, dst_dir_fd=pin)
+                os.unlink(os.path.basename(tmp), dir_fd=pin)
+        elif pin is None:
             replace_with_retry(tmp, path)
         else:
             # renameat, both ends relative to the pinned parent: neither the temp
