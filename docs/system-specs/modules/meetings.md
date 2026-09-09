@@ -159,6 +159,10 @@ never overwrites, so user edits survive every restart. A second `on_startup`
 hook launches the calendar poller (below); its `on_cleanup` partner runs before
 the session teardown hook, so no poll tick can pre-create a meeting mid-shutdown.
 
+Dictionary terms and aliases round-trip through UTF-8 TOML, including supplementary
+Unicode characters. Quotes, backslashes, and control characters remain escaped;
+the serializer does not emit JSON surrogate-pair escapes that TOML rejects.
+
 ## Lifecycle
 
 ```

@@ -179,6 +179,28 @@ class TestMutation:
 
 
 class TestSerialization:
+    @pytest.mark.parametrize(
+        "correct, aliases",
+        [
+            ("\U00020bb7田", ["yoshida"]),
+            ("Yoshida", ["\U00020bb7田"]),
+            ("Launch \U0001f680", ["launch team"]),
+            ("delete\x7fmarker", ["control\x7falias"]),
+        ],
+    )
+    def test_unicode_terms_survive_save_and_reload(self, tmp_path, correct, aliases):
+        path = tmp_path / "dictionary.toml"
+        first = DomainDictionary()
+        first.add_term("DynamoDB", ["dynamo db"])
+        first.add_term(correct, aliases)
+        first.save(path)
+
+        second = DomainDictionary()
+        second.load(path)
+
+        assert second.as_list() == first.as_list()
+        assert second.correct("use dynamo db") == "use DynamoDB"
+
     def test_roundtrip_through_disk(self, tmp_path: Path):
         path = tmp_path / "d.toml"
         first = DomainDictionary()

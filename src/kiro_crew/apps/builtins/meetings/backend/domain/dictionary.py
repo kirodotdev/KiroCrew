@@ -154,18 +154,17 @@ class DomainDictionary:
     def render_toml(self) -> str:
         """Render the current terms back to TOML.
 
-        Values go through ``json.dumps`` because TOML basic strings and JSON
-        strings share an escaping grammar for the characters that matter here —
-        so a quote or backslash in a term can never break out of its string and
-        inject a new ``[[term]]`` table.
+        JSON quoting protects quotes, backslashes, and control characters.
+        Non-ASCII characters stay literal: TOML does not accept JSON's UTF-16
+        surrogate-pair escapes. DEL must still be escaped for a TOML basic string.
         """
         parts = [_DICTIONARY_HEADER]
         for correct, aliases in self.terms:
             parts.append(
-                f"\n[[term]]\ncorrect = {json.dumps(correct)}\n"
-                f"aliases = {json.dumps(aliases)}\n"
+                f"\n[[term]]\ncorrect = {json.dumps(correct, ensure_ascii=False)}\n"
+                f"aliases = {json.dumps(aliases, ensure_ascii=False)}\n"
             )
-        return "".join(parts)
+        return "".join(parts).replace("\x7f", "\\u007f")
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
