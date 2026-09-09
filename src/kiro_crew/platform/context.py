@@ -49,6 +49,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         PromptSourceProvider,
         ProviderRegistry,
         PublishRegistry,
+        RemoteProvisionerProvider,
         SandboxPolicy,
         SkillDiscoveryProvider,
         SlackEnterpriseGate,
@@ -322,6 +323,10 @@ class PlatformContext:
     dashboard: "DashboardContributor"
     jail: "JailProvider"
     mobile_connect: "MobileConnectProvider"
+    # Remote-instance provisioners the Set-up tab offers (the built-in EC2 lane
+    # plus whatever the edition adds), each backed by a ``LaunchEngine`` the
+    # core's launch job drives. v1 addition (no CONTRACT_VERSION bump).
+    remote_provisioners: "RemoteProvisionerProvider"
 
     # ── bundled feature apps ──
     feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS

@@ -641,3 +641,76 @@ class TestOrphanReaping:
         assert _store(tmp_path).reap_orphans() == []
         after = _store(tmp_path).get(job.id)
         assert after is not None and after.status == lj.DONE
+
+
+class TestProvisionerOnTheJob:
+    """``provider_id`` and per-provisioner step labels on the persisted job."""
+
+    def test_provider_id_defaults_to_the_builtin_and_round_trips(self, tmp_path):
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        assert job.provider_id == "aws_ec2"
+        assert job.to_dict()["provider_id"] == "aws_ec2"
+        assert lj.LaunchJobStore(root=s.root).get(job.id).provider_id == "aws_ec2"
+
+    def test_pre_seam_job_file_loads_as_the_builtin(self):
+        """A job written before the seam has no key; it was an EC2 launch."""
+        d = lj.LaunchJob(id="a" * 12, profile="", region="", size_key="balanced").to_dict()
+        del d["provider_id"]
+        assert lj.LaunchJob.from_dict(d).provider_id == "aws_ec2"
+        d["provider_id"] = ""
+        assert lj.LaunchJob.from_dict(d).provider_id == "aws_ec2"
+
+    def test_non_builtin_size_key_is_not_checked_against_the_ec2_ladder(self, tmp_path):
+        """Another provisioner's ``size_key`` is its own vocabulary; refusing it here
+        against ``sizes.py`` would refuse every non-EC2 launch."""
+        job = _store(tmp_path).create(
+            profile="", region="us-west-2", size_key="dev.standard1.large",
+            provider_id="devspace",
+        )
+        assert job.provider_id == "devspace"
+        assert job.size_key == "dev.standard1.large"
+
+    def test_step_labels_override_only_known_keys(self, tmp_path):
+        job = _store(tmp_path).create(
+            profile="", region="", size_key="s", provider_id="devspace",
+            step_labels={lj.STEP_PROVISION: "Create the DevSpace", "bogus": "ignored"},
+        )
+        labels = {st.key: st.label for st in job.steps}
+        assert labels[lj.STEP_PROVISION] == "Create the DevSpace"
+        assert labels[lj.STEP_PREFLIGHT] == "Check your AWS setup"  # untouched core label
+        assert [st.key for st in job.steps] == [
+            lj.STEP_PREFLIGHT, lj.STEP_PROVISION, lj.STEP_SIGNIN, lj.STEP_CONNECT,
+        ]
+
+    def test_default_steps_with_no_overrides_are_the_core_labels(self):
+        assert [s.to_dict() for s in lj.default_steps()] == [
+            s.to_dict() for s in lj.default_steps({})
+        ]
+        assert lj.default_steps()[0].label == "Check your AWS setup"
+
+    def test_rollback_wording_names_what_the_provisioner_created(self, tmp_path):
+        """Only the built-in creates a CloudFormation stack; telling a DevSpace
+        user to look for an "EC2 stack" sends them to the wrong console."""
+        s = _store(tmp_path)
+        ec2 = s.create(profile="", region="", size_key="balanced")
+        lj.run_launch(ec2, s, FakeEngine(provision_exc=RuntimeError("boom")))
+        assert "EC2 stack" in ec2.error
+
+        s2 = _store(tmp_path / "two")
+        other = s2.create(profile="", region="", size_key="s", provider_id="devspace")
+        lj.run_launch(other, s2, FakeEngine(provision_exc=RuntimeError("boom")))
+        assert "EC2 stack" not in other.error
+        assert "instance" in other.error
+
+    def test_reap_wording_names_what_the_provisioner_created(self, tmp_path):
+        s = _store(tmp_path)
+        job = s.create(profile="", region="", size_key="s", provider_id="devspace")
+        job.status = lj.RUNNING
+        s.save(job)
+        reaped = lj.LaunchJobStore(root=s.root)
+        reaped.reap_orphans()
+        got = reaped.get(job.id)
+        assert got.status == lj.FAILED
+        assert "EC2 stack" not in got.error
+        assert "instance may still exist" in got.error

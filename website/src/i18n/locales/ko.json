@@ -13736,9 +13736,13 @@
         "starting": "시작 중…",
         "changed_outside_this_form": "이 인스턴스가 이 양식 밖에서 변경되었습니다({{fields}}). 위의 행을 확인하세요 — 편집을 시작한 인스턴스가 아니라면 취소하세요.",
         "use_my_edits_anyway": "지금 상태의 인스턴스에 내 편집 적용",
+        "provisioner_choose": "새 인스턴스를 어디에서 실행할까요?",
         "copy_failed": "복사하지 못했습니다. 텍스트를 선택하여 직접 복사하세요.",
         "launch_status_unavailable": "설정 진행 상황을 새로 고칠 수 없습니다. 아래 카드는 마지막으로 받은 상태를 표시합니다.",
-        "copy_policy_failed": "정책 JSON을 클립보드에 복사하지 못했습니다. 다시 시도하거나 이 사이트에 클립보드 접근을 허용하세요."
+        "copy_policy_failed": "정책 JSON을 클립보드에 복사하지 못했습니다. 다시 시도하거나 이 사이트에 클립보드 접근을 허용하세요.",
+        "provisioner_stale_choice": "이전에 사용한 인스턴스 유형은 이 게이트웨이에서 더 이상 제공되지 않아 {{label}}이(가) 선택되었습니다.",
+        "provisioner_none_drawable": "이 게이트웨이에는 이 대시보드가 표시할 수 있는 인스턴스 생성 방법이 없습니다. 대시보드를 업데이트하거나 관리자에게 사용할 프로비저너를 문의하세요.",
+        "provisioners_unavailable": "이 게이트웨이가 제공하는 인스턴스 생성 방법을 읽을 수 없습니다. 기본 제공 AWS 런처가 표시됩니다."
       },
       "webhooksPanel": {
         "inbound_webhooks": "인바운드 webhook",

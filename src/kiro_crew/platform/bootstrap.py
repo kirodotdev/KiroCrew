@@ -45,6 +45,7 @@ from kiro_crew.platform.defaults import (
     DefaultPromptSourceProvider,
     DefaultProviderRegistry,
     DefaultPublishRegistry,
+    DefaultRemoteProvisionerProvider,
     DefaultSandboxPolicy,
     DefaultSkillDiscoveryProvider,
     DefaultSlackEnterpriseGate,
@@ -158,6 +159,7 @@ def build_default_context(
         dashboard=DefaultDashboardContributor(),
         jail=DefaultJailProvider(),
         mobile_connect=DefaultMobileConnectProvider(),
+        remote_provisioners=DefaultRemoteProvisionerProvider(),
         feature_apps=(),
         governance=governance,
     )

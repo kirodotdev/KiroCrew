@@ -26,6 +26,7 @@ from typing import (
     Optional,
     Protocol,
     Sequence,
+    Tuple,
 )
 
 if TYPE_CHECKING:
@@ -1295,6 +1296,85 @@ class MobileConnectProvider(Protocol):
         ``capabilities.mobile_connect`` governance scope; the mint endpoints
         re-check the same scope per id, so the filtered list is presentation,
         never the control.
+        """
+        ...
+
+
+#: The id AND kind of the provisioner the core ships: EC2 in the user's own
+#: AWS account, driven by ``cloud.launch_engine.RealLaunchEngine``. A companion
+#: may return a list without it (hiding the AWS lane) but may not register a
+#: second descriptor under this id.
+BUILTIN_PROVISIONER_ID = "aws_ec2"
+
+
+@dataclass(frozen=True)
+class RemoteProvisioner:
+    """One way this deployment can CREATE a machine that runs a Kiro Crew
+    gateway and register it as a remote instance.
+
+    A descriptor says WHICH provisioners exist and how the dashboard should
+    draw each one, never how a machine is created: creation stays behind the
+    ``LaunchEngine`` the provider hands out for the id, driven by the core's
+    durable launch job (``cloud/launch_job.py``), which is where cancel,
+    rollback, one-launch-at-a-time and orphan reaping already live. A seam
+    that let an edition run its own launch loop would move a billing action
+    outside that machinery.
+
+    ``id`` is the identifier a launch request names (``provider_id`` on
+    ``POST /api/cloud/launch``) and the one a future governance scope narrows
+    on. ``kind`` names the frontend form: ``aws_ec2`` is drawn by the core's
+    own prerequisites + size form, any other kind needs a
+    ``registerRemoteProvisionerRenderer`` on the SPA side, and the dashboard
+    skips a kind it cannot draw (an older frontend renders an edition's new
+    provisioner as absent, never as a broken panel).
+
+    ``label`` is the untranslated display name shown on the selector; it is
+    edition-owned copy (a product name), so it deliberately does not route
+    through the core catalog. ``posix_only`` says whether a launch may run on a
+    Windows gateway; the built-in shells to ``bash``/``aws`` and cannot.
+    ``step_labels`` overrides the user-facing label of any of the four fixed
+    launch steps (``preflight``/``provision``/``signin``/``connect``) so a
+    provisioner that does not create an AWS instance is not described as one;
+    the step KEYS are fixed because cancel/rollback semantics hang off them.
+    """
+
+    id: str
+    kind: str
+    label: str
+    posix_only: bool = True
+    step_labels: Tuple[Tuple[str, str], ...] = ()
+
+
+class RemoteProvisionerProvider(Protocol):
+    """Edition-contributed remote-instance provisioners.
+
+    Public default = the single built-in ``aws_ec2`` descriptor backed by
+    ``RealLaunchEngine``, reproducing today's Set-up tab exactly. A companion
+    replaces the list with its own (keeping or dropping the built-in) and
+    supplies a ``LaunchEngine`` per id: a DevSpace, a Fargate task, a fleet
+    API, whatever creates a box that ends up running ``kirocrew gateway``.
+    """
+
+    def provisioners(self) -> List[RemoteProvisioner]:
+        """Return the deployment's provisioners, in display order.
+
+        WIRED: ``dashboard/handlers_cloud.py::api_cloud_provisioners`` reads
+        this via ``safe_context_call`` (fallback: the built-in descriptor
+        alone, so a degraded seam read keeps today's tab rather than an empty
+        one) and ``api_cloud_launch_create`` resolves the requested
+        ``provider_id`` against it before any job is persisted.
+        """
+        ...
+
+    def engine_for(self, provisioner_id: str) -> Any:
+        """Return the ``cloud.launch_job.LaunchEngine`` that drives *provisioner_id*.
+
+        Raise ``KeyError`` for an id not in :meth:`provisioners`; the handler
+        answers 400 ``unknown_provisioner``. Typed ``Any`` here only to keep
+        this module import-light (``cloud/launch_job.py`` is heavy); the
+        contract is the five-method ``LaunchEngine`` Protocol.
+
+        WIRED: ``dashboard/handlers_cloud.py::_engine``.
         """
         ...
 

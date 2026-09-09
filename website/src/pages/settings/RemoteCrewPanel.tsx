@@ -46,6 +46,7 @@ import {
   type LaunchJob,
   type CloudPreflight,
   type CloudCoords,
+  type RemoteProvisioner,
 } from '../../api/client'
 import { Card, Btn, Badge, IconButton } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
@@ -57,6 +58,12 @@ import {
   DropdownMenuSeparator,
 } from '../../components/ui/dropdown-menu'
 import ErrorNotice from '../../components/ErrorNotice'
+import ErrorBoundary from '../../components/ErrorBoundary'
+import {
+  BUILTIN_REMOTE_PROVISIONER_KINDS,
+  canRenderRemoteProvisionerKind,
+  getRemoteProvisionerRenderer,
+} from '../../components/remoteProvisionerRenderers'
 import type { ErrorReport } from '../../utils/errorReport'
 import { parseErrorCode } from '../../utils/errorReport'
 import { reportInstanceFailure } from '../../utils/instanceFailureReport'
@@ -88,6 +95,11 @@ const CLOUD_REGION_KEY = 'mc-cloud-region'
 // then silently reset to the recommended default is a launch the user did not ask
 // for.
 const CLOUD_SIZE_KEY = 'mc-cloud-size'
+// Which provisioner the setup tab is drawing. Persisted for the same reason as
+// the three fields above — every way out of this panel unmounts it, and silently
+// reverting to the built-in EC2 launcher would put the user in front of a
+// different form (and a different bill) than the one they chose.
+const CLOUD_PROVISIONER_KEY = 'mc-cloud-provisioner'
 const DEFAULT_REGION = 'us-east-1'
 
 /** A launch that has reached a final state — nothing more will happen to it. */
@@ -184,6 +196,29 @@ function SizeCard({ tier, on, onPick }: { tier: SizeTier; on: boolean; onPick: (
         </span>
         <span className="block text-[12px] text-text mt-1.5">{tierWhy(tier.family)}</span>
       </span>
+    </button>
+  )
+}
+
+/** One selectable provisioner. Shown only when the gateway offers more than one
+ *  the frontend can draw, so the stock build (EC2 alone) renders no selector at
+ *  all. The label is server-authored and rendered verbatim, like a step label —
+ *  the core has no catalog key for a provisioner it does not know about. */
+function ProvisionerCard({ provisioner, on, onPick }: {
+  provisioner: RemoteProvisioner
+  on: boolean
+  onPick: (id: string) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(provisioner.id)}
+      aria-pressed={on}
+      aria-label={provisioner.label}
+      className={`w-full text-left flex items-start gap-3 rounded-md border p-3.5 transition-all ${on ? 'border-accent bg-accent-subtle shadow-[0_0_0_3px_var(--accent-glow)]' : 'border-border-strong bg-bg-elevated hover:border-border-strong'}`}
+    >
+      <span className={`mt-0.5 w-4 h-4 shrink-0 rounded-full border-[1.5px] ${on ? 'border-accent bg-accent' : 'border-border-strong'}`} />
+      <span className="min-w-0 font-bold text-[13px] text-text-strong">{provisioner.label}</span>
     </button>
   )
 }
@@ -700,6 +735,9 @@ export function RemoteCrewPanel() {
       ? persistedSize
       : 'balanced'
   ) as SizeTier['key']
+  // The provisioner the setup tab draws. '' means "not chosen yet", which resolves
+  // to the first renderable row below.
+  const [persistedProvisioner, setProvisionerId] = usePersistedString(CLOUD_PROVISIONER_KEY, '')
   const [copied, setCopied] = useState<'command' | 'policy' | null>(null)
   /** A failed copy, pinned to the checklist row whose button was pressed. */
   const [copyErr, setCopyErr] = useState<{ target: 'command' | 'policy'; message: string } | null>(null)
@@ -843,10 +881,61 @@ export function RemoteCrewPanel() {
     },
   })
 
+  // Which provisioners this gateway offers, and which of them this frontend can
+  // draw. The stock build gets exactly one row (`aws_ec2`, drawn by the cards
+  // below), so the selector never appears and this tab is unchanged. Fetched only
+  // on the setup tab, because that is the only place it decides anything.
+  const provisionersQuery = useQuery({
+    queryKey: ['cloud', 'provisioners'],
+    queryFn: () => api.cloudProvisioners(),
+    enabled: tab === 'setup' && !disabled,
+  })
+
+  // Built-in first, then the edition's own in the order the server sent them: the
+  // core-drawn launcher is the one every deployment has, so it is the default a
+  // user who has never chosen lands on.
+  const provisioners = useMemo(() => {
+    const rows = provisionersQuery.data?.provisioners ?? []
+    const drawable = rows.filter(p => canRenderRemoteProvisionerKind(p.kind))
+    const builtin = (BUILTIN_REMOTE_PROVISIONER_KINDS as readonly string[])
+    return [...drawable.filter(p => builtin.includes(p.kind)), ...drawable.filter(p => !builtin.includes(p.kind))]
+  }, [provisionersQuery.data])
+
+  // A remembered id the gateway no longer offers must not leave the tab drawing
+  // nothing: fall back to the first renderable row, exactly as an unset choice
+  // does. `null` while the list is unknown (loading or failed), which is what
+  // keeps the built-in form the answer in those cases — the stock build never
+  // depends on this query succeeding.
+  const selectedProvisioner =
+    provisioners.find(p => p.id === persistedProvisioner) ?? provisioners[0] ?? null
+  // The user chose a lane the gateway has since stopped offering. Surfaced as a
+  // line above the form rather than swallowed: the fallback puts them in front
+  // of a different form, and a different bill, than the one they picked.
+  const staleChoice =
+    persistedProvisioner !== '' && provisioners.length > 0 && selectedProvisioner?.id !== persistedProvisioner
+  // The gateway answered and none of its lanes is one this frontend can draw
+  // (an edition withdrew the built-in and this frontend predates its renderer).
+  // Drawing the EC2 cards here would offer a Launch that the server refuses
+  // with `unknown_provisioner`; a notice says why there is nothing to launch.
+  const noDrawableLane = provisionersQuery.isSuccess && provisioners.length === 0
+  // The fallback for an UNKNOWN list is the built-in form, so a failed or
+  // still-loading query renders the EC2 cards rather than an empty tab.
+  const builtinProvisioner =
+    selectedProvisioner === null
+    || (BUILTIN_REMOTE_PROVISIONER_KINDS as readonly string[]).includes(selectedProvisioner.kind)
+  const registeredProvisioner = builtinProvisioner || selectedProvisioner === null
+    ? undefined
+    : getRemoteProvisionerRenderer(selectedProvisioner.kind)
+
   const preflightQuery = useQuery({
     queryKey: ['cloud', 'preflight', checkedProfile, checkedRegion],
     queryFn: () => api.cloudPreflight(checkedProfile || undefined, checkedRegion || undefined),
-    enabled: tab === 'setup' && !disabled,
+    // A user with no remembered lane is on the built-in form whatever the list
+    // says, so the probe fires at once, as it always did. Only a remembered
+    // choice waits for the list: it may resolve to a lane whose form must not
+    // trigger an AWS probe at all.
+    enabled: tab === 'setup' && !disabled && !noDrawableLane
+      && (persistedProvisioner === '' || (builtinProvisioner && !provisionersQuery.isLoading)),
   })
 
   const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data])
@@ -900,11 +989,20 @@ export function RemoteCrewPanel() {
     setEditingId(editDraft.id)
   }, [instances, instancesQuery.isSuccess, editingId, editDraft])
 
-  // instance_id → cloud tag, from every launch job that produced an instance.
+  // instance_id → cloud tag, from every EC2 launch job that produced an instance.
   // An SSM instance whose target matches is a cloud crew, and this is its tag.
+  // Built-in lane only: the Stop/Start/Delete this map unlocks call the EC2
+  // routes, and a job from another provisioner names a resource those routes
+  // cannot reach (a lane that needs lifecycle controls contributes its own).
+  // A job with no `provider_id` at all can only come from a gateway older than
+  // the field (a dev-server build against one); every such job WAS an EC2
+  // launch, and dropping it here would let Remove unregister a crew whose stack
+  // keeps billing.
   const cloudTagByInstanceId = useMemo(() => {
     const m = new Map<string, string>()
-    for (const j of launches) if (j.instance_id) m.set(j.instance_id, j.tag)
+    for (const j of launches) {
+      if (j.instance_id && (j.provider_id ?? 'aws_ec2') === 'aws_ec2') m.set(j.instance_id, j.tag)
+    }
     return m
   }, [launches])
 
@@ -992,8 +1090,12 @@ export function RemoteCrewPanel() {
     onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
     onSettled: () => { if (activeLaunchId) void queryClient.invalidateQueries({ queryKey: ['cloud', 'launch', activeLaunchId] }) },
   })
+  // Takes its body as VARIABLES rather than closing over the form state: a
+  // registered provisioner's form owns its own inputs, and the core cannot read
+  // them. The built-in call site passes the panel's own profile/region/size.
   const launchMutation = useMutation({
-    mutationFn: () => api.cloudLaunch({ profile, region, size_key: sizeKey }),
+    mutationFn: (body: { provider_id?: string; profile: string; region: string; size_key: string }) =>
+      api.cloudLaunch(body),
     onMutate: () => setActionErr(null),
     onSuccess: job => { setActiveLaunchId(job.id); reloadLaunches() },
     onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
@@ -1344,6 +1446,52 @@ export function RemoteCrewPanel() {
         </div>
       ) : (
         <div className="space-y-4">
+          {/* The lane list could not be read. The built-in form below still
+              renders (the list is presentation, not permission), but the
+              failure is said rather than swallowed: a newer dashboard on an
+              older gateway is exactly the version skew the agent can explain.
+              askAgent ON: the launch form persists its account and size, so
+              the navigation destroys nothing. */}
+          {provisionersQuery.isError && (
+            <ErrorNotice
+              message={errMsg(provisionersQuery.error, i18nT('pages.settings.remoteCrewPanel.provisioners_unavailable'))}
+              askAgent
+            />
+          )}
+
+          {/* Which provisioner. Rendered only when the gateway offers more than
+              one this frontend can draw, so the stock build shows nothing here
+              and goes straight to the AWS cards below. */}
+          {provisioners.length > 1 && (
+            <Card>
+              <div className="text-text font-medium mb-3">{i18nT('pages.settings.remoteCrewPanel.provisioner_choose')}</div>
+              <div className="space-y-2.5">
+                {provisioners.map(p => (
+                  <ProvisionerCard
+                    key={p.id}
+                    provisioner={p}
+                    on={selectedProvisioner?.id === p.id}
+                    onPick={setProvisionerId}
+                  />
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* The remembered lane is gone; say so before showing a different form. */}
+          {staleChoice && selectedProvisioner && (
+            <p role="status" className="text-[12px] text-muted flex items-start gap-1.5">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warn" />
+              {i18nT('pages.settings.remoteCrewPanel.provisioner_stale_choice', { label: selectedProvisioner.label })}
+            </p>
+          )}
+
+          {noDrawableLane ? (
+            <Card>
+              <div className="text-[13px] text-muted">{i18nT('pages.settings.remoteCrewPanel.provisioner_none_drawable')}</div>
+            </Card>
+          ) : builtinProvisioner ? (
+          <>
           {/* AWS prerequisites — the account inputs live HERE, above the rows they
               produce. The check runs against this profile/region, so showing the
               verdict first and the inputs in a later card inverted cause and effect:
@@ -1490,12 +1638,39 @@ export function RemoteCrewPanel() {
             </div>
 
             <div className="mt-4 flex items-center gap-3 flex-wrap">
-              <Btn primary onClick={() => launchMutation.mutate()} disabled={!blockingOk || launchMutation.isPending}>
+              {/* Name the lane that is on screen. The built-in form draws EVERY
+                  `aws_ec2`-kind row, and an edition may register a second one
+                  behind a different engine; omitting the id would let the server
+                  default to the built-in and provision on the wrong lane. Only
+                  an UNKNOWN list (loading or failed) sends the pre-seam body. */}
+              <Btn primary onClick={() => launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey })} disabled={!blockingOk || launchMutation.isPending}>
                 <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
               </Btn>
               <span className="text-[12px] text-muted">{blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}</span>
             </div>
           </Card>
+          </>
+          ) : registeredProvisioner && selectedProvisioner ? (
+            // The edition owns this form entirely — its own inputs, its own copy,
+            // its own prerequisites. Isolated in an ErrorBoundary so a throwing
+            // renderer costs the user this form and not the whole Settings page;
+            // the progress card and the status notice below still render, which is
+            // what keeps a launch already in flight visible.
+            <ErrorBoundary scope={`remote-provisioner:${selectedProvisioner.kind}`}>
+              <registeredProvisioner.component
+                provisioner={selectedProvisioner}
+                launch={input => launchMutation.mutate({
+                  provider_id: selectedProvisioner.id,
+                  profile: input.profile ?? '',
+                  region: input.region ?? '',
+                  size_key: input.size_key,
+                })}
+                launching={launchMutation.isPending}
+                disabled={disabled}
+                activeJob={activeJob}
+              />
+            </ErrorBoundary>
+          ) : null}
 
           {/* The progress poll itself failed. Gated on the query having a job to
               poll (`effectiveLaunchId`), NOT on `activeJob`: when the polled

@@ -1730,6 +1730,23 @@ export interface CloudPreflight {
   session_manager_plugin_command?: string
 }
 
+/** One remote-instance provisioner the gateway offers, from
+ *  `GET /api/cloud/provisioners`.
+ *
+ *  `id` is what `POST /api/cloud/launch` names in `provider_id`; `kind` names the
+ *  FRONTEND form that collects its inputs (see
+ *  `components/remoteProvisionerRenderers.tsx`), so several rows may share one
+ *  kind. `label` and `steps[].label` are server-authored and rendered verbatim,
+ *  not translated. `posix_only` is informational: the server refuses a launch on
+ *  a Windows gateway itself, with 400 `posix_host_required`. */
+export interface RemoteProvisioner {
+  id: string
+  kind: string
+  label: string
+  posix_only: boolean
+  steps: { key: string; label: string }[]
+}
+
 export type LaunchJobStatus =
   | 'pending' | 'running' | 'awaiting_signin' | 'done' | 'failed' | 'cancelled'
 export type LaunchStepState = 'pending' | 'active' | 'done' | 'failed' | 'skipped'
@@ -1752,6 +1769,9 @@ export interface CloudLaunchSignin {
 
 export interface LaunchJob {
   id: string
+  /** Which provisioner ran this job. A job persisted before the provisioner seam
+   *  existed loads as "aws_ec2", so this is always present. */
+  provider_id: string
   profile: string
   region: string
   size_key: string
@@ -2493,8 +2513,16 @@ export const api = {
     return get('/api/cloud/preflight' + (s ? '?' + s : '')).then(j) as Promise<CloudPreflight>
   },
   cloudIamPolicy: () => get('/api/cloud/iam-policy').then(j) as Promise<{ policy: string }>,
+  // Which provisioners this gateway offers. Answers on every platform (a Windows
+  // host still lists the POSIX-only built-in, and refuses the launch itself), so
+  // the setup tab can pick a form before it knows whether a launch would be
+  // allowed.
+  cloudProvisioners: () =>
+    get('/api/cloud/provisioners').then(j) as Promise<{ provisioners: RemoteProvisioner[] }>,
   cloudLaunches: () => get('/api/cloud/launch').then(j) as Promise<{ jobs: LaunchJob[] }>,
-  cloudLaunch: (body: { profile: string; region: string; size_key: string }) =>
+  // `provider_id` is optional on the wire: the server defaults it to "aws_ec2"
+  // and answers 400 `unknown_provisioner` for an id it does not offer.
+  cloudLaunch: (body: { provider_id?: string; profile: string; region: string; size_key: string }) =>
     post('/api/cloud/launch', body).then(j) as Promise<LaunchJob>,
   cloudLaunchStatus: (id: string) =>
     get('/api/cloud/launch/' + encodeURIComponent(id)).then(j) as Promise<LaunchJob>,

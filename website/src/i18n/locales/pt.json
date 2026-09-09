@@ -14086,9 +14086,13 @@
         "starting": "Iniciando…",
         "changed_outside_this_form": "Esta instância mudou fora deste formulário ({{fields}}). Verifique a linha acima — se não for a instância que você começou a editar, cancele.",
         "use_my_edits_anyway": "Aplicar minhas alterações à instância como ela está agora",
+        "provisioner_choose": "Onde a nova instância deve ser executada?",
         "copy_failed": "Falha ao copiar. Selecione o texto e copie manualmente.",
         "launch_status_unavailable": "Não foi possível atualizar o progresso da configuração. O cartão abaixo mostra o último estado recebido.",
-        "copy_policy_failed": "Não foi possível copiar o JSON da política para a área de transferência. Tente novamente ou permita o acesso à área de transferência para este site."
+        "copy_policy_failed": "Não foi possível copiar o JSON da política para a área de transferência. Tente novamente ou permita o acesso à área de transferência para este site.",
+        "provisioner_stale_choice": "O tipo de instância que você usou antes não é mais oferecido por este gateway; {{label}} foi selecionado no lugar.",
+        "provisioner_none_drawable": "Este gateway não oferece nenhuma forma de criar uma instância que este painel consiga exibir. Atualize o painel ou pergunte ao administrador qual provisionador usar.",
+        "provisioners_unavailable": "Não foi possível ler quais formas de criar uma instância este gateway oferece. O iniciador AWS integrado é exibido."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks de entrada",

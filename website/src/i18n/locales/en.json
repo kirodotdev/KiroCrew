@@ -8614,7 +8614,11 @@
         "stopping": "Stopping…",
         "starting": "Starting…",
         "changed_outside_this_form": "This instance changed outside this form ({{fields}}). Check the row above — if it is not the instance you started editing, cancel.",
-        "use_my_edits_anyway": "Apply my edits to the instance as it is now"
+        "use_my_edits_anyway": "Apply my edits to the instance as it is now",
+        "provisioner_choose": "Where should the new instance run?",
+        "provisioner_stale_choice": "The instance type you used before ({{label}} was chosen for you) is no longer offered by this gateway.",
+        "provisioner_none_drawable": "This gateway offers no way to create an instance that this dashboard can draw. Update the dashboard, or ask your administrator which provisioner to use.",
+        "provisioners_unavailable": "Could not read which ways of creating an instance this gateway offers. The built-in AWS launcher is shown."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Inbound webhooks",

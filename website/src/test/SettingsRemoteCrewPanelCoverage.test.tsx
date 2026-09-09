@@ -50,6 +50,7 @@ vi.mock('../api/client', () => {
       patchConfig: vi.fn(),
       cloudLaunches: vi.fn(),
       cloudPreflight: vi.fn(),
+      cloudProvisioners: vi.fn(),
       cloudIamPolicy: vi.fn(),
       cloudLaunch: vi.fn(),
       cloudLaunchStatus: vi.fn(),
@@ -114,6 +115,7 @@ const DONE_JOB: LaunchJob = {
   id: 'j-done',
   tag: 'kc-3f9a',
   instance_id: 'i-0abc123456789def0',
+  provider_id: 'aws_ec2',
   profile: 'Admin',
   region: 'us-west-2',
   size_key: 'balanced',
@@ -126,6 +128,7 @@ const DONE_JOB: LaunchJob = {
 const RUNNING_JOB: LaunchJob = {
   id: 'j-run',
   tag: 'kc-4d10',
+  provider_id: 'aws_ec2',
   profile: '',
   region: 'us-east-1',
   size_key: 'light',
@@ -190,6 +193,19 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
   vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+  // The setup tab asks which provisioners the gateway offers, and the AWS
+  // preflight waits for that answer (it must not probe AWS for a provisioner that
+  // has nothing to do with AWS). The stock single-row answer keeps every case
+  // here on the built-in form.
+  vi.mocked(api.cloudProvisioners).mockResolvedValue({
+    provisioners: [{
+      id: 'aws_ec2',
+      kind: 'aws_ec2',
+      label: 'AWS EC2 in your own account',
+      posix_only: true,
+      steps: [{ key: 'preflight', label: 'Check your AWS setup' }],
+    }],
+  })
   // The status query is enabled by the mere existence of a persisted job, so a
   // test that only cares about the crew list still polls it — an unmocked
   // resolve returns undefined, which React Query rejects noisily.

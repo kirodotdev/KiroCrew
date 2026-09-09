@@ -139,6 +139,9 @@ def register(app: web.Application) -> None:
     # instance in the user's own AWS account as a durable launch job.
     app.router.add_get("/api/cloud/preflight", handlers_cloud.api_cloud_preflight)
     app.router.add_get("/api/cloud/iam-policy", handlers_cloud.api_cloud_iam_policy)
+    # The lanes the Set-up tab may offer (CPP remote_provisioners seam); the
+    # built-in EC2 lane plus whatever the edition composes in.
+    app.router.add_get("/api/cloud/provisioners", handlers_cloud.api_cloud_provisioners)
     app.router.add_get("/api/cloud/launch", handlers_cloud.api_cloud_launch_list)
     app.router.add_post("/api/cloud/launch", handlers_cloud.api_cloud_launch_create)
     app.router.add_get("/api/cloud/launch/{id}", handlers_cloud.api_cloud_launch_get)

@@ -14087,9 +14087,13 @@
         "starting": "Démarrage…",
         "changed_outside_this_form": "Cette instance a changé en dehors de ce formulaire ({{fields}}). Vérifie la ligne ci-dessus — si ce n’est pas l’instance que tu as commencé à modifier, annule.",
         "use_my_edits_anyway": "Appliquer mes modifications à l’instance dans son état actuel",
+        "provisioner_choose": "Où la nouvelle instance doit-elle s’exécuter ?",
         "copy_failed": "Copie impossible. Sélectionnez le texte et copiez-le manuellement.",
         "launch_status_unavailable": "Impossible d'actualiser la progression de la configuration. La carte ci-dessous affiche le dernier état reçu.",
-        "copy_policy_failed": "Impossible de copier le JSON de la politique dans le presse-papiers. Réessayez ou autorisez l'accès au presse-papiers pour ce site."
+        "copy_policy_failed": "Impossible de copier le JSON de la politique dans le presse-papiers. Réessayez ou autorisez l'accès au presse-papiers pour ce site.",
+        "provisioner_stale_choice": "Le type d'instance utilisé précédemment n'est plus proposé par cette passerelle ; {{label}} a été sélectionné à la place.",
+        "provisioner_none_drawable": "Cette passerelle ne propose aucun moyen de créer une instance que ce tableau de bord puisse afficher. Mettez à jour le tableau de bord ou demandez à votre administrateur quel provisionneur utiliser.",
+        "provisioners_unavailable": "Impossible de lire les moyens de création d'instance proposés par cette passerelle. Le lanceur AWS intégré est affiché."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrants",

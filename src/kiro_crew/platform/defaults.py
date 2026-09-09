@@ -30,10 +30,12 @@ if TYPE_CHECKING:
 
 from kiro_crew import security, sso_status
 from kiro_crew.platform.interfaces import (
+    BUILTIN_PROVISIONER_ID,
     CapabilityResult,
     InterceptDecision,
     MobileConnectMethod,
     OtlpDestination,
+    RemoteProvisioner,
 )
 
 # ``agent``, ``sandbox``, ``embeddings``, ``apps.registry`` and ``slack.enterprise``
@@ -641,3 +643,36 @@ class DefaultMobileConnectProvider:
             MobileConnectMethod(id="tailnet_qr", kind="tailnet_qr"),
             MobileConnectMethod(id="login_link", kind="login_link"),
         ]
+
+
+#: The descriptor the public build ships. Module-level so the handler's
+#: degraded-seam fallback and the Default adapter cannot drift apart.
+BUILTIN_REMOTE_PROVISIONER = RemoteProvisioner(
+    id=BUILTIN_PROVISIONER_ID,
+    kind=BUILTIN_PROVISIONER_ID,
+    label="AWS EC2 in your own account",
+    posix_only=True,
+)
+
+
+class DefaultRemoteProvisionerProvider:
+    """The one provisioner the core ships: EC2 in the user's own AWS account.
+
+    ``provisioners()`` returns the single ``aws_ec2`` descriptor and
+    ``engine_for`` hands out ``RealLaunchEngine`` for it, so the stock Set-up
+    tab and its launch path are unchanged. A companion replaces this via
+    ``dataclasses.replace(ctx, remote_provisioners=...)`` to add a lane (or
+    withdraw the AWS one on a fleet whose users have no AWS account of their
+    own). The engine import is deferred: ``cloud/launch_engine.py`` pulls in the
+    whole ``cloud/`` package and this module is loaded during ``platform`` init.
+    """
+
+    def provisioners(self) -> List[RemoteProvisioner]:
+        return [BUILTIN_REMOTE_PROVISIONER]
+
+    def engine_for(self, provisioner_id: str) -> Any:
+        if provisioner_id != BUILTIN_PROVISIONER_ID:
+            raise KeyError(provisioner_id)
+        from kiro_crew.cloud.launch_engine import RealLaunchEngine  # deferred: heavy
+
+        return RealLaunchEngine()

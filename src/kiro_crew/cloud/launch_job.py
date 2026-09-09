@@ -32,12 +32,13 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Protocol
+from typing import List, Mapping, Optional, Protocol
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cloud import sizes
 from kiro_crew.config.loader import config_dir
+from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,17 @@ _STEP_LABELS: tuple = (
     (STEP_SIGNIN, "Sign in to Kiro"),
     (STEP_CONNECT, "Connect"),
 )
+
+
+def _resource_noun(job: "LaunchJob") -> str:
+    """What a launch created, for the user-facing rollback and reap messages.
+
+    The built-in lane creates a CloudFormation stack and the messages have always
+    said so; a provisioner from the ``remote_provisioners`` seam creates whatever
+    it creates (a DevSpace, a task), and calling that an "EC2 stack" would send the
+    user to the wrong console to clean it up.
+    """
+    return "EC2 stack" if job.provider_id == BUILTIN_PROVISIONER_ID else "instance"
 
 
 class LaunchCancelled(Exception):
@@ -123,8 +135,17 @@ class LaunchStep:
         )
 
 
-def _default_steps() -> list:
-    return [LaunchStep(key=k, label=lbl) for k, lbl in _STEP_LABELS]
+def default_steps(step_labels: Optional[Mapping[str, str]] = None) -> list:
+    """The four fixed steps, with a provisioner's label overrides applied.
+
+    The KEYS are the orchestration contract (``run_launch`` and the two rollback
+    paths branch on them), so a provisioner may rename a step but not add or
+    drop one. An override for an unknown key is ignored rather than raised: the
+    descriptor is edition-supplied and a typo there must not make every launch
+    fail before its first step.
+    """
+    labels = dict(step_labels or {})
+    return [LaunchStep(key=k, label=labels.get(k) or lbl) for k, lbl in _STEP_LABELS]
 
 
 @dataclass
@@ -137,13 +158,17 @@ class LaunchJob:
     size_key: str
     tag: str = ""
     status: str = PENDING
-    steps: list = field(default_factory=_default_steps)
+    steps: list = field(default_factory=default_steps)
     instance_id: str = ""
     signin: Optional[SigninPrompt] = None
     signin_detected: bool = False
     error: str = ""
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    # Which remote-instance provisioner drives this job (the CPP
+    # ``remote_provisioners`` seam). A job file written before the seam existed
+    # carries no key and loads as the built-in, which is what it was.
+    provider_id: str = BUILTIN_PROVISIONER_ID
 
     @property
     def terminal(self) -> bool:
@@ -158,6 +183,7 @@ class LaunchJob:
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "provider_id": self.provider_id,
             "profile": self.profile,
             "region": self.region,
             "size_key": self.size_key,
@@ -178,7 +204,7 @@ class LaunchJob:
         steps = (
             [LaunchStep.from_dict(s) for s in steps_raw]
             if isinstance(steps_raw, list) and steps_raw
-            else _default_steps()
+            else default_steps()
         )
         signin_raw = d.get("signin")
         signin = SigninPrompt.from_dict(signin_raw) if isinstance(signin_raw, dict) else None
@@ -196,6 +222,7 @@ class LaunchJob:
             error=str(d.get("error", "")),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
+            provider_id=str(d.get("provider_id") or BUILTIN_PROVISIONER_ID),
         )
 
 
@@ -261,10 +288,34 @@ class LaunchJobStore:
             raise ValueError(f"invalid job id {job_id!r}")
         return self._root / f"{job_id}.json"
 
-    def create(self, *, profile: str, region: str, size_key: str) -> LaunchJob:
-        """Build + persist a fresh PENDING job. Validates the size key up front."""
-        sizes.get_tier(size_key)  # raises KeyError with the valid set if unknown
-        job = LaunchJob(id=_new_job_id(), profile=profile, region=region, size_key=size_key)
+    def create(
+        self,
+        *,
+        profile: str,
+        region: str,
+        size_key: str,
+        provider_id: str = BUILTIN_PROVISIONER_ID,
+        step_labels: Optional[Mapping[str, str]] = None,
+    ) -> LaunchJob:
+        """Build + persist a fresh PENDING job.
+
+        The size key is validated up front ONLY for the built-in EC2 provisioner:
+        ``sizes.py`` is the EC2 instance-type ladder, and another provisioner's
+        ``size_key`` is that provisioner's own shape vocabulary (a DevSpace
+        instance type, a Fargate cpu/memory pair), which its engine validates in
+        ``provision``. Rejecting it here against the EC2 table would refuse every
+        non-EC2 launch.
+        """
+        if provider_id == BUILTIN_PROVISIONER_ID:
+            sizes.get_tier(size_key)  # raises KeyError with the valid set if unknown
+        job = LaunchJob(
+            id=_new_job_id(),
+            profile=profile,
+            region=region,
+            size_key=size_key,
+            provider_id=provider_id,
+            steps=default_steps(step_labels),
+        )
         # Claim ownership BEFORE the file exists. `reap_orphans` spares only jobs this
         # process owns, and it runs off the event loop: a reap already in flight can
         # list the job dir at any moment. Adopting in the worker instead leaves a
@@ -376,7 +427,7 @@ class LaunchJobStore:
             job.status = FAILED
             job.error = (
                 "Interrupted — Kiro Crew restarted while this setup was running. "
-                "The EC2 stack may still exist; check your crews before retrying."
+                f"The {_resource_noun(job)} may still exist; check your crews before retrying."
             )
             job.signin = None
             self.save(job)
@@ -447,7 +498,7 @@ def _rollback_cancelled_stack(
         confirmed = engine.teardown(tag=job.tag, profile=job.profile, region=job.region)
     except Exception as exc:  # noqa: BLE001 - reported on the job, never propagated
         job.error = (
-            f"Cancelled, but the EC2 stack {job.tag} could not be removed "
+            f"Cancelled, but the {_resource_noun(job)} {job.tag} could not be removed "
             f"automatically ({str(exc)[:200]}). Delete it from your crews — or with "
             "the CLI — so it stops billing."
         )
@@ -457,7 +508,7 @@ def _rollback_cancelled_stack(
         step.detail = f"Removed {job.tag} after cancellation."
         return
     job.error = (
-        f"Cancelled, and the delete of EC2 stack {job.tag} was requested but did NOT "
+        f"Cancelled, and the delete of {_resource_noun(job)} {job.tag} was requested but did NOT "
         "confirm (it may be DELETE_FAILED). Check your crews — it may still be running "
         "and billing."
     )
@@ -487,17 +538,17 @@ def _rollback_failed_provision(
         confirmed = engine.teardown(tag=job.tag, profile=job.profile, region=job.region)
     except Exception as exc:  # noqa: BLE001 - reported on the job, never propagated
         job.error = (
-            f"{base} The EC2 stack {job.tag} could not be removed automatically "
+            f"{base} The {_resource_noun(job)} {job.tag} could not be removed automatically "
             f"({str(exc)[:150]}). Delete it from your crews — or with the CLI — so it "
             "stops billing."
         )
         logger.warning("Could not roll back stack %s after provision failure: %s", job.tag, exc)
         return
     if confirmed:
-        job.error = f"{base} The EC2 stack {job.tag} was removed so it stops billing."
+        job.error = f"{base} The {_resource_noun(job)} {job.tag} was removed so it stops billing."
         return
     job.error = (
-        f"{base} The delete of EC2 stack {job.tag} was requested but did NOT confirm "
+        f"{base} The delete of {_resource_noun(job)} {job.tag} was requested but did NOT confirm "
         "(it may be DELETE_FAILED). Check your crews — it may still be running and billing."
     )
     logger.warning("Rollback of %s after provision failure did not confirm", job.tag)

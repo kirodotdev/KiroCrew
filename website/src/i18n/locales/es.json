@@ -14087,9 +14087,13 @@
         "starting": "Iniciando…",
         "changed_outside_this_form": "Esta instancia cambió fuera de este formulario ({{fields}}). Revisa la fila de arriba — si no es la instancia que empezaste a editar, cancela.",
         "use_my_edits_anyway": "Aplicar mis cambios a la instancia tal como está ahora",
+        "provisioner_choose": "¿Dónde debe ejecutarse la nueva instancia?",
         "copy_failed": "No se pudo copiar. Selecciona el texto y cópialo manualmente.",
         "launch_status_unavailable": "No se pudo actualizar el progreso de la configuración. La tarjeta de abajo muestra el último estado recibido.",
-        "copy_policy_failed": "No se pudo copiar el JSON de la política al portapapeles. Inténtalo de nuevo o permite el acceso al portapapeles para este sitio."
+        "copy_policy_failed": "No se pudo copiar el JSON de la política al portapapeles. Inténtalo de nuevo o permite el acceso al portapapeles para este sitio.",
+        "provisioner_stale_choice": "El tipo de instancia que usaste antes ya no lo ofrece esta puerta de enlace; se ha elegido {{label}} en su lugar.",
+        "provisioner_none_drawable": "Esta puerta de enlace no ofrece ninguna forma de crear una instancia que este panel pueda mostrar. Actualiza el panel o pregunta a tu administrador qué aprovisionador usar.",
+        "provisioners_unavailable": "No se pudo leer qué formas de crear una instancia ofrece esta puerta de enlace. Se muestra el lanzador de AWS integrado."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrantes",

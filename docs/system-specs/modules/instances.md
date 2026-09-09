@@ -811,8 +811,9 @@ its real jobs.
 |---|---|
 | `GET /api/cloud/preflight?profile=&region=` | AWS reachability + the prerequisite checklist (the doctor checks as JSON). |
 | `GET /api/cloud/iam-policy` | The minimum IAM policy document to paste into the user's account. |
+| `GET /api/cloud/provisioners` | The lanes the Set-up tab may offer: `{id, kind, label, posix_only, steps}` per provisioner, from the CPP `remote_provisioners` seam ([platform-context.md](platform-context.md)). The stock build lists the single `aws_ec2` lane. Answers on every platform, like the two history routes: the tab needs it to pick a form, and each row's `posix_only` carries the platform answer for that lane. |
 | `GET /api/cloud/launch` | List launch jobs, in progress and finished. |
-| `POST /api/cloud/launch` | Start a launch job; returns the job immediately. `409` when one is already in flight. |
+| `POST /api/cloud/launch` | Start a launch job; returns the job immediately. `409` when one is already in flight. Body `{provider_id?, profile, region, size_key}`; `provider_id` defaults to `aws_ec2`, and an id the seam does not list or cannot back answers `400 unknown_provisioner` before any job file exists. The job carries `provider_id`, and its step labels are the provisioner's. |
 | `GET /api/cloud/launch/{id}` | Poll one job: per-step state plus the device-code prompt while signing in. |
 | `POST /api/cloud/launch/{id}/cancel` | Request cancellation; honored between steps and inside the sign-in wait. A cancel during provisioning is acted on when the deploy returns, and the stack it created is rolled back. |
 | `POST /api/cloud/launch/{id}/signin` | Acknowledge the device-code prompt (`409` when none is pending). |

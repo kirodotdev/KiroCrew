@@ -14086,9 +14086,13 @@
         "starting": "Avvio in corso…",
         "changed_outside_this_form": "Questa istanza è cambiata fuori da questo modulo ({{fields}}). Controlla la riga sopra — se non è l’istanza che hai iniziato a modificare, annulla.",
         "use_my_edits_anyway": "Applica le mie modifiche all’istanza così com’è ora",
+        "provisioner_choose": "Dove deve essere eseguita la nuova istanza?",
         "copy_failed": "Copia non riuscita. Seleziona il testo e copialo manualmente.",
         "launch_status_unavailable": "Impossibile aggiornare l'avanzamento della configurazione. La scheda sotto mostra l'ultimo stato ricevuto.",
-        "copy_policy_failed": "Impossibile copiare il JSON della policy negli appunti. Riprova oppure consenti a questo sito l'accesso agli appunti."
+        "copy_policy_failed": "Impossibile copiare il JSON della policy negli appunti. Riprova oppure consenti a questo sito l'accesso agli appunti.",
+        "provisioner_stale_choice": "Il tipo di istanza usato in precedenza non è più offerto da questo gateway; è stato selezionato {{label}} al suo posto.",
+        "provisioner_none_drawable": "Questo gateway non offre alcun modo di creare un'istanza che questa dashboard possa mostrare. Aggiorna la dashboard o chiedi all'amministratore quale provisioner usare.",
+        "provisioners_unavailable": "Impossibile leggere quali modi di creare un'istanza offre questo gateway. Viene mostrato il launcher AWS integrato."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhook in entrata",

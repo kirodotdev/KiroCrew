@@ -13736,9 +13736,13 @@
         "starting": "正在启动…",
         "changed_outside_this_form": "此实例已在此表单之外发生更改（{{fields}}）。请检查上方那一行 — 如果它不是你开始编辑的那个实例，请取消。",
         "use_my_edits_anyway": "将我的编辑应用到当前的实例上",
+        "provisioner_choose": "新实例应该在哪里运行？",
         "copy_failed": "复制失败。请选中文本后手动复制。",
         "launch_status_unavailable": "无法刷新设置进度。下方卡片显示的是最后一次收到的状态。",
-        "copy_policy_failed": "无法将策略 JSON 复制到剪贴板。请重试，或允许此站点访问剪贴板。"
+        "copy_policy_failed": "无法将策略 JSON 复制到剪贴板。请重试，或允许此站点访问剪贴板。",
+        "provisioner_stale_choice": "你之前使用的实例类型已不再由此网关提供，已为你改选 {{label}}。",
+        "provisioner_none_drawable": "此网关提供的创建方式此仪表板都无法显示。请更新仪表板，或询问管理员应使用哪个 provisioner。",
+        "provisioners_unavailable": "无法读取此网关提供的实例创建方式，已显示内置的 AWS 启动器。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "入站 webhook",

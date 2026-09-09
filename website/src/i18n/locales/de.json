@@ -13911,9 +13911,13 @@
         "starting": "Wird gestartet…",
         "changed_outside_this_form": "Diese Instanz wurde außerhalb dieses Formulars geändert ({{fields}}). Prüfe die Zeile oben — wenn es nicht die Instanz ist, die du bearbeiten wolltest, brich ab.",
         "use_my_edits_anyway": "Meine Änderungen auf die Instanz in ihrem aktuellen Zustand anwenden",
+        "provisioner_choose": "Wo soll die neue Instanz laufen?",
         "copy_failed": "Kopieren fehlgeschlagen. Markieren Sie den Text und kopieren Sie ihn manuell.",
         "launch_status_unavailable": "Der Einrichtungsfortschritt konnte nicht aktualisiert werden. Die Karte unten zeigt den letzten empfangenen Stand.",
-        "copy_policy_failed": "Das Richtlinien-JSON konnte nicht in die Zwischenablage kopiert werden. Versuchen Sie es erneut oder erlauben Sie dieser Seite den Zugriff auf die Zwischenablage."
+        "copy_policy_failed": "Das Richtlinien-JSON konnte nicht in die Zwischenablage kopiert werden. Versuchen Sie es erneut oder erlauben Sie dieser Seite den Zugriff auf die Zwischenablage.",
+        "provisioner_stale_choice": "Der zuvor verwendete Instanztyp wird von diesem Gateway nicht mehr angeboten; stattdessen wurde {{label}} gewählt.",
+        "provisioner_none_drawable": "Dieses Gateway bietet keine Erstellungsmethode, die dieses Dashboard anzeigen kann. Aktualisieren Sie das Dashboard oder fragen Sie Ihren Administrator, welcher Provisioner zu verwenden ist.",
+        "provisioners_unavailable": "Es konnte nicht gelesen werden, welche Erstellungsmethoden dieses Gateway anbietet. Der integrierte AWS-Launcher wird angezeigt."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Eingehende Webhooks",

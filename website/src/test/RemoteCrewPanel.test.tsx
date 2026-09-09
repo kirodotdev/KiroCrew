@@ -36,6 +36,7 @@ vi.mock('../api/client', () => {
       patchConfig: vi.fn(),
       cloudLaunches: vi.fn(),
       cloudPreflight: vi.fn(),
+      cloudProvisioners: vi.fn(),
       cloudIamPolicy: vi.fn(),
       cloudLaunch: vi.fn(),
       cloudLaunchStatus: vi.fn(),
@@ -48,6 +49,10 @@ vi.mock('../api/client', () => {
   }
 })
 import { api, ApiError } from '../api/client'
+import {
+  registerRemoteProvisionerRenderer,
+  type RemoteProvisionerFormProps,
+} from '../components/remoteProvisionerRenderers'
 
 /** Open a crew row's overflow menu — Edit / Stop / Start / Delete live there. */
 async function openRowMenu(u: ReturnType<typeof userEvent.setup>, name: RegExp = /More actions/i) {
@@ -89,10 +94,12 @@ const MANUAL_INSTANCE = {
 }
 const DONE_JOB = {
   id: 'j-done', tag: 'kc-3f9a', instance_id: 'i-0abc123456789def0', profile: '', region: 'us-east-1',
+  provider_id: 'aws_ec2',
   size_key: 'balanced', status: 'done' as const, steps: [], signin: null, created_at: 0, updated_at: 0,
 }
 const RUNNING_JOB = {
   id: 'j-run', tag: 'kc-4d10', profile: '', region: 'us-east-1', size_key: 'light',
+  provider_id: 'aws_ec2',
   status: 'running' as const, signin: null, created_at: 0, updated_at: 0,
   steps: [
     { key: 'preflight', label: 'Checked your AWS setup', state: 'done' as const },
@@ -107,6 +114,20 @@ const PREFLIGHT_OK = {
   session_manager_plugin: true, note: '', detail: '',
 }
 
+/** The one row the stock gateway offers. Its kind is drawn by the panel itself. */
+const AWS_EC2_ROW = {
+  id: 'aws_ec2',
+  kind: 'aws_ec2',
+  label: 'AWS EC2 in your own account',
+  posix_only: true,
+  steps: [
+    { key: 'preflight', label: 'Check your AWS setup' },
+    { key: 'provision', label: 'Create the instance' },
+    { key: 'signin', label: 'Sign in to Kiro' },
+    { key: 'connect', label: 'Connect' },
+  ],
+}
+
 // localStorage is cleared too: the panel now persists the AWS profile/region, so a
 // test that seeds them would otherwise dictate what later tests probe.
 beforeEach(() => {
@@ -115,6 +136,11 @@ beforeEach(() => {
   sessionStorage.clear()
   __resetErrorJournalForTests()
   __resetInstanceFailuresForTests()
+  // Every test that reaches the setup tab needs this to settle before the
+  // preflight is enabled (the preflight probes AWS, so it waits until the
+  // selected provisioner is known to be the built-in one). The stock single-row
+  // answer is the default; a test that cares overrides it.
+  vi.mocked(api.cloudProvisioners).mockResolvedValue({ provisioners: [AWS_EC2_ROW] })
 })
 
 describe('RemoteCrewPanel', () => {
@@ -594,7 +620,8 @@ describe('RemoteCrewPanel', () => {
     const launch = await screen.findByRole('button', { name: /^Launch$/ })
     await waitFor(() => expect(launch).not.toBeDisabled())
     await u.click(launch)
-    await waitFor(() => expect(api.cloudLaunch).toHaveBeenCalledWith({ profile: '', region: 'us-east-1', size_key: 'balanced' }))
+    // The list resolved to the built-in row, so the body names it (see the seam tests).
+    await waitFor(() => expect(api.cloudLaunch).toHaveBeenCalledWith({ provider_id: 'aws_ec2', profile: '', region: 'us-east-1', size_key: 'balanced' }))
     // Progress card polls the job and renders its steps.
     expect(await screen.findByText('Installing Kiro Crew')).toBeInTheDocument()
   })
@@ -751,6 +778,286 @@ describe('RemoteCrewPanel', () => {
       const body = vi.mocked(api.updateInstance).mock.calls[0]?.[1] as Record<string, unknown>
       expect(body).toMatchObject({ ssh_host: 'nimbus-fixed' })
       expect(body).not.toHaveProperty('ttl')
+    })
+  })
+
+  describe('which provisioner draws the setup tab', () => {
+    // The tab used to hardcode the EC2 launcher. The gateway now says which
+    // provisioners it offers, and the frontend seam says which of those it can
+    // draw — but the stock answer (one built-in row) must leave this tab exactly
+    // as it was, because that is every OSS user's experience.
+    const DEVSPACE_ROW = {
+      id: 'devspace_pdx',
+      kind: 'seam_test_panel_devspace',
+      label: 'Amazon DevSpace (PDX)',
+      posix_only: false,
+      steps: [{ key: 'provision', label: 'Claim a pool host' }],
+    }
+    const DEVSPACE_ROW_2 = { ...DEVSPACE_ROW, id: 'devspace_iad', label: 'Amazon DevSpace (IAD)' }
+
+    /** The edition's form. Registered once for the whole file — the registry is a
+     *  module singleton and a second registration of one kind is a collision. */
+    const DevSpaceForm = ({ provisioner, launch, launching }: RemoteProvisionerFormProps) => (
+      <div>
+        <span>Pool: {provisioner.id}</span>
+        <button type="button" onClick={() => launch({ size_key: 'pool-small' })}>
+          Claim a host
+        </button>
+        {launching ? <span>Claiming…</span> : null}
+      </div>
+    )
+    registerRemoteProvisionerRenderer({ kind: DEVSPACE_ROW.kind, component: DevSpaceForm })
+
+    it('shows no selector and the built-in form when EC2 is all the gateway offers', async () => {
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+      // The built-in prerequisites card and size ladder, unchanged.
+      expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
+      expect(await screen.findByRole('button', { name: /^Launch$/ })).toBeInTheDocument()
+      // One choice is not a choice: no selector, and nothing asking the question.
+      expect(screen.queryByText(/Where should the new instance run/i)).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: /AWS EC2 in your own account/i }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('offers both rows of a registered kind and posts provider_id for the one picked', async () => {
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudLaunch).mockResolvedValue({ ...RUNNING_JOB, provider_id: 'devspace_iad' })
+      vi.mocked(api.cloudProvisioners).mockResolvedValue({
+        provisioners: [AWS_EC2_ROW, DEVSPACE_ROW, DEVSPACE_ROW_2],
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+      // Every renderable row is offered by its SERVER-authored label; two rows may
+      // share one kind, so the selector is per row, not per renderer.
+      expect(await screen.findByText(/Where should the new instance run/i)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'AWS EC2 in your own account' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Amazon DevSpace (PDX)' })).toBeInTheDocument()
+      const second = screen.getByRole('button', { name: 'Amazon DevSpace (IAD)' })
+
+      await u.click(second)
+
+      // The registered form replaces the EC2 cards, and knows which row it is on.
+      expect(await screen.findByText('Pool: devspace_iad')).toBeInTheDocument()
+      expect(screen.queryByText(/Before you start/i)).not.toBeInTheDocument()
+      // Its own launch reaches the shared mutation, carrying the row's id.
+      const preflightsBefore = vi.mocked(api.cloudPreflight).mock.calls.length
+      await u.click(screen.getByRole('button', { name: /Claim a host/i }))
+      await waitFor(() =>
+        expect(api.cloudLaunch).toHaveBeenCalledWith({
+          provider_id: 'devspace_iad',
+          profile: '',
+          region: '',
+          size_key: 'pool-small',
+        }),
+      )
+      // And nothing re-probed AWS on the way: the preflight belongs to the EC2
+      // form that was on screen before the switch.
+      expect(vi.mocked(api.cloudPreflight).mock.calls.length).toBe(preflightsBefore)
+    })
+
+    it('never probes AWS when the remembered provisioner is not the AWS one', async () => {
+      // The preflight shells out to the AWS CLI on the gateway. A provisioner with
+      // no AWS involvement must not trigger it, so the query stays disabled until
+      // the selected kind is known to be the built-in one.
+      localStorage.setItem('mc-cloud-provisioner', 'devspace_pdx')
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudProvisioners).mockResolvedValue({
+        provisioners: [AWS_EC2_ROW, DEVSPACE_ROW],
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+      expect(await screen.findByText('Pool: devspace_pdx')).toBeInTheDocument()
+      await waitFor(() => expect(api.cloudProvisioners).toHaveBeenCalled())
+      expect(api.cloudPreflight).not.toHaveBeenCalled()
+    })
+
+    it('falls back to the first renderable row when the remembered one is gone', async () => {
+      // A choice the gateway no longer offers must not leave the tab drawing
+      // nothing — it resolves exactly as an unset choice does.
+      localStorage.setItem('mc-cloud-provisioner', 'devspace_retired')
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudProvisioners).mockResolvedValue({
+        provisioners: [AWS_EC2_ROW, DEVSPACE_ROW],
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+      // The built-in row is first, so that is what shows.
+      expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'AWS EC2 in your own account' }),
+      ).toHaveAttribute('aria-pressed', 'true')
+      // And it says so: a silent swap would put the user in front of a different
+      // form, and a different bill, than the one they picked.
+      expect(screen.getByRole('status')).toHaveTextContent(/no longer offered/i)
+      expect(screen.getByRole('status')).toHaveTextContent('AWS EC2 in your own account')
+    })
+
+    it('names a second aws_ec2-kind lane in the built-in form launch body', async () => {
+      // The built-in form draws EVERY row of the aws_ec2 kind. An edition may
+      // register a second one behind its own engine (a different account, a
+      // different template); launching it with no provider_id would let the
+      // server default to the built-in and provision on the wrong lane.
+      const secondEc2 = { ...AWS_EC2_ROW, id: 'ec2_gov', label: 'AWS EC2 (GovCloud account)' }
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudLaunch).mockResolvedValue({ ...RUNNING_JOB, provider_id: 'ec2_gov' })
+      vi.mocked(api.cloudProvisioners).mockResolvedValue({ provisioners: [AWS_EC2_ROW, secondEc2] })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('button', { name: 'AWS EC2 (GovCloud account)' }))
+
+      // Same built-in prerequisites and size form, different lane.
+      expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
+      const launch = await screen.findByRole('button', { name: /^Launch$/ })
+      await waitFor(() => expect(launch).not.toBeDisabled())
+      await u.click(launch)
+      await waitFor(() =>
+        expect(api.cloudLaunch).toHaveBeenCalledWith({
+          provider_id: 'ec2_gov', profile: '', region: 'us-east-1', size_key: 'balanced',
+        }),
+      )
+    })
+
+    it('says nothing about a stale choice when the remembered row is still offered', async () => {
+      localStorage.setItem('mc-cloud-provisioner', 'aws_ec2')
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudProvisioners).mockResolvedValue({
+        provisioners: [AWS_EC2_ROW, DEVSPACE_ROW],
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+      expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    })
+
+    it('shows a notice, not the EC2 form, when the gateway offers only lanes it cannot draw', async () => {
+      // A successful answer with zero drawable rows is different from an unknown
+      // answer: the EC2 form's Launch would post the absent default and be refused
+      // with `unknown_provisioner`, so there is nothing to launch and the tab says
+      // why instead of offering a dead button. No AWS probe either.
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudProvisioners).mockResolvedValue({
+        provisioners: [
+          { ...DEVSPACE_ROW, id: 'nobody', kind: 'seam_test_no_renderer', label: 'Nobody draws me' },
+        ],
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+      expect(await screen.findByText(/no way to create an instance that this dashboard can draw/i)).toBeInTheDocument()
+      expect(screen.queryByText(/Before you start/i)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /^Launch$/ })).not.toBeInTheDocument()
+      // (With no remembered lane the AWS probe fires before the list arrives, on
+      // purpose: a stock user must not wait a round-trip for a constant answer.
+      // The probe is a read; what this case guards is that no Launch is offered.)
+    })
+
+    it('offers EC2 lifecycle controls only for crews an EC2 launch created', async () => {
+      // The Stop/Start/Delete menu items call the EC2 routes. A job from another
+      // lane that happens to share an instance id shape must not unlock them; the
+      // row reads as a hand-added machine with a plain Remove instead.
+      const otherLane = {
+        ...CLOUD_INSTANCE, id: 'other-lane', name: 'Other lane', ssm_target: 'i-0aaaaaaaaaaaaaaaa',
+        status: { instance_id: 'i-0aaaaaaaaaaaaaaaa', state: 'connected' as const },
+      }
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [otherLane] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({
+        jobs: [{ ...DONE_JOB, id: 'j-other', provider_id: 'devspace_pdx', instance_id: 'i-0aaaaaaaaaaaaaaaa', tag: 'kc-other' }],
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      expect(await screen.findByText('Other lane')).toBeInTheDocument()
+      expect(screen.queryByText('Launched by Kiro Crew')).not.toBeInTheDocument()
+      await openRowMenu(u)
+      expect(screen.queryByRole('menuitem', { name: /^Stop/i })).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: /^Remove/i })).toBeInTheDocument()
+    })
+
+    it('drops a row whose kind no renderer claims', async () => {
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudProvisioners).mockResolvedValue({
+        provisioners: [
+          AWS_EC2_ROW,
+          { ...DEVSPACE_ROW, id: 'nobody', kind: 'seam_test_no_renderer', label: 'Nobody draws me' },
+        ],
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+      // One renderable row is left, so there is no selector and no unpickable card.
+      expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
+      expect(screen.queryByText('Nobody draws me')).not.toBeInTheDocument()
+      expect(screen.queryByText(/Where should the new instance run/i)).not.toBeInTheDocument()
+    })
+
+    it('falls back to the built-in form when the provisioners endpoint fails', async () => {
+      // The list is presentation, not permission: a gateway too old to answer, or
+      // one that errors, must still be able to launch an EC2 crew.
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudLaunch).mockResolvedValue(RUNNING_JOB)
+      vi.mocked(api.cloudProvisioners).mockRejectedValue(new ApiError(404, 'not found'))
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+      expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
+      expect(screen.queryByText(/Where should the new instance run/i)).not.toBeInTheDocument()
+      // The failure is said, not swallowed: an ErrorNotice above the form names
+      // it and offers the agent hand-off, while the form itself stays usable.
+      expect(await screen.findByRole('alert')).toHaveTextContent(/not found|Could not read which ways/i)
+      const launch = await screen.findByRole('button', { name: /^Launch$/ })
+      await waitFor(() => expect(launch).not.toBeDisabled())
+      await u.click(launch)
+      // Byte-identical to the pre-seam body: no provider_id, so the server keeps
+      // defaulting it.
+      await waitFor(() =>
+        expect(api.cloudLaunch).toHaveBeenCalledWith({
+          profile: '', region: 'us-east-1', size_key: 'balanced',
+        }),
+      )
     })
   })
 
