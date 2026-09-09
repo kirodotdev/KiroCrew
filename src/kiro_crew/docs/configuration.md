@@ -29,8 +29,18 @@ The dashboard port is **not** a config key: set `KIROCREW_PORT` instead.
 `config.json` is written as a full materialization of the schema, so every key is
 on disk even if you never set it — and a stored value always beats the shipped
 default. Changing a default therefore reaches new installs only: yours keeps
-whatever was written the last time it saved. On startup Kiro Crew prints one line
-naming any key still holding an old default.
+whatever was written the last time it saved.
+
+Kiro Crew now fixes that for itself on the two agent timeout budgets — the subagent
+timeout and the chat-turn ceiling. On the first start after an upgrade, a stored value
+that is exactly an old shipped default is removed so the current default applies, in
+that same run. It happens once per key: set one back afterwards and it stays yours.
+Affirming a value with `--keep` before that first start also keeps it.
+
+Everything else is reported, not changed, because a stored value can be a real
+choice: `stt.streaming: false` is how you turn live dictation text off, and on disk
+that is identical to the old default. On startup Kiro Crew prints one line naming any
+key still holding an old default.
 
 `kirocrew config defaults` shows each one with its stored value, the current
 default, and the release that changed it. Two ways to answer it:

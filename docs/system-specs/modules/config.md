@@ -348,7 +348,7 @@ type mismatch the schema validator removes before the loader sees it, so such an
 entry is absent from the loaded table. `resolve_agent_bindings` has always answered
 from that table; `workspace_dir_for` now agrees with it.
 
-## Superseded Defaults (reported, never rewritten)
+## Superseded Defaults (reported; a named few adopt themselves once)
 
 `config.json` is a full materialization of the schema -- every field is written to
 disk, including fields the operator never set -- and each field is resolved as
@@ -366,8 +366,114 @@ stored `0` is not read as `False`.
 Registered so far: `mcp_gateway.forward_declared_env` (False -> True, #4566),
 `session.autocompact_pct` (90.0 -> 70.0, #4388), `stt.streaming` (False -> True,
 0.5.0), `stt.model` ("turbo" -> "base", 0.5.0),
-`dashboard.loop_stall_exit_after_secs` (25 -> unset, #6651) and
-`instances.warm_set_cap` (5 -> 0, #7248).
+`dashboard.loop_stall_exit_after_secs` (25 -> unset, #6651),
+`instances.warm_set_cap` (5 -> 0, #7248),
+`agent.chat_turn_timeout_secs` (7200 -> 14400, #8949) and
+`agent.subagent_timeout_secs` (1800 -> 10800, #8891). **Two** carry `auto_adopt` --
+the agent timeout budgets -- and the other six are report-only; see below.
+
+### Auto-adoption, and the line it does not cross
+
+Reporting is the right answer only while the two readings of a stored value are
+indistinguishable AND holding the old value is survivable. On the two agent timeout
+budgets neither holds: an install carrying `agent.subagent_timeout_secs: 1800` reaps
+every subagent at 30 minutes on a build whose default is 10800, and its operator
+sees timeouts instead of results having never chosen 1800. The existing mechanism's
+only answer was a CLI command they have no reason to know exists.
+
+So `SupersededDefault.auto_adopt` opts ONE entry into a one-shot rewrite. What keeps
+the set small is **not** a judgment about how wide the value's range is. That
+criterion was tried and is wrong: `instances.warm_set_cap` is numeric with a range,
+and an operator running five crews who types 5 stores exactly the old default. The
+line that holds is whether the repository ALREADY PINS the stored value as a
+supported configuration:
+
+| Key | | Pinned by |
+|---|---|---|
+| `agent.subagent_timeout_secs` | adopts | -- |
+| `agent.chat_turn_timeout_secs` | adopts | -- |
+| `session.autocompact_pct` | reports | `test_a_persisted_ceiling_value_is_left_alone` |
+| `dashboard.loop_stall_exit_after_secs` | reports | `test_explicit_desktop_default_is_preserved_for_managed_service` |
+| `stt.streaming` | reports | `test_put_persists_streaming` |
+| `mcp_gateway.forward_declared_env` | reports | `test_a_real_false_still_turns_it_off` |
+| `stt.model` | reports | a picker value; adopting changes transcription accuracy |
+| `instances.warm_set_cap` | reports | 5 is an ordinary deliberate cap |
+
+A row whose old value another suite guarantees is not stale noise by definition,
+whatever its type. `test_only_unpinned_broken_budgets_adopt_themselves` pins the
+opted-in set and names every exclusion, so a row cannot gain the flag without the
+suite that pins it being consulted. `auto_adopt` defaults to False, so a new row is
+report-only until someone states otherwise.
+
+Two further properties make the rewrite safe on the rows that remain, without the
+per-key provenance the config layer still lacks:
+
+- **One-shot.** `auto_adoptable()` excludes any key already in the sidecar's
+  `adopted` map, so a key is adopted at most once per install and a value the
+  operator sets back afterwards is theirs forever. Without that record the loader
+  would re-remove a restored value on every load -- the one behaviour worse than
+  saying nothing.
+- **Marker first, chosen for its worst case.** `record_adoptions` writes the ledger
+  entry BEFORE the removal, inside the config write lock, and a failing record aborts
+  the whole migration write. `config.json` and the sidecar are two files with no
+  shared transaction, so exactly one of two windows exists and the ordering decides
+  which one:
+
+  | Ordering | Window | Consequence |
+  |---|---|---|
+  | marker first (this) | durable marker, failed removal | the operator KEEPS their value and the adoption is not retried. A **missed improvement**, recoverable with `kirocrew config defaults --adopt` and still named by the startup line. |
+  | removal first | landed removal, lost marker | nothing suppresses a later adoption, so a value the operator deliberately RESTORES is deleted a second time. A **destroyed choice**, unrecoverable. |
+
+  No retry, rollback, compensating write or two-phase pending/committed scheme removes
+  the window -- each only moves it onto another write that can fail the same way, and
+  a rollback that fails recreates the hazard it exists to prevent. So the marker goes
+  first and the failure lands on the recoverable side.
+  `test_a_failed_write_keeps_the_value_and_does_not_re_adopt_later` pins that path
+  end to end, including that a later load does not take the value on a retry, and
+  `test_the_unapplied_adoption_is_still_reported_so_it_is_recoverable` pins that the
+  marker suppresses the retry but not the report.
+- **An adoption that did not reach disk drops the validated-data cache.** Only a load
+  that READS the base document can decide an adoption (`adoptable` is empty on a cache
+  hit, by design), so a read-and-skip that left its document cached would have every
+  later load serve the stale value and never retry. Three paths skip the write -- a
+  contended lock, the degraded-sections branch, an exception caught by the
+  best-effort handler -- so `_load_resolved` tracks `adoption_landed` separately from
+  `persisted` (which starts True so the `connections_ui` marker still lands on a load
+  that needed no migration) and invalidates in a `finally` all three share. Both
+  variables are bound before the `try`, or an early exception would turn a logged
+  write-back failure into a `NameError` out of `load()`.
+- **An unreadable ledger adopts nothing.** `_read_ack_document_status` returns
+  `(document, readable)`, and `auto_adoptable` returns `[]` when a sidecar exists but
+  cannot be parsed: reading it as empty would re-arm the one-shot over a value the
+  operator restored. The ACK half stays fail-soft, because a missed ack costs one
+  report line rather than a deleted setting.
+
+`record_adoptions` takes the sidecar lock **single-shot** (`wait_for_lock=False`),
+because the config load path runs on the asyncio event-loop thread in places and a
+blocking acquire there stalls the gateway for as long as another writer holds it. A
+contended acquire raises `BlockingIOError`, which the migration treats as "defer to
+the next load" -- the same deferral `_persist_config_migration` already takes on a
+contended config lock. A CLI caller keeps the wait: no loop to stall, no later retry.
+
+`--keep` still wins: an acknowledged value is not drift, so affirming a key before
+it is adopted keeps it, which is the answer for an operator who did choose 1800.
+
+Adoption is an **un-materialization**, not a write of the new number:
+`drop_drifted_keys` removes the stored key, so the field resolves through
+`data.get(key, DEFAULT)`. That holds only until the next FULL rewrite of
+`config.json` -- any settings save re-materializes the current number, as
+`drop_drifted_keys`' own docstring says -- so a later default move on the same key
+still needs its own registry row and does not ride along.
+
+It is applied in memory as well, because the gateway reads these budgets once at
+startup -- a disk-only fix would leave the run that performed it still holding the
+old value, which is exactly the "upgraded and nothing changed" complaint. Two guards
+on that half: `_adopt_in_memory` reads the field's OWN dataclass default rather than
+the row's `new_default` (on a key whose default moved twice, the matching row's
+`new_default` is an intermediate value), and it replaces the value only when the
+parsed field still EQUALS `old_default`, so a value the loader clamped or coerced
+keeps the loader's correction. A key the `config.local.json` overlay supplies is
+cleared on disk but left alone in memory: the overlay is the operator's live choice.
 
 `stt.provider` is deliberately absent from `SUPERSEDED_DEFAULTS` even though its
 default moved to `local`: `_validated_stt_provider` coerces a retired value at
@@ -384,7 +490,9 @@ key names the default the loader actually applies, so moving a default without
 appending a row fails rather than leaving the report telling operators to adopt a
 value that no longer exists.
 
-Two surfaces render it, and neither writes:
+Two surfaces render it. Neither writes config; the load path's adoption above is
+the only thing that does, and a key it adopts is excluded from the warning rather
+than pointing the operator at a command for something already fixed:
 
 - The load path emits **one** warning naming every drifted key plus the command to
   resolve it, evaluated on the **stored base document before the

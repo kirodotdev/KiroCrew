@@ -10,9 +10,9 @@ default only reaches installs created after the change -- every pre-existing
 install keeps whatever value was materialized the last time it wrote config, and
 nothing tells anyone.
 
-Why this REPORTS and never rewrites
------------------------------------
-An earlier revision corrected the stored value. That cannot be done safely for a
+Why this mostly REPORTS rather than rewrites
+--------------------------------------------
+An early revision corrected every stored value. That cannot be done safely for a
 key that also has a documented escape hatch, and at least one does:
 ``test_a_real_false_still_turns_it_off`` in the gateway env suite pins that an
 explicitly stored ``forward_declared_env: false`` is honoured, and calls it "the
@@ -20,12 +20,51 @@ escape hatch for a server that must not share a backend". On disk that escape
 hatch and a stale materialized default are the SAME BYTES, so no rewrite can tell
 them apart -- correcting one necessarily overrides the other.
 
-Distinguishing them needs per-key provenance (which keys the operator actually
-set), which is a materially larger change to the config layer and its own piece
-of work. Until that exists, the honest scope is to make the drift VISIBLE and
-leave the change to the operator: a warning on the gateway's own log and a
-``doctor`` section naming the key, the stored value, the current default, and the
-release that changed it.
+So the default stayed REPORT-ONLY, and it still is: an entry rewrites nothing
+unless it says ``auto_adopt``.
+
+Why TWO entries adopt themselves anyway
+---------------------------------------
+Reporting is the right answer only while the two readings of the stored value are
+genuinely indistinguishable AND holding the old value is survivable. On the two
+agent timeout budgets neither holds: an install carrying
+``agent.subagent_timeout_secs: 1800`` reaps every subagent at 30 minutes and the
+operator sees timeouts instead of results, having never chosen 1800 at all, and
+telling them to run a command they have no reason to know about is not a fix.
+
+The set is deliberately SMALL, and what keeps it small is not a judgment about how
+wide the value's range is. That test was tried and is wrong: ``instances.warm_set_cap``
+is numeric with a range, and an operator running five crews who types 5 stores
+exactly the old default -- an ordinary config, not a coincidence. The test that
+holds is whether the repository ALREADY PINS the stored value as a supported
+configuration. Three rows do, and all three stay report-only:
+``test_a_persisted_ceiling_value_is_left_alone`` (``session.autocompact_pct``),
+``test_explicit_desktop_default_is_preserved_for_managed_service``
+(``dashboard.loop_stall_exit_after_secs``), and ``test_put_persists_streaming``
+(``stt.streaming``). A row whose old value some other suite guarantees is not stale
+noise by definition, whatever its type.
+
+Two things make the rewrite safe on the rows that remain, without the per-key
+provenance the config layer still lacks:
+
+* ``auto_adopt`` is per ENTRY, so the judgment is made once, by name, in the
+  registry -- not inferred by a rule that would eventually sweep up a key like
+  ``forward_declared_env``;
+* adoption is ONE-SHOT, recorded in the sidecar's ``adopted`` map. A key is
+  adopted at most once per install, so a value the operator sets back afterwards is
+  their choice and is never touched again. Without that record the mechanism would
+  re-remove a restored value on every load, which is the one behaviour worse than
+  saying nothing.
+
+``--keep`` still wins: an acknowledged value is not drift, so affirming a key
+before it is adopted keeps it, and the ack is what an operator who DID choose 1800
+uses to say so.
+
+Adoption is an un-materialization, not a write of the new value: the stored key is
+removed, so the field resolves through ``data.get(key, DEFAULT)`` to whatever the
+running build ships. That lasts only until the next FULL rewrite of ``config.json``
+-- any settings save re-materializes the current number -- so a later default move
+on the same key still needs its own registry row rather than riding along.
 
 Why the report is acknowledgeable
 ---------------------------------
@@ -88,6 +127,15 @@ class SupersededDefault:
     literal values before and after the change; an install is reported as drifted
     only when its stored value equals ``old_default``. ``changed_in`` names the
     PR the change shipped in, so the report can say when the divergence started.
+
+    ``auto_adopt`` opts ONE entry into the one-shot adoption the load path performs
+    (see :func:`auto_adoptable`). It is per-entry rather than global because the
+    reason a rewrite is unsafe is per-key, not universal: set it only where the old
+    value carries no second meaning, so that un-materializing it cannot override a
+    documented escape hatch. ``mcp_gateway.forward_declared_env`` is the standing
+    counter-example -- its stored ``False`` is also the opt-out for a server that
+    must not share a backend -- and it stays report-only. The default is False, so
+    an appended entry is report-only until someone states otherwise.
     """
 
     dotted_key: str
@@ -95,6 +143,7 @@ class SupersededDefault:
     new_default: object
     changed_in: str
     new_default_display: str | None = None
+    auto_adopt: bool = False
 
 
 # The explicit, versioned registry of superseded defaults. APPEND-ONLY: a future
@@ -109,6 +158,12 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     # pooling, so the shipped default is True. The change carried no migration, so
     # an install materialized while the default was still False keeps resolving
     # False and never receives the fix.
+    #
+    # REPORT-ONLY, and the reason ``auto_adopt`` is per-entry rather than a global
+    # switch. A stored ``False`` here is ALSO the documented opt-out for a server
+    # that must not share a backend (``test_a_real_false_still_turns_it_off`` in the
+    # gateway env suite pins it), so un-materializing it would turn pooling ON for an
+    # operator who deliberately turned it off -- a behaviour change, not a budget.
     SupersededDefault(
         dotted_key="mcp_gateway.forward_declared_env",
         old_default=False,
@@ -122,6 +177,12 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     # carried no migration -- on disk, "chose 90" and "90 was the default when this
     # file was written" are the same bytes -- so an install materialized before it
     # still compacts at 90 and nothing tells anyone.
+    #
+    # REPORT-ONLY: ``test_a_persisted_ceiling_value_is_left_alone`` pins that a
+    # stored 90.0 keeps resolving 90.0, and says in its own docstring that changing
+    # it must be a conscious act. 90.0 is also the validator's maximum, so "max the
+    # slider out" is an ordinary deliberate choice landing on exactly these bytes --
+    # and the cost of holding it is money, not a broken feature.
     SupersededDefault(
         dotted_key="session.autocompact_pct",
         old_default=90.0,
@@ -133,6 +194,12 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     # does not hold. An install materialized before the change keeps resolving False
     # and sees text only after it stops speaking, which reads as the feature being
     # missing rather than switched off.
+    #
+    # REPORT-ONLY: the field has two possible values, so EVERY user who deliberately
+    # turns streaming off stores exactly the old default -- the collision is certain,
+    # not unlikely, and the dashboard has a control that produces it.
+    # ``test_put_persists_streaming`` PUTs ``streaming: false`` and pins that it
+    # survives a fresh load, which an adoption would break.
     SupersededDefault(
         dotted_key="stt.streaming",
         old_default=False,
@@ -144,6 +211,11 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     # 1.6 GB first-use download where the current default is 148 MB, on an install
     # that materialized the name back when the model was fetched by a separate
     # whisper CLI the user had already installed themselves.
+    #
+    # REPORT-ONLY on the same collision reasoning as ``stt.streaming``: the value is
+    # one of a short list of model names shown in a picker, so an operator who wants
+    # the larger model stores precisely the old default. Adopting it would also be a
+    # transcription-accuracy change made without asking.
     #
     # stt.provider is deliberately NOT registered even though its default moved to
     # ``local``: a stored retired provider is coerced at parse time, so the stored
@@ -158,6 +230,13 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     # desktop/foreground and 90 seconds for managed services. A stored 25 may be
     # either the old default or a deliberate operator pin, so report it instead of
     # rewriting it.
+    #
+    # REPORT-ONLY, and pinned twice:
+    # ``test_legacy_materialized_desktop_default_is_reported_not_rewritten`` and
+    # ``test_explicit_desktop_default_is_preserved_for_managed_service``. The second
+    # is the substantive one -- a managed service storing 25 KEEPS 25, deliberately,
+    # so the value an adoption would remove is a supported configuration rather than
+    # stale noise.
     SupersededDefault(
         dotted_key="dashboard.loop_stall_exit_after_secs",
         old_default=25,
@@ -169,14 +248,43 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     # panes as there are crews registered). A stored 5 keeps evicting the 6th crew,
     # and eviction is indistinguishable from a disconnect at the pane -- so the
     # symptom of holding the old default is a connection that looks like it flaps
-    # on tab switch. A stored 5 may equally be a deliberate budget on a
-    # memory-tight machine, so report it rather than rewriting it.
+    # on tab switch.
+    #
+    # REPORT-ONLY: the plausible values here are roughly 1..10, so an operator with
+    # five crews who types 5 stores exactly the old default. That is an ordinary
+    # config, not a coincidence, which is the same collision the boolean rows above
+    # are excluded for -- the range being numeric does not widen it.
     SupersededDefault(
         dotted_key="instances.warm_set_cap",
         old_default=5,
         new_default=0,
         changed_in="#7248",
         new_default_display="0 (automatic: as many as are registered)",
+    ),
+    # A stored 7200 cuts a turn at two hours, which is BELOW the longest turn the
+    # shipped budgets legitimately produce, so the turn ends mid-work and reads as
+    # the agent
+    # stopping for no reason. auto_adopt: the field is a runaway backstop with a
+    # single meaning -- a bigger number is a longer ceiling and nothing else -- so
+    # un-materializing it cannot override a second, opt-out reading the way
+    # forward_declared_env's False can.
+    SupersededDefault(
+        dotted_key="agent.chat_turn_timeout_secs",
+        old_default=7200,
+        new_default=14400,
+        changed_in="#8949",
+        auto_adopt=True,
+    ),
+    # A stored 1800 reaps every subagent at 30 minutes, which is what a wide fan-out
+    # of ordinary work exceeds, so the parent collects timeouts instead of results.
+    # Same
+    # single-meaning reasoning as the turn ceiling above, so it auto-adopts too.
+    SupersededDefault(
+        dotted_key="agent.subagent_timeout_secs",
+        old_default=1800,
+        new_default=10800,
+        changed_in="#8891",
+        auto_adopt=True,
     ),
 )
 
@@ -244,48 +352,94 @@ def _read_ack_document() -> object:
     Returns ``None`` for every refusal and every read error. An ack suppresses one
     report line and changes nothing about how config resolves, so the worst
     consequence of ignoring an unreadable file is that the operator is told again.
+
+    The ADOPTION half of the same document cannot be that relaxed: reading an
+    unreadable ledger as empty re-enables a one-shot adoption over a value the
+    operator restored. :func:`_read_ack_document_status` is the tri-state read that
+    tells "no file" apart from "file we could not read", and the adoption path fails
+    CLOSED on the latter.
+    """
+    document, _readable = _read_ack_document_status()
+    return document
+
+
+def _read_ack_document_status() -> tuple[object, bool]:
+    """``(parsed document, readable)`` for the sidecar.
+
+    ``readable`` is False only when a file IS there and we could not turn it into a
+    document -- a refused shape, a failed read, malformed JSON. A file that simply
+    does not exist is ``(None, True)``: nothing was recorded, which is a complete and
+    trustworthy answer.
+
+    The distinction exists for exactly one caller. An ack read may treat both cases
+    as "says nothing" because the cost is one extra report line. An adoption read may
+    not: "no ledger" means never adopted, while "unreadable ledger" means unknown,
+    and acting on unknown as if it were never is what deletes a restored value a
+    second time.
     """
     path = ack_file_path()
     try:
         st = os.lstat(path)
-    except OSError:
-        return None
+    except FileNotFoundError:
+        return None, True
+    except OSError as e:
+        logger.debug("Cannot stat superseded-default sidecar: %s", e)
+        return None, False
     if not stat.S_ISREG(st.st_mode) or st.st_size > ACK_MAX_BYTES:
         logger.debug("Ignoring superseded-default acknowledgments: not a plain small file")
-        return None
+        return None, False
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
     except OSError as e:
         logger.debug("Ignoring unreadable superseded-default acknowledgments: %s", e)
-        return None
+        return None, False
     try:
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode) or opened.st_size > ACK_MAX_BYTES:
-            return None
+            return None, False
         raw = os.read(fd, ACK_MAX_BYTES)
     except OSError as e:
         logger.debug("Ignoring unreadable superseded-default acknowledgments: %s", e)
-        return None
+        return None, False
     finally:
         os.close(fd)
     try:
-        return json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8")), True
     except ValueError as e:
         # Covers both failure modes without restating them: UnicodeDecodeError and
         # json.JSONDecodeError are both ValueError subclasses.
         logger.debug("Ignoring malformed superseded-default acknowledgments: %s", e)
-        return None
+        return None, False
+
+
+def _map_from_document(raw: object, section: str) -> dict[str, object]:
+    """Extract one ``{dotted key: value}`` map from a parsed document.
+
+    Tolerates every other shape for the same reason the read does: this file only
+    decides whether a line is printed or an adoption already happened, so a
+    document it cannot understand is treated as saying nothing.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    found = raw.get(section)
+    if not isinstance(found, dict):
+        return {}
+    return {k: v for k, v in found.items() if isinstance(k, str)}
+
+
+#: Top-level keys inside the sidecar. ``acked`` is what the operator affirmed;
+#: ``adopted`` is what the load path already auto-adopted once. They share one file
+#: (and therefore one lock, one bounded read, and one link-refusing write) because
+#: both answer the same question about the same registry row, and a second file
+#: would be a second thing to lose.
+ACK_SECTION = "acked"
+ADOPTED_SECTION = "adopted"
 
 
 def _acked_from_document(raw: object) -> dict[str, object]:
     """Extract the ack map from a parsed document, tolerating any other shape."""
-    if not isinstance(raw, dict):
-        return {}
-    acked = raw.get("acked")
-    if not isinstance(acked, dict):
-        return {}
-    return {k: v for k, v in acked.items() if isinstance(k, str)}
+    return _map_from_document(raw, ACK_SECTION)
 
 
 def acked_superseded() -> dict[str, object]:
@@ -298,12 +452,71 @@ def acked_superseded() -> dict[str, object]:
     return _acked_from_document(_read_ack_document())
 
 
-def _update_acked(mutate: Callable[[dict[str, object]], dict[str, object]]) -> dict[str, object]:
-    """Read-modify-write the acknowledgment file under its own lock.
+def adopted_superseded() -> dict[str, object]:
+    """Return ``{dotted key: the value that was un-materialized}`` already adopted.
+
+    This is the record that makes auto-adoption ONE-SHOT, and it is the whole reason
+    an automatic rewrite is safe here at all. Without it, an operator who
+    deliberately sets a key back to the old default would have it removed again on
+    the next load, forever -- the tool overriding a live choice, which is exactly
+    what the report-only design existed to avoid. With it, the rewrite happens at
+    most once per key per install and every later value is the operator's.
+
+    Fails SOFT like the ack read. The consequence of losing the file is bounded and
+    known: a key could auto-adopt a second time, which un-materializes a value the
+    operator may have restored. Two things keep that bounded: the pending record is
+    written BEFORE the rewrite and a failed record aborts the adoption, and a key
+    reaches this suppressing map only once its removal is known to have landed.
+    """
+    return _map_from_document(_read_ack_document(), ADOPTED_SECTION)
+
+
+def _sidecar_holds_unparsable_data() -> bool:
+    """True when the sidecar leaf is a PLAIN FILE we could not turn into a document.
+
+    Separates the two reasons a read fails, because they call for opposite answers.
+    Bytes in a plain file are the operator's ledger and must not be overwritten
+    sight-unseen. A leaf that is not a plain file -- a planted symlink, a FIFO, a
+    directory -- holds no ledger of ours, and the write path deliberately renames
+    OVER it rather than following it; refusing there would turn "anyone who can
+    create this path" into a permanent block on acks and adoptions.
+
+    Reads one ``lstat``. Called under the sidecar lock, so the leaf cannot change
+    between this check and the write that follows it in any way that matters: the
+    rename-over-leaf is what makes the link case safe regardless.
+    """
+    try:
+        st = os.lstat(ack_file_path())
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode)
+
+
+def _update_map(
+    section: str,
+    mutate: Callable[[dict[str, object]], dict[str, object]],
+    *,
+    wait_for_lock: bool = True,
+) -> dict[str, object]:
+    """Read-modify-write one *section* of the sidecar under the file's own lock.
 
     The whole transaction runs inside one lock hold, so two concurrent ``--keep``
     calls cannot both read the same map and have the second replacement drop the
     first operator's acknowledgment.
+
+    *wait_for_lock* must be False on any caller that can run on the asyncio
+    event-loop thread. The config LOAD path is one: a blocking acquire there stalls
+    every gateway request and the heartbeat for as long as another writer keeps the
+    lock. With False the acquire is single-shot and raises ``BlockingIOError`` at
+    once instead, which the load path treats as "defer to the next load" -- correct,
+    because a held lock means another writer is mid-write and its bytes are exactly
+    what must not be clobbered. A CLI caller keeps the wait: it has no loop to stall
+    and no later retry.
+
+    **The section not being mutated is carried through unchanged.** Both maps live
+    in one document, so a write that serialized only its own section would silently
+    delete the other -- an adoption record dropped that way would let a key
+    auto-adopt a second time over a value the operator had restored.
 
     **The write never RESOLVES the leaf.** ``write_config_atomically`` deliberately
     follows a link, because symlinking ``config.json`` into a dotfiles repo is a
@@ -313,8 +526,16 @@ def _update_acked(mutate: Callable[[dict[str, object]], dict[str, object]]) -> d
     rather than followed -- the check reports the condition, the rename is what
     makes it unexploitable.
 
-    Raises ``OSError`` (including :class:`AckPathRefused`) on any filesystem
-    refusal; callers turn that into a controlled CLI error rather than a traceback.
+    **An UNREADABLE sidecar refuses the write instead of rebuilding it.** Both maps
+    are serialized from one read, so a document that could not be parsed would be
+    replaced by one built from two empty maps -- and silently dropping the ADOPTED map
+    re-arms the one-shot over a value the operator restored. Refusing keeps the
+    unreadable bytes for a human to inspect.
+
+    Raises ``OSError`` (including :class:`AckPathRefused` for a link or an unreadable
+    document and, on a contended ``wait_for_lock=False`` acquire, ``BlockingIOError``)
+    on any filesystem refusal; callers turn that into a controlled CLI error or a
+    deferral rather than a traceback.
     """
     path = ack_file_path()
     if platform_compat.is_link_or_junction(path):
@@ -323,13 +544,45 @@ def _update_acked(mutate: Callable[[dict[str, object]], dict[str, object]]) -> d
     lock_path = path.parent / (path.name + ".lock")
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        with platform_compat.file_lock(fd, exclusive=True):
-            current = _acked_from_document(_read_ack_document())
-            updated = dict(mutate(current))
-            atomic_write(path, json.dumps({"acked": updated}, indent=2) + "\n", mode=0o600)
+        with platform_compat.file_lock(fd, exclusive=True, wait=wait_for_lock):
+            document, readable = _read_ack_document_status()
+            if not readable and _sidecar_holds_unparsable_data():
+                # REFUSE rather than rebuild, but ONLY for a plain file whose bytes
+                # we could not parse. Both maps are serialized from this read, so
+                # such a document would be replaced by one built from two empty
+                # maps -- and silently dropping the ADOPTED map re-arms the one-shot
+                # over a value the operator restored, which is the outcome the
+                # ledger exists to prevent. A refusal keeps those bytes for a human
+                # to inspect, and every caller already handles OSError.
+                #
+                # A leaf that is NOT a plain file (a planted symlink, a FIFO) is the
+                # opposite case and must NOT refuse: it holds no ledger of ours, and
+                # the design deliberately REPLACES it by renaming over it rather
+                # than following it. Refusing there would let anyone who can create
+                # a path permanently block both acks and adoptions.
+                raise AckPathRefused(
+                    f"{ACK_FILE_NAME} is a plain file whose contents could not be "
+                    "read; refusing to replace it and lose the adoption ledger"
+                )
+            sections = {
+                ACK_SECTION: _map_from_document(document, ACK_SECTION),
+                ADOPTED_SECTION: _map_from_document(document, ADOPTED_SECTION),
+            }
+            updated = dict(mutate(sections[section]))
+            sections[section] = updated
+            body = {name: values for name, values in sections.items() if values}
+            # ``acked`` is always present even when empty: it is the shape every
+            # reader before the adoption ledger existed was written against.
+            body.setdefault(ACK_SECTION, sections[ACK_SECTION])
+            atomic_write(path, json.dumps(body, indent=2) + "\n", mode=0o600)
             return updated
     finally:
         os.close(fd)
+
+
+def _update_acked(mutate: Callable[[dict[str, object]], dict[str, object]]) -> dict[str, object]:
+    """Read-modify-write the acknowledgment map. See :func:`_update_map`."""
+    return _update_map(ACK_SECTION, mutate)
 
 
 def write_acked_superseded(acked: dict[str, object]) -> None:
@@ -397,6 +650,18 @@ def _stored_value(base_data: dict, dotted_key: str) -> object:
     return section_data[field]
 
 
+def stored_value_or_none(base_data: dict, dotted_key: str) -> object:
+    """Return what *base_data* stores at *dotted_key*, or ``None`` when absent.
+
+    The ``None``-mapping wrapper around :func:`_stored_value` for callers outside
+    this module, which have no use for the ``_ABSENT`` sentinel: the adoption ledger
+    records what a key held, and a key that held nothing was never adopted. Exported
+    so the loader does not carry a second spelling of the same lookup.
+    """
+    found = _stored_value(base_data, dotted_key)
+    return None if found is _ABSENT else found
+
+
 def _is_acked(entry: SupersededDefault, stored: object, acked: dict[str, object]) -> bool:
     """True when *stored* is the exact value the operator acknowledged for *entry*.
 
@@ -449,6 +714,90 @@ def superseded_default_drift(
             continue
         drifted.append(entry)
     return drifted
+
+
+def auto_adoptable(
+    base_data: dict,
+    *,
+    acked: dict[str, object] | None = None,
+    adopted: dict[str, object] | None = None,
+) -> list[SupersededDefault]:
+    """Return the drifted entries this install may un-materialize automatically.
+
+    Three filters, and each one is a separate reason a rewrite would be wrong:
+
+    * the entry must be DRIFTED -- the stored value equals ``old_default``, type
+      included, which is what :func:`superseded_default_drift` decides;
+    * the entry must carry ``auto_adopt`` -- the per-key statement that the old
+      value has no second meaning a rewrite could override;
+    * the key must not already be in the adoption ledger -- adoption is one-shot, so
+      a value the operator set back to the old default after we adopted once is
+      theirs and stays.
+
+    An ACKED key is excluded by the drift filter itself: an affirmed value is the
+    operator's answer, and answering is precisely what makes it not drift. That
+    ordering matters -- ``--keep`` must be able to pre-empt an adoption that has not
+    happened yet, not merely silence the line about it.
+
+    Reads only. Both maps may be supplied to keep this pure in tests; ``None`` reads
+    the sidecar -- and an UNREADABLE sidecar returns nothing rather than treating it
+    as empty. Reading a ledger we could not parse as "nothing was ever adopted"
+    re-arms the one-shot over a value the operator restored, which is the one outcome
+    the ledger exists to prevent; declining to adopt this load costs at most a
+    deferral to the next one.
+    """
+    if adopted is None:
+        document, readable = _read_ack_document_status()
+        if not readable:
+            logger.warning(
+                "Not adopting any superseded default this load: %s exists but could "
+                "not be read, so an already-adopted key cannot be told from a value "
+                "the operator restored",
+                ACK_FILE_NAME,
+            )
+            return []
+        adopted = _map_from_document(document, ADOPTED_SECTION)
+    return [
+        entry
+        for entry in superseded_default_drift(base_data, acked=acked)
+        if entry.auto_adopt and entry.dotted_key not in adopted
+    ]
+
+
+def record_adoptions(values: dict[str, object]) -> dict[str, object]:
+    """Record ``{dotted key: the value about to be un-materialized}`` as ADOPTED.
+
+    Written BEFORE the removal, and a failure propagates so the caller abandons the
+    adoption entirely. The order is the whole design, and it is chosen for its WORST
+    CASE, because ``config.json`` and this sidecar are two files with no shared
+    transaction -- one of the two windows below is unavoidable:
+
+    * **marker first** (this): the marker can be durable while the removal failed. The
+      key is then never adopted again, so the operator keeps the value they already
+      had, the drift report still names it, and ``kirocrew config defaults --adopt``
+      applies it by hand. A missed improvement.
+    * **removal first**: the removal can land while the marker did not. Nothing
+      suppresses a future adoption, so if the operator later RESTORES that value on
+      purpose, the next load deletes it again -- and being deleted twice is precisely
+      what the one-shot guarantee exists to prevent. A destroyed choice.
+
+    A missed improvement is recoverable by one documented command; a destroyed choice
+    is not recoverable at all, and no ordering, retry or compensating write removes
+    the window -- each only moves it onto another write that can fail the same way.
+    So the marker goes first and the failure lands on the harmless side.
+
+    The lock acquire is SINGLE-SHOT (``wait_for_lock=False``). The only caller is the
+    config-load migration, which runs on the asyncio event-loop thread in places, and
+    a blocking acquire there stalls the gateway for as long as another writer holds
+    the sidecar. A contended acquire raises ``BlockingIOError`` instead, which is the
+    deferral the surrounding migration already knows how to take.
+
+    The value is recorded rather than a bare key so the ledger says what was taken
+    away, which is what a ``doctor`` line or a bug report needs.
+    """
+    return _update_map(
+        ADOPTED_SECTION, lambda existing: {**existing, **values}, wait_for_lock=False
+    )
 
 
 @dataclass(frozen=True)
