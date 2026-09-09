@@ -111,6 +111,11 @@ def _norm_year(value: int) -> int:
     return 2000 + value if value < 100 else value
 
 
+def _valid_iso_match(match: re.Match[str]) -> bool:
+    """Return whether an ISO-shaped token has an accepted month and day."""
+    return 1 <= int(match.group(2)) <= 12 and 1 <= int(match.group(3)) <= 31
+
+
 @dataclass
 class DocRef:
     """A single de-dup unit: a folder file, or a whole upload/chat source."""
@@ -177,12 +182,23 @@ def _extract_dates(name: str) -> list[tuple[int | None, int, int | None]]:
     stem = name.rsplit("/", 1)[-1]
     out: list[tuple[int | None, int, int | None]] = []
 
+    iso_spans: list[tuple[int, int]] = []
     for m in _ISO_DATE_RE.finditer(stem):
         iyear, imonth, iday = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= imonth <= 12 and 1 <= iday <= 31:
+        if _valid_iso_match(m):
             out.append((iyear, imonth, iday))
+            iso_spans.append(m.span())
 
+    # A valid ISO date's month/day suffix is not a second, yearless date, so a
+    # numeric match that falls WHOLLY inside a valid ISO span is dropped -- keeping
+    # it would let reports from different years pass the date gate. The scan runs
+    # on the original stem (not a masked copy) so a numeric date that only partly
+    # overlaps an over-matched ISO span keeps its own explicit year, and an invalid
+    # ISO-shaped token still reaches the generic numeric guard.
     for m in _NUM_DATE_RE.finditer(stem):
+        ns, ne = m.span()
+        if any(ns >= istart and ne <= iend for istart, iend in iso_spans):
+            continue
         g1, g2 = int(m.group(1)), int(m.group(2))
         nyear: int | None = _norm_year(int(m.group(3))) if m.group(3) else None
         nmonth, nday = (g2, g1) if g1 > 12 and g2 <= 12 else (g1, g2)  # tolerate DD/MM
