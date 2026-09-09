@@ -1625,13 +1625,23 @@ read-your-writes should add it deliberately, with its own tests.
   Both run at `cron_add` (authoring) AND again at fire time — for EVERY job
   kind — via the shared `mcp_cron.vet_job_at_fire_time(job)` entry point
   called from `slack.gateway._cron_callback` immediately before execution:
-  `command` jobs re-run the capability gate + the `commands` ceiling, `script`
+  `command` jobs re-run the capability gate + the `commands` ceiling + the
+  command-body COMPOSITION scan (`mcp_cron._vet_shell_command`, audited under
+  the `cron_command_body` scope), `script`
   jobs re-run the capability gate + the script-body scan
   (`mcp_cron._vet_script_file`) on the freshly re-resolved path (so a script
   file edited on disk after authoring is re-checked too), and `message` (LLM)
   jobs re-run the capability gate before the session dispatch. A policy
   tightened after a job was scheduled therefore denies that job's next run
-  instead of only affecting jobs authored after the change. Denial at
+  instead of only affecting jobs authored after the change.
+
+  The ceiling and the composition scan are DISTINCT decisions and both are
+  re-run: the ceiling authorizes who may run the command, while the scan judges
+  what the command COMPOSES at run time, and only the second moves when
+  `mcp_cron`'s refusals change. Re-running only the ceiling left a command
+  stored before a refusal existed running after it — the case this whole entry
+  exists to prevent — so a composition refusal added to `mcp_cron` now reaches
+  the installed base rather than only jobs authored afterwards. Denial at
   fire time marks the run `last_status="error"`, emits a SEL
   `outcome="denied"` event keyed `cron:<job.id>`, and does not delete or pause
   a RECURRING job — deliberately including the consecutive-failure auto-pause

@@ -28,6 +28,8 @@ from kiro_crew import mcp_cron
 from kiro_crew.mcp_cron import (
     _call_tool_inner,
     _glob_could_reach_credentials,
+    _has_bash_brace_expansion,
+    _quote_states,
     _substitute_local_assignments,
     _vet_script_contents,
     _vet_script_file,
@@ -187,6 +189,89 @@ MALICIOUS_COMMANDS = [
     "cat ~/.$@/id_rsa",
     "echo $*",
     "echo ${1}",
+    # BASH BRACE EXPANSION composes words at run time, so the path this gate sees
+    # is not the path that is opened. It was the one composition form with no
+    # storage-time refusal, left to a runtime shell probe — which meant the shell
+    # decided whether the gate held. Refused here so the guarantee is the same on
+    # every host. Verified against real bash: `echo x.{a,a}` -> `x.a x.a`.
+    "cat ~/.a{w,w}s/credentials",
+    "cp ~/.ss{h,h}/id_rsa /tmp/key",
+    # The re-enable route is closed by the same refusal rather than by naming it:
+    # with no braces left in the command, `set -B` has nothing to expand.
+    "set -B; cat ~/.a{w,w}s/credentials",
+    # Sequence form carries the same hazard with no comma in it. Verified against
+    # real bash: `echo .s{s..s}h` -> `.ssh`, and the literal text carries no
+    # credential path for the static scan to anchor on.
+    "cat ~/.s{s..s}h/id_rsa",
+    # NESTED comma form. The outer braces contain an inner `{`, so an inner class
+    # that excluded `{` would read straight past this while real bash still expands
+    # it: `echo .a{w,{w}}s` -> `.aws .a{w}s`, i.e. the first word IS the credential
+    # directory. This shape is reachable precisely because of the `+B` shell probe
+    # shipped alongside, which admits a brace-expanding bash as the cron executor.
+    "cp ~/.a{w,{w}}s/credentials /tmp/x",
+    "set -B; cat ~/.ss{h,{h}x}/id_rsa",
+    # QUOTED whitespace inside an alternative. bash needs the braces and the comma
+    # unquoted, but NOT the alternatives, so every spelling below is a live
+    # expansion whose first word is the credential path — verified against real
+    # bash, e.g. `echo p{x,"x x"}s` -> `pxs px xs`. A whitespace-free requirement
+    # written as `[^}\s]*` exempts exactly these, which is why the refusal reads
+    # quote state instead: whitespace only disqualifies a group when it is BARE.
+    'cat ~/.a{w,"w w"}s/credentials',
+    "cp ~/.ss{h,'h x'}/id_rsa /tmp/key",
+    # ANSI-C quoting is a third spelling of the same quoted space.
+    "cat ~/.ss{h,$'h x'}/id_rsa",
+    # ...and a BACKSLASH-escaped space is a fourth, with no quote characters in the
+    # command at all.
+    "cat ~/.a{w,w\\ w}s/credentials",
+    "set -B; cp ~/.a{w,\"w w\"}s/credentials /tmp/x",
+    # A NESTED SHELL re-parses the string, so a group that is quoted at this level
+    # is unquoted for the shell that actually runs it. This is why the scan takes
+    # the state at the opening brace as its reference rather than requiring the
+    # braces to be unquoted: stubbing the brace refusal out shows it is the ONLY
+    # rule in `_vet_shell_command` that covers this command, so exempting a quoted
+    # group opens it.
+    'sh -c "cat ~/.a{w,w}s/credentials"',
+    "sh -c 'cp ~/.ss{h,h}/id_rsa /tmp/key'",
+    # A NESTED group puts the separator past an inner `}`, so a scan that breaks on
+    # the first `}` reads the outer group as separator-free. Verified against real
+    # bash: `echo p{{x}s,s}q` -> `p{x}sq psq`, and here the first expanded word is
+    # `~/.ssh` itself.
+    "cp ~/.ss{{x}h,h}/id_rsa /tmp/k",
+    "set -B; cp ~/.ss{{x}h,h}/id_rsa /tmp/k",
+    "cat ~/.a{{x}w,w}s/credentials",
+    # Whitespace bash does NOT break on, while `str.isspace()` says it does: form
+    # feed, vertical tab, carriage return and NBSP. Whitespace is the disqualifier
+    # in this scan, so an over-broad class fails OPEN rather than over-refusing.
+    "cp ~/.ss{h,h\x0cx}/id_rsa /tmp/k",
+    "cp ~/.ss{h,h\x0bx}/id_rsa /tmp/k",
+    "cp ~/.ss{h,h\rx}/id_rsa /tmp/k",
+    "cp ~/.ss{h,h\xa0x}/id_rsa /tmp/k",
+    # QUOTE CONCATENATION splits one group across quote states: the comma is
+    # produced by joining two double-quoted runs, so it sits outside both while the
+    # braces sit inside. No single-level rule can see that, which is why the
+    # quote-removed projection is scanned too. Verified: the inner shell receives
+    # `cat ~/.ss{h,h}/id_rsa` and prints the expansion.
+    'bash -c "cat ~/.ss{h","h}/id_rsa"',
+    'sh -c "cp ~/.a{w","w}s/credentials /tmp/x"',
+    # LINE CONTINUATIONS. The shell deletes backslash-newline before it parses, so a
+    # continuation splits whatever token a static check matches on and the shell
+    # rejoins it. Every rule in `_vet_shell_command` was bypassable this way, with
+    # the un-split spelling of each payload refused as expected, so the fix is to
+    # normalise once before scanning rather than per-rule. POSIX requires the
+    # removal, so this is not bash-specific -- `sh` resolves the split path too.
+    # The plainest one needs no composition form at all: it splits the literal path
+    # so the credential-path pattern cannot see it.
+    "cat ~/.ss\\\nh/id_rsa",
+    "cat ~/.aw\\\ns/credentials",
+    # ...and one per composition rule, each with its trigger token split.
+    "cat ~/.s$\\\n(printf ss)h/id_rsa",
+    "A=ss; cat ~/.$\\\n{A}h/id_rsa",
+    "cat ~/.$\\\n'\\x73\\x73'h/id_rsa",
+    # The sequence form is the one the brace scan itself missed: a comma is one
+    # character and cannot be split, but `..` is two. Verified against real bash --
+    # `echo p{x.\<newline>.z}s` prints `pxs pys pzs`, a real range expansion.
+    "cat ~/.s{s.\\\n.s}h/id_rsa",
+    "sh -c \"cat ~/.s{s.\\\n.s}h/id_rsa\"",
 ]
 
 # Shapes that LOOK like the smuggling patterns above but cannot actually reach a
@@ -251,6 +336,35 @@ BENIGN_COMMANDS = [
     # trip the loop gate — it is only refused in command-word position.
     "git log --format=for",
     "echo 'while you were out'",
+    # Braces that are NOT a brace expansion must stay usable. A BARE space inside
+    # the group does stop bash expanding — verified: `echo {a b,c}` prints
+    # `{a b,c}` — and a group with no `,`/`..` at all is not an expansion in the
+    # first place, so the `find -exec` placeholder and `awk` program text stay
+    # allowed. (`awk '{a,b}'` is the one shape refused without being expandable;
+    # see `_has_bash_brace_expansion` for why that over-refusal is kept.)
+    "find /tmp -name '*.log' -exec rm {} ;",
+    "echo {print}",
+    "awk '{print x, y}' /tmp/f",
+    # ESCAPED braces are literal to every shell, so there is no expansion to
+    # refuse — verified: `echo \\{a,b\\}` prints `{a,b}`.
+    r"echo \{a,b\}",
+    # An UNTERMINATED group expands to nothing; scanning to end-of-string looking
+    # for a close must not fall back to refusing.
+    "echo {a,b",
+    # A continuation is ordinary formatting in a long one-liner and must stay usable
+    # once the joined command is clean.
+    "tar czf /tmp/x.tgz \\\n  ~/notes \\\n  ~/documents",
+    # Inside SINGLE quotes a backslash is literal, so these two characters survive
+    # into the argument and the shell never joins the halves -- verified, `echo
+    # 'a\<newline>b'` prints the backslash and the newline. Deleting them here would
+    # let the scan read a token that does not exist at run time, so the
+    # normalisation is quote-aware and this stays allowed.
+    "echo '.s\\\nsh'",
+    # An ESCAPED backslash does not continue the line either: `\\` is a literal
+    # backslash, so the newline after it stays a command separator -- verified, a
+    # script line `echo a\\<newline>b` prints `a\` and then reports `b: command not
+    # found`, two commands. The halves must not be joined.
+    "echo .s\\\\\nsh",
 ]
 
 
@@ -336,6 +450,233 @@ def test_vet_shell_command_allows_smuggling_lookalikes(cmd):
     surface where the model has no way to appeal.
     """
     assert _vet_shell_command(cmd) is None, f"should allow: {cmd!r}"
+
+
+# (word, some shell in the chain expands it, the scan must refuse it). Every row
+# was RUN, never reasoned: the word is echoed twice, once with brace expansion on
+# and once under `+B`, and a difference in output is an expansion while identical
+# output is quote removal only. Two chains are measured per word, because the
+# string reaches more than one parser -- `bash -c 'echo W'` for the shell that runs
+# the cron, and `bash -c 'bash -c "echo W"'` for a nested shell that re-parses it
+# after quote removal.
+#
+# The third column is separate from the second on purpose. Where they differ, the
+# scan is deliberately stricter than the level-1 parser, and the comment says why.
+_BRACE_SHAPES_MEASURED_AGAINST_BASH = [
+    # Quoted or escaped whitespace inside an alternative does not stop bash. These
+    # are the shapes a whitespace-free character class exempts, i.e. the live ones.
+    ('p{x,"x x"}s', True, True),
+    ("p{x,'x x'}s", True, True),
+    ("p{x,$'x x'}s", True, True),
+    ("p{x,x\\ x}s", True, True),
+    ('p{"x","x x"}s', True, True),
+    ("p{x,x}s", True, True),
+    ("p{x..z}s", True, True),
+    ("p{x,{x}}s", True, True),
+    ("p{x,y}{a,b}s", True, True),
+    ('p{x,"x"}s', True, True),
+    # NESTED groups: the separator sits at depth 0, past an inner `}`. Breaking at
+    # the first `}` reads the outer group as separator-free and stores it.
+    # `echo p{{x}s,s}q` -> `p{x}sq psq`, so the first expanded word is assembled.
+    ("p{{x}s,s}q", True, True),
+    ("p{{x,y}s,s}q", True, True),
+    ("p{{x,s}q", True, True),
+    # `str.isspace()` is true for all four of these, and bash breaks on NONE of
+    # them: form feed, vertical tab, carriage return, NBSP. Since whitespace is the
+    # DISQUALIFIER here, an over-broad class fails OPEN.
+    ("p{x,x\x0cy}s", True, True),
+    ("p{x,x\x0by}s", True, True),
+    ("p{x,x\ry}s", True, True),
+    ("p{x,x\xa0y}s", True, True),
+    # The three characters bash's lexer really breaks words on, and the only ones
+    # that may disqualify a group. (Newline ends the command outright.)
+    ("p{x,x x}s", False, False),
+    ("p{x,x\ty}s", False, False),
+    ("p{x,x\ny}s", False, False),
+    # An escaped separator or brace is literal to every shell in the chain: the
+    # backslash survives double-quoted nesting, verified -- `bash -c 'bash -c
+    # "echo \\{a,b\\}"'` prints `{a,b}`.
+    ("p{x\\,x}s", False, False),
+    ("p\\{x,x\\}s", False, False),
+    # DOUBLE-quoted spellings are refused FOR CAUSE, not caution. Level 1 leaves
+    # them literal, but quote removal makes both well-formed and the inner shell
+    # expands them: verified, each reaches an inner shell as `p{x,x}s` and prints
+    # `pxs pxs`.
+    ('p{x","x}s', True, True),
+    ('p"{"x,x"}"s', True, True),
+    # The one genuine over-refusal. Single quotes survive one level of
+    # double-quoted nesting, so the inner shell receives the group intact and
+    # leaves it literal -- verified. This is the `awk '{a,b}'` family, refused
+    # because the quote-removed projection is scanned unconditionally.
+    ("p'{'x,x'}'s", False, True),
+    # No separator, so not an expansion at any level.
+    ("p{}s", False, False),
+    ("p{print}s", False, False),
+    ("p{unterminated,x s", False, False),
+]
+
+
+@pytest.mark.parametrize(
+    "word,any_shell_expands,must_refuse", _BRACE_SHAPES_MEASURED_AGAINST_BASH
+)
+def test_brace_scan_refuses_every_shape_some_shell_expands(
+    word, any_shell_expands, must_refuse
+):
+    """Allowing an expansion is a HOLE; refusing a literal is only a false positive.
+
+    So the safety assertion is one-directional -- if any parser in the chain
+    expands the word, the scan MUST refuse it -- and the third column pins the
+    exact over-refusals on top, so a later change that trades one for a hole cannot
+    pass by loosening a shape nobody was watching.
+    """
+    refused = _has_bash_brace_expansion(f"cat {word}")
+    if any_shell_expands:
+        assert refused, f"a shell expands {word!r} but the scan allowed it"
+    assert refused == must_refuse, (
+        f"{word!r}: expected refused={must_refuse}, got {refused}"
+    )
+
+
+def test_quote_states_is_the_shared_machine_not_a_second_copy():
+    """ANSI-C `$'...'` escapes a quote, and a private copy of the rules got that wrong.
+
+    `security.shell_normalizer._iter_shell_chars` is THE quote/escape machine here,
+    and its docstring records this exact escape as a real bypass: inside `$'...'` a
+    backslash escapes, so `$'a\\'b'` does not close at the escaped quote. A
+    hand-rolled copy closed early, reopened on the next quote, and then disagreed
+    for the whole rest of the string -- on `x $'a\\'b' {p,q} y` it labelled an
+    UNQUOTED `{p,q}` as single-quoted, 10 of 17 positions differing.
+
+    So this asserts the OUTCOME rather than the wiring: the group after the ANSI-C
+    string must read as unquoted. The only disagreement left with the generator is
+    the quote characters themselves, where this adapter deliberately reports the
+    state a quote is changing FROM.
+    """
+    text = "x $'a\\'b' {p,q} y"
+    states, escaped = _quote_states(text)
+    assert len(states) == len(text) and len(escaped) == len(text)
+
+    brace = text.index("{")
+    assert states[brace] is None, (
+        "the group after an ANSI-C string is UNQUOTED; reading it as single-quoted "
+        "is the desync a private copy of the quote rules reintroduces"
+    )
+    # The escaped quote is data, so the string does not close there.
+    assert escaped[text.index("\\") + 1], "a backslash inside $'...' escapes"
+
+
+def test_brace_scan_keeps_a_nested_shell_covered():
+    """A group quoted at THIS level is unquoted for the shell that re-parses it.
+
+    This is the coupling that decides the shape of the rule, so it gets a test of
+    its own rather than living only in a comment. Stubbing the scan out shows it is
+    the only rule in `_vet_shell_command` that covers these commands, so if a later
+    change exempts quoted groups, this test is the one that must fail.
+
+    The third case is the spelling that a single-level scan cannot see at all: the
+    comma is produced by CONCATENATING two quoted runs, so it sits outside both
+    while the braces sit inside. Verified -- the inner shell receives
+    `cat ~/.ss{h,h}/id_rsa` and expands it -- which is why the quote-removed
+    projection is scanned rather than only the command as written.
+    """
+    assert _has_bash_brace_expansion('sh -c "cat ~/.a{w,w}s/credentials"')
+    assert _has_bash_brace_expansion("sh -c 'cp ~/.ss{h,h}/id_rsa /tmp/k'")
+    assert _has_bash_brace_expansion('bash -c "cat ~/.ss{h","h}/id_rsa"')
+
+
+def test_fire_time_vet_rescans_a_legacy_command_body(monkeypatch):
+    """A job stored BEFORE a refusal existed must not keep running after it.
+
+    This is the whole reason `vet_job_at_fire_time` exists -- its own docstring
+    says a policy tightened after scheduling "would never be re-evaluated: the job
+    keeps running under the rules that were in force when it was created". A
+    `script` body was already re-scanned there; a `command` body was not, and that
+    asymmetry is load-bearing now that the shell resolver accepts a brace-expanding
+    bash. Measured: `_vet_command_governance`, the only fire-time check a command
+    had, ALLOWS `set -B; cat ~/.a{w,w}s/credentials` while `_vet_shell_command`
+    refuses it -- so the storage-time half of this change did not reach the
+    installed base, and the compensating control the `+B` acceptance leans on was
+    absent for exactly the jobs that predate it.
+
+    Deny semantics are the caller's existing ones: fail the run, KEEP the job, and
+    audit -- so this surfaces as a legible audited failure rather than silence.
+    """
+    from kiro_crew.cron import CronJob
+
+    legacy = CronJob(id="legacy1", name="legacy", message="", command="set -B; cat ~/.a{w,w}s/credentials")
+
+    # The governance ceiling alone lets it through: that is the gap, not a mock.
+    assert mcp_cron._vet_command_governance(legacy.command) is None
+    # And the composition scan refuses it, so the two disagree.
+    assert mcp_cron._vet_shell_command(legacy.command) is not None
+
+    monkeypatch.setattr(mcp_cron, "_vet_cron_capability_governance", lambda **_kw: None)
+    audited: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        mcp_cron,
+        "_audit_fire_time_decision",
+        lambda job_id, scope, outcome, reason="": audited.append((scope, outcome)),
+    )
+
+    reason = mcp_cron.vet_job_at_fire_time(legacy)
+
+    assert reason is not None and "brace expansion" in reason, (
+        "a legacy command the new gate refuses must be refused at fire time too"
+    )
+    assert ("cron_command_body", "denied") in audited, (
+        "the refusal must be audited under its own scope, mirroring cron_script_body"
+    )
+
+
+def test_fire_time_vet_still_allows_a_clean_command(monkeypatch):
+    """The no-regression half: an ordinary command must still fire."""
+    from kiro_crew.cron import CronJob
+
+    clean = CronJob(id="clean1", name="clean", message="", command="df -h")
+    monkeypatch.setattr(mcp_cron, "_vet_cron_capability_governance", lambda **_kw: None)
+    monkeypatch.setattr(mcp_cron, "_audit_fire_time_decision", lambda *a, **k: None)
+    assert mcp_cron.vet_job_at_fire_time(clean) is None
+
+
+def test_brace_scan_cost_is_bounded_and_refuses_rather_than_hangs():
+    """The brace scan is quadratic on a hostile shape, and one caller is uncapped.
+
+    A long run of `{` with no closing brace at the same state makes the inner walk
+    run to end-of-string for every one of them. Measured before the bound: 145 ms at
+    1k, 572 ms at 2k, 2.3 s at 4k, 9.2 s at 8k -- doubling the input multiplied the
+    time by ~4, so a few hundred KB hangs the process.
+
+    A length cap alone does not fix it. `cron_add` is capped at 5000 by
+    `validation.FieldSpec("command", max_len=5000)`, but `portability.py` re-vets an
+    IMPORTED job with the raw dict value and that cap does not apply there -- and
+    5000 still costs seconds, once per imported job. So the STEPS are bounded, which
+    bounds every shape rather than one of them.
+
+    And exhaustion must REFUSE: short-circuiting to "clean" would turn a denial of
+    service into a bypass, which is the worse of the two failures.
+    """
+    def timed(cmd: str) -> tuple[float, str | None]:
+        began = time.monotonic()
+        verdict = _vet_shell_command(cmd)
+        return time.monotonic() - began, verdict
+
+    # Two orders of magnitude apart. Unbounded, the second would cost 10_000x the
+    # first; bounded, both sit under the same ceiling.
+    small, small_verdict = timed("{" * 20_000)
+    large, large_verdict = timed("{" * 2_000_000)
+
+    assert small_verdict is not None and "too complex" in small_verdict, (
+        "no verdict was reached, so the command is not clean -- it must be refused"
+    )
+    assert large_verdict is not None and "too complex" in large_verdict
+
+    assert large < 30.0, f"a 2M-character command took {large:.1f}s; the bound is not holding"
+    # The residual growth is the linear passes (quote states, list allocation), not
+    # the quadratic walk, so a 100x longer input must not cost anywhere near 100x.
+    assert large < small * 100, (
+        f"cost grew {large / max(small, 1e-9):.0f}x for a 100x longer input, which is "
+        "the superlinear walk still running"
+    )
 
 
 def test_glob_matching_cost_is_bounded():
