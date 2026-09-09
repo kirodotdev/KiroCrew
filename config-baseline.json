@@ -31,6 +31,7 @@
         "sandbox": "auto",
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
+        "sandbox_forward_ssh_auth_sock": false,
         "apps_allow_third_party": false,
         "apps_trusted": [],
         "apps_trusted_local": [],
@@ -357,6 +358,20 @@
       "tags": [],
       "label": "Allow Unsandboxed Execution",
       "help": "When true, allow agent subprocesses to execute without any sandbox backend (fail-open). When false (default), wrap_argv raises a RuntimeError if no sandbox backend is available and mode is not 'off', preventing unsandboxed execution entirely (fail-closed). This is distinct from sandbox_allow_no_isolation which only controls warning severity — this field controls whether execution proceeds at all. The default is platform-independent: on a host with no backend (any Windows host, a Linux kernel refusing user namespaces) `kirocrew setup` OFFERS this opt-in interactively and writes it only on an explicit yes, so unconfined execution stays operator-declared and is never enabled implicitly by the platform.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.sandbox_forward_ssh_auth_sock",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Forward SSH_AUTH_SOCK Into Sandbox",
+      "help": "When true, keep SSH_AUTH_SOCK in the agent subprocess environment instead of scrubbing it, so git commit signing and git-over-SSH can reach the ssh-agent the operator is already running outside the sandbox. The socket grants USE of the agent's keys, not possession: the private key material stays outside the sandbox and, under the strict tier, ~/.ssh is bind-mounted / read-denied so the agent still cannot read the key files. SECURITY TRADE-OFF: any code the agent runs can authenticate as the operator through the socket for the lifetime of the session, not commit signing alone. Off by default; today's behaviour (socket scrubbed) is unchanged unless the operator explicitly opts in. Forwards ONLY the socket path - no other credential env var is affected, and MCP declared-env forwarding still refuses SSH_AUTH_SOCK regardless of this flag.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

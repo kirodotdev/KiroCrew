@@ -175,6 +175,7 @@ from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     BoundWorkspaceMismatch,
+    _forward_ssh_auth_sock,
     apply_windows_resource_ceiling,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
@@ -5065,10 +5066,18 @@ class AcpClient:
         argv, delegate_internal_sandbox = await asyncio.to_thread(
             apply_pod_bundle_spawn, argv, backend=self.backend
         )
+        # Issue #8104: resolve the SSH_AUTH_SOCK forward opt-in OFF the event
+        # loop (KiroCrewConfig.load() may stat/read config) ONCE, then pass the
+        # resolved boolean into both the sandbox wrap below and the parent-side
+        # scrub further down, so neither reads config synchronously on the loop
+        # (anchor: no-blocking-call-on-event-loop). Scoped to this agent spawn:
+        # generic launchers default the flag off and keep scrubbing the socket.
+        forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             # Credential homes the standard tier exposes for kiro-cli's sake and
             # that an enforced adapter has no claim on. Empty for every harness
             # this core does not enforce, so their spawn arguments are unchanged.
@@ -5136,8 +5145,9 @@ class AcpClient:
         # Windows Kiro delegation has no POSIX `env -u` wrapper, so this is the
         # enforcement point there. Keep it after _resolve_spawn_env so SSH repair
         # cannot reintroduce a denied pointer; KIRO_API_KEY remains available only
-        # to the positively identified Kiro backend.
-        env = scrub_agent_subprocess_env(env)
+        # to the positively identified Kiro backend. forward_ssh_auth_sock was
+        # resolved off-loop above (issue #8104) and is reused here.
+        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
         # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
         # confined to the pod's tree instead of the real host's -- see
         # _apply_pod_home_remap's docstring. No-op outside a pod

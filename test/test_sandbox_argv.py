@@ -175,14 +175,18 @@ class TestWrapArgv:
             "kiro-cli",
         ]
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
-        mock_ns_argv.assert_called_once_with(["kiro-cli"], "strict", strip_python_env=False)
+        mock_ns_argv.assert_called_once_with(
+            ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
+        )
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="sandbox-exec")
     @patch("kiro_crew.sandbox.sandbox_exec_argv")
     def test_sandbox_exec_backend(self, mock_sb_argv, mock_detect):
         mock_sb_argv.return_value = (["sandbox-exec", "-f", "/tmp/p.sb", "kiro-cli"], "/tmp/p.sb")
         result, cleanup = wrap_argv(["kiro-cli"], mode="strict")
-        mock_sb_argv.assert_called_once_with(["kiro-cli"], "strict", strip_python_env=False)
+        mock_sb_argv.assert_called_once_with(
+            ["kiro-cli"], "strict", strip_python_env=False, forward_ssh_auth_sock=False
+        )
 
     @patch("kiro_crew.sandbox.detect_backend")
     def test_inside_sandbox_passes_through(self, mock_detect, monkeypatch):
@@ -272,17 +276,13 @@ class TestBuildSeatbeltProfile:
             assert f'(deny file-write* (subpath "{path}"))' in profile
             assert f'(deny file-link (subpath "{path}"))' in profile
 
-    def test_voice_runtime_cannot_be_reexposed_or_missed_by_relocation(
-        self, monkeypatch, tmp_path
-    ):
+    def test_voice_runtime_cannot_be_reexposed_or_missed_by_relocation(self, monkeypatch, tmp_path):
         custom_home = tmp_path / "custom-home"
         custom_home.mkdir()
         relocated = custom_home / "run" / "voice-runtime"
         monkeypatch.setattr(sandbox_mod, "config_dir", lambda: custom_home)
 
-        profile = _build_seatbelt_profile(
-            "standard", extra_visible_dirs=(str(relocated),)
-        )
+        profile = _build_seatbelt_profile("standard", extra_visible_dirs=(str(relocated),))
 
         assert f'(deny file-read* (subpath "{relocated}"))' in profile
         assert f'(deny file-write* (subpath "{relocated}"))' in profile
@@ -297,9 +297,7 @@ class TestBuildSeatbeltProfile:
         canonical_run = canonical_home / "run"
         lexical_root = lexical_run / "voice-runtime"
         canonical_root = canonical_run / "voice-runtime"
-        guards = sandbox_mod._literal_ancestor_guards(
-            (str(lexical_run), str(canonical_run))
-        )
+        guards = sandbox_mod._literal_ancestor_guards((str(lexical_run), str(canonical_run)))
         monkeypatch.setattr(sandbox_mod, "config_dir", lambda: lexical_home)
         monkeypatch.setattr(
             sandbox_mod,
@@ -487,9 +485,11 @@ class TestBuildSeatbeltProfile:
         monkeypatch.setattr(
             sandbox_mod.os,
             "stat",
-            lambda path: runtime_info
-            if os.path.abspath(os.fspath(path)) == os.path.abspath(str(workspace))
-            else real_stat(path),
+            lambda path: (
+                runtime_info
+                if os.path.abspath(os.fspath(path)) == os.path.abspath(str(workspace))
+                else real_stat(path)
+            ),
         )
 
         with pytest.raises(RuntimeError, match="protected voice runtime"):
@@ -517,8 +517,7 @@ class TestBuildSeatbeltProfile:
         assert str(runtime) in message
         assert "contains" in message
         assert (
-            "Pick a project subdirectory that does not contain the Kiro Crew data home."
-            in message
+            "Pick a project subdirectory that does not contain the Kiro Crew data home." in message
         )
 
     def test_voice_guard_refusal_names_both_paths_when_workspace_is_inside_runtime(
@@ -543,8 +542,7 @@ class TestBuildSeatbeltProfile:
         assert str(runtime) in message
         assert "lives inside it" in message
         assert (
-            "Pick a project subdirectory that does not contain the Kiro Crew data home."
-            in message
+            "Pick a project subdirectory that does not contain the Kiro Crew data home." in message
         )
 
     def test_voice_guard_alias_refusal_names_both_paths(self, monkeypatch, tmp_path):
@@ -577,13 +575,10 @@ class TestBuildSeatbeltProfile:
         assert str(runtime) in message
         assert "aliases" in message
         assert (
-            "Pick a project subdirectory that does not contain the Kiro Crew data home."
-            in message
+            "Pick a project subdirectory that does not contain the Kiro Crew data home." in message
         )
 
-    def test_voice_guard_cannot_verify_refusal_names_the_failed_stat(
-        self, monkeypatch, tmp_path
-    ):
+    def test_voice_guard_cannot_verify_refusal_names_the_failed_stat(self, monkeypatch, tmp_path):
         """OSError variant: workspace, runtime, the failed path, and the remedy."""
         runtime = tmp_path / "data" / "run" / "voice-runtime"
         workspace = tmp_path / "workspace"
@@ -615,14 +610,11 @@ class TestBuildSeatbeltProfile:
         assert "Permission denied" in message
         assert "fails closed" in message
         assert (
-            "Pick a project subdirectory that does not contain the Kiro Crew data home."
-            in message
+            "Pick a project subdirectory that does not contain the Kiro Crew data home." in message
         )
         assert isinstance(excinfo.value.__cause__, OSError)
 
-    def test_voice_guard_bind_cannot_verify_refusal_names_the_failed_open(
-        self, monkeypatch
-    ):
+    def test_voice_guard_bind_cannot_verify_refusal_names_the_failed_open(self, monkeypatch):
         """Bind-path OSError variant: workspace, failed path, and the remedy."""
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
         monkeypatch.setattr(
@@ -646,8 +638,7 @@ class TestBuildSeatbeltProfile:
         assert "a filesystem check failed on" in message
         assert "Permission denied" in message
         assert (
-            "Pick a project subdirectory that does not contain the Kiro Crew data home."
-            in message
+            "Pick a project subdirectory that does not contain the Kiro Crew data home." in message
         )
         assert isinstance(excinfo.value.__cause__, OSError)
 
@@ -678,9 +669,7 @@ class TestBuildSeatbeltProfile:
             sandbox_mod,
             "_directory_ancestor_identities",
             lambda descriptor: (
-                ((7, 101), (7, 11), (7, 1))
-                if descriptor == 41
-                else ((7, 202), (7, 22), (7, 1))
+                ((7, 101), (7, 11), (7, 1)) if descriptor == 41 else ((7, 202), (7, 22), (7, 1))
             ),
         )
         closed: list[int] = []
@@ -704,12 +693,8 @@ class TestBuildSeatbeltProfile:
         this check and the peer's own resolution, which is the window the binding
         exists to close.
         """
-        monkeypatch.setattr(
-            sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True
-        )
-        monkeypatch.setattr(
-            "kiro_crew.sandbox.fd_real_path", lambda _fd: "/canonical/workspace"
-        )
+        monkeypatch.setattr(sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True)
+        monkeypatch.setattr("kiro_crew.sandbox.fd_real_path", lambda _fd: "/canonical/workspace")
 
         assert (
             sandbox_mod.bound_agent_workspace_target(41, "/mutable/workspace")
@@ -717,17 +702,13 @@ class TestBuildSeatbeltProfile:
         )
 
     def test_bound_session_target_is_none_for_a_workspace_that_is_not_bound(self, monkeypatch):
-        monkeypatch.setattr(
-            sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: False
-        )
+        monkeypatch.setattr(sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: False)
 
         assert sandbox_mod.bound_agent_workspace_target(41, "/other/workspace") is None
 
     def test_bound_session_target_fails_closed_when_the_name_cannot_be_read(self, monkeypatch):
         """No fallback to the mutable pathname: that is the string under attack."""
-        monkeypatch.setattr(
-            sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True
-        )
+        monkeypatch.setattr(sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True)
         monkeypatch.setattr("kiro_crew.sandbox.fd_real_path", lambda _fd: None)
 
         with pytest.raises(OSError):
@@ -797,9 +778,7 @@ class TestBuildSeatbeltProfile:
             sandbox_mod,
             "_directory_ancestor_identities",
             lambda descriptor: (
-                ((8, 301), (8, 302), (8, 1))
-                if descriptor == 51
-                else ((8, 302), (8, 1))
+                ((8, 301), (8, 302), (8, 1)) if descriptor == 51 else ((8, 302), (8, 1))
             ),
         )
         closed: list[int] = []
@@ -812,8 +791,7 @@ class TestBuildSeatbeltProfile:
         assert "/mutable/workspace" in message
         assert "/protected/voice-runtime" in message
         assert (
-            "Pick a project subdirectory that does not contain the Kiro Crew data home."
-            in message
+            "Pick a project subdirectory that does not contain the Kiro Crew data home." in message
         )
         assert closed == [51, 52]
 
@@ -952,9 +930,7 @@ class TestWritableCarveouts:
 
     def test_seatbelt_carveout_allow_lands_after_run_seal(self, monkeypatch, tmp_path):
         home, probe = self._relocated_home(monkeypatch, tmp_path)
-        profile = _build_seatbelt_profile(
-            "standard", extra_writable_dirs=(str(probe),)
-        )
+        profile = _build_seatbelt_profile("standard", extra_writable_dirs=(str(probe),))
         deny = f'(deny file-write* (subpath "{home / "run"}"))'
         assert deny in profile
         for spelling in self._spellings(probe):
@@ -981,24 +957,18 @@ class TestWritableCarveouts:
     def test_seatbelt_refuses_unsafe_carveouts(self, monkeypatch, tmp_path, candidate):
         home, _probe = self._relocated_home(monkeypatch, tmp_path)
         (home / "elsewhere").mkdir()
-        profile = _build_seatbelt_profile(
-            "standard", extra_writable_dirs=(str(home / candidate),)
-        )
+        profile = _build_seatbelt_profile("standard", extra_writable_dirs=(str(home / candidate),))
         assert "(allow file-write*" not in profile
 
     def test_seatbelt_refuses_relative_carveout(self, monkeypatch, tmp_path):
         self._relocated_home(monkeypatch, tmp_path)
-        profile = _build_seatbelt_profile(
-            "standard", extra_writable_dirs=("run/mcp-tmp/probe-x",)
-        )
+        profile = _build_seatbelt_profile("standard", extra_writable_dirs=("run/mcp-tmp/probe-x",))
         assert "(allow file-write*" not in profile
 
     @_POSIX_ONLY
     def test_launcher_embeds_validated_carveout(self, monkeypatch, tmp_path):
         home, probe = self._relocated_home(monkeypatch, tmp_path)
-        script = _build_launcher_script(
-            "standard", extra_writable_dirs=(str(probe),)
-        )
+        script = _build_launcher_script("standard", extra_writable_dirs=(str(probe),))
         expected = json.dumps(self._spellings(probe))
         assert f"WRITABLE_DIRS = {expected}" in script
         # Structural anchor (not prose): the carve-out loop's remount must
@@ -1024,9 +994,7 @@ class TestWritableCarveouts:
     @_POSIX_ONLY
     def test_launcher_refuses_unsafe_carveout(self, monkeypatch, tmp_path):
         home, _probe = self._relocated_home(monkeypatch, tmp_path)
-        script = _build_launcher_script(
-            "standard", extra_writable_dirs=(str(home / "run"),)
-        )
+        script = _build_launcher_script("standard", extra_writable_dirs=(str(home / "run"),))
         assert "WRITABLE_DIRS = []" in script
 
     @_POSIX_ONLY
@@ -1039,12 +1007,8 @@ class TestWritableCarveouts:
         silently and #8653 is back with no error.
         """
         home, probe = self._relocated_home(monkeypatch, tmp_path)
-        script = _build_launcher_script(
-            "standard", extra_writable_dirs=(str(probe),)
-        )
-        assert script.index("for d in READONLY_DIRS:") < script.index(
-            "for d in WRITABLE_DIRS:"
-        )
+        script = _build_launcher_script("standard", extra_writable_dirs=(str(probe),))
+        assert script.index("for d in READONLY_DIRS:") < script.index("for d in WRITABLE_DIRS:")
 
     @_POSIX_ONLY
     def test_launcher_carveout_mounts_fail_open(self, monkeypatch, tmp_path):
@@ -1052,17 +1016,13 @@ class TestWritableCarveouts:
         through ``_mount_or_die``: a host refusing them keeps the seal
         (pre-carve-out behavior) instead of losing every sandboxed probe."""
         home, probe = self._relocated_home(monkeypatch, tmp_path)
-        script = _build_launcher_script(
-            "standard", extra_writable_dirs=(str(probe),)
-        )
+        script = _build_launcher_script("standard", extra_writable_dirs=(str(probe),))
         loop = self._writable_loop(script)
         assert "_mount_or_die" not in loop
         assert "_mount_or_warn" in loop
 
     @_POSIX_ONLY
-    def test_launcher_refuses_carveout_inside_unhidden_tree(
-        self, monkeypatch, tmp_path
-    ):
+    def test_launcher_refuses_carveout_inside_unhidden_tree(self, monkeypatch, tmp_path):
         """A caller-re-exposed (``extra_visible_dirs``) tree must still refuse
         a writable window: exposure cancels the hide, not the write seal, so
         the validator's guard set must include the ``unhidden`` entries (the
@@ -1092,9 +1052,7 @@ class TestWritableCarveouts:
         lexical = os.path.normpath(str(probe))
         canonical = os.path.realpath(lexical)
         assert lexical != canonical  # the premise of the test
-        profile = _build_seatbelt_profile(
-            "standard", extra_writable_dirs=(str(probe),)
-        )
+        profile = _build_seatbelt_profile("standard", extra_writable_dirs=(str(probe),))
         for spelling in (lexical, canonical):
             assert f'(allow file-write* (subpath "{spelling}"))' in profile
 
@@ -1262,9 +1220,7 @@ class TestBuildLauncherScript:
         real_dir = tmp_path / "creds"
         real_dir.mkdir()
 
-        script = _build_launcher_script(
-            "strict", extra_hidden_dirs=(str(secret), str(real_dir))
-        )
+        script = _build_launcher_script("strict", extra_hidden_dirs=(str(secret), str(real_dir)))
         dirs = json.loads(re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S).group(1))
         files = json.loads(re.search(r"SENSITIVE_FILES = (\[.*?\])\n", script, re.S).group(1))
 
@@ -1300,9 +1256,9 @@ class TestBuildLauncherScript:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in {"isfile", "isdir", "exists", "stat", "lstat"}
         ]
-        assert probes == [], (
-            f"_build_launcher_script stats the filesystem on the event loop: {probes}"
-        )
+        assert (
+            probes == []
+        ), f"_build_launcher_script stats the filesystem on the event loop: {probes}"
 
     @_POSIX_ONLY
     def test_every_sensitive_path_reaches_a_loop_that_can_hide_it(self):
@@ -1450,14 +1406,11 @@ class TestHardlinkScanBudget:
             stmt
             for stmt in root_loops[0].body
             if isinstance(stmt, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id == "_root_scanned"
-                for t in stmt.targets
-            )
+            and any(isinstance(t, ast.Name) and t.id == "_root_scanned" for t in stmt.targets)
         ]
-        assert len(direct_assigns) == 1, (
-            "_root_scanned reset must sit directly in the per-root loop body"
-        )
+        assert (
+            len(direct_assigns) == 1
+        ), "_root_scanned reset must sit directly in the per-root loop body"
 
     def test_truncation_warns_on_stderr_without_exiting(self):
         script = _build_launcher_script("strict")
@@ -1832,9 +1785,7 @@ class TestNamespaceArgv:
 
                 # Self-check: WITHOUT the flags the payload must fire, otherwise a
                 # pass below would mean nothing.
-                subprocess.run(
-                    [result[0], "-c", "pass"], env=env, capture_output=True, timeout=60
-                )
+                subprocess.run([result[0], "-c", "pass"], env=env, capture_output=True, timeout=60)
                 assert marker.exists(), (
                     "fixture is inert: payload did not execute even WITHOUT the "
                     "hardening flags, so this test proves nothing"
@@ -1922,9 +1873,9 @@ class TestPinnedEnvBin:
         review because it looks identical to the pinned one at the call site.
         """
         source = Path(sandbox_mod.__file__).read_text(encoding="utf-8")
-        assert '["env",' not in source, (
-            'a bare ["env", ...] argv prefix is PATH-redirectable; use _pinned_env_bin()'
-        )
+        assert (
+            '["env",' not in source
+        ), 'a bare ["env", ...] argv prefix is PATH-redirectable; use _pinned_env_bin()'
 
 
 class TestSshSupportsAcceptNew:
@@ -2459,13 +2410,15 @@ class TestCgroupScopeArgv:
         """
         import kiro_crew.sandbox as sb
 
-        with patch("os.sysconf", side_effect=OSError("no sysconf")), patch.object(
-            sb.platform_compat, "system_memory", return_value=None
+        with (
+            patch("os.sysconf", side_effect=OSError("no sysconf")),
+            patch.object(sb.platform_compat, "system_memory", return_value=None),
         ):
             assert sb._default_max_memory_mb() == sb._CGROUP_FALLBACK_MAX_MEMORY_MB
         # Non-positive product also falls back (never returns 0 -> unlimited).
-        with patch("os.sysconf", return_value=0), patch.object(
-            sb.platform_compat, "system_memory", return_value=None
+        with (
+            patch("os.sysconf", return_value=0),
+            patch.object(sb.platform_compat, "system_memory", return_value=None),
         ):
             assert sb._default_max_memory_mb() == sb._CGROUP_FALLBACK_MAX_MEMORY_MB
 
@@ -2949,9 +2902,7 @@ class TestCgroupScopeBusEnv:
                     "kiro_crew.sandbox._probe_cgroup_scope",
                     return_value=(False, "not Linux"),
                 ),
-                patch.dict(
-                    os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False
-                ),
+                patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False),
             ):
                 out, injected = sb.cgroup_scope_bus_env({"PATH": "/usr/bin"})
             assert out == {"PATH": "/usr/bin"}
@@ -2995,7 +2946,13 @@ class TestCgroupScopeBusEnv:
                 patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
                 patch(
                     "kiro_crew.sandbox._unset_env_argv",
-                    return_value=["/usr/bin/env", "-u", "XDG_RUNTIME_DIR", "-u", "DBUS_SESSION_BUS_ADDRESS"],
+                    return_value=[
+                        "/usr/bin/env",
+                        "-u",
+                        "XDG_RUNTIME_DIR",
+                        "-u",
+                        "DBUS_SESSION_BUS_ADDRESS",
+                    ],
                 ),
                 patch.dict(
                     os.environ,
@@ -3047,14 +3004,10 @@ class TestCgroupScopeBusEnv:
                 ),
                 patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
                 patch("kiro_crew.sandbox._unset_env_argv", return_value=None),
-                patch.dict(
-                    os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False
-                ),
+                patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/4242"}, clear=False),
                 caplog.at_level(logging.WARNING),
             ):
-                argv, env, _cleanup = sb.sandboxed_spawn_argv(
-                    ["gh"], env={"PATH": "/usr/bin:/bin"}
-                )
+                argv, env, _cleanup = sb.sandboxed_spawn_argv(["gh"], env={"PATH": "/usr/bin:/bin"})
             assert "XDG_RUNTIME_DIR" not in env
             assert "DBUS_SESSION_BUS_ADDRESS" not in env
             assert argv[argv.index("--") + 1 :] == ["gh"]
@@ -3419,9 +3372,7 @@ class TestMacOsNestingDetection:
         mock_detect.assert_not_called()
 
     @patch("kiro_crew.sandbox.detect_backend", return_value="none")
-    def test_forged_marker_without_kernel_confirmation_is_refused(
-        self, mock_detect, monkeypatch
-    ):
+    def test_forged_marker_without_kernel_confirmation_is_refused(self, mock_detect, monkeypatch):
         # The kernel is authoritative: a marker on a process the kernel says is
         # NOT sandboxed can only have been forged or inherited into an unconfined
         # process, so it must not open the passthrough.
@@ -3632,7 +3583,10 @@ class TestAgentSliceMemoryHigh:
         try:
             with (
                 patch("kiro_crew.sandbox._default_slice_memory_high_mb", return_value=2048),
-                patch("kiro_crew.sandbox.platform_compat.trusted_system_bin", return_value="/usr/bin/systemctl"),
+                patch(
+                    "kiro_crew.sandbox.platform_compat.trusted_system_bin",
+                    return_value="/usr/bin/systemctl",
+                ),
                 patch("kiro_crew.sandbox.subprocess.run") as run,
             ):
                 run.return_value = MagicMock(returncode=0, stderr="", stdout="")
@@ -3661,7 +3615,10 @@ class TestAgentSliceMemoryHigh:
                     "kiro_crew.sandbox._default_slice_memory_high_mb",
                     return_value=2048,
                 ),
-                patch("kiro_crew.sandbox.platform_compat.trusted_system_bin", return_value="/usr/bin/systemctl"),
+                patch(
+                    "kiro_crew.sandbox.platform_compat.trusted_system_bin",
+                    return_value="/usr/bin/systemctl",
+                ),
                 patch("kiro_crew.sandbox.subprocess.run") as run,
             ):
                 run.return_value = MagicMock(returncode=0, stderr="", stdout="")
@@ -3681,7 +3638,10 @@ class TestAgentSliceMemoryHigh:
         try:
             with (
                 patch("kiro_crew.sandbox._default_slice_memory_high_mb", return_value=2048),
-                patch("kiro_crew.sandbox.platform_compat.trusted_system_bin", return_value="/usr/bin/systemctl"),
+                patch(
+                    "kiro_crew.sandbox.platform_compat.trusted_system_bin",
+                    return_value="/usr/bin/systemctl",
+                ),
                 patch("kiro_crew.sandbox.subprocess.run") as run,
             ):
                 run.return_value = MagicMock(returncode=1, stderr="Failed to set", stdout="")
@@ -3727,9 +3687,7 @@ class TestAgentSliceMemoryHigh:
                     return_value=(8192, 8192, 50, 0),
                 ),
                 patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
-                patch(
-                    "kiro_crew.sandbox._reconcile_slice_memory_high_off_thread"
-                ) as ensure,
+                patch("kiro_crew.sandbox._reconcile_slice_memory_high_off_thread") as ensure,
             ):
                 out = sb.cgroup_scope_argv(["kiro-cli", "chat"])
             ensure.assert_called_once_with()
@@ -3961,20 +3919,22 @@ class TestSandboxExecArgvPinsInnerConfiner:
         than emitting an unpinned name: losing a DoS ceiling beats gaining an
         arbitrary-exec channel.
         """
-        with patch.object(sandbox_mod, "_probe_cgroup_scope", return_value=(True, "")), patch.object(
-            sandbox_mod, "_reconcile_slice_memory_high_off_thread"
-        ), patch.object(sandbox_mod, "_cpu_controller_delegated", return_value=False):
+        with (
+            patch.object(sandbox_mod, "_probe_cgroup_scope", return_value=(True, "")),
+            patch.object(sandbox_mod, "_reconcile_slice_memory_high_off_thread"),
+            patch.object(sandbox_mod, "_cpu_controller_delegated", return_value=False),
+        ):
             with patch.object(
-                sandbox_mod.platform_compat, "trusted_system_bin", return_value="/usr/bin/systemd-run"
+                sandbox_mod.platform_compat,
+                "trusted_system_bin",
+                return_value="/usr/bin/systemd-run",
             ):
                 pinned = sandbox_mod.cgroup_scope_argv(["kiro-cli", "chat"])
             assert pinned[0] == "/usr/bin/systemd-run"
             assert "systemd-run" not in pinned
 
             # Unresolvable -> no wrapper at all, never a bare name.
-            with patch.object(
-                sandbox_mod.platform_compat, "trusted_system_bin", return_value=None
-            ):
+            with patch.object(sandbox_mod.platform_compat, "trusted_system_bin", return_value=None):
                 unwrapped = sandbox_mod.cgroup_scope_argv(["kiro-cli", "chat"])
             assert unwrapped == ["kiro-cli", "chat"]
 

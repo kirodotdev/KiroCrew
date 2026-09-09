@@ -938,6 +938,25 @@ class AgentConfig:
             "never enabled implicitly by the platform.",
         ),
     )
+    sandbox_forward_ssh_auth_sock: bool = field(
+        default=False,
+        metadata=_meta(
+            "Forward SSH_AUTH_SOCK Into Sandbox",
+            "When true, keep SSH_AUTH_SOCK in the agent subprocess environment "
+            "instead of scrubbing it, so git commit signing and git-over-SSH can "
+            "reach the ssh-agent the operator is already running outside the "
+            "sandbox. The socket grants USE of the agent's keys, not possession: "
+            "the private key material stays outside the sandbox and, under the "
+            "strict tier, ~/.ssh is bind-mounted / read-denied so the agent still "
+            "cannot read the key files. SECURITY TRADE-OFF: any code the agent "
+            "runs can authenticate as the operator through the socket for the "
+            "lifetime of the session, not commit signing alone. Off by default; "
+            "today's behaviour (socket scrubbed) is unchanged unless the operator "
+            "explicitly opts in. Forwards ONLY the socket path - no other "
+            "credential env var is affected, and MCP declared-env forwarding "
+            "still refuses SSH_AUTH_SOCK regardless of this flag.",
+        ),
+    )
     apps_allow_third_party: bool = field(
         default=False,
         metadata=_meta(

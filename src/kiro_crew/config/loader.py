@@ -2850,6 +2850,9 @@ class KiroCrewConfig:
                 sandbox_allow_unsandboxed_exec=bool(
                     agent_data.get("sandbox_allow_unsandboxed_exec", False)
                 ),
+                sandbox_forward_ssh_auth_sock=bool(
+                    agent_data.get("sandbox_forward_ssh_auth_sock", False)
+                ),
                 apps_allow_third_party=_safe_bool(
                     agent_data.get("apps_allow_third_party", False), False
                 ),

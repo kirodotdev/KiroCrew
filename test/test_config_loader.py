@@ -213,6 +213,18 @@ def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
     assert enabled.agent.sandbox_allow_unsandboxed_exec is True
 
 
+def test_sandbox_forward_ssh_auth_sock_loads_from_config() -> None:
+    """The SSH_AUTH_SOCK forward opt-in (#8104) is built field-by-field in
+    load(), so an operator's value must reach the dataclass. Without the loader
+    wiring the AgentConfig(...) constructor omits it, the default False always
+    wins, and the feature is inert regardless of config.json.
+    """
+    assert KiroCrewConfig().agent.sandbox_forward_ssh_auth_sock is False
+    assert _load_from_dict({}).agent.sandbox_forward_ssh_auth_sock is False
+    enabled = _load_from_dict({"agent": {"sandbox_forward_ssh_auth_sock": True}})
+    assert enabled.agent.sandbox_forward_ssh_auth_sock is True
+
+
 def test_max_stop_hook_nudges_loads_from_config_and_round_trips() -> None:
     """The Stop-hook nudge cap is built field-by-field in load(), so an
     operator's value must hydrate and survive a to_dict() -> load() round-trip.

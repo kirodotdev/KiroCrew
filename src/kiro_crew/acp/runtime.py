@@ -117,6 +117,7 @@ from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     BoundWorkspaceMismatch,
+    _forward_ssh_auth_sock,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
@@ -1262,10 +1263,15 @@ class AcpRuntime:
         argv, delegate_internal_sandbox = await asyncio.to_thread(
             apply_pod_bundle_spawn, argv, backend=self._acp_backend
         )
+        # Issue #8104: resolve the SSH_AUTH_SOCK forward opt-in off-loop ONCE
+        # (config read) and pass it to both the sandbox wrap and the parent scrub
+        # below, so neither reads config on the loop. Scoped to this agent spawn.
+        forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
         )
@@ -1324,7 +1330,7 @@ class AcpRuntime:
         # CLI's internal sandbox without a POSIX `env -u` wrapper. Do it after
         # credential-pointer/API-key resolution so no resolver can reintroduce a
         # denied variable; KIRO_API_KEY itself is intentionally not denied.
-        env = scrub_agent_subprocess_env(env)
+        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
         # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
         # confined to the pod's tree instead of the real host's -- see
         # acp.client._apply_pod_home_remap's docstring. No-op outside a pod and
