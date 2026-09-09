@@ -7341,6 +7341,7 @@
       "unknown_error": "অজানা ত্রুটি"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "সাজানোর ক্রম অনুসরণ করুন (সব পিন করা)",
       "bring_back_to_main": "মূল উইন্ডোতে ফিরিয়ে আনুন",
       "close_session": "সেশন বন্ধ করুন",
       "copy_link": "লিঙ্ক কপি করুন",

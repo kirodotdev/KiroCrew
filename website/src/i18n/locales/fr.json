@@ -7451,6 +7451,7 @@
       "unknown_error": "Erreur inconnue"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "Suivre le tri (toutes les épinglées)",
       "bring_back_to_main": "Ramener dans la fenêtre principale",
       "close_session": "Fermer la session",
       "copy_link": "Copier le lien",

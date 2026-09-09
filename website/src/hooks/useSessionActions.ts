@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
+import { publishPinMutationKeysInFlight } from '../utils/pinMutationsInFlight'
 import { deleteSlot, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../store/dashboardSlice'
 import { emitSlotRead } from '../lib/slotReadRelay'
@@ -24,17 +25,20 @@ interface PinMutationEntry {
 interface PinMutationBatch {
   baseline: string[]
   storedBaseline: string[]
+  /** The arrangement revision when this batch opened; a later one outranks this batch's answer. */
   entries: PinMutationEntry[]
   snapshotVersion: number
 }
 
 let activePinMutationBatch: PinMutationBatch | null = null
 
-/** Keys whose optimistic pin membership has not reached authoritative reconciliation. */
-export function pinMutationKeysInFlight(): string[] {
-  return activePinMutationBatch
-    ? [...new Set(activePinMutationBatch.entries.map(entry => entry.key))]
-    : []
+/** Publish the batch's keys as the one in-flight record, so no second tally can drift from it. */
+function syncPinMutationKeysInFlight(): void {
+  publishPinMutationKeysInFlight(
+    activePinMutationBatch
+      ? [...new Set(activePinMutationBatch.entries.map(entry => entry.key))]
+      : [],
+  )
 }
 let pinReconcileRequestId = 0
 const pinMutationTails = new Map<string, Promise<unknown>>()
@@ -117,7 +121,6 @@ export function useSessionActions(mode?: string): SessionActions {
           break
         }
       }
-      if (activePinMutationBatch === batch) activePinMutationBatch = null
       const latest = new Map<string, boolean>()
       for (const candidate of batch.entries) latest.set(candidate.key, candidate.pinned)
       const snapshotByKey = new Map(slots.map(slot => [slot.key, slot]))
@@ -152,6 +155,14 @@ export function useSessionActions(mode?: string): SessionActions {
         ...batch.baseline.filter(key => pinnedKeys.has(key)),
         ...newlyPinnedKeys,
       ]
+      // Reconciliation has confirmed pins exist, so a zero-pin snapshot held back earlier is answered
+      // — releasing the window would otherwise replay it over the arrangement those pins belong to.
+      // Released BEFORE the commit, as the catch path already does: the commit's own settle is the
+      // only channel a last-pin unpin reaches with the socket down, and it bails while still published.
+      if (activePinMutationBatch === batch) {
+        activePinMutationBatch = null
+        syncPinMutationKeysInFlight()
+      }
       commitPinnedSessionSnapshot(
         authoritativePinnedOrder, batch.baseline, newlyPinnedKeys, batch.storedBaseline,
       )
@@ -159,7 +170,10 @@ export function useSessionActions(mode?: string): SessionActions {
       // A newer request (or an entry that has not settled yet) owns reconciliation.
       if (snapshotVersion !== batch.snapshotVersion
         || batch.entries.some(candidate => candidate.succeeded === null)) return
-      if (activePinMutationBatch === batch) activePinMutationBatch = null
+      if (activePinMutationBatch === batch) {
+        activePinMutationBatch = null
+        syncPinMutationKeysInFlight()
+      }
       const latest = new Map<string, PinMutationEntry>()
       for (const candidate of batch.entries) latest.set(candidate.key, candidate)
       const ownedKeys = new Set([...latest]
@@ -233,6 +247,9 @@ export function useSessionActions(mode?: string): SessionActions {
         slotsGeneration: dashboard.slotsGeneration ?? 0,
       }
       batch.entries.push(entry)
+      // After the push, so the published record is what the batch actually holds. A second toggle
+      // joining this batch republishes both keys, and the single batch clear empties it once.
+      syncPinMutationKeysInFlight()
       dispatch(updateSlotPin({ key, pinned }))
       entry.pinGeneration = store.getState().dashboard.slotPinGenerations?.[key] ?? 0
       return { batch, entry }
