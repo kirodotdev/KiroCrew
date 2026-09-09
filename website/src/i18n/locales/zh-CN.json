@@ -7720,9 +7720,11 @@
       "suggestion_summarize_chat": "总结本周的聊天活动",
       "suggestion_triage_tickets": "分类处理我的值班工单",
       "suggestion_write_design_doc": "帮我写一份设计文档",
-      "switch_back_to_default_mode": "切换回默认模式",
-      "switch_to_ephemeral_mode": "切换到临时模式",
+      "choose_memory_mode": "选择记忆模式",
+      "incognito_active_switch_to_persistent": "隐身 — 切换到持久模式",
+      "switch_to_persistent_mode": "切换到持久模式",
       "temporary": "临时",
+      "temporary_active_switch_to_persistent": "临时 — 切换到持久模式",
       "temporary_desc": "全新开始 — 不读写记忆",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "试试：“制定一个计划，分析 {{productName}} 代码包并按主要组件报告文件数”",
       "what_can_i_do_for_you": "我能帮你做什么？"
@@ -14280,6 +14282,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "持久模式会使用已知信息并保存新记忆。隐身模式会使用已知信息，但不保存新记忆。临时模式从空白开始，不保存任何记忆。所有聊天仍会显示在历史记录中。你可以更改任意聊天的模式。",
+        "label": "默认记忆模式",
+        "persistent": "持久"
+      },
       "plainDiff": {
         "description": "以普通 unified diff 文本显示差异，不使用语法高亮着色。在大型差异上占用更少内存。",
         "label": "纯文本 diff"

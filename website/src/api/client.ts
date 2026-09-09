@@ -46,7 +46,7 @@ export const SKILLS_TIMEOUT_MS = 15_000
 export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 import { installApiTransport } from './apiTransport'
 import type { SessionSummary } from '../types/sessionSummary'
-import { queryClient } from './queryClient'
+import { queryClient, resolveDefaultMemoryMode } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
 import { recordError, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
@@ -3227,7 +3227,23 @@ export const api = {
    *  over there. The backend opens the peer's slot first, so a peer that is
    *  disconnected or on a different version fails the create rather than yielding
    *  a session that cannot send. */
-  createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string, instance_id?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}), ...(folder_id ? { folder_id } : {}), ...(instance_id ? { instance_id } : {}) }).then(j) as Promise<ChatSlot>,
+  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string, instance_id?: string) => {
+    const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
+      () => fetch('/api/dashboard/config').then(j),
+    )
+    return post('/api/chat/slots', {
+      ...(name ? { name } : {}),
+      ...(agent ? { agent } : {}),
+      ...(model ? { model } : {}),
+      ...(mode ? { mode } : {}),
+      memory_mode: resolvedMemoryMode,
+      ...(title ? { title } : {}),
+      ...(clean_mode !== undefined ? { clean_mode } : {}),
+      ...(artifact ? { artifact } : {}),
+      ...(folder_id ? { folder_id } : {}),
+      ...(instance_id ? { instance_id } : {}),
+    }).then(j) as Promise<ChatSlot>
+  },
   /** Inject silent background context into a slot — consumed on the next user
    * message. Used by the artifact companion chat to name the bound artifact so
    * the user's first message needs no slug boilerplate. */

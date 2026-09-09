@@ -2493,7 +2493,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # The picks ride the create rather than following it: a second
             # round-trip could fail after the peer session existed, leaving a
             # bound session running a crew the user did not choose.
-            remote_slot_key = await create_peer_slot(state, instance_id, agent=agent, model=model)
+            remote_slot_key = await create_peer_slot(
+                state,
+                instance_id,
+                agent=agent,
+                model=model,
+                memory_mode=memory_mode,
+            )
         except RemoteTurnError as exc:
             return web.json_response({"error": str(exc), "code": "remote_bind_failed"}, status=502)
 

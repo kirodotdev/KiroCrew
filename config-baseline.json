@@ -5910,6 +5910,7 @@
         "chat_entry_cache_max_entries": 4096,
         "chat_entry_cache_max_bytes": 33554432,
         "cautious_boot": true,
+        "default_memory_mode": "persistent",
         "widget_density": "more",
         "use_builtin_browser": true,
         "browser_view_port": 0,
@@ -6268,6 +6269,24 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.default_memory_mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Default Memory Mode",
+      "help": "Memory mode for new dashboard chat sessions. 'persistent' reads and writes memory; 'incognito' reads but does not write; 'temporary' neither reads nor writes. Explicit per-session choices still win.",
+      "hasChildren": false,
+      "enumValues": [
+        "persistent",
+        "incognito",
+        "temporary"
+      ],
+      "defaultValue": "persistent"
     },
     {
       "path": "dashboard.widget_density",

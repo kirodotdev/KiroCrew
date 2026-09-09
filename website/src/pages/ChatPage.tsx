@@ -7167,6 +7167,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       color_index: old?.color_index ?? null,
                       color_hex: old?.color_hex ?? null,
                       project: old?.project ?? null,
+                      instanceId: old?.instance_id || undefined,
                     }
                     try { await dispatch(createSlot(opts)).unwrap() } catch { return }
                     try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch { /* new slot already active */ }
@@ -7183,6 +7184,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       color_index: old?.color_index ?? null,
                       color_hex: old?.color_hex ?? null,
                       project: old?.project ?? null,
+                      instanceId: old?.instance_id || undefined,
                     }
                     try { await dispatch(createSlot(opts)).unwrap() } catch { return }
                     try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch { /* new slot already active */ }

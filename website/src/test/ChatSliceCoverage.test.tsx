@@ -98,6 +98,7 @@ const apiMock = vi.hoisted(() => ({
   chatSlots: vi.fn(),
   chatMode: vi.fn(),
   chatSlotProject: vi.fn(),
+  dashboardConfig: vi.fn(),
   createChatSlot: vi.fn(),
   deleteChatSlot: vi.fn(),
   deleteSession: vi.fn(),
@@ -141,6 +142,7 @@ const POISON = ['__proto__', 'constructor', 'prototype'] as const
 beforeEach(() => {
   for (const fn of Object.values(apiMock)) fn.mockReset()
   apiMock.chatSlots.mockResolvedValue([])
+  apiMock.dashboardConfig.mockResolvedValue({ default_memory_mode: 'persistent' })
   apiMock.setSlotColor.mockResolvedValue({})
   apiMock.stopChatSlot.mockResolvedValue({})
   apiMock.stopChatSlotForce.mockResolvedValue({})
@@ -1319,6 +1321,46 @@ describe('chatSlice thunks', () => {
     await store.dispatch(createSlot({ agent: 'kirocrew' }))
     expect(chat(store).creatingSlot).toBe(false)
     expect(chat(store).activeSlot).toBe('elsewhere')
+  })
+
+  it('applies the configured default memory mode to a new dashboard chat', async () => {
+    apiMock.dashboardConfig.mockResolvedValue({ default_memory_mode: 'temporary' })
+    apiMock.createChatSlot.mockResolvedValue({ key: 'temporary-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot(undefined))
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('temporary')
+  })
+
+  it('preserves an explicit memory-mode choice without reading the default', async () => {
+    apiMock.createChatSlot.mockResolvedValue({ key: 'incognito-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot({ memory_mode: 'incognito' }))
+    expect(apiMock.dashboardConfig).not.toHaveBeenCalled()
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('incognito')
+  })
+
+  it('fails closed to temporary when the configured default is malformed', async () => {
+    apiMock.dashboardConfig.mockResolvedValue({ default_memory_mode: 'surprise' })
+    apiMock.createChatSlot.mockResolvedValue({ key: 'temporary-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot(undefined))
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('temporary')
+  })
+
+  it('keeps New chat available but temporary when the config read fails', async () => {
+    apiMock.dashboardConfig.mockRejectedValue(new Error('offline'))
+    apiMock.createChatSlot.mockResolvedValue({ key: 'temporary-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot(undefined))
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('temporary')
+  })
+
+  it('keeps the historical persistent default for an older backend', async () => {
+    apiMock.dashboardConfig.mockResolvedValue({})
+    apiMock.createChatSlot.mockResolvedValue({ key: 'persistent-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot(undefined))
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('persistent')
   })
 
   it('carries a caller-supplied title on the create request', async () => {

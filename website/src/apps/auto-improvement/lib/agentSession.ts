@@ -229,8 +229,14 @@ export function useAgentSession(): UseAgentSession {
         // already carries it. A follow-up rename instead paints a generated title
         // first and, being best-effort, can fail silently -- leaving the slot with
         // whatever the auto-titler chooses. Same shape the Issue Radar path uses.
+        // App-owned workstreams choose their memory contract explicitly; a
+        // general chat preference must not silently alter their behavior.
         const slot = await dispatch(
-          createSlot({ folder_id: folderId, title: truncate(title) }),
+          createSlot({
+            folder_id: folderId,
+            title: truncate(title),
+            memory_mode: 'persistent',
+          }),
         ).unwrap()
         // The slot is persisted but not yet linked, so a failure before the seed
         // would leave an empty session that the next click cannot find. Rollback

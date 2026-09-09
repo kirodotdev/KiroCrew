@@ -7720,9 +7720,11 @@
       "suggestion_summarize_chat": "今週のチャットアクティビティを要約",
       "suggestion_triage_tickets": "オンコールチケットをトリアージ",
       "suggestion_write_design_doc": "設計ドキュメントの作成を支援",
-      "switch_back_to_default_mode": "デフォルトモードに戻す",
-      "switch_to_ephemeral_mode": "一時的なモードに切り替え",
+      "choose_memory_mode": "メモリモードを選択",
+      "incognito_active_switch_to_persistent": "プライベート — 永続モードに切り替える",
+      "switch_to_persistent_mode": "永続モードに切り替える",
       "temporary": "一時的",
+      "temporary_active_switch_to_persistent": "一時的 — 永続モードに切り替える",
       "temporary_desc": "白紙 — メモリ読み取りおよび書き込みなし",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "試す：「{{productName}} コードパッケージを分析し、主要コンポーネント別のファイル数をレポートするプランを作成してください」",
       "what_can_i_do_for_you": "何かお手伝いできることはありますか？"
@@ -14280,6 +14282,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "永続は既知の情報を使い、新しいメモリを保存します。プライベートは既知の情報を使いますが、新しいメモリは保存しません。一時的は空の状態で始まり、何も保存しません。すべてのチャットは履歴に残ります。各チャットのモードは変更できます。",
+        "label": "デフォルトのメモリモード",
+        "persistent": "永続"
+      },
       "plainDiff": {
         "description": "差分を構文ハイライトなしのプレーンな unified diff テキストとして表示します。大きな差分でのメモリ使用量が減ります。",
         "label": "プレーン diff"

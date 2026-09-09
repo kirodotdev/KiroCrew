@@ -7942,9 +7942,11 @@
       "suggestion_summarize_chat": "Résumer l'activité de messagerie de cette semaine",
       "suggestion_triage_tickets": "Trier mes tickets d'astreinte",
       "suggestion_write_design_doc": "M'aider à rédiger un document de conception",
-      "switch_back_to_default_mode": "Revenir au mode par défaut",
-      "switch_to_ephemeral_mode": "Passer en mode éphémère",
+      "choose_memory_mode": "Choisir le mode mémoire",
+      "incognito_active_switch_to_persistent": "Incognito — passer au mode persistant",
+      "switch_to_persistent_mode": "Passer au mode persistant",
       "temporary": "Temporaire",
+      "temporary_active_switch_to_persistent": "Temporaire — passer au mode persistant",
       "temporary_desc": "Page blanche — aucune lecture ni écriture en mémoire",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Essayez : « Crée un plan pour analyser le package de code {{productName}} et indiquer le nombre de fichiers par composant principal »",
       "what_can_i_do_for_you": "Que puis-je faire pour toi ?"
@@ -14659,6 +14661,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "Persistant utilise ce qu’il sait déjà et enregistre de nouveaux souvenirs. Incognito utilise ce qu’il sait, mais n’enregistre rien de nouveau. Temporaire démarre sans mémoire et n’enregistre rien. Tous les chats restent visibles dans l’historique. Vous pouvez changer le mode de chaque chat.",
+        "label": "Mode mémoire par défaut",
+        "persistent": "Persistant"
+      },
       "plainDiff": {
         "description": "Affiche les diffs sous forme de texte unified diff sans coloration syntaxique. Consomme moins de mémoire sur les diffs volumineux.",
         "label": "Diffs en texte brut"

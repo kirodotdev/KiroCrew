@@ -7831,9 +7831,11 @@
       "suggestion_summarize_chat": "Die Chat-Aktivität dieser Woche zusammenfassen",
       "suggestion_triage_tickets": "Meine Bereitschafts-Tickets triagieren",
       "suggestion_write_design_doc": "Mir beim Schreiben eines Design-Dokuments helfen",
-      "switch_back_to_default_mode": "Zurück zum Standardmodus wechseln",
-      "switch_to_ephemeral_mode": "Zum temporären Modus wechseln",
+      "choose_memory_mode": "Speichermodus wählen",
+      "incognito_active_switch_to_persistent": "Inkognito — zum dauerhaften Modus wechseln",
+      "switch_to_persistent_mode": "Zum dauerhaften Modus wechseln",
       "temporary": "Temporär",
+      "temporary_active_switch_to_persistent": "Temporär — zum dauerhaften Modus wechseln",
       "temporary_desc": "Leeres Blatt — kein Lesen oder Schreiben in die Erinnerung",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Versuchen Sie: „Erstelle einen Plan, um das {{productName}}-Codepaket zu analysieren und die Dateianzahl nach Hauptkomponenten zu melden“",
       "what_can_i_do_for_you": "Was kann ich für dich tun?"
@@ -14469,6 +14471,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "Dauerhaft nutzt vorhandenes Wissen und speichert neue Erinnerungen. Inkognito nutzt vorhandenes Wissen, speichert aber nichts Neues. Temporär startet ohne Vorwissen und speichert nichts. Jeder Chat bleibt im Verlauf sichtbar. Du kannst den Modus für jeden Chat ändern.",
+        "label": "Standard-Speichermodus",
+        "persistent": "Dauerhaft"
+      },
       "plainDiff": {
         "description": "Diffs als einfachen Unified-Diff-Text ohne Syntaxhervorhebung anzeigen. Benötigt bei großen Diffs weniger Speicher.",
         "label": "Einfache Diffs"

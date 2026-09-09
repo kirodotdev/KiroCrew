@@ -144,6 +144,13 @@ export default function WelcomeView({
             // the trigger: an active clean OR a non-persistent memory mode means
             // we're in some ephemeral state and the button offers to go back.
             const ephemeralActive = cleanMode || currentMode !== 'persistent'
+            const modeActionLabel = !ephemeralActive
+              ? i18nT('components.welcomeView.choose_memory_mode')
+              : cleanMode
+                ? i18nT('components.welcomeView.switch_to_persistent_mode')
+                : currentMode === 'incognito'
+                  ? i18nT('components.welcomeView.incognito_active_switch_to_persistent')
+                  : i18nT('components.welcomeView.temporary_active_switch_to_persistent')
             return (
               <button
                 ref={anonBtnRef}
@@ -159,7 +166,7 @@ export default function WelcomeView({
                 }}
               >
                 {!ephemeralActive ? <Ghost size={13} /> : <Undo2 size={13} />}
-                <span>{!ephemeralActive ? i18nT('components.welcomeView.switch_to_ephemeral_mode') : i18nT('components.welcomeView.switch_back_to_default_mode')}</span>
+                <span>{modeActionLabel}</span>
               </button>
             )
           })()}

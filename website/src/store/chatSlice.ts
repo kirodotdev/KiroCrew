@@ -1,6 +1,7 @@
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { api } from '../api/client'
+import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { devLog, inspectorOn } from '../dev/scrollInspector'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
@@ -2816,6 +2817,9 @@ export const refreshSlot = createAsyncThunk(
 let warmSeqCounter = 0
 const nextWarmSeq = (): number => ++warmSeqCounter
 
+const configuredDefaultMemoryMode = () =>
+  resolveDefaultMemoryMode(() => api.dashboardConfig())
+
 export const warmSlotCache = createAsyncThunk(
   'chat/warmSlotCache',
   async (key: string, { getState }) => {
@@ -2844,7 +2848,7 @@ export const createSlot = createAsyncThunk<
     const agent = typeof opts === 'string' ? opts : opts?.agent
     const model = typeof opts === 'string' ? undefined : opts?.model
     const mode = typeof opts === 'string' ? undefined : opts?.mode
-    const memory_mode = typeof opts === 'string' ? undefined : opts?.memory_mode
+    const requestedMemoryMode = typeof opts === 'string' ? undefined : opts?.memory_mode
     const clean_mode = typeof opts === 'string' ? undefined : opts?.clean_mode
     const folderId = typeof opts === 'string' ? undefined : opts?.folder_id
     // Title at BIRTH, for the same reason folder membership rides this payload:
@@ -2871,6 +2875,10 @@ export const createSlot = createAsyncThunk<
     // pending (e.g. New Chat spun on "Creating" under memory pressure and they
     // moved to another tab), the new slot must NOT hijack the view.
     const originActiveSlot = (getState() as RootState).chat.activeSlot
+    // An explicit Incognito/Temporary menu choice wins. All other dashboard chat
+    // entry points resolve the persisted preference here, before the first turn
+    // can read or write memory.
+    const memory_mode = requestedMemoryMode || await configuredDefaultMemoryMode()
     const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, clean_mode, undefined, folderId || undefined, instanceId)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a

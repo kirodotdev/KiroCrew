@@ -7720,9 +7720,11 @@
       "suggestion_summarize_chat": "이번 주 채팅 활동 요약",
       "suggestion_triage_tickets": "온콜 티켓 분류",
       "suggestion_write_design_doc": "설계 문서 작성 지원",
-      "switch_back_to_default_mode": "기본 모드로 되돌리기",
-      "switch_to_ephemeral_mode": "임시 모드로 전환",
+      "choose_memory_mode": "메모리 모드 선택",
+      "incognito_active_switch_to_persistent": "시크릿 — 영구 모드로 전환",
+      "switch_to_persistent_mode": "영구 모드로 전환",
       "temporary": "임시",
+      "temporary_active_switch_to_persistent": "임시 — 영구 모드로 전환",
       "temporary_desc": "백지 상태 — 메모리 읽기와 쓰기 없음",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "예시: ‘{{productName}} 코드 패키지를 분석하고 주요 구성 요소별 파일 수를 보고하는 계획을 만드세요’",
       "what_can_i_do_for_you": "무엇을 도와드릴까요?"
@@ -14280,6 +14282,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "영구 모드는 이미 아는 내용을 사용하고 새 메모리를 저장합니다. 시크릿 모드는 아는 내용을 사용하지만 새 메모리를 저장하지 않습니다. 임시 모드는 빈 상태로 시작하고 아무것도 저장하지 않습니다. 모든 채팅은 기록에 계속 표시됩니다. 각 채팅의 모드를 바꿀 수 있습니다.",
+        "label": "기본 메모리 모드",
+        "persistent": "영구"
+      },
       "plainDiff": {
         "description": "차이를 구문 강조 없이 일반 unified diff 텍스트로 표시합니다. 큰 diff에서 메모리를 덜 사용합니다.",
         "label": "일반 diff"

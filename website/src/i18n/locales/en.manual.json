@@ -2608,9 +2608,11 @@
       "suggestion_summarize_chat": "Summarize this week's chat activity",
       "suggestion_triage_tickets": "Triage my on-call tickets",
       "suggestion_write_design_doc": "Help me write a design doc",
-      "switch_back_to_default_mode": "Switch back to default mode",
-      "switch_to_ephemeral_mode": "Switch to ephemeral mode",
+      "choose_memory_mode": "Choose memory mode",
+      "incognito_active_switch_to_persistent": "Incognito — switch to persistent mode",
+      "switch_to_persistent_mode": "Switch to persistent mode",
       "temporary": "Temporary",
+      "temporary_active_switch_to_persistent": "Temporary — switch to persistent mode",
       "temporary_desc": "Blank slate — no memory reads or writes",
       "what_can_i_do_for_you": "What can I do for you?"
     },
@@ -5924,6 +5926,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
+        "label": "Default Memory Mode",
+        "persistent": "Persistent"
+      },
       "plainDiff": {
         "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",
         "label": "Plain diffs"

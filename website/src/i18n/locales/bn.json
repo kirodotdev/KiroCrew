@@ -7831,9 +7831,11 @@
       "suggestion_summarize_chat": "এই সপ্তাহের চ্যাট কার্যকলাপের সারসংক্ষেপ দিন",
       "suggestion_triage_tickets": "আমার অন-কল টিকিট ট্রায়াজ করুন",
       "suggestion_write_design_doc": "একটি ডিজাইন ডকুমেন্ট লিখতে আমাকে সাহায্য করুন",
-      "switch_back_to_default_mode": "ডিফল্ট মোডে ফিরে যাও",
-      "switch_to_ephemeral_mode": "ক্ষণস্থায়ী মোডে যাও",
+      "choose_memory_mode": "মেমরি মোড বেছে নিন",
+      "incognito_active_switch_to_persistent": "ছদ্মবেশী — স্থায়ী মোডে বদলান",
+      "switch_to_persistent_mode": "স্থায়ী মোডে বদলান",
       "temporary": "অস্থায়ী",
+      "temporary_active_switch_to_persistent": "অস্থায়ী — স্থায়ী মোডে বদলান",
       "temporary_desc": "নতুন শুরু — মেমরিতে পড়া বা লেখা হবে না",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "যেমন: “{{productName}} কোড প্যাকেজ বিশ্লেষণ করে প্রধান কম্পোনেন্ট অনুযায়ী ফাইলের সংখ্যা জানানোর একটি প্ল্যান তৈরি করো”",
       "what_can_i_do_for_you": "তোমার জন্য কী করতে পারি?"
@@ -14470,6 +14472,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "স্থায়ী মোড আগের জানা তথ্য ব্যবহার করে এবং নতুন মেমরি সংরক্ষণ করে। ছদ্মবেশী মোড জানা তথ্য ব্যবহার করে, কিন্তু নতুন মেমরি সংরক্ষণ করে না। অস্থায়ী মোড খালি অবস্থা থেকে শুরু করে এবং কিছু সংরক্ষণ করে না। সব চ্যাট এখনও ইতিহাসে দেখা যাবে। যেকোনো চ্যাটের মোড বদলানো যায়।",
+        "label": "ডিফল্ট মেমরি মোড",
+        "persistent": "স্থায়ী"
+      },
       "plainDiff": {
         "description": "পার্থক্য সিনট্যাক্স হাইলাইট ছাড়া সাধারণ unified diff টেক্সট হিসেবে দেখান। বড় diff-এ কম মেমরি লাগে।",
         "label": "সাধারণ diff"

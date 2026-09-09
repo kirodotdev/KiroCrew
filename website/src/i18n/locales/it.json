@@ -7942,9 +7942,11 @@
       "suggestion_summarize_chat": "Riassumi l'attività di chat di questa settimana",
       "suggestion_triage_tickets": "Smista i miei ticket di reperibilità",
       "suggestion_write_design_doc": "Aiutami a scrivere un documento di progettazione",
-      "switch_back_to_default_mode": "Torna alla modalità predefinita",
-      "switch_to_ephemeral_mode": "Passa alla modalità effimera",
+      "choose_memory_mode": "Scegli la modalità memoria",
+      "incognito_active_switch_to_persistent": "Incognito — passa alla modalità persistente",
+      "switch_to_persistent_mode": "Passa alla modalità persistente",
       "temporary": "Temporaneo",
+      "temporary_active_switch_to_persistent": "Temporaneo — passa alla modalità persistente",
       "temporary_desc": "Foglio bianco — nessuna lettura o scrittura in memoria",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Prova: \"Crea un piano per analizzare il pacchetto di codice di {{productName}} e riportare il numero di file per componenti principali\"",
       "what_can_i_do_for_you": "Cosa posso fare per te?"
@@ -14658,6 +14660,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "Persistente usa ciò che già sa e salva nuova memoria. Incognito usa ciò che sa, ma non salva nuova memoria. Temporaneo parte senza memoria e non salva nulla. Tutte le chat restano visibili nella cronologia. Puoi cambiare la modalità di ogni chat.",
+        "label": "Modalità memoria predefinita",
+        "persistent": "Persistente"
+      },
       "plainDiff": {
         "description": "Mostra i diff come testo unified diff senza evidenziazione della sintassi. Usa meno memoria sui diff di grandi dimensioni.",
         "label": "Diff in testo semplice"

@@ -26,10 +26,14 @@ const payload = (list: string[]): Suggestions => ({
   stale: false,
 })
 
-const ephemeralTrigger = () =>
-  screen.getByText(i18nT('components.welcomeView.switch_to_ephemeral_mode')).closest('button')!
-const undoTrigger = () =>
-  screen.getByText(i18nT('components.welcomeView.switch_back_to_default_mode')).closest('button')!
+const chooserTrigger = () =>
+  screen.getByText(i18nT('components.welcomeView.choose_memory_mode')).closest('button')!
+const cleanUndoTrigger = () =>
+  screen.getByText(i18nT('components.welcomeView.switch_to_persistent_mode')).closest('button')!
+const temporaryUndoTrigger = () =>
+  screen.getByText(
+    i18nT('components.welcomeView.temporary_active_switch_to_persistent'),
+  ).closest('button')!
 
 describe('WelcomeView', () => {
   beforeEach(() => {
@@ -121,7 +125,7 @@ describe('WelcomeView', () => {
   it('hides the ephemeral affordance entirely when neither handler is passed', () => {
     renderWithProviders(<WelcomeView mode="orchestrator" setInput={vi.fn()} />)
     expect(
-      screen.queryByText(i18nT('components.welcomeView.switch_to_ephemeral_mode')),
+      screen.queryByText(i18nT('components.welcomeView.choose_memory_mode')),
     ).not.toBeInTheDocument()
   })
 
@@ -130,7 +134,7 @@ describe('WelcomeView', () => {
     renderWithProviders(
       <WelcomeView mode="orchestrator" setInput={vi.fn()} onSwitchMode={onSwitchMode} />,
     )
-    fireEvent.click(ephemeralTrigger())
+    fireEvent.click(chooserTrigger())
 
     const incognito = screen.getByText(i18nT('components.welcomeView.incognito'))
     fireEvent.click(incognito.closest('button')!)
@@ -145,7 +149,7 @@ describe('WelcomeView', () => {
     renderWithProviders(
       <WelcomeView mode="orchestrator" setInput={vi.fn()} onToggleClean={onToggleClean} />,
     )
-    fireEvent.click(ephemeralTrigger())
+    fireEvent.click(chooserTrigger())
     fireEvent.click(screen.getByText(i18nT('components.welcomeView.clean')).closest('button')!)
     expect(onToggleClean).toHaveBeenCalledWith(true)
   })
@@ -154,7 +158,7 @@ describe('WelcomeView', () => {
     renderWithProviders(
       <WelcomeView mode="orchestrator" setInput={vi.fn()} onSwitchMode={vi.fn()} />,
     )
-    fireEvent.click(ephemeralTrigger())
+    fireEvent.click(chooserTrigger())
 
     fireEvent.mouseDown(screen.getByText(i18nT('components.welcomeView.incognito')))
     expect(screen.getByText(i18nT('components.welcomeView.incognito'))).toBeInTheDocument()
@@ -178,7 +182,7 @@ describe('WelcomeView', () => {
         onToggleClean={onToggleClean}
       />,
     )
-    fireEvent.click(undoTrigger())
+    fireEvent.click(cleanUndoTrigger())
     expect(onToggleClean).toHaveBeenCalledWith(false)
     expect(onSwitchMode).not.toHaveBeenCalled()
   })
@@ -195,7 +199,7 @@ describe('WelcomeView', () => {
         onToggleClean={onToggleClean}
       />,
     )
-    fireEvent.click(undoTrigger())
+    fireEvent.click(temporaryUndoTrigger())
     expect(onSwitchMode).toHaveBeenCalledWith('persistent')
     expect(onToggleClean).not.toHaveBeenCalled()
   })

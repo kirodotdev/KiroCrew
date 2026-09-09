@@ -501,7 +501,12 @@ def remote_bound_refusal(slot: "_ChatSlot") -> "web.Response | None":
 
 
 async def create_peer_slot(
-    state: "DashboardState", instance_id: str, *, agent: str = "", model: str = ""
+    state: "DashboardState",
+    instance_id: str,
+    *,
+    agent: str = "",
+    model: str = "",
+    memory_mode: str = "persistent",
 ) -> str:
     """Create the slot on *instance_id* that will execute a local session's turns.
 
@@ -515,11 +520,13 @@ async def create_peer_slot(
     this machine's default agent names a crew from this machine's roster: sending
     it would either fail there or bind a different crew than the name implies,
     where an omission lets the peer apply its own default — which is the point of
-    the session running on it.
+    the session running on it. ``memory_mode`` is different: it is the user's
+    privacy boundary and always rides the create, so local and remote execution
+    cannot disagree about whether memory may be read or written.
     """
     mgr = await _require_manager(state)
     await ensure_version_parity(mgr, instance_id)
-    create_body: dict[str, str] = {}
+    create_body: dict[str, str] = {"memory_mode": memory_mode}
     if agent:
         create_body["agent"] = agent
     if model:

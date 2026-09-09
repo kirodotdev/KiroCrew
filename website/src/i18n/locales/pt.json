@@ -7942,9 +7942,11 @@
       "suggestion_summarize_chat": "Resumir a atividade de chat desta semana",
       "suggestion_triage_tickets": "Triar meus tickets de plantão",
       "suggestion_write_design_doc": "Ajudar-me a escrever um documento de design",
-      "switch_back_to_default_mode": "Voltar ao modo padrão",
-      "switch_to_ephemeral_mode": "Alternar para o modo efêmero",
+      "choose_memory_mode": "Escolher modo de memória",
+      "incognito_active_switch_to_persistent": "Anônimo — mudar para o modo persistente",
+      "switch_to_persistent_mode": "Mudar para o modo persistente",
       "temporary": "Temporário",
+      "temporary_active_switch_to_persistent": "Temporário — mudar para o modo persistente",
       "temporary_desc": "Começo do zero — sem leituras ou gravações de memória",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Tente: “Crie um plano para analisar o pacote de código do {{productName}} e informar a contagem de arquivos por componente principal”",
       "what_can_i_do_for_you": "O que posso fazer por você?"
@@ -14658,6 +14660,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "Persistente usa o que já sabe e salva nova memória. Anônimo usa o que sabe, mas não salva nova memória. Temporário começa em branco e não salva nada. Todos os chats continuam aparecendo no histórico. Você pode mudar o modo de qualquer chat.",
+        "label": "Modo de memória padrão",
+        "persistent": "Persistente"
+      },
       "plainDiff": {
         "description": "Exibe os diffs como texto unified diff sem realce de sintaxe. Usa menos memória em diffs grandes.",
         "label": "Diffs em texto simples"

@@ -881,11 +881,14 @@ describe('path encoding', () => {
 })
 
 describe('request bodies with conditionally-omitted keys', () => {
-  it('createChatSlot sends only the fields it was given', async () => {
+  it('createChatSlot resolves an omitted mode and preserves explicit fields', async () => {
+    fetchMock.mockResolvedValueOnce(okJson({ default_memory_mode: 'temporary' }))
     await api.createChatSlot()
-    expect(call().body).toEqual({})
+    expect(call().url).toBe('/api/dashboard/config')
+    expect(call(1).body).toEqual({ memory_mode: 'temporary' })
+
     await api.createChatSlot('n', 'a', 'm', 'mode', 'mem', 't', false, 'slug', 'f1')
-    expect(call(1).body).toEqual({
+    expect(call(2).body).toEqual({
       name: 'n', agent: 'a', model: 'm', mode: 'mode', memory_mode: 'mem',
       title: 't', clean_mode: false, artifact: 'slug', folder_id: 'f1',
     })
@@ -1580,8 +1583,9 @@ describe('every api method issues one well-formed /api request', () => {
     // botched template literal shows up as `undefined` inside the path.
     await Promise.resolve(fn(...(ARGS[name] ?? ['sw-1', 'sw-2', 'sw-3', 'sw-4'])))
 
-    expect(fetchMock, `${name} issued no request`).toHaveBeenCalledTimes(1)
-    const { url, init } = call()
+    const expectedRequests = name === 'createChatSlot' ? 2 : 1
+    expect(fetchMock, `${name} issued the wrong request count`).toHaveBeenCalledTimes(expectedRequests)
+    const { url, init } = call(expectedRequests - 1)
     expect(typeof url, `${name} did not pass a string URL`).toBe('string')
     expect(url.startsWith('/api/'), `${name} escaped the /api prefix: ${url}`).toBe(true)
     for (const junk of ['undefined', '[object Object]', 'NaN', '/null']) {

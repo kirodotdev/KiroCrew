@@ -27,6 +27,12 @@ state are composed behind that facade:
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
   policy, and process/filesystem sweeps
 
+A dashboard slot bound to a remote crew keeps one memory boundary on both sides.
+`remote_relay.create_peer_slot()` always includes the validated `memory_mode` in
+the peer's `POST /api/chat/slots` payload, while agent and model remain sparse
+explicit picks. Omitting the mode would let a local Incognito or Temporary row
+execute as Persistent on the peer and read or write memory the user disabled.
+
 Cross-boundary calls that were observable on `SessionManager` route back through
 the facade, and patchable module dependencies are resolved through injected
 call-time functions. Persistence remains owned by the existing `SessionMap`
