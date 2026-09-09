@@ -177,8 +177,8 @@ export function renderReport(summary, options = {}) {
  * Budgets must be keyed by something stable across builds, and the emitted file
  * name is not: `assets/main-CZ3WY91T.js` carries a content hash that changes on
  * every edit. The logical name (`main`) is what Rollup derived from the entry,
- * the dynamic-import source, or a `manualChunks` label, and only changes when
- * the chunk graph itself changes.
+ * the dynamic-import source, or a `codeSplitting` group name, and only changes
+ * when the chunk graph itself changes.
  */
 export function logicalChunkName(fileName) {
   if (typeof fileName !== 'string' || !fileName) return ''

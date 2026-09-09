@@ -828,59 +828,136 @@ export default defineConfig({
         // eager vendor chunk and regress load time. Monaco (editor.main +
         // *.worker) and mermaid diagrams already emit their own lazy chunks;
         // leave them alone.
-        manualChunks(id) {
-          if (!id.includes('node_modules')) return
-          // React + all context-carrying singletons in ONE chunk so a single
-          // module instance is guaranteed and provider/init ordering is
-          // preserved (mirrors resolve.dedupe above). Splitting these apart
-          // risks "Invalid hook call" / "No QueryClient set".
-          if (/[\\/]node_modules[\\/](react|react-dom|scheduler|react-redux|@reduxjs|redux|redux-thunk|react-router|react-router-dom|@tanstack[\\/]react-query|@tanstack[\\/]query-core|framer-motion)[\\/]/.test(id)) {
-            return 'vendor-react'
-          }
-          // d3 in its OWN chunk: MemoryGraphTab + KnowledgeGraph both defer it
-          // with `import('d3')` (only their type imports are eager), so d3 is a
-          // deliberate lazy boundary. Grouping it with the eager sigma/graphology
-          // stack below would pull d3 into that eager chunk and defeat the lazy
-          // load. Keep it separate so `import('d3')` stays its own async chunk.
-          if (/[\\/]node_modules[\\/](d3|d3-[^\\/]+|internmap|delaunator|robust-predicates)[\\/]/.test(id)) {
-            return 'vendor-d3'
-          }
-          // ForceAtlas2 + Louvain are physics-only: KnowledgeGraph defers both
-          // with `import('graphology-layout-forceatlas2')` / `.../worker` and
-          // `import('graphology-communities-louvain')`, reached only when physics
-          // is toggled on or the one-shot mount layout runs. Route them to their
-          // OWN lazy chunk ahead of the broad graphology rule below, so the eager
-          // vendor-graph chunk (sigma + core graphology, loaded for every graph
-          // view) does not carry code the default physics-off view never touches.
-          if (/[\\/]node_modules[\\/](graphology-layout-forceatlas2|graphology-communities-louvain)[\\/]/.test(id)) {
-            return 'vendor-graph-physics'
-          }
-          // Graph/network visualization stack (vis-network, vis-data, sigma,
-          // graphology, cytoscape) — large and only used by graph views.
-          if (/[\\/]node_modules[\\/](vis-network|vis-data|vis-util|sigma|graphology|graphology-[^\\/]+|cytoscape)[\\/]/.test(id)) {
-            return 'vendor-graph'
-          }
-          // Markdown/math/syntax rendering (katex, highlight.js, and the
-          // remark/rehype/unified pipeline).
-          if (/[\\/]node_modules[\\/](katex|highlight\.js|lowlight|refractor|react-markdown|remark-[^\\/]+|rehype-[^\\/]+|mdast-[^\\/]+|hast-[^\\/]+|micromark[^\\/]*|unified|unist-[^\\/]+)[\\/]/.test(id)) {
-            return 'vendor-markdown'
-          }
-          // The YAML document parser, reached only by the skill editor's
-          // frontmatter round-trip (`SkillForm.tsx`). Bucketed like every other
-          // vendor library here because the App chunk is meant to hold FIRST-PARTY
-          // code -- its budget comment in scripts/check-bundle-size.mjs says as
-          // much -- and it is the ceiling that ordinary feature PRs trip. Measured
-          // 93.7 KB raw / 29 KB gzip, far under the gate's 500 KB default, so it
-          // needs no CHUNK_BUDGETS entry of its own. The leading separator keeps
-          // this off `js-yaml`, which is mermaid's and belongs in mermaid's chunk.
-          if (/[\\/]node_modules[\\/]yaml[\\/]/.test(id)) {
-            return 'vendor-yaml'
-          }
-          // Routed out because this change's sidebar growth pushed the App chunk past the
-          // ceiling the `yaml` note above names; eager at every use site, no lazy boundary to defeat.
-          if (/[\\/]node_modules[\\/]dompurify[\\/]/.test(id)) {
-            return 'vendor-dompurify'
-          }
+        // Named groups, replacing the former `manualChunks` callback. The whole
+        // callback had to move in ONE step, not rule by rule: rolldown IGNORES
+        // `manualChunks` whenever `codeSplitting` is set -- it logs "`manualChunks`
+        // option is ignored because the `codeSplitting` option is specified" and
+        // drops it (rolldown 1.2.3, create-bundler-option:3046) -- so a rule left
+        // behind would have quietly un-split its chunk with only a warning to say
+        // so. `vite.build.rollupOptions` is an alias of `rolldownOptions`
+        // (`buildConfig.rolldownOptions ??= buildConfig.rollupOptions`), so these
+        // reach rolldown from here; setting BOTH keys to different objects is an
+        // error, which is why this stays under the existing one.
+        //
+        // `priority` replaces the callback's first-match-wins order: the highest
+        // number is matched first and a captured module is removed from every
+        // lower group. Two orderings are load-bearing, and both are now encoded as
+        // numbers instead of array position -- react above everything, because the
+        // icon group depends on it, and graph-physics above the broad graph rule.
+        // `includeDependenciesRecursively` is deliberately LEFT AT ITS DEFAULT
+        // (true). Do not set it to false here. An earlier revision did, to stop
+        // the icon group below from swallowing the whole lucide package and
+        // dragging the App chunk into main -- and it produced two import CYCLES
+        // that this base branch does not have: a 71-chunk one spanning App,
+        // client, vendor-react and vendor-icons, and a 3-chunk one across
+        // vendor-graph, vendor-graph-physics and graphology-communities-louvain,
+        // which also breaks the deliberate lazy-physics boundary below. A cycle
+        // there means a chunk body runs before a chunk it references has
+        // initialized, which blanks the page before React mounts. rolldown's own
+        // jsdoc warns about exactly this and asks for `preserveEntrySignatures`
+        // plus `strictExecutionOrder` alongside it; the smaller answer is to not
+        // disable it, because `minShareCount` on the icon group fixes the real
+        // cause. Measured: 0 cycles here, 2 with it off.
+        codeSplitting: {
+          groups: [
+            {
+              // React + all context-carrying singletons in ONE chunk so a single
+              // module instance is guaranteed and provider/init ordering is
+              // preserved (mirrors resolve.dedupe above). Splitting these apart
+              // risks "Invalid hook call" / "No QueryClient set".
+              name: 'vendor-react',
+              priority: 50,
+              test: /[\\/]node_modules[\\/](react|react-dom|scheduler|react-redux|@reduxjs|redux|redux-thunk|react-router|react-router-dom|@tanstack[\\/]react-query|@tanstack[\\/]query-core|framer-motion)[\\/]/,
+            },
+            {
+              // ForceAtlas2 + Louvain are physics-only: KnowledgeGraph defers both
+              // with `import('graphology-layout-forceatlas2')` / `.../worker` and
+              // `import('graphology-communities-louvain')`, reached only when physics
+              // is toggled on or the one-shot mount layout runs. Route them to their
+              // OWN lazy chunk ahead of the broad graphology rule below, so the eager
+              // vendor-graph chunk (sigma + core graphology, loaded for every graph
+              // view) does not carry code the default physics-off view never touches.
+              name: 'vendor-graph-physics',
+              priority: 40,
+              test: /[\\/]node_modules[\\/](graphology-layout-forceatlas2|graphology-communities-louvain)[\\/]/,
+            },
+            {
+              // Every lucide icon in ONE chunk, for REQUEST COUNT rather than byte
+              // size -- the reason this group exists at all. Left to automatic
+              // chunking each icon module became its own file: the served shell
+              // referenced 252 assets, 153 of them a single icon averaging 381 B
+              // (`check-*.js` is 124 B) for 57 KB all told. The bytes do not matter;
+              // the 153 round trips do. A browser reaching the gateway through a
+              // proxied HTTP/2 connection asks for the whole graph at once, and
+              // `tailscale serve` advertises 250 concurrent streams while answering
+              // 502 past roughly 140 -- measured on Windows at 200 streams -> 60x502
+              // and 247 -> 104x502, which is what PR #9518 and #9540 had to retry
+              // around. Nothing lazy is lost: the shell already preloads all 153, so
+              // they were eager regardless.
+              name: 'vendor-icons',
+              priority: 40,
+              // Load-bearing, and the reason `includeDependenciesRecursively`
+              // above can stay on. src/app-sdk/shared-modules.ts registers the
+              // WHOLE lucide-react namespace so an installed app can import it as
+              // a bare specifier, so the entire package is legitimately in the
+              // graph -- not dead code. Unfiltered, this group therefore captured
+              // all of it: 598.9 KiB eager for the 55.5 KB of icons actually
+              // shared, which also distorted the graph enough to pull App into
+              // main. `minShareCount` captures only modules referenced by more
+              // than one entry chunk, which every genuinely shared icon is (its
+              // named consumer plus the namespace). Result: 90.8 KiB. A module the
+              // filter skips is not dropped -- it falls back to automatic
+              // chunking, so no icon can go missing.
+              minShareCount: 2,
+              test: /[\\/]node_modules[\\/]lucide-react[\\/]/,
+            },
+            {
+              // d3 in its OWN chunk: MemoryGraphTab + KnowledgeGraph both defer it
+              // with `import('d3')` (only their type imports are eager), so d3 is a
+              // deliberate lazy boundary. Grouping it with the eager sigma/graphology
+              // stack below would pull d3 into that eager chunk and defeat the lazy
+              // load. Keep it separate so `import('d3')` stays its own async chunk.
+              name: 'vendor-d3',
+              priority: 30,
+              test: /[\\/]node_modules[\\/](d3|d3-[^\\/]+|internmap|delaunator|robust-predicates)[\\/]/,
+            },
+            {
+              // Markdown/math/syntax rendering (katex, highlight.js, and the
+              // remark/rehype/unified pipeline).
+              name: 'vendor-markdown',
+              priority: 30,
+              test: /[\\/]node_modules[\\/](katex|highlight\.js|lowlight|refractor|react-markdown|remark-[^\\/]+|rehype-[^\\/]+|mdast-[^\\/]+|hast-[^\\/]+|micromark[^\\/]*|unified|unist-[^\\/]+)[\\/]/,
+            },
+            {
+              // The YAML document parser, reached only by the skill editor's
+              // frontmatter round-trip (`SkillForm.tsx`). Bucketed like every other
+              // vendor library here because the App chunk is meant to hold FIRST-PARTY
+              // code -- its budget comment in scripts/check-bundle-size.mjs says as
+              // much -- and it is the ceiling that ordinary feature PRs trip. Measured
+              // 93.7 KB raw / 29 KB gzip, far under the gate's 500 KB default, so it
+              // needs no CHUNK_BUDGETS entry of its own. The leading separator keeps
+              // this off `js-yaml`, which is mermaid's and belongs in mermaid's chunk.
+              name: 'vendor-yaml',
+              priority: 30,
+              test: /[\\/]node_modules[\\/]yaml[\\/]/,
+            },
+            {
+              // Routed out because a sidebar change pushed the App chunk past the
+              // ceiling the `yaml` note above names; eager at every use site, no lazy
+              // boundary to defeat.
+              name: 'vendor-dompurify',
+              priority: 30,
+              test: /[\\/]node_modules[\\/]dompurify[\\/]/,
+            },
+            {
+              // Graph/network visualization stack (vis-network, vis-data, sigma,
+              // graphology, cytoscape) — large and only used by graph views. Lowest
+              // priority so graph-physics above claims its two packages first.
+              name: 'vendor-graph',
+              priority: 20,
+              test: /[\\/]node_modules[\\/](vis-network|vis-data|vis-util|sigma|graphology|graphology-[^\\/]+|cytoscape)[\\/]/,
+            },
+          ],
         },
       },
     },
