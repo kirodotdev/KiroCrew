@@ -77,7 +77,12 @@ def test_flag_absent_defaults_the_gallery_on(tmp_path, monkeypatch):
 
 
 def test_flag_set_false_leaves_the_gallery_off(tmp_path, monkeypatch):
+    """The deliberate opt-out. Post-launch, a bare stored ``false`` is
+    indistinguishable from pre-launch materialized noise, so the honoured
+    opt-out is ``false`` WITH the migration marker present — the state every
+    install reaches after its first post-launch boot."""
     _point_loader_at(tmp_path, monkeypatch, {FLAG: False})
+    (tmp_path / L.CONNECTIONS_UI_MIGRATION_MARKER).write_text("{}", encoding="utf-8")
     masked = _masked(KiroCrewConfig.load())
 
     assert masked.get(FLAG) is False
@@ -207,3 +212,105 @@ async def test_the_wire_response_carries_the_flag(tmp_path, monkeypatch):
         resp = await client.get("/api/config/kirocrew")
         assert resp.status == 200
         assert _frontend_says_enabled(await resp.json())
+
+
+# ---------------------------------------------------------------------------
+# The launch migration: pre-launch builds materialized ``connections_ui: false``
+# into every config they saved (the key was the opt-in gate then, so a stored
+# false was the default's noise, never a choice). Post-launch that same byte
+# pattern is the deliberate opt-out. The migration strips exactly the noise,
+# once: on the first load that finds no marker file, a stored ``false`` is
+# removed (the launch default then applies) and the marker is recorded; every
+# later load honours ``false`` as the opt-out it now is. ``true`` — the only
+# deliberate pre-launch act — is never touched.
+# ---------------------------------------------------------------------------
+
+
+def _marker_path(tmp_path):
+    return tmp_path / L.CONNECTIONS_UI_MIGRATION_MARKER
+
+
+def test_materialized_false_is_stripped_once_and_the_gallery_turns_on(tmp_path, monkeypatch):
+    """The upgrade trap: pre-launch noise must not read as an opt-out."""
+    _point_loader_at(tmp_path, monkeypatch, {FLAG: False, "auto_update": True})
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.connections_ui is True, "stale materialized false still wins the load"
+    on_disk = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert FLAG not in on_disk, "the stale key must be stripped from the document"
+    assert on_disk.get("auto_update") is True, "the delta must not touch other keys"
+    assert _marker_path(tmp_path).exists(), "the one-shot boundary must be recorded"
+
+
+def test_false_after_the_marker_is_a_deliberate_opt_out(tmp_path, monkeypatch):
+    """Post-migration, explicit false is the honoured opt-out — forever."""
+    _point_loader_at(tmp_path, monkeypatch, {FLAG: False})
+    _marker_path(tmp_path).write_text("{}", encoding="utf-8")
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.connections_ui is False
+    on_disk = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert on_disk.get(FLAG) is False, "a marked config is never rewritten"
+
+
+def test_true_is_never_touched_and_still_records_the_marker(tmp_path, monkeypatch):
+    """Pre-launch true was the one deliberate act; it survives, marker lands."""
+    _point_loader_at(tmp_path, monkeypatch, {FLAG: True})
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.connections_ui is True
+    on_disk = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert on_disk.get(FLAG) is True
+    assert _marker_path(tmp_path).exists()
+
+
+def test_absent_key_records_the_marker_without_touching_the_flag(tmp_path, monkeypatch):
+    """Nothing to migrate: no flag key materializes, only the marker is written."""
+    _point_loader_at(tmp_path, monkeypatch, {"auto_update": True})
+    cfg = KiroCrewConfig.load()
+
+    assert cfg.connections_ui is True
+    # Other one-shot migrations (agents seeding) may rewrite the document; the
+    # contract HERE is only that the flag key is not invented on disk.
+    on_disk = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert FLAG not in on_disk
+    assert _marker_path(tmp_path).exists()
+
+
+def test_second_load_after_migration_is_a_no_op(tmp_path, monkeypatch):
+    """Idempotency: the marker makes the migration one-shot."""
+    _point_loader_at(tmp_path, monkeypatch, {FLAG: False})
+    KiroCrewConfig.load()
+    migrated = (tmp_path / "config.json").read_text(encoding="utf-8")
+    marker_stat = _marker_path(tmp_path).stat().st_mtime_ns
+
+    cfg = KiroCrewConfig.load()
+    assert cfg.connections_ui is True
+    assert (tmp_path / "config.json").read_text(encoding="utf-8") == migrated
+    assert _marker_path(tmp_path).stat().st_mtime_ns == marker_stat
+
+
+def test_a_deferred_strip_defers_the_marker_too(tmp_path, monkeypatch):
+    """Lock contention: ``_persist_config_migration`` swallows a contended lock
+    and returns False — the strip is deferred to the next load. The marker MUST
+    defer with it: marker-without-strip freezes the stale ``false`` as a
+    deliberate opt-out forever (the next load sees marker present and honours
+    it). Pins that the marker write is gated on the persist outcome."""
+    _point_loader_at(tmp_path, monkeypatch, {FLAG: False})
+    calls: list[frozenset] = []
+
+    def contended(path, pending, **kwargs):
+        calls.append(pending)
+        return False  # what a BlockingIOError-swallowing persist returns
+
+    monkeypatch.setattr(L, "_persist_config_migration", contended)
+    cfg = KiroCrewConfig.load()
+
+    # This boot still serves the launch default in memory...
+    assert cfg.connections_ui is True
+    # ...but on disk NOTHING moved: false still present, marker absent,
+    # so the next (uncontended) load retries the whole migration.
+    on_disk = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert on_disk.get(FLAG) is False
+    assert not _marker_path(tmp_path).exists()
+    assert any(L.MIGRATE_CONNECTIONS_UI in p for p in calls)
