@@ -123,6 +123,7 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     published_autocompact_pct,
 )
+from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
@@ -1116,6 +1117,14 @@ class SessionManager:
         return state
 
     def _cleanup_deps(self) -> CleanupDeps:
+        # Resolved HERE, on the thread that builds the deps, and carried into the
+        # sandbox sweep. That sweep runs on the maintenance pool, and a path a pool
+        # thread resolves for itself is resolved whenever the thread gets scheduled:
+        # under the test suite that is routinely after the test that queued it has
+        # dropped its KIROCREW_HOME pin, so the sweep walked the operator's real
+        # ~/.kiro/crew. The data home does not move during a gateway's life, so
+        # resolving it once at construction loses nothing.
+        data_home = config_dir()
         return CleanupDeps(
             logger=logger,
             get_shutdown_signal=lambda: shutdown_event,
@@ -1123,7 +1132,9 @@ class SessionManager:
             get_subprocess_executor=lambda: subprocess_executor(),
             cleanup_orphaned_mcp_servers=lambda: _cleanup_orphaned_mcp_servers(),
             cleanup_orphaned_session_roots=lambda: cleanup_orphaned_session_roots(),
-            cleanup_stale_sandbox_profiles=lambda: cleanup_stale_sandbox_profiles(),
+            cleanup_stale_sandbox_profiles=lambda: cleanup_stale_sandbox_profiles(
+                data_home=data_home
+            ),
             prune_pycache=lambda: prune_pycache(),
             collect_active_pids=lambda sessions: _collect_active_pids(
                 cast(dict[Any, Any], sessions)

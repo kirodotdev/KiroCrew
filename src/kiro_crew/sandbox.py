@@ -5003,7 +5003,7 @@ def _parse_pid_segment(pid_str: str) -> int | None:
         return None
 
 
-def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
+def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = None) -> int:
     """Remove orphan sandbox files from <config_dir>/run/ and legacy /tmp.
 
     A file is removed when EITHER:
@@ -5021,13 +5021,21 @@ def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
     Called from the periodic cleanup sweep in session.py, offloaded to the
     maintenance executor (blocking I/O).  Safe to call from sync contexts too.
 
+    *data_home* is the data home every path below is rooted at. The sweep runs on
+    a pool thread, and a pool thread resolves ``config_dir()`` whenever it happens
+    to be scheduled, which, under the test suite, is routinely AFTER the test
+    that queued it has torn down its ``KIROCREW_HOME`` pin, so the sweep then
+    walked (and could stamp or remove under) the operator's real ``~/.kiro/crew``.
+    The caller that knows the home resolves it on ITS thread and passes it in;
+    there is deliberately no default, so no future caller can reopen that path.
+
     Returns:
         Number of stale files removed.
     """
     now = time.time()
     if legacy_dir is None:
         legacy_dir = _LEGACY_LAUNCHER_DIR
-    run_dir = str(config_dir() / "run")
+    run_dir = str(data_home / "run")
     removed = 0
 
     # ── Sweep <config_dir>/run/ (PID + age) ──
@@ -5095,8 +5103,8 @@ def cleanup_stale_sandbox_profiles(*, legacy_dir: str | None = None) -> int:
             pass
 
     removed += _cleanup_stale_sandbox_mount_sources()
-    removed += _cleanup_legacy_mount_source_residue()
-    removed += _cleanup_retired_acp_snapshot_dir()
+    removed += _cleanup_legacy_mount_source_residue(data_home)
+    removed += _cleanup_retired_acp_snapshot_dir(data_home)
     return removed
 
 
@@ -5733,7 +5741,7 @@ def _bound_source_basenames(
     )
 
 
-def _cleanup_legacy_mount_source_residue() -> int:
+def _cleanup_legacy_mount_source_residue(data_home: Path) -> int:
     """One-shot reclaim of the pre-#6268, pid-less bind-mount source residue.
 
     An install that upgraded past #6268 gained a sweep that can never touch what
@@ -5783,7 +5791,7 @@ def _cleanup_legacy_mount_source_residue() -> int:
     Returns:
         Number of entries removed.
     """
-    marker = config_dir() / _LEGACY_RESIDUE_MARKER
+    marker = data_home / _LEGACY_RESIDUE_MARKER
     try:
         if marker.exists():
             return 0
@@ -5937,7 +5945,7 @@ def _cleanup_legacy_mount_source_residue() -> int:
     return removed
 
 
-def _cleanup_retired_acp_snapshot_dir() -> int:
+def _cleanup_retired_acp_snapshot_dir(data_home: Path) -> int:
     """Reclaim `<config_dir>/run/kiro-cli-snapshots` from before the in-place launch.
 
     KiroCrew used to copy the whole kiro-cli binary here per ACP spawn generation
@@ -5950,7 +5958,7 @@ def _cleanup_retired_acp_snapshot_dir() -> int:
     when a tree was removed so the periodic sweep logs it.
     """
 
-    retired = config_dir() / "run" / "kiro-cli-snapshots"
+    retired = data_home / "run" / "kiro-cli-snapshots"
     if not retired.is_dir():
         return 0
     shutil.rmtree(retired, ignore_errors=True)

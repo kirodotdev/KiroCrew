@@ -48,8 +48,28 @@ def _isolated_recorder(monkeypatch):
     """
     _frame_record._reset_for_tests()
     monkeypatch.delenv(_frame_record.ENV_RECORD_FRAMES, raising=False)
+    _pin_acl_gate_open(monkeypatch)
     yield
     _frame_record._reset_for_tests()
+
+
+def _pin_acl_gate_open(monkeypatch) -> None:
+    """Run the recorder's LOGIC on any POSIX host; only the gate tests flip it back.
+
+    Production refuses to record anywhere but Linux (``_require_acl_inspectable``:
+    only Linux exposes ACLs through ``os.listxattr``). Left unpinned, that gate made
+    75 tests in this module and its provider-safety sibling FAIL on every macOS dev
+    box while CI (Linux) was green, a platform-dependent failure rather than a skip. The
+    redaction, the owner-only modes, the symlink and hardlink refusals and the drain
+    are POSIX-generic and are exactly what a developer on a Mac wants checked before
+    pushing, so the gate is pinned to the platform the feature targets and, where the
+    host has no ``os.listxattr`` at all, an inspector that reports no ACLs (a Linux
+    filesystem without xattrs). The two tests OF the gate set ``IS_LINUX`` False
+    themselves and are unaffected.
+    """
+    monkeypatch.setattr(_frame_record.platform_compat, "IS_LINUX", True)
+    if not hasattr(os, "listxattr"):
+        monkeypatch.setattr(_frame_record.os, "listxattr", lambda *_a, **_k: [], raising=False)
 
 
 @asynccontextmanager
@@ -494,10 +514,11 @@ def test_a_bare_code_field_is_not_a_credential(monkeypatch, key):
 
 
 def test_a_credential_in_a_header_map_leaves_valid_json(monkeypatch, tmp_path):
-    """Redacting the SERIALIZED frame let one pattern span key, quote, colon and
-    value -- ``"Authorization": "Bearer …"`` collapsed to a single token and the
-    line no longer parsed. Redaction is per string leaf now, so the header key
-    survives, the value is redacted, and the corpus loader can read the line."""
+    """Redaction is per string leaf, never over the SERIALIZED frame: a pattern
+    spanning key, quote, colon and value would collapse ``"Authorization":
+    "Bearer …"`` to a single token and leave a line that does not parse. Per leaf,
+    the header key survives, the value is redacted, and the corpus loader can read
+    the line."""
     _clean(monkeypatch)
     frame = {
         "params": {

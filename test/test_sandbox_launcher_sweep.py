@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
+import kiro_crew.sandbox as sandbox_mod
 from kiro_crew.sandbox import (
     _LAUNCHER_MAX_AGE_SECONDS,
     _ensure_run_dir,
@@ -139,7 +140,7 @@ class TestCleanupSweep:
         dead_file = run_dir / "kirocrew_sandbox_99999999_abc123.py"
         dead_file.write_text("# dead launcher")
 
-        removed = cleanup_stale_sandbox_profiles()
+        removed = cleanup_stale_sandbox_profiles(data_home=sandbox_mod.config_dir())
         assert not dead_file.exists()
         assert removed == 1
 
@@ -149,7 +150,7 @@ class TestCleanupSweep:
         dead_file = run_dir / "kirocrew_sandbox_99999999_xyz789.sb"
         dead_file.write_text("(version 1)")
 
-        removed = cleanup_stale_sandbox_profiles()
+        removed = cleanup_stale_sandbox_profiles(data_home=sandbox_mod.config_dir())
         assert not dead_file.exists()
         assert removed == 1
 
@@ -164,7 +165,7 @@ class TestCleanupSweep:
         old_time = time.time() - _LAUNCHER_MAX_AGE_SECONDS - 100
         os.utime(live_file, (old_time, old_time))
 
-        removed = cleanup_stale_sandbox_profiles()
+        removed = cleanup_stale_sandbox_profiles(data_home=sandbox_mod.config_dir())
         assert not live_file.exists()
         assert removed == 1
 
@@ -175,7 +176,7 @@ class TestCleanupSweep:
         live_file = run_dir / f"kirocrew_sandbox_{os.getpid()}_fresh123.py"
         live_file.write_text("# fresh launcher")
 
-        removed = cleanup_stale_sandbox_profiles()
+        removed = cleanup_stale_sandbox_profiles(data_home=sandbox_mod.config_dir())
         assert live_file.exists()
         assert removed == 0
 
@@ -185,7 +186,7 @@ class TestCleanupSweep:
         live_file = run_dir / f"kirocrew_sandbox_{os.getpid()}_live456.sb"
         live_file.write_text("(version 1)")
 
-        removed = cleanup_stale_sandbox_profiles()
+        removed = cleanup_stale_sandbox_profiles(data_home=sandbox_mod.config_dir())
         assert live_file.exists()
         assert removed == 0
 
@@ -201,7 +202,7 @@ class TestCleanupSweep:
         normal_dead = run_dir / "kirocrew_sandbox_99999999_y.py"
         normal_dead.write_text("# dead")
 
-        removed = cleanup_stale_sandbox_profiles()
+        removed = cleanup_stale_sandbox_profiles(data_home=sandbox_mod.config_dir())
         # Both should be removed (huge via age fallback or error, normal via dead-PID)
         assert not normal_dead.exists()
         assert removed >= 1  # at least the normal dead one
@@ -219,7 +220,7 @@ class TestCleanupSweep:
         fresh_legacy = legacy_dir / "kirocrew_sandbox_fresh.py"
         fresh_legacy.write_text("# fresh legacy")
 
-        removed = cleanup_stale_sandbox_profiles(legacy_dir=str(legacy_dir))
+        removed = cleanup_stale_sandbox_profiles(legacy_dir=str(legacy_dir), data_home=sandbox_mod.config_dir())
         assert not old_legacy.exists()
         assert fresh_legacy.exists()
         assert removed == 1
@@ -233,7 +234,7 @@ class TestCleanupSweep:
         old_time = time.time() - _LAUNCHER_MAX_AGE_SECONDS - 100
         os.utime(non_py, (old_time, old_time))
 
-        removed = cleanup_stale_sandbox_profiles(legacy_dir=str(legacy_dir))
+        removed = cleanup_stale_sandbox_profiles(legacy_dir=str(legacy_dir), data_home=sandbox_mod.config_dir())
         assert non_py.exists()
         assert removed == 0
 
@@ -253,7 +254,7 @@ class TestCleanupSweep:
         f4 = run_dir / "kirocrew_sandbox_notapid_abc.py"
         f4.write_text("# unrelated")
 
-        removed = cleanup_stale_sandbox_profiles()
+        removed = cleanup_stale_sandbox_profiles(data_home=sandbox_mod.config_dir())
         assert f1.exists()
         assert f2.exists()
         assert f3.exists()
@@ -262,5 +263,63 @@ class TestCleanupSweep:
 
     def test_no_run_dir_is_noop(self, fake_home: Path):
         """If ~/.kirocrew/run/ doesn't exist, no crash."""
-        removed = cleanup_stale_sandbox_profiles()  # should not raise
+        removed = cleanup_stale_sandbox_profiles(data_home=sandbox_mod.config_dir())  # should not raise
         assert removed == 0
+
+
+class TestTheSweepIsRootedAtTheHomeItIsHanded:
+    """``cleanup_stale_sandbox_profiles(data_home=...)`` never asks ``config_dir()``.
+
+    The sweep runs on the maintenance pool. A pool thread that resolves the data
+    home for itself resolves it whenever it is scheduled: under the suite, that
+    was routinely after the queuing test had dropped its ``KIROCREW_HOME`` pin,
+    and the third full-run audit counted 60+ ``mkdir`` calls on the operator's
+    real ``~/.kiro/crew`` from ``mc-maint`` threads, plus the retired-snapshot
+    ``rmtree`` and the legacy-residue marker aimed at the same tree. The caller
+    that knows the home resolves it on its own thread and hands it in.
+    """
+
+    def test_an_explicit_home_is_used_and_config_dir_is_never_consulted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.sandbox as sandbox
+
+        def _forbidden():
+            raise AssertionError("the sweep resolved the data home on the pool thread")
+
+        monkeypatch.setattr(sandbox, "config_dir", _forbidden)
+        home = tmp_path / "handed-home"
+        retired = home / "run" / "kiro-cli-snapshots"
+        retired.mkdir(parents=True)
+        (retired / "gen-1").write_bytes(b"old binary copy")
+
+        removed = cleanup_stale_sandbox_profiles(
+            legacy_dir=str(tmp_path / "no-legacy"), data_home=home
+        )
+
+        assert removed >= 1, "the retired snapshot tree under the handed home was not reclaimed"
+        assert not retired.exists()
+
+    def test_the_session_manager_resolves_the_home_when_it_builds_the_deps(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deps lambda carries a home resolved at construction, not at run time."""
+        import kiro_crew.session as session_mod
+
+        pinned = tmp_path / "pinned-home"
+        pinned.mkdir()
+        monkeypatch.setattr(session_mod, "config_dir", lambda: pinned)
+        seen: list[Path | None] = []
+        monkeypatch.setattr(
+            session_mod,
+            "cleanup_stale_sandbox_profiles",
+            lambda *, data_home=None, **_kw: seen.append(data_home) or 0,
+        )
+        manager = session_mod.SessionManager.__new__(session_mod.SessionManager)
+        deps = session_mod.SessionManager._cleanup_deps(manager)
+
+        # Simulate the pool thread running the job AFTER the home has moved on.
+        monkeypatch.setattr(session_mod, "config_dir", lambda: tmp_path / "somewhere-else")
+        deps.cleanup_stale_sandbox_profiles()
+
+        assert seen == [pinned]

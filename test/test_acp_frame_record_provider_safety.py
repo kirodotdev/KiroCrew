@@ -165,6 +165,12 @@ def _runtime_frame(session_id: str, **extra_params) -> dict:
 def _fresh_recorder(monkeypatch):
     _frame_record._reset_for_tests()
     monkeypatch.delenv(_frame_record.ENV_RECORD_FRAMES, raising=False)
+    # Pin the Linux-only ACL gate open so a macOS dev box runs the provider-safety
+    # logic instead of failing 48 tests on the gate; see
+    # test_acp_frame_record._pin_acl_gate_open for the reasoning.
+    monkeypatch.setattr(_frame_record.platform_compat, "IS_LINUX", True)
+    if not hasattr(os, "listxattr"):
+        monkeypatch.setattr(_frame_record.os, "listxattr", lambda *_a, **_k: [], raising=False)
     yield
     # Never leave a writer thread behind for the next test module.
     loop = asyncio.new_event_loop()

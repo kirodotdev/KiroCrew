@@ -28,6 +28,34 @@ def _mock_source_sel(monkeypatch):
     return audit
 
 
+@pytest.fixture(autouse=True)
+def _no_visibility_refresh_side_task(monkeypatch):
+    """Keep the repo-visibility refresh out of tests that are not about it.
+
+    A cache write-through schedules ``_refresh_repo_visibility`` as a detached
+    task; nothing in this module awaits it, so it ran on into the NEXT test and
+    past this one's pins. Its ``_run_provider`` resolves the provider CLI on a
+    worker thread, and that resolution reads ``workspace_root()``, which reached
+    ``config_dir()`` after ``KIROCREW_HOME`` had been unpinned and created the
+    operator's real ``~/.kiro/crew`` (third side-effect audit, four tests here).
+    No test in this module asserts anything about visibility
+    (``test_public_repo_chip_status.py`` owns that surface and drains the set
+    itself), so the scheduler is a recorder here: the calls are observable, the
+    task is never spawned, and nothing outlives the test.
+    """
+    scheduled: list[tuple] = []
+    monkeypatch.setattr(
+        source,
+        "schedule_visibility_refresh",
+        lambda urls, *a, **k: scheduled.append((tuple(urls), a, k)),
+    )
+    yield scheduled
+    for task in list(source._VISIBILITY_TASKS):
+        if not task.get_loop().is_closed():
+            task.cancel()
+    source._VISIBILITY_TASKS.clear()
+
+
 def test_parse_github_pull_request() -> None:
     ref = source.parse_source_url("https://github.com/kirodotdev/KiroCrew/pull/58?tab=checks")
     assert ref.provider == "github"

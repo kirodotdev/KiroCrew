@@ -340,6 +340,7 @@ class TestModuleUnload:
     def test_reload_after_unload_gets_fresh_code(self, tmp_path: Path) -> None:
         """After unload, re-loading gets fresh module code."""
         import importlib
+        import importlib.util
         import uuid
         work_dir = tmp_path / uuid.uuid4().hex
         work_dir.mkdir()
@@ -351,13 +352,13 @@ class TestModuleUnload:
 
         unload_app_modules("test-app-reload")
 
-        # Update the file — also invalidate any bytecode cache
+        # Update the file: also invalidate any bytecode cache. Located through
+        # cache_from_source, which honours sys.pycache_prefix (the suite redirects
+        # bytecode off the checkout), rather than assuming a sibling __pycache__/.
         mod_path.write_text("def func(ctx): return 'v2'")
-        # Remove __pycache__ if it exists
-        pycache = work_dir / "__pycache__"
-        if pycache.exists():
-            import shutil
-            shutil.rmtree(pycache)
+        cached = Path(importlib.util.cache_from_source(str(mod_path)))
+        if cached.exists():
+            cached.unlink()
         # Invalidate importlib caches
         importlib.invalidate_caches()
 

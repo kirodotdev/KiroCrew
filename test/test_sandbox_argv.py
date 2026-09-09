@@ -2031,7 +2031,7 @@ class TestCleanupStaleSandboxProfiles:
 
         with patch("kiro_crew.sandbox.config_dir", return_value=tmp_path / ".kirocrew"):
             with patch("kiro_crew.sandbox.platform_compat.pid_exists", return_value=False):
-                removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
+                removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"), data_home=sandbox_mod.config_dir())
 
         assert not stale_file.exists()
         assert removed == 1
@@ -2053,13 +2053,13 @@ class TestCleanupStaleSandboxProfiles:
         (holder / "kiro-cli").write_bytes(b"orphaned copy")
 
         with patch("kiro_crew.sandbox.config_dir", return_value=home):
-            removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
+            removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"), data_home=sandbox_mod.config_dir())
 
         assert not (home / "run" / "kiro-cli-snapshots").exists()
         assert removed == 1
         # The rest of run/ is untouched, and a second pass is a no-op.
         with patch("kiro_crew.sandbox.config_dir", return_value=home):
-            assert cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent")) == 0
+            assert cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"), data_home=sandbox_mod.config_dir()) == 0
 
     def test_preserves_live_pid_profile(self, tmp_path):
         """Profile file whose PID is alive (current process) is preserved."""
@@ -2071,7 +2071,7 @@ class TestCleanupStaleSandboxProfiles:
         live_file.write_text("(version 1)")
 
         with patch("kiro_crew.sandbox.config_dir", return_value=tmp_path / ".kirocrew"):
-            removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
+            removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"), data_home=sandbox_mod.config_dir())
 
         assert live_file.exists()
         assert removed == 0
@@ -2086,7 +2086,7 @@ class TestCleanupStaleSandboxProfiles:
         other_file.write_text("keep me")
 
         with patch("kiro_crew.sandbox.config_dir", return_value=tmp_path / ".kirocrew"):
-            removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"))
+            removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "nonexistent"), data_home=sandbox_mod.config_dir())
 
         assert other_file.exists()
         assert removed == 0

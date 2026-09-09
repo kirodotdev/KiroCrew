@@ -74,9 +74,13 @@ class TestGateTaskPromptCarriesDesignLenses(unittest.TestCase):
     """The driver's Phase-1 gate prompt must instruct deep design reasoning across
     the same lenses as the skill, so the worker actually performs the deep gate."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.prompt = build_review_task("CR-12345678")
+    def setUp(self):
+        # Per TEST, not setUpClass: a class-level setup runs before the rootdir
+        # conftest pins KIROCREW_HOME for the test, and build_review_task reads the
+        # app config through config_dir(), which then created the operator's real
+        # ~/.kiro/crew (third side-effect audit). The prompt is a pure function of
+        # the link, so rebuilding it three times costs nothing.
+        self.prompt = build_review_task("https://github.com/o/r/pull/1")
 
     def test_prompt_instructs_deep_thinking(self):
         self.assertIn("THINK DEEPLY", self.prompt)

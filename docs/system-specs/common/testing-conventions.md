@@ -792,10 +792,151 @@ found these further classes. Each one passed on the host that wrote it.
   and still catch a pin that escapes to the real tree. Sixteen tests were red in every
   agent-driven run before this.
 
+The third full-run audit ran five backend and five frontend runs on a **macOS** host,
+from inside a Kiro Crew agent session, with the audit hook attributing every write,
+spawn, connect and kill to a test and a per-test census of duration, RSS, threads and
+descriptors. Both changes of venue mattered: the two earlier audits ran on Linux, and a
+suite that is clean there had 227 deterministic failures and four 120-second hangs on a
+Mac, plus host writes the Linux runs could not see. Zero backend flakes in 5 × 92k
+tests; the classes below are what the rest was made of.
+
+- **`monkeypatch.undo()` in a test body unwound the floor, and the order of the two
+  stacks was luck.** The same class the second pass closed with `_floor_monkeypatch`
+  (below); this pass caught `detect()` creating the real `~/.kiro/crew` through it and
+  added the missing half. Two independent `MonkeyPatch` stacks only nest correctly when
+  the floor's is set up BEFORE the test's `monkeypatch` and torn down AFTER it, and
+  autouse ordering across three conftests does not promise that. The rootdir conftest
+  therefore re-declares the `monkeypatch` fixture with `_floor_monkeypatch` as a
+  dependency, so the order is a dependency edge, not a convention.
+  `test_host_isolation_floor.py::TestTheDataHomeIsPinnedForEveryTestpath` pins both
+  halves: `undo()` in a test body leaves every pin in force, and the fixture in force is
+  the rootdir override. Never `undo()` a shared instance to lift one patch; use
+  `pytest.MonkeyPatch.context()`.
+- **A pin that lives in `test/conftest.py` is not a floor.** `KIROCREW_PROFILE=standalone`
+  was pinned there, so the ~108 modules under `src/kiro_crew/apps/builtins/*/tests/`
+  never saw it. A Kiro Crew agent session exports the enterprise `KIROCREW_PROFILE` to every
+  child it spawns; with no companion installed that profile FAILS CLOSED, and 150+
+  builtin-app tests were red (every governance-gated route 500, every gated
+  notification dropped) while `test/` was green. The pin is a rootdir autouse fixture
+  now (`_reset_platform_context`). The rule generalises: anything an operator's shell
+  can export that changes what production resolves is pinned at the ROOTDIR, and
+  `test_host_isolation_floor.py` asserts it for every testpath.
+- **A metric emitted at import builds the recorder from the operator's config.**
+  `ToolHookResult.allow()` as a module-level DEFAULT ARGUMENT ran during collection,
+  before any pin existed; the recorder's first build read the real `config.json`
+  (`telemetry.enabled: true`) and started a `PeriodicExportingMetricReader` bound to
+  the real `~/.kiro/crew/metrics`, which exported every minute for the life of each
+  xdist worker (four worker pids' shards in the operator's metrics dir per run). The
+  per-test exporter-leak guard cannot see it (the thread predates every test) and the
+  per-test env pin cannot reach it (already built). Two fixes: `pytest_configure` pins
+  `KIROCREW_TELEMETRY=0` for the whole PROCESS, so even an emitter nobody has named
+  yet builds a no-op recorder; and `pytest_make_collect_report` records every module
+  whose collection flipped `metrics.provider._ever_built` into
+  `IMPORT_TIME_METRIC_EMITTERS`, asserted empty by
+  `TestNoMetricIsEmittedAtImport`. Build such values inside the test or fixture.
+- **A maintenance-pool job resolved its path when it RAN.** `cleanup_stale_sandbox_profiles`
+  ran on the `mc-maint` executor and called `config_dir()` there; the test that queued
+  it had torn down its pin by the time the thread was scheduled, so the sweep `mkdir`ed
+  the operator's real `~/.kiro/crew` 60+ times per run and aimed its retired-snapshot
+  `rmtree` and legacy-residue marker at the same tree. Round one's breadcrumb rule,
+  one layer up: the caller resolves the home on ITS thread and hands it in
+  (`SessionManager._cleanup_deps` → `cleanup_stale_sandbox_profiles(data_home=...)`).
+  When a job goes onto a pool, ask what it resolves lazily; the answer must be "nothing".
+  The `mc-maint` pool is the gateway's own, so `_join_test_loop_executor` (which joins
+  the TEST LOOP's default executor at teardown) cannot reach it; the caller-resolves rule
+  is the fix there. The loop's executor is covered: a cache write-through in
+  `test_source_providers.py` scheduled a detached repo-visibility refresh whose
+  `to_thread` resolved the provider CLI through `workspace_root()`; the join drains it,
+  and the module also stubs the scheduler (a recorder, so the calls stay observable),
+  because no test there is about visibility and a side task that never starts has
+  nothing to drain.
+- **Dropping the override to test the DEFAULT home resolves, and creates, the real one.**
+  Five tests `delenv("KIROCREW_HOME")` (or `patch.dict(os.environ, {}, clear=True)`, or
+  ran a module-scoped fixture BEFORE the function-scoped floor) and let `config_dir()`
+  fall through to `~/.kiro/crew` plus the recovery breadcrumb beside it. A test of the
+  default path relocates the default too: `monkeypatch.setattr(paths,
+  "_resolve_default_home", lambda: tmp_path / "d")`, a fake `HOME` + `Path.home`, or
+  keep `KIROCREW_HOME` in the cleared environment. Ratcheted:
+  `pytest_runtest_teardown` reads `paths._resolved_home` BEFORE any fixture unwinds
+  (a test that patched the global itself would otherwise restore the evidence first)
+  and fails the test AFTER the floor has torn down, when it holds the operator's real
+  home (`_refuse_a_resolved_real_default_home`). Relocating only the RESOLVER is not
+  enough: `config_dir()`'s default path also writes `~/.kirocrew.breadcrumb` beside the
+  home, through `Path.home()`, so a tmp stand-in for `_resolve_default_home` alone
+  rewrote the operator's real breadcrumb to point at a pytest directory (six writes per
+  run, repaired only because the live gateway wrote it back). The floor wraps
+  `_write_recovery_breadcrumb` (`_breadcrumb_guard`): with `Path.home()` still the real
+  home it fails the test, with a faked home it delegates. So fake the host home (`HOME`
+  and `pathlib.Path.home`) and let every default derive from it. A module-, class- or
+  session-scoped fixture (`setUpClass` included) runs OUTSIDE the function-scoped floor
+  and pins what it resolves itself.
+- **Bytecode written into the checkout, closed as a class.** Fifteen `__pycache__/`
+  trees per run (`scripts/`, `packaging/signing/`, every skill's `scripts/`), each from
+  an import-by-path that round two had closed one site at a time with a scoped
+  `sys.dont_write_bytecode`. `pytest_configure` now sets `sys.pycache_prefix` (and
+  `PYTHONPYCACHEPREFIX` for children) to `~/.cache/kirocrew/pycache`: every import's
+  bytecode lands in a mirror tree under the cache root, still persistent across runs.
+  A test that wants a module's stale bytecode gone locates it with
+  `importlib.util.cache_from_source`, not by assuming a sibling `__pycache__/`.
+- **A PTY close that deadlocks on macOS: a hang is a lost run.** `_kill_session` closed
+  the PTY's controller descriptor first, to unblock the reader's `os.read()`. True on Linux
+  (the read returns EIO), false on macOS/BSD, where `close()` WAITS for the outstanding
+  read. With an interactive bash holding the terminal end, four terminal tests hit the 120 s
+  timeout on every run, each parking a pool thread forever. The process tree is now
+  hung up (SIGHUP: the signal a vanished terminal delivers, and the one an interactive
+  shell does not ignore) and terminated BEFORE the controller end is closed; the tests run in
+  under a second. A teardown that "unblocks" something by closing a descriptor has to be
+  true on every kernel the suite runs on.
+- **Linux-shaped tests on a Mac.** Ten distinct shapes, one rule: a test that asserts a
+  platform behaviour pins the platform it means, or gates on the SAME predicate
+  production gates on, never on `os.name == "nt"` alone. The frame recorder is
+  Linux-only (`_require_acl_inspectable`), so its 75 logic tests pin the gate open
+  (`IS_LINUX=True`, an `os.listxattr` that reports no ACLs) and only the two tests OF
+  the gate flip it; the unnamed-inode (`O_TMPFILE`) prompt tests skip on the production
+  capability flag `_UNNAMED_CREATE_SUPPORTED`; `/dev/fd/N` is a symlink Linux `realpath`
+  follows and a devfs node macOS leaves alone, so a consumer path is compared by
+  `open`+`fstat` identity; `unlink()` on a directory is `EISDIR` on Linux and `EPERM` on
+  macOS, so `_discard_untracked_files` recognises both; a simulated `O_BINARY` bit is
+  derived from the live `os.O_*` constants (`1 << 20` IS `O_DIRECTORY` on macOS, and
+  every open became a directory open); a `--copies` venv cannot relocate a
+  non-framework shared-lib CPython, so that test skips on `Py_ENABLE_SHARED` without
+  `PYTHONFRAMEWORK`; the darwin-only workspace binding adds a `pass_fds` entry, so the
+  test about the snapshot descriptor pins that seam to the no-descriptor shape;
+  `sys.platform` patched to `"darwin"` on a real Mac lets `get_process_start_id`
+  answer for the pid the test hoped was absent, so the start id is pinned; a
+  `Path.mkdir` stub (record, do nothing) left the pinned data home uncreated for the
+  macOS seatbelt priming that `lstat`s it, so it is a SPY that delegates; and a
+  workflow's `sed -e '1{...}' -e '1,8{...}'` relied on GNU opening a numeric range on
+  a later line (BSD only opens it on the exact one), so the two deletes share one
+  `1,8{}` block.
+- **Real network in a platform-specific test file.** `test_handlers_system_macos_paths.py`
+  reached `8.8.8.8:80` through `_local_ip()`; the Linux siblings had stubbed it in
+  round one, this file was never run there. Stub at the seam the code reads.
+- **A probe that depends on the venv's packaging, again.** `transcribe_unsupported`
+  folds in `_pip_install_channel_available()`, False in every uv-created venv; one
+  test had not pinned it. Same rule as round two: pin every probe the function reads.
+- **Frontend: a fetch chain `act` does not await, and a latch that lags its source.**
+  `AutoNudgePopover`'s watch list is `fetch` → `json()` → `setState`, three promise hops
+  after `await act(render)`, so the positive assertion flaked (1 in 5 runs) and every
+  "not listed" assertion in the block was vacuous (absent BEFORE the fetch resolves
+  whether or not the filter works). Render, wait for the mocked fetch to have been
+  CALLED, drain the chain, then assert (`renderPopoverSettled`). And `App`'s startup
+  video gate read a `startupInterruptionSeen` latch that an effect sets AFTER the commit
+  showing the changelog, while `changelogDecided` is set one microtask later on the
+  same fetch chain: when that microtask landed between the commit and its passive
+  effects, the gate opened beside the changelog (2 in 5 runs). The gate now reads the
+  live conditions in the same commit as well as the latch, the `onboardingOwed` shape.
+
 Two ways to see all of the above on your own machine: run a touched file under
 `trace_home.py`-style tracing (an `sys.addaudithook` that prints the stack of every
 write under the real home — the recipe is in "The measurement" above), and compare
 `systemctl --user list-units --all | grep -c kirocrew-agents` before and after a run.
+On macOS the manager to compare is `launchctl list`, and the metrics dir to watch is
+`ls -la ~/.kiro/crew/metrics`, where a shard named after a pytest worker's pid is the
+import-time-emission class above. A thread that exists at the FIRST test's setup with
+an exporter bound to the real home (`_prev` in an audit plugin's
+`pytest_runtest_protocol`) was started at collection, and the plugin above names the
+module in `IMPORT_TIME_METRIC_EMITTERS`.
 
 ### Coverage that only looks like coverage
 

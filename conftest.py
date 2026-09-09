@@ -214,6 +214,38 @@ def _redirect_hypothesis_database() -> None:
     _hyp_settings.load_profile(_hyp_settings._current_profile)
 
 
+def _redirect_bytecode_cache() -> None:
+    """Write every ``.pyc`` this run compiles under the per-user cache, not the checkout.
+
+    Importing a module writes its bytecode beside the source, and the suite imports
+    a lot that is not a package: ``scripts/*.py``, ``packaging/signing/*.py``, every
+    skill's ``scripts/`` helper, ``.github/scripts``, all loaded by path through
+    ``spec_from_file_location`` + ``exec_module``. Each such import left a
+    ``__pycache__/`` in the tree (fifteen of them per full run at the last count),
+    after two audits had closed individual sites with a scoped
+    ``sys.dont_write_bytecode`` (``test/skill_script_helpers.py`` is the helper for
+    that). A per-site opt-out is the "remember to" contract this file exists to
+    delete, so the class is closed here instead: ``sys.pycache_prefix`` sends the
+    bytecode of EVERY import to a mirror tree under the cache root, and the env var
+    does the same for every interpreter a test spawns. The cache still persists
+    across runs (it is keyed on the absolute source path), so warm imports stay
+    warm; only WHERE the files land changes. Same cache root, same fallback posture
+    and same tolerance of an unwritable root as the hypothesis redirect above.
+    Runs in ``pytest_configure``, before any test module or ``test/conftest.py`` is
+    imported, so the test tree's own bytecode moves too.
+    """
+    if os.environ.get("PYTHONDONTWRITEBYTECODE"):
+        return  # nothing is written anywhere; nothing to redirect
+    cache_root = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    candidate = os.path.join(cache_root, "kirocrew", "pycache")
+    try:
+        os.makedirs(candidate, exist_ok=True)
+    except OSError:
+        return
+    sys.pycache_prefix = candidate
+    os.environ["PYTHONPYCACHEPREFIX"] = candidate
+
+
 def _root_can_create_real_symlink() -> bool:
     """Probe real-link capability for tests collected outside ``test/`` too.
 
@@ -427,6 +459,25 @@ def _floor_monkeypatch():
         yield mp
     finally:
         mp.undo()
+
+
+@pytest.fixture
+def monkeypatch(_floor_monkeypatch):
+    """pytest's own ``monkeypatch``, re-declared to order it AFTER the floor.
+
+    Body-identical to ``_pytest.monkeypatch.monkeypatch``; the only change is the
+    dependency on ``_floor_monkeypatch``, which is what GUARANTEES the order the
+    docstring above relies on: the floor is set up before the test's ``monkeypatch``
+    and torn down after it, whatever autouse fixture in whatever conftest happens to
+    request ``monkeypatch`` first. A test's ``setenv("KIROCREW_HOME", ...)`` therefore
+    records the pinned value, restores it on the test's undo, and the floor's undo then
+    restores the operator's. A test cannot tell the difference otherwise: same type,
+    same scope, same undo semantics for everything IT patched.
+    ``test_host_isolation_floor.py::TestTheDataHomeIsPinnedForEveryTestpath`` pins it.
+    """
+    mp = pytest.MonkeyPatch()
+    yield mp
+    mp.undo()
 
 
 @pytest.fixture(autouse=True)
@@ -1042,10 +1093,75 @@ def _prefer_short_tmp_base() -> None:
         os.environ[name] = _SHORT_TMP_BASE
 
 
+#: Module nodeids whose COLLECTION built the process-global metrics recorder.
+#:
+#: Filled by :func:`pytest_make_collect_report`, asserted empty by
+#: ``test_host_isolation_floor.py::TestNoMetricIsEmittedAtImport``. A metric emitted
+#: while a test module is being imported (a default argument evaluated at
+#: definition time, a module constant built through a factory that counts itself)
+#: runs ``get_recorder()`` before any test's pins exist. The recorder's first build
+#: reads the OPERATOR's real config; with ``telemetry.enabled`` there, it starts a
+#: ``PeriodicExportingMetricReader`` whose exporter is bound to the real
+#: ``~/.kiro/crew/metrics`` and which exports every minute for the life of the xdist
+#: worker. The per-test exporter-leak guard cannot see it (the thread predates every
+#: test), and the per-test ``KIROCREW_TELEMETRY=0`` pin cannot reach it (it is already
+#: built). The third full-run audit found four worker pids writing the operator's
+#: metrics dir on every run from exactly one such default argument.
+IMPORT_TIME_METRIC_EMITTERS: list[str] = []
+
+
+def _metrics_provider_module():
+    return sys.modules.get("kiro_crew.metrics.provider")
+
+
+def _pin_telemetry_off_for_the_process() -> None:
+    """``KIROCREW_TELEMETRY=0`` from process start, not just from each test's setup.
+
+    The per-test pin (``_no_model_download``) covers the test body; this covers the
+    stretch BEFORE the first test (conftest imports and the collection of every
+    module), which is where an import-time metric emission builds the recorder. With
+    the env pin in force the build is a no-op recorder that reads no config and starts
+    no thread, so even an emitter this guard has not yet named cannot reach the host.
+    Tests that exercise telemetry delete the variable themselves, as they already did.
+    """
+    os.environ["KIROCREW_TELEMETRY"] = "0"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector):
+    """Name the module whose import built the metrics recorder, and undo it.
+
+    The detection is ``metrics.provider._ever_built`` flipping across one module's
+    collection: the flag is set by every build, including the no-op one the env pin
+    above turns it into, so an emitter is caught whether or not it reached the host.
+    ``reset_for_testing()`` then drops what was built (stopping an exporter thread if
+    one exists), so the next module starts clean and the attribution stays per-module.
+    Recorded per worker under xdist: every worker collects the whole tree.
+    """
+    provider = _metrics_provider_module()
+    built_before = bool(provider is not None and getattr(provider, "_ever_built", False))
+    yield
+    if not isinstance(collector, pytest.Module):
+        return
+    provider = _metrics_provider_module()
+    if provider is None or not getattr(provider, "_ever_built", False):
+        return
+    if built_before:
+        # Built before this module was reached, by a conftest import. Named as such
+        # rather than blamed on whichever module happened to be first.
+        IMPORT_TIME_METRIC_EMITTERS.append(f"conftest import (before {collector.nodeid})")
+    else:
+        IMPORT_TIME_METRIC_EMITTERS.append(collector.nodeid)
+    with contextlib.suppress(Exception):
+        provider.reset_for_testing()
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Record the working directory pytest started in, before any test can move it."""
+    _pin_telemetry_off_for_the_process()
     _prefer_short_tmp_base()
     _redirect_hypothesis_database()
+    _redirect_bytecode_cache()
     global _SESSION_CWD
     try:
         _SESSION_CWD = os.getcwd()
@@ -1288,9 +1404,18 @@ def _join_test_loop_executor(item) -> None:
         return
 
 
-@pytest.hookimpl(tryfirst=True)
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_teardown(item, nextitem):
     """Put the process working directory back, BEFORE any fixture teardown runs.
+
+    A ``tryfirst`` HOOKWRAPPER: everything before the ``yield`` runs before any other
+    teardown impl (so before any fixture unwinds), and the one thing after it (the
+    verdict of ``_refuse_a_resolved_real_default_home``) runs after every fixture has
+    been torn down. That split is load-bearing: the check must READ its evidence before
+    the test's ``monkeypatch`` restores the global, but it must RAISE only once the
+    floor has unwound, because an exception raised before the default teardown impl
+    skips fixture finalization for the whole item and leaves every pin in place for
+    the rest of the worker (1,245 downstream errors when it was first tried).
 
     The CWD is per-PROCESS, so under xdist one test's ``os.chdir`` silently becomes every
     later test's starting directory on that worker. That was survivable while the
@@ -1324,6 +1449,16 @@ def pytest_runtest_teardown(item, nextitem):
     """
     _join_install_receipt_workers()
     _join_test_loop_executor(item)
+    resolved_real_home = (
+        _resolved_real_default_home() if item.stash.get(_HOME_PIN_ARMED, False) else None
+    )
+    _restore_session_cwd()
+    yield
+    if resolved_real_home is not None:
+        _refuse_a_resolved_real_default_home(resolved_real_home)
+
+
+def _restore_session_cwd() -> None:
     if _SESSION_CWD is None:  # pragma: no cover - configure always runs first
         return
     try:
@@ -2197,8 +2332,15 @@ def _isolation_dirs(_isolation_root):
 _isolation_dirs.seq = 0  # type: ignore[attr-defined]
 
 
+#: Set on an item by ``_isolate_kirocrew_home`` once its pins are in force. The
+#: teardown check reads it: a test skipped at setup (a ``skipif`` marker) never ran
+#: the floor, so ``paths._resolved_home`` still holds whatever collection resolved
+#: (the operator's real home, legitimately) and must not be blamed for it.
+_HOME_PIN_ARMED = pytest.StashKey[bool]()
+
+
 @pytest.fixture(autouse=True)
-def _isolate_kirocrew_home(_isolation_dirs, _floor_monkeypatch):
+def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     """Pin ``KIROCREW_HOME`` and ``KIROCREW_WORKSPACE`` to per-test tmp dirs, for EVERY testpath.
 
     This lives at the rootdir rather than in ``test/conftest.py`` because the leak it
@@ -2295,6 +2437,96 @@ def _isolate_kirocrew_home(_isolation_dirs, _floor_monkeypatch):
     paths = sys.modules.get("kiro_crew.config.paths")
     if paths is not None:
         monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
+        monkeypatch.setattr(
+            paths,
+            "_write_recovery_breadcrumb",
+            _breadcrumb_guard(paths._write_recovery_breadcrumb),
+            raising=False,
+        )
+    request.node.stash[_HOME_PIN_ARMED] = True
+
+
+def _breadcrumb_guard(real):
+    """Refuse the recovery breadcrumb while ``Path.home()`` is the operator's.
+
+    ``config_dir()`` on its DEFAULT path writes ``~/.kirocrew.breadcrumb`` (outside
+    ``~/.kiro`` on purpose) naming the home it resolved. A test that relocates the
+    default with ``paths._resolve_default_home = lambda: tmp_path / ...`` and nothing
+    else therefore rewrites the operator's real breadcrumb to point at a pytest tmp
+    dir: the third audit found six such writes per run, each repaired only because
+    the live gateway rewrote the file later. The teardown check cannot see this one
+    (``_resolved_home`` holds the tmp stand-in), so the guard sits on the writer:
+    with ``Path.home()`` still the real home it FAILS the test naming the fix; with
+    a faked home (``monkeypatch.setattr(Path, "home", ...)``) it delegates, so the
+    tests OF the breadcrumb keep exercising the real writer against their fake home.
+    """
+
+    def _guarded(data_home):
+        try:
+            home_is_real = pathlib.Path.home().resolve() == _REAL_USER_HOME.resolve()
+        except OSError:  # pragma: no cover - a faked home that does not exist
+            home_is_real = False
+        if home_is_real:
+            raise AssertionError(
+                "this test would write the operator's real ~/.kirocrew.breadcrumb "
+                f"(pointing it at {data_home}): the default-home path was taken with "
+                "Path.home() still the real home. Relocate the WHOLE default, not just the "
+                "resolver: monkeypatch HOME and pathlib.Path.home to a dir under tmp_path, "
+                "or stub paths._write_recovery_breadcrumb when the breadcrumb is not what "
+                "the test is about; see conftest._breadcrumb_guard."
+            )
+        return real(data_home)
+
+    return _guarded
+
+
+def _is_the_operators_default_home(path) -> bool:
+    """Whether *path* is the real ``~/.kiro/crew`` (not a tmp stand-in for it)."""
+    try:
+        return pathlib.Path(path).resolve() == (_REAL_USER_HOME / ".kiro" / "crew").resolve()
+    except OSError:
+        return False
+
+
+def _resolved_real_default_home():
+    """The operator's real home if ``paths._resolved_home`` holds it right now, else None."""
+    paths = sys.modules.get("kiro_crew.config.paths")
+    resolved = getattr(paths, "_resolved_home", None) if paths is not None else None
+    if resolved is not None and _is_the_operators_default_home(resolved):
+        return resolved
+    return None
+
+
+def _refuse_a_resolved_real_default_home(resolved) -> None:
+    """Fail the test that let ``config_dir()`` fall through to the operator's home.
+
+    ``paths._resolved_home`` is only ever written by ``_resolve_default_home()``, i.e.
+    by a ``config_dir()`` / ``data_home()`` call made with NO override in force. So a
+    value equal to the operator's real ``~/.kiro/crew`` at teardown means the test
+    dropped the pin (``monkeypatch.delenv("KIROCREW_HOME")``) to exercise the default
+    path and let production resolve, and CREATE, the real data home, plus the
+    recovery breadcrumb beside it. Five tests did in the third full-run audit; each
+    passed. A test of the default path relocates the default too
+    (``monkeypatch.setattr(paths, "_resolve_default_home", lambda: tmp_path / "d")``,
+    or ``_resolved_home`` itself); ``test_lazy_data_home_paths.py`` is the shape.
+
+    The evidence is read by ``pytest_runtest_teardown`` BEFORE the test's own
+    ``monkeypatch`` unwinds (a test that set ``_resolved_home = None`` through
+    monkeypatch and then resolved the real home would otherwise have it restored to
+    ``None`` before any fixture could look), and the failure is raised AFTER every
+    fixture has been torn down, so the floor's pins are always restored. One attribute
+    read and one path comparison per test, so it costs nothing on the ~92k tests that
+    never touch the global.
+    """
+    raise AssertionError(
+        "this test resolved the operator's REAL default data home "
+        f"({resolved}): it dropped the KIROCREW_HOME pin and let config_dir() / "
+        "data_home() fall through to ~/.kiro/crew, which CREATES that directory. "
+        "A test of the default path pins the default too: "
+        "monkeypatch.setattr(kiro_crew.config.paths, '_resolve_default_home', "
+        "lambda: tmp_path / 'default'); see test_lazy_data_home_paths.py and "
+        "conftest._refuse_a_resolved_real_default_home."
+    )
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -2932,6 +3164,43 @@ def _no_central_policy_fetch(_floor_monkeypatch):
         # next test a different way.
         with contextlib.suppress(Exception):
             module.reset_process_state()
+
+
+@pytest.fixture(autouse=True)
+def _reset_platform_context(_floor_monkeypatch):
+    """Clear the process-global PlatformContext between tests, and pin the profile.
+
+    A test that composes a non-default context (e.g. an enterprise-overlay probe)
+    must not leak it into the next test.  ``current_context()`` lazily rebuilds
+    the standalone default on next access.
+
+    Also pins ``KIROCREW_PROFILE=standalone`` so the profile a test boots under
+    comes from the test, never from the operator's shell: a dev box with a real
+    SSO-marker directory, or a shell whose parent process exported
+    ``KIROCREW_PROFILE`` set to the enterprise profile (a Kiro Crew agent session
+    does exactly that for every child it spawns), would otherwise make
+    ``boot_platform`` resolve the enterprise profile and fail CLOSED (no companion installed) for every test
+    that drives ``run_gateway`` / boot / the governance hook.  A test that wants
+    the enterprise profile overrides this env via its own ``monkeypatch.setenv`` (it
+    runs after this autouse fixture), or composes the context directly via
+    ``set_context`` without booting.
+
+    Lives HERE, at the rootdir, for the same reason ``_isolate_kirocrew_home`` does:
+    the ~108 test modules under ``src/kiro_crew/apps/builtins/*/tests/`` never see
+    ``test/conftest.py``.  With the pin only there, an inherited
+    ``KIROCREW_PROFILE=enterprise`` reddens 150+ builtin-app tests (every governance-gated
+    route answers 500, every gated notification is dropped) while ``test/`` stays
+    green.
+    """
+    from kiro_crew.platform.bootstrap import _reset_boot_state
+    from kiro_crew.platform.context import reset_context
+
+    _floor_monkeypatch.setenv("KIROCREW_PROFILE", "standalone")
+    reset_context()
+    _reset_boot_state()
+    yield
+    reset_context()
+    _reset_boot_state()
 
 
 @pytest.fixture(autouse=True)

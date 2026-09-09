@@ -3351,6 +3351,10 @@ class TestCreateAndDeletePinTheDirectory:
             "bool",
         }, f"boot-path constant calls something that may touch the filesystem: {sorted(calls)}"
 
+    @pytest.mark.skipif(
+        not _prompts_mod._UNNAMED_CREATE_SUPPORTED or not os.path.isdir("/proc/self/fd"),
+        reason="platform cannot build an unnamed inode (O_TMPFILE + /proc/self/fd)",
+    )
     def test_the_body_is_durable_before_the_name_appears(self, tmp_path, mock_sel, monkeypatch):
         """The flush precedes the publish, and the DIRECTORY is flushed too.
 
@@ -3506,6 +3510,10 @@ class TestCreateAndDeletePinTheDirectory:
         ).exists(), "the fallback left behind a prompt whose entry it could not flush"
         assert _outcomes(mock_sel)[-1] == "error"
 
+    @pytest.mark.skipif(
+        not _prompts_mod._UNNAMED_CREATE_SUPPORTED or not os.path.isdir("/proc/self/fd"),
+        reason="platform cannot build an unnamed inode (O_TMPFILE + /proc/self/fd)",
+    )
     def test_a_create_cannot_disturb_a_prompt_already_at_the_name(
         self, tmp_path, mock_sel, monkeypatch
     ):

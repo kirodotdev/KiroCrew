@@ -784,34 +784,19 @@ async def _kill_session(sess: _TerminalSession) -> None:
         except (OSError, RuntimeError):
             pass
         return
-    # Close master_fd first — unblocks reader_task's os.read() in executor.
-    #
-    # os.close() on a PTY master fd can BLOCK in the kernel: when the far-end
-    # shell is wedged (uninterruptible sleep), the tty teardown waits on it.
-    # Run it on the dedicated subprocess pool, never the event loop — a wedged
-    # close then costs at most one pool thread instead of freezing the whole
-    # gateway, and shares no workers with the orphan-reaping maintenance sweep.
-    if sess.master_fd >= 0:
-        fd = sess.master_fd
-        # Clear the handle BEFORE the await: if this coroutine is cancelled while
-        # suspended on the executor (e.g. aiohttp cancels the request handler on
-        # client disconnect), the fd must not be left referenced on the session.
-        sess.master_fd = -1
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), os.close, fd,
-            )
-        except (OSError, RuntimeError):
-            # OSError: close failed. RuntimeError: the subprocess pool was
-            # already torn down (shutdown races interpreter exit) — submit
-            # raises rather than returning a future; the fd is reaped on exit.
-            pass
-    if sess.reader_task is not None:
-        sess.reader_task.cancel()
-        try:
-            await sess.reader_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    # The child goes FIRST, then the PTY's controller descriptor, and the order
+    # is the fix for a real deadlock. Closing the controller end while the reader
+    # task is blocked in os.read() on it behaves differently per kernel: Linux
+    # hangs up the terminal end and the read returns EIO, which is what let the
+    # close come first; macOS (and the BSDs) make close() wait for that
+    # outstanding read, so with an interactive bash still holding the terminal
+    # end the close never returned, and four PTY tests timed out at 120 s on
+    # every macOS run, each parking a pool thread forever. Ending the session's
+    # process tree first releases the terminal end on both, so the read returns
+    # EOF, the close completes. SIGHUP is what a vanished terminal
+    # delivers and the one signal an interactive shell does not ignore (it
+    # ignores SIGTERM, which alone would cost the 5 s escalation wait); SIGTERM
+    # follows for everything else, SIGKILL after the wait as before.
     if sess.proc is not None and sess.proc.returncode is None:
         # Route through platform_compat.kill_process_tree so the whole terminal
         # handler stays platform-portable (killpg on POSIX, taskkill /T on
@@ -819,18 +804,17 @@ async def _kill_session(sess: _TerminalSession) -> None:
         # ws returns an error on Windows before any session is created — but
         # keeping a single shim call site avoids a raw-os.killpg vs shim
         # inconsistency across the module, and the tests all patch the shim.
-        try:
-            # Async variants offload Windows taskkill to subprocess_executor
-            # so this PTY teardown path never blocks the event loop on
-            # taskkill.exe. POSIX os.killpg stays inline.
-            await platform_compat.kill_process_tree_async(
-                sess.proc.pid, platform_compat.SIGTERM
-            )
-        except (ProcessLookupError, PermissionError):
-            # PermissionError (EPERM): the child made the PTY its controlling
-            # terminal (TIOCSCTTY) and leads a session/group we can't signal.
-            # Fall through to wait()/kill the proc directly.
-            pass
+        for sig in (platform_compat.SIGHUP, platform_compat.SIGTERM):
+            try:
+                # Async variants offload Windows taskkill to subprocess_executor
+                # so this PTY teardown path never blocks the event loop on
+                # taskkill.exe. POSIX os.killpg stays inline.
+                await platform_compat.kill_process_tree_async(sess.proc.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                # PermissionError (EPERM): the child made the PTY its controlling
+                # terminal (TIOCSCTTY) and leads a session/group we can't signal.
+                # Fall through to wait()/kill the proc directly.
+                pass
         try:
             await asyncio.wait_for(sess.proc.wait(), timeout=5)
         except asyncio.TimeoutError:
@@ -845,6 +829,33 @@ async def _kill_session(sess: _TerminalSession) -> None:
             except ProcessLookupError:
                 pass
             await sess.proc.wait()
+    # os.close() on a PTY controller fd can still BLOCK in the kernel when the far
+    # end is wedged (uninterruptible sleep, or a child this process may not
+    # signal). Run it on the dedicated subprocess pool, never the event loop, so a
+    # wedged close then costs at most one pool thread instead of freezing the
+    # whole gateway, and shares no workers with the orphan-reaping maintenance
+    # sweep.
+    if sess.master_fd >= 0:  # wokeignore:rule=master
+        fd = sess.master_fd  # wokeignore:rule=master
+        # Clear the handle BEFORE the await: if this coroutine is cancelled while
+        # suspended on the executor (e.g. aiohttp cancels the request handler on
+        # client disconnect), the fd must not be left referenced on the session.
+        sess.master_fd = -1  # wokeignore:rule=master
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), os.close, fd,
+            )
+        except (OSError, RuntimeError):
+            # OSError: close failed. RuntimeError: the subprocess pool was
+            # already torn down (shutdown races interpreter exit): submit
+            # raises rather than returning a future; the fd is reaped on exit.
+            pass
+    if sess.reader_task is not None:
+        sess.reader_task.cancel()
+        try:
+            await sess.reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.Response:

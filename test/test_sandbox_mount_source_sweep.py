@@ -46,6 +46,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.config.paths import config_dir
 from kiro_crew.sandbox import (
     _MOUNT_SOURCE_MAX_AGE_SECONDS,
     _build_launcher_script,
@@ -383,7 +384,7 @@ class TestMountSourceSweep:
         legacy = tmp_path / "legacy"
         legacy.mkdir()
 
-        removed = cleanup_stale_sandbox_profiles(legacy_dir=str(legacy))
+        removed = cleanup_stale_sandbox_profiles(legacy_dir=str(legacy), data_home=config_dir())
 
         assert removed >= 1
         assert not (root / f"kirocrew_sb_{_DEAD_PID}_wired").exists()
@@ -1185,7 +1186,7 @@ class TestLegacyResidueSweep:
         empty = self._legacy_dir(tmp_path)
         plain = self._legacy_file(tmp_path)
 
-        removed = _cleanup_legacy_mount_source_residue()
+        removed = _cleanup_legacy_mount_source_residue(data_home=config_dir())
 
         assert removed == 1
         assert not empty.exists()
@@ -1195,7 +1196,7 @@ class TestLegacyResidueSweep:
         assert plain.exists()
         # Second call is a no-op: no current build creates the shape, so a
         # completed pass is final and must not re-walk the tmpfs forever.
-        assert _cleanup_legacy_mount_source_residue() == 0
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 0
 
     def test_a_planted_symlink_at_the_marker_is_not_followed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1212,7 +1213,7 @@ class TestLegacyResidueSweep:
         marker.symlink_to(target)
         self._legacy_dir(tmp_path)
 
-        assert _cleanup_legacy_mount_source_residue() == 1
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 1
         assert not target.exists()
         assert marker.is_symlink()  # untouched, so the pass is not retired
 
@@ -1226,7 +1227,7 @@ class TestLegacyResidueSweep:
         self._fence(monkeypatch, tmp_path, complete=False, covered=True)
         empty = self._legacy_dir(tmp_path)
 
-        assert _cleanup_legacy_mount_source_residue() == 1
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 1
         assert not empty.exists()
 
     def test_a_cohort_under_the_age_fence_withholds_the_marker(
@@ -1239,15 +1240,15 @@ class TestLegacyResidueSweep:
         old = self._legacy_dir(tmp_path)
         young = self._legacy_dir(tmp_path, "tmpyoung001", old=False)
 
-        assert _cleanup_legacy_mount_source_residue() == 1
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 1
         assert not old.exists() and young.exists()
         stale = time.time() - _MOUNT_SOURCE_MAX_AGE_SECONDS - 100
         os.utime(young, (stale, stale))
         # Not retired: the aged cohort is reclaimed by the next pass, which
         # then finds nothing young and stamps.
-        assert _cleanup_legacy_mount_source_residue() == 1
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 1
         assert not young.exists()
-        assert _cleanup_legacy_mount_source_residue() == 0
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 0
 
     def test_unproven_bind_coverage_removes_nothing_and_does_not_retire_the_pass(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -1259,14 +1260,14 @@ class TestLegacyResidueSweep:
         held = self._legacy_dir(tmp_path)
 
         with caplog.at_level(logging.INFO, logger="kiro_crew.sandbox"):
-            assert _cleanup_legacy_mount_source_residue() == 0
+            assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 0
         assert held.exists()
         retained = [r for r in caplog.records if "legacy pass retained" in r.getMessage()]
         assert len(retained) == 1
         assert retained[0].levelno == logging.WARNING
 
         self._fence(monkeypatch, tmp_path, complete=True)
-        assert _cleanup_legacy_mount_source_residue() == 1
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 1
 
     def test_an_absent_root_skips_the_pin_scan_without_a_warning(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -1295,14 +1296,14 @@ class TestLegacyResidueSweep:
         monkeypatch.setattr("kiro_crew.sandbox._bound_source_basenames", _fake)
 
         with caplog.at_level(logging.INFO, logger="kiro_crew.sandbox"):
-            assert _cleanup_legacy_mount_source_residue() == 0
+            assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 0
         assert scanned == []  # the pin scan never ran
         assert not [r for r in caplog.records if "legacy pass retained" in r.getMessage()]
 
         # Not retired: a root that does appear is still swept.
         self._fence(monkeypatch, tmp_path)
         held = self._legacy_dir(tmp_path)
-        assert _cleanup_legacy_mount_source_residue() == 1
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 1
         assert not held.exists()
 
     def test_bound_entry_is_preserved(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1311,7 +1312,7 @@ class TestLegacyResidueSweep:
         self._fence(monkeypatch, tmp_path, bound={name})
         held = self._legacy_dir(tmp_path, name)
 
-        assert _cleanup_legacy_mount_source_residue() == 0
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 0
         assert held.exists()
 
     def test_non_empty_dir_survives(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1324,7 +1325,7 @@ class TestLegacyResidueSweep:
         populated = self._legacy_dir(tmp_path, "tmpshadow12")
         (populated / "known_hosts").write_text("example.com ssh-ed25519 AAAA\n")
 
-        assert _cleanup_legacy_mount_source_residue() == 0
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 0
         assert (populated / "known_hosts").exists()
 
     def test_bound_scan_keys_on_the_tmpfs_relative_root_field(
@@ -1379,7 +1380,7 @@ class TestLegacyResidueSweep:
         named.mkdir(mode=0o700)
         keyed = _make_dir(tmp_path, f"kirocrew_sb_{_DEAD_PID}_keyed01")
 
-        assert _cleanup_legacy_mount_source_residue() == 0
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 0
         for path in (fresh, loose, sized, named, keyed):
             assert path.exists(), path
 
@@ -1398,12 +1399,12 @@ class TestLegacyResidueSweep:
         monkeypatch.setattr("kiro_crew.sandbox._LEGACY_PILE_THRESHOLD", 4)
         strays = [self._legacy_dir(tmp_path, f"tmpstray00{i}") for i in range(3)]
 
-        assert _cleanup_legacy_mount_source_residue() == 0
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 0
         for stray in strays:
             assert stray.exists(), stray
         # Retired: a later pass is a no-op even once more candidates appear.
         self._legacy_dir(tmp_path, "tmpstray003")
-        assert _cleanup_legacy_mount_source_residue() == 0
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 0
 
     def test_at_the_pile_threshold_the_buffered_candidates_are_reclaimed_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1413,7 +1414,7 @@ class TestLegacyResidueSweep:
         monkeypatch.setattr("kiro_crew.sandbox._LEGACY_PILE_THRESHOLD", 4)
         pile = [self._legacy_dir(tmp_path, f"tmppile000{i}") for i in range(6)]
 
-        assert _cleanup_legacy_mount_source_residue() == 6
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 6
         for entry in pile:
             assert not entry.exists(), entry
 
@@ -1436,7 +1437,9 @@ class TestLegacyResidueSweep:
         )
         legacy = self._legacy_dir(tmp_path)
 
-        removed = cleanup_stale_sandbox_profiles(legacy_dir=str(tmp_path / "absent"))
+        removed = cleanup_stale_sandbox_profiles(
+            legacy_dir=str(tmp_path / "absent"), data_home=config_dir()
+        )
 
         assert removed >= 1
         assert not legacy.exists()
@@ -1543,13 +1546,13 @@ class TestSweepTimeBudget:
 
         budget = self._spent_budget()
         try:
-            assert _cleanup_legacy_mount_source_residue() == 1
+            assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 1
         finally:
             budget.undo()
         assert len(list(tmp_path.iterdir())) == 2
 
         # The marker was NOT stamped, so the next pass finishes the residue.
-        assert _cleanup_legacy_mount_source_residue() == 2
+        assert _cleanup_legacy_mount_source_residue(data_home=config_dir()) == 2
         assert not list(tmp_path.iterdir())
 
 

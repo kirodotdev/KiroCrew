@@ -978,12 +978,19 @@ class TestSensitivePathsFollowTheLiveDataHome:
         assert default_anchored, "the default-home entries were dropped"
 
     def test_no_duplicates_when_the_home_is_the_default(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """With no override the two anchors coincide, and the list must not double."""
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        # The "default" home is exercised against a FAKE host home, so both anchors
+        # (expanduser("~") and the resolver's default) coincide there instead of on the
+        # operator's real ~/.kiro/crew, which the bare delenv resolved and created.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
         hidden = latex._sensitive_hidden_dirs()
         assert len(hidden) == len(set(hidden))
+        assert any(h.startswith(str(tmp_path)) for h in hidden), "the fake home was not the anchor"
 
 
 @pytest.mark.asyncio

@@ -75,6 +75,9 @@ class TestMacOsSysctlPaths:
 
         with (
             patch.object(handlers_system, "_get_static_system_info", return_value={}),
+            # _local_ip() opens a UDP socket to 8.8.8.8:80 to learn the host's outbound
+            # address: a real network dependency the Linux siblings already stub.
+            patch.object(handlers_system, "_local_ip", return_value="127.0.0.1"),
             patch(
                 "kiro_crew.dashboard.handlers_system.subprocess.check_output",
                 side_effect=fake_check_output,
@@ -115,6 +118,9 @@ class TestMacOsSysctlPaths:
 
         with (
             patch.object(handlers_system, "_get_static_system_info", return_value={}),
+            # _local_ip() opens a UDP socket to 8.8.8.8:80 to learn the host's outbound
+            # address: a real network dependency the Linux siblings already stub.
+            patch.object(handlers_system, "_local_ip", return_value="127.0.0.1"),
             patch(
                 "kiro_crew.dashboard.handlers_system.subprocess.check_output",
                 side_effect=fake_check_output,

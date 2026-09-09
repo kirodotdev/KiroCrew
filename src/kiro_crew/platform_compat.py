@@ -146,6 +146,9 @@ SIGKILL: int = getattr(signal, "SIGKILL", 9)
 # the self-check is stable and immune to test-time os.getpgid patching.
 _OWN_PGID: int = os.getpgid(0) if hasattr(os, "getpgid") else 0
 SIGTERM: int = getattr(signal, "SIGTERM", 15)
+# The hangup a vanished controlling terminal delivers. Undefined on Windows, where
+# the ConPTY backend tears a console down by handle rather than by signal.
+SIGHUP: int = getattr(signal, "SIGHUP", 1)
 
 # Portable subprocess creation flags — these constants exist ONLY on Windows
 # (the subprocess module has no such attributes on POSIX). Referencing

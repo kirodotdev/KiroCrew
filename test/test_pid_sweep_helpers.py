@@ -672,12 +672,35 @@ class TestPidAgeSeconds:
         assert age is not None
         assert abs(age - age_desired) < 1.0
 
-    def test_non_linux_returns_none(self) -> None:
-        """On non-Linux, _pid_age_seconds returns None immediately."""
+    def test_non_linux_without_a_start_id_returns_none(self) -> None:
+        """Off Linux the age comes from ``get_process_start_id``; no id, no age.
+
+        The start id is pinned to ``None`` rather than assumed: on a real macOS host
+        the darwin backend answers for any live pid, so the old shape of this test
+        (patch ``sys.platform`` and hope pid 1234 has no start time) passed on Linux
+        CI and failed on every Mac that happened to be running pid 1234.
+        """
         from kiro_crew.session_pid import _pid_age_seconds
 
-        with patch("kiro_crew.session_pid.sys.platform", "darwin"):
+        with (
+            patch("kiro_crew.session_pid.sys.platform", "darwin"),
+            patch("kiro_crew.session_pid.platform_compat.get_process_start_id", return_value=None),
+        ):
             assert _pid_age_seconds(1234) is None
+
+    def test_non_linux_with_a_start_id_derives_the_age(self) -> None:
+        from kiro_crew.session_pid import _pid_age_seconds
+
+        now = 1_000_000.0
+        with (
+            patch("kiro_crew.session_pid.sys.platform", "darwin"),
+            patch(
+                "kiro_crew.session_pid.platform_compat.get_process_start_id",
+                return_value=f"{now - 42.5:.6f}",
+            ),
+            patch("kiro_crew.session_pid.time.time", return_value=now),
+        ):
+            assert _pid_age_seconds(1234) == pytest.approx(42.5)
 
 
 class TestPidInSpawnGrace:

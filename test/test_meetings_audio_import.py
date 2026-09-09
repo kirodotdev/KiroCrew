@@ -60,6 +60,28 @@ def _owner(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ai, "is_owner_dashboard_request", lambda _request: True)
 
 
+def _consumed(path: str) -> "tuple[int, int] | str":
+    """The identity of the file *path* names, as ``(st_dev, st_ino)``.
+
+    Works for a plain path and for a ``/dev/fd/N`` descriptor path alike, on
+    Linux (a symlink) and on macOS (a devfs node), because OPENING either yields
+    a descriptor on the underlying file and ``fstat`` reports that file. (A bare
+    ``stat`` of the devfs node on macOS reports the file's inode under devfs's own
+    ``st_dev``, so it is not the same identity.) Falls back to the string when the
+    path cannot be opened, so a refusal test that logs a never-opened name still
+    compares.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return path
+    try:
+        st = os.fstat(fd)
+    finally:
+        os.close(fd)
+    return (st.st_dev, st.st_ino)
+
+
 def _patch(monkeypatch: pytest.MonkeyPatch, **over: Any) -> dict[str, list]:
     """Patch the route's external dependencies. Returns a call log.
 
@@ -72,9 +94,14 @@ def _patch(monkeypatch: pytest.MonkeyPatch, **over: Any) -> dict[str, list]:
     into the route's snapshot dir (named like the real helper's output): the
     route pins that file with one descriptor and hands both consumers a
     ``/dev/fd`` path, so the stub must produce something openable. The probe
-    and transcribe stubs log the CALL-TIME realpath of what they were handed —
+    and transcribe stubs log the CALL-TIME resolution of what they were handed :
     the descriptor is closed before the response returns, so a later resolve
-    would fail. The real copy helper has its own tests below.
+    would fail. Resolution is by INODE (``_consumed``), not ``realpath``: Linux's
+    ``/dev/fd/N`` is a symlink that realpath follows to the snapshot file, but on
+    macOS it is a devfs node that realpath leaves as ``/dev/fd/N``, so a realpath
+    comparison passed on Linux CI and failed on every Mac. ``stat`` on the
+    descriptor path returns the open file's identity on both, and identity is the
+    guarantee the route actually makes. The real copy helper has its own tests below.
     """
     import kiro_crew.transcribe as transcribe_mod
 
@@ -87,6 +114,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, **over: Any) -> dict[str, list]:
         "config_loads": [],
         "snapshots": [],
         "snapshot_files": [],
+        "snapshot_idents": [],
         "ready_config": [],
         "cap_config": [],
         "split_calls": [],
@@ -115,16 +143,20 @@ def _patch(monkeypatch: pytest.MonkeyPatch, **over: Any) -> dict[str, list]:
             fh.write(over.get("snapshot_bytes", b"fake recording bytes"))
         log["snapshot_files"].append(dst)
         st = os.stat(dst)
+        # Recorded NOW: the route removes the snapshot dir before it answers, so
+        # an assertion cannot stat the file afterwards. Compared against what
+        # the consumers logged via ``_consumed``.
+        log["snapshot_idents"].append((st.st_dev, st.st_ino))
         return dst, (st.st_dev, st.st_ino)
 
     async def _transcribe(path: str, *a: Any, **kw: Any) -> str | None:
-        log["transcribed"].append((os.path.realpath(path), a[0] if a else kw.get("stt_config")))
+        log["transcribed"].append((_consumed(path), a[0] if a else kw.get("stt_config")))
         return over.get("transcript", "we decided to ship on Friday")
 
     async def _split(path: str, cap_secs: int, segment_dir: str, cfg: Any) -> str | None:
-        # The route hands the pinned descriptor path; realpath it so the assertion
-        # matches the snapshot the same way ``_transcribe`` does.
-        log["split_calls"].append((os.path.realpath(path), cap_secs, segment_dir))
+        # The route hands the pinned descriptor path; resolve it by inode so the
+        # assertion matches the snapshot the same way ``_transcribe`` does.
+        log["split_calls"].append((_consumed(path), cap_secs, segment_dir))
         if "split_transcript" in over:
             return over["split_transcript"]
         return over.get("transcript", "we decided to ship on Friday")
@@ -139,7 +171,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, **over: Any) -> dict[str, list]:
         return over.get("splits", True)
 
     async def _exceeds(path: str, max_secs: int, **kw: Any) -> bool | None:
-        log["probed"].append((os.path.realpath(path), max_secs))
+        log["probed"].append((_consumed(path), max_secs))
         log["probe_timeouts"].append(kw.get("timeout_secs"))
         return over.get("exceeds", False)
 
@@ -595,10 +627,10 @@ class TestRefusals:
             assert body["lines"] == 2
         # The probe and the split BOTH consumed the PINNED snapshot, never the
         # user-writable original name; the whole-file transcriber was NOT called.
-        assert log["probed"] == [(os.path.realpath(log["snapshot_files"][0]), 3600)]
+        assert log["probed"] == [(log["snapshot_idents"][0], 3600)]
         assert len(log["split_calls"]) == 1
         split_path, split_cap, _seg_dir = log["split_calls"][0]
-        assert split_path == os.path.realpath(log["snapshot_files"][0])
+        assert split_path == log["snapshot_idents"][0]
         assert split_cap == 3600
         assert log["transcribed"] == []
 
@@ -768,7 +800,7 @@ class TestRefusals:
             )
             assert resp.status == 200
         assert log["probed"] == []
-        assert [p for p, _cfg in log["transcribed"]] == [os.path.realpath(log["snapshot_files"][0])]
+        assert [p for p, _cfg in log["transcribed"]] == [log["snapshot_idents"][0]]
 
     @pytest.mark.asyncio
     async def test_one_config_snapshot_feeds_readiness_cap_and_transcription(

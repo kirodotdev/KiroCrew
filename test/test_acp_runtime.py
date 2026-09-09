@@ -1109,6 +1109,15 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
         "cgroup_scope_argv",
         lambda argv: ["/usr/bin/cgroup-wrapper", *argv],
     )
+    # The claim below is about the SNAPSHOT descriptor (there must be none, the
+    # binary is exec'd in place). On macOS the darwin-only workspace binding adds
+    # its own descriptor to pass_fds, so pin that seam to the no-descriptor shape
+    # every other platform already produces, or the assertion reads the wrong fd.
+
+    async def _unbound_workspace(work_dir):
+        return work_dir, None
+
+    monkeypatch.setattr(runtime_mod, "bind_voice_safe_agent_workspace_async", _unbound_workspace)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", stop_spawn)
 
     runtime = AcpRuntime(work_dir=tmp_path / "workspace")

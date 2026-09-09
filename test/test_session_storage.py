@@ -1991,6 +1991,33 @@ class TestScanCache:
                 assert got == expected, f"disagreement on {a!r} vs {b!r}"
 
 
+def _pin_a_fake_default_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, legacy: bool = False
+) -> None:
+    """Put the process in the DEFAULT-home posture, against a fake host home.
+
+    These tests need ``data_home()`` to BE the default (or the legacy default), so
+    ``reclaim_block_reason`` takes its shared-store branch. Pinning ``_resolved_home``
+    to ``paths._default_home()`` under the operator's real ``HOME`` achieved that by
+    pointing the process at the operator's real ``~/.kiro/crew``: the next
+    ``config_dir()`` then ``mkdir``s it and drops the recovery breadcrumb beside it,
+    and the rootdir floor now fails a test that leaves the real default resolved. So
+    the host home is faked first: every resolver here reads ``Path.home()``
+    (``session_storage`` for both defaults and the pod root, ``paths`` for the data
+    home), so the posture holds exactly as before, one directory over.
+    """
+    host_home = tmp_path / "host-home"
+    host_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(host_home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: host_home))
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.setattr(
+        paths, "_resolved_home", paths.legacy_home() if legacy else paths._default_home()
+    )
+    monkeypatch.setattr(paths, "_config_dir_memo", None)
+
+
 class TestCotenantCache:
     """The co-tenant lookup follows the scan cache's rules: reads may reuse, mutations never.
 
@@ -2176,8 +2203,7 @@ class TestCotenantCache:
         monkeypatch.delenv("KIRO_HOME", raising=False)
         # Pin the default home rather than clearing the memo; see
         # TestSharedStoreRefusal for why re-resolving on a real machine is unsafe.
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         session_storage.cotenant_sids(cached=True)  # prime
         calls = self._count_pod_scans(monkeypatch)
@@ -2193,8 +2219,7 @@ class TestCotenantCache:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         session_storage.cotenant_sids(cached=True)  # prime
         calls = self._count_pod_scans(monkeypatch)
@@ -2210,8 +2235,7 @@ class TestCotenantCache:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         session_storage.cotenant_sids(cached=True)  # prime
         calls = self._count_pod_scans(monkeypatch)
@@ -2256,8 +2280,7 @@ class TestSharedStoreRefusal:
         # next data_home() RE-RESOLVE, which on a real machine initializes or
         # migrates the operator's actual data home — and leaves that resolution
         # memoized for every later test in the same worker.
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         assert session_storage.reclaim_block_reason() == ""
 
@@ -2273,8 +2296,7 @@ class TestSharedStoreRefusal:
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
-        monkeypatch.setattr(paths, "_resolved_home", paths.legacy_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path, legacy=True)
 
         assert session_storage.reclaim_block_reason() == ""
 
@@ -2386,8 +2408,7 @@ class TestSharedStoreRefusal:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         assert session_storage.reclaim_block_reason() == ""
         protected, refusals = session_storage.cotenant_sids()
@@ -2414,8 +2435,7 @@ class TestSharedStoreRefusal:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         reason = session_storage.reclaim_block_reason()
         assert "wt-legacy-shared" in reason
@@ -2440,8 +2460,7 @@ class TestSharedStoreRefusal:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         assert session_storage.reclaim_block_reason() == ""
         assert session_storage.cotenant_sids() == (frozenset(), ())
@@ -2469,8 +2488,7 @@ class TestSharedStoreRefusal:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         protected, refusals = session_storage.cotenant_sids()
         assert protected == frozenset({"legacysid01"})
@@ -2600,8 +2618,7 @@ class TestSharedStoreRefusal:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         reason = session_storage.reclaim_block_reason()
         assert "make reclaiming unsafe" in reason
@@ -2637,8 +2654,7 @@ class TestSharedStoreRefusal:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "no-pods-here"))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
 
         assert session_storage.reclaim_block_reason() == ""
 
@@ -2922,8 +2938,7 @@ class TestCotenantNamesAreLogSafe:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(pod_root))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
         return pod_root
 
     def _make_forged_pod(self, pod_root: Path) -> Path:
@@ -3054,8 +3069,7 @@ class TestCotenantRefusalTextIsForgeSafe:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         monkeypatch.delenv("KIRO_HOME", raising=False)
-        monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
-        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        _pin_a_fake_default_home(monkeypatch, tmp_path)
         monkeypatch.setattr(
             session_storage, "cotenant_sids", lambda *, cached=False: (frozenset(), self._REFUSALS)
         )

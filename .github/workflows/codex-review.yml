@@ -1416,8 +1416,14 @@ jobs:
                 # the verdict to EOF — the very failure this guard prevents.
                 # Worst case inside the window is a few head lines; the
                 # verdict body below line 8 is untouchable by construction.
-                sed -e '1{/^<!-- codex-ai-review -->$/d;}' \
-                  -e '1,8{/^<!-- codex-stale-notice-begin -->$/,/^<!-- codex-stale-notice-end -->$/d;}' \
+                # ONE address block, not two expressions: with the marker
+                # delete as its own `1{...}` expression, BSD sed never
+                # presents line 1 to the `1,8` range that follows (the `d`
+                # ends the cycle), so that range never opens and the old
+                # notice survives and the two stack. GNU sed opens a numeric
+                # range on any later line; BSD only on the exact one. Inside
+                # a single `1,8{}` block both deletes see the open range.
+                sed -e '1,8{/^<!-- codex-ai-review -->$/d;/^<!-- codex-stale-notice-begin -->$/,/^<!-- codex-stale-notice-end -->$/d;}' \
                   "${RUNNER_TEMP:-/tmp}/codex-existing-comment.md"
               } > "${RUNNER_TEMP:-/tmp}/codex-merged-comment.md"
               gh api --method PATCH "repos/$REPO/issues/comments/$existing" \

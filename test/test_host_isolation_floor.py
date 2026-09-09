@@ -34,6 +34,7 @@ import pathlib
 import queue
 import sys
 import tempfile
+import threading
 from logging.handlers import QueueListener
 
 import pytest
@@ -174,6 +175,164 @@ class TestTheDataHomeIsPinnedForEveryTestpath:
         monkeypatch.setattr("kiro_crew.config.paths._resolved_home", None)
 
         assert config_dir().resolve() == mine.resolve()
+
+    def test_a_tests_own_undo_cannot_lift_the_floor(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``monkeypatch.undo()`` in a test body unwinds the TEST's patches only.
+
+        The floor's pins ride on their own ``MonkeyPatch`` (``conftest._floor_monkeypatch``),
+        not on the ``monkeypatch`` fixture the test holds. Before that split, the third
+        full-run audit caught ``test_browser_cli_install.py`` calling ``undo()`` to lift
+        an ``os.name`` patch and then running ``detect()`` against the operator's real
+        ``~/.kiro/crew``: ``undo()`` had lifted ``KIROCREW_HOME`` with it. Every pin
+        named here is one the audit saw a real host write through.
+        """
+        pinned = {
+            key: os.environ[key]
+            for key in ("KIROCREW_HOME", "KIROCREW_WORKSPACE", "KIROCREW_PROFILE", "KIROCREW_TELEMETRY")
+        }
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "mine"))
+        monkeypatch.setattr(os, "name", os.name)  # the shape the real call site undid
+
+        monkeypatch.undo()
+
+        for key, value in pinned.items():
+            assert os.environ.get(key) == value, f"{key} was unpinned by the test's own undo()"
+        assert not _inside_a_guarded_root(pathlib.Path(os.environ["KIROCREW_HOME"]).resolve())
+
+    def test_the_floor_is_set_up_before_and_torn_down_after_the_tests_monkeypatch(
+        self, request: pytest.FixtureRequest
+    ) -> None:
+        """The two undo stacks nest, so a same-key override restores the PIN, not the host.
+
+        Pinned structurally rather than by observing one teardown: the ``monkeypatch``
+        fixture is re-declared at the rootdir with ``_floor_monkeypatch`` as a dependency,
+        which is what orders its setup after, and its teardown before, the floor's.
+        """
+        definition = request._fixturemanager.getfixturedefs("monkeypatch", request.node)
+        assert definition, "no monkeypatch fixture resolved"
+        active = definition[-1]
+        assert "_floor_monkeypatch" in active.argnames, (
+            "the monkeypatch fixture in force here is not the rootdir override; a test's "
+            "undo would race the floor's teardown"
+        )
+        assert pathlib.Path(active.func.__code__.co_filename).resolve() == _ROOT_CONFTEST.resolve()
+
+
+class TestThePlatformProfileIsPinnedForEveryTestpath:
+    """``KIROCREW_PROFILE`` is ``standalone`` for every test, whatever the shell exported.
+
+    A Kiro Crew agent session exports the enterprise ``KIROCREW_PROFILE`` to every child it
+    spawns, and a dev box with an SSO marker resolves the same profile on its own. With
+    no companion installed that profile FAILS CLOSED: ``current_context()`` raises
+    ``PlatformCompositionError``, every governance-gated route answers 500, every gated
+    notification is dropped. A pin in ``test/conftest.py`` reaches ``test/`` alone:
+    ``test/`` stays green while 150+ tests under ``src/kiro_crew/apps/builtins/*/tests/``
+    are red on exactly that box. The pin is a rootdir floor, like the data home.
+    """
+
+    def test_the_profile_is_standalone(self) -> None:
+        assert os.environ.get("KIROCREW_PROFILE") == "standalone"
+
+    def test_the_pin_is_an_autouse_fixture_of_the_rootdir_conftest(self) -> None:
+        definition = getattr(_root, "_reset_platform_context")
+        marker = getattr(definition, "_fixture_function_marker", None) or getattr(
+            definition, "_pytestfixturefunction", None
+        )
+        assert marker is not None and marker.autouse
+
+    def test_the_context_composes_the_open_source_default(self) -> None:
+        """The observable consequence: no fail-closed refusal on an unbooted process."""
+        from kiro_crew.platform.context import current_context
+
+        assert current_context() is not None
+
+
+class TestNoMetricIsEmittedAtImport:
+    """Collecting a test module must not build the process-global metrics recorder.
+
+    An import-time emission (``ToolHookResult.allow()`` as a DEFAULT ARGUMENT of a
+    module-level helper was the real case) runs ``get_recorder()`` before any pin
+    exists. The recorder's first build read the operator's real config, and with
+    ``telemetry.enabled`` there it started an exporter bound to the real
+    ``~/.kiro/crew/metrics`` that wrote every minute for the life of the worker --
+    invisible to the per-test leak guard (the thread predates every test) and to the
+    per-test env pin (already built). The rootdir conftest now pins
+    ``KIROCREW_TELEMETRY=0`` from process start AND records every module whose
+    collection flipped ``metrics.provider._ever_built``; this asserts that record.
+    """
+
+    @staticmethod
+    def _live_root_conftest(config: pytest.Config):
+        """The rootdir conftest AS PYTEST LOADED IT, found by path, not by name.
+
+        ``_root`` above is a second copy loaded for its definitions; the record this
+        test reads is runtime state, so it has to come from the plugin instance that
+        actually ran the collection hooks.
+        """
+        for plugin in config.pluginmanager.get_plugins():
+            file = getattr(plugin, "__file__", None)
+            if file and pathlib.Path(file).resolve() == _ROOT_CONFTEST.resolve():
+                return plugin
+        raise AssertionError("the rootdir conftest is not a registered plugin")
+
+    def test_the_process_starts_with_telemetry_pinned_off(self) -> None:
+        assert os.environ.get("KIROCREW_TELEMETRY") == "0"
+
+    def test_no_module_built_the_recorder_while_being_collected(self, request) -> None:
+        live = self._live_root_conftest(request.config)
+        emitters = list(live.IMPORT_TIME_METRIC_EMITTERS)
+        assert emitters == [], (
+            "importing these test modules emitted a metric (a module-level default "
+            "argument or constant that goes through kiro_crew.metrics): "
+            f"{emitters}. Build the value inside the test or fixture instead; an "
+            "import-time build binds the exporter to the operator's real data home."
+        )
+
+    def test_the_guard_names_a_module_that_emits_at_import(self, request, monkeypatch) -> None:
+        """Negative control, driven on the standalone copy so the live record stays clean.
+
+        The hookwrapper is a plain generator: enter it, emit a metric where the module
+        import would have, leave it, and the module is recorded and the build undone.
+        """
+        from kiro_crew.hooks import ToolHookResult
+        from kiro_crew.metrics import provider
+
+        provider.reset_for_testing()
+        monkeypatch.setattr(_root, "IMPORT_TIME_METRIC_EMITTERS", [])
+        module = request.node.getparent(pytest.Module)
+        assert module is not None
+
+        wrapper = _root.pytest_make_collect_report(module)
+        next(wrapper)
+        ToolHookResult.allow()  # the import-time emission, with the process pin in force
+        assert provider._ever_built, "the emission did not build a recorder; control is vacuous"
+        with pytest.raises(StopIteration):
+            next(wrapper)
+
+        assert _root.IMPORT_TIME_METRIC_EMITTERS == [module.nodeid]
+        assert not provider._ever_built, "the guard must undo the build it recorded"
+        assert not any("Otel" in t.name for t in threading.enumerate())
+
+    def test_a_build_that_predates_the_module_is_blamed_on_the_conftest_import(
+        self, request, monkeypatch
+    ) -> None:
+        from kiro_crew.hooks import ToolHookResult
+        from kiro_crew.metrics import provider
+
+        provider.reset_for_testing()
+        monkeypatch.setattr(_root, "IMPORT_TIME_METRIC_EMITTERS", [])
+        module = request.node.getparent(pytest.Module)
+        ToolHookResult.allow()  # already built when the module is reached
+
+        wrapper = _root.pytest_make_collect_report(module)
+        next(wrapper)
+        with pytest.raises(StopIteration):
+            next(wrapper)
+
+        assert _root.IMPORT_TIME_METRIC_EMITTERS == [f"conftest import (before {module.nodeid})"]
+        assert not provider._ever_built
 
 
 class TestTheWorkspaceRootIsPinnedForEveryTestpath:

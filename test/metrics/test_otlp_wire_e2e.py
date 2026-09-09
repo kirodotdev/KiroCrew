@@ -140,6 +140,15 @@ def _drive_live_build(tmp_path, monkeypatch, readings=None):
     fidelity assertion compare them rather than restate a fixed list.
     """
     monkeypatch.setenv("KIROCREW_TELEMETRY", "1")
+    # The MODULE-scoped `exported` fixture drives this before the function-scoped
+    # rootdir floor has pinned KIROCREW_HOME for the first test, and the live build
+    # reads config through config_dir(), which then created the operator's real
+    # ~/.kiro/crew (third side-effect audit). A fixture outside the floor pins what
+    # it resolves itself.
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "kirocrew-home"))
+    import kiro_crew.config.paths as _paths
+
+    monkeypatch.setattr(_paths, "_resolved_home", None)
     for name, value in (readings if readings is not None else _PINNED_READINGS).items():
         if value is _REAL:
             continue

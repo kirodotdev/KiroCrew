@@ -16,6 +16,7 @@ ship a tool that looks right and delivers nothing:
 
 from __future__ import annotations
 
+import os
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,6 +41,18 @@ from kiro_crew.validation import SEND_MESSAGE_SCHEMA, ValidationError, validate_
 CRON_CALLER = "cron:abc123"
 OWNER_ID = "424242424242424242"
 DM_CHANNEL = "999000111222333444"
+
+
+def _PINNED_HOME_ONLY() -> dict[str, str]:
+    """An otherwise-empty environment that KEEPS the suite's data-home pin.
+
+    ``patch.dict(os.environ, {}, clear=True)`` is the right shape for "no caller
+    identity in the environment", but it also dropped ``KIROCREW_HOME``, so the
+    session-key resolver inside the call fell through to, and created, the
+    operator's real ``~/.kiro/crew`` (audit 3). The pin is not an identity.
+    """
+    home = os.environ.get("KIROCREW_HOME")
+    return {"KIROCREW_HOME": home} if home else {}
 
 
 def _descriptor() -> dict:
@@ -231,7 +244,10 @@ def test_an_addressed_send_is_refused_without_a_verifiable_identity() -> None:
     no benign default to fall back to (the gateway would vet it as the host), so it
     is refused rather than sent under a borrowed identity. Nothing is posted.
     """
-    with patch.dict("os.environ", {}, clear=True), patch("kiro_crew.mcp_core._post") as post:
+    with (
+        patch.dict("os.environ", _PINNED_HOME_ONLY(), clear=True),
+        patch("kiro_crew.mcp_core._post") as post,
+    ):
         result = _call_tool(
             "send_message",
             {"text": "hi", "channel_type": "webex", "target_id": "room:Y2lzY29z"},
@@ -248,7 +264,7 @@ def test_a_bare_send_still_works_without_a_verifiable_identity() -> None:
     it would break the default path for every unidentified caller.
     """
     with (
-        patch.dict("os.environ", {}, clear=True),
+        patch.dict("os.environ", _PINNED_HOME_ONLY(), clear=True),
         patch("kiro_crew.mcp_core._post", return_value={"ok": True}) as post,
     ):
         result = _call_tool("send_message", {"text": "hi"})

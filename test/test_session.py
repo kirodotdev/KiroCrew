@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -3016,9 +3018,13 @@ class TestCleanupLoop:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
 
         sweep_threads: list[str] = []
+        sweep_homes: list[object] = []
 
-        def _fake_sweep() -> int:
+        def _fake_sweep(*, data_home=None) -> int:
+            # The deps hand the sweep the data home the manager resolved on ITS
+            # thread (the pool thread must not resolve it itself); record it too.
             sweep_threads.append(threading.current_thread().name)
+            sweep_homes.append(data_home)
             return 3
 
         with (
@@ -3050,6 +3056,13 @@ class TestCleanupLoop:
         assert sweep_threads, "sweep never executed"
         assert all(name != threading.main_thread().name for name in sweep_threads)
         assert sweep_threads[0].startswith("mc-maint")
+        # The home reached the pool thread pre-resolved and pinned: a sweep that
+        # resolved config_dir() for itself, after the queuing test's pin was gone,
+        # walked the operator's real ~/.kiro/crew (third side-effect audit).
+        assert sweep_homes and all(
+            h is not None and Path(h).resolve() == Path(os.environ["KIROCREW_HOME"]).resolve()
+            for h in sweep_homes
+        ), sweep_homes
         # Verify: non-zero return produces the info log
         assert "removed 3 stale sandbox artifacts" in caplog.text
         await mgr.close_all()

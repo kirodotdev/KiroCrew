@@ -80,6 +80,29 @@ def test_records_the_resolved_path_when_python_on_path_is_a_symlink(tmp_path):
     assert Path(recorded).exists(), recorded
 
 
+def _copies_venv_cannot_relocate_this_interpreter() -> bool:
+    """A macOS CPython that links ``@rpath/libpython`` cannot be copied out of its tree.
+
+    ``--copies`` duplicates the launcher binary alone; a shared-library build that
+    is not a framework (uv's python-build-standalone, Homebrew's) then dies in dyld
+    looking for ``libpython3.x.dylib`` beside the copy: before any ``pyvenv.cfg``
+    logic this test is about gets a chance to run. The python.org framework build,
+    which the docstring below describes, references its framework by absolute path
+    and relocates fine. A property of the host interpreter, so a skip, not a fail.
+    """
+    if sys.platform != "darwin":
+        return False
+    import sysconfig
+
+    return bool(sysconfig.get_config_var("Py_ENABLE_SHARED")) and not sysconfig.get_config_var(
+        "PYTHONFRAMEWORK"
+    )
+
+
+@pytest.mark.skipif(
+    _copies_venv_cannot_relocate_this_interpreter(),
+    reason="macOS: a non-framework shared-lib CPython cannot be copied into a --copies venv",
+)
 def test_a_venv_built_from_the_recorded_path_can_import_the_stdlib(tmp_path):
     """The reported symptom: ``make build`` died inside ensurepip.
 

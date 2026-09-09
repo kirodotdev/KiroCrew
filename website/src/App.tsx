@@ -2830,12 +2830,22 @@ export default function App() {
   // spends the launch. Sampling would let the video open the instant the user
   // closed the changelog, which is the back-to-back pair the policy forbids.
   const [startupInterruptionSeen, setStartupInterruptionSeen] = useState(false)
+  // The LIVE reading of the same conditions the latch is fed from. The gate reads
+  // both, and the live one is load-bearing: the latch is written by the effect
+  // below, which runs AFTER the commit that showed the changelog, while
+  // `changelogDecided` is set one microtask later on the same fetch chain. When
+  // that microtask lands between the commit and its passive effects, the gate's
+  // own effect runs in a render where `changelogDecided` is already true and the
+  // latch still false: and opened the video beside the changelog (flaked in 2
+  // of 5 frontend runs). Same shape as `onboardingOwed` above: derive from the
+  // authoritative flags in the same commit, keep the latch for after they clear.
+  const startupInterruptionLive = showChangelog || updateAvailable || updateStaged
+    || showOnboarding || showAgentImport || showPrivacy
   useEffect(() => {
-    if (showChangelog || updateAvailable || updateStaged
-      || showOnboarding || showAgentImport || showPrivacy) {
+    if (startupInterruptionLive) {
       setStartupInterruptionSeen(true)
     }
-  }, [showChangelog, updateAvailable, updateStaged, showOnboarding, showAgentImport, showPrivacy])
+  }, [startupInterruptionLive])
 
   const [startupVideoOpen, setStartupVideoOpen] = useState(false)
   const [startupVideoDone, setStartupVideoDone] = useState(false)
@@ -2848,7 +2858,7 @@ export default function App() {
     if (!canShowStartupVideo({
       // Either an interruption already appeared this launch, or first-run is still
       // owed and is about to. Both spend the launch.
-      interruptionShown: startupInterruptionSeen || onboardingOwed,
+      interruptionShown: startupInterruptionSeen || startupInterruptionLive || onboardingOwed,
       // Three separate authorities, and the video waits for ALL of them: onboarding's
       // three modals are decided by the `themeBootReady` effect above, the changelog
       // decides across its own fetch, and the slot list decides whether this session
@@ -2860,8 +2870,8 @@ export default function App() {
     markStartupVideoHandled()
     setStartupVideoOpen(true)
   }, [
-    startupVideoOpen, startupVideoDone, startupInterruptionSeen, onboardingOwed,
-    themeBootReady, changelogDecided, slotsLoaded, activeSlotMemoryMode,
+    startupVideoOpen, startupVideoDone, startupInterruptionSeen, startupInterruptionLive,
+    onboardingOwed, themeBootReady, changelogDecided, slotsLoaded, activeSlotMemoryMode,
   ])
 
   // Browser tab title badge — sums every built-in surface's badge (chat,
