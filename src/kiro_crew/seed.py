@@ -10,6 +10,7 @@ not find ``<repo>/test/fixtures/`` from there).
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import shutil
@@ -29,7 +30,7 @@ except ImportError:  # pragma: no cover — KiroCrew targets py3.10.
 # would mean the KiroCrew install itself is broken — there's no scenario
 # where it's optional. ``_safe_audit`` still handles *runtime* SEL failures
 # (read-only ``$HOME``, HMAC-key write failure) via its broad except.
-from kiro_crew import pinned_fs
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.sel import sel
 
@@ -309,6 +310,207 @@ def copy_fixture_into_dir_fd(fixture_name: str, dst_fd: int) -> None:
             )
     finally:
         os.close(src_fd)
+
+
+def copy_fixture_into_witnessed_dir(fixture_name: str, home_dir: Path) -> None:
+    """Copy one shipped fixture into a directory the CALLER just created and witnessed.
+
+    The win32 twin of :func:`copy_fixture_into_dir_fd`, and it exists because that
+    function's whole mechanism is unavailable here: Windows has no ``dir_fd``, so a
+    destination cannot be addressed relative to a held descriptor at all.
+
+    What is preserved, and what is not:
+
+    * The SOURCE is still fully pinned. Each fixture file is opened once and handed
+      to :func:`pinned_fs.copy_file_pinned` as ``src_fd``, which is documented as the
+      only pinned source form on this platform, and each source directory is screened
+      with :func:`pinned_fs.is_reparse_point` before it is descended.
+    * Every DESTINATION is created ``O_CREAT | O_EXCL`` under *home_dir*, so this
+      function can only ever add entries it created. It cannot overwrite anything,
+      and an occupied name is an error rather than a silent replace.
+    * What is NOT preserved is destination ancestor pinning. *home_dir* is reached by
+      name on every entry, which is sound only because the caller created that
+      directory fresh and holds an open handle plus an
+      :func:`pinned_fs.fd_real_path` witness for it -- the documented exception for
+      "a path this process just created". The caller re-witnesses before publishing
+      the completion marker, so a swap during the copy is detected and the seed is
+      refused rather than booted.
+
+    The manifest is deliberately not copied, exactly as in the descriptor twin: the
+    caller publishes it last through
+    :func:`publish_fixture_manifest_into_witnessed_dir` so a partial tree can never
+    carry a completion marker.
+    """
+    src = _resolve_fixture(fixture_name)
+    manifest_seen = False
+
+    def _refuse_skip(reason: str, path: str) -> None:
+        raise SeedError(
+            f"fixture {fixture_name!r} contains an unsupported {reason}: {path}",
+            guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
+        )
+
+    def _walk(src_dir: Path, dst_dir: Path, display: Path) -> None:
+        nonlocal manifest_seen
+        # PIN the source directory for the whole of its own listing. On Windows the
+        # handle is opened without FILE_SHARE_DELETE, so neither this directory nor
+        # any directory ABOVE it can be renamed or deleted while it is held, and the
+        # open itself refuses a junction sitting at the name. Screening with
+        # `is_reparse_point` and then descending by name is a check-to-descend
+        # window instead, and an adversary that can plant the junction picks when to
+        # plant it. The listing below is still by name, which is why every entry is
+        # settled by an ATOMIC open rather than by a stat that precedes one.
+        #
+        # The refusal is mapped back onto this function's own error contract: the pin
+        # reports a reparse point as NotADirectoryError (or ELOOP on POSIX), and
+        # callers of the seeder are documented to see `unsupported symlink`.
+        try:
+            src_pin = platform_compat.pin_directory(src_dir)
+        except NotADirectoryError:
+            _refuse_skip(pinned_fs.SKIP_SYMLINK, str(display))
+            raise  # pragma: no cover - _refuse_skip always raises
+        except OSError as exc:
+            if getattr(exc, "errno", None) == errno.ELOOP:
+                _refuse_skip(pinned_fs.SKIP_SYMLINK, str(display))
+            raise
+        try:
+            entries = sorted(os.listdir(src_dir))
+        except OSError:
+            os.close(src_pin)
+            raise
+        try:
+            for name in entries:
+                if display == src and name == FIXTURE_MANIFEST:
+                    manifest_seen = True
+                    continue
+                shown = display / name
+                src_entry = src_dir / name
+                # An EARLY reject with the clearest message. It is not the authority:
+                # a screen by name can go stale, so the atomic opens below settle what
+                # the name really is. Defense in depth, the same pairing
+                # `open_file_no_reparse` carries at its other call sites.
+                if pinned_fs.is_reparse_point(src_entry):
+                    _refuse_skip(pinned_fs.SKIP_SYMLINK, str(shown))
+                # lstat CLASSIFIES; it does not authorize. The pinned open below is
+                # the authority on what the name really is, and it refuses the
+                # mismatch itself (IsADirectoryError / NotADirectoryError), so a
+                # swap between these two calls cannot promote a link into a copy.
+                st = os.lstat(src_entry)
+                if stat.S_ISDIR(st.st_mode):
+                    child = dst_dir / name
+                    try:
+                        child.mkdir(mode=0o700)
+                    except FileExistsError as exc:
+                        raise SeedError(
+                            f"seed destination name was occupied during copy: {shown}",
+                            guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+                        ) from exc
+                    _walk(src_entry, child, shown)
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    _refuse_skip(pinned_fs.SKIP_NOT_REGULAR, str(shown))
+                # The source descriptor is opened ONCE and handed over; copy_file_pinned
+                # takes ownership and fstats it, so the bytes copied are the bytes of the
+                # inode this open reached rather than of whatever the name means later.
+                #
+                # `open_file_no_reparse`, not `os.open`: on Windows
+                # `getattr(os, "O_NOFOLLOW", 0)` is 0, so a plain `os.open` FOLLOWS a
+                # reparse point at the leaf and the earlier screen was only a
+                # prediction about it. This refuses the reparse point in the same
+                # operation that opens the file, which is what makes "opened once and
+                # handed over" a fact on this platform rather than a claim.
+                try:
+                    src_fd = platform_compat.open_file_no_reparse(src_entry)
+                except OSError as exc:
+                    if getattr(exc, "errno", None) == errno.ELOOP:
+                        _refuse_skip(pinned_fs.SKIP_SYMLINK, str(shown))
+                    if isinstance(exc, IsADirectoryError):
+                        # The name changed kind between the classifier and this open.
+                        _refuse_skip(pinned_fs.SKIP_NOT_REGULAR, str(shown))
+                    raise
+                try:
+                    copied = pinned_fs.copy_file_pinned(
+                        str(shown),
+                        str(dst_dir / name),
+                        src_fd=src_fd,
+                        force_mode=0o600,
+                        on_skip=_refuse_skip,
+                    )
+                except FileExistsError as exc:
+                    raise SeedError(
+                        f"seed destination name was occupied during copy: {shown}",
+                        guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+                    ) from exc
+                if not copied:  # pragma: no cover - the reporter above always raises
+                    raise SeedError(
+                        f"fixture entry could not be copied: {shown}",
+                        guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+                    )
+        finally:
+            os.close(src_pin)
+
+    # Early reject at the ROOT, for the message; `pin_directory` inside `_walk` is
+    # what actually settles it, in the same operation that opens it.
+    if pinned_fs.is_reparse_point(src):
+        _refuse_skip(pinned_fs.SKIP_SYMLINK, str(src))
+    _walk(src, home_dir, src)
+    if not manifest_seen:
+        raise SeedError(
+            f"fixture {fixture_name!r} has no {FIXTURE_MANIFEST} completion marker",
+            guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+        )
+
+
+def publish_fixture_manifest_into_witnessed_dir(fixture_name: str, home_dir: Path) -> None:
+    """Publish the completion manifest into a caller-witnessed seeded home.
+
+    The commit step of the win32 seeding transaction, and the twin of
+    :func:`publish_fixture_manifest`. The source is pinned by descriptor and the
+    destination is an ``O_EXCL`` create under *home_dir*, so the marker can only
+    appear once and only over a tree this process finished writing.
+    """
+    src = _resolve_fixture(fixture_name) / FIXTURE_MANIFEST
+    if pinned_fs.is_reparse_point(src):
+        raise SeedError(
+            f"fixture {fixture_name!r} completion marker is a link: {src}",
+            guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
+        )
+
+    def _refuse_skip(reason: str, path: str) -> None:
+        raise SeedError(
+            f"fixture {fixture_name!r} completion marker is an unsupported {reason}: {path}",
+            guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
+        )
+
+    # Same pairing as the tree walk: the screen above is the early message, and this
+    # open is the authority. `os.open` with `getattr(os, "O_NOFOLLOW", 0)` is NOT --
+    # that flag is 0 on Windows, so a reparse point planted at the marker name after
+    # the screen would be FOLLOWED and a host file's contents would be published as
+    # this pod's completion marker, inside a home the agent can read.
+    try:
+        src_fd = platform_compat.open_file_no_reparse(src)
+    except IsADirectoryError:
+        _refuse_skip(pinned_fs.SKIP_NOT_REGULAR, str(src))
+        raise  # pragma: no cover - _refuse_skip always raises
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.ELOOP:
+            raise SeedError(
+                f"fixture {fixture_name!r} completion marker is a link: {src}",
+                guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
+            ) from exc
+        raise
+    copied = pinned_fs.copy_file_pinned(
+        str(src),
+        str(home_dir / FIXTURE_MANIFEST),
+        src_fd=src_fd,
+        force_mode=0o600,
+        on_skip=_refuse_skip,
+    )
+    if not copied:  # pragma: no cover - the reporter above always raises
+        raise SeedError(
+            f"fixture {fixture_name!r} completion marker could not be copied",
+            guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+        )
 
 
 def publish_fixture_manifest(fixture_name: str, dst_fd: int) -> None:
@@ -620,9 +822,7 @@ def seed_cmd(args) -> int:  # noqa: ANN001 — argparse.Namespace at call site
         # ``target_set`` records presence-only (captured pre-``seed()``) —
         # never the raw path, which would leak ``$HOME``-derived info.
         # ``replace`` records whether the rmtree path was taken.
-        resources=(
-            f"fixture={fixture!r} target_set={target_set} replace={replace}"
-        ),
+        resources=(f"fixture={fixture!r} target_set={target_set} replace={replace}"),
     )
     return EXIT_OK
 
@@ -664,6 +864,4 @@ def _safe_audit(*, outcome: str, resources: str) -> None:
             resources=resources,
         )
     except Exception:  # noqa: BLE001 — audit must never fail the tool.
-        logging.getLogger(__name__).warning(
-            "seed: SEL audit emit failed", exc_info=True
-        )
+        logging.getLogger(__name__).warning("seed: SEL audit emit failed", exc_info=True)

@@ -1,4 +1,4 @@
-"""A Windows xdist run must refuse to replace a dead worker.
+"""A Windows or macOS xdist run must refuse to replace a dead worker.
 
 `pytest-timeout` has no SIGALRM on Windows, so it falls back to its thread
 method, and that method cannot fail a single test -- it terminates the whole
@@ -53,11 +53,18 @@ def _logical_lines(run: str) -> list[str]:
 
 
 def _windows_xdist_invocations() -> list[tuple[str, str]]:
-    """Every (job name, command) that runs pytest under xdist on Windows."""
+    """Every (job name, command) that runs pytest under xdist on Windows or macOS.
+
+    macOS is included because the FLAG is now set there too. The stated cause is
+    Windows-specific (no SIGALRM), but the xdist path it avoids is not, and a
+    burnt cap costs about ten times as much on a macOS runner. Without this the
+    macOS invocation would carry the flag with nothing holding it in place.
+    """
     workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
     found: list[tuple[str, str]] = []
     for job_name, job in workflow["jobs"].items():
-        if "windows" not in str(job.get("runs-on", "")).lower():
+        runner = str(job.get("runs-on", "")).lower()
+        if "windows" not in runner and "macos" not in runner:
             continue
         for step in job.get("steps") or []:
             if not isinstance(step, dict):
@@ -76,10 +83,16 @@ def test_ci_has_a_windows_xdist_job_to_guard() -> None:
     # a job rename or a shard removal would do.
     invocations = _windows_xdist_invocations()
     assert invocations, (
-        "ci.yml has no Windows job running pytest under xdist. If that is "
-        "deliberate, delete this file; if it is a rename, update the discovery "
+        "ci.yml has no Windows or macOS job running pytest under xdist. If that "
+        "is deliberate, delete this file; if it is a rename, update the discovery "
         "in _windows_xdist_invocations so the guard keeps applying."
     )
+    # Both hosts, named. One list covering two runners can go half-blind: a
+    # rename on either side would leave the other's invocations still found and
+    # every assertion still passing.
+    jobs = {job for job, _ in invocations}
+    assert any("windows" in job for job in jobs), jobs
+    assert any("macos" in job for job in jobs), jobs
 
 
 def test_every_windows_xdist_invocation_refuses_worker_replacement() -> None:
@@ -87,7 +100,8 @@ def test_every_windows_xdist_invocation_refuses_worker_replacement() -> None:
     # because a shard hangs on the first timeout it happens to hit.
     for job_name, command in _windows_xdist_invocations():
         assert FLAG in command, (
-            f"{job_name} runs pytest under xdist on Windows without {FLAG}: "
+            f"{job_name} runs pytest under xdist on a non-Linux runner without "
+            f"{FLAG}: "
             f"{command!r}. Without it a timeout-killed worker sends the session "
             f"into xdist's node-replacement path, which hangs until the job cap "
             f"(#4227). setup.cfg's --max-worker-restart=2 is a deliberate "
@@ -103,7 +117,7 @@ def test_the_flag_is_not_weakened_to_allow_a_replacement() -> None:
     for job_name, command in _windows_xdist_invocations():
         for value in re.findall(r"--max-worker-restart[= ](\S+)", command):
             assert value == "0", (
-                f"{job_name} sets --max-worker-restart={value} on Windows. Any "
+                f"{job_name} sets --max-worker-restart={value}. Any "
                 f"nonzero value allows the node replacement that hangs the "
                 f"session; the first replacement is the one #4227 hit."
             )

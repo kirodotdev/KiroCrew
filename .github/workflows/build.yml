@@ -81,12 +81,44 @@ jobs:
           name: wheel
           path: dist/*.whl
 
-  # Keep the native installer fast without coupling the check to a custom UI.
-  # This builds the real Windows artifact, installs it silently, verifies the
-  # registration and payload, and fails if extraction exceeds five minutes.
+  # Build the real Windows artifact, install it silently, verify the
+  # registration and payload, BOOT THE INSTALLED GATEWAY, and fail if extraction
+  # exceeds the ceiling.
+  #
+  # The backend payload is a REAL python-build-standalone runtime carrying the
+  # wheel build-wheel just produced, not a stub. Before this, the step staged a
+  # two-line `@echo off` batch file as the entire payload and therefore had to
+  # pass `-SkipGatewayValidation`: with no bundled interpreter there was nothing
+  # for the script's gateway leg to launch. The consequence was that the whole
+  # class of defect that leaves an installable-but-unbootable artifact -- a prune
+  # that drops a module the gateway imports, bytecode filtered out of the
+  # payload, a launcher redirecting imports into an empty user cache -- had no
+  # gate on a PR at all. The install-duration ceiling it did enforce was measured
+  # against 40 bytes of batch file, so it proved nothing about a real install
+  # either.
+  #
+  # This is the SAME assembly packaging/build-desktop.sh's build_backend_windows
+  # performs, minus the voice extras: PBS runtime, pip install, the relocatable
+  # bin/kirocrew.cmd shim, then packaging/precompile_windows.py for the measured
+  # gateway import closure. The extras are deliberately omitted -- they add a
+  # pywhispercpp + numpy download for a code path the gateway boot never reaches
+  # -- which is why the pyc floor below is passed explicitly rather than left at
+  # the script's full-bundle default.
+  #
+  # Budget: the added steps are the PBS fetch (~32MB zstd via uv, well under a
+  # minute), the wheel install (a few minutes at most, all deps --prefer-binary)
+  # and the precompile pass (compiles ~1000 sources). NSIS now compresses a real
+  # payload rather than 40 bytes, which is the largest single addition. The job
+  # keeps its 20-minute cap; if the real installer cannot be built, installed and
+  # booted inside that, the artifact users receive has a problem worth failing on.
   build-windows-installer:
     name: Build Windows Installer (x64)
     runs-on: windows-latest
+    # Consumes build-wheel's artifact rather than building its own wheel: that
+    # job already stages the frontend dist into the package before building, so
+    # its wheel is the one users install. Building a second wheel here would add
+    # an npm frontend build to a Windows runner and let the two drift.
+    needs: build-wheel
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,12 +135,72 @@ jobs:
         working-directory: website/electron
         run: npm ci --no-audit --no-fund
 
-      - name: Create minimal backend payload
+      - name: Download the wheel to bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wheel
+          path: wheelhouse
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # Cache disabled deliberately: an Actions cache is writable from any
+          # branch, and a restored entry would reach the interpreter this job
+          # installs and boots (zizmor cache-poisoning). The PBS fetch is fast
+          # enough that caching it buys little.
+          enable-cache: false
+
+      # The same interpreter provider build-desktop.sh uses (`provision_pbs`),
+      # pinned to the same 3.12 series, so this job exercises the runtime users
+      # actually get rather than the runner's own Python.
+      - name: Assemble a real backend payload from the wheel
         shell: pwsh
-        working-directory: website/electron
         run: |
-          New-Item -ItemType Directory -Force backend-dist/kirocrew-backend/bin | Out-Null
-          @('@echo off', 'exit /b 0') | Set-Content -Encoding ascii backend-dist/kirocrew-backend/bin/kirocrew.cmd
+          $ErrorActionPreference = "Stop"
+          $wheel = @(Get-ChildItem -LiteralPath wheelhouse -File -Filter "*.whl")
+          if ($wheel.Count -ne 1) {
+            throw "Expected exactly one wheel in wheelhouse; found $($wheel.Count)."
+          }
+          uv python install cpython-3.12-windows-x86_64-none
+          $pbs = @(
+            Get-ChildItem -LiteralPath (uv python dir) -Directory |
+              Where-Object { $_.Name -like "cpython-3.12*-windows-x86_64-none" }
+          )
+          if ($pbs.Count -lt 1) {
+            throw "uv installed no cpython-3.12 windows-x86_64 interpreter under $(uv python dir)."
+          }
+          $out = "website/electron/backend-dist/kirocrew-backend"
+          New-Item -ItemType Directory -Force (Split-Path $out) | Out-Null
+          Copy-Item -Recurse -LiteralPath $pbs[0].FullName -Destination $out
+          # PBS marks itself externally managed; pip refuses to install into it
+          # until that marker is gone. build_backend_windows deletes it too.
+          Get-ChildItem -LiteralPath $out -Recurse -File -Filter "EXTERNALLY-MANAGED" |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+          $python = Join-Path $out "python.exe"
+          $env:PYTHONNOUSERSITE = "1"
+          $env:PYTHONPATH = $null
+          & $python -m pip install --prefer-binary --no-warn-script-location `
+            --disable-pip-version-check $wheel[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "pip install of the wheel failed." }
+          # The relocatable launcher shim, byte-identical in shape to the one
+          # build_backend_windows writes: %~dp0 is bin\, so the interpreter
+          # resolves relative to the bundle wherever it lands.
+          New-Item -ItemType Directory -Force (Join-Path $out "bin") | Out-Null
+          Set-Content -Encoding ascii -LiteralPath (Join-Path $out "bin\kirocrew.cmd") `
+            -Value @('@echo off', '"%~dp0..\python.exe" -s -m kiro_crew %*')
+          # Self-containment gate, same as the packaging script's: a missing
+          # dependency must fail here, not at gateway boot.
+          & $python -s -m kiro_crew --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "the bundled backend is NOT self-contained under PYTHONNOUSERSITE=1."
+          }
+          # Ship checked-hash bytecode for the measured gateway import closure,
+          # which is what the script's pyc floor then verifies survived into the
+          # installed artifact.
+          $env:PYTHONDONTWRITEBYTECODE = "1"
+          & $python -s packaging/precompile_windows.py --root $out --module kiro_crew.cli_server
+          if ($LASTEXITCODE -ne 0) { throw "precompiling the gateway import closure failed." }
+          Remove-Item Env:PYTHONDONTWRITEBYTECODE
 
       - name: Compile unsigned x64 NSIS installer
         working-directory: website/electron
@@ -116,10 +208,22 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      - name: Enforce native installer performance ceiling
+      # No -SkipGatewayValidation: the payload above has a real interpreter, so
+      # the script's gateway leg runs and requires /api/ready within its own
+      # 30-second ceiling.
+      #
+      # -MinStartupPycs 750 rather than the script's 1000 default: that default
+      # describes the FULL release bundle, which also carries the voice extras
+      # (pywhispercpp, numpy) this job omits. Measured on the core closure of
+      # kiro_crew.cli_server, precompile emits about 990 sources, so 750 is a
+      # floor with headroom for the win32 closure differing from the measured one
+      # while still catching what the assertion exists for: bytecode filtered out
+      # of the artifact, or the launcher redirecting imports into an empty user
+      # cache, both of which land near zero rather than near 750.
+      - name: Install the artifact, boot the installed gateway, enforce the ceilings
         shell: pwsh
         working-directory: website/electron
-        run: '& "$env:GITHUB_WORKSPACE\.github\scripts\test-windows-installer.ps1" -SkipGatewayValidation'
+        run: '& "$env:GITHUB_WORKSPACE\.github\scripts\test-windows-installer.ps1" -MinStartupPycs 750'
 
       - name: Upload installer timing
         if: always()
@@ -128,6 +232,9 @@ jobs:
           name: windows-installer-performance
           path: |
             website/electron/runtime-evidence/install-timing.txt
+            website/electron/runtime-evidence/gateway-startup-timing.txt
+            website/electron/runtime-evidence/gateway-stdout.log
+            website/electron/runtime-evidence/gateway-stderr.log
             website/electron/runtime-evidence/native-install-mode.png
           if-no-files-found: warn
 

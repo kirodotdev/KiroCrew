@@ -18,19 +18,30 @@ the question the fakes cannot.
 from __future__ import annotations
 
 import subprocess
-import uuid
 
 import pytest
 
 from kiro_crew.platform_compat import IS_WINDOWS
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import windows as win
-from kiro_crew.pod.config import PodConfig
+from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 requires_windows = pytest.mark.skipif(
     not IS_WINDOWS, reason="drives the real schtasks.exe, which only exists on win32"
 )
+
+
+def _no_successor(tmp_path):
+    """A gateway pid sidecar path with nothing at it.
+
+    ``supervise_gateway`` reads that sidecar after the gateway it spawned exits,
+    to see whether an in-app restart (``os.execv``, which on Windows spawns a
+    successor and exits the caller) left a replacement serving. An absent file is
+    the "no successor" answer, which is what every test here means: they assert
+    the ordinary spawn-and-exit contract, not the restart handover.
+    """
+    return tmp_path / "no-such-gateway.pid"
 
 
 def _cp(stdout: str = "", returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess:
@@ -118,11 +129,15 @@ def test_the_wrapper_routes_logs_to_files_since_there_is_no_journal(cfg):
     assert f'if not exist "{out.parent}" mkdir "{out.parent}"' in body
 
 
-def test_the_wrapper_does_not_enable_delayed_expansion(cfg):
-    """A `!` in a pod-plane path must stay literal."""
+def test_the_wrapper_disables_delayed_expansion(monkeypatch, tmp_path):
+    """A `!` in a pod-plane path stays literal."""
+    weird = tmp_path / "pod!root"
+    monkeypatch.setenv("KIROCREW_POD_ROOT", str(weird))
+    cfg = PodConfig.load()
+    cfg.pods_dir.mkdir(parents=True, exist_ok=True)
     body = win.render_task_script(cfg, "smoke")
-    assert "setlocal" in body
-    assert "EnableDelayedExpansion" not in body
+    assert body.splitlines()[2] == "setlocal DisableDelayedExpansion"
+    assert f'set "KIROCREW_POD_ROOT={weird}"' in body
 
 
 def test_a_percent_in_the_plane_is_escaped_not_expanded(cfg, monkeypatch, tmp_path):
@@ -302,27 +317,24 @@ def test_recent_journal_says_why_it_is_empty(cfg):
 # --------------------------------------------------------------------------
 # The exit-code contract
 # --------------------------------------------------------------------------
-def test_a_terminal_refusal_keeps_its_honest_exit_code_on_windows():
-    """The launchd twin must translate 78 to 0; this platform must NOT.
+def test_the_runtime_wrapper_does_not_translate_on_windows(cfg, monkeypatch):
+    """The launchd twin translates 78 to 0; this platform must NOT.
 
-    Pinned because the reason is a property of the task this backend renders: it
-    has no restart policy, so the honest code is already terminal. A future
-    change that adds one has to revisit `windows_exit_code`, exactly as the
-    launchd side's `KeepAlive` is pinned.
+    Pinned on ``terminal_exit_code`` -- the function callers actually reach --
+    because that is where the decision lives, and a change that gives the task a
+    restart policy would have to change it HERE. Asserting the same property on a
+    per-platform identity helper instead would be decorative: nothing calls such a
+    helper, so a translation added to this branch would leave it green.
+
+    The reason the answer is "no translation" is a property of the task this
+    backend renders: Task Scheduler has no restart policy, so a non-zero exit is
+    recorded and stays down, and the honest code is already the terminal one.
     """
     from kiro_crew.pod.config import TERMINAL_BOOT_EXIT_CODES
 
-    for code in (*TERMINAL_BOOT_EXIT_CODES, 0, 1, 42):
-        assert win.windows_exit_code(code) == code
-
-
-def test_the_runtime_wrapper_does_not_translate_on_windows(cfg, monkeypatch):
-    from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE
-
     monkeypatch.setattr(rt, "IS_MACOS", False)
-    assert rt.terminal_exit_code(cfg, "smoke", EXIT_REFUSED_UNRECOVERABLE) == (
-        EXIT_REFUSED_UNRECOVERABLE
-    )
+    for code in (*TERMINAL_BOOT_EXIT_CODES, 0, 1, 42):
+        assert rt.terminal_exit_code(cfg, "smoke", code) == code
 
 
 # --------------------------------------------------------------------------
@@ -485,6 +497,9 @@ class _FakeClock:
         self._t += 1.0
         return self._t
 
+    def time(self) -> float:
+        return self._t
+
     def sleep(self, _s: float) -> None:
         return None
 
@@ -604,7 +619,7 @@ def test_stop_pod_clears_the_recorded_result_so_a_reused_name_starts_clean(cfg, 
 def test_boot_supervises_instead_of_exec_on_windows(cfg, monkeypatch, tmp_path):
     """Windows has no exec: os.execve there spawns and terminates the caller.
 
-    Using it would change the pid (so main_pid could no longer name the process
+    Using it would change the pid (so main_pid would stop naming the process
     that bound the port) and let the task's own process exit while the gateway
     kept running orphaned, with Task Scheduler reporting the task finished.
     """
@@ -625,17 +640,185 @@ def test_boot_supervises_instead_of_exec_on_windows(cfg, monkeypatch, tmp_path):
         return FakeProc()
 
     monkeypatch.setattr(win.subprocess, "Popen", fake_popen)
+    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
+    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
+    # Popen a real query and fail on the fake's missing context-manager protocol.
+    # On Linux it reads /proc and the pin is a no-op.
+    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
+    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: True)
+    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: True)
+    # Same reason as the pin above, for the other platform primitive the
+    # supervision loop reads. After the gateway is reaped it asks whether a
+    # restart successor could exist, and `process_descendants` shells out to `ps`
+    # on macOS -- an unpinned call would hand the fake Popen a real query. Empty
+    # is the ordinary-shutdown answer: nothing to adopt.
+    monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
     rc = win.supervise_gateway(
-        cfg, "smoke", tmp_path / "kirocrew", ["gateway", "--no-crons"], {"A": "b"}
+        cfg,
+        "smoke",
+        tmp_path / "kirocrew",
+        ["gateway", "--no-crons"],
+        {"A": "b"},
+        gateway_pid_record=_no_successor(tmp_path),
     )
     assert rc == 3
     assert seen["argv"][1:] == ["gateway", "--no-crons"]
-    # The POSIX analogue of start_new_session: a Ctrl+C in whatever console the
-    # task ran under must not reach the pod.
-    assert seen["flags"] == win.CREATE_NEW_PROCESS_GROUP
+    # The flag composition itself is pinned by
+    # test_the_ceiling_is_attached_while_the_gateway_is_still_suspended, which
+    # substitutes sentinels because both constants are 0 off win32.
+    assert seen["flags"] == win.CREATE_NEW_PROCESS_GROUP | win.CREATE_SUSPENDED
     # The record is dropped once the gateway exits, so a dead pod never attests.
     assert win.supervised_pid(cfg, "smoke") is None
     assert sys is not None  # keep the import meaningful for linters
+
+
+def test_the_ceiling_is_attached_while_the_gateway_is_still_suspended(cfg, monkeypatch, tmp_path):
+    """Order is the whole guarantee, so it is pinned rather than left to reading.
+
+    Job membership covers a member's FUTURE descendants, not ones it already
+    spawned, so attaching the ceiling to a RUNNING child leaves a window where a
+    grandchild escapes. A child created suspended has executed no instructions
+    and provably has no descendants, which closes that window by construction --
+    which only holds if the calls happen in this order.
+
+    The two creation flags are replaced with distinct sentinels for the duration:
+    both are literally ``0`` off win32, so asserting on their real values would
+    make this test vacuous on the matrix that actually runs it.
+    """
+    import os
+
+    order: list[str] = []
+    monkeypatch.setattr(win, "CREATE_NEW_PROCESS_GROUP", 0x200)
+    monkeypatch.setattr(win, "CREATE_SUSPENDED", 0x4)
+
+    class FakeProc:
+        pid = os.getpid()
+
+        def wait(self):
+            return 0
+
+    def fake_popen(argv, **kwargs):
+        assert kwargs["creationflags"] & win.CREATE_SUSPENDED, (
+            "the gateway must be created SUSPENDED, or the ceiling races the "
+            "descendants it is meant to bound"
+        )
+        assert (
+            kwargs["creationflags"] & win.CREATE_NEW_PROCESS_GROUP
+        ), "the pod must still be out of the task console's Ctrl+C group"
+        order.append("spawn")
+        return FakeProc()
+
+    monkeypatch.setattr(win.subprocess, "Popen", fake_popen)
+    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
+    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
+    # Popen a real query and fail on the fake's missing context-manager protocol.
+    # On Linux it reads /proc and the pin is a no-op.
+    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
+    monkeypatch.setattr(
+        win, "apply_windows_resource_ceiling", lambda pid: order.append("ceiling") or True
+    )
+    monkeypatch.setattr(
+        win, "resume_process_main_thread", lambda pid: order.append("resume") or True
+    )
+    # Pinned like `process_start_time`: the post-reap successor check would
+    # otherwise shell out to a real `ps` on macOS. Empty keeps it out of `order`.
+    monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
+    assert (
+        win.supervise_gateway(
+            cfg,
+            "smoke",
+            tmp_path / "kirocrew",
+            ["gateway"],
+            {},
+            gateway_pid_record=_no_successor(tmp_path),
+        )
+        == 0
+    )
+    assert order == ["spawn", "ceiling", "resume"]
+
+
+def test_a_gateway_that_cannot_be_resumed_is_killed_not_left_frozen(cfg, monkeypatch, tmp_path):
+    """A frozen child must never masquerade as a running gateway.
+
+    Same policy ``acp.client.finish_suspended_spawn`` implements for this
+    handshake: a failed resume leaves a process that is alive, answers nothing,
+    and would otherwise sit there until the boot timeout blamed the worktree.
+    """
+    import os
+
+    killed: list[str] = []
+
+    class FakeProc:
+        pid = os.getpid()
+
+        def kill(self):
+            killed.append("kill")
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(win.subprocess, "Popen", lambda argv, **kw: FakeProc())
+    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
+    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
+    # Popen a real query and fail on the fake's missing context-manager protocol.
+    # On Linux it reads /proc and the pin is a no-op.
+    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
+    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: True)
+    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: False)
+    # Pinned like `process_start_time`: the post-reap successor check would
+    # otherwise shell out to a real `ps` on macOS.
+    monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
+    rc = win.supervise_gateway(
+        cfg,
+        "smoke",
+        tmp_path / "kirocrew",
+        ["gateway"],
+        {},
+        gateway_pid_record=_no_successor(tmp_path),
+    )
+    assert killed == ["kill"]
+    assert rc == EXIT_REFUSED_UNRECOVERABLE
+    # Nothing was recorded, so no reader can attest for a pod that never ran.
+    assert win.supervised_pid(cfg, "smoke") is None
+
+
+def test_a_missing_ceiling_does_not_fail_the_boot(cfg, monkeypatch, tmp_path):
+    """Matches how an unavailable cgroup scope is handled on the POSIX side.
+
+    ``apply_job_limits`` has already logged the miss as a SECURITY warning; a pod
+    that refuses to start because a ceiling could not be attached would be a
+    worse outcome than one that runs unbounded and says so in the log.
+    """
+    import os
+
+    class FakeProc:
+        pid = os.getpid()
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(win.subprocess, "Popen", lambda argv, **kw: FakeProc())
+    # Pinned alongside the fake Popen: on macOS ``process_start_time`` shells out
+    # to ``ps`` through ``subprocess``, so an unpinned call would hand the fake
+    # Popen a real query and fail on the fake's missing context-manager protocol.
+    # On Linux it reads /proc and the pin is a no-op.
+    monkeypatch.setattr(win, "process_start_time", lambda pid: "1234567")
+    monkeypatch.setattr(win, "apply_windows_resource_ceiling", lambda pid: False)
+    monkeypatch.setattr(win, "resume_process_main_thread", lambda pid: True)
+    # Pinned like `process_start_time`: the post-reap successor check would
+    # otherwise shell out to a real `ps` on macOS.
+    monkeypatch.setattr(win, "attributed_descendants", lambda pid, token: [])
+    assert (
+        win.supervise_gateway(
+            cfg,
+            "smoke",
+            tmp_path / "kirocrew",
+            ["gateway"],
+            {},
+            gateway_pid_record=_no_successor(tmp_path),
+        )
+        == 0
+    )
 
 
 # --------------------------------------------------------------------------
@@ -649,44 +832,10 @@ def test_schtasks_resolves_from_a_trusted_system_directory():
     assert win.schtasks_bin() is not None
 
 
-@requires_windows
-def test_require_backend_probes_real_task_creation(monkeypatch):
-    """The gate's third stage. Group Policy, a disabled Schedule service and a
-    principal without TASK_CREATE all refuse invisibly from the client side, so
-    the only honest check is to try."""
-    monkeypatch.setattr(win, "_PROBE_OK", False)
-    win.require_backend()  # must not raise on a normal user session
-
-
-@requires_windows
-def test_a_real_task_round_trips_through_create_run_and_delete(cfg):
-    """End to end against the actual service manager, with a trivial action.
-
-    Proves the four verbs the backend depends on, unelevated, in the pod plane's
-    own folder — without booting a gateway, which is the next test's job.
-    """
-    name = f"probe{uuid.uuid4().hex[:8]}"
-    marker = cfg.pods_dir / f"{name}.touched"
-    script = cfg.pods_dir / f"{name}.cmd"
-    script.write_text(f'@echo off\r\n> "{marker}" echo ok\r\n', newline="")
-    tn = win.task_name(cfg, name)
-    try:
-        created = win.schtasks(
-            "/Create", "/F", "/SC", "ONCE", "/ST", "00:00", "/TN", tn, "/TR", f'"{script}"'
-        )
-        assert created.returncode == 0, created.stderr or created.stdout
-        assert win.task_exists(cfg, name) is True
-        assert win.schtasks("/Run", "/TN", tn).returncode == 0
-        deadline = 30
-        while deadline and not marker.exists():
-            import time as _t
-
-            _t.sleep(1)
-            deadline -= 1
-        assert marker.exists(), "the task never ran its action"
-    finally:
-        win.schtasks("/Delete", "/TN", tn, "/F")
-    assert win.task_exists(cfg, name) is False
+# The two tests that drive the REAL Task Scheduler (the creation probe and the
+# create/run/delete round trip) live in test_pod_windows_boot.py: that module is
+# opt-in (KIROCREW_E2E_POD_WINDOWS=1) and on the root conftest's host-service
+# allowlist, so an ordinary Windows `pytest` never registers a scheduled task.
 
 
 @requires_windows
@@ -704,3 +853,40 @@ def test_the_wrapper_a_real_pod_would_boot_is_a_parsable_batch_file(cfg):
     cp = subprocess.run([str(probe)], capture_output=True, timeout=30, **UTF8_TEXT)
     assert cp.returncode == 0, cp.stderr
     assert str(cfg.pod_root) in cp.stdout
+
+
+def test_the_wrapper_is_written_in_the_console_code_page_and_refuses_what_it_cannot_spell(
+    tmp_path, monkeypatch
+):
+    """cmd.exe reads a batch file in the OEM code page, never UTF-8, so a wrapper
+    written as UTF-8 would hand cmd.exe different bytes for any non-ASCII path.
+    The write encodes in that page strictly and refuses rather than misspell."""
+    monkeypatch.setattr(win, "_script_encoding", lambda: "cp437")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "pods-env"))
+    monkeypatch.setenv("KIROCREW_POD_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+
+    # A Latin-1 letter is inside cp437, so this plane still renders and writes.
+    monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "caf\u00e9" / "pods"))
+    cfg = PodConfig.load()
+    cfg.pods_dir.mkdir(parents=True, exist_ok=True)
+    path = win.write_task_script(cfg, "smoke")
+    body = path.read_bytes().decode("cp437")
+    assert body.startswith("@echo off") and "caf\u00e9" in body
+
+    # A CJK character is not, so the write refuses with the offending text named.
+    monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "\u4e2d\u6587" / "pods"))
+    cfg = PodConfig.load()
+    cfg.pods_dir.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(win.WindowsTaskError) as info:
+        win.write_task_script(cfg, "smoke")
+    assert "console code page" in str(info.value)
+    assert "\u4e2d" in str(info.value)
+
+
+def test_the_wrapper_encoding_is_oem_on_windows_and_utf8_elsewhere(monkeypatch):
+    monkeypatch.setattr(win, "IS_WINDOWS", True)
+    assert win._script_encoding() == "oem"
+    monkeypatch.setattr(win, "IS_WINDOWS", False)
+    assert win._script_encoding() == "utf-8"

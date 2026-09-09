@@ -136,27 +136,43 @@ def posix_test_shell() -> str:
     return shell
 
 
-# ── Windows CI ──────────────────────────────────────────────────────────
+# ── Windows and macOS CI ────────────────────────────────────────────────
 # The backend runs natively on Windows (kiro_crew.platform_compat), but a
 # handful of suites exercise POSIX-only-by-design features (OS-level
 # sandbox, process groups / PGID semantics, PTY, AF_UNIX sockets -- see
 # docs/guides/windows-install.md's per-feature table). Skip collecting them on
 # Windows rather than marking test-by-test: several fail at import or
 # fixture time on win32.
+#
+# macOS reuses the same file-driven mechanism (macos-collect-ignore.txt). macOS is
+# POSIX, so the reasons that fill the Windows list do not apply there; that list is
+# expected to stay short or empty, and a file exists so a whole-file exclusion has
+# one documented home instead of an inline literal.
 from kiro_crew import platform_compat  # noqa: E402
+
+
+def _collect_ignore_from(listname: str) -> list:
+    """Bare test filenames listed in ``test/<listname>``, comments stripped."""
+    path = os.path.join(os.path.dirname(__file__), listname)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return [
+                name
+                for name in (ln.split("#", 1)[0].strip() for ln in fh)
+                if name
+            ]
+    except OSError:  # pragma: no cover - list file absent in a partial checkout
+        return []
+
 
 if platform_compat.IS_WINDOWS:
     # Read from windows-collect-ignore.txt rather than an inline list: the CI
     # reduced-scope selector (scripts/ci-surface-tests.py) has to apply the same
     # exclusion, because naming a file explicitly on the pytest command line
     # bypasses collect_ignore. One file, two readers, no drift.
-    _ignore_listfile = os.path.join(os.path.dirname(__file__), "windows-collect-ignore.txt")
-    with open(_ignore_listfile, encoding="utf-8") as _fh:
-        collect_ignore = [
-            name
-            for name in (ln.split("#", 1)[0].strip() for ln in _fh)
-            if name
-        ]
+    collect_ignore = _collect_ignore_from("windows-collect-ignore.txt")
+elif platform_compat.IS_MACOS:
+    collect_ignore = _collect_ignore_from("macos-collect-ignore.txt")
 
 
 def make_escaping_link(inside: pathlib.Path, outside: pathlib.Path) -> str:
@@ -704,8 +720,8 @@ def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
     exercise middleware, for instance) otherwise starts ``_status_refresher``,
     a genuine network ``git fetch``, as a fire-and-forget task. That task can
     still be running when the test's client tears down, and cancelling it then
-    is what leaked into unrelated tests and flaked ``Gateway Tests (macOS)``
-   . A test that wants the real refresher overrides this itself
+    is what leaked into unrelated tests and flaked the macOS backend job. A
+    test that wants the real refresher overrides this itself
     via ``monkeypatch.setattr(worktree_ops, "_background_tasks_disabled", lambda: False)``.
     """
     _floor_monkeypatch.setenv("KIROCREW_DEVFLEET_NO_BACKGROUND", "1")
@@ -1402,6 +1418,40 @@ def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     # Also keeps the 5s-TTL refresh thread behind the cached verdict from
     # starting, so no test leaves one probing the host after it ends.
     monkeypatch.setattr(subagent, "cached_admission_check", _admit)
+
+
+@pytest.fixture
+def ample_host_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``resource_status.probe`` to AMPLE so no turn gains a ``[RESOURCES]`` line.
+
+    ``ContextBuilder.build_message`` prepends a ``[RESOURCES]`` advisory whenever
+    the host's own memory reading is tight or critical. Every test that asserts on
+    the SHAPE of a built turn -- that it opens with the user's text, with a hook
+    prefix, or with nothing at all -- therefore has the runner's free memory as a
+    hidden input, and fails with the advisory glued to the front of the string it
+    compared.
+
+    Not a platform gap: a macos-15 runner under a 3-way xdist split is simply the
+    first host observed under the threshold, and a loaded Linux runner reaches the
+    same state. The probe is imported INSIDE ``build_message``, so patching it on
+    its own module is what that call resolves.
+
+    A test that is actually ABOUT the advisory patches the probe in its own body,
+    which lands on top of this and reverts to it.
+    """
+    import kiro_crew.resource_status as resource_status
+
+    def _ample(cfg: object | None = None) -> "resource_status.ResourceStatus":
+        return resource_status.ResourceStatus(
+            available_gb=_HEALTHY_AVAILABLE_GB,
+            cpu_count=4,
+            load_per_cpu=0.1,
+            posture=resource_status.POSTURE_AMPLE,
+            pressure_gb=4.0,
+            critical_gb=2.0,
+        )
+
+    monkeypatch.setattr(resource_status, "probe", _ample)
 
 
 @pytest.fixture(autouse=True)

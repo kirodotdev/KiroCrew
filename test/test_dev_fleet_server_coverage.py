@@ -11,6 +11,7 @@ loader's ``config_dir`` is patched, so nothing touches the real one.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import sys
@@ -3987,6 +3988,67 @@ def test_discard_untracked_files_type_change_refuses_and_keeps_unapproved(tmp_pa
     # The unapproved file inside the swapped-in directory is untouched.
     assert victim.exists()
     assert victim.read_text() == "keep me"
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_type_change_is_named_on_an_eperm_platform(tmp_path, monkeypatch):
+    """The SAME type change, arriving as the errno darwin uses.
+
+    `unlink(2)` on a directory is EISDIR on Linux and EPERM on darwin, so the
+    branch above is unreachable there and the refusal the user reads was a bare
+    "operation not permitted" naming nothing. Injecting EPERM runs the darwin
+    shape here, so the message stays pinned on every runner rather than only on
+    the one that happens to be macOS.
+    """
+    _need_unsymlinked_tmp(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    victim = scratch / "not-approved.txt"
+    victim.write_text("keep me")
+
+    real_unlink = os.unlink
+
+    def _eperm_on_a_directory(name, *a, **kw):
+        try:
+            return real_unlink(name, *a, **kw)
+        except IsADirectoryError:
+            raise PermissionError(errno.EPERM, "Operation not permitted") from None
+
+    # The helper's own capability gate reads `os.unlink in os.supports_dir_fd`, so
+    # the replacement has to be declared dir_fd-capable or the whole discard is
+    # refused as unsupported before any unlink happens.
+    monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {_eperm_on_a_directory})
+    monkeypatch.setattr(os, "unlink", _eperm_on_a_directory)
+    reason = repository._discard_untracked_files(str(tmp_path), ["scratch"])
+    monkeypatch.setattr(os, "unlink", real_unlink)
+
+    assert reason is not None
+    assert "scratch" in reason
+    assert "directory" in reason.lower()
+    assert victim.read_text() == "keep me"
+
+
+@requires_fd_safe_discard
+def test_discard_untracked_files_keeps_a_real_permission_refusal_verbatim(tmp_path, monkeypatch):
+    """A genuine EPERM on a FILE is not relabelled as a type change.
+
+    The stat that confirms the type change is what keeps these two apart, so an
+    unwritable directory still reports the permission problem it has.
+    """
+    _need_unsymlinked_tmp(tmp_path)
+    (tmp_path / "scratch").write_text("approved")
+
+    def _always_eperm(name, *a, **kw):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {_always_eperm})
+    monkeypatch.setattr(os, "unlink", _always_eperm)
+    reason = repository._discard_untracked_files(str(tmp_path), ["scratch"])
+
+    assert reason is not None
+    assert "scratch" in reason
+    assert "directory" not in reason.lower()
+    assert "not permitted" in reason.lower()
 
 
 @requires_fd_safe_discard

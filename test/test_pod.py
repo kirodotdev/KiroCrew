@@ -6,6 +6,7 @@ import argparse
 import ast
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -109,14 +110,17 @@ def _isolate_pod_host_state(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -
 def _systemd_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise the SYSTEMD backend by default, on every host.
 
-    ``runtime`` dispatches unit operations on ``IS_MACOS``, so without this the
-    tests that monkeypatch ``rt.systemctl`` would silently exercise the launchd
-    branch when the suite runs on a Mac — passing on Linux CI and failing (or
-    worse, vacuously passing) on a developer's laptop. Pinning it makes the
-    default explicit and keeps the Linux/Windows contract asserted everywhere.
-    Tests for the macOS path set ``IS_MACOS`` True themselves.
+    ``runtime`` dispatches unit operations on ``IS_MACOS`` and ``IS_WINDOWS``,
+    so without this the tests that monkeypatch ``rt.systemctl`` would silently
+    exercise the launchd branch on a Mac or the Task Scheduler branch on the
+    Windows shards — passing on Linux CI and failing (or worse, vacuously
+    passing) elsewhere. The first full Windows run of this file after the
+    Windows backend landed failed exactly that way. Pinning both makes the
+    default explicit and keeps the systemd contract asserted everywhere. Tests
+    for the macOS or Windows path set their flag True themselves.
     """
     monkeypatch.setattr(rt, "IS_MACOS", False)
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
 
 
 @pytest.fixture
@@ -700,15 +704,6 @@ class TestPortAllocation:
         )
         assert displaced == shared, "the second pod should report what it moved off"
 
-    @pytest.mark.skipif(
-        rt.fcntl is None,
-        reason=(
-            "pod_name_mutex -- which pod_plane_mutex borrows -- degrades to a no-op "
-            "without fcntl, so nothing serializes these threads there. Not a gap: "
-            "require_backend refuses pods on any host without systemd/launchd, so "
-            "production never reaches the no-op. Only this test could."
-        ),
-    )
     def test_concurrent_allocations_never_hand_out_one_port_twice(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -1552,7 +1547,7 @@ class TestPortOwner:
     def _recorded_pid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Stand in for a pid record that PROVED fresh.
 
-        This used to also pin ``rt.IS_POSIX`` True, because ``port_owner``
+        This deliberately does NOT pin ``rt.IS_POSIX``, because ``port_owner``
         returned ``OWNER_UNPROVEN`` on a non-POSIX host before consulting any
         helper — so on Windows the decision cases FAILED and the ones expecting
         ``OWNER_UNPROVEN`` passed VACUOUSLY. That platform gate is gone: both facts
@@ -1649,7 +1644,7 @@ class TestPortOwner:
     def test_windows_can_prove_ownership_because_both_facts_now_answer(
         self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Windows used to be refused here by a blanket ``not IS_POSIX`` return.
+        """A blanket ``not IS_POSIX`` return would refuse Windows here outright.
 
         That was unsatisfiable rather than strict: ``pod up`` mints a token and
         ``mint_token`` requires positive proof, so every healthy Windows pod
@@ -2973,6 +2968,39 @@ class TestCleanupHomeVerifies:
         monkeypatch.setattr(Path, "iterdir", _boom)
         assert rt.cleanup_home(c, "demo") == 1
 
+    def test_a_transiently_locked_home_is_reclaimed_on_a_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ "Still there" and "cannot be reclaimed" are different states on Windows.
+
+        MEASURED on a native host: killing a process that held a file open and
+        deleting immediately leaves the tree in place, because handles of an exited
+        process are released ASYNCHRONOUSLY; a retry clears it on the second
+        attempt. A control with no holder deletes on the first, and a holder that is
+        still alive survives every attempt. So the retry absorbs the OS's release
+        latency, and the survivor check keeps its teeth — proven by
+        ``test_reports_a_home_that_survived_the_delete``, where every attempt fails
+        and the result is still 1.
+        """
+        # Captured BEFORE _held_home, which patches this same module attribute to a
+        # no-op: `rt.shutil` and `shutil` are one module object, so capturing after
+        # would hand the no-op back and the "retry" would delete nothing.
+        real = shutil.rmtree
+        c, home = self._held_home(tmp_path, monkeypatch)
+        attempts: list[int] = []
+
+        def flaky(path, *a, **k):
+            attempts.append(1)
+            if len(attempts) == 1:
+                return None  # the OS has not released the handle yet
+            real(path, *a, **k)
+
+        monkeypatch.setattr(rt.shutil, "rmtree", flaky)
+
+        assert rt.cleanup_home(c, "demo") == 0, "a tree that CAN be reclaimed must be"
+        assert len(attempts) == 2, f"exactly one retry was needed, saw {len(attempts)}"
+        assert not home.exists()
+
 
 class TestDrainCgroup:
     """The delete waits for the unit's process tree, because that is the set that
@@ -3387,10 +3415,6 @@ class TestPodNameMutexOnLinux:
         rt.stop_pod(cfg, "demo")
         assert held == ["enter:demo", "exit:demo"], "the sweep must run INSIDE the mutex"
 
-    @pytest.mark.skipif(
-        rt.fcntl is None,
-        reason="flock needs POSIX; without it the mutex is a documented no-op",
-    )
     def test_it_is_a_real_lock(self, cfg: PodConfig) -> None:
         with rt.pod_name_mutex(cfg, "demo"):
             pass
@@ -3952,7 +3976,16 @@ class TestOrphanSymlinkSafety:
             rt.shutil, "rmtree", lambda p, ignore_errors=False: seen.append(Path(p))
         )
         rt.cleanup_home(c, "demo")
-        assert seen == [c.pod_root / "demo"], "rmtree must get the unresolved name"
+        # Asserted over EVERY call rather than as a one-element list. The reclaim
+        # retries while the OS releases handles, and a faked rmtree never makes the
+        # entry disappear, so the bounded window runs to its cap here. The property
+        # under test is WHICH path is passed, not how many times: quantifying over
+        # all attempts pins it harder, because a retry that resolved the name would
+        # now fail too.
+        assert seen, "rmtree must be called at least once"
+        assert all(
+            p == c.pod_root / "demo" for p in seen
+        ), "rmtree must get the unresolved name on every attempt"
         assert seen[0] != (c.pod_root / "demo").resolve(), "test setup lost the distinction"
 
     def test_a_dangling_symlink_swap_is_reported_not_swallowed(
@@ -5144,10 +5177,6 @@ class TestReviewRound2Fix:
         assert rt.read_env_file(c, "y")["CHECKOUT"] == "/a/b"
 
 
-@pytest.mark.skipif(
-    rt.fcntl is None,
-    reason="flock needs POSIX; without it the mutex is a documented no-op",
-)
 class TestEnvFileConcurrentWrite:
     """``write_env_file`` merges, so it must serialize per pod name.
 
@@ -5155,9 +5184,9 @@ class TestEnvFileConcurrentWrite:
     file, so an unserialized merge drops one side's keys and boots the pod on stale
     config.
 
-    Both tests assert a property only the real lock provides, so both are POSIX-only:
-    where ``fcntl`` is absent ``pod_name_mutex`` degrades to a no-op by design, and
-    pods are refused on those hosts anyway.
+    Both tests assert a property only the real lock provides, and both run on every
+    platform: ``pod_name_mutex`` locks through ``platform_compat.file_lock``, which
+    is ``flock`` on POSIX and ``msvcrt.locking`` on Windows.
     """
 
     def test_a_concurrent_write_does_not_drop_the_other_writers_keys(
@@ -5268,8 +5297,16 @@ class TestEnvFileConcurrentWrite:
         fd = os.open(str(env_path), os.O_RDONLY)
         try:
             head = os.read(fd, len(before) // 2)
-            # The writer runs while this reader is mid-file.
-            rt.write_env_file(c, "demo", {"APPROVAL": "yolo"})
+            # The writer runs while this reader is mid-file. On Windows the
+            # reader's handle carries no FILE_SHARE_DELETE, so the final rename
+            # is refused with a sharing violation once the bounded retry is spent:
+            # the contract there is fail CLOSED, never torn, so the old generation
+            # must survive byte for byte and the caller must hear about it.
+            if sys.platform == "win32":
+                with pytest.raises(PermissionError):
+                    rt.write_env_file(c, "demo", {"APPROVAL": "yolo"})
+            else:
+                rt.write_env_file(c, "demo", {"APPROVAL": "yolo"})
             chunks = [head]
             while True:
                 part = os.read(fd, 4096)
@@ -5284,9 +5321,14 @@ class TestEnvFileConcurrentWrite:
         assert head, "reader consumed nothing; the fixture is not exercising the seam"
         # The reader must have seen exactly one whole generation, old or new.
         assert seen in (before, after), "torn read: the reader spliced two generations together"
-        # And the new generation must be complete on disk.
         final = rt.read_env_file(c, "demo")
-        assert final["APPROVAL"] == "yolo"
+        if sys.platform == "win32":
+            # Refused, so the old generation is what remains, whole.
+            assert after == before
+            assert final["APPROVAL"] == "interactive"
+        else:
+            # And the new generation must be complete on disk.
+            assert final["APPROVAL"] == "yolo"
         assert final["CHECKOUT"] == "/a"
 
 

@@ -333,6 +333,7 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
         assert set(self._pytest_jobs()) >= {
             "ci.yml:backend-test",
             "ci.yml:backend-test-windows",
+            "ci.yml:backend-test-windows-fail-closed",
             "ci.yml:backend-test-macos",
             "ci.yml:backend-test-sandbox",
             "release.yml:release-candidate-tests",

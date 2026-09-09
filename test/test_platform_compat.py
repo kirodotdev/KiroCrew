@@ -1800,6 +1800,72 @@ class TestPidLivenessPosix:
         assert pc.pid_exists(os.getpid()) is True
 
 
+class TestAttributedDescendants:
+    """Every parent-child EDGE is attributed, not just "created after the root".
+
+    The root-only comparison is the trap: a stale orphan sitting under a recycled
+    INTERMEDIATE pid was also created after the root, so it passes that test while
+    being unrelated to the tree — and on Windows it is frequently a same-user process
+    the caller CAN terminate, which makes the mistake irreversible.
+    """
+
+    @staticmethod
+    def _pin(monkeypatch, parent_map, tokens):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: parent_map)
+        monkeypatch.setattr(pc, "process_start_time", lambda pid: tokens.get(pid, ""))
+
+    def test_a_real_chain_is_walked_to_the_bottom(self, monkeypatch):
+        """Each generation is compared against ITS OWN parent, so depth is no barrier."""
+        self._pin(
+            monkeypatch,
+            {20: 10, 30: 20, 40: 30},
+            {10: "1000", 20: "1100", 30: "1200", 40: "1300"},
+        )
+
+        assert pc.attributed_descendants(10, "1000") == [20, 30, 40]
+
+    def test_an_orphan_under_a_recycled_intermediate_is_excluded(self, monkeypatch):
+        """The case root-only attribution gets wrong.
+
+        30 was created BEFORE 20 — it is the leftover child of whatever held pid 20
+        before 20 did — but AFTER the root, so a root comparison admits it. Comparing
+        it against 20, the parent it is reached through, rejects it.
+        """
+        self._pin(
+            monkeypatch,
+            {20: 10, 30: 20},
+            {10: "1000", 20: "1200", 30: "1100"},
+        )
+
+        assert pc.attributed_descendants(10, "1000") == [20]
+        # Coherence check: the weaker rule really would have admitted it, so this
+        # test is exercising the difference rather than restating the primitive.
+        assert pc.created_after("1100", "1000") is True
+
+    def test_the_whole_subtree_behind_a_bad_edge_is_dropped(self, monkeypatch):
+        """Everything under an unattributable child is reachable only through it."""
+        self._pin(
+            monkeypatch,
+            {20: 10, 30: 20, 40: 30},
+            {10: "1000", 20: "1200", 30: "1100", 40: "9999"},
+        )
+
+        assert pc.attributed_descendants(10, "1000") == [20]
+
+    def test_a_process_with_no_readable_identity_is_left_alone(self, monkeypatch):
+        """An unreadable creation time is not a licence to guess."""
+        self._pin(monkeypatch, {20: 10, 30: 10}, {10: "1000", 20: "1100"})
+
+        assert pc.attributed_descendants(10, "1000") == [20]
+
+    def test_a_missing_root_token_yields_nothing(self, monkeypatch):
+        """With no root identity there is no edge to attribute the first hop against."""
+        self._pin(monkeypatch, {20: 10}, {10: "", 20: "1100"})
+
+        assert pc.attributed_descendants(10, "") == []
+
+
 class TestProcessDescendants:
     def test_descendants_from_parent_map_walks_full_tree(self):
         parent_map = {

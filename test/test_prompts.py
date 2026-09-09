@@ -3368,6 +3368,16 @@ class TestCreateAndDeletePinTheDirectory:
         that is not comes back from a power loss with the body intact and nothing
         pointing at it -- acknowledged, then vanished. Both flushes are the
         contract, so the whole order is what is asserted.
+
+        WHICH order that is depends on the branch the filesystem takes, so the
+        branch is read rather than assumed. The unnamed publish has no name until
+        ``link`` makes one, so there the flush provably precedes the name. A mount
+        without ``O_TMPFILE`` (every darwin host, and NFS) never calls ``link`` at
+        all: its ``O_EXCL`` open IS the entry, so what is left to pin there is that
+        the body is flushed before the flush that claims the entry is durable. That
+        branch's other promises -- the 409 on an occupied name and the
+        identity-checked cleanup -- are pinned by the ``force_named_fallback``
+        tests below.
         """
         order: list[str] = []
         real_fsync, real_link = os.fsync, os.link
@@ -3389,11 +3399,27 @@ class TestCreateAndDeletePinTheDirectory:
         monkeypatch.setattr(os, "link", real_link)
 
         assert resp.status == 201
-        assert order[:2] == ["fsync_file", "publish"], f"flush must precede publish, got {order}"
+        assert "fsync_file" in order, f"the body was never flushed: {order}"
         assert "fsync_dir" in order, f"the directory entry was never flushed: {order}"
-        assert order.index("fsync_dir") > order.index(
-            "publish"
-        ), f"the directory flush must follow the publish it is making durable: {order}"
+        assert order.index("fsync_file") < order.index(
+            "fsync_dir"
+        ), f"the body must be durable before the entry's flush claims it: {order}"
+        # The production predicate, so this cannot quietly settle for the weaker
+        # arm on a host where the stronger property holds.
+        unnamed = _prompts_mod._UNNAMED_CREATE_SUPPORTED and os.path.isdir("/proc/self/fd")
+        if unnamed:
+            assert order[:2] == [
+                "fsync_file",
+                "publish",
+            ], f"flush must precede publish, got {order}"
+            assert order.index("fsync_dir") > order.index(
+                "publish"
+            ), f"the directory flush must follow the publish it is making durable: {order}"
+        else:
+            assert "publish" not in order, (
+                "the by-name branch has no unnamed inode to link, so a publish here "
+                f"means the branch predicate and the code disagree: {order}"
+            )
         assert (tmp_path / ".kiro" / "prompts" / "durable.md").read_text() == "B"
 
     def test_a_failing_directory_flush_is_reported_not_swallowed(
@@ -3445,6 +3471,36 @@ class TestCreateAndDeletePinTheDirectory:
         assertions run here as would run on an NFS home.
         """
         monkeypatch.setattr(_prompts_mod, "_UNNAMED_CREATE_SUPPORTED", False)
+
+    def test_the_named_fallback_flushes_the_body_before_the_entry(
+        self, tmp_path, mock_sel, monkeypatch, force_named_fallback
+    ):
+        """The by-name branch's own half of the durability order, run HERE.
+
+        ``O_TMPFILE`` is present on every Linux runner, so the branch every darwin
+        host and every NFS home actually takes would otherwise be exercised only
+        where nobody watches. It has no ``link`` to order against -- its ``O_EXCL``
+        open is the entry -- so the property left is the one that still matters: the
+        body is flushed before the flush that claims the entry is durable, and a
+        201 therefore never rests on an unflushed body.
+        """
+        order: list[str] = []
+        real_fsync = os.fsync
+
+        def _note_fsync(fd):
+            order.append("fsync_dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "fsync_file")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", _note_fsync)
+        resp = asyncio.run(api_prompts_create(_create_request({"name": "byname", "content": "B"})))
+        monkeypatch.setattr(os, "fsync", real_fsync)
+
+        assert resp.status == 201
+        assert order[:2] == [
+            "fsync_file",
+            "fsync_dir",
+        ], f"the body must be flushed before the entry's flush claims it: {order}"
+        assert (tmp_path / ".kiro" / "prompts" / "byname.md").read_text() == "B"
 
     def test_the_named_fallback_publishes_a_correct_prompt(
         self, tmp_path, mock_sel, force_named_fallback
@@ -3545,8 +3601,12 @@ class TestCreateAndDeletePinTheDirectory:
         assert (rival.stat().st_dev, rival.stat().st_ino) == (before.st_dev, before.st_ino)
         assert [p.name for p in d.iterdir()] == ["rival.md"]
 
-        # And a create that FAILS mid-write never had the name to lose: the
-        # incumbent survives and no debris is left beside it.
+        # And a create that FAILS mid-write never reaches its own name: the
+        # incumbent beside it survives and no debris is left. The name is a FREE
+        # one on purpose. A mount without ``O_TMPFILE`` refuses an OCCUPIED name at
+        # its ``O_EXCL`` open, before any body is written, so aiming the failure at
+        # ``rival`` again makes this half vacuous there -- which is exactly what it
+        # reported on darwin.
         real_write = os.write
         failed = {"done": False}
 
@@ -3558,13 +3618,15 @@ class TestCreateAndDeletePinTheDirectory:
 
         monkeypatch.setattr(os, "write", _fail_the_body)
         broke = asyncio.run(
-            api_prompts_create(_create_request({"name": "rival", "content": "MINE"}))
+            api_prompts_create(_create_request({"name": "newcomer", "content": "MINE"}))
         )
         monkeypatch.setattr(os, "write", real_write)
 
         assert failed["done"], "the write never failed — the test would be vacuous"
         assert broke.status == 500 and json.loads(broke.body)["code"] == "write_failed"
         assert rival.read_text() == "NOT YOURS"
+        # No ``newcomer.md``: the unnamed branch never named the inode, and the
+        # by-name branch removed the leaf its own O_EXCL made.
         assert [p.name for p in d.iterdir()] == ["rival.md"]
 
 

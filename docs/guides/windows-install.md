@@ -135,16 +135,43 @@ Current status:
   not show this cost. The loading screen retains its extended
   Windows handoff window as a slow-machine fallback; a child exit or spawn error
   still fails immediately and includes the launch-log cause.
-  `.github/scripts/test-windows-installer.ps1` can start the just-installed
-  bundled interpreter against an isolated data home and require `/api/ready`
+  `.github/scripts/test-windows-installer.ps1` starts the just-installed
+  bundled interpreter against an isolated data home and requires `/api/ready`
   within 30 seconds, covering both the packaged caches and the full gateway
-  handoff — but it is a **real-artifact check, not a CI gate**: the installer
-  job builds the NSIS package over a synthetic backend stub, so it has no
-  bundled interpreter to start and runs the script with
-  `-SkipGatewayValidation`. What CI enforces on every push is the native
-  installer's performance ceiling and its install-location contract; run the
-  script without that switch against a genuine backend payload to exercise the
-  gateway handoff.
+  handoff. **This runs on every qualifying PR.** `build.yml`'s installer job
+  bundles a real python-build-standalone runtime carrying the wheel `build-wheel`
+  produced, so the script's gateway leg has an interpreter to start and the job
+  no longer passes `-SkipGatewayValidation`. `KIROCREW_KIRO_BIN` points at the
+  fake ACP backend inside that same payload, so readiness needs no model and no
+  sign-in. The job also enforces the native installer's performance ceiling
+  against a real payload rather than a stub, and its install-location contract.
+- **The signed-artifact smoke runs NIGHTLY, not per PR.**
+  `build-windows.yml`'s `Smoke-install Windows installer (x64)` job downloads the
+  installer that workflow just built, installs it silently on a clean
+  `windows-latest` runner, and runs `scripts/smoke-windows-install.ps1`: it
+  asserts the uninstall registration and its `InstallLocation`, that the install
+  claimed an owned subdirectory rather than the pre-existing directory it was
+  pointed at, that a Start Menu shortcut targets the executable THIS install
+  wrote, that the bundled CLI runs, that the installed gateway answers
+  `/api/health`, and that a silent uninstall removes both the registration and
+  the tree. `build-windows.yml` is `workflow_call`-only from `nightly.yml` and
+  `release.yml` plus a `workflow_dispatch` packaging probe, so this leg costs a
+  PR nothing and a packaging change that only breaks a real install is caught by
+  the next nightly — or before merge by dispatching that probe. There is **no
+  `PATH` edit to check**: the installer makes none, so the CLI is exercised at
+  `resources\backend-dist\kirocrew-backend\bin\kirocrew.cmd` rather than by name.
+- **The fail-closed sandbox opt-in contract IS checked per PR.**
+  `test/test_windows_fail_closed_optin.py` runs on `windows-latest` in the
+  `backend-test-windows` shards and again in a dedicated
+  `Windows Fail-Closed Sandbox Contract` job that runs it by node id and greps
+  the pass count, so a silent skip cannot go green. It boots a real gateway
+  against the packaged fake ACP backend on a home with no `config.json` and a
+  host with no `~/.kiro/settings/amazon-internal.json`, requires one session and
+  one prompt turn to complete, and separately requires an unclassified spawn to
+  fail closed and the same spawn to run once
+  `agent.sandbox_allow_unsandboxed_exec=true` is on disk. See
+  [e2e-gate.md](../ci/e2e-gate.md) for how the distribution and contract legs
+  divide the work.
 
 The source install below remains the fully supported path.
 
@@ -317,7 +344,7 @@ while the other 503s. Concretely:
 | Spec Builder | works, except **Duplicate** — crash-safe copy publication pins a staging directory and uses the platform's atomic no-replace rename (`renameat2(RENAME_NOREPLACE)` on Linux, `renameatx_np(RENAME_EXCL)` on macOS). Windows provides neither that native contract nor CPython's directory-descriptor operations, so the backend reports the capability as unavailable and the dashboard omits Duplicate instead of falling back to a check-then-rename race or a junction-prone path write. Approval, per-task runs, labels, archive/restore, chat, and whole-plan execution work normally |
 | Code Review Sage | not yet — the provider-CLI trust check now passes, but its review worker hands the session `python3 sage_lib/…` commands and `python3` is not an interpreter on Windows (the name resolves to the Microsoft Store app-execution alias, or to nothing). It refuses with that reason rather than starting a review that produces no result |
 | Browser automation (`playwright-cli`) | works (`npm install -g @playwright/cli@latest`, needs Node.js 20 or newer) |
-| `kirocrew pod` (isolated worktree test gateways) | works, through **Task Scheduler**, unelevated. A pod is a per-user disposable gateway, so `sc.exe` is the wrong tool twice over (it needs `SeCreateServiceNamePrivilege` and installs a machine-wide LocalSystem service); `schtasks.exe` creates a task in your own namespace with no elevation, matching `systemd --user` and launchd's `gui/<uid>`. A task carries no environment block, so the action is a generated `.cmd` wrapper under `KIROCREW_POD_ENV_DIR` that pins the pod plane and re-enters `kirocrew pod _run <name>` — a plane path containing a double quote or a newline is refused at `pod up`, since cmd.exe cannot quote it. Three limits, none of them silent: **no memory/CPU ceiling** (no cgroups, the same stated gap as macOS — a weaker knob that read as the 4G cap is deliberately not emitted), **no restart on crash** (Task Scheduler retries a failed *start*, not a non-zero exit, so a crashed pod stays down; the wrapper records the boot's exit code and `pod ls` / `pod up` read it as the crash signal), and **`pod api` refuses** because its authenticated request travels over the pod's private AF_UNIX dashboard socket with no TCP fallback and CPython here has no `AF_UNIX` — use `pod token` plus your own client against the loopback port. `pod up/down/ls/status/token/url/logs/prune/provision/scenarios` all work. Two Windows-specific mechanics worth knowing: `schtasks` output is **localized**, so the backend never parses it (liveness, the pid and the last result come from files the supervised process itself writes, and `schtasks` is used only where its exit code is the answer), and Windows has no `exec`, so the gateway is supervised as the wrapper's child with its pid plus creation-time identity recorded — that is what keeps `port_owner`'s ownership proof honest here. If `pod up` reports that your user cannot create a scheduled task, that is Group Policy, a disabled `Schedule` service, or a principal without `TASK_CREATE`; there is no non-admin workaround |
+| `kirocrew pod` (isolated worktree test gateways) | works, through **Task Scheduler**, unelevated. A pod is a per-user disposable gateway, so `sc.exe` is the wrong tool twice over (it needs `SeCreateServiceNamePrivilege` and installs a machine-wide LocalSystem service); `schtasks.exe` creates a task in your own namespace with no elevation, matching `systemd --user` and launchd's `gui/<uid>`. A task carries no environment block, so the action is a generated `.cmd` wrapper under `KIROCREW_POD_ENV_DIR` that pins the pod plane and re-enters `kirocrew pod _run <name>` — a plane path containing a double quote or a newline is refused at `pod up`, since cmd.exe cannot quote it. The memory and fork-bomb ceiling IS enforced here, by a Job object attached to the gateway while it is still suspended (the same `resource_limits` config and the same seam the agent-subprocess path uses), but it is not parity with the Linux cgroup: the process bound counts processes where `TasksMax` counts threads, and there is no CPU cap. Two limits remain, neither of them silent: **no restart on crash** (Task Scheduler retries a failed *start*, not a non-zero exit, so a crashed pod stays down; the wrapper records the boot's exit code and `pod ls` / `pod up` read it as the crash signal), and **`pod api` refuses** because its authenticated request travels over the pod's private AF_UNIX dashboard socket with no TCP fallback and CPython here has no `AF_UNIX` — use `pod token` plus your own client against the loopback port. `pod up/down/ls/status/token/url/logs/prune/provision/scenarios` all work. Two Windows-specific mechanics worth knowing: `schtasks` output is **localized**, so the backend never parses it (liveness, the pid and the last result come from files the supervised process itself writes, and `schtasks` is used only where its exit code is the answer), and Windows has no `exec`, so the gateway is supervised as the wrapper's child with its pid plus creation-time identity recorded — that is what keeps `port_owner`'s ownership proof honest here. If `pod up` reports that your user cannot create a scheduled task, that is Group Policy, a disabled `Schedule` service, or a principal without `TASK_CREATE`; there is no non-admin workaround |
 | Vector memory / embeddings | works — embeddings run **in-process** through the vendored llama-cpp-python (`_vendor/llama_cpp_libs/win_amd64`), which loads the Qwen3-Embedding-0.6B GGUF from `~/.kiro/crew/models`. No remote endpoint, no Docker and no Ollama server is involved on any platform |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply | works out of the box on the default `system` provider: it drives `System.Speech` through Windows PowerShell 5.1, needs no install, and deliberately does NOT route through `wrap_argv`, so the missing sandbox backend does not block it. `piper` and `polly` DO route through `wrap_argv` and therefore run unconfined under this platform's default; declare `sandbox_allow_unsandboxed_exec=false` and synthesis returns no audio, with the log naming that setting. `pip install piper-tts` does ship a Windows x64 wheel, so piper itself is installable |

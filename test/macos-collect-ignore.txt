@@ -1,0 +1,30 @@
+# Test files NOT collected on macOS -- one bare filename per line, relative
+# to this directory. Blank lines and #-comments are ignored.
+#
+# Read by test/conftest.py, which builds `collect_ignore` from it. Same file-driven
+# mechanism as windows-collect-ignore.txt, deliberately: one shape for both OS lines
+# rather than an inline literal here and a file there.
+#
+# PREFER macos-expected-failures.txt. A whole-file exclusion is the blunt tool and
+# belongs here only when the file cannot be COLLECTED on darwin -- an import-time or
+# fixture-time failure, which a skip marker cannot prevent. Everything else is a node
+# id in the expected-failures list, where the report names it.
+#
+# macOS is POSIX, so the POSIX-only-by-design reasons that fill the Windows list
+# (AF_UNIX, PGID, PTY, mode bits, symlink privilege) do not apply. This list is
+# expected to stay short or empty.
+#
+# One entry. Everything else the full-suite macOS shard runs surfaced was
+# addressable as a node id in macos-expected-failures.txt, including the two
+# frame-recording suites, whose refusal-path tests still pass here and are
+# deliberately kept running.
+#
+# test_terminal_handler.py is NOT excluded from macOS: it runs in the dedicated
+# "Terminal handler suite" step of backend-test-macos, verbosely and single-process,
+# instead of inside the shards. On darwin a blocked os.read() on the PTY controlling side is not
+# woken by closing the descriptor from another thread, so a terminal test whose
+# shell is still alive when the session closes runs to its per-test timeout. Inside a
+# -q shard that is 180 s of silence per test, and enough of them pushed shard 3 past
+# the job cap twice with no output at all. The dedicated step names each test as it
+# runs, so a hang fails by name, and the shards finish.
+test_terminal_handler.py

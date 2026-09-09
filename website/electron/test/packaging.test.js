@@ -308,7 +308,11 @@ describe("first-download installer design contract", () => {
     assert.match(runtimeScript, /^\$MaxGatewayReadySeconds = 30$/m);
     assert.match(runtimeScript, /silent-install-seconds=/);
     assert.match(runtimeScript, /gateway-ready-seconds=/);
-    assert.match(runtimeScript, /startupPycCount -lt 1000/);
+    // The pyc floor is a parameter now (build.yml passes a lower value for the
+    // PR-time job, whose payload has no voice extras); the 1000 default is the
+    // full-bundle contract and stays pinned here.
+    assert.match(runtimeScript, /^\s*\[int\]\$MinStartupPycs = 1000$/m);
+    assert.match(runtimeScript, /startupPycCount -lt \$MinStartupPycs/);
     assert.match(runtimeScript, /\/api\/ready/);
     assert.match(
       runtimeScript,

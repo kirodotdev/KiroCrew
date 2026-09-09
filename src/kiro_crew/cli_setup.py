@@ -37,6 +37,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.constants import DATA_WARNING, MIN_NODE_MAJOR
+from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.sel import sel
@@ -1442,12 +1443,16 @@ def _maybe_setup_dashboard_url() -> None:
     if not has_slack:
         return  # No Slack → local-only, no URL needed
 
-    # Detect if this looks like a remote host
-    try:
-        ip = socket.gethostbyname(socket.gethostname())
-        is_remote = not ip.startswith("127.")
-    except OSError:
-        is_remote = False
+    # Detect if this looks like a remote host. Bounded, because
+    # `socket.gethostbyname` has no timeout of its own: on a host whose own name
+    # does not resolve (an mDNS `*.local` with no responder) the bare call sits
+    # for 15+ seconds, which here stalls an INTERACTIVE prompt the operator is
+    # waiting on. Same resolver, same hazard and same remedy as the dashboard's
+    # startup path, so it reads through the one helper rather than growing a
+    # second bounded copy. `None` means unresolved, which is the same answer as
+    # a raised OSError: treat the host as local.
+    ip = _resolve_hostname_bounded(socket.gethostname())
+    is_remote = ip is not None and not ip.startswith("127.")
 
     if not is_remote and not cfg.dashboard.url:
         return  # Localhost machine with no existing URL config — skip

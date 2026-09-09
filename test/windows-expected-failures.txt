@@ -1,21 +1,31 @@
 # Known Windows test gaps -- burn-down backlog for full Windows parity.
 #
 # Applied by test/conftest.py::pytest_collection_modifyitems on Windows
-# ONLY: each listed test (all parametrizations) is skipped there and runs
-# normally on the POSIX matrix. Entries are unparametrized pytest node
-# ids. Captured from the first Windows CI runs (PR #413, 2026-07-25);
-# dominant causes: POSIX mode-bit asserts (0o600/0o644), POSIX process
-# APIs monkeypatched directly (killpg/getuid/getpgid), /tmp and
-# bin/kirocrew path-shape assumptions, and Windows file-locking
+# ONLY: each listed test is marked a STRICT xfail there and runs normally
+# on the POSIX matrix. Entries are pytest node ids without the xdist
+# `@group` suffix; params are OPTIONAL -- a line with no `[params]` covers
+# every parametrization, and a line WITH `[params]` covers only that one,
+# which is what a test whose params do not all fail needs (see the
+# test_seed.py pair). Captured from the first Windows CI runs (PR #413,
+# 2026-07-25); dominant causes: POSIX mode-bit asserts (0o600/0o644),
+# POSIX process APIs monkeypatched directly (killpg/getuid/getpgid), /tmp
+# and bin/kirocrew path-shape assumptions, and Windows file-locking
 # semantics. Fix the test (or the product gap) and DELETE the line --
 # additions require a reason in the PR.
+#
+# STRICT XFAIL, not skip, and that is the whole point: a listed test RUNS, a
+# still-failing one is green, and one that starts PASSING fails the job with
+# XPASS. That is the "delete the line" signal this file has always asked for and
+# a skip could never give -- the first run under xfail found 23 entries whose
+# gaps had already closed, on a list nobody could have audited otherwise.
+#
+# A test that HANGS must NOT be listed here. It would be executed, and on Windows
+# pytest-timeout has no SIGALRM to interrupt with, so it kills the process and
+# takes the session with it (measured). Give such a test an explicit skipif at the
+# test, with the reason -- see
+# test_config_loader.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution.
 test/metrics/test_local_exporter.py::test_export_locks_only_the_prune_phase
-test/test_acp_liveness.py::test_matched_child_exit_flips_dead_after_grace
-test/test_acp_liveness.py::test_matched_live_shell_child_is_working
-test/test_acp_liveness.py::test_socket_blocked_child_is_not_stuck
-test/test_acp_liveness.py::test_stuck_input_detected_on_flat_tty_blocked_child
 test/test_acp_offload.py::TestOffloadRunsOnSubprocessPool::test_kill_process_runs_scan_and_sweep_off_loop
-test/test_acp_provider.py::TestStartKiroRuntimeResume::test_resume_loads_full_transcript_path
 test/test_acp_runtime.py::test_periodic_sweep_skips_protected_runtime_pid
 test/test_agent.py::TestAtomicJsonWrite::test_new_file_gets_0o644
 test/test_agent.py::TestAtomicJsonWrite::test_preserves_existing_permissions
@@ -34,8 +44,6 @@ test/test_app_backend.py::TestShellDispatch::test_non_executable_sh_entry_falls_
 test/test_app_backend.py::TestShellEntryDetection::test_extensionless_non_executable_is_not_shell
 # Needs symlink-creation privilege to build the fixture: these exercise
 # copytree's handling of in-tree POSIX symlinks, which junctions cannot model.
-test/test_app_manager.py::TestCopyAppTree::test_symlink_escaping_source_root_omitted
-test/test_app_manager.py::TestCopyAppTree::test_symlink_inside_source_root_preserved
 test/test_artifact_materialize.py::test_materialize_recorded_document_succeeds
 test/test_artifact_materialize.py::test_materialize_symlinked_request_resolves_to_recorded_inode
 test/test_artifact_materialize.py::test_safe_read_with_identity_authorized
@@ -45,20 +53,12 @@ test/test_artifacts_handlers.py::TestTeardown::test_not_found_returns_404
 test/test_artifacts_handlers.py::TestTeardown::test_restricted_session_denied
 test/test_artifacts_handlers.py::TestTeardown::test_success_includes_infra_note
 test/test_artifacts_handlers.py::TestTeardown::test_teardown_fail_closed_when_aws_unreachable
-test/test_auto_research.py::TestCRUD::test_parallel_workers_stored_and_in_brief
-test/test_auto_research.py::TestClarificationQuestions::test_brief_question_mode
-test/test_auto_research.py::TestGrillBrief::test_no_subquestions_brief_is_not_contradictory
-test/test_auto_research.py::TestGrillBrief::test_scope_block_checklist_and_origin
-test/test_auto_research.py::TestHTTPHandlers::test_add_question
-test/test_auto_research.py::TestLoopLaunch::test_launch_writes_brief
-test/test_auto_research.py::TestReserveAndFinalize::test_enter_finalize_writes_flag_and_guidance
 test/test_cli.py::TestInstallPidfdChildWatcher::test_falls_back_to_safe_watcher_on_old_kernel
 test/test_cli.py::TestInstallPidfdChildWatcher::test_falls_back_to_safe_watcher_when_pidfd_open_missing
 test/test_cli.py::TestInstallPidfdChildWatcher::test_installs_safe_watcher_on_macos
 test/test_cli.py::TestInstallPidfdChildWatcher::test_sets_watcher_on_linux
 test/test_cli.py::TestRestart::test_spawn_detached_gateway_uses_kirocrew_bin
 test/test_cli.py::TestSetupWorkspaceDir::test_uses_saved_path_as_default
-test/test_config_loader.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution
 test/test_config_paths.py::TestConfigDir::test_kirocrew_home_system_dir_is_ignored
 test/test_config_paths.py::TestDefaultWorkspaceBase::test_macos_uses_volumes_when_present
 test/test_cpp_wiring_enterprise.py::test_launcher_script_hides_sso
@@ -95,14 +95,6 @@ test/test_discord_config_handlers.py::test_save_persists_token_and_config
 test/test_ephemeral_sessions.py::TestSessionSlotRecovery::test_session_has_persisted_history_unit
 test/test_file_explorer_app.py::TestAutoSdeRound1Findings::test_python_search_outside_kirocrew_finds_project_files
 test/test_file_read_resolve.py::TestFileReadResolve::test_audit_logs_resolved_path
-test/test_file_read_resolve.py::TestFileReadResolve::test_head_logs_success
-test/test_file_read_resolve.py::TestFileReadResolve::test_head_returns_200_no_body
-test/test_file_read_resolve.py::TestFileReadResolve::test_head_returns_404_for_missing_file
-test/test_file_read_resolve.py::TestFileReadResolve::test_resolve_ignored_for_absolute_paths
-test/test_file_read_resolve.py::TestFileReadResolve::test_resolve_joins_project_dir
-test/test_file_watch.py::TestFileWatch::test_returns_sse_content_type
-test/test_file_watch.py::TestFileWatch::test_sel_audit_logged
-test/test_file_watch.py::TestFileWatch::test_streams_initial_content
 test/test_flock_compat.py::TestFlockCompat::test_posix_delegates_to_real_fcntl
 test/test_gateway_lock.py::test_acquire_creates_lock_file_with_pid
 test/test_gateway_lock.py::test_second_acquire_refused_and_names_holder
@@ -124,13 +116,9 @@ test/test_installer_shim_and_cleanup.py::test_first_run_no_global_mcp
 test/test_installer_shim_and_cleanup.py::test_first_run_purge_is_one_time
 test/test_instances.py::TestPortAllocator::test_is_port_free_detects_live_listener_even_with_reuseaddr
 test/test_instances.py::TestRunMarker::test_write_read_clear
-test/test_kiro_usage_api.py::TestSafeReadFileInternalSymlink::test_rejects_symlinked_allowlisted_path
-test/test_knowledge_add_source.py::TestAddSourceLocalFile::test_resolves_symlinks
 test/test_mcp_discovery.py::TestProbeServerStderrCapture::test_stderr_captured_when_child_exits_before_response
 test/test_mcp_discovery.py::TestProbeServerStderrCapture::test_successful_probe_does_not_mention_stderr
-test/test_mcp_gateway_oversize.py::TestSpillFailure::test_unwritable_dir_returns_original
 test/test_mcp_gateway_wedge_ping_gate.py::test_tool_cancelled_exception_suppresses_response
-test/test_mcp_gateway_wedge_ping_gate.py::test_ping_answered_while_tool_in_flight
 # Needs symlink-creation privilege: builds an in-vault FILE symlink
 # (Alias.md -> One.md); a junction is directory-only and cannot model it.
 test/test_memory_selfheal.py::TestFtsSelfHealGating::test_genuine_corruption_still_self_heals
@@ -139,19 +127,19 @@ test/test_pip_deps_consistency.py::test_all_unguarded_third_party_imports_are_de
 # prove the writer replaces it rather than writing through. atomic_write already
 # does the right thing on Windows; a junction is directory-only and can't model
 # a file symlink, so the fixture cannot be built without the privilege.
-test/test_perf_sampler.py::TestArtifactWriteFailure::test_symlinked_output_does_not_write_through_the_link
-test/test_perf_sampler.py::TestPySpyPathShortening::test_symlinked_output_target_survives_the_pyspy_path
 test/test_pod.py::TestCliVerbs::test_install_writes_unit
 test/test_pod.py::TestEnvFileAndPin::test_pin_checkout
 test/test_pod.py::TestPodConfigWrite::test_config_and_home_are_owner_only
 test/test_pod.py::TestPodConfigWrite::test_seed_config_sanitized_and_locked_down
 test/test_pod.py::TestUnitRendering::test_env_block_pins_nondefaults
 test/test_pod.py::TestUpVerb::test_up_happy_path_json
-test/test_portability.py::TestImportMerge::test_import_merge_deduplicates_crons
-test/test_portability.py::TestImportMerge::test_import_merge_memory_db
 test/test_process_tree.py::TestDirectChildren::test_proc_children_parsed
 test/test_prompts.py::TestApiPrompts::test_detail_unreadable
 test/test_prompts.py::TestExpandPromptMention::test_unreadable_file
+# Code-page dependent, so a host-local run is NOT evidence for this one:
+# it passes where the console codec is UTF-8-ish and raises
+# UnicodeEncodeError('charmap') on the cp1252 runners, encoding a binary
+# body through the locale codec. Judge it on the Windows shards only.
 test/test_publish_sync.py::test_pull_upstream_rejects_non_text_content_type
 test/test_push_branch_gate.py::TestGitPushEnforcement::test_redos_safe_on_pathological_input
 test/test_refresh_tokens.py::test_tr_u_17_persistence_file_mode_0600
@@ -166,7 +154,7 @@ test/test_sandbox_launcher_sweep.py::TestRunDirMode::test_run_dir_mode_enforced_
 test/test_security.py::TestIsSensitivePath::test_absolute_symlink_to_aws_credentials
 test/test_security.py::TestIsSensitivePath::test_base_dir_anchors_relative_path
 test/test_security.py::TestIsSensitivePath::test_relative_symlink_to_aws_credentials
-test/test_seed.py::test_seed_audit_uses_rail_tag_not_raw_path
+test/test_seed.py::test_seed_audit_uses_rail_tag_not_raw_path[main_home-main_home-False]
 test/test_seed.py::test_seed_main_home_rail_catches_symlink
 test/test_seed.py::test_seed_main_home_rail_refuses
 test/test_seed.py::test_seed_main_home_rail_refuses_even_with_replace
@@ -203,7 +191,6 @@ test/test_subagent_sizing.py::TestMacosMemoryProbe::test_zero_page_count_fails_o
 test/test_telegram_config_handlers.py::test_save_persists_token_and_config
 test/test_tips.py::TestStateFilePermissions::test_existing_world_readable_file_corrected_on_rewrite
 test/test_tips.py::TestStateFilePermissions::test_state_file_written_mode_600
-test/test_vector_memory.py::TestSchemaInit::test_file_permissions
 test/test_voice_reply.py::TestResolvePiperBinary::test_configured_expanduser
 test/test_voice_reply.py::TestResolvePiperBinary::test_configured_path_not_executable_returns_none
 test/test_voice_reply.py::TestResolvePiperBinary::test_falls_back_to_venv

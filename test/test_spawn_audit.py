@@ -1389,6 +1389,28 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
         "pod/runtime.py::recent_journal",
+        # Task Scheduler twin of launchctl above: the single chokepoint for
+        # `schtasks.exe /<verb> /TN KiroCrewPod-<name> ...`. Argv is a fixed verb
+        # set plus a task name built from a validate_name-checked pod name and a
+        # script path under the pod dir. `schtasks()` routes through it, and the
+        # gate's own create-and-delete probe of a throwaway task calls it
+        # directly. Not agent-influenced.
+        "pod/windows.py::_schtasks_raw",
+        # The refusal report's process description: `tasklist /FI "PID eq <n>"
+        # /NH /FO CSV`, one call per pid, best-effort and its output only ever
+        # rendered into a message. Every argument is fixed except the pid, which
+        # is an integer this module read from the OS parent map -- never a caller
+        # value, let alone an agent one -- and the binary comes from
+        # `trusted_system_bin`, not from PATH. Not agent-influenced.
+        "pod/windows.py::_describe_processes",
+        # The pod's own gateway. On Linux and macOS the service manager execs
+        # it; Windows has no exec, so the task's wrapper spawns
+        # `<python> -m kiro_crew gateway ...` itself and supervises it. Argv is
+        # the interpreter plus a fixed module and flags from the pod's config,
+        # created CREATE_SUSPENDED so the Job object ceiling is applied before
+        # the first instruction. It IS the product, not an agent subprocess; the
+        # agent-facing spawns inside it go through the normal chokepoints.
+        "pod/windows.py::supervise_gateway",
         "sandbox.py::_probe_sandbox_exec",
         "sandbox.py::_ssh_supports_accept_new",
         # The aggregate slice-ceiling apply: `systemctl --user set-property

@@ -115,6 +115,10 @@ class TestMemoryStoreOverrideProperty:
 
 
 class TestContextBuilder:
+    # Every test here asserts the SHAPE of a built turn, so the host's own free
+    # memory must not be an input: see the fixture for the advisory it pins off.
+    pytestmark = pytest.mark.usefixtures("ample_host_resources")
+
     def test_empty_context_has_critical_rules(self, tmp_path):
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "ws"),

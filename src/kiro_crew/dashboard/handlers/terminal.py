@@ -993,8 +993,20 @@ def _pty_child_env(extra: dict[str, str]) -> dict[str, str]:
     user's own unsandboxed shell (see the spawn comment below), so
     ``SSH_AUTH_SOCK``, the AWS vars and the rest of the credential-bearing
     environment must survive or git-over-SSH and the AWS CLI break in it.
+
+    One variable is ADDED: ``BASH_SILENCE_DEPRECATION_WARNING=1``. macOS ships
+    Bash 3.2, which prints a three-line "the default interactive shell is now
+    zsh" notice on every interactive start. In this panel that banner is pure
+    noise: it lands at the top of the transcript of a terminal the user opened
+    inside Kiro Crew, it says nothing about Kiro Crew, and it repeats on every
+    session. It also precedes the readiness marker, so it is the first thing any
+    consumer of the stream has to skip. A user who wants the notice keeps it by
+    exporting the variable themselves with an empty value, which this respects:
+    an existing value of any kind wins, so this only fills a gap. The variable
+    means nothing to other shells and to Bash on other platforms.
     """
     env = {**os.environ, **extra}
+    env.setdefault("BASH_SILENCE_DEPRECATION_WARNING", "1")
     for key in list(env):
         if any(key.startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES):
             del env[key]
@@ -1205,7 +1217,30 @@ async def _kill_session(sess: _TerminalSession) -> None:
                 sess.proc.kill()
             except ProcessLookupError:
                 pass
-            await sess.proc.wait()
+            # BOUNDED, because SIGKILL is not the end of the story on a PTY. A
+            # shell blocked writing into a controller buffer nobody drains sits
+            # in a tty write inside the kernel, and the pending SIGKILL only
+            # tears it down once it leaves that sleep, which needs a READ on the
+            # controller fd. The read that would free it is this session's
+            # reader task, so a session whose reader has already ended (an
+            # OSError on the fd, an EOF, a cancellation) hands an unbounded
+            # wait() a child that cannot exit until the close further down runs.
+            # That is a deadlock inside a request handler: the handler is lost
+            # for the life of the process, and on the shutdown path it wedges
+            # the whole teardown. Give up on the reap instead, name the pid, and
+            # let the rest of teardown run: closing the controller fd is itself
+            # what releases the wedged write, and the child watcher reaps the
+            # exit afterwards.
+            try:
+                await asyncio.wait_for(
+                    sess.proc.wait(), timeout=platform_compat.REAP_TIMEOUT_SECS
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "terminal: session %s pid %s did not exit %ss after SIGKILL; "
+                    "continuing teardown without reaping it",
+                    sess.session_id, sess.proc.pid, platform_compat.REAP_TIMEOUT_SECS,
+                )
     # os.close() on a PTY controller fd can still BLOCK in the kernel when the far
     # end is wedged (uninterruptible sleep, or a child this process may not
     # signal). Run it on the dedicated subprocess pool, never the event loop, so a

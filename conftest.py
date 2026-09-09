@@ -410,7 +410,7 @@ _ROOT_HAS_REAL_SYMLINKS = _root_can_create_real_symlink()
 #: * ``sudo`` — a privilege prefix, not an action. Whether the spawn mutates
 #:   anything is decided by the command it wraps, and ``sudo systemctl restart``
 #:   is already caught on ``systemctl``.
-_SERVICE_MANAGERS = frozenset({"systemctl", "launchctl"})
+_SERVICE_MANAGERS = frozenset({"systemctl", "launchctl", "schtasks", "schtasks.exe"})
 
 #: Subcommands of the managers above that CHANGE host service state.
 #:
@@ -457,6 +457,13 @@ _MUTATING_VERBS = frozenset(
         "setenv",
         "unsetenv",
         "attach",
+        # schtasks (Windows Task Scheduler). Verbs are `/Create`-style switches
+        # and case-insensitive on the command line, so they are matched lowercased.
+        "/create",
+        "/delete",
+        "/run",
+        "/end",
+        "/change",
     }
 )
 
@@ -475,7 +482,38 @@ _ALWAYS_REFUSED = frozenset({"apparmor_parser"})
 #: service on whoever runs the suite. Same shape as ``_ALLOWED`` in
 #: ``test/test_spawn_preexec_guard.py``: an entry needs a comment saying why the
 #: host mutation is acceptable.
-_HOST_SERVICE_EXEC_ALLOWED_MODULES: frozenset[str] = frozenset()
+#:
+#: The two entries below are the real-service end-to-end suites, and they are the
+#: reason the guard also recognises the pod CLI (see ``_POD_MUTATING_VERBS``): a
+#: test that drives ``kirocrew pod up`` through a CHILD interpreter reaches
+#: ``systemctl start`` / ``launchctl bootstrap`` / ``schtasks /Create`` one
+#: process removed, where the in-process manager check cannot see it. Both
+#: suites self-skip unless an operator sets their own opt-in variable
+#: (``KIROCREW_E2E_SCENARIOS`` / ``KIROCREW_E2E_POD_WINDOWS``), run against a
+#: hermetic plane (their own root, env dir, port base and unit prefix), and tear
+#: down every pod, the plane root and the plane's template unit in ``finally``.
+_HOST_SERVICE_EXEC_ALLOWED_MODULES: frozenset[str] = frozenset(
+    {
+        # The pod scenario suite (nightly ``pod-scenarios``): boots one real pod
+        # per session on the ``kirocrew-e2e-pod`` plane and reclaims it.
+        "e2e.scenarios.test_cron_fire",
+        "e2e.scenarios.test_service_install_dry_run",
+        "e2e.scenarios.test_settings_save",
+        "e2e.scenarios.test_subagent_spawn",
+        "e2e.scenarios.test_wheel_install",
+        # The Windows pod boot canary: one real Task Scheduler task on a
+        # per-run plane, removed by ``pod down`` before the test returns.
+        "test_pod_windows_boot",
+    }
+)
+
+#: ``kirocrew pod`` verbs that create, start, stop or delete a host service
+#: definition (a systemd unit, a launchd agent, a Task Scheduler task). The pod
+#: CLI is how a test reaches a service manager without naming one, so a spawn of
+#: ``kirocrew pod <verb>`` or ``python -m kiro_crew pod <verb>`` is refused for
+#: every module not listed above. Read-only verbs (``ls``, ``status``, ``api``,
+#: ``logs``) stay allowed.
+_POD_MUTATING_VERBS = frozenset({"up", "down", "install", "prune", "restart"})
 
 
 def _tokens(argv: object, *, shell: bool = False) -> list[str]:
@@ -519,8 +557,35 @@ def _refusal_reason(argv: object, *, shell: bool = False) -> str | None:
         if name not in _SERVICE_MANAGERS:
             continue
         for candidate in tokens[index + 1 :]:
-            if _basename(candidate) in _MUTATING_VERBS:
+            # `schtasks` verbs are `/Create`-style switches: `_basename` would
+            # strip the slash, so the raw token is compared lowercased as well.
+            if _basename(candidate) in _MUTATING_VERBS or candidate.lower() in _MUTATING_VERBS:
                 return f"{name} {candidate!r} changes host service state"
+    pod_reason = _pod_cli_refusal(tokens)
+    if pod_reason:
+        return pod_reason
+    return None
+
+
+def _pod_cli_refusal(tokens: list[str]) -> str | None:
+    """Name the ``kirocrew pod`` mutation in *tokens*, or ``None``.
+
+    Matches the console script (``kirocrew``, ``kirocrew.exe``) and the module
+    form (``python -m kiro_crew``), then requires the literal ``pod`` subcommand
+    followed by a verb from :data:`_POD_MUTATING_VERBS`. Anything looser would
+    refuse a test that merely passes ``"pod"`` as an argument to something else.
+    """
+    for index, token in enumerate(tokens):
+        name = _basename(token)
+        if name in {"kirocrew", "kirocrew.exe"}:
+            rest = tokens[index + 1 :]
+        elif token == "-m" and index + 1 < len(tokens) and tokens[index + 1] == "kiro_crew":
+            rest = tokens[index + 2 :]
+        else:
+            continue
+        if len(rest) >= 2 and rest[0] == "pod" and rest[1] in _POD_MUTATING_VERBS:
+            return f"kirocrew pod {rest[1]!r} changes host service state"
+        return None
     return None
 
 
@@ -2001,7 +2066,7 @@ def _refuse_oversized_nodeids(items) -> None:
 
 
 def pytest_collection_modifyitems(config, items):
-    """Apply exact capability skips, then Windows' tracked known-gap skips.
+    """Apply exact capability skips, then the tracked known-gap skips for this OS.
 
     Real-symlink tests are listed individually rather than intercepting
     ``os.symlink`` globally.  A global interception also catches production
@@ -2009,19 +2074,21 @@ def pytest_collection_modifyitems(config, items):
     a junction, silently dropping the Windows behavior those tests exist to
     cover.  Exact collection markers leave every non-link path untouched.
 
-    The list lives in ``test/windows-expected-failures.txt`` -- one unparametrized node
-    id per line, captured from the first Windows CI runs. It is a burn-down backlog:
-    fixed tests get their line deleted, and anything NOT on the list still fails the
-    job, so the Windows line holds for the tests that pass today.
+    The lists live in ``test/windows-expected-failures.txt`` and
+    ``test/macos-expected-failures.txt`` -- one unparametrized node id per line,
+    captured from the first CI runs on that OS. Each is a burn-down backlog: fixed
+    tests get their line deleted, and anything NOT on the list still fails the
+    job, so the line holds for the tests that pass today. Both go through the same
+    ``_apply_tracked_gap_list`` matcher; do not add a third mechanism.
 
-    Lives HERE rather than in ``test/conftest.py`` because the list already names node
+    Lives HERE rather than in ``test/conftest.py`` because the lists already name node
     ids under ``src/kiro_crew/apps/builtins/auto_improvement/tests/``, and a hook rooted
     at ``test/`` is never registered when only in-package tests are collected -- which is
     exactly what CI's reduced-scope Windows job does when a diff touches no path under
     ``test/``. Those entries are also absent from ``BACKEND_DESELECTS``, so they were
     collected unskipped and the shard went red for a gap that was already tracked.
 
-    The list file itself stays under ``test/``, read by path from here. Node ids are
+    The list files themselves stay under ``test/``, read by path from here. Node ids are
     always spelled with ``/`` even on Windows, so the in-package entries need no
     translation.
     """
@@ -2044,24 +2111,93 @@ def pytest_collection_modifyitems(config, items):
             if _base_nodeid(item.nodeid) in requires_real_symlink:
                 item.add_marker(marker)
 
-    if not platform_compat_or_none() or not platform_compat_or_none().IS_WINDOWS:
+    pc = platform_compat_or_none()
+    if pc is None:
         return
-    listfile = _REPO_ROOT / "test" / "windows-expected-failures.txt"
+    if pc.IS_WINDOWS:
+        _apply_tracked_gap_list(items, "windows-expected-failures.txt", "Windows")
+    elif pc.IS_MACOS:
+        _apply_tracked_gap_list(items, "macos-expected-failures.txt", "macOS")
+
+
+def _apply_tracked_gap_list(items, listname: str, platform_label: str) -> None:
+    """Mark every collected item named in ``test/<listname>`` as a STRICT xfail.
+
+    ONE mechanism serves both OS gap lists. macOS reuses it rather than growing a
+    second matcher, so the node-id spelling rule (``_base_nodeid``: no ``[params]``,
+    no ``@group``) and the burn-down semantics -- anything NOT listed still fails
+    the job -- are identical on both platforms by construction.
+
+    **``xfail(strict=True)``, not ``skip``, because these files call themselves a
+    burn-down backlog and say "fix the test and DELETE the line".** A skip does not
+    execute the test, so nothing can ever report that a gap CLOSED: the list could
+    only ever grow, and 241 node ids were retired rather than tracked. Under a
+    strict xfail a listed test that still fails is green (the gap is known), and one
+    that starts PASSING fails the job with XPASS -- which is precisely the signal
+    that the line should be deleted, delivered by the same run that earned it.
+
+    Safe for the entries whose failure is intended platform behaviour rather than a
+    gap: those still FAIL on the platform they are listed for, so they xfail green
+    exactly as before. They only never burn down, which is an honesty problem with
+    the list's framing (see the frame-recorder group in
+    ``macos-expected-failures.txt``) and not a mis-fire of this mechanism.
+
+    **A listed test that HANGS must not be in this list, and the platform is why.**
+    Executing rather than skipping costs CI minutes, which is fine; what is not
+    fine is a hang. On Windows there is no ``SIGALRM``, so pytest-timeout cannot
+    interrupt the test -- it kills the process, which is why the Windows shards pass
+    ``--max-worker-restart=0``. MEASURED: one listed entry
+    (``test_config_loader.py::TestAgentWorkspaceBindingsProperties::test_workspace_path_resolution``)
+    hangs on a native Windows host, and running the list killed the session at 22%
+    with no summary line printed at all. A hanging test therefore cannot be tracked
+    here; it needs an explicit ``skipif`` at the test, with the reason, so nothing
+    about it is silent.
+
+    **An entry MAY name one parametrization, and that is what makes strict xfail
+    expressible at all.** Stripping ``[params]`` from every entry (see
+    :func:`_base_nodeid` for why the strip exists) means one line covers every
+    parametrization of a test -- which is right when they all fail, and impossible
+    when they do not: ``test_seed_audit_uses_rail_tag_not_raw_path`` has two params
+    that fail on Windows and one that passes, so a single base entry would either
+    un-track the two or red the job forever on the one. So a line WITHOUT ``[`` is
+    matched against the param-stripped id, exactly as before, and a line WITH ``[``
+    is matched against the id with its params intact. The ``@group`` suffix is
+    stripped on both sides either way, because that one is an xdist artifact rather
+    than part of the test's identity.
+    """
+    listfile = _REPO_ROOT / "test" / listname
     try:
         text = listfile.read_text(encoding="utf-8")
     except OSError:  # pragma: no cover - list file absent in a partial checkout
         return
-    expected = {
-        _base_nodeid(ln.strip())
-        for ln in text.splitlines()
-        if ln.strip() and not ln.startswith("#")
-    }
-    marker = pytest.mark.skip(
-        reason="known Windows gap -- tracked in test/windows-expected-failures.txt"
+    entries = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+    expected_base = {_base_nodeid(e) for e in entries if "[" not in e}
+    expected_exact = {_ungrouped_nodeid(e) for e in entries if "[" in e}
+    if not expected_base and not expected_exact:
+        return
+    marker = pytest.mark.xfail(
+        reason=f"known {platform_label} gap -- tracked in test/{listname}; "
+        "delete the line when it starts passing",
+        strict=True,
     )
     for item in items:
-        if _base_nodeid(item.nodeid) in expected:
+        if (
+            _base_nodeid(item.nodeid) in expected_base
+            or _ungrouped_nodeid(item.nodeid) in expected_exact
+        ):
             item.add_marker(marker)
+
+
+def _ungrouped_nodeid(nodeid: str) -> str:
+    """A node id with only the xdist ``@group`` suffix removed, params kept.
+
+    The counterpart to :func:`_base_nodeid` for a gap-list entry that names ONE
+    parametrization. ``@group`` still has to go -- it is added by
+    ``--dist loadgroup`` and absent under ``-n0``, so leaving it in would make the
+    same entry match in one invocation and not the other -- but ``[params]`` is part
+    of what the entry is identifying and stays.
+    """
+    return nodeid.split("@")[0]
 
 
 def _base_nodeid(nodeid: str) -> str:

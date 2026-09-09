@@ -137,6 +137,151 @@ jobs:
     name: Production Dependency Vulnerability Gate
     uses: ./.github/workflows/dependency-vulnerability.yml
 
+  # ── Pod scenario E2E ──────────────────────────────────────────────────
+  # Scenario-level E2E over the shipped `kirocrew pod` tooling: one real
+  # service-managed pod, five user-visible flows (test/e2e/scenarios/).
+  #
+  # Nightly rather than per-PR because it boots a real service-managed gateway
+  # and builds the SPA and a wheel, which is minutes per leg. It is deliberately
+  # NOT a `needs:` of anything: a scenario failure must not hold up a nightly
+  # publish, and a publish failure must not hide a scenario result.
+  #
+  # Linux and macOS only for now. There is no `if: runner.os != 'Windows'` in any
+  # scenario body and none in this job: the suite's pod fixture asks the pod's own
+  # `runtime.require_backend()` whether this host can run pods, so the matrix is a
+  # pure consequence of which backends exist. The Windows backend now EXISTS, so
+  # what holds windows-latest back is a validated run rather than a missing
+  # backend, and that reason is pinned in `test/test_pod_scenario_matrix.py`
+  # instead of stated here -- delete its PENDING_VALIDATION entry and the test
+  # demands this matrix entry.
+  pod-scenarios:
+    name: Pod Scenario E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # A pod's gateway is the CHECKOUT's own `.venv/bin/kirocrew`, not the
+      # runner's installed build, and the pod fixture refuses rather than falling
+      # back to a global one. So the venv is a hard prerequisite, in the layout
+      # `pod provision` expects.
+      - name: Build the checkout venv the pod boots
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -U pip build
+          .venv/bin/python -m pip install -e . --group dev
+          .venv/bin/kirocrew --version
+
+      # `pod up` fails loud without a built SPA bundle, on purpose: a pod serves
+      # the real dashboard. Staged the same way ci.yml's e2e job stages it.
+      - name: Build and stage the SPA bundle
+        run: |
+          cd website
+          npm ci
+          npm run build
+          cd ..
+          rm -rf src/kiro_crew/static/dist
+          cp -r website/dist src/kiro_crew/static/dist
+          test -f src/kiro_crew/static/dist/index.html
+
+      # A hosted ubuntu runner has NO `systemd --user` session by default: the
+      # job runs over SSH-less exec with no login session, so there is no
+      # per-user manager and no session bus, and every pod verb refuses (see
+      # pod/runtime.py require_systemd). `loginctl enable-linger` starts the
+      # per-user instance independently of a login session, which is the exact
+      # remedy that refusal prints. The two variables are then exported for every
+      # later step, because systemctl --user locates the manager through them and
+      # a non-login shell inherits neither.
+      #
+      # PROVEN in the log, not assumed: the step prints `systemctl --user
+      # is-system-running` and `--version`, and fails the job if the manager
+      # cannot be reached. Without that check a broken session would silently
+      # become 6 skipped scenarios, and KIROCREW_E2E_REQUIRE below
+      # would be the only thing standing between that and a green nightly.
+      - name: Start a systemd --user session (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$USER"
+          UID_NUM="$(id -u)"
+          echo "XDG_RUNTIME_DIR=/run/user/${UID_NUM}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${UID_NUM}/bus" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="/run/user/${UID_NUM}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${UID_NUM}/bus"
+          # Linger creates the runtime dir asynchronously; wait for the bus
+          # rather than sleeping a fixed amount.
+          for _ in $(seq 1 30); do
+            [ -S "${XDG_RUNTIME_DIR}/bus" ] && break
+            sleep 1
+          done
+          echo "--- proof: systemd --user is reachable ---"
+          systemctl --user --version | head -1
+          systemctl --user is-system-running || true
+          systemctl --user show-environment >/dev/null
+          echo "systemd --user session bus: ${XDG_RUNTIME_DIR}/bus"
+
+      # macOS needs nothing equivalent: the pod's launchd backend uses the
+      # per-user launchd domain, which a runner session already has. Printed so
+      # the two legs read the same way in the log.
+      - name: Confirm the launchd user domain (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          launchctl print "user/$(id -u)" >/dev/null
+          echo "launchd user domain reachable: user/$(id -u)"
+
+      # The canary pattern from ci.yml: run by path with `-v -n0`, tee the log,
+      # then grep the expected pass count and fail otherwise. An exit code alone
+      # cannot tell "every scenario passed" from "every scenario skipped", and a
+      # silent skip is exactly what a precondition-gated suite degrades into.
+      # KIROCREW_E2E_REQUIRE=1 is the belt: it turns each precondition
+      # skip into a failure. The grep is the braces.
+      - name: Run the pod scenario suite
+        env:
+          KIROCREW_E2E_SCENARIOS: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+        run: |
+          set -uo pipefail
+          .venv/bin/python -m pytest -v -p no:cacheprovider -o addopts= \
+            -n0 --timeout=600 test/e2e/scenarios/ 2>&1 | tee pod-scenarios.log
+          status="${PIPESTATUS[0]}"
+          echo "pytest exit: ${status}"
+          # Anchored: an unanchored '6 passed' also matches '16 passed' / '26
+          # passed', so the pin would hold after a scenario was added.
+          if ! grep -qE '(^|[^0-9])6 passed' pod-scenarios.log; then
+            echo "::error::the pod scenario suite did not report 6 passed; a skipped or collapsed suite is not a pass"
+            exit 1
+          fi
+          exit "${status}"
+
+      # The pod's own journal / log files are the only place a boot refusal is
+      # legible, and the job log carries just the tail `pod up` chose to print.
+      - name: Upload the pod logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pod-scenarios-logs-${{ matrix.os }}
+          path: |
+            pod-scenarios.log
+            /tmp/kce2e-*/a/**
+            /tmp/kce2e-*/h/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   build-wheel:
     name: Build Wheel
     needs: [version]
@@ -338,6 +483,17 @@ jobs:
   # cleanly when it is absent. That keeps a Windows-only failure from blocking
   # the mac and Linux lanes, which is the same per-platform independence
   # soft_fail exists to protect.
+  #
+  # There is deliberately NO `if:` here, so a red `smoke-install-windows` holds
+  # this publish. soft_fail sets continue-on-error on the BUILD job only; the
+  # smoke in the same reusable workflow does not carry it, so a failed install or
+  # a gateway that will not start fails the `build-windows` CALL and this job is
+  # skipped with it. That is the point of running the smoke: the artifact is
+  # uploaded before it runs, so anything that lets this job start anyway would
+  # find that artifact and publish an installer the smoke had already rejected.
+  # Holding it costs nothing cross-platform -- the lane being held is the same
+  # platform whose smoke failed, and the mac and Linux publishes are their own
+  # jobs.
   publish-windows-x64:
     name: Publish Windows Desktop (nightly channel · x64)
     needs: [version, build-windows, dependency-vulnerability-gate]

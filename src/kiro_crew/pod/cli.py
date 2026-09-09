@@ -1062,8 +1062,10 @@ def _run_internal(cfg: PodConfig, args: argparse.Namespace) -> None:
     # keeps its honest non-zero instead of looking like a clean exit. Do NOT call
     # ``launchd.launchd_exit_code`` directly here; it states the platform semantics
     # but knows nothing about whether the record exists. Windows needs no
-    # translation at all (Task Scheduler never restarts a non-zero exit), which
-    # ``kiro_crew.pod.windows.windows_exit_code`` states and a test pins.
+    # translation at all: Task Scheduler never restarts a non-zero exit, so the
+    # honest code is already the terminal one. The branch below says so, and
+    # `test_the_runtime_wrapper_does_not_translate_on_windows` pins it there --
+    # which is where a change that adds a restart policy would have to look.
     exit_code = rt.terminal_exit_code(cfg, args.name, rc)
     if exit_code != rc:
         print(

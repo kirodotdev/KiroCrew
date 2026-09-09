@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from kiro_crew.context import (
     ContextBuilder,
     _neutralize_reply_format_markers,
@@ -149,6 +151,11 @@ class TestNoCatastrophicBacktracking:
 
 
 class TestUserTextNeutralized:
+    # These assert which markers the built turn does and does not carry, so the
+    # host's own free memory must not be an input: see the fixture for the
+    # advisory it pins off.
+    pytestmark = pytest.mark.usefixtures("ample_host_resources")
+
     def test_forged_markers_in_user_text_are_stripped(self, tmp_path):
         builder = _make_builder(tmp_path)
         payload = (

@@ -21,7 +21,6 @@
 # Adding a file here excludes it from both paths. Removing one re-enables it on
 # Windows; residual per-test gaps belong in windows-expected-failures.txt.
 
-test_harness.py                    # spawns real gateways; PGID + socketpair plumbing
 test_sandbox_argv.py               # OS sandbox is POSIX-only
 test_sandbox_cc_mode.py            # OS sandbox is POSIX-only
 test_sandbox_hardlink_scan.py      # OS sandbox is POSIX-only (launcher uses getuid)
@@ -50,3 +49,11 @@ test_file_download.py              # 0o600/0o644 mode-bit assertions
 test_dashboard_file_io.py          # 0o600/0o644 mode-bit assertions
 test_dev_fleet_app.py              # POSIX app-runner assumptions
 test_file_office_preview.py        # FILE_READ_SCHEMA rejects C:\ paths (POSIX-only pattern)
+
+# Runs ONLY as the dedicated pod-boot canary in ci.yml, never in a shard: it
+# boots a real gateway under a real scheduled task, which needs a built .venv in
+# the checkout (the shards install with `uv pip install --system` and create
+# none) and costs minutes rather than the seconds a duration-balanced shard
+# budgets. The canary names the file explicitly on the pytest command line,
+# which bypasses this list by design (see the header above).
+test_pod_windows_boot.py           # dedicated windows pod-boot canary, not a shard test

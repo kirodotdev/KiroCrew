@@ -693,19 +693,24 @@ class TestOneTurnPerSessionKey:
                 sign_with=secret,
             )
 
+        # The waits below are hang guards, not timing assertions: the test
+        # proves ORDER (the claim lands before the capacity await), and a loaded
+        # Windows runner has taken longer than a second to schedule the first
+        # request's coroutine as far as acquire().
+        bound = 10
         first = asyncio.create_task(H.api_hooks_agent(request("first")))
-        await asyncio.wait_for(semaphore.entered.wait(), timeout=1)
+        await asyncio.wait_for(semaphore.entered.wait(), timeout=bound)
 
         # The first request is paused inside acquire(). The claim must already
         # be visible, so the second request finishes with session_busy instead
         # of joining it at the capacity await.
-        second = await asyncio.wait_for(H.api_hooks_agent(request("second")), timeout=1)
+        second = await asyncio.wait_for(H.api_hooks_agent(request("second")), timeout=bound)
         assert second.status == 409
         assert (await _payload(second))["code"] == "session_busy"
         assert semaphore.acquire_calls == 1
 
         semaphore.allow.set()
-        accepted = await asyncio.wait_for(first, timeout=1)
+        accepted = await asyncio.wait_for(first, timeout=bound)
         assert accepted.status == 200
         await asyncio.sleep(0)
         run.assert_awaited_once()

@@ -128,9 +128,9 @@ class TestCatalog:
             # not enforceable here. Found in review (GPT 5.6).
             "python -c \"import sys; sys.argv.append('token'); "
             'from kiro_crew.cli import main; main()"',
-            "python -c \"from kiro_crew.cli import main; import sys; "
+            'python -c "from kiro_crew.cli import main; import sys; '
             "sys.argv=['x','token']; main()\"",
-            'python -c "from kiro_crew.cli import main; main([\'token\'])"',
+            "python -c \"from kiro_crew.cli import main; main(['token'])\"",
             'python -c "import kiro_crew.cli as c; c.main()"',
             'python -X dev -c "import kiro_crew.cli"',
             # STDIN forms: `python -` and a bare interpreter read the program from stdin, so a
@@ -1177,9 +1177,7 @@ class TestIsDeniedReDoSResistance:
             fn()
             return 0.123
 
-        monkeypatch.setattr(
-            TestIsDeniedReDoSResistance, "_cpu_cost", staticmethod(fake_cpu_cost)
-        )
+        monkeypatch.setattr(TestIsDeniedReDoSResistance, "_cpu_cost", staticmethod(fake_cpu_cost))
         assert self._elapsed("git status") == 0.123
         assert len(calls) == 1
 
@@ -1241,10 +1239,9 @@ class TestIsDeniedReDoSResistance:
                         "2-spinner burst — the burst harness is not generating "
                         "in-process noise"
                     )
-            assert len(failures) <= 1, (
-                f"{len(failures)}/5 samples failed (need a majority to hold): "
-                + "; ".join(failures)
-            )
+            assert (
+                len(failures) <= 1
+            ), f"{len(failures)}/5 samples failed (need a majority to hold): " + "; ".join(failures)
         finally:
             stop.set()
             for thread in spinners:
@@ -1308,9 +1305,9 @@ class TestIsDeniedReDoSResistance:
             "credential-exfil-python-botocore-credentials",
         }
         chain_rules = [r for r in BUILTIN_DENIED_RULES if r.id in chain_ids]
-        assert {r.id for r in chain_rules} == chain_ids, (
-            "the mid-dotstar chain rules under test are gone from the catalog"
-        )
+        assert {
+            r.id for r in chain_rules
+        } == chain_ids, "the mid-dotstar chain rules under test are gone from the catalog"
         for rule in chain_rules:
             matcher = _deny_matcher(rule.pattern)
             assert matcher._disabled is False
@@ -1966,11 +1963,11 @@ class TestInterpreterArgvLiteralMint:
     @pytest.mark.parametrize(
         "cmd",
         [
-            'python -c \'os.system("{n} {v}")\'',
-            'python -c \'os.popen("{n} {v}")\'',
+            "python -c 'os.system(\"{n} {v}\")'",
+            "python -c 'os.popen(\"{n} {v}\")'",
             'node -e \'require("child_process").execSync("{n} {v}")\'',
-            'php -r \'shell_exec("{n} {v}");\'',
-            'ruby -e \'system("{n} {v}")\'',
+            "php -r 'shell_exec(\"{n} {v}\");'",
+            "ruby -e 'system(\"{n} {v}\")'",
         ],
     )
     def test_sink_qualified_single_string_blocked(self, cmd):
@@ -1987,9 +1984,9 @@ class TestInterpreterArgvLiteralMint:
     @pytest.mark.parametrize(
         "cmd",
         [
-            'python -c \'os.system("PKILL -f {n}")\'',
+            "python -c 'os.system(\"PKILL -f {n}\")'",
             'node -e \'require("child_process").execSync("PKILL -f {n}")\'',
-            'php -r \'shell_exec("KILLALL {n}");\'',
+            "php -r 'shell_exec(\"KILLALL {n}\");'",
         ],
     )
     def test_sink_qualified_single_string_kill_blocked(self, cmd):
@@ -2046,9 +2043,9 @@ class TestInterpreterArgvLiteralMint:
     @pytest.mark.parametrize(
         "cmd",
         [
-            'python -c \'os.kill(pid_from("[k]irocrew gateway"), 9)\'',
-            'python -c \'os.killpg(pgid_of("{n}"), 15)\'',
-            'node -e \'process.kill(pidOf("{n}"), 9)\'',
+            "python -c 'os.kill(pid_from(\"[k]irocrew gateway\"), 9)'",
+            "python -c 'os.killpg(pgid_of(\"{n}\"), 15)'",
+            "node -e 'process.kill(pidOf(\"{n}\"), 9)'",
         ],
     )
     def test_direct_kill_api_blocked(self, cmd):
@@ -2093,8 +2090,8 @@ class TestInterpreterArgvLiteralMint:
     @pytest.mark.parametrize(
         "cmd",
         [
-            'python -c \'os.system(f"{n} {v}")\'',
-            'python -c \'os.system(f"PKILL -f {n}")\'',
+            "python -c 'os.system(f\"{n} {v}\")'",
+            "python -c 'os.system(f\"PKILL -f {n}\")'",
             "python -c 'os.system(rb\"{n} {v}\")'",
         ],
     )
@@ -2161,7 +2158,7 @@ class TestInterpreterArgvLiteralMint:
             "python -c \"subprocess.run(['./bin/{n}','{v}'])\"",
             "python -c \"subprocess.run(['/usr/bin/PKILL','-f','{n}'])\"",
             'node -e \'execFileSync("/opt/{n}",["{v}"])\'',
-            'python -c \'os.system("/usr/bin/{n} {v}")\'',
+            "python -c 'os.system(\"/usr/bin/{n} {v}\")'",
         ],
     )
     def test_path_qualified_program_in_interpreter_argv_blocked(self, cmd):
@@ -2245,8 +2242,8 @@ class TestInterpreterArgvLiteralMint:
     @pytest.mark.parametrize(
         "cmd",
         [
-            'python -c \'os.system("PKILL -f [k]irocrew")\'',
-            'node -e \'execSync("PKILL -f [k]irocrew")\'',
+            "python -c 'os.system(\"PKILL -f [k]irocrew\")'",
+            "node -e 'execSync(\"PKILL -f [k]irocrew\")'",
             "python -c \"subprocess.run(['PKILL','-f','[k]irocrew'])\"",
         ],
     )
@@ -2326,7 +2323,7 @@ class TestInterpreterArgvLiteralMint:
     @pytest.mark.parametrize(
         "cmd",
         [
-            'node -e \'console.log("run {n} {v} to mint")\'',
+            "node -e 'console.log(\"run {n} {v} to mint\")'",
             "echo 'run PKILL {n} to stop it'",
             "python3 -c \"print('{n} docs mention {v}')\"",
             "git commit -m 'note: PKILL {n} rule'",
@@ -2341,8 +2338,16 @@ class TestInterpreterArgvLiteralMint:
     def test_literal_concatenation_is_no_longer_the_gap(self):
         """Adjacent string LITERALS are now joined before matching."""
         assembled = (
-            "python -c 'import os; os.system(" + Q + "kiro" + Q + " + "
-            + Q + "crew " + _TOK + Q + ")'"
+            "python -c 'import os; os.system("
+            + Q
+            + "kiro"
+            + Q
+            + " + "
+            + Q
+            + "crew "
+            + _TOK
+            + Q
+            + ")'"
         )
         assert _denied_by(assembled) == _RULE_MINT + "-argv"
 
@@ -2359,7 +2364,10 @@ class TestInterpreterArgvLiteralMint:
         """
         computed = (
             "python -c 'import os,base64; os.system(base64.b64decode("
-            + Q + "a2lyb2NyZXcgdG9rZW4=" + Q + ").decode())'"
+            + Q
+            + "a2lyb2NyZXcgdG9rZW4="
+            + Q
+            + ").decode())'"
         )
         assert _denied_by(computed) is not None
 
@@ -2403,17 +2411,13 @@ class TestRuleIdentityIsTheId:
     def test_a_governance_pin_resolves_by_id_not_pattern(self):
         rule = next(r for r in BUILTIN_DENIED_RULES if r.id == _RULE_MINT)
         # Pinned by ID, the rule survives even a blanket user disable.
-        assert compute_effective_denied([rule], {rule.id}, True, (), {rule.id}) == [
-            rule.pattern
-        ]
+        assert compute_effective_denied([rule], {rule.id}, True, (), {rule.id}) == [rule.pattern]
 
     def test_a_pattern_string_is_never_an_identity(self):
         rule = next(r for r in BUILTIN_DENIED_RULES if r.id == _RULE_KILL)
         # Passing the PATTERN where an id belongs disables nothing, which is precisely
         # why a pattern edit cannot weaken an existing policy.
-        assert compute_effective_denied([rule], {rule.pattern}, False, (), ()) == [
-            rule.pattern
-        ]
+        assert compute_effective_denied([rule], {rule.pattern}, False, (), ()) == [rule.pattern]
 
 
 class TestNameAsDataIsNotAnInvocation:
@@ -3121,7 +3125,7 @@ class TestSelfProtectionKillTargetScoping:
         "cmd,rule",
         [
             ('a=({n} {v}); "${{a[@]}}"', _RULE_MINT),
-            ('a=({n} {v}); ${{a[*]}}', _RULE_MINT),
+            ("a=({n} {v}); ${{a[*]}}", _RULE_MINT),
             ('arr=({n} {v}); "${{arr[@]}}"', _RULE_MINT),
             ('a=({n} {v}); echo hi; "${{a[@]}}"', _RULE_MINT),
             ('a=(PKILL -f {n}); "${{a[@]}}"', _RULE_KILL),
@@ -3164,9 +3168,7 @@ class TestSelfProtectionKillTargetScoping:
 
     def test_percent_format_without_a_sink_allowed(self):
         # `print` does not execute, so collapsing the format must not make it a mint.
-        text = (
-            "python3 -c " + chr(39) + 'print("' + _NAME + ' %s" % "' + _TOK + '")' + chr(39)
-        )
+        text = "python3 -c " + chr(39) + 'print("' + _NAME + ' %s" % "' + _TOK + '")' + chr(39)
         assert _denied_by(text) is None
 
     def test_percent_format_with_a_non_literal_argument_allowed(self):
@@ -3203,23 +3205,28 @@ class TestSelfProtectionKillTargetScoping:
         pattern tight, and sink qualification still decides.
         """
         text = (
-            "python3 -c " + chr(34) + "print(" + chr(39) + _NAME + chr(39) + "); log("
-            + chr(39) + _TOK + chr(39) + ")" + chr(34)
-        )
-        assert _denied_by(text) is None
-
-    def test_binding_used_by_a_non_sink_allowed(self):
-        text = (
-            "python3 -c " + chr(34) + "n=" + chr(39) + _NAME + chr(39) + "; print(n)"
+            "python3 -c "
+            + chr(34)
+            + "print("
+            + chr(39)
+            + _NAME
+            + chr(39)
+            + "); log("
+            + chr(39)
+            + _TOK
+            + chr(39)
+            + ")"
             + chr(34)
         )
         assert _denied_by(text) is None
 
+    def test_binding_used_by_a_non_sink_allowed(self):
+        text = "python3 -c " + chr(34) + "n=" + chr(39) + _NAME + chr(39) + "; print(n)" + chr(34)
+        assert _denied_by(text) is None
+
     def test_sink_named_in_prose_allowed(self):
         # Naming a sink is not calling one; sink qualification still governs.
-        assert _denied_by(
-            f'git commit -m "wrap getoutput for {_NAME} {_TOK}"'
-        ) is None
+        assert _denied_by(f'git commit -m "wrap getoutput for {_NAME} {_TOK}"') is None
 
     def test_transformation_of_something_harmless_allowed(self):
         assert _denied_by("K=ls; ${K:0} /tmp") is None
@@ -3263,9 +3270,7 @@ class TestSelfProtectionKillTargetScoping:
     def test_concatenation_without_a_sink_allowed(self):
         # `print` does not execute, so joining the literals must not make it a mint --
         # sink qualification still governs.
-        assert _denied_by(
-            "python3 -c \"print('" + _NAME + " '+'" + _TOK + "')\""
-        ) is None
+        assert _denied_by("python3 -c \"print('" + _NAME + " '+'" + _TOK + "')\"") is None
 
     def test_greedy_variable_name_is_not_a_concatenation(self):
         # bash parses `$xkill` as the variable `xkill` (unset), NOT `$x` followed by
@@ -3287,9 +3292,9 @@ class TestSelfProtectionKillTargetScoping:
 
     def test_asyncio_name_without_a_sink_call_allowed(self):
         # Naming the function in prose is not calling it; sink qualification still governs.
-        assert _denied_by(
-            f'git commit -m "wrap create_subprocess_shell for {_NAME} {_TOK}"'
-        ) is None
+        assert (
+            _denied_by(f'git commit -m "wrap create_subprocess_shell for {_NAME} {_TOK}"') is None
+        )
 
     @pytest.mark.parametrize(
         "cmd",
@@ -3447,7 +3452,7 @@ class TestCredentialMintSegmentScoping:
             f'bash -lc "{_NAME} {_TOK}"',
             f'zsh -c "{_NAME} pod {_TOK} wt"',
             f'eval "{_NAME} {_TOK}"',
-            f'bash -c \'bash -c "{_NAME} {_TOK}"\'',
+            f"bash -c 'bash -c \"{_NAME} {_TOK}\"'",
             f'bash -c "{_NAME} >/tmp/o {_TOK}"',
         ],
     )
@@ -3713,9 +3718,9 @@ class TestSelfFloorShortCircuit:
             "cat notes.txt",
             "npm run build",
         ):
-            assert self._descent_calls(monkeypatch, benign) == 0, (
-                f"descent ran for benign input: {benign!r}"
-            )
+            assert (
+                self._descent_calls(monkeypatch, benign) == 0
+            ), f"descent ran for benign input: {benign!r}"
 
     def test_name_carrying_command_still_descends(self, monkeypatch):
         # A real candidate must reach the full structural scan.
@@ -3741,11 +3746,11 @@ class TestSelfFloorShortCircuit:
             'k""iro""crew token',  # empty-string concatenation
             "kiro?rew token",  # glob the shell expands before exec
             "kill $(pgrep -f kirocrew)",  # bare kill via substitution
-            'python -c "exec(__import__(\'base64\').b64decode(\'x\'))" token',
+            "python -c \"exec(__import__('base64').b64decode('x'))\" token",
         ):
-            assert security._self_floor_can_fire(evasive), (
-                f"gate would bypass the floor for {evasive!r}"
-            )
+            assert security._self_floor_can_fire(
+                evasive
+            ), f"gate would bypass the floor for {evasive!r}"
 
     def test_gated_predicates_still_deny_the_obfuscation_corpus(self):
         """End-to-end: the predicates (with the gate in front) keep firing."""
@@ -3772,9 +3777,7 @@ class TestSelfFloorShortCircuit:
             "grep token app.log",
             "cat /workplace/user/notes.txt",
         ):
-            assert not security._self_floor_can_fire(plain), (
-                f"gate over-triggered on {plain!r}"
-            )
+            assert not security._self_floor_can_fire(plain), f"gate over-triggered on {plain!r}"
 
     def test_tilde_expansion_still_reaches_the_floor(self, monkeypatch):
         """``pkill -f ~`` IS a self-kill whenever $HOME lies under the product
@@ -3790,9 +3793,7 @@ class TestSelfFloorShortCircuit:
         monkeypatch.setenv("HOME", "/opt/kiro-crew")
         monkeypatch.setenv("USERPROFILE", "/opt/kiro-crew")
         for kill in ("pkill -f ~", "killall ~", "pkill -f ~/"):
-            assert security._self_floor_can_fire(kill), (
-                f"gate would bypass the floor for {kill!r}"
-            )
+            assert security._self_floor_can_fire(kill), f"gate would bypass the floor for {kill!r}"
         # End-to-end: the gated predicate still denies it.
         assert security._is_self_kill("pkill -f ~")
 
@@ -3816,9 +3817,9 @@ class TestSelfFloorShortCircuit:
         assert not security._SELF_FLOOR_MACHINERY_RE.search(cmd)
         assert not security._INLINE_DYNAMIC_EXEC_RE.search(cmd)
 
-        assert security._self_floor_can_fire(cmd), (
-            "gate would bypass the floor for quote-glued dynamic exec"
-        )
+        assert security._self_floor_can_fire(
+            cmd
+        ), "gate would bypass the floor for quote-glued dynamic exec"
         # And the floor's verdict survives the gate: still denied end-to-end.
         assert security._is_credential_mint(cmd)
 
@@ -3846,7 +3847,7 @@ class TestSelfKillArgvWindowIsQuoteAware:
             # the kill matched at any argv position, as the token walk does
             "sudo kill $(printf ')' ; pgrep -f {n})",
             # the decoy inside a nested shell payload is the same command
-            'sh -c \'kill $(printf ")" ; pgrep -f {n})\'',
+            "sh -c 'kill $(printf \")\" ; pgrep -f {n})'",
             # a quoted separator is DATA: bash hands kill the substitution too
             "kill 123 ';' $(pgrep -f {n})",
             # ``&>`` is a redirect of the SAME command, not a separator: bash
@@ -3861,7 +3862,7 @@ class TestSelfKillArgvWindowIsQuoteAware:
             # a proven substitution INSIDE double quotes must not swallow the
             # rest of the line: the ``;`` after it is a real separator and the
             # kill segment after it is still scanned (pre-push review, measured)
-            'echo "$(date)" ; kill $(printf \')\' ; pgrep -f {n})',
+            "echo \"$(date)\" ; kill $(printf ')' ; pgrep -f {n})",
             # the decoy fully inside double quotes: bash parses the body in a
             # fresh quote context, so the interior ')' stays data
             "kill \"$(printf ')' ; pgrep -f {n})\"",
@@ -3870,7 +3871,7 @@ class TestSelfKillArgvWindowIsQuoteAware:
             # (server-side GPT review, measured)
             "k''ill $(printf ')' ; pgrep -f {n})",
             "k'i'll $(printf ')' ; pgrep -f {n})",
-            '"ki"ll $(printf \')\' ; pgrep -f {n})',
+            "\"ki\"ll $(printf ')' ; pgrep -f {n})",
             # an EMPTY substitution expands to nothing, so ``kill$()`` is the
             # word ``kill`` -- the glue exclusion must not eat the anchor
             # (measured)
@@ -4398,7 +4399,7 @@ class TestDevModeConfirmFlagIsAgentInaccessible:
         for cmd in (
             "kirocrew app dev my-app --confirm-out-of-install-root",
             'bash -c "kirocrew app dev my-app --confirm-out-of-install-root"',
-            "python3 -c \"import subprocess; subprocess.run("
+            'python3 -c "import subprocess; subprocess.run('
             "['kirocrew','app','dev','x','--confirm-out-of-install-root'])\"",
         ):
             assert security.is_denied(cmd) is not None, f"not denied: {cmd!r}"
@@ -5537,7 +5538,7 @@ class TestDenyMatchingIsQuoteNormalized:
         ``_nested_shell_payloads`` recognises must therefore be viewed too.
         """
         for cmd in (
-            'bash -c \'dd "if=/dev/zero" of=/dev/sda\'',
+            "bash -c 'dd \"if=/dev/zero\" of=/dev/sda'",
             "sh -c 'rm -rf \"/\"'",
             "sh -c \"rm -rf '/'\"",
             "bash -c -- 'rm -rf \"/\"'",  # ``--`` ends option parsing
@@ -5594,9 +5595,7 @@ class TestDenyMatchingIsQuoteNormalized:
         ):
             assert is_denied(cmd) is not None, f"executor wrapper escaped the rule: {cmd!r}"
 
-    def test_a_normalized_match_records_the_raw_spelling_too(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_a_normalized_match_records_the_raw_spelling_too(self, monkeypatch: pytest.MonkeyPatch):
         """Forensics needs both halves.  The view names the command that WOULD
         have run; only the raw spelling shows the evasion.  The full input is
         already in ``operation``, so what the extra field adds is WHICH segment
@@ -5672,7 +5671,7 @@ class TestDenyMatchingIsQuoteNormalized:
         for cmd in (
             "bash<<<'rm -rf \"/\"'",  # glued herestring
             "alias x='rm -rf \"/\"'",  # alias assignment
-            'sed \'s#x#rm -rf "/"#e\' file',  # sed e-flag script executes
+            "sed 's#x#rm -rf \"/\"#e' file",  # sed e-flag script executes
         ):
             assert is_denied(cmd) is not None, f"glued payload escaped the rule: {cmd!r}"
         for cmd in (
@@ -5734,7 +5733,7 @@ class TestDenyMatchingIsQuoteNormalized:
             "dd $'if=/dev/zero' of=/dev/sda",
             "$'rm' -rf /",
             "rm $'\\x2d\\x72\\x66' /",  # the flag spelled in hex
-            'bash -c $\'rm -rf "/"\'',  # ANSI-C wrapping a nested payload
+            "bash -c $'rm -rf \"/\"'",  # ANSI-C wrapping a nested payload
             'rm -rf $"/"',  # locale quoting
         ):
             assert is_denied(cmd) is not None, f"dollar-quoted spelling escaped: {cmd!r}"
@@ -5925,14 +5924,14 @@ class TestDenyMatchingIsQuoteNormalized:
         nested view missed the rule (BLOCKING from the GPT 5.6 lane).
         """
         for cmd in (
-            'bash -c $\'rm -rf \\"/\\"\'',
+            "bash -c $'rm -rf \\\"/\\\"'",
             "bash -c $'rm -rf \\'/\\''",
         ):
             assert is_denied(cmd) is not None, f"escaped-quote payload escaped: {cmd!r}"
         # ...but the same escapes NOT feeding a shell are a literal operand, and
         # must not be over-blocked: bash argv for ``rm -rf $'\\"/\\"'`` is
         # ``<rm><-rf><\\"/\\">`` -- a file named `"/"`, not the root (printf %q).
-        assert is_denied('rm -rf $\'\\"/\\"\'') is None
+        assert is_denied("rm -rf $'\\\"/\\\"'") is None
 
     def test_the_ansi_c_decoder_is_a_single_pass(self):
         """Sequential replaces let one substitution's OUTPUT be re-read as another's
@@ -6435,9 +6434,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         """The word is available at both levels: in the wrapper's own argv and
         inside the ``-c`` script, whose payload gets its own view."""
         for cmd in (
-            "bash \"\" -c 'dd \"if=/dev/zero\" of=/dev/sda'",
+            'bash "" -c \'dd "if=/dev/zero" of=/dev/sda\'',
             "bash -c 'dd \"\" if=/dev/zero of=/dev/sda'",
-            "bash \"\" -c 'dd \"\" if=/dev/zero of=/dev/sda'",
+            'bash "" -c \'dd "" if=/dev/zero of=/dev/sda\'',
         ):
             assert is_denied(cmd) is not None, f"nested empty word escaped: {cmd!r}"
 
@@ -6488,9 +6487,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
             'r""m -rf "" ./data',  # the isolating spelling
             "rm -rf '' ./data",
         ):
-            assert is_denied(cmd, denied_regexes=custom) is not None, (
-                f"an existing denial was lost: {cmd!r}"
-            )
+            assert (
+                is_denied(cmd, denied_regexes=custom) is not None
+            ), f"an existing denial was lost: {cmd!r}"
         # The canonical spelling was never covered by that rule, before or after,
         # which is what makes the rows above denials to PRESERVE rather than a
         # coverage claim this change should be making.
@@ -6567,9 +6566,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         for base in self.PROPERTY_BASES:
             expected_denied = security.is_denied(base) is not None
             for _at, _word, variant in self._empty_word_variants(base):
-                assert (security.is_denied(variant) is not None) == expected_denied, (
-                    f"{variant!r} decided differently from {base!r}"
-                )
+                assert (
+                    security.is_denied(variant) is not None
+                ) == expected_denied, f"{variant!r} decided differently from {base!r}"
 
     def test_the_git_publish_detector_skips_an_empty_word(self):
         """The empty-word gap is closed -- this is the flipped form of the
@@ -6605,9 +6604,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         base = "git push origin main".split(" ")
         for word in self.EMPTY_WORDS + ('" "', "$'\\t'"):
             cmd = " ".join([base[0], word] + base[1:])
-            assert is_denied(cmd) is not None, (
-                f"an interposed word escaped the git-publish floor: {cmd!r}"
-            )
+            assert (
+                is_denied(cmd) is not None
+            ), f"an interposed word escaped the git-publish floor: {cmd!r}"
         # The DISCRIMINATING pin for the seek-loop closure is the predicate
         # itself: the end-to-end deny above can also arrive via the ungated
         # parse-failure branch, and the flag spellings below already match the
@@ -6620,9 +6619,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
             "git '' -c x=y push origin main",
             "git -c '' push origin main",
         ):
-            assert security._is_git_push_via_normalizer(cmd) is True, (
-                f"the normalizer seek did not resolve the subcommand: {cmd!r}"
-            )
+            assert (
+                security._is_git_push_via_normalizer(cmd) is True
+            ), f"the normalizer seek did not resolve the subcommand: {cmd!r}"
         # ...and the end-to-end deny for the flag spellings holds too.
         for cmd in (
             "git -c '' push origin main",
@@ -6820,9 +6819,9 @@ class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
         # The count must not scale with the payload count.  Measured: 1 at every
         # size here; before the fix the guard's work was re-done per payload.
         counts = {n: self._count_guard_calls(monkeypatch, self._spaced(n)) for n in (30, 60, 120)}
-        assert counts[30] == counts[60] == counts[120], (
-            f"command-level guard is charged per payload, not per command: {counts}"
-        )
+        assert (
+            counts[30] == counts[60] == counts[120]
+        ), f"command-level guard is charged per payload, not per command: {counts}"
         # Belt as well as braces: a future change making it 2*N would still keep
         # the three counts EQUAL to each other only by accident, so bound it
         # against the payload count directly.
@@ -6900,7 +6899,7 @@ class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
             f"$(printf echo) {_NAME} {_TOK}",
             f"`printf echo` {_PK} -f {_NAME}",
             # the script text can EXECUTE rather than print
-            f'awk \'system("{_PK} -f {_NAME}")\'',
+            f"awk 'system(\"{_PK} -f {_NAME}\")'",
             f"awk 'BEGIN{{print | \"{_PK} -f {_NAME}\"}}'",
             # a control operator inside the token starts a command that runs
             f"echo foo;{_PK} -f {_NAME}",
@@ -6931,7 +6930,7 @@ class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
         [
             f"echo {_NAME} {_TOK}",
             f"echo {_NAME} {_TOK} | sh",
-            f'awk \'system("{_PK} -f {_NAME}")\'',
+            f"awk 'system(\"{_PK} -f {_NAME}\")'",
             "awk '{print $1}' file",
             f"$(printf echo) {_NAME} {_TOK}",
         ],
@@ -7483,10 +7482,22 @@ class TestSandboxEscapeSshSelf:
         # representative allow case through the floor must NOT spawn the real
         # ``kirocrew-own-host-resolve`` daemon (DONE=True short-circuits
         # ``_own_host_names`` before the thread).
+        #
+        # Scoped to threads that appear DURING the call, because the claim is
+        # about THIS evaluation and `threading.enumerate()` is process-wide. The
+        # resolver unit tests below call the cache function directly, and on macOS
+        # a `getfqdn`/`getaddrinfo` for a `*.local` name takes SECONDS (the same
+        # mDNS latency this branch's boot matrix surfaced), so one of their daemons
+        # can still be alive here under any test order -- a neighbour's leftover is
+        # not this floor spawning one.
+        before = {id(t) for t in threading.enumerate() if t.name == "kirocrew-own-host-resolve"}
         assert _denied_by("ssh far-host.example.com uptime") is None
-        assert not any(
-            t.name == "kirocrew-own-host-resolve" for t in threading.enumerate()
-        ), "the DNS-enrichment daemon thread was spawned during the floor scan"
+        spawned = [
+            t
+            for t in threading.enumerate()
+            if t.name == "kirocrew-own-host-resolve" and id(t) not in before
+        ]
+        assert not spawned, "the DNS-enrichment daemon thread was spawned during the floor scan"
 
     def test_rsync_detached_rsh_floor_allows_plain_ssh(self):
         # THIS floor must not deny the normal detached remote-shell selector;
@@ -7600,9 +7611,7 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
         monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(
-            _argv_floor, "_own_interface_addresses", lambda: {"203.0.113.7"}
-        )
+        monkeypatch.setattr(_argv_floor, "_own_interface_addresses", lambda: {"203.0.113.7"})
         assert _denied_by("ssh 203.0.113.7 id") == self._RULE
         assert _denied_by("ssh 198.51.100.9 id") is None
 
@@ -7635,9 +7644,7 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
         monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(
-            _argv_floor, "_windows_interface_addresses", lambda: {"203.0.113.44"}
-        )
+        monkeypatch.setattr(_argv_floor, "_windows_interface_addresses", lambda: {"203.0.113.44"})
         assert _denied_by("ssh 203.0.113.44 id") == self._RULE
         assert _denied_by("ssh 198.51.100.9 id") is None
 
@@ -7711,9 +7718,7 @@ class TestSandboxEscapeSshSelf:
         # seed).  Once published, a secondary IPv4 the ioctl sweep cannot
         # see denies from the cache like any own address, and a far IP is
         # admitted again.
-        monkeypatch.setattr(
-            _argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"203.0.113.66"})
-        )
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"203.0.113.66"}))
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
@@ -7742,9 +7747,7 @@ class TestSandboxEscapeSshSelf:
         # lands in the resolved set and a non-empty pass publishes the flag
         # that closes the IP-literal window.  DNS is stubbed inert so the
         # test stays packet-less.
-        monkeypatch.setattr(
-            _argv_floor, "_linux_netlink_addresses", lambda: {"203.0.113.66"}
-        )
+        monkeypatch.setattr(_argv_floor, "_linux_netlink_addresses", lambda: {"203.0.113.66"})
         monkeypatch.setattr(_argv_floor.socket, "getfqdn", lambda: "")
         monkeypatch.setattr(_argv_floor.socket, "getaddrinfo", lambda *a, **k: [])
         monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", False)
@@ -7770,9 +7773,7 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", float("inf"))
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
         monkeypatch.setattr(_argv_floor, "_NETLINK_ADDRS_PUBLISHED", True)
-        monkeypatch.setattr(
-            _argv_floor, "_darwin_interface_addresses", lambda: {"203.0.113.55"}
-        )
+        monkeypatch.setattr(_argv_floor, "_darwin_interface_addresses", lambda: {"203.0.113.55"})
         assert _denied_by("ssh 203.0.113.55 id") == self._RULE
         assert _denied_by("ssh 198.51.100.9 id") is None
 
@@ -7804,9 +7805,7 @@ class TestSandboxEscapeSshSelf:
         # from an off-loop resolution; the decision fails closed until the
         # worker publishes, and scheduling is single-flight per host.
         assert _REAL_RESOLVED_HOST_VERDICT is not None
-        monkeypatch.setattr(
-            _argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT
-        )
+        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
         started: "list[str]" = []
@@ -8092,21 +8091,15 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh -p 22 localhost id") == self._RULE
         assert security._own_host_names() == frozenset()
 
-    def test_mapped_loopback_denial_does_not_rely_on_is_loopback_delegation(
-        self, monkeypatch
-    ):
+    def test_mapped_loopback_denial_does_not_rely_on_is_loopback_delegation(self, monkeypatch):
         # Before Python 3.12.4, IPv6Address("::ffff:127.0.0.1").is_loopback is
         # False (no ipv4_mapped delegation).  _host_is_self must unwrap the
         # mapped address itself, so the deny holds on every supported micro.
         # Simulate the old semantics by pinning the IPv6 properties to False.
         import ipaddress as _ipaddress
 
-        monkeypatch.setattr(
-            _ipaddress.IPv6Address, "is_loopback", property(lambda self: False)
-        )
-        monkeypatch.setattr(
-            _ipaddress.IPv6Address, "is_unspecified", property(lambda self: False)
-        )
+        monkeypatch.setattr(_ipaddress.IPv6Address, "is_loopback", property(lambda self: False))
+        monkeypatch.setattr(_ipaddress.IPv6Address, "is_unspecified", property(lambda self: False))
         assert _denied_by("ssh ::ffff:127.0.0.1 id") == self._RULE
 
     def test_own_name_resolution_is_best_effort(self, monkeypatch):
@@ -8294,9 +8287,7 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"a"}))
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
-        monkeypatch.setattr(
-            security, "_resolve_own_host_names", lambda: (frozenset({"b"}), False)
-        )
+        monkeypatch.setattr(security, "_resolve_own_host_names", lambda: (frozenset({"b"}), False))
         security._resolve_own_host_names_into_cache()
         assert _argv_floor._OWN_HOST_NAMES_CACHE == frozenset({"a", "b"})
         assert _argv_floor._OWN_HOST_RESOLVE_DONE is False
@@ -8327,14 +8318,12 @@ class TestSandboxEscapeSshSelf:
         ]
         for cmd in corpus:
             if rx.search(cmd.lower()):
-                assert security._is_ssh_to_self(cmd.lower()), (
-                    f"pattern matched but predicate did not: {cmd}"
-                )
+                assert security._is_ssh_to_self(
+                    cmd.lower()
+                ), f"pattern matched but predicate did not: {cmd}"
 
     def test_opt_out_disables_both_tiers(self):
-        effective = compute_effective_denied(
-            BUILTIN_DENIED_RULES, (self._RULE,), False, (), ()
-        )
+        effective = compute_effective_denied(BUILTIN_DENIED_RULES, (self._RULE,), False, (), ())
         assert is_denied("ssh -p 22 localhost id", denied_regexes=list(effective)) is None
         assert is_denied("ssh localhost id", denied_regexes=list(effective)) is None
 
@@ -8469,7 +8458,9 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
         monkeypatch.setattr(
-            _argv_floor.threading, "Thread", lambda *a, **kw: type("_T", (), {"start": lambda s: None})()
+            _argv_floor.threading,
+            "Thread",
+            lambda *a, **kw: type("_T", (), {"start": lambda s: None})(),
         )
         assert _denied_by("ssh localalias uptime") == self._RULE
         assert _denied_by("ssh -- localalias uptime") == self._RULE
@@ -8487,7 +8478,9 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
         monkeypatch.setattr(
-            _argv_floor.threading, "Thread", lambda *a, **kw: type("_T", (), {"start": lambda s: None})()
+            _argv_floor.threading,
+            "Thread",
+            lambda *a, **kw: type("_T", (), {"start": lambda s: None})(),
         )
         assert _denied_by("ssh dnsalias uptime") is None
         # What the scheduled worker would have done: resolve to loopback.
@@ -8564,9 +8557,7 @@ class TestHostAddressesPlatformReaders:
 
             psz = 8 if ptr8 else 4
             ctypes.memmove(ctypes.byref(buf, 8), _s.pack(pack_ptr, adapter2), psz)
-            ctypes.memmove(
-                ctypes.byref(buf, first_unicast_off), _s.pack(pack_ptr, u4), psz
-            )
+            ctypes.memmove(ctypes.byref(buf, first_unicast_off), _s.pack(pack_ptr, u4), psz)
 
         return write_into
 
@@ -8805,9 +8796,7 @@ class TestHostsAliasPublicationWindow:
         monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
         monkeypatch.setattr(_argv_floor.threading, "Thread", self._recording_thread(started))
 
-    def test_late_published_own_address_flips_the_cached_alias_to_deny(
-        self, monkeypatch, tmp_path
-    ):
+    def test_late_published_own_address_flips_the_cached_alias_to_deny(self, monkeypatch, tmp_path):
         started: "list[str]" = []
         self._wire(monkeypatch, tmp_path, started)
         # Startup window: netlink has not published, and the secondary own

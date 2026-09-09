@@ -490,8 +490,13 @@ jobs:
     name: Backend Tests
     needs: [changes, await-fast-gate]
     runs-on: ubuntu-latest
-    # Full coverage shards need room for collection, tests and artifact upload.
-    # The 120-second per-test timeout still bounds a stalled individual test.
+    # The slowest 3.12 shard runs 34 to 36 minutes on a hosted runner, and the
+    # per-shard time swings by several minutes run to run (a 28-minute shard
+    # reached 99% at 40 on the next run of the same tree). A cap that a green
+    # shard can hit kills the job at the coverage step with every test passed
+    # and Coverage Gate then reds on the missing artifact, so the cap carries
+    # headroom over the slowest observed shard. Per-test hangs are still bounded
+    # by pytest-timeout, not by this number.
     timeout-minutes: 50
     strategy:
       # Don't cancel sibling shards when one fails -- we want the full failure
@@ -784,26 +789,249 @@ jobs:
         # test/windows-expected-failures.txt, which is the mechanism a whole-file deselect
         # was standing in for.
 
-  # macOS gateway line. Until this job existed macOS had ZERO pytest coverage in
-  # CI -- the macos-14 runners appear only in build.yml, build-desktop.yml and
+  # `kirocrew pod` on Windows, booted for real under Task Scheduler.
+  #
+  # A SEPARATE JOB for the same reason the fail-closed canary below is one: a
+  # step inside backend-test-windows would run in all four shards and pay for
+  # four real gateway boots to make one assertion. It is also the only Windows
+  # job that needs a built `.venv` INSIDE the checkout, because a pod boots the
+  # worktree's own binary rather than the control plane's -- the shards install
+  # with `uv pip install --system` and create no venv at all, which is why
+  # test_pod_windows_boot.py is listed in test/windows-collect-ignore.txt and
+  # named explicitly here instead.
+  #
+  # What only this job can establish: that the runner user can create a
+  # scheduled task at all, that `/SC ONCE /ST 00:00` does not auto-fire, that the
+  # generated .cmd wrapper's quoting is something cmd.exe accepts, that the
+  # gateway answers over TCP (Windows has no AF_UNIX, so the pod's private
+  # dashboard socket does not exist there), and that `pod down` really reaps both
+  # the task and the process tree. Every one of those is faked in the sharded
+  # test_pod_windows.py, which is what makes this job worth its minutes.
+  pod-boot-windows:
+    name: Pod Boot Canary (Windows)
+    needs: [await-fast-gate]
+    runs-on: windows-latest
+    # A cold boot pays for the venv build, interpreter start, config seeding and
+    # the health wait. The test's own bound is 180s; this is the job's.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the files
+          # that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      # The CONTROL plane: the interpreter that runs pytest and drives the pod
+      # verbs. Deliberately separate from the payload below, which is the real
+      # split the pod design rests on.
+      - name: Install dependencies (control plane)
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # The PAYLOAD: the worktree's own `.venv\Scripts\kirocrew.exe`, which is
+      # what the scheduled task actually boots. Without this the test FAILS
+      # naming the missing venv rather than skipping, so a broken step here
+      # cannot leave the canary silently green.
+      - name: Build the checkout's own venv (the binary the pod boots)
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/Scripts/python.exe -e "."
+
+      # `pod up` refuses a checkout with no served SPA bundle, which is correct
+      # product behaviour and not what this canary is testing (Task Scheduler
+      # supervision is). The runner is disposable, so the one-file stand-in is
+      # placed by the WORKFLOW rather than by the test: a test that wrote into
+      # the checkout could be killed by its own timeout before cleaning up.
+      - name: Place a one-file SPA stand-in for `pod up`
+        shell: bash
+        run: |
+          mkdir -p src/kiro_crew/static/dist
+          [ -f src/kiro_crew/static/dist/index.html ] || \
+            printf '<!doctype html><title>pod boot canary</title>' > src/kiro_crew/static/dist/index.html
+
+      - name: Assert a real pod boots and is reclaimed (not skipped)
+        shell: bash
+        env:
+          # The module's own opt-in: without it the canary skips itself, and the
+          # grep below turns that skip into a failure.
+          KIROCREW_E2E_POD_WINDOWS: "1"
+        run: |
+          set -o pipefail
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          # The whole opt-in module: the creation probe, the create/run/delete
+          # round trip, and the full pod boot. These are the only tests in the
+          # tree that drive the real Task Scheduler, which is why they live in
+          # one module that is skipped without KIROCREW_E2E_POD_WINDOWS.
+          pytest -v -n0 --no-cov --timeout=600 \
+            test/test_pod_windows_boot.py \
+            | tee pod-boot.log
+          # The canary. `pytest` exits 0 on a fully skipped module, so the exit
+          # code alone cannot tell "a pod booted and was reclaimed" from "the
+          # test never ran". Grepping the exact count is what makes this honest;
+          # raise the number when you add a test to this module.
+          # ANCHORED on purpose: `grep -q "3 passed"` is a substring match, so it
+          # also HITs "13 passed" and "23 passed" — measured. A pin that accepts a
+          # larger number pins nothing when a test is added, which is the direction
+          # a count pin exists to catch. `^3 passed` cannot be used: pytest's
+          # summary line starts with `=` padding.
+          grep -qE '(^|[^0-9])3 passed' pod-boot.log || {
+            echo "::error::the Windows pod boot canary did not report 3 passed (skipped, not collected, or a test was added or renamed without updating this step)"
+            exit 1
+          }
+
+      - name: Upload the pod boot log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pod-boot-windows
+          path: pod-boot.log
+          if-no-files-found: ignore
+          retention-days: 7
+  # The Windows fail-closed sandbox opt-in contract, asserted to have RUN.
+  #
+  # PR #8117 made `wrap_argv`'s Windows Kiro delegation depend on
+  # `kiro_internal_sandbox_enabled()`, which reads a settings file a fresh Windows
+  # install does not have. Delegation stopped, the no-backend policy fail-closed,
+  # and the ACP backend never started. The suite that pinned that exact branch,
+  # test_sandbox_argv.py, is line 2 of test/windows-collect-ignore.txt -- so on
+  # windows-latest it was never collected, and in the Linux shards it reached the
+  # branch only by monkeypatching sys.platform to "win32" AND patching the
+  # settings probe to return True, hardcoding the one answer a fresh Windows host
+  # cannot give.
+  #
+  # A SEPARATE JOB rather than a step in backend-test-windows: that job is a
+  # 4-shard matrix, so a canary step there would run four times and pay the
+  # gateway boot four times over for one assertion. It also overrides
+  # --max-worker-restart for xdist reasons that do not apply to an -n0 run.
+  #
+  # Run by NODE ID with `-v -n0` and grep the pass count, the same shape as the
+  # macOS peer-identity canary below and for the same reason: `pytest -q` does not
+  # name passing tests and a skip exits 0, so a canary that quietly stopped
+  # running (a changed skipif, a collect-ignore entry, a renamed node) would leave
+  # this job green while the contract it proves went unverified. That is precisely
+  # the blindness that let test_sandbox_argv.py sit unrun inside conftest's
+  # Windows collect_ignore.
+  #
+  # The file is deliberately NOT in test/windows-collect-ignore.txt, so the
+  # backend-test-windows shards collect it too. This job is the assertion that it
+  # RAN, not the only place it runs.
+  backend-test-windows-fail-closed:
+    name: Windows Fail-Closed Sandbox Contract
+    needs: [await-fast-gate]
+    runs-on: windows-latest
+    # The gateway leg boots a real gateway and drives one ACP prompt turn against
+    # the packaged fake backend; both are slow on windows-latest. 25 minutes is
+    # the test's own 900s ceiling plus dependency install, not a guess at a sleep.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the files
+          # that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # A fresh windows-latest image has no ~/.kiro/settings/amazon-internal.json,
+      # which IS the precondition under test. Assert it from the workflow as well
+      # as from the fixture: if a future runner image or an earlier step ever
+      # created it, the suite would SKIP with a clear reason and the grep below
+      # would fail -- but this step names the cause on the run page instead of
+      # leaving it to be read out of a pytest skip line.
+      - name: Assert the host carries no kiro internal-sandbox settings file
+        shell: pwsh
+        run: |
+          $settings = Join-Path $env:USERPROFILE ".kiro\settings\amazon-internal.json"
+          if (Test-Path -LiteralPath $settings) {
+            Write-Host "::error::$settings exists on this runner; the fresh-install precondition this job pins cannot be observed"
+            exit 1
+          }
+          Write-Host "no $settings on this host, as a fresh Windows install would be"
+
+      - name: Assert the Windows fail-closed contract runs (not skipped)
+        shell: bash
+        run: |
+          set -o pipefail
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov --timeout=900 \
+            test/test_windows_fail_closed_optin.py \
+            | tee canary.log
+          # Anchored: an unanchored "7 passed" also matches "17 passed" / "27
+          # passed". See the pod-boot canary above for the measurement.
+          grep -qE '(^|[^0-9])7 passed' canary.log || {
+            echo "::error::the Windows fail-closed sandbox contract did not fully PASS (skipped, not collected, or a test was added/removed without updating this count)"
+            exit 1
+          }
+
+
+  # macOS regression line. Until this job existed macOS had ZERO pytest coverage in
+  # CI -- the macOS runners appeared only in build.yml, build-desktop.yml and
   # sign-and-notarize.yml, all of which merely build and notarize the desktop
   # app. That left the macOS-only identity primitives (LOCAL_PEERPID for the
   # peer pid, libproc for the process start id) verified by nothing, on the
   # platform several maintainers develop on.
   #
-  # Deliberately SCOPED, not the full suite: a full macOS run would need its own
-  # exclusion burn-down first (the Windows line needed 23 file exclusions plus
-  # ~237 node skips before it held), and shipping a job that is red on arrival
-  # trains people to ignore it. The glob keeps the scope from going stale -- a
-  # new test_mcp_gateway_* suite is picked up without editing this file, which a
-  # hand-maintained list would not do.
+  # It shipped SCOPED to a 51-file glob (gateway, socketsec, platform-compat, pod,
+  # MCP-apps) because a full run needed its own exclusion burn-down first. That
+  # burn-down is done, so this job now runs the WHOLE suite in duration-balanced
+  # shards, the same shape as backend-test-windows. 51 of 2094 test files was 2.4
+  # percent of the tree: a POSIX-but-not-Linux regression outside that glob (the
+  # `ru_maxrss` unit difference, BSD `ps`/`stat` argv, case-insensitive HFS+ path
+  # comparison) had no CI that could catch it.
   #
-  # Keep this focused lane unsharded; the real Seatbelt canary and member
-  # gateway suites also pin the macOS private-memory boundary.
+  # macos-15 (Apple Silicon), pinned by label rather than macos-latest: macos-14 is
+  # deprecated by GitHub, and macos-latest moves under us, which would turn an image
+  # rollout into an unexplained red on an unrelated pull request.
+  #
+  # 3 shards, not Windows' 4. macOS bills at 10x Linux per minute, so the shard
+  # count is the billing knob; 3 is the smallest count that keeps the slowest shard
+  # inside a budget comparable to the Windows job.
   backend-test-macos:
-    name: Gateway Tests (macOS)
+    name: Backend Tests (macOS)
     needs: [await-fast-gate]
-    runs-on: macos-14
+    runs-on: macos-15
+    # 40, matching backend-test-windows. MEASURED on the first full-suite run of
+    # this branch (run 34288884863): shards 1 and 2 finished their pytest step in
+    # 20.3 and 20.1 minutes, and shard 3 was still running past 27, so a 30-minute
+    # cap cancelled it. 1.5x the slowest observed shard is therefore at least 40.
+    # This is still a spend guard, not just a hang guard: a runaway macOS shard
+    # costs about ten times a Linux one.
+    timeout-minutes: 40
+    strategy:
+      # Full failure picture across shards, same as backend-test.
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
+    env:
+      SHARD_COUNT: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -834,6 +1062,11 @@ jobs:
       # the gate it proves went unverified. That is the same blindness that let
       # four mutation-verified tests sit unrun inside conftest's Windows
       # collect_ignore. Run it by node id and fail unless it actually PASSED.
+      #
+      # Kept on every shard, not folded into the sharded run: the sharded step is
+      # `-q` and cannot prove a named test passed, and pytest-split would put this
+      # node id on exactly one shard, so a shard-1-only canary would go unrun
+      # whenever that shard died early.
       - name: Assert the macOS peer-identity canary runs (not skipped)
         run: |
           set -o pipefail
@@ -844,7 +1077,10 @@ jobs:
           pytest -v -n0 --no-cov --timeout=120 \
             "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves" \
             | tee canary.log
-          grep -q "1 passed" canary.log || {
+          # Anchored, and this one was the worst of the family: an unanchored
+          # "1 passed" matches "11 passed", "101 passed" and "231 passed", so the
+          # pin held for almost any outcome. Measured.
+          grep -qE '(^|[^0-9])1 passed' canary.log || {
             echo "::error::macOS peer-identity canary did not PASS (skipped or not collected)"
             exit 1
           }
@@ -860,22 +1096,68 @@ jobs:
             echo "::error::Darwin V1 and private-memory canaries must both PASS (no skips)"
             exit 1
           }
-
-      - name: Run gateway + platform suites
+      - name: Terminal handler suite (verbose, so a darwin PTY hang names its test)
+        # test/macos-collect-ignore.txt keeps this file out of the shards and this
+        # step runs it instead: -v -n0 so every test name streams to the log the
+        # moment it starts, and a 90 s per-test timeout so a PTY read that darwin
+        # never wakes fails by name in the log rather than as 180 s of silence
+        # inside a -q shard. Runs on shard 1 only; the file is one process either way.
+        if: matrix.group == 1
+        env:
+          PYTHONUNBUFFERED: "1"
         run: |
-          pytest -q -rs --timeout=180 --no-cov \
-            test/test_mcp_gateway_*.py \
-            test/test_socketsec.py \
-            test/test_member_memory_auth.py \
-            test/test_member_memory_provenance.py \
-            test/test_member_memory_api.py \
-            test/test_platform_compat.py \
-            test/test_mcp_apps_e2e.py \
-            test/test_pod*.py \
-            test/test_service.py \
-            test/test_dev_fleet_app.py \
-            "test/test_denied_commands_security.py::TestSandboxEscapeSshSelf::test_own_interface_addresses_returns_parseable_addresses" \
-            "test/test_denied_commands_security.py::TestSandboxEscapeSshSelf::test_first_command_knows_darwin_interface_addresses"
+          set -o pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov --timeout=90 -o faulthandler_timeout=75 \
+            -p no:cacheprovider test/test_terminal_handler.py 2>&1 | tee terminal.log
+          # A FLOOR, not "at least one pass". This file carries ~277 tests and this
+          # step is its only execution on macOS (test/macos-collect-ignore.txt keeps
+          # it out of every shard, and test/windows-collect-ignore.txt out of the
+          # Windows ones), so what has to be caught here is a COLLECTION COLLAPSE --
+          # and `[1-9][0-9]* passed` was satisfied by "1 passed, 276 skipped". The
+          # count is read numerically instead: growth is fine, a handful of
+          # platform skips is fine, and a collapse to a few tests is not. `pipefail`
+          # above already reds the step on a real test failure, so this guards only
+          # the "it did not really run" direction.
+          passed=$(sed -n 's/.*[^0-9]\([0-9][0-9]*\) passed.*/\1/p' terminal.log | tail -1)
+          echo "terminal handler suite: ${passed:-0} passed"
+          if [ "${passed:-0}" -lt 200 ]; then
+            echo "::error::terminal handler suite reported only ${passed:-0} passes on macOS; expected ~277 (collection collapse, mass skip, or the file was not collected)"
+            exit 1
+          fi
+
+      - name: Run tests (macOS shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        # Flags copied verbatim from backend-test-windows, including
+        # --max-worker-restart=0. That flag's stated reason is Windows-specific
+        # (no SIGALRM, so pytest-timeout kills the whole xdist worker), but the
+        # xdist node-replacement path it avoids -- #2803's broken invariant, and
+        # #4227's session that never completes and burns the full cap -- is
+        # platform-independent, and a burnt cap costs 10x here. --no-cov because
+        # coverage-combine merges ubuntu shards only.
+        #
+        # No surface selector and nothing deselected, same as the Windows job:
+        # `-n auto` already saturates the runner, so a shorter file list does not
+        # shorten a shard. Residual darwin gaps are node ids in
+        # test/macos-expected-failures.txt, applied by the rootdir conftest through
+        # the same matcher as the Windows list.
+        # PYTHONUNBUFFERED plus faulthandler_timeout: the first full run of shard
+        # 3 on macos-15 hit the 40-minute cap having printed NOTHING after the
+        # pytest command line, and the runner then reaped nine orphan bash and two
+        # Python processes. A hang that leaves no output is a lost run, not a
+        # failed test (testing-conventions.md, class 6). faulthandler fires at
+        # 150 s, while the test is still stuck, and dumps every thread's traceback
+        # to stderr naming the frame; the per-test --timeout then fails it by
+        # name at 180.
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
+            -o faulthandler_timeout=150 \
+            --splits "$SHARD_COUNT" --group ${{ matrix.group }}
 
   # The job where Linux mount-namespace tests EXECUTE rather than skip. They need
   # unprivileged user namespaces (unshare NEWNS), which ubuntu-24.04 restricts via
@@ -2184,5 +2466,106 @@ jobs:
           path: |
             website/test-results/
             website/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The only job that BOOTS A GATEWAY on macOS and Windows.
+  #
+  # Everything else on those two runners is unit tests. `e2e` above spawns a real
+  # gateway, but it is ubuntu-latest only, because `KIROCREW_E2E` is set solely by
+  # `setup.py test_e2e`. That was one of the two holes #8117 fell through: it
+  # added a settings-file probe to `wrap_argv`'s Windows delegation branch, so on
+  # a fresh Windows host -- where that file does not exist -- the Kiro ACP spawn
+  # stopped delegating, took the no-backend fail-closed path, and the gateway
+  # never became usable. The unit test that pinned that branch lives in
+  # `test_sandbox_argv.py`, which `windows-collect-ignore.txt` excludes, and the
+  # PR itself changed that test's mock to hardcode the one answer a fresh Windows
+  # host cannot give. Neither hole is closable by another unit test; only a real
+  # boot on the real platform is.
+  #
+  # Offline and credential-less by construction: the agent binary is the packaged
+  # fake ACP backend, wired through `KIROCREW_KIRO_BIN`, so there is no model, no
+  # token, no network and no cost. See docs/ci/e2e-gate.md.
+  e2e-boot-matrix:
+    name: E2E Gateway Boot (${{ matrix.os }})
+    needs: [await-fast-gate]
+    strategy:
+      # Each OS is its own verdict. A Windows-only regression must not hide
+      # behind a cancelled macOS leg, which is exactly the shape of the escape
+      # this job exists for.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the files
+          # that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Boot a gateway end to end and assert the pass count
+        # `shell: bash` on every leg so one command text serves all three; the
+        # Windows default is pwsh, where `| tee` and `grep` are not these tools.
+        shell: bash
+        env:
+          # Lifts the module skip.
+          KIROCREW_E2E: "1"
+          # Turns an unmet PRECONDITION (the packaged fake backend missing, the
+          # testing package not importable) from a graceful skip into a hard
+          # failure. Without it the job could report green having booted zero
+          # gateways, because pytest counts a skip as a pass. Same mechanism as
+          # KIROCREW_E2E_REQUIRE on the `e2e` job.
+          KIROCREW_E2E_REQUIRE: "1"
+          # Readiness window per OS, set here rather than in the test so a slow
+          # runner is retunable without a code change. Windows gets the widest:
+          # subprocess spawn and filesystem latency there are measurably slower,
+          # the conditions #9172 addressed when a slow disk killed the gateway.
+          KIROCREW_HARNESS_READY_TIMEOUT: ${{ matrix.os == 'windows-latest' && '180' || matrix.os == 'macos-15' && '90' || '60' }}
+        run: |
+          set -o pipefail
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          # -n0: this module spawns a real gateway per test, and under xdist a
+          # block would take the worker down with it, which on Windows aborts the
+          # whole run. --timeout is above the widest readiness window (180s) plus
+          # the per-turn reply ceiling, so a stuck turn fails by name instead of
+          # killing the run.
+          pytest -v -n0 --no-cov -p no:cacheprovider --timeout=420 \
+            test/e2e/test_gateway_boot_matrix.py \
+            | tee boot-matrix.log
+          # The canary. `pytest` exits 0 on a fully skipped module, so the exit
+          # code alone cannot tell "seven gateways booted" from "the module was
+          # never collected". Grepping the exact count is what makes this job
+          # honest; raise the number when you add a test here.
+          # Anchored: see the pod-boot canary above.
+          grep -qE '(^|[^0-9])7 passed' boot-matrix.log || {
+            echo "::error::gateway boot matrix did not report 7 passed (skipped, or a test was added without updating this canary)"
+            exit 1
+          }
+
+      - name: Upload the boot-matrix log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-boot-matrix-${{ matrix.os }}
+          path: boot-matrix.log
           if-no-files-found: ignore
           retention-days: 7

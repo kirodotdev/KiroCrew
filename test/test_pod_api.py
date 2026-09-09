@@ -616,7 +616,7 @@ class TestPodPidAttestation:
     def test_windows_is_asked_the_same_question_as_every_other_host(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``port_owner`` used to refuse win32 outright, before consulting anything.
+        """``port_owner`` must not refuse win32 outright before consulting anything.
 
         That was unsatisfiable rather than strict: ``pod up`` mints a token and
         ``mint_token`` requires positive proof, so a healthy Windows pod could
@@ -843,6 +843,36 @@ class TestPodApiUnixTransport:
         # Actionable: names the socket it wanted and what to do about it.
         assert "dashboard-" in rendered and ".sock" in rendered
         assert "kirocrew pod status wt" in rendered
+
+    def test_windows_names_the_real_cause_instead_of_prescribing_a_futile_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The generic refusal is wrong ON WINDOWS, not merely unhelpful.
+
+        There the socket is not MISSING, it is never created: CPython on win32
+        exposes no ``AF_UNIX`` (measured on 3.12), so the pod's gateway binds no
+        dashboard socket and no amount of restarting produces one. Sending the
+        operator down "is it healthy / read the logs / down && up" therefore costs
+        them the pod's state on every lap and never reaches an explanation. There is
+        a way through -- mint a token, drive the loopback port yourself -- and the
+        message is the only place they will find it, because the docs that say so
+        are not what a failing command shows them.
+
+        Asserted by CONTENT rather than by absence of the old text, so a future
+        rewording cannot pass by dropping the guidance.
+        """
+        monkeypatch.setattr(rt, "IS_WINDOWS", True)
+        monkeypatch.setattr(rt, "is_active", lambda cfg, name: True)
+
+        with pytest.raises(rt.PodError) as excinfo:
+            rt.pod_api(PodConfig.load(), "wt", "GET", "sessions")
+
+        rendered = str(excinfo.value)
+        assert "AF_UNIX" in rendered, "must name the actual missing capability"
+        assert "restart will not fix it" in rendered, "must stop the futile loop explicitly"
+        assert "kirocrew pod token wt" in rendered, "must name the way through"
+        assert "127.0.0.1:" in rendered, "must name where to send the request"
+        assert "pod down" not in rendered, "must not prescribe the restart that cannot help"
 
     def test_a_stale_socket_file_does_not_reopen_the_tcp_path(
         self, port_squatter: _RecordingServer

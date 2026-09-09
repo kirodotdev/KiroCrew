@@ -1118,6 +1118,9 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     async def stop_spawn(*args, **kwargs):
         wrapped["spawn_args"] = args
         wrapped["spawn_kwargs"] = kwargs
+        # Read while the spawn is still in flight: its failure path closes the
+        # bound workspace descriptor and clears the attribute.
+        wrapped["bound_fd"] = runtime._bound_workspace_fd
         raise _StopSpawn()
 
     async def resolve_installed(*, environ=None, home=None):
@@ -1169,10 +1172,17 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     )
     spawn_kwargs = wrapped["spawn_kwargs"]
     assert isinstance(spawn_kwargs, dict)
-    # The installed binary is exec'd in place: no inherited snapshot descriptor,
-    # and the sibling subcommand binary a multi-call CLI dispatches to is still
+    # The installed binary is exec'd in place: the ONLY descriptor handed to the
+    # child is the verified workspace the spawn shim must `fchdir` into, never an
+    # inherited snapshot descriptor. Nothing binds a workspace off macOS, so the
+    # expected set is empty there -- asserting the exact set rather than the absence
+    # of the key keeps the same strength on Linux and stops pinning the platform's
+    # own spawn shape on darwin.
+    bound_fd = wrapped["bound_fd"]
+    expected_fds: tuple[int, ...] = () if bound_fd is None else (bound_fd,)
+    assert tuple(spawn_kwargs.get("pass_fds", ())) == expected_fds
+    # The sibling subcommand binary a multi-call CLI dispatches to is still
     # reachable beside the launch path.
-    assert "pass_fds" not in spawn_kwargs
     assert (Path(launch_path).parent / "kiro-cli-chat").exists()
 
 

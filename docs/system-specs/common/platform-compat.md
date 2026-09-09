@@ -39,6 +39,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Is this pid a PROCESS rather than a thread | `is_thread_group_leader(pid)` for one pid; `live_thread_group_leaders()` once for a whole sweep | `pid_exists(pid)` alone (Linux numbers threads from the pid space and POSIX permits signalling a tid, so a pid recycled as a THREAD of an unrelated process reads as alive forever). Both answer `None`, never `False`, when unknowable — treat `None` as "retain", never as licence to act |
 | Signals | `platform_compat.SIGKILL` / `SIGTERM` | `signal.SIGKILL` (undefined on Windows) |
 | Spawn isolation | `start_new_session=IS_POSIX` + `creationflags=CREATE_NEW_PROCESS_GROUP` | bare `start_new_session=True` |
+| Wait on a subprocess PIPE with a deadline | a daemon reader thread feeding a `queue.Queue`, consumed with a bounded `get` (`testing/harness.py`'s `_StdoutPump`) | `selectors.DefaultSelector()` on the pipe (select()-based on Windows, which accepts SOCKETS only, so registering a pipe RAISES there) |
 | Re-exec the current Python module | `reexec_python_module(module, args)` | `os.execv(sys.executable, [sys.executable, ...])` (breaks when the Windows interpreter path contains spaces) |
 | Replace the current process with another program (a supervised service body) | spawn a child, record its pid + `process_start_time`, and `wait()` on it under `IS_WINDOWS` (see `pod.windows.supervise_gateway`) | `os.execve` (on Windows this SPAWNS and terminates the caller, so the pid changes and the service manager sees the unit exit while the real program keeps running orphaned) |
 | Race-free Job object assignment | `creationflags \|= CREATE_SUSPENDED`, then `apply_job_limits`, then `resume_process_main_thread` | assigning a job to an already-running child (descendants it already spawned escape) |
@@ -60,9 +61,28 @@ produces exactly those silent failures, which is why the helper is named per cal
 
 ## Verifying a change
 
-Verify process, signal, file-lock and metrics changes on macOS **and** Linux; the
-Windows shards in CI cover the third. A test that only ever runs on the author's
-platform is how a silent no-op ships.
+CI holds all three platforms at the UNIT layer: the `backend-test` shards cover
+Linux, `backend-test-windows` covers Windows, and `backend-test-macos` covers
+macOS. All three run the whole suite, so a POSIX call that only works on Linux
+goes red on the macOS shards rather than shipping. A shard passing is still not
+evidence that a gateway starts: 25 whole files are excluded on Windows by
+`test/windows-collect-ignore.txt` and further node ids by
+`test/windows-expected-failures.txt` and `test/macos-expected-failures.txt`.
+What runs a real gateway on macOS and Windows is `ci.yml`'s `e2e-boot-matrix`
+job (`test/e2e/test_gateway_boot_matrix.py`), which boots one per test against
+the packaged fake ACP backend and asserts a completed prompt turn. Point a
+process or signal change at that job, not only at the shards. See
+[../../ci/e2e-gate.md](../../ci/e2e-gate.md).
+
+Still run process, signal, file-lock and metrics changes on macOS **and** Linux
+locally where you can. A test that only ever runs on the author's platform is how
+a silent no-op ships, and a CI red found after the push costs a round trip.
+
+A test that cannot pass on macOS gets a precise
+`skipif(sys.platform == "darwin", reason=...)` naming the capability, or its node
+id in `test/macos-expected-failures.txt`, the burn-down list applied by the
+rootdir `conftest.py`, same mechanism as `windows-expected-failures.txt`. Never
+widen a platform assertion to make a red go away.
 
 Frontend support is Chrome, Firefox, Safari and Edge, using standard Web APIs and
 guarding the rest (`typeof Notification !== 'undefined'`).

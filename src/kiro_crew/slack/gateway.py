@@ -12026,12 +12026,17 @@ class GatewayOrchestrator:
                 dashboard_url = build_dashboard_url(
                     base_url, startup_token, local_only=self._local_only
                 )
-                for line in format_dashboard_urls(
+                # Off the loop: the Remote hint resolves the host's own name, and
+                # a name the resolver cannot answer (every hosted macOS runner)
+                # would otherwise sit on the loop for the lookup's bound.
+                url_lines = await asyncio.to_thread(
+                    format_dashboard_urls,
                     dashboard_url,
                     port=self._dashboard_port,
                     local_only=self._local_only,
                     has_custom_host=bool(self._configured_host),
-                ):
+                )
+                for line in url_lines:
                     print(line)
 
                 # Auto-open dashboard — skip on headless remote sessions

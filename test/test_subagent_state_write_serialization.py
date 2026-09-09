@@ -37,6 +37,14 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 _PARK_TIMEOUT = 1.0
 
 
+# How long the holder thread keeps the lock in the on-loop / off-loop pair.
+# Both tests derive their bounds from it: one asserts the on-loop caller does
+# NOT wait this out, the other that the off-loop caller does. Naming it keeps
+# the two from drifting apart, and keeps either bound from being read as a
+# statement about absolute speed rather than about queueing.
+_HOLD_SECS = 1.5
+
+
 def _new_agent(agent_id: str) -> None:
     sp.create_agent_folder(
         agent_id,
@@ -188,7 +196,7 @@ class TestOnLoopCallerDoesNotWait:
 
         # Release the lock well after the assertion window: if the on-loop
         # caller wrongly waits, it waits this long and fails on elapsed.
-        timer = threading.Timer(1.5, holder_release.set)
+        timer = threading.Timer(_HOLD_SECS, holder_release.set)
         timer.daemon = True
         timer.start()
         try:
@@ -204,8 +212,18 @@ class TestOnLoopCallerDoesNotWait:
             holder_release.set()
             keeper.join(timeout=10.0)
 
-        # Did not queue behind the holder.
-        assert elapsed < 0.5, f"on-loop caller waited {elapsed:.2f}s on the lock"
+        # Did not queue behind the holder. The bound is DERIVED from the hold, not a
+        # bare constant: what this test can distinguish is "returned promptly" from
+        # "waited out a holder that keeps the lock for _HOLD_SECS", and a caller that
+        # queued measures the full hold. A tighter absolute number does not sharpen
+        # that distinction -- it only fails on scheduler noise, which is what a
+        # 0.5s bound did on a loaded Windows runner at 0.515s while the caller had
+        # plainly not queued behind a 1.5s holder.
+        assert elapsed < _HOLD_SECS * 0.66, (
+            f"on-loop caller waited {elapsed:.2f}s with the lock held for "
+            f"{_HOLD_SECS:.2f}s, so it queued behind the holder instead of "
+            "offloading the write"
+        )
         assert wrote is True
         state = sp.read_state("a3")
         assert state is not None

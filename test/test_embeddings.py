@@ -178,9 +178,7 @@ def _load_bundled_linux_llama(monkeypatch, vendor: Path, cpu_probe):
     env_was_set = embeddings_mod._LIB_PATH_ENV in os.environ
     prior_env = os.environ.get(embeddings_mod._LIB_PATH_ENV)
     monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", vendor)
-    monkeypatch.setattr(
-        embeddings_mod, "_platform_libs_dirname", lambda: "linux_x86_64"
-    )
+    monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: "linux_x86_64")
     monkeypatch.setattr(embeddings_mod, "_linux_x86_64_cpu_flags", cpu_probe)
     embeddings_mod._load_llama_class.cache_clear()
     try:
@@ -197,9 +195,7 @@ def _load_bundled_linux_llama(monkeypatch, vendor: Path, cpu_probe):
 
 
 class TestBundledLinuxX86CpuGate:
-    def test_cpuinfo_parser_normalizes_sse3_and_intersects_processors(
-        self, tmp_path: Path
-    ) -> None:
+    def test_cpuinfo_parser_normalizes_sse3_and_intersects_processors(self, tmp_path: Path) -> None:
         cpuinfo = tmp_path / "cpuinfo"
         cpuinfo.write_text(
             "processor: 0\nflags: pni ssse3 avx avx2 bmi2 f16c fma\n\n"
@@ -217,9 +213,7 @@ class TestBundledLinuxX86CpuGate:
     def test_unreadable_cpuinfo_is_unknown(self, tmp_path: Path) -> None:
         assert embeddings_mod._linux_x86_64_cpu_flags(tmp_path / "missing") is None
 
-    def test_compatible_cpu_continues_to_native_import(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_compatible_cpu_continues_to_native_import(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
         _stub_bundled_linux_libs(tmp_path)
         fake_llama_cpp = ModuleType("llama_cpp")
@@ -284,16 +278,12 @@ class TestBundledLinuxX86CpuGate:
         assert "SIGILL" in caplog.text
         assert embeddings_mod._LIB_PATH_ENV not in os.environ
 
-    def test_unknown_cpu_features_fail_closed(
-        self, tmp_path: Path, monkeypatch, caplog
-    ) -> None:
+    def test_unknown_cpu_features_fail_closed(self, tmp_path: Path, monkeypatch, caplog) -> None:
         monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
         _stub_bundled_linux_libs(tmp_path)
 
         with caplog.at_level("WARNING", logger=embeddings_mod.__name__):
-            result, active_lib_path = _load_bundled_linux_llama(
-                monkeypatch, tmp_path, lambda: None
-            )
+            result, active_lib_path = _load_bundled_linux_llama(monkeypatch, tmp_path, lambda: None)
 
         assert result is None
         assert active_lib_path is None
@@ -379,9 +369,7 @@ class TestLlamaCppEmbedder:
         assert len(vec) == _DIM
         assert emb.is_ready()
 
-    def test_embed_returns_none_when_model_file_missing(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_embed_returns_none_when_model_file_missing(self, tmp_path: Path, monkeypatch) -> None:
         """No model file → None without ever constructing the Llama class."""
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
@@ -410,9 +398,7 @@ class TestLlamaCppEmbedder:
         assert emb.wait_ready(timeout=5)
         assert emb.embed("hello") is None
 
-    def test_embed_returns_none_on_malformed_response(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_embed_returns_none_on_malformed_response(self, tmp_path: Path, monkeypatch) -> None:
         """Vector count mismatch (empty data) degrades to None, not a crash."""
         fake_cls = _make_fake_llama_class()
         fake_cls.response_override = {"data": []}
@@ -495,12 +481,23 @@ class TestLlamaCppEmbedder:
         assert len(fake_cls.instances) == 2
 
     def test_concurrent_embeds_are_safe(self, tmp_path: Path, monkeypatch) -> None:
-        """Lock-serialized embeds from many threads all succeed."""
+        """Lock-serialized embeds from many threads all succeed.
+
+        The thread count is DERIVED from the queue's own capacity, not picked. This
+        embedder bounds pending work on purpose and refuses past the bound, so a
+        submitter beyond it gets ``None`` back -- correct behaviour, and
+        indistinguishable here from the corruption this test exists to detect.
+        Hard-coding a count above the capacity therefore makes the test a race
+        against the worker's drain rate: it passes on a fast machine and fails on a
+        loaded CI runner, which is what it did. The refusal is covered on its own by
+        ``test_embeds_past_the_queue_bound_are_refused_not_dropped``.
+        """
+        concurrency = embeddings_mod._MAX_PENDING_EMBEDS - embeddings_mod._INTERACTIVE_QUEUE_RESERVE
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
         emb = self._embedder(tmp_path)
         assert emb.wait_ready(timeout=5)  # load once, then race only inference
-        results: list[list[float] | None] = [None] * 8
+        results: list[list[float] | None] = [None] * concurrency
         errors: list[BaseException] = []
 
         def _work(i: int) -> None:
@@ -509,15 +506,105 @@ class TestLlamaCppEmbedder:
             except BaseException as exc:  # pragma: no cover - failure diagnostics
                 errors.append(exc)
 
-        threads = [threading.Thread(target=_work, args=(i,)) for i in range(8)]
+        threads = [threading.Thread(target=_work, args=(i,)) for i in range(concurrency)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
         assert not errors
-        assert all(r is not None and len(r) == _DIM for r in results)
+        # Named per index: `all(...)` collapses to a bare "assert False" that says
+        # neither which embed came back empty nor what it returned.
+        bad = {
+            i: r if r is None else len(r)
+            for i, r in enumerate(results)
+            if r is None or len(r) != _DIM
+        }
+        assert not bad, (
+            f"every embed within the queue's capacity ({concurrency}) must return a "
+            f"{_DIM}-vector; got {bad} (None = refused or failed, int = wrong width)"
+        )
         # The model loaded exactly once despite the concurrent first calls.
         assert len(fake_cls.instances) == 1
+
+    def test_embeds_past_the_queue_bound_are_refused_not_dropped(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Past the pending bound an embed returns None; it never raises, never queues.
+
+        This is the contract the concurrency test above kept tripping over while
+        nothing actually asserted it. It matters in both directions: a caller must
+        get None (so the row stays pending and retrieval falls back to its lexical
+        path) rather than an exception, AND the queue must not grow past its bound,
+        which is the whole point of refusing.
+
+        The worker is held inside inference so the queue fills deterministically
+        instead of depending on a drain rate.
+        """
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = self._embedder(tmp_path)
+        assert emb.wait_ready(timeout=5)
+        capacity = embeddings_mod._MAX_PENDING_EMBEDS - embeddings_mod._INTERACTIVE_QUEUE_RESERVE
+        llm = fake_cls.instances[0]
+        release = threading.Event()
+        entered = threading.Event()
+        real_create = llm.create_embedding
+
+        def _held(texts):
+            entered.set()
+            # Generous on purpose: this wait must never be the thing that expires.
+            # A timeout here surfaces as a job error, which `embed` turns into the
+            # same None a refusal produces -- so a tight bound here would let this
+            # test pass without the queue bound existing at all.
+            assert release.wait(timeout=60), "the held worker was never released"
+            return real_create(texts)
+
+        llm.create_embedding = _held  # type: ignore[method-assign]
+        outcomes: dict[int, object] = {}
+        lock = threading.Lock()
+
+        def _work(i: int) -> None:
+            try:
+                r = emb.embed(f"text {i}")
+            except BaseException as exc:  # pragma: no cover - failure diagnostics
+                r = exc
+            with lock:
+                outcomes[i] = r
+
+        # One more than the queue can hold, on top of the one the worker is holding.
+        overshoot = capacity + 2
+        threads = [threading.Thread(target=_work, args=(i,)) for i in range(overshoot)]
+        threads[0].start()
+        assert entered.wait(timeout=10), "the worker never reached inference"
+        for t in threads[1:]:
+            t.start()
+        # Both claims are read WHILE the worker is held, which is the only window in
+        # which a refusal is distinguishable from a completed embed: after release
+        # every admitted job succeeds and returns a vector too.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with lock:
+                if any(r is None for r in outcomes.values()):
+                    break
+            time.sleep(0.02)
+        with lock:
+            refused_while_held = sorted(i for i, r in outcomes.items() if r is None)
+        depth = emb._jobs.qsize()
+        release.set()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not any(t.is_alive() for t in threads), "a submitter never returned"
+        raised = {i: r for i, r in outcomes.items() if isinstance(r, BaseException)}
+        assert not raised, f"an overloaded embed must return None, not raise: {raised}"
+        assert refused_while_held, (
+            f"submitting {overshoot} against a capacity of {capacity} must refuse at "
+            "least one while the worker is held -- no refusal means the bound is gone"
+        )
+        assert depth <= capacity, (
+            f"pending work must stay within its bound; queue held {depth} with a "
+            f"capacity of {capacity}"
+        )
 
     def test_inference_runs_on_one_owned_thread(self, tmp_path: Path, monkeypatch) -> None:
         """Inference never runs on the caller's thread, and always on the same one.
@@ -612,9 +699,7 @@ class TestLlamaCppEmbedder:
         first_worker.join(timeout=5)
         assert not first_worker.is_alive()
 
-    def test_inference_error_propagates_from_the_worker(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_inference_error_propagates_from_the_worker(self, tmp_path: Path, monkeypatch) -> None:
         """A failure raised on the worker thread still degrades to None, not a hang."""
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
@@ -651,7 +736,7 @@ def _fake_urlopen_factory(
             self.headers = {"Content-Length": str(len(data))}
 
         def read(self, n: int) -> bytes:
-            chunk = self._data[self._pos:self._pos + n]
+            chunk = self._data[self._pos : self._pos + n]
             self._pos += n
             return chunk
 
@@ -751,9 +836,7 @@ class TestModelDownloadManager:
         tiny = b"tiny placeholder"
         fake_urlopen, _state = _fake_urlopen_factory(payload=tiny)
         monkeypatch.setattr("kiro_crew.embeddings.urllib.request.urlopen", fake_urlopen)
-        monkeypatch.setattr(
-            "kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(tiny).hexdigest()
-        )
+        monkeypatch.setattr("kiro_crew.embeddings._GGUF_SHA256", hashlib.sha256(tiny).hexdigest())
         mgr = self._mgr(tmp_path)
         assert await mgr.ensure_model(attempts=1) is False
         assert not mgr.target.exists()
@@ -762,9 +845,7 @@ class TestModelDownloadManager:
         assert "download failed" in str(mgr.status["error"])
 
     @pytest.mark.asyncio
-    async def test_network_failure_reports_failed_status(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    async def test_network_failure_reports_failed_status(self, tmp_path: Path, monkeypatch) -> None:
         fake_urlopen, _state = _fake_urlopen_factory(fail_rcs=[True])
         monkeypatch.setattr("kiro_crew.embeddings.urllib.request.urlopen", fake_urlopen)
         mgr = self._mgr(tmp_path)
@@ -1014,6 +1095,11 @@ class TestEmbedThreads:
     """
 
     def test_default_when_unset(self, monkeypatch) -> None:
+        # The resolver clamps to the core count, so a host with fewer cores than
+        # the default answers with its own core count and the assertion would pin
+        # the runner. Pinned above the default, the same way
+        # ``test_clamped_to_the_core_count`` below pins it under one.
+        monkeypatch.setattr("os.cpu_count", lambda: 8)
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
         monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
         assert embeddings_mod._DEFAULT_EMBED_THREADS == 4
@@ -1027,6 +1113,7 @@ class TestEmbedThreads:
     @pytest.mark.parametrize("bad", [0, -1, True, False, "4", 2.5, None])
     def test_invalid_values_fall_back_to_the_default(self, monkeypatch, bad) -> None:
         """Booleans are rejected explicitly: ``True`` would coerce to 1 thread."""
+        monkeypatch.setattr("os.cpu_count", lambda: 8)
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": bad}
         )
@@ -1081,9 +1168,7 @@ class TestEmbedQueueTiming:
     tells the two apart.
     """
 
-    def test_a_queued_embed_reports_wait_not_inference(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_a_queued_embed_reports_wait_not_inference(self, tmp_path: Path, monkeypatch) -> None:
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))

@@ -212,7 +212,6 @@ src/kiro_crew/dashboard/tailnet_serve.py
 src/kiro_crew/dashboard/terminal_commands.py
 src/kiro_crew/dashboard/theme_validate.py
 src/kiro_crew/dashboard/token_secret.py
-src/kiro_crew/dashboard/urls.py
 src/kiro_crew/dashboard/ws_event_scope.py
 src/kiro_crew/deploy/__init__.py
 src/kiro_crew/deploy/engine.py
@@ -296,14 +295,12 @@ src/kiro_crew/notifications/settings.py
 src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/update_layout.py
-src/kiro_crew/pod/config.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/pod/provision.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
 src/kiro_crew/security/__init__.py
-src/kiro_crew/seed.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
 src/kiro_crew/service/common.py
@@ -478,7 +475,6 @@ test/test_chat_slot_reasoning_effort.py
 test/test_chat_tags.py
 test/test_chat_title.py
 test/test_chat_turn_timeout_consistency.py
-test/test_ci_surface_tests.py
 test/test_cli_desktop.py
 test/test_cli_doctor.py
 test/test_cli_lazy_imports.py
@@ -559,10 +555,8 @@ test/test_delete_message.py
 test/test_denied_commands_api.py
 test/test_denied_commands_authority.py
 test/test_denied_commands_hooks.py
-test/test_denied_commands_security.py
 test/test_dependencies.py
 test/test_dependency_ledger.py
-test/test_dependency_vulnerability_gate.py
 test/test_deploy_apigw_logging.py
 test/test_deploy_apigw_rationale_docs.py
 test/test_deploy_cwe770_throttle_waf.py
@@ -626,7 +620,6 @@ test/test_doctor_sandbox_verdict.py
 test/test_effort.py
 test/test_embedding_model_apply.py
 test/test_embedding_space_reconcile.py
-test/test_embeddings.py
 test/test_enable_embeddings_faiss.py
 test/test_enterprise.py
 test/test_env.py
@@ -776,7 +769,6 @@ test/test_mcp_gateway_stub_paths.py
 test/test_mcp_gateway_stub_poolable_ack.py
 test/test_mcp_gateway_stub_recaller.py
 test/test_mcp_gateway_transport.py
-test/test_mcp_gateway_wedge_ping_gate.py
 test/test_mcp_gatewayd_coverage.py
 test/test_mcp_internal_caller.py
 test/test_mcp_knowledge_add_document.py
@@ -855,7 +847,6 @@ test/test_platform_admission.py
 test/test_platform_compat_coverage.py
 test/test_playwright_e2e.py
 test/test_pod_e2e_video_guard.py
-test/test_pod_launchd.py
 test/test_pod_self_contained.py
 test/test_port_reclaim.py
 test/test_port_reclaim_cov80.py
@@ -919,7 +910,6 @@ test/test_sandbox_unsandboxed_exec_consent.py
 test/test_scenarios_v2.py
 test/test_scenarios_v2_logic.py
 test/test_search_sessions_cost.py
-test/test_seed.py
 test/test_sel.py
 test/test_sel_dashboard_offload.py
 test/test_sel_prune_streaming.py

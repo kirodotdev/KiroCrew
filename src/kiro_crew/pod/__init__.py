@@ -41,10 +41,11 @@ booted gateway never re-resolves. Mechanism, per platform:
   under the pod plane's own directory (a task carries no environment block, so the
   wrapper is what pins the pod plane), created unelevated with ``schtasks.exe`` —
   ``sc.exe`` would need administrator rights and a machine-wide LocalSystem
-  service. Two capabilities have no equivalent: there are no cgroups, so **the
-  resource ceiling is not enforced**, and there is no restart policy, so a crashed
-  pod stays down and the crash signal is derived from the exit code the wrapper
-  records. Windows also has no ``exec``, so the gateway is SUPERVISED as the
+  service. One capability has no equivalent: there is no restart policy, so a
+  crashed pod stays down and the crash signal is derived from the exit code the
+  wrapper records. The resource ceiling IS enforced, by a Job object attached to
+  the gateway while it is still suspended, though with a looser process bound and
+  no CPU cap. Windows also has no ``exec``, so the gateway is SUPERVISED as the
   wrapper's child rather than replacing it — see :mod:`kiro_crew.pod.windows`.
 
 Reclaiming a pod's isolated HOME belongs to ``pod down`` on every platform rather

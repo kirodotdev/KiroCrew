@@ -8,8 +8,10 @@ import json
 import os
 import pathlib
 import shutil
+import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -536,6 +538,164 @@ class TestKillSession:
         calls = [c.args for c in mock_kill.call_args_list]
         assert (12345, platform_compat.SIGTERM) in calls
         assert (12345, platform_compat.SIGKILL) in calls
+
+    @pytest.mark.asyncio
+    async def test_ends_child_before_closing_controller_fd(self):
+        """Teardown ends the child, THEN closes the PTY controller fd.
+
+        The read loop parks a pool thread in a blocking ``os.read()`` on that
+        fd. Only the child's exit frees it portably: the worker side hangs up
+        and the read returns EOF on macOS or EIO on Linux. Closing the fd does
+        not wake a blocking PTY read on macOS, where the read returns only on
+        that hangup, so a close-first order parks the thread for the process's
+        lifetime and stalls teardown before it signals anything. The assertion
+        is on the ORDER, so it holds on every platform.
+        """
+        order: list[tuple[str, object]] = []
+        sess = _make_session(alive=True)
+        sess.master_fd = 42  # wokeignore:rule=master
+
+        async def _kill(pid, sig):
+            order.append(("kill", sig))
+
+        with patch("os.close", side_effect=lambda fd: order.append(("close", fd))), patch(
+            "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree_async",
+            AsyncMock(side_effect=_kill),
+        ):
+            await terminal._kill_session(sess)
+
+        assert ("kill", platform_compat.SIGTERM) in order, order
+        assert ("close", 42) in order, order
+        assert order.index(("kill", platform_compat.SIGTERM)) < order.index(("close", 42)), (
+            f"controller fd closed before the child was ended: {order}"
+        )
+        assert sess.master_fd == -1  # wokeignore:rule=master
+
+    @pytest.mark.asyncio
+    async def test_reader_task_cancelled_after_child_ends(self):
+        """The reader task is cancelled after the child's exit, so the parked
+        read has already returned EOF and the cancel is a formality."""
+        order: list[str] = []
+        task = AsyncMock()
+        task.cancel = MagicMock(side_effect=lambda: order.append("cancel"))
+        sess = _make_session(alive=True)
+        sess.reader_task = task
+
+        async def _kill(pid, sig):
+            order.append("kill")
+
+        with patch("os.close"), patch(
+            "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree_async",
+            AsyncMock(side_effect=_kill),
+        ):
+            await terminal._kill_session(sess)
+
+        # Every signal (SIGHUP, then SIGTERM) lands before the reader is touched;
+        # the exact signal sequence is the previous test's business.
+        assert order and order[-1] == "cancel", order
+        assert order.count("cancel") == 1, order
+        assert all(step == "kill" for step in order[:-1]), order
+
+    @pytest.mark.skipif(
+        terminal.platform_compat.IS_WINDOWS,
+        reason="POSIX pty teardown; Windows sessions use the ConPTY backend",
+    )
+    @pytest.mark.asyncio
+    async def test_close_completes_with_a_reader_parked_on_a_real_pty(self):
+        """End to end on a real PTY: a thread parked in a blocking read on the
+        controller fd must not outlive teardown, and teardown must finish.
+
+        This is the shape a user hits by closing a terminal whose shell is
+        alive. It passes on Linux with either order and fails on macOS with a
+        close-first order, so the macOS leg is what proves the fix.
+        """
+        controller_fd, worker_fd = os.openpty()
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", "import sys; sys.stdin.read()",
+            stdin=worker_fd, stdout=worker_fd, stderr=worker_fd,
+            start_new_session=True,
+        )
+        os.close(worker_fd)
+        sess = terminal._TerminalSession(
+            session_id="real-pty", master_fd=controller_fd, proc=proc,  # wokeignore:rule=master
+        )
+        parked = threading.Event()
+
+        def _blocking_read():
+            parked.set()
+            try:
+                return os.read(controller_fd, 4096)
+            except OSError:
+                return b""
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            read_future = pool.submit(_blocking_read)
+            assert parked.wait(10), "reader thread never started"
+            await asyncio.sleep(0.2)  # let the read enter the kernel
+
+            await asyncio.wait_for(terminal._kill_session(sess), timeout=20)
+
+            assert sess.master_fd == -1  # wokeignore:rule=master
+            assert proc.returncode is not None, "child survived teardown"
+            # The parked read has returned, so the pool worker is free again.
+            for _ in range(100):
+                if read_future.done():
+                    break
+                await asyncio.sleep(0.1)
+            assert read_future.done(), (
+                "the parked os.read() never returned: closing the controller fd "
+                "does not wake it, so the child must be ended first"
+            )
+        finally:
+            # A failure above (a _kill_session timeout, a wrong assertion) must
+            # not leave the child holding the PTY and the worker parked in
+            # os.read(): end the child, then close the controller so the read
+            # returns, then let the pool go. Otherwise the non-daemon worker
+            # blocks the interpreter's exit and the run hangs instead of failing.
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(proc.wait(), timeout=10)
+            if sess.master_fd != -1:  # wokeignore:rule=master
+                with contextlib.suppress(OSError):
+                    os.close(controller_fd)
+            pool.shutdown(wait=False)
+
+    @pytest.mark.asyncio
+    async def test_reap_after_sigkill_is_bounded(self, monkeypatch):
+        """A child that does not exit after SIGKILL must not hang teardown.
+
+        A shell blocked writing into an undrained PTY controller buffer stays in
+        a tty write until the fd is read or closed, so a pending SIGKILL does
+        not tear it down and an unbounded wait() loses the request handler for
+        the life of the process. Teardown gives up on the reap and continues,
+        which is what lets the controller fd close and release the write.
+        """
+        sess = _make_session(alive=True)
+        sess.master_fd = 42  # wokeignore:rule=master
+        calls = {"n": 0}
+
+        async def _wait(*_a, **_k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise asyncio.TimeoutError  # the 5s SIGTERM wait expires
+            await asyncio.Event().wait()  # SIGKILL never lands: wait forever
+
+        sess.proc.wait = _wait
+        monkeypatch.setattr(terminal.platform_compat, "REAP_TIMEOUT_SECS", 0.05)
+
+        with patch("os.close") as mock_close, patch(
+            "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree_async",
+            AsyncMock(),
+        ):
+            await asyncio.wait_for(terminal._kill_session(sess), timeout=10)
+
+        # Teardown ran to completion: the controller fd is closed and cleared.
+        mock_close.assert_called_with(42)
+        assert sess.master_fd == -1  # wokeignore:rule=master
+        assert calls["n"] == 2
 
     @pytest.mark.asyncio
     async def test_handles_os_error_on_close(self):
@@ -2745,6 +2905,23 @@ def _make_app(registry=None, cfg=None, user="testuser", owner_id=None):
     return app
 
 
+def _unwrapped(buf: bytes) -> bytes:
+    """Return *buf* with the PTY's line-wrap artifacts removed.
+
+    The PTY is 80 columns (``TIOCSWINSZ`` 24x80 at spawn) and the host's own
+    prompt eats part of that row, so a command that reaches the right margin
+    comes back split: bash redraws the wrap point and ``sleep 120`` arrives as
+    ``sleep 12 \\r0\\r\\n``. Deleting CR, LF and spaces makes a match
+    independent of where the row broke, so every needle compared through this
+    helper is written space-free (``sleep120``).
+
+    Squashing cannot turn a miss into a false pass for the SIGINT probe: the
+    typed ``SIG''INT_OK`` keeps its quotes here, so ``SIGINT_OK`` still appears
+    only in the shell's own execution output.
+    """
+    return buf.replace(b"\r", b"").replace(b"\n", b"").replace(b" ", b"")
+
+
 async def _recv_matching(ws, predicate, what: str, *, frames: int = 40, timeout: float = 3):
     """Return the first frame satisfying *predicate*, skipping the ones it does not.
 
@@ -3038,17 +3215,33 @@ class TestTerminalWsIntegration:
 
         async def _drain_to_pong(ws):
             # The write loop handles frames in order, so a pong proves the
-            # preceding binary frame has already been processed.
+            # preceding binary frame has already been processed. Bounded by a
+            # DEADLINE, not a frame count: the shell's own startup output is
+            # what shares this stream, and how many frames it takes is a
+            # property of the host's shell and profile chain, not of the
+            # handler. A macOS runner's login shell emits enough startup frames
+            # to spend a 40-frame budget before the pong is reached, which makes
+            # a count-bounded drain either report a missing pong or sit in
+            # 3-second receives until the file's own timeout fires.
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + 20
             await ws.send_str(json.dumps({"type": "ping"}))
-            for _ in range(40):
-                msg = await ws.receive(timeout=3)
+            while True:
+                remaining = deadline - loop.time()
+                assert remaining > 0, "no pong received within 20s"
+                msg = await ws.receive(timeout=remaining)
                 if msg.type == web.WSMsgType.TEXT and json.loads(msg.data).get("type") == "pong":
                     return
-            raise AssertionError("no pong received")
+                if msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
+                    raise AssertionError(f"socket closed before pong: {msg.type}")
 
         async with TestClient(TestServer(app)) as client:
             async with client.ws_connect("/api/ws/terminal/cwd-memo-sess") as ws:
                 sess = registry["cwd-memo-sess"]
+                # Let the shell finish starting before the assertions begin, so
+                # its startup output is already drained and cannot interleave
+                # with the bookkeeping this test is about.
+                await _drain_to_pong(ws)
 
                 sess.cwd_probe = (time.monotonic(), "/tmp/old")
                 await ws.send_bytes(b"c")
@@ -3061,11 +3254,34 @@ class TestTerminalWsIntegration:
 
                 # The submitted line is the one input that can change the cwd,
                 # so it re-arms the title poller directly rather than relying on
-                # the shell's echo to do it. Stop the PTY reader first, since
-                # that echo would otherwise re-arm the session either way and
-                # the assertion would prove nothing.
-                if sess.reader_task is not None:
-                    sess.reader_task.cancel()
+                # the shell's echo to do it. The session's own reader has to
+                # stop setting the flag for that assertion to mean anything,
+                # BUT the PTY still has to be drained: a shell blocked writing
+                # into a controller buffer nobody reads cannot exit, so leaving
+                # the fd undrained makes teardown wait on a child that is wedged
+                # until the fd closes. Swap the reader for a drain-only task
+                # that consumes output and touches no session state, and keep it
+                # in `reader_task` so teardown stops it the way it stops the
+                # real one.
+                assert sess.reader_task is not None
+                sess.reader_task.cancel()
+                try:
+                    await sess.reader_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+                async def _drain_only(fd=sess.master_fd):  # wokeignore:rule=master
+                    loop = asyncio.get_running_loop()
+                    while True:
+                        try:
+                            if not await loop.run_in_executor(
+                                None, os.read, fd, 4096
+                            ):
+                                return
+                        except OSError:
+                            return
+
+                sess.reader_task = asyncio.ensure_future(_drain_only())
                 sess.frames_dirty = False
                 await ws.send_bytes(b"cd /tmp\r")
                 await _drain_to_pong(ws)
@@ -3462,10 +3678,10 @@ class TestTerminalWsIntegration:
                 await ws.send_bytes(b"echo __PTY_READY__\n")
                 ready = await _drain_until(
                     ws,
-                    lambda b: b"__PTY_READY__" in b,
+                    lambda b: b"__PTY_READY__" in _unwrapped(b),
                     budget_secs=15,
                 )
-                assert b"__PTY_READY__" in ready, (
+                assert b"__PTY_READY__" in _unwrapped(ready), (
                     "shell never echoed the readiness probe — PTY input/echo "
                     "path is not live"
                 )
@@ -3483,12 +3699,12 @@ class TestTerminalWsIntegration:
                 await ws.send_bytes(b"sleep 120\n")
                 echoed = await _drain_until(
                     ws,
-                    lambda b: b"sleep 120" in b,
+                    lambda b: b"sleep120" in _unwrapped(b),
                     budget_secs=5,
                 )
-                assert b"sleep 120" in echoed, (
+                assert b"sleep120" in _unwrapped(echoed), (
                     "shell did not echo `sleep 120` within 5s — "
-                    "input may not have reached an interactive shell"
+                    f"input may not have reached an interactive shell: {echoed[-200:]!r}"
                 )
 
                 # Deliver SIGINT and confirm the child actually received it.
@@ -3542,10 +3758,10 @@ class TestTerminalWsIntegration:
                     # wait cannot overshoot ``overall_deadline`` by a full drain.
                     tail = await _drain_until(
                         ws,
-                        lambda b: b"SIGINT_OK" in b,
+                        lambda b: b"SIGINT_OK" in _unwrapped(b),
                         budget_secs=min(5.0, remaining),
                     )
-                    if b"SIGINT_OK" in tail:
+                    if b"SIGINT_OK" in _unwrapped(tail):
                         found = True
                         break
                     # Signal may instead have torn down the whole session — that
@@ -3916,7 +4132,7 @@ class TestTerminalWsIntegration:
                         msg = await ws.receive(timeout=deadline - loop.time())
                         if msg.type == web.WSMsgType.BINARY:
                             out.extend(msg.data)
-                            if b"PCNOW=" in bytes(out):
+                            if b"PCNOW=" in _unwrapped(bytes(out)):
                                 break
                         elif msg.type == web.WSMsgType.TEXT:
                             if json.loads(msg.data).get("type") == "ready":
@@ -3933,18 +4149,22 @@ class TestTerminalWsIntegration:
                 await terminal._kill_session(spawned)
 
         tail = bytes(out)
+        # Compared through ``_unwrapped``: a long host prompt makes the typed probe
+        # reach the 80-column margin, and bash redraws the wrap point mid-word
+        # (``PC' \r'NOW``), which is where the raw form failed on a hosted runner.
+        flat = _unwrapped(tail)
         # (1) It ran at the FIRST prompt, i.e. it was appended after the hook
         # rather than only restored: its output precedes the echo of the probe
         # this test typed afterwards.
-        assert b"PREV_RAN" in tail and b"PC''NOW" in tail, (
+        assert b"PREV_RAN" in flat and b"PC''NOW" in flat, (
             f"probe never completed. PTY tail: {tail[-500:]!r}"
         )
-        assert tail.index(b"PREV_RAN") < tail.index(b"PC''NOW"), (
+        assert flat.index(b"PREV_RAN") < flat.index(b"PC''NOW"), (
             "the gateway's exported PROMPT_COMMAND did not run at the first "
             f"prompt, so it was not appended after the hook. PTY: {tail[:600]!r}"
         )
         # (2) The withdrawal restored it instead of unsetting the variable.
-        assert b"PCNOW=[builtin printf PREV_RAN]" in tail, (
+        assert b"PCNOW=[builtinprintfPREV_RAN]" in flat, (
             "the gateway's exported PROMPT_COMMAND was not restored after the "
             f"readiness hook withdrew. PTY tail: {tail[-500:]!r}"
         )
@@ -5450,6 +5670,16 @@ class TestPtyChildEnvStripsPythonStartupVars:
         assert env["TERM"] == "xterm-256color"
         assert env["KIROCREW_UNRELATED_KEEPME"] == "keep-this-value"
 
+    def test_macos_bash_deprecation_banner_is_silenced(self, monkeypatch):
+        """macOS ships Bash 3.2, which prints a three-line "use zsh" notice on
+        every interactive start. The panel silences it, and yields to a user who
+        set the variable themselves."""
+        monkeypatch.delenv("BASH_SILENCE_DEPRECATION_WARNING", raising=False)
+        assert terminal._pty_child_env({})["BASH_SILENCE_DEPRECATION_WARNING"] == "1"
+
+        monkeypatch.setenv("BASH_SILENCE_DEPRECATION_WARNING", "")
+        assert terminal._pty_child_env({})["BASH_SILENCE_DEPRECATION_WARNING"] == ""
+
     def test_credential_bearing_vars_survive(self, monkeypatch):
         """Only the Python prefixes are dropped. This is the user's own
         unsandboxed shell, so borrowing the AGENT spawn's credential scrub would
@@ -5553,7 +5783,21 @@ class TestPtyChildEnvStripsPythonStartupVars:
 
         async with TestClient(TestServer(app)) as client:
             async with client.ws_connect("/api/ws/terminal/win-pyenv") as ws:
-                await ws.receive(timeout=3)
+                # Wait for the SPAWN, not for a frame. ``captured["env"]`` is
+                # filled synchronously inside _FakeWinPty.__init__, so the
+                # assertion's input exists the moment the handler reaches the
+                # ConPTY branch. Waiting on ``ws.receive(timeout=3)`` instead
+                # ties this contract test to how fast the host delivers the
+                # first PTY frame, and a receive whose timeout is cancelled
+                # from outside raises CancelledError straight out of both
+                # ``async with`` blocks rather than a TimeoutError this test
+                # could report. Polling the spawn is deterministic and needs no
+                # wall-clock margin.
+                loop = asyncio.get_event_loop()
+                deadline = loop.time() + 15
+                while "env" not in captured and loop.time() < deadline:
+                    await asyncio.sleep(0.02)
+                assert "env" in captured, "the ConPTY branch never spawned"
                 await ws.close()
 
         if "win-pyenv" in registry:

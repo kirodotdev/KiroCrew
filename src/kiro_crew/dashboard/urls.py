@@ -20,6 +20,7 @@ import ipaddress
 import logging
 import os
 import socket
+import threading
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -36,9 +37,7 @@ _BIND_ALL = "0.0.0.0"
 # reaches the dashboard on more than one of these names gets a separate, empty
 # settings bucket each time — settings appear to "reset". We canonicalize
 # navigations among this set onto a single host (see should_canonicalize_host).
-_CANONICALIZABLE_LOOPBACK_HOSTS = frozenset(
-    {"127.0.0.1", "::1", "localhost", "kirocrew.localhost"}
-)
+_CANONICALIZABLE_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "kirocrew.localhost"})
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +51,48 @@ def machine_hostname() -> str | None:
         return socket.gethostname()
     except Exception:
         return None
+
+
+#: Ceiling on the startup hostname lookup. The hint it feeds is cosmetic; the
+#: gateway's event loop is not.
+HOSTNAME_RESOLVE_TIMEOUT_SECS = 2.0
+
+
+def _resolve_hostname_bounded(host: str, timeout: float | None = None) -> str | None:
+    """Resolve *host* with a bounded wait.
+
+    ``gethostbyname`` has no timeout, and an unresolved mDNS hostname can stall
+    for 15+ seconds. Gateway startup reaches this helper through
+    ``format_dashboard_urls`` inside ``asyncio.to_thread``, while synchronous
+    CLI setup calls it directly. The bound keeps both startup paths responsive.
+
+    The lookup runs on a daemon thread and is abandoned, not cancelled, on
+    timeout: the resolver call cannot be interrupted, and a leaked daemon thread
+    that ends a few seconds later costs nothing, while a leaked block on the
+    loop costs the gateway.
+    """
+    if timeout is None:
+        timeout = HOSTNAME_RESOLVE_TIMEOUT_SECS
+    result: list[str] = []
+
+    def _lookup() -> None:
+        try:
+            result.append(socket.gethostbyname(host))
+        except Exception:
+            pass
+
+    worker = threading.Thread(target=_lookup, name="kc-hostname-resolve", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError:
+        # Thread exhaustion. This function's whole contract is a BEST-EFFORT
+        # answer -- its one caller uses it only to decide whether to print an
+        # extra `ssh -NL` hint line -- so an unstarted resolver means "unresolved",
+        # not an exception thrown through the code that prints the dashboard's
+        # URLs. Losing a hint line beats losing the banner.
+        return None
+    worker.join(timeout)
+    return result[0] if result else None
 
 
 def is_loopback(host: str) -> bool:
@@ -394,12 +435,9 @@ def format_dashboard_urls(
     if local_only and not has_custom_host and not _is_remote:
         mh_local = machine_hostname()
         if mh_local and mh_local != "localhost":
-            try:
-                ip = socket.gethostbyname(mh_local)
-                if ip and ip != "127.0.0.1":
-                    lines.append(f"👻 Remote:    ssh -NL {port}:localhost:{port} {mh_local}")
-            except Exception:
-                pass
+            ip = _resolve_hostname_bounded(mh_local)
+            if ip and ip != "127.0.0.1":
+                lines.append(f"👻 Remote:    ssh -NL {port}:localhost:{port} {mh_local}")
 
     proxy = devspaces_proxy_url(port)
     if proxy and not local_only:

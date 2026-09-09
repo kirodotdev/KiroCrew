@@ -2253,6 +2253,103 @@ def process_descendants(pid: int) -> list[int]:
     return _descendants_from_parent_map(pid, parent_map)
 
 
+def attributed_descendants(root_pid: int, root_token: str) -> list[int]:
+    """*root_pid*'s descendants with EVERY parent-child edge attributed, not just the root.
+
+    :func:`created_after` compares one child against one parent. Applying it with the
+    ROOT's token for a whole flattened descendant list is weaker than it looks: it
+    asks "was this process created after the root", which every process started since
+    the root satisfies -- including a stale orphan that the parent map lists under a
+    RECYCLED INTERMEDIATE pid. Such an orphan is unrelated to this tree, often
+    belongs to the same user, and a caller acting on the set then terminates a
+    stranger's process tree irreversibly.
+
+    Walking level by level and attributing each edge against the parent it was
+    reached THROUGH separates them: a real grandchild was created after its own
+    parent, while the orphan of a recycled intermediate was created before the
+    process that now holds that number. A child failing its edge is dropped WITH ITS
+    SUBTREE -- everything below an unattributable edge is reached only through it, so
+    none of it is provably part of this tree either.
+
+    Still the token-only form: it needs no handles, so it serves the callers that
+    cannot hold an exact root handle. :func:`descendant_termination_handles` remains
+    the stronger answer where one IS available. A process whose creation identity
+    cannot be read at all is left alone rather than guessed at, exactly as
+    :func:`created_after` documents.
+
+    Best-effort like :func:`process_descendants`: an unreadable process table yields
+    an empty list rather than raising, and the SAME snapshot ordering rule applies --
+    call this BEFORE killing anything.
+    """
+
+    if type(root_pid) is not int or root_pid <= 1 or not root_token:
+        return []
+    try:
+        parent_map = _windows_process_parent_map() if IS_WINDOWS else _posix_process_parent_map()
+    except Exception:  # noqa: BLE001 - introspection must never break a kill path
+        return []
+
+    children_of: dict[int, list[int]] = {}
+    for child, parent in parent_map.items():
+        children_of.setdefault(parent, []).append(child)
+
+    out: list[int] = []
+    seen = {root_pid}
+    frontier = [(root_pid, root_token)]
+    while frontier:
+        next_frontier: list[tuple[int, str]] = []
+        for parent_pid, parent_token in frontier:
+            for child in sorted(children_of.get(parent_pid, ())):
+                if child in seen:
+                    continue
+                child_token = process_start_time(child)
+                if not child_token or not created_after(child_token, parent_token):
+                    # Unattributable edge: this child is not provably ours, and
+                    # nothing below it is reachable except through it.
+                    continue
+                seen.add(child)
+                out.append(child)
+                next_frontier.append((child, child_token))
+        frontier = next_frontier
+    return out
+
+
+def created_after(child_token: str, parent_token: str) -> bool:
+    """Whether a process the parent map lists under another is really its child.
+
+    The Toolhelp snapshot behind :func:`process_descendants` records a parent as a
+    bare pid, and Windows keeps that number after the parent dies. When the dead
+    parent's pid is later recycled, an unrelated process appears as a child of the
+    recycler -- and, being unrelated, is often one this user cannot terminate, so
+    ending it fails and a caller that treats the set as a tree draws the wrong
+    conclusion in whichever direction hurts it (killing a stranger, or calling a
+    foreign listener its own).
+
+    A genuine child was created after its parent, while such a stray was created
+    while the pid still belonged to the process it was born under, so comparing the
+    creation identities separates the two exactly. Both tokens are the creation
+    ``FILETIME`` as decimal text (:func:`process_start_time`); a token that is not
+    (nothing on Windows produces one) is not attributable, and the caller must leave
+    that process alone rather than act on a guess.
+
+    Lives HERE, beside the primitive whose staleness it compensates for, because
+    three callers need the same rule and a second spelling of it is how they drift:
+    the pod backend's ``stop``, ``pod.runtime.port_owner``, and the test harness's
+    Windows teardown. All three reach it through
+    :func:`attributed_descendants`, which applies this comparison to EVERY
+    parent-child edge -- applying it with only the ROOT's token admits a stale orphan
+    sitting under a recycled INTERMEDIATE pid, which also postdates the root.
+    :func:`descendant_termination_handles` is the stronger form still --
+    exact per-process handles, every edge validated against creation AND exit times
+    across two snapshots -- and is the right answer for a caller that holds an exact
+    root handle; this is the token-only form for callers that do not.
+    """
+    try:
+        return int(child_token) > int(parent_token)
+    except ValueError:
+        return False
+
+
 def _windows_process_parent_map() -> dict[int, int]:
     """Return one Toolhelp PID -> PPID snapshot, raising if enumeration fails."""
 
@@ -3246,6 +3343,64 @@ def pgroup_exists(pgid: int) -> bool:
     except OSError:
         return True  # exists but we can't signal it
     return True
+
+
+def pgroup_of(pid: int) -> int | None:
+    """The process GROUP *pid* belongs to, or ``None`` when it cannot be read.
+
+    Distinct from :func:`pgroup_of_leader`, which answers "what group does this
+    LEADER name" and falls back to the pid itself so a reaped leader's group can
+    still be signalled. This one asks a plain membership question about a pid that
+    may be any descendant, so there is no leader contract to fall back on and an
+    unreadable answer is ``None`` rather than a guess.
+
+    Callers use it to tell an in-group descendant (a group kill covers it) from one
+    that has ``setsid``'d out of the group (it has to be signalled on its own), so
+    a wrong guess here either signals a stranger or leaves a live writer behind --
+    which is why the failure answers "unknown".
+
+    POSIX ONLY, deliberately unguarded: ``os.getpgid`` does not exist on Windows,
+    and a caller reaching here on that platform has the wrong primitive.
+    """
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def pgroup_of_leader(pid: int) -> int | None:
+    """Resolve the process GROUP to signal for a group leader ``pid``.
+
+    Companion to :func:`pgroup_exists` for the teardown side: a caller that must
+    signal a group needs its id even when the leader itself has been reaped,
+    because the group outlives its leader and the children left in it keep
+    running. ``os.getpgid`` cannot name such a group -- it raises
+    ``ProcessLookupError`` once the leader is gone -- and reading that as "the
+    group is gone" signals nothing at all while the tree survives.
+
+    So a reaped leader resolves to ``pid`` itself: for a child spawned with
+    ``start_new_session=True`` the leader's pid IS the group id (the same
+    identity :func:`pgroup_exists` documents), so that number still names the
+    group. ``killpg`` on a group that really is empty raises
+    ``ProcessLookupError``, which callers already absorb, so the fallback costs
+    nothing when the group is gone and is the whole teardown when it is not.
+
+    Returns:
+        The group id, or ``None`` when the group cannot be resolved because
+        signalling it is denied (pid recycled to another user, or reduced
+        privilege) -- a caller must not proceed to signal on ``None``.
+
+    POSIX ONLY, deliberately unguarded: ``os.getpgid`` does not exist on
+    Windows, so a caller reaching here on Windows has the wrong teardown
+    primitive and gets an ``AttributeError`` saying so rather than a silent
+    no-op. Windows teardown goes through ``kill_process_tree``.
+    """
+    try:
+        return os.getpgid(pid)
+    except ProcessLookupError:
+        return pid
+    except PermissionError:
+        return None
 
 
 def pid_exists(pid: int) -> bool:

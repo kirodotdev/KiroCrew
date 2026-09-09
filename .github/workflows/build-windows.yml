@@ -145,6 +145,13 @@ jobs:
     continue-on-error: ${{ inputs.soft_fail == true }}
     runs-on: windows-latest
     timeout-minutes: 60
+    # Set only by the step that runs AFTER the artifact upload succeeded, so a
+    # consumer job can tell "built and uploaded" from "soft-failed": under
+    # continue-on-error a failed build still reports success to `needs`, which
+    # would otherwise run the smoke install against an artifact that does not
+    # exist and redden exactly the publish run soft_fail keeps green.
+    outputs:
+      artifact_uploaded: ${{ steps.uploaded.outputs.uploaded }}
     # Publishing callers pass use_prod_environment: true -- REQUIRED, because
     # the signing role's OIDC trust accepts exactly two subjects
     # (ref:refs/heads/main and environment:prod) and tag-triggered release runs
@@ -340,4 +347,79 @@ jobs:
             website/electron/dist/latest.yml
             website/electron/dist/symbols-manifest.json
           if-no-files-found: error
+          retention-days: 14
+
+      # Reached only when every step above, the upload included, succeeded: a
+      # failed step ends the job before this one, so the output stays empty
+      # and `smoke-install-windows` sees no artifact to consume.
+      - name: Record that the artifact was uploaded
+        id: uploaded
+        shell: bash
+        run: echo "uploaded=true" >> "$GITHUB_OUTPUT"
+
+  # Install the artifact this workflow just produced on a CLEAN runner and boot
+  # it. Mirrors build-desktop.yml's `Smoke-install Linux packages` job, which
+  # downloads `build-linux-x64` and runs scripts/smoke-linux-packages.sh.
+  #
+  # A SEPARATE JOB, not a step in build-windows: that job holds a production
+  # Authenticode signing identity via OIDC, and running an installer plus a
+  # gateway inside it would put that credential in the same process tree as the
+  # code under test for no benefit. This job declares contents:read only and
+  # no id-token, which keeps the least-privilege split test_workflow_permissions.py
+  # pins for build-windows.yml intact.
+  #
+  # It is also what makes the install path genuinely FRESH: the build job's runner
+  # has the full node/uv/electron-builder toolchain and the unpacked app tree
+  # sitting in the workspace, so an install there could pass on state the build
+  # left behind. A new runner has neither.
+  #
+  # soft_fail is deliberately NOT applied here. It exists so a Windows packaging
+  # or signing failure never blocks the mac and Linux release, and it is applied
+  # to the job that produces the artifact. This job consumes one, and `needs`
+  # alone cannot tell the two outcomes apart: a job under continue-on-error
+  # reports success to its dependents even when it failed, so the build's
+  # `artifact_uploaded` output is the gate. When the build soft-failed and
+  # uploaded nothing this job is skipped rather than reddened; when an artifact
+  # exists, a real install-or-boot failure is a Windows-only signal that should
+  # be visibly red on the run page.
+  smoke-install-windows:
+    name: Smoke-install Windows installer (x64)
+    needs: build-windows
+    if: needs.build-windows.outputs.artifact_uploaded == 'true'
+    runs-on: windows-latest
+    # The install has a 300s ceiling and the gateway boot 180s, both enforced
+    # inside the script. 30 minutes covers those plus checkout and download with
+    # room for a cold runner, and is not a substitute for either ceiling.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download Windows x64 build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: build-windows-x64
+          path: dist
+
+      # x64 only, the same reason the Linux smoke gives: every assertion is about
+      # installer metadata, the registry and whether the bundled interpreter
+      # boots, none of which is arch-specific.
+      - name: Install the Windows build and boot it
+        shell: pwsh
+        run: ./scripts/smoke-windows-install.ps1 -DistDir dist
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-install-smoke-evidence
+          path: |
+            ${{ runner.temp }}/kirocrew-smoke-*/gateway-stdout.log
+            ${{ runner.temp }}/kirocrew-smoke-*/gateway-stderr.log
+            ${{ runner.temp }}/kirocrew-smoke-*/cli-version.out
+            ${{ runner.temp }}/kirocrew-smoke-*/cli-version.err
+          if-no-files-found: warn
           retention-days: 14

@@ -120,7 +120,7 @@ def test_env_selection_is_shared_with_the_systemd_backend(cfg):
 # --------------------------------------------------------------------------
 _RUNNING = "state = running\n\tpid = 4242\n\tlast exit code = 0\n"
 _DEAD = "state = waiting\n\tlast exit code = 1\n"
-_ABSENT = _cp(returncode=113, stderr="Could not find service \"x\" in domain")
+_ABSENT = _cp(returncode=113, stderr='Could not find service "x" in domain')
 
 
 def test_is_active_needs_a_live_pid(cfg, monkeypatch):
@@ -230,8 +230,13 @@ def test_runtime_dispatches_to_launchd_on_macos(cfg, monkeypatch):
 
 
 def test_runtime_does_not_touch_launchd_off_macos(cfg, monkeypatch):
-    """The Linux/Windows contract: dispatch must not reach the launchd module."""
+    """The Linux contract: dispatch must not reach the launchd module.
+
+    ``IS_WINDOWS`` is pinned False too, so on the Windows shards this exercises
+    the systemd branch it stubs rather than the Task Scheduler backend.
+    """
     monkeypatch.setattr(rt, "IS_MACOS", False)
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
     monkeypatch.setattr(rt, "require_systemd", lambda: None)
     monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
 
@@ -302,7 +307,9 @@ def test_stop_does_not_treat_a_generic_print_failure_as_unloaded(cfg, monkeypatc
     """An OPERATIONAL print failure (rc!=0 without the absent-service message)
     proves nothing about the label. Confirming the unload on it would let
     teardown proceed against a possibly-live pod."""
-    monkeypatch.setattr(launchd, "launchctl", lambda *a, **k: _cp(returncode=5, stderr="Input/output error"))
+    monkeypatch.setattr(
+        launchd, "launchctl", lambda *a, **k: _cp(returncode=5, stderr="Input/output error")
+    )
     monkeypatch.setattr(launchd.time, "sleep", lambda _s: None)
     dst = launchd.write_plist(cfg, "smoke")
     cp = launchd.stop(cfg, "smoke", timeout=0.5)
@@ -329,9 +336,7 @@ def test_stop_preserves_everything_when_the_unload_cannot_be_confirmed(cfg, monk
 def test_stop_pod_does_not_reap_the_home_on_a_failed_unload(cfg, monkeypatch):
     """runtime.stop_pod must honour launchd.stop's authoritative failure."""
     monkeypatch.setattr(rt, "IS_MACOS", True)
-    monkeypatch.setattr(
-        rt.launchd, "stop", lambda c, n: _cp(returncode=1, stderr="preserved")
-    )
+    monkeypatch.setattr(rt.launchd, "stop", lambda c, n: _cp(returncode=1, stderr="preserved"))
     reaped: list[str] = []
     monkeypatch.setattr(rt, "cleanup_home", lambda c, n: reaped.append(n))
     cp = rt.stop_pod(cfg, "smoke")
@@ -393,9 +398,7 @@ def test_down_preserves_the_new_pods_checkout_pin_when_reclaimed(cfg, monkeypatc
 
     monkeypatch.setattr(rt, "validate_name", lambda n: n)
     monkeypatch.setattr(rt, "is_active", lambda c, n: True)
-    monkeypatch.setattr(
-        rt, "stop_pod", lambda c, n: _cp(returncode=0, stdout=rt.RECLAIMED_MARKER)
-    )
+    monkeypatch.setattr(rt, "stop_pod", lambda c, n: _cp(returncode=0, stdout=rt.RECLAIMED_MARKER))
     monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
     env = cfg.env_file("smoke")
     env.parent.mkdir(parents=True, exist_ok=True)
@@ -603,8 +606,8 @@ def test_up_failure_cleanup_stops_the_pod_inside_the_mutex(cfg, monkeypatch, tmp
     with pytest.raises(SystemExit):
         pod_cli._up(cfg, args)
     assert "stop" in events, "the failed boot must be stopped"
-    assert events.index("lock") < events.index("stop") < events.index(
-        "unlock"
+    assert (
+        events.index("lock") < events.index("stop") < events.index("unlock")
     ), f"the failure cleanup must stop the pod INSIDE the mutex: {events}"
 
 

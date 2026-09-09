@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from kiro_crew.context import ContextBuilder
 from kiro_crew.hooks import ContextRule, HookManager, HooksConfig, TransformHook
 from kiro_crew.learn import LessonStore
@@ -101,6 +103,11 @@ class TestMemoryInjectionAllAgents:
     critical-rules contract is injected by default for every agent, and a custom
     agent may opt out of it (and the dashboard tool nudges) via
     ``includeCrewContext: false``."""
+
+    # ``test_custom_agent_gets_hook_transform`` asserts the built turn's exact
+    # opening, so the host's own free memory must not be an input: see the
+    # fixture for the advisory it pins off.
+    pytestmark = pytest.mark.usefixtures("ample_host_resources")
 
     def test_kirocrew_agent_gets_everything(self, tmp_path: Path) -> None:
         ws = tmp_path / "ws"

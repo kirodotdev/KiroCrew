@@ -789,10 +789,10 @@ def _discard_untracked_files(worktree: str, rel_paths: list[str]) -> str | None:
         ):
             return f"refusing to discard a path that is not worktree-relative: {rel!r}"
         dir_fds: list[int] = []
+        walked = 0
         try:
             try:
                 dir_fds.append(os.open("/", os.O_RDONLY | os.O_DIRECTORY))
-                walked = 0
                 for comp in (*root_parts[1:], *parts[:-1]):
                     dir_fds.append(
                         os.open(
@@ -817,6 +817,21 @@ def _discard_untracked_files(worktree: str, rel_paths: list[str]) -> str | None:
                     f"refusing to discard {rel!r}: it is now a directory, not the "
                     "file that was confirmed"
                 )
+            except PermissionError as exc:
+                # Same type change, different errno. Linux answers EISDIR from
+                # unlink(2) on a directory; darwin answers EPERM, so the branch
+                # above never sees it and the user reads a bare "operation not
+                # permitted" that names nothing. Confirmed with a stat before it is
+                # reported, so a genuine permission refusal keeps its own message,
+                # and only the LEAF can be this case -- an EPERM from the ancestor
+                # walk never reached the unlink.
+                reached_unlink = walked == len(root_parts) - 1 + len(parts) - 1
+                if reached_unlink and _is_dir_at(parts[-1], dir_fds[-1]):
+                    return (
+                        f"refusing to discard {rel!r}: it is now a directory, not the "
+                        "file that was confirmed"
+                    )
+                return f"could not discard {rel!r}: {exc.strerror or exc}"
             except OSError as exc:
                 if exc.errno == errno.EPERM and _is_directory_at(parts[-1], dir_fds[-1]):
                     # macOS and the BSDs answer unlink() on a directory with EPERM,
@@ -845,6 +860,18 @@ def _discard_untracked_files(worktree: str, rel_paths: list[str]) -> str | None:
                 except OSError:  # pragma: no cover - defensive
                     pass
     return None
+
+
+def _is_dir_at(name: str, dir_fd: int) -> bool:
+    """Whether *name* under *dir_fd* is a real directory right now.
+
+    Never raises: the caller is already handling a refusal and only needs to know
+    which refusal to report.
+    """
+    try:
+        return stat.S_ISDIR(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
+    except OSError:
+        return False
 
 
 async def _real_dirty(path: str) -> bool | None:
