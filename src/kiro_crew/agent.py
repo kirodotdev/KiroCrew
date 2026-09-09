@@ -75,7 +75,9 @@ from kiro_crew.config.paths import (
     _under_system_tmp,
     _valid_override_home,
     ambient_agents_dir,
+    foreign_data_home,
     isolated_agents_dir,
+    isolated_kiro_home,
     kiro_agents_dir,
 )
 from kiro_crew.env import (
@@ -3505,6 +3507,101 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
     return spec_path, str(previous)
 
 
+def _private_isolated_agents_dir(own_home: Path) -> Path | None:
+    """``isolated_agents_dir(own_home)`` iff it is provably THIS instance's private dir.
+
+    Two conditions, both checked here rather than in the prologue that exports
+    ``KIRO_HOME`` (which is filesystem-free by rule -- this is the write side):
+
+    * **Link-free.** ``own_home`` is already resolved (``_valid_override_home``),
+      so a resolved spelling that differs from the lexical one means a symlink or
+      junction sits somewhere under ``<data home>/kiro/agents`` -- planted there,
+      it would make the machine-wide ``~/.kiro/agents`` compare equal to this
+      instance's private dir and defeat the exemption.
+    * **Directory-shaped.** ``<data home>/kiro`` and ``<data home>/kiro/agents``
+      may be absent (a fresh home; the writer creates them) but, where present,
+      must be directories: a stray regular file there would let the exemption
+      pass and the writer's ``mkdir(parents=True)`` then fail with
+      ``NotADirectoryError`` mid-boot. ``resolve()`` does not surface that, so it
+      is asked explicitly.
+
+    ``None`` on any failure to answer (link cycle, unreadable parent): a path that
+    cannot be proven private is not treated as private.
+    """
+    isolated = isolated_agents_dir(own_home)
+    try:
+        if isolated.resolve() != isolated:
+            return None
+        for node in (isolated.parent, isolated):
+            if node.exists() and not node.is_dir():
+                logger.warning(
+                    "%s exists but is not a directory; this instance's isolated agent "
+                    "home cannot be used until it is removed",
+                    node,
+                )
+                return None
+    except (OSError, RuntimeError):
+        return None
+    return isolated
+
+
+def _unexempt_shared_target(target: Path) -> Path | None:
+    """*target* resolved, iff it is the SHARED agents dir with no private exemption.
+
+    ``None`` when a caller pointed the write somewhere of its own choosing
+    (nothing is shared with the ambient install, so there is nothing to protect)
+    or when the target is EXACTLY this instance's ``isolated_agents_dir(own data
+    home)``, the one supported opt-in. That exemption is matched exactly, not by
+    ancestry -- "anywhere beneath the data home" reads the machine-wide
+    ``~/.kiro/agents`` as private whenever the data home is an ancestor of it
+    (``KIROCREW_HOME=$HOME`` suffices) -- and only when the path is link-free and
+    directory-shaped (:func:`_private_isolated_agents_dir`): an agent with write
+    access to the data home could plant ``<data home>/kiro -> ~/.kiro``, and a
+    resolved comparison would then read the shared dir as this instance's private
+    one. A different ``KIRO_HOME`` layout is refused rather than guessed.
+
+    The comparison is against what the AMBIENT environment resolves
+    (:func:`ambient_agents_dir`) -- the override-blind resolver, so a test's
+    redirect moves only the target side and reads as private. This is the single
+    place that resolver is consulted; every writer's ownership question routes
+    through here. A target that cannot be resolved (link cycle, unreadable
+    parent) is returned as-is: a path that cannot be proven private is treated
+    as shared, so the callers decline rather than write.
+    """
+    try:
+        resolved = target.resolve()
+        if resolved != ambient_agents_dir().resolve():
+            return None
+    except (OSError, RuntimeError):
+        return target
+    own_home = _valid_override_home()
+    if own_home is not None and resolved == _private_isolated_agents_dir(own_home):
+        return None
+    return resolved
+
+
+def foreign_home_targets_shared_agents_dir(target: Path) -> Path | None:
+    """The non-default data home this process runs on, iff *target* is the SHARED
+    agents dir that home does not own; ``None`` when the write is this instance's
+    to make.
+
+    The ownership arm of :func:`_decline_shared_agent_home`, exposed for the
+    other shared-dir writer -- ``apps.bridges`` materialises, prunes and removes
+    app agent specs under ``kiro_agents_dir()`` too. Under the CLI prologue's
+    ``KIRO_HOME`` export that directory is the instance's own
+    ``isolated_agents_dir`` and this returns ``None``; it answers a home only when
+    a foreign instance is pointed at the machine-wide directory anyway -- the
+    documented ``KIRO_HOME=~/.kiro`` opt-out (READ the default instance's specs)
+    or a prologue-bypassing entrypoint. There, writing app agents would let two
+    instances with different app sets prune and re-register each other's specs,
+    and removing an app here would delete the default instance's copies. No
+    environment variable is consent.
+    """
+    if _unexempt_shared_target(target) is None:
+        return None
+    return foreign_data_home()
+
+
 def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     """Return the spec path to report, WITHOUT writing, when this instance must
     not own the shared agent home; ``None`` when writing is safe.
@@ -3532,11 +3629,15 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
       all, yet ``pod down`` deletes its home and checkout venv, so it still leaves
       the machine-wide specs dangling. Pods therefore declare themselves via
       ``KIROCREW_POD`` (set in ``build_pod_env``) and that counts as ephemeral on
-      its own. Note what is deliberately NOT used as the signal: merely *having*
-      an isolated ``KIROCREW_HOME``. A CI test gateway (the offline E2E suite boots
-      on a tmp data home) and a user who permanently relocated their data home are
-      indistinguishable from a pod under that rule, and stopping either from
-      writing its specs is a regression, not protection.
+      its own. A **non-default ``KIROCREW_HOME``** is refused too, on a different
+      ground: not because it is ephemeral -- a CI test gateway and a user
+      who relocated their data home are not -- but because the specs it would
+      write pin ITS data home into the managed servers the default instance's
+      sessions spawn. Such an instance owns ``isolated_agents_dir(own home)``
+      instead, which the CLI prologue arranges via ``KIRO_HOME``
+      (``config.paths.adopt_isolated_kiro_home``). No environment variable opts
+      a foreign home back into writing the shared file: ``KIRO_HOME=~/.kiro`` may
+      make it READ the shared specs, never write them.
     * A globally exported ``KIRO_HOME`` moves the shared directory, so comparing
       against a hard-coded default reads "not the shared one" and waves the write
       straight through. The comparison is therefore against what the AMBIENT
@@ -3552,40 +3653,86 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     test's ``tmp_path``), or it is EXACTLY ``isolated_agents_dir(own data home)``
     — the dedicated ``<data home>/kiro/agents`` this instance's teardown owns.
 
-    That second case is the *mechanism* by which a genuinely isolated instance will
-    own its specs; it is NOT advice to set ``KIRO_HOME`` today. Nothing in this
-    repo sets it (``build_pod_env`` deliberately does not) because it also
-    relocates kiro-cli's session storage while KiroCrew still reads the host path
-    — see ``kiro_home()``'s scope caveat. The exemption is matched exactly rather
-    than by ancestry: "beneath the data home" reads the machine-wide
-    ``~/.kiro/agents`` as private the moment the data home is an ancestor of it
-    (``KIROCREW_HOME=$HOME`` is enough).
+    That second case is the *mechanism* by which an isolated instance owns its
+    specs, and it is how every non-default instance runs: ``build_pod_env`` sets
+    ``KIRO_HOME=<pod home>/kiro`` for a pod, and ``adopt_isolated_kiro_home`` in
+    the CLI prologue does the same for any other non-default data home. Session
+    resume survives it because Kiro Crew reads transcripts through
+    ``kiro_sessions_dir()``, which follows ``KIRO_HOME`` like the agents dir does.
+    The exemption is matched exactly rather than by ancestry: "beneath the data
+    home" reads the machine-wide ``~/.kiro/agents`` as private the moment the
+    data home is an ancestor of it (``KIROCREW_HOME=$HOME`` is enough).
     """
-    target = kiro_agents_dir_path().resolve()
-    if target != ambient_agents_dir().resolve():
-        # A caller pointed the write somewhere of its own choosing; nothing is
-        # shared with the ambient install, so there is nothing to protect.
+    target = _unexempt_shared_target(kiro_agents_dir_path())
+    if target is None:
+        # Either a caller's own redirect (nothing shared to protect) or this
+        # instance's dedicated ``isolated_agents_dir`` -- see the predicate.
         return None
 
-    own_home = _valid_override_home()
-    if own_home is not None and target == isolated_agents_dir(own_home).resolve():
-        # The one supported opt-in: the DEDICATED agents dir beneath this
-        # instance's own data home, which its teardown owns. Matched exactly, not
-        # by ancestry — "anywhere beneath the data home" reads the machine-wide
-        # ~/.kiro/agents as private whenever the data home is an ancestor of it
-        # (KIROCREW_HOME=$HOME suffices), handing an ephemeral instance the very
-        # specs this guard protects. A different KIRO_HOME layout is refused
-        # rather than guessed; the warning below names the supported path.
-        return None
+    # A NON-DEFAULT data home does not own the shared agents dir. This is a
+    # question of OWNERSHIP, not of ephemerality (the arms below): whether or
+    # not such an instance is throwaway, the specs it writes pin ITS data home
+    # into every managed server's ``env`` (``_managed_mcp_env``), and the
+    # default-home gateway's sessions read the same file. The failure that
+    # produces is total and misattributed: every strict-identity check on the
+    # real gateway fails ("signed pid mapping did not verify") while its trust
+    # root is healthy, because its stubs are verifying against the other home.
+    #
+    # The two populations that legitimately run on a non-default home are still
+    # served, just not by writing the shared file: the CI test gateway sets
+    # ``KIRO_HOME`` (harness.py) and takes the private-target exemption above,
+    # and every other non-default instance is given its own kiro home by
+    # ``adopt_isolated_kiro_home`` in the CLI prologue, so it never reaches this
+    # arm with the shared target either. What DOES reach it is a caller that
+    # bypassed the prologue (a library import, a test, a future entrypoint) —
+    # and that is exactly the caller that must not be handed the shared file by
+    # default. There is deliberately NO environment-variable opt-in here: an
+    # explicit ``KIRO_HOME=~/.kiro`` from a foreign data home makes kiro-cli READ
+    # the shared specs (the default instance's wiring), which is a legitimate
+    # choice, but it cannot make this instance the WRITER of them -- the spec it
+    # would write pins its own home, which is the poisoning itself, and an
+    # environment variable is set by whoever launched the process, an agent
+    # included. Ownership is decided by which data home this is, nothing else.
+    foreign = foreign_data_home()
+    if foreign is not None:
+        if audit:
+            logger.warning(
+                "Refusing to rewrite the shared agent home %s from a non-default data "
+                "home (%s): the rebuilt specs would pin this data home into every "
+                "managed MCP server the DEFAULT instance's sessions spawn, and their "
+                "session-identity checks would then verify against the wrong home. "
+                "This instance will use the existing specs instead. Its own specs "
+                "belong in %s -- the kirocrew CLI exports KIRO_HOME=%s on start to put "
+                "them there; export KIRO_HOME yourself if this process bypassed that.",
+                target,
+                foreign,
+                isolated_agents_dir(foreign),
+                isolated_kiro_home(foreign),
+            )
+            sel().log_api_access(
+                caller="system",
+                operation="agent_home_write",
+                outcome="denied",
+                source="rebuild_agent_config",
+                resources=str(target),
+                error=(
+                    f"non-default data home {foreign} refused write to shared agent "
+                    f"home (own specs belong in {isolated_agents_dir(foreign)})"
+                ),
+            )
+        return kiro_agents_dir_path() / AGENT_FILENAME
 
+    own_home = _valid_override_home()  # named in the refusal below; None on the default home
     # Ephemerality must be POSITIVE evidence that this instance is throwaway.
-    # "Has an isolated KIROCREW_HOME" is NOT that: a CI test gateway and a user
-    # who permanently relocated their data home both look identical under that
-    # rule, and neither should be stopped from writing its own specs (an earlier
-    # revision used it and broke the offline E2E gateway, which boots on a tmp data
-    # home and then found no agents). A pod needs no arm here: ``build_pod_env``
+    # A non-default KIROCREW_HOME is refused ABOVE on ownership grounds, not
+    # here on ephemerality: a CI test gateway and a user who permanently
+    # relocated their data home are not throwaway, and both are served by owning
+    # ``isolated_agents_dir`` rather than by being handed the shared file (the
+    # offline E2E gateway boots on a tmp data home, sets KIRO_HOME, and takes the
+    # private-target exemption; reading the override as ephemerality would leave
+    # it with no agents at all). A pod needs no arm here either: ``build_pod_env``
     # gives it its own ``KIRO_HOME``, so its target is its own dedicated directory
-    # and the private-target exemption above already lets it through.
+    # and that same exemption lets it through.
     #
     # A checkout under the system temp directory is the third positive signal:
     # like a linked worktree and a pod, its teardown is a matter of WHEN, not
@@ -3657,9 +3804,9 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
             "(checkout %s, data home %s): it would repoint the real install's MCP "
             "servers at this instance's venv and data home, and break them outright "
             "when it is torn down. This instance will use the existing specs instead. "
-            "Deliberately no remedy is suggested here: redirecting the agent home via "
-            "KIRO_HOME also relocates kiro-cli's session storage, which Kiro Crew still "
-            "reads from the host path -- see kiro_home()'s scope caveat.",
+            "To give it specs of its own, run it on its own data home "
+            "(KIROCREW_HOME=<dir>): the kirocrew CLI then exports "
+            "KIRO_HOME=<dir>/kiro and writes them there.",
             target,
             Path(__file__).resolve().parents[2],
             own_home or "default",

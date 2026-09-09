@@ -399,6 +399,22 @@ means "nothing to preserve", never "abort the refresh".
 Writer: `apps/bridges.py::_register_agents`, `_preserve_user_agent_edits`,
 `_read_agent_config`.
 
+**Ownership of the target directory.** The copies land in `kiro_agents_dir()`,
+the same directory `agent.rebuild_agent_config` owns or declines. Before
+materialising, pruning (`_prune_stale_app_resources`) or removing
+(`_deregister_agents`) app specs, bridges asks
+`agent.foreign_home_targets_shared_agents_dir(agents_dir)`; when it names a home,
+the write is skipped with one WARNING and `_register_agents` returns `[]`. It
+names one only when this process runs on a non-default `KIROCREW_HOME` AND the
+target is the machine-wide shared directory rather than the instance's own
+`isolated_agents_dir` — the `KIRO_HOME=~/.kiro` read-only opt-out, or a caller
+that bypassed the CLI prologue's `KIRO_HOME` export (see
+[config](config.md#kiro-home-of-a-non-default-data-home)). Two instances with
+different app sets would otherwise prune and re-register each other's specs, and
+uninstalling an app on one would delete the other's copies. A worktree or pod on
+the default home is not affected: the gate is the ownership arm only, not the
+ephemerality arms `rebuild_agent_config` also applies.
+
 ## 4. A generated prompt is pinned through the app's policy
 
 An agent template packaged inside an app can only name paths that exist at

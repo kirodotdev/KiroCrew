@@ -52,7 +52,11 @@ from kiro_crew.config.paths import (
     LEGACY_CONFIG_DIR_NAME,
     _valid_override_home,
     data_home,
+    default_kiro_home,
+    foreign_data_home,
+    isolated_kiro_home,
     kiro_agents_dir,
+    kiro_home,
     project_agents_dir,
 )
 from kiro_crew.config.superseded_defaults import render_doctor_section
@@ -72,6 +76,10 @@ from kiro_crew.dashboard.origin import (
 from kiro_crew.deny_guidance import credential_vendor_server_ids
 from kiro_crew.discord import install_url, intent_probe
 from kiro_crew.doctor_deadpath import doctor_dead_paths
+from kiro_crew.doctor_spec_home import _expected_forms as _spec_home_expected_forms
+from kiro_crew.doctor_spec_home import _lexical as _spec_home_lexical
+from kiro_crew.doctor_spec_home import _pinned_home as _spec_home_pinned
+from kiro_crew.doctor_spec_home import doctor_spec_home_drift
 from kiro_crew.embeddings import (
     _LIB_PATH_ENV,
     _load_llama_class,
@@ -989,6 +997,139 @@ def _legacy_venv_entries(home: Path) -> list[str]:
         return []
 
 
+def _doctor_kiro_home(data_home: Path) -> None:
+    """Report which kiro-cli home this instance reads, and what it thereby skips.
+
+    Under the default data home the kiro home is the machine-wide ``~/.kiro`` and
+    there is nothing to say. Under a non-default one the line is always printed --
+    including the ``KIRO_HOME=~/.kiro`` opt-out, labelled as the shared host home
+    this instance reads and never writes. Otherwise the CLI prologue adopts
+    ``KIRO_HOME=<data home>/kiro`` (``config.paths.adopt_isolated_kiro_home``),
+    so this instance's kiro-cli reads agents, sessions, steering, skills and
+    settings from there and NOT from the host ``~/.kiro``. For an install that
+    relocated its data home permanently, the first start after the adoption is
+    a silent move: pre-existing transcripts, steering and skills under the host
+    home stop applying. The prologue logs that once; this is the place an
+    operator actually looks, so it is repeated here for as long as the host
+    home still holds content this instance does not read. Informational only --
+    the operator may well want the isolation -- so it appends nothing to
+    doctor's issues. Read-only: one ``is_dir()``/``any()`` probe per host subtree
+    (four), plus one hardened read of the host ``kirocrew.json`` for the
+    orphan check below; no writes.
+
+    The orphan check: an install that ran on this non-default home BEFORE it
+    owned its own kiro home wrote the machine-wide ``~/.kiro/agents/kirocrew.json``
+    with THIS data home pinned into its managed servers. Nothing on this
+    instance rewrites that file any more (its own specs live under the isolated
+    home), so the pin outlives the switch and the DEFAULT instance's sessions
+    keep verifying against this home until a default-home rebuild replaces it.
+    That is the poisoning this whole mechanism exists to end, so it is named
+    here with the one command that clears it -- on the other instance, which is
+    why it is a ⚠️ line and not an ``issues`` entry for this one.
+    """
+    kiro = kiro_home()
+    default_kiro = default_kiro_home()
+    try:
+        isolated = kiro.resolve() == isolated_kiro_home(data_home).resolve()
+        shared = kiro.resolve() == default_kiro.resolve()
+    except (OSError, RuntimeError):  # pragma: no cover - defensive
+        isolated = shared = False
+    foreign = foreign_data_home()
+    if shared:
+        if foreign is None:
+            return
+        # The documented opt-out: a non-default data home reading the host's
+        # specs on purpose. Named as such, because "reads the default
+        # instance's specs, never writes them" is the whole contract here.
+        print(
+            f"  kiro home:   ✅ {kiro} (shared host home via KIRO_HOME; this instance "
+            "reads the default instance's specs and never writes them)"
+        )
+        return
+    label = "isolated" if isolated else "KIRO_HOME override"
+    print(f"  kiro home:   ✅ {kiro} ({label}; kiro-cli reads agents/sessions here)")
+    if not isolated or foreign is None:
+        return
+    _doctor_orphaned_shared_pin(default_kiro / "agents" / AGENT_FILENAME, data_home)
+    left_behind: list[str] = []
+    for sub in ("sessions", "steering", "skills", "prompts"):
+        try:
+            if (default_kiro / sub).is_dir() and any((default_kiro / sub).iterdir()):
+                left_behind.append(sub)
+        except OSError:
+            # An unreadable or vanished subtree is not evidence either way; a
+            # read-only diagnostic must not abort on it.
+            continue
+    if not left_behind:
+        return
+    print(
+        f"  ⏹ host home: {default_kiro} still holds {', '.join(left_behind)} that this "
+        f"instance does not read."
+    )
+    print(
+        "               Intended for a scratch/dev instance. If this install relocated its "
+        "data home on purpose and"
+    )
+    print(
+        "               wants kiro-cli to keep reading them, export KIRO_HOME="
+        f"{default_kiro} before starting the gateway"
+    )
+    print(
+        "               (its Kiro Crew MCP servers then follow the default instance's "
+        "specs; a non-default data home never writes the shared ones)."
+    )
+
+
+def _doctor_orphaned_shared_pin(shared_spec: Path, data_home: Path) -> None:
+    """Name a machine-wide ``kirocrew.json`` that still pins THIS non-default home.
+
+    Read through the hardened spec reader (same gate as every other spec read
+    here); a missing, unreadable or foreign-shaped file is silence, not a
+    finding. Only a pin that lexically names this data home is reported -- that
+    is the leftover of this install writing the shared specs before it owned an
+    isolated kiro home, and it is what breaks the DEFAULT instance's sessions.
+    """
+    if not shared_spec.is_file():
+        return
+    data = _read_agent_spec(shared_spec, operation="doctor", source="cli")
+    if not data:
+        return
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+    ours = _spec_home_expected_forms(data_home)
+    # Only the servers ``setup --agent-only`` rewrites count: a user-added entry
+    # inside the owned file is preserved by the rebuild, so naming it under this
+    # remedy would promise a fix the command does not deliver.
+    stale = sorted(
+        str(name)
+        for name, entry in servers.items()
+        if isinstance(name, str)
+        and name in _MANAGED_MCPS
+        and isinstance(entry, dict)
+        and (pin := _spec_home_pinned(entry))
+        and _spec_home_lexical(pin) in ours
+    )
+    if not stale:
+        return
+    print(
+        f"  ⚠ shared spec: {shared_spec} still pins THIS data home in "
+        f"{', '.join(_safe_display(s) for s in stale)}."
+    )
+    print(
+        "               It was written before this instance owned its own kiro home, "
+        "and nothing here rewrites"
+    )
+    print(
+        "               it now -- so the DEFAULT instance's sessions verify their "
+        "identity against this home"
+    )
+    print(
+        "               and fail. From the default home run `kirocrew setup "
+        "--agent-only` (or restart that gateway)."
+    )
+
+
 def _doctor_data_home() -> None:
     """Report the data home and any leftover top-level ``~/.kirocrew`` directory.
 
@@ -1001,6 +1142,7 @@ def _doctor_data_home() -> None:
     print("\nData Home")
     home = config_dir()
     print(f"  location:    ✅ {home}")
+    _doctor_kiro_home(home)
 
     legacy = Path.home() / LEGACY_CONFIG_DIR_NAME
     if not legacy.is_dir():
@@ -3566,6 +3708,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_cron_script_sources(issues)
     _doctor_path_launcher()
     _doctor_trust_root()
+    # Right after the trust root, deliberately: a healthy trust root here plus
+    # "signed pid mapping did not verify" in every session is the shape this
+    # check exists for, and it names the cause — a shared spec pinning a
+    # different KIROCREW_HOME than the one doctor (and the gateway) run on.
+    doctor_spec_home_drift(issues, agents_dir=_agents_dir())
     _doctor_strict_identity(cfg)
     _doctor_mcp_gateway_daemon(issues)
     _doctor_unresolved_mcp_refs()

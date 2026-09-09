@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import IO, Any, Callable, Iterator, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.config.paths import isolated_kiro_home
 from kiro_crew.kiro_prerequisite import FAKE_ACP_TEST_MODE_ENV
 from kiro_crew.testing import fake_acp_backend
 
@@ -956,7 +957,7 @@ def spawn_feature_gateway(
             # private-target exemption already lets this instance own. The whole tree
             # is removed with ``home`` on teardown, so the gateway writes only its own
             # specs and leaves the shared install untouched.
-            "KIRO_HOME": str(home / "kiro"),
+            "KIRO_HOME": str(isolated_kiro_home(home)),
             # Marks this gateway as a test rig. It grants no launch privilege —
             # the packaged fake backend is exec'd by the ordinary in-place path
             # like any other runnable executable.

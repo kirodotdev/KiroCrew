@@ -1591,6 +1591,10 @@ class SessionManager:
         self._compaction_state = CompactionState()
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         self._session_map = SessionMap()
+        # Before any get() or prune() can read a mapped transcript as gone: an
+        # install that just acquired its own kiro home still has its transcripts
+        # under the host ``~/.kiro``, and this moves them where the map now looks.
+        self._session_map.reclaim_adopted_transcripts()
 
         self._pool = WarmSessionPool(
             cast(Any, self),

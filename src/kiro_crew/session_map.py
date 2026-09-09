@@ -12,6 +12,7 @@ import functools
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
 from collections.abc import Callable, Iterator
@@ -20,7 +21,13 @@ from pathlib import Path
 from typing import ParamSpec, TypeVar
 
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
-from kiro_crew.config.paths import config_dir, kiro_sessions_dir
+from kiro_crew.config.paths import (
+    config_dir,
+    default_kiro_home,
+    foreign_data_home,
+    isolated_kiro_home,
+    kiro_sessions_dir,
+)
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
     UNBIND_REASON_ENTRY_DELETED,
@@ -1003,6 +1010,87 @@ class SessionMap:
         its own so the audit says which one happened.
         """
         self._remove_entry(canonical_key(key), reason=reason)
+
+    @_guarded
+    def reclaim_adopted_transcripts(self) -> int:
+        """Move this map's transcripts from the host ``~/.kiro`` into an adopted kiro home.
+
+        An install that already ran on a non-default ``KIROCREW_HOME`` wrote its
+        kiro-cli transcripts under the machine-wide ``~/.kiro/sessions/cli``; once
+        the CLI prologue gives that install its own kiro home
+        (``config.paths.adopt_isolated_kiro_home``), ``kiro_sessions_dir()`` names
+        a directory nothing has written yet. Left there, the very next
+        :meth:`prune` would read every mapped transcript as gone and drop the
+        mapping, while the files sat one directory over. So, before the first
+        prune under the new home, each entry whose transcript exists in the host
+        directory and not in the adopted one is moved -- ``<sid>.json`` and the
+        ``<sid>.jsonl`` journal beside it -- and resume keeps working.
+
+        Only THIS instance's files move: the host directory is shared with the
+        default instance, and the map is the authoritative list of which sessions
+        are ours. Nothing is copied, deleted or rewritten beyond that rename, and
+        nothing runs unless the kiro home in force IS the adopted one -- the
+        ``KIRO_HOME=~/.kiro`` opt-out, a pod, the CI harness and every default-home
+        install return before touching the host directory. Idempotent and
+        resumable: each file is moved only while it is still on the host side and
+        absent from the target, the journal before the transcript, so a move that
+        fails halfway is retried on the next start instead of being read as
+        done. Returns the number of sessions with at least one file moved; a
+        failure to move one file is logged and skipped, never fatal, because a
+        startup path must not die on a permissions quirk in a directory it does
+        not own.
+        """
+        own_home = foreign_data_home()
+        if own_home is None:
+            return 0
+        # Lexical gate: the prologue exports exactly ``str(isolated_kiro_home(own))``,
+        # so anything else (opt-out, pod, harness, unset) is not an adoption --
+        # decided without a stat, since this runs on every default-home and
+        # test-suite construction of the map too.
+        if os.environ.get("KIRO_HOME", "") != str(isolated_kiro_home(own_home)):
+            return 0
+        target = _kiro_sessions_dir()
+        source = default_kiro_home() / "sessions" / "cli"
+        try:
+            if not source.is_dir() or source.resolve() == target.resolve():
+                return 0
+        except (OSError, RuntimeError):
+            return 0
+        moved = 0
+        for entry in self._data.values():
+            if (entry.get("provider") or PROVIDER_LABEL_DEFAULT) != PROVIDER_LABEL_DEFAULT:
+                continue
+            sid = entry.get("sid")
+            # A sid is a filename here; the map is ours, but a value with a
+            # separator in it would otherwise walk out of the directory.
+            if not sid or not isinstance(sid, str) or Path(sid).name != sid:
+                continue
+            # Per file, journal first: the transcript is what ``prune`` and
+            # ``get`` look for, so it lands last, and a move that fails halfway
+            # leaves the entry looking unmigrated rather than done -- the next
+            # start retries exactly the file that is still on the host side.
+            moved_here = False
+            for suffix in (".jsonl", ".json"):
+                src = source / f"{sid}{suffix}"
+                dst = target / f"{sid}{suffix}"
+                if not src.is_file() or dst.exists():
+                    continue
+                try:
+                    target.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(src), str(dst))
+                    moved_here = True
+                except OSError as exc:
+                    logger.warning("Could not move %s into %s: %s", src.name, target, exc)
+            if moved_here:
+                moved += 1
+        if moved:
+            logger.info(
+                "Moved %d session transcript(s) from %s into this instance's kiro home %s",
+                moved,
+                source,
+                target,
+            )
+        return moved
 
     @_guarded
     def prune(self) -> int:

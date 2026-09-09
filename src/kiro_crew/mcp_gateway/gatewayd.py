@@ -4496,9 +4496,13 @@ def main() -> None:
     # watchdog (no-blocking-call-on-event-loop). Idempotent + process-cached, so
     # every later config_dir() is a cheap lookup; a fresh install with no legacy
     # home just creates the directory.
-    from kiro_crew.config.paths import ensure_data_home
+    from kiro_crew.config.paths import adopt_isolated_kiro_home, ensure_data_home
 
     ensure_data_home()
+    # Same prologue step as cli.main: the daemon normally inherits KIRO_HOME
+    # from the gateway that spawned it, but a hand-started daemon on a
+    # non-default data home must resolve the same kiro home its gateway does.
+    adopt_isolated_kiro_home()
     try:
         rc = asyncio.run(_amain())
     except KeyboardInterrupt:
