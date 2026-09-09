@@ -1263,6 +1263,26 @@ export default [
     },
   },
 
+  // DURABLE SERVER-MATCHED VALUE ONLY, same category as `wireValues.ts` above: the
+  // one string in this module is a folder NAME the server stores and this code then
+  // finds again by that name on a later run. Translating it forks a second folder the
+  // moment the reader switches language and strands every session already filed under
+  // the old name, so the value has to be language-independent for the same reason a
+  // protocol value does.
+  //
+  // Scoped to this one file, and the module's own header says to keep it copy-free:
+  // a shape rule cannot express "the identifier a folder is looked up by, but only in
+  // this module", and the alternative tried first — assembling the name at runtime
+  // from lowercase tokens so the scanner could not see it — was worse. That opens a
+  // third suppression channel this config does not count, which is exactly what
+  // centralizing suppression here exists to prevent.
+  {
+    files: ['src/apps/command-bar/sessionFolder.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // PROTOCOL KEY NAMES ONLY, same category as `wireValues.ts` above: this module's
   // entire contents are the two spellings of kiro-cli's reserved tool-purpose
   // ARGUMENT NAME (`__tool_use_purpose` and the camelCased echo) plus the regex that

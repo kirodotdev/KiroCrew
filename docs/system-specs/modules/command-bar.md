@@ -257,6 +257,61 @@ already looking at the field. A stronger per-app grant is a reasonable future
 addition, not a substitute — a grant given once at install is not read again at the
 moment a bulk write actually fires.
 
+### Where the session it opened goes
+
+Every contributed row opens a NEW session, so a reader who uses two of them a few
+times a day accumulates generated sessions at the top level of the sidebar, mixed
+together and pushing their own chats down. So the host FILES each one under
+`Command Bar Sessions / <the row's title>`, creating whichever folder does not exist
+yet. One parent says where all of them came from; one leaf per row keeps two commands'
+runs apart without the reader sorting anything.
+
+The folders are matched BY NAME on every run rather than remembered by id, because the
+launcher holds no per-command state to remember one in. The consequence is deliberate:
+renaming or moving a leaf makes it stop matching, so the next run creates a fresh one —
+visible and undoable, where a remembered id would silently refile into a folder the
+reader had moved on from.
+
+Three rules keep this cosmetic rather than load-bearing:
+
+- **Filed last, and never awaited.** The prompt is already seeded and the bar already
+  closed, so a folder API that is slow, capped, rate-limited or refused costs this
+  session its place in the sidebar and nothing else. Every failure is swallowed.
+- **The folder list is read from the sidebar's cache, not fetched.** `GET
+  /api/chat/folders` walks the on-disk session list synchronously to count archived
+  sessions per folder, so fetching it per run would pay for a filesystem scan — scaling
+  with the reader's history — to learn what the `['chat-folders']` cache already holds.
+  The launcher subscribes to that cache the same way it subscribes to the app list; a
+  cold cache falls back to one fetch.
+- **Contributed rows only.** The Ask row uses the same seeding path but carries a
+  sentence the reader wrote; it belongs wherever they are working, not under a
+  command's name.
+- **Nothing filed for a seed that was abandoned.** A bar dismissed mid-create sends no
+  prompt, and a folder named after a command that did not run is worse than an unfiled
+  session.
+
+The parent name is not localized, which is a choice and not an omission: it is written
+to the server and matched by that name later, so a translated copy would fork a second
+folder the moment the reader switches language and strand every session already filed.
+That makes it a durable server-matched value rather than UI copy, so it is written as a
+literal and the module carries a scoped `i18next/no-literal-string: off` block in
+`eslint.i18n.config.js`, beside `wireValues.ts`'s for the same category — suppression
+stays where this repository counts it. Assembling the name at runtime to keep the
+scanner from seeing it was tried first and is worse: it opens a third suppression
+channel nothing counts.
+
+The leaf name is clamped to the 100 characters the server stores, because a manifest
+title may be 120. Without the clamp the create is silently shortened, the next run's
+lookup for the full title misses, and every run makes another folder — the one failure
+mode here that compounds rather than staying cosmetic. When two rows currently offered
+carry the SAME title, the contributing app's label is appended to both, because a leaf
+keyed on the title alone would interleave two commands the reader cannot tell apart —
+the very thing this filing prevents. The label is appended only on a collision: always
+would put a redundant parenthesis on every folder for a case almost nobody has. Two
+commands fired at the same instant can each find the parent missing and create it twice;
+the loser's folder is an empty duplicate, which is cheaper than putting a lock in front
+of the reader's session appearing at all.
+
 ## Switching it off, and back on
 
 Both directions have to work in the UI, and one of them nearly did not. The Apps page
