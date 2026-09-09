@@ -269,7 +269,10 @@ def test_main_boots_platform_before_binding_server(monkeypatch) -> None:
 
     monkeypatch.setattr(server, "boot_platform", _boot)
     monkeypatch.setattr(server.KiroCrewConfig, "load", classmethod(lambda cls: SimpleNamespace()))
-    monkeypatch.setattr(server, "ThreadingHTTPServer", _FakeServer)
+    # `main()` constructs the module's `_Server` subclass, not the imported
+    # `ThreadingHTTPServer` name; patching the latter would bind a real socket
+    # on PORT and block in serve_forever() for the rest of the run.
+    monkeypatch.setattr(server, "_Server", _FakeServer)
 
     assert server.main() is None
     assert calls == ["boot", "bind", "serve"]
@@ -287,7 +290,7 @@ def test_main_fails_closed_when_platform_cannot_compose(monkeypatch) -> None:
     monkeypatch.setattr(server, "boot_platform", _boom)
     monkeypatch.setattr(
         server,
-        "ThreadingHTTPServer",
+        "_Server",
         lambda *args, **kwargs: served.append("bind"),
     )
 
