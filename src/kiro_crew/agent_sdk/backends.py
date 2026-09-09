@@ -114,6 +114,10 @@ with no row here.
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
+   * - ``ACP_BACKENDS_SIDE_READONLY``
+     - pre-session registry query (whether a side-chat turn may execute
+       read-only tools under the derived ``<agent>--readonly`` spec; asked
+       about the configured backend id before the side session is created)
 
 The two non-set tables ``SessionCapabilities`` also translates are
 :func:`model_registry_namespace` (the model-id namespace) and
@@ -652,6 +656,20 @@ ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
 # reads no agent file at all (``ACP_BACKENDS_SESSION_MCP_ARRAY``), and codex-acp
 # has not demonstrated the capability — neither inherits it.
 ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
+
+# Backends on which a Side Chat turn may EXECUTE read-only tools under
+# ``ToolApprovalPolicy.READ_ONLY``. The allowance rests on a kiro-cli agent-spec
+# mechanism: the side session is bound to a derived ``<agent>--readonly`` spec
+# (``dashboard/side_readonly_spec``) whose emptied grants make every tool call
+# raise a permission request the host gate judges. Another harness has its own
+# pre-approval surface — claude-agent-acp's ``permissions.allow`` /
+# ``bypassPermissions``, KAS ``permissions`` rules read from its own store — that
+# neither the derived spec nor the gate can see, so a call it pre-approves would
+# run with no READ_ONLY decision and no SEL row. Off this set the side turn runs
+# ``REJECT_ALL``, the pre-allowance posture, and its footer says tools are
+# unavailable there. A harness joins by demonstrating that every tool call it
+# serves reaches ``session/request_permission`` under the derived spec.
+ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli

@@ -3583,7 +3583,9 @@
       },
       "sideChat": {
         "ask_a_side_question_2": "Ask a side question…",
-        "context_only_tools_unavailable": "Context only · Tools and MCPs are unavailable here. Use the main chat to take action.",
+        "context_only_tools_unavailable": "Read-only · Lookups work here, but changes don't. Use the main chat to take action.",
+        "context_only_tools_unavailable_backend": "Context only · Tools are unavailable here on this agent backend. Use the main chat to take action.",
+        "context_only_config_unavailable": "Couldn't load the agent configuration, so Side Chat runs without tools. Use the main chat to take action.",
         "question_too_long": "Question too long — reduce to under ~{{max}} characters (yours: {{current}})",
         "queue_cancel_failed": "Could not cancel that queued question",
         "queue_edit_failed": "Could not update that queued question",

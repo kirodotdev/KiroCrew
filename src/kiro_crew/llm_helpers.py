@@ -1129,11 +1129,42 @@ def _first_tool_input_denial(
 
 
 class ToolApprovalPolicy(Enum):
-    """How to handle tool permission requests during streaming."""
+    """How to handle tool permission requests during streaming.
+
+    ``READ_ONLY`` is the dashboard "Reads" approval mode's semantics ported to
+    surfaces that have no interactive approver: provably read-only calls are
+    auto-approved through the SAME hook gate the Reads mode uses (deny floor
+    first, then the read-only classifier), and every call that is not provably
+    read-only is rejected — where the Reads mode would ask, this policy
+    refuses. Requires ``hooks``; without a gate to classify with it fails
+    closed and rejects everything, exactly like ``REJECT_ALL``.
+
+    Only the classifier's own verdict approves under ``READ_ONLY``. The hook
+    gate is asked ``classifier_only``, so its GRANT tiers — the operator's
+    ``auto_approve_tools`` globs and the app-own-server rule, which vouch for
+    the caller and say nothing about what the call does — are skipped rather
+    than honoured, and an auto-approve is then trusted only when the result
+    carries the classifier's ``read_only`` tag. A grant that shadows a
+    read-only call therefore still gets the read approved (by the classifier),
+    and a grant that shadows a write approves nothing.
+
+    With no approver to catch an over-approval, ``classifier_only`` also
+    restricts proof to HOST-TRUSTED facts: the recovered shell command judged
+    by ``is_read_only_bash``, or a built-in the host knows to be read-only
+    (``hooks._HOST_READ_ONLY_BUILTIN_TOOLS``) named by the non-model-authored
+    ``_meta.kiro.toolName`` with no MCP server behind it, and only when the
+    event carries ``mcp_identity_trusted`` (the pair came from the
+    provenance-verified caches, not an inline payload). The agent-influenced
+    ACP ``kind`` and the model-authored title may narrow but never prove, so a
+    mutating tool labelled ``kind="read"``, a read-looking title, and any
+    MCP-served tool (no host-trusted read-only marker exists for one) are
+    rejected here where the interactive Reads mode would still ask.
+    """
 
     AUTO_APPROVE = "auto_approve"
     REJECT_ALL = "reject_all"
     HOOK_BASED = "hook_based"
+    READ_ONLY = "read_only"
 
 
 # ── Stream and Collect ──
@@ -1761,7 +1792,7 @@ async def stream_and_collect(
         provider: The LLM provider to stream through.
         message: The prompt to send.
         approval_policy: How to handle tool permission requests.
-        hooks: HookManager for HOOK_BASED approval policy.
+        hooks: HookManager for the HOOK_BASED and READ_ONLY approval policies.
         on_chunk: Optional callback invoked with each text chunk (for progress).
         on_tool_approval: Optional async callback for interactive approval.
         on_steer_consumed: Optional callback invoked with the backend's
@@ -1801,7 +1832,8 @@ async def stream_and_collect(
         app: Owning app name, forwarded to the gate so the app's governance
             PROFILE is resolved — not just the enterprise ceiling.
 
-            All three matter for ``HOOK_BASED`` callers specifically. The gate
+            All three matter for ``HOOK_BASED`` and ``READ_ONLY`` callers
+            specifically. The gate
             resolves ``ceiling ∩ profile``, and it can only look up a profile it
             has been told the name of; with all three empty it applied the
             ceiling alone, so an app profile narrowing (say) ``filesystem.write``
@@ -2431,7 +2463,15 @@ async def _resolve_permission(
         )
         return False
 
-    if policy == ToolApprovalPolicy.HOOK_BASED and hooks:
+    if policy == ToolApprovalPolicy.READ_ONLY and hooks is None:
+        # Fail closed: READ_ONLY's classifier IS the hook gate. Without one
+        # there is no way to prove a call read-only, so the policy degrades to
+        # REJECT_ALL rather than to the caller-less auto-approve below.
+        await provider.reject_tool(event.request_id)
+        _log("rejected", metadata={"reason": "read_only_policy_no_hooks"})
+        return False
+
+    if policy in (ToolApprovalPolicy.HOOK_BASED, ToolApprovalPolicy.READ_ONLY) and hooks:
         tool_result = hooks.on_tool_call(
             event.title,
             session_key=session_key,
@@ -2445,6 +2485,15 @@ async def _resolve_permission(
             mcp_server_name=event.mcp_server_name,
             mcp_tool_name=event.tool_name,
             mcp_identity_trusted=event.mcp_identity_trusted,
+            # READ_ONLY asks for the classifier's verdict alone: the gate skips
+            # its grant tiers (`auto_approve_tools`, app-own-server), which vouch
+            # for the caller rather than for the call's effect, so a grant that
+            # shadows a read still lets the classifier approve the read and a
+            # grant that shadows a write approves nothing. Under READ_ONLY the
+            # provenance flag above is also what lets a host-known built-in
+            # (``fs_read``) count as proven read-only. HOOK_BASED keeps the
+            # grants — its approver is the card they skip.
+            classifier_only=policy == ToolApprovalPolicy.READ_ONLY,
         )
         if tool_result.action == TOOL_DENY:
             await provider.reject_tool(event.request_id)
@@ -2463,6 +2512,20 @@ async def _resolve_permission(
             )
             return False
         if tool_result.action == TOOL_AUTO_APPROVE:
+            if policy == ToolApprovalPolicy.READ_ONLY and not tool_result.read_only:
+                # READ_ONLY honours the classifier's verdict alone, and the
+                # result says which route produced it: ``read_only`` is set only
+                # by the read-only classifier, never by a grant (the operator's
+                # `auto_approve_tools` globs, the app-own-server rule), which
+                # vouches for the caller and says nothing about the call's
+                # effect. The gate is asked classifier-only above, so an
+                # untagged auto-approve here comes from a gate that does not
+                # carry the tag — a double, a tier that omits it — and this
+                # surface has no approver to hand it to. Refuse, as policy
+                # state: the same call is allowed where a card exists.
+                await provider.reject_tool(event.request_id)
+                _log("rejected", metadata={"reason": "read_only_policy_unclassified"})
+                return False
             # The hook granted this by NAME (its `auto_approve_tools` globs, or
             # the read-only allowlist). Verify it UNCONDITIONALLY: this helper
             # serves unattended callers (cron / autonudge / heartbeat / Meetings
@@ -2498,6 +2561,19 @@ async def _resolve_permission(
                 await provider.reject_tool(event.request_id)
                 _log("rejected", metadata={"reason": "name_grant_headless_reject"})
                 return False
+
+    if policy == ToolApprovalPolicy.READ_ONLY:
+        # Everything the hook gate did not deny (rejected above) or positively
+        # classify as read-only (approved above, name-grant verified) lands
+        # here: `allow` results, and auto-approves whose name grant was
+        # withheld (a grant-shaped auto-approve is refused above, before the
+        # name check). Where the interactive Reads mode would fall through to the
+        # approval card, this policy refuses — reject is the fallback, and it
+        # runs BEFORE the interactive callback so a caller passing one cannot
+        # widen the policy.
+        await provider.reject_tool(event.request_id)
+        _log("rejected", metadata={"reason": "read_only_policy"})
+        return False
 
     # Interactive approval if callback provided
     if on_tool_approval:

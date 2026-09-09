@@ -3278,6 +3278,15 @@ def _infer_source(session_key: str) -> str:
         return "host"
     if session_key.startswith("dashboard:"):
         return "dashboard"
+    # The side chat (``dashboard/handlers/side.py``) runs its isolated LLM
+    # session under ``side:<slot>``. That IS a dashboard surface — the slot's
+    # own side panel — keyed apart from ``dashboard:<slot>`` only so the ACP
+    # session and its SEL rows stay separate from the parent slot's. Classifying
+    # it here keeps every consumer in step: a dashboard-bound governance profile
+    # (``governance_profiles.resolve_active_scope``) binds a side turn exactly as
+    # it binds the parent slot, and the ``slack`` fallback below never claims it.
+    if session_key.startswith("side:"):
+        return "dashboard"
     if session_key.startswith("cron:"):
         return "cron"
     if session_key.startswith("subagent:"):

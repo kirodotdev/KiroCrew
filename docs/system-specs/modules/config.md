@@ -734,6 +734,27 @@ Deliberately **single-valued**: it is the WRITE target as well as a read scope
 (`bridges._register_agents` and `agent.rebuild_agent_config` both write here), so it
 is never widened into a search path.
 
+A third writer is the side chat's derived read-only spec,
+`dashboard/side_readonly_spec.publish_readonly_spec`: `<agent>--readonly.json` (or
+`<agent>--readonly-<8 hex of the project path>.json` for a project-scope base, so two
+checkouts declaring the same agent never contend for one file), the active agent's
+spec with every backend-side grant emptied (`allowedTools: []`, no
+`mcpServers.*.autoApprove`, no `toolsSettings.*.allowed*`/`trusted*`/`auto*`,
+`includeMcpJson: false`, `autoAllowReadonly: false`, an empty KAS `permissions`) and
+the lifecycle `hooks` removed, regenerated from the base spec on every side turn and
+written atomically only when its content changed. It is a runtime resource, never
+hand-edited (an edit is overwritten on the next turn), and it lives HERE because
+kiro-cli discovers selectable agents from nowhere else: this directory and the
+session's `<project>/.kiro/agents`, at process start (`acp/runtime.py`). The project
+scope is the user's checkout, which Kiro Crew does not write into, so the user-level
+registry is the only publishable location. The derived spec declares its own `name`
+so no two files declare the base agent's name (`agent.agent_spec_path` refuses that
+ambiguity), and its `description` starts with the owner marker
+`Kiro Crew derived read-only spec`: the writer refuses — never overwrites — a file at
+the derived path without that marker, and refuses to publish at all when another
+spec (project scope, or a second user-scope file) declares the derived name, because
+kiro-cli would load that one instead. See `side.md`.
+
 ### `project_agents_dir(project_dir)` / `project_kiro_dir(project_dir)` (`config/paths.py`)
 The **project** scope, read-only: `<project>/.kiro/agents` (kiro-cli's own workspace
 agents dir) and `<project>/.kiro` (which holds Kiro Crew's older

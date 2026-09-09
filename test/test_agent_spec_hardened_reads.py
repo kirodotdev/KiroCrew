@@ -936,6 +936,13 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("mcp_server_rows", "dashboard"),
         ("mcp_stub_eligibility", "dashboard"),
     ],
+    # The side chat's derived read-only spec reads the base agent's spec in
+    # BOTH scopes, project first (kiro-cli resolves --agent there before the
+    # user level); one label for both so a refusal attributes to the side turn.
+    "kiro_crew/dashboard/side_readonly_spec.py": [
+        ("side_readonly_spec", "dashboard"),
+        ("side_readonly_spec", "dashboard"),
+    ],
     "kiro_crew/mcp_discovery.py": [("mcp_discovery_agent_config", "unknown")],
     "kiro_crew/member_essential_context.py": [
         ("member_essentials", "context"),

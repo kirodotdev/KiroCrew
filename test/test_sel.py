@@ -1152,6 +1152,12 @@ class TestInferSource:
     @pytest.mark.parametrize("key,expected", [
         ("dashboard:slot0", "dashboard"),
         ("dashboard:slot5", "dashboard"),
+        # The side chat's isolated session (`side:<slot>`) IS a dashboard
+        # surface: a dashboard-bound governance profile must bind it. Before
+        # this branch the key fell through to the "slack" fallback and a
+        # dashboard-scoped profile skipped every side turn.
+        ("side:slot0", "dashboard"),
+        ("side:dashboard:slot0", "dashboard"),
         ("cron:job123", "cron"),
         ("subagent:abc", "subagent"),
         ("taskrunner:spec1", "taskrunner"),

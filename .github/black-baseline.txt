@@ -196,7 +196,6 @@ src/kiro_crew/dashboard/handlers/mcp_custom.py
 src/kiro_crew/dashboard/handlers/memory.py
 src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/security.py
-src/kiro_crew/dashboard/handlers/side.py
 src/kiro_crew/dashboard/handlers/sso_login.py
 src/kiro_crew/dashboard/handlers/steering.py
 src/kiro_crew/dashboard/handlers/terminal.py
@@ -693,7 +692,6 @@ test/test_history_coverage.py
 test/test_history_locking_remediation.py
 test/test_history_race.py
 test/test_hook_matcher_modes.py
-test/test_hooks.py
 test/test_hooks_json_shared_file.py
 test/test_host_isolation_floor.py
 test/test_host_service_guard.py
@@ -749,7 +747,6 @@ test/test_lesson_ranking.py
 test/test_lifecycle_hooks.py
 test/test_link_dashboard.py
 test/test_live_target.py
-test/test_llm_helpers_tool_gate.py
 test/test_llm_pool.py
 test/test_local_gate.py
 test/test_loopback_proxy.py
@@ -973,7 +970,6 @@ test/test_session_usage.py
 test/test_sessions_health_cache.py
 test/test_settingref_schema_fixture.py
 test/test_ship_report_issues.py
-test/test_side.py
 test/test_side_context.py
 test/test_side_context_cov80.py
 test/test_side_steer_queue.py

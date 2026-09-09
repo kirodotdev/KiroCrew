@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MessageCircleQuestionMark, RotateCcw } from 'lucide-react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, queueEditBroadcastAt } from '../../store/chatSlice'
@@ -69,6 +69,20 @@ function relativeTime(iso: string): string | null {  const diff = Date.now() - n
 export default function SideChat({ slot }: { slot: string }) {
   const connected = useConnected()
   const dispatch = useAppDispatch()
+  // The footer describes what the backend enforces, so it follows the selected
+  // harness: the derived `<agent>--readonly` spec is a kiro-cli mechanism, and on
+  // any other backend the side turn runs with no tools at all (REJECT_ALL). The
+  // kiro backend is the empty string (`ACP_BACKEND_KIRO`), so an unloaded or
+  // absent value reads as kiro — the default the gateway itself falls back to.
+  const cfgQ = useQuery<{ agent?: { acp_backend?: string } }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
+  // Mirrors the backend: the read-only allowance is granted only when the
+  // loaded config names the kiro backend; a turn whose config cannot load runs
+  // with no tools, so the footer claims nothing until the config is loaded and
+  // says so when the load failed.
+  const readOnlyToolsAvailable = cfgQ.isSuccess && !(cfgQ.data?.agent?.acp_backend ?? '')
   const reduxSide = useAppSelector(s => s.chat.slotSide[slot])
   const parentTurnCount = useAppSelector(s =>
     s.chat.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
@@ -727,9 +741,24 @@ export default function SideChat({ slot }: { slot: string }) {
             promptOptimizer={false}
             connected={connected}
           />
-          <div role="note" className="px-1 pt-1.5 text-[11px] leading-4 text-muted">
-            {i18nT('pages.chat.sideChat.context_only_tools_unavailable')}
-          </div>
+          {cfgQ.isError ? (
+            // No agent hand-off: the composer above still works (the turn runs
+            // without tools), so there is nothing for the agent to take over.
+            <ErrorNotice
+              variant="inline"
+              className="px-1 pt-1.5 text-[11px] leading-4"
+              message={i18nT('pages.chat.sideChat.context_only_config_unavailable')}
+              testId="side-chat-config-error"
+            />
+          ) : cfgQ.isSuccess ? (
+            <div role="note" className="px-1 pt-1.5 text-[11px] leading-4 text-muted">
+              {i18nT(
+                readOnlyToolsAvailable
+                  ? 'pages.chat.sideChat.context_only_tools_unavailable'
+                  : 'pages.chat.sideChat.context_only_tools_unavailable_backend',
+              )}
+            </div>
+          ) : null}
         </SlotProvider>
       </div>
     </div>

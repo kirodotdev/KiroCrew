@@ -46,6 +46,30 @@ def test_surface_binding_resolves(profiles_dir):
     assert prof is not None and prof.name == "cron-tight"
 
 
+def test_side_key_binds_the_dashboard_surface(profiles_dir):
+    """A side-chat turn (``side:<slot>``) is a dashboard surface: the profile an
+    operator binds to ``surface: dashboard`` must govern it. Before
+    ``sel._infer_source`` learned the prefix, the key fell through to the
+    ``slack`` fallback, resolved the slack binding (none here) and the side turn
+    ran policy-only under a dashboard-scoped profile."""
+    _write(
+        profiles_dir,
+        "dashboard-tight",
+        {
+            "name": "dashboard-tight",
+            "bind": {"type": "surface", "id": "dashboard"},
+            "tools": {"mode": "allow", "allow": ["fs_read"]},
+        },
+    )
+    prof = gp.resolve_active_scope("side:slot1")
+    assert prof is not None and prof.name == "dashboard-tight"
+    # The same profile, by the same route, as the parent slot's own turns.
+    parent = gp.resolve_active_scope("dashboard:slot1")
+    assert parent is not None and parent.name == "dashboard-tight"
+    # And it FORBIDS what it does not allow, on the side key as on the parent's.
+    assert not resolve(None, prof, "tools", "web_fetch").permitted
+
+
 def test_app_binding_wins_over_surface(profiles_dir):
     _write(
         profiles_dir,
