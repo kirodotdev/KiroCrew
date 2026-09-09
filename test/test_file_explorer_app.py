@@ -921,7 +921,7 @@ def test_main_boots_platform_before_serving(monkeypatch):
 
     monkeypatch.setattr(server, "boot_platform", _fake_boot)
     monkeypatch.setattr(server.KiroCrewConfig, "load", classmethod(lambda cls: SimpleNamespace()))
-    monkeypatch.setattr(server, "ThreadingHTTPServer", _FakeServer)
+    monkeypatch.setattr(server, "_Server", _FakeServer)
 
     assert server.main() == 0
     assert calls[0] == "boot", "boot_platform must run before the server binds"
