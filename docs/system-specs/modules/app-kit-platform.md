@@ -658,6 +658,44 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
 3. Backend stop and resource deregistration (gateway-managed only).
 4. Dependency cleanup (see §11).
 5. File removal, preserving `data/` unless the caller asked to purge.
+6. Resume pointers dropped for every conversation the app owned, on success only.
+
+Step 6 exists because an app's slot key is often DETERMINISTIC — one slot per object
+it tracks, named after that object — and `session.py` resumes a slot's previous
+kiro-cli conversation by that key. Correct while the app is installed; wrong once it
+is gone, since a reinstall would open the same key and resume a transcript from the
+previous installation.
+
+Ownership is read from each conversation's own metadata line, which every save —
+including the save that closes a tab — stamps with `app`. It has to be a record that
+outlives the tab: a closed app slot is the mainline state before an uninstall, and
+both live `_ChatSlot._app` and `open_slots.json` are gone by then (the latter tracks
+tabs to REOPEN, while the resume pointer deliberately survives close). The scan is
+scoped to session-map keys that still hold a sid, so the index is exactly as wide as
+the problem.
+
+Who performs the write differs by path, because `SessionMap`'s rule 3 makes a
+throwaway instance READ-ONLY — two instances that loaded `_data` independently do not
+merge, each write being a whole-file rewrite of one snapshot:
+
+- **In-gateway** (the uninstall route) clears through the LIVE map via
+  `SessionManager.discard_conversation`, which also tears the live session down, so a
+  still-open tab of the uninstalled app cannot re-record a sid on its next turn. It
+  runs INSIDE `app_lifecycle_lock`, because a step of the uninstall released before
+  the clear lands lets a concurrent reinstall be serving the same slot key again —
+  and the pointer dropped is then the new installation's.
+- **Gateway-less** (`kirocrew app uninstall`) writes through its own `SessionMap`
+  while HOLDING `GatewayLock` across the scan and the write, and declines when it
+  cannot take it. Asking whether a gateway is up cannot establish this: one starting
+  between the question and the write lands in exactly the excluded case. Holding the
+  lock the gateway itself takes makes the exclusion real both ways. Cost: a gateway
+  starting inside that window is refused as by any other holder.
+
+Deliberately NOT part of step 3: deregistration also runs on **disable**, and App
+Store Sync is a disable/enable pair, so clearing there would discard every
+long-lived conversation's accumulated context on every sync. `clear_sid`, not
+`delete` — the entry keeps its Slack linkage and the dropped value is stashed as
+`discarded_sid`.
 
 The lock spans the script deliberately: the script may itself be destructive, so
 holding the lock across it stops a racing enable or update from starting a

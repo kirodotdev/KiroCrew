@@ -962,7 +962,7 @@ class SessionMap:
         return entry.get("provider", "")
 
     @_guarded
-    def clear_sid(self, key: str) -> None:
+    def clear_sid(self, key: str) -> bool:
         """Clear the stored session ID without removing the entry.
 
         Used on provider switch (the SID is incompatible with the new
@@ -970,12 +970,20 @@ class SessionMap:
         is stashed as ``discarded_sid`` so the operation is diagnosable and
         manually reversible — the native conversation still exists on disk;
         only the pointer to it is dropped.
+
+        Returns whether a pointer was actually dropped, so a caller clearing a
+        SET of keys can report how many conversations it orphaned without a
+        second lookup. ``get`` is the wrong probe for that: it gates on the
+        transcript file existing and prunes stale entries as a side effect, so
+        it answers "is this resumable" rather than "is a pointer recorded".
         """
         entry = self._data.get(canonical_key(key))
         if entry and entry.get("sid"):
             entry["discarded_sid"] = entry["sid"]
             entry["sid"] = ""
             self._save()
+            return True
+        return False
 
     def get_discarded_sid(self, key: str) -> str:
         """Return the last sid dropped by :meth:`clear_sid`, or ''."""
