@@ -28,7 +28,6 @@ src/kiro_crew/apps/builtins/auto_improvement/tests/test_github_profile.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_checks.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_profile_capture.py
-src/kiro_crew/apps/builtins/auto_improvement/tests/test_reconcile_and_publish.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_spine_scope_cov80.py
 src/kiro_crew/apps/builtins/auto_research/handlers.py

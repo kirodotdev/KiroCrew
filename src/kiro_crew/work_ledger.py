@@ -62,7 +62,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import file_lock
 from kiro_crew.session_ledger import _store_name, resolved_within
@@ -604,6 +604,17 @@ def _read_json_record(path: Path, *, strict: bool = False) -> Any | None:
     the same way, because a two-writer store's reader must not be what crashes when
     the other writer was interrupted mid-write. The ceiling is checked before the
     read so a hand-grown file cannot be pulled into memory first.
+
+    The bytes come from ``read_bytes_with_retry`` because a strict read here is
+    LOCK-FREE across writers: :func:`_refuse_if_worker_holds_open_item` reads the
+    prior item's file under the WORKER's binding lock, while that item's own
+    conductor may be replacing it under a different item lock. On Windows a read of
+    a file another handle holds open for write raises ``PermissionError``, so one
+    correct concurrent writer is enough to turn a strict read into a bare
+    ``OSError`` — which the dashboard route maps to a transient 503 "try again"
+    instead of the permanent already-bound refusal the guard exists to raise. The
+    retry closes that window. POSIX permits the read, and there a
+    ``PermissionError`` is a genuine access fault the helper re-raises at once.
     """
     try:
         if path.stat().st_size > MAX_RECORD_BYTES:
@@ -612,7 +623,7 @@ def _read_json_record(path: Path, *, strict: bool = False) -> Any | None:
                 path.name,
             )
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except FileNotFoundError:
         return None
     except OSError:

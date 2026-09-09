@@ -17,9 +17,12 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 import pytest
+from windows_sim import read_sharing_violation
 
+from kiro_crew import atomic_write, platform_compat
 from kiro_crew import work_ledger as wl
 
 CONDUCTOR = "chat-1-conductor"
@@ -1019,23 +1022,45 @@ def test_an_item_file_storing_a_different_id_reads_as_absent(caplog):
     assert wl.item_path(CONDUCTOR, b).read_bytes() == b_before
 
 
+def _fault_record_read(monkeypatch, *, name: str | None = None, parent: Path | None = None):
+    """Make a record read raise a Windows-style sharing violation, and undo it.
+
+    Records are read through ``atomic_write.read_bytes_with_retry``, so the fault
+    belongs on ``Path.read_bytes``. On POSIX that helper treats ``PermissionError``
+    as a genuine access fault and re-raises on the first attempt, so a test pinning
+    the fail-closed contract sees the error directly. Returns the callable that
+    restores the real reader.
+
+    Exactly one selector: ``name`` faults a single file, ``parent`` faults every
+    read inside one directory.
+    """
+    real_read_bytes = Path.read_bytes
+
+    def flaky(self, *a, **kw):
+        if (name is not None and self.name == name) or (
+            parent is not None and self.parent == parent
+        ):
+            raise PermissionError("sharing violation")
+        return real_read_bytes(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+
+    def restore() -> None:
+        monkeypatch.setattr(Path, "read_bytes", real_read_bytes)
+
+    return restore
+
+
 def test_the_bind_guard_fails_closed_on_a_transient_read_error(monkeypatch):
     """GPT round 5 F2: a prior item that is present but momentarily unreadable must
     NOT read as stale, or the worker is rebound and its open item stranded."""
     first = _new_item(title="first")
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
-    real_read_text = Path.read_text
-
-    def flaky(self, *a, **kw):
-        if self.name == f"{first}.json":
-            raise PermissionError("sharing violation")
-        return real_read_text(self, *a, **kw)
-
-    monkeypatch.setattr(Path, "read_text", flaky)
+    restore = _fault_record_read(monkeypatch, name=f"{first}.json")
     with pytest.raises(PermissionError):
         wl.apply_conductor_action(CONDUCTOR, "bind", item_id=second, worker_session_key=WORKER)
-    monkeypatch.setattr(Path, "read_text", real_read_text)
+    restore()
     assert wl.read_binding(WORKER) == (CONDUCTOR, first)
     second_item = wl.read_work_item(CONDUCTOR, second)
     assert second_item is not None and second_item.worker_session_key is None
@@ -1048,21 +1073,14 @@ def test_the_bind_guard_fails_closed_when_the_binding_itself_is_unreadable(monke
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
     binding_before = wl.binding_path(WORKER).read_bytes()
-    real_read_text = Path.read_text
-
-    def flaky(self, *a, **kw):
-        if self.parent == wl.bindings_dir():
-            raise PermissionError("sharing violation")
-        return real_read_text(self, *a, **kw)
-
-    monkeypatch.setattr(Path, "read_text", flaky)
+    restore = _fault_record_read(monkeypatch, parent=wl.bindings_dir())
     with pytest.raises(PermissionError):
         wl.apply_conductor_action(CONDUCTOR, "bind", item_id=second, worker_session_key=WORKER)
-    monkeypatch.setattr(Path, "read_text", real_read_text)
+    restore()
     assert wl.binding_path(WORKER).read_bytes() == binding_before
     assert wl.read_binding(WORKER) == (CONDUCTOR, first)
     # The lenient reader still answers 'unbound' for a worker tool.
-    monkeypatch.setattr(Path, "read_text", flaky)
+    _fault_record_read(monkeypatch, parent=wl.bindings_dir())
     assert wl.read_binding(WORKER) is None
 
 
@@ -1072,14 +1090,7 @@ def test_a_transient_read_error_does_not_reset_the_conductor_header(monkeypatch)
     wl.ensure_conductor(CONDUCTOR, goal="keep me", depth=1)
     wl.apply_conductor_action(CONDUCTOR, "goal", round_number=4)
     before = (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes()
-    real_read_text = Path.read_text
-
-    def flaky(self, *a, **kw):
-        if self.name == "conductor.json":
-            raise PermissionError("sharing violation")
-        return real_read_text(self, *a, **kw)
-
-    monkeypatch.setattr(Path, "read_text", flaky)
+    restore = _fault_record_read(monkeypatch, name="conductor.json")
     with pytest.raises(PermissionError):
         wl.ensure_conductor(CONDUCTOR, goal="other")
     # The action entry point's lenient pre-lock read answers ``no_ledger`` first;
@@ -1088,7 +1099,7 @@ def test_a_transient_read_error_does_not_reset_the_conductor_header(monkeypatch)
         wl.apply_conductor_action(CONDUCTOR, "goal", goal="other")
     with pytest.raises(PermissionError):
         wl._write_goal(CONDUCTOR, wl.ConductorRecord(slot_key=CONDUCTOR), "other", None)
-    monkeypatch.setattr(Path, "read_text", real_read_text)
+    restore()
     assert (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes() == before
     record = wl.read_conductor(CONDUCTOR)
     assert record is not None and (record.goal, record.round, record.depth) == ("keep me", 4, 1)
@@ -1139,14 +1150,7 @@ def test_an_interrupted_bind_can_be_retried(caplog):
 
 def test_lenient_reads_still_treat_a_transient_error_as_absent(monkeypatch):
     item_id = _new_item()
-    real_read_text = Path.read_text
-
-    def flaky(self, *a, **kw):
-        if self.name == f"{item_id}.json":
-            raise PermissionError("sharing violation")
-        return real_read_text(self, *a, **kw)
-
-    monkeypatch.setattr(Path, "read_text", flaky)
+    _fault_record_read(monkeypatch, name=f"{item_id}.json")
     assert wl.read_work_item(CONDUCTOR, item_id) is None
     assert wl.list_work_items(CONDUCTOR) == []
 
@@ -1513,6 +1517,51 @@ def test_the_guards_share_one_containment_helper(monkeypatch):
     with pytest.raises(wl.WorkLedgerError) as excinfo:
         wl.conductor_dir(CONDUCTOR)
     assert excinfo.value.code == wl.CODE_INVALID_VALUE
+
+
+def test_a_contended_item_read_still_refuses_with_already_bound():
+    """A losing bind must refuse PERMANENTLY, not fail as if the write broke.
+
+    ``_refuse_if_worker_holds_open_item`` reads the prior item under the WORKER's
+    binding lock, while that item's own conductor holds a DIFFERENT lock, so the
+    read is unserialized against a correct concurrent writer. On Windows that read
+    raises ``PermissionError``, which escapes the guard's ``WorkLedgerError`` arm and
+    reaches the dashboard route as a transient 503 "try again" -- telling a conductor
+    to retry a binding that is legitimately taken until the item closes.
+
+    ``read_sharing_violation`` reproduces the fault on any OS, so this drives the
+    exact path a Windows host takes. It does NOT prove the real OS behaviour, only
+    that the read survives one contended window and the refusal stays permanent.
+    """
+    holder, loser = "chat-hold-c", "chat-lose-c"
+    for key in (holder, loser):
+        wl.ensure_conductor(key, goal="g")
+    held_item = wl.apply_conductor_action(holder, "create", title="t", acceptance={})[
+        "item"
+    ].item_id
+    loser_item = wl.apply_conductor_action(loser, "create", title="t", acceptance={})[
+        "item"
+    ].item_id
+    wl.apply_conductor_action(holder, "bind", item_id=held_item, worker_session_key=WORKER)
+
+    with (
+        mock.patch.object(platform_compat, "IS_WINDOWS", True),
+        mock.patch.object(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0),
+        read_sharing_violation(match=f"{held_item}.json", times=1) as state,
+    ):
+        with pytest.raises(wl.WorkLedgerError) as caught:
+            wl.apply_conductor_action(loser, "bind", item_id=loser_item, worker_session_key=WORKER)
+
+    assert caught.value.code == wl.CODE_ALREADY_BOUND, (
+        f"a contended read of the prior item must still refuse with "
+        f"{wl.CODE_ALREADY_BOUND!r}, got {caught.value.code!r}: {caught.value}"
+    )
+    assert state["n"] >= 2, (
+        "the guard's read of the prior item must be retried after the simulated "
+        f"sharing violation; intercepted reads: {state['n']}"
+    )
+    # The loser's own item keeps no binding, and the holder's keeps the one it won.
+    assert wl.read_binding(WORKER) == (holder, held_item)
 
 
 def test_acquiring_a_lock_does_not_truncate_the_lock_file():

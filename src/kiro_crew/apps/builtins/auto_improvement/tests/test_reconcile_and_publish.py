@@ -15,6 +15,7 @@ network is involved.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -30,11 +31,23 @@ def registry(tmp_path: Path) -> W.PRWatcherRegistry:
     )
 
 
+def _pr_number(fp: str) -> int:
+    """A PR number derived from the fingerprint by a SALT-FREE digest.
+
+    ``hash()`` on a str is salted per interpreter process, so two fingerprints can
+    share one PR url in some processes and not others -- and a test that tells its
+    findings apart BY url then fails on that draw alone. Each xdist shard is its own
+    process drawing its own salt, so the failure looks like one shard being special.
+    sha256 gives the same mapping in every process.
+    """
+    return int(hashlib.sha256(fp.encode()).hexdigest()[:8], 16) % 9000 + 1
+
+
 def _finding(fp: str, *, status: str = "filed", pr: str | None = None) -> dict:
     return {
         "fp": fp,
         "status": status,
-        "pr": pr if pr is not None else f"https://github.com/o/r/pull/{abs(hash(fp)) % 9000 + 1}",
+        "pr": pr if pr is not None else f"https://github.com/o/r/pull/{_pr_number(fp)}",
         "kind": "bug",
         "target": "src/m.py::f",
     }
@@ -252,14 +265,14 @@ class TestOrphanCloneSweep:
         # The rmtree must not be dedented back out of the `with` block: everything from the lock
         # to the rmtree stays in one block, so no `return`-then-delete-outside pattern.
         between = src[lock_at:rmtree_at]
-        assert "reg._lock" not in between.replace("with reg._lock:", "", 1), (
-            "the lock is released and re-taken between the check and the delete"
-        )
+        assert "reg._lock" not in between.replace(
+            "with reg._lock:", "", 1
+        ), "the lock is released and re-taken between the check and the delete"
         # Must read thread state directly, not via the lock-taking helpers.
         assert "reg._threads.get(" in src, "does not inspect thread state directly under the lock"
-        assert "reg.is_alive(" not in src, (
-            "calls is_alive() inside the held non-reentrant lock — self-deadlock"
-        )
+        assert (
+            "reg.is_alive(" not in src
+        ), "calls is_alive() inside the held non-reentrant lock — self-deadlock"
 
     def test_a_watcher_registering_during_the_sweep_is_not_swept(self, tmp_path, monkeypatch):
         """Behavioral race check: a watcher whose registration lands WHILE the sweep holds the
