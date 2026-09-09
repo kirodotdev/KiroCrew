@@ -8206,17 +8206,16 @@ class TestSubstitutionCloserReadsCommandGrammar:
         the pattern's ``)`` closed the body early. bash was measured running the
         folded form as ``case``, so the body must survive it.
 
-        Only the BODY is asserted. The verdict on this spelling does NOT flip, and
-        not because of this walk: ``_self_tokens`` reads the backslash-newline as a
-        command SEPARATOR rather than folding it away, which severs the assignment
-        from the invocation so ``$T`` never resolves. That is a tokenizer-level
-        continuation bug, it sits upstream of this helper, and it is present on the
-        base branch with the identical token split -- measured zero delta, so this
-        change neither causes nor worsens it. Tracked separately.
+        The verdict is asserted too: ``_self_tokens`` folds the backslash-newline
+        away before tokenizing, so the assignment and the invocation stay in one
+        command, ``$T`` resolves, and the two halves together deny this spelling.
+        The tokenizer-level cases live in
+        ``TestSelfTokensFoldLineContinuations``.
         """
         command = f"T=$(ca\\\nse x in x) printf {self.VERB};; esac); {self.NAME} $T"
         (body,) = security._substitution_bodies(command)
         assert f"printf {self.VERB}" in body, body
+        assert security.is_denied(command) is not None
 
     def test_a_line_continuated_esac_still_ends_the_pattern_rule(self) -> None:
         """The same folding applies to ``esac``, so the rule disarms where bash does."""
@@ -8254,3 +8253,113 @@ class TestSubstitutionCloserReadsCommandGrammar:
         """Fail-CLOSED direction: a body that reaches too far is only over-scanned."""
         (body,) = security._substitution_bodies(f"$(case x in x) printf {self.VERB}")
         assert f"printf {self.VERB}" in body, body
+
+
+class TestSelfTokensFoldLineContinuations:
+    """``_self_tokens`` folds ``\\`` + newline away BEFORE tokenizing.
+
+    The shell removes a line continuation while READING, before it tokenizes
+    anything, so the two characters vanish. ``_self_tokens`` folds them the same
+    way, which keeps an assignment and the invocation it feeds in ONE command:
+    ``$T`` resolves and the ``kirocrew token`` argv pair forms, so the
+    self-protection check sees the command bash assembles and runs. A quote-blind
+    fold is safe here because this view only feeds the deny-direction
+    self-protection predicates.
+
+    Both directions are asserted: the continuation spelling matches its folded
+    twin, and a REAL unescaped newline -- which the shell keeps as a separator --
+    keeps its verdict on both the benign and the denied side.
+    """
+
+    VERB = "tok" + "en"
+    NAME = "kiro" + "crew"
+
+    def test_a_continuation_is_folded_not_read_as_a_separator(self) -> None:
+        """The token list carries no ``';'`` -- the pair vanishes, as in bash."""
+        command = f"T=$(ca\\\nse x in x) printf {self.VERB};; esac); {self.NAME} $T"
+        tokens = security._self_tokens(command.lower())
+        assert ";" not in tokens, tokens
+        assert tokens[0] == "t=$(case", tokens
+
+    def test_the_assignment_then_invoke_continuation_spelling_is_denied(self) -> None:
+        """The documented assignment-then-invoke shape denies once the fold keeps the pair together."""
+        command = f"T=$(ca\\\nse x in x) printf {self.VERB};; esac); {self.NAME} $T"
+        assert security.is_denied(command) is not None
+
+    def test_the_folded_spelling_is_denied_alongside_the_plain_one(self) -> None:
+        """The continuation spelling and its folded twin get the same verdict."""
+        folded = f"T=$(case x in x) printf {self.VERB};; esac); {self.NAME} $T"
+        plain = f"{self.NAME} {self.VERB}"
+        assert security.is_denied(folded) is not None
+        assert security.is_denied(plain) is not None
+
+    def test_a_continuation_inside_the_program_name_still_denies(self) -> None:
+        """``kiro\\`` + newline + ``crew token`` is one word to bash, so it denies."""
+        assert security.is_denied(f"{self.NAME[:4]}\\\n{self.NAME[4:]} {self.VERB}") is not None
+
+    def test_a_continuation_inside_a_module_name_reaches_the_floor(self) -> None:
+        """The cheap floor prefilter must fold before it decides it cannot fire.
+
+        ``_self_floor_can_fire`` strips removable quote and backslash glue before
+        looking for the product name. A ``\\`` + newline leaves a newline behind
+        once the backslash goes, which pushes the two halves of ``kiro_crew`` past
+        the hint's one-separator budget -- so the gate answered "provably cannot
+        fire" and the whole argv scan was skipped for a command bash mints from.
+        """
+        command = f"python -m {self.NAME[:4]}\\\n_crew {self.VERB}"
+        assert security.argv_floor._self_floor_can_fire(command) is True
+        assert security.is_denied(command) is not None
+
+    def test_an_even_backslash_run_is_not_a_continuation(self) -> None:
+        """``\\\\`` before a newline is an escaped literal backslash, so the line ENDS.
+
+        Only a LONE ``\\`` + newline continues a line. Bash runs a mint on the
+        second line of ``true\\\\`` + newline + ``python -m kirocrew token``; a
+        fold that joined any backslash-newline would mangle the ``python`` token
+        and hide the mint, so the fold must leave the even run intact and the
+        mint on its own line must still deny.
+        """
+        command = f"true\\\\\npython -m {self.NAME} {self.VERB}"
+        assert security.is_denied(command) is not None
+
+    def test_a_backslash_crlf_is_not_a_continuation(self) -> None:
+        """``\\`` + CRLF is NOT a continuation: bash escapes the CR and the LF ends the line.
+
+        Measured against bash: ``echo a\\`` + CRLF + ``echo b`` runs two
+        commands. So ``true\\`` + CRLF + ``python -m kirocrew token`` runs the
+        mint on the second line, and folding the ``\\`` + CRLF away would join
+        ``true`` and ``python`` and hide the mint from the argv check.
+        """
+        command = f"true\\\r\npython -m {self.NAME} {self.VERB}"
+        assert security.is_denied(command) is not None
+
+    def test_an_even_backslash_run_before_crlf_is_not_a_continuation(self) -> None:
+        """``\\\\`` + CRLF ends the line just as ``\\\\`` + LF does; the mint on line two denies."""
+        command = f"true\\\\\r\npython -m {self.NAME} {self.VERB}"
+        assert security.is_denied(command) is not None
+
+    def test_a_real_newline_still_separates_commands(self) -> None:
+        """An UNESCAPED newline is a separator; folding must not touch it.
+
+        Pins the TOKEN view, not just the verdict: a continuation folds two words
+        into one (``echo a\\<newline>b`` -> ``echo ab``) while a real newline keeps
+        them apart (``echo a<newline>b`` -> ``echo a b``), so the two spellings
+        must not tokenize alike. Asserting only ``is_denied`` here would pass even
+        if the fold ate real newlines too, since neither command is a mint.
+        """
+        assert security._self_tokens("echo a\\\nb") == ["echo", "ab"]
+        assert security._self_tokens("echo a\nb") == ["echo", "a", "b"]
+        assert security.is_denied("echo a\necho b") is None
+
+    def test_a_real_newline_mint_keeps_its_denial(self) -> None:
+        """A mint on its own line after a real newline stays denied."""
+        assert security.is_denied(f"echo a\n{self.NAME} {self.VERB}") is not None
+
+    def test_a_benign_continuation_stays_allowed(self) -> None:
+        """Folding shapes the argv only -- a harmless command must not start refusing."""
+        assert security.is_denied("echo a\\\nb") is None
+
+    def test_a_quoted_separator_still_stays_inside_its_token(self) -> None:
+        """The fold must not disturb shlex's quote resolution downstream."""
+        tokens = security._self_tokens(f"pkill -f '[;]*{self.NAME}'")
+        assert f"[;]*{self.NAME}" in tokens, tokens

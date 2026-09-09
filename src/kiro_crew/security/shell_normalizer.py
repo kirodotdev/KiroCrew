@@ -1398,11 +1398,16 @@ def _fold_line_continuations(text: str) -> str:
     ``"A\\<nl>A" BB``        ``<AA><BB>``        yes
     ``'A\\<nl>A' BB``        ``<A\\<nl>A><BB>``   no
     ``$'A\\<nl>A' BB``       ``<A\\<nl>A><BB>``   no
+    ``A\\<cr><nl>A BB``      ``<A\\r>`` + new cmd  no
     ======================  ==================  ========
 
     So: fold unquoted and inside double quotes; preserve inside single quotes and
     inside ANSI-C (``$'…'``) spans.  ``$"…"`` follows the double-quote rule, which
     falls out of the scan because only ``$'`` opens a preserving span.
+
+    Only a BARE newline ends a continuation.  A ``\\`` before ``\\r\\n`` escapes the
+    CR into a literal carriage return and the LF then ends the command, so the two
+    lines stay apart -- see :func:`_continuation_width`.
 
     Runs BEFORE the ANSI-C decode, which is the shell's own order: continuations
     are removed while lexing, and the escape body is interpreted after -- so a
@@ -1480,13 +1485,16 @@ def _fold_line_continuations(text: str) -> str:
 def _continuation_width(text: str, i: int) -> int:
     """Characters to drop for a continuation at *i*, or 0 if there is none.
 
-    ``text[i]`` is known to be a backslash.  Handles both ``\\n`` and ``\\r\\n``
-    line endings so a CRLF command is folded the same way.
+    ``text[i]`` is known to be a backslash.  Only a backslash directly followed
+    by a bare newline is a line continuation.  A backslash before ``\\r\\n`` is
+    NOT: bash reads the backslash as escaping the CR into a literal carriage
+    return, and the LF then ends the command -- measured, ``echo a\\`` + CRLF +
+    ``echo b`` prints ``a`` then ``b`` as two commands, not one.  Folding it
+    would join the two lines and hide a second-line command (e.g. a credential
+    mint) from the argv check while bash still runs it.
     """
     if text.startswith("\\\n", i):
         return 2
-    if text.startswith("\\\r\n", i):
-        return 3
     return 0
 
 
@@ -2236,10 +2244,30 @@ def _self_tokens(text_lower: str) -> "list[str]":
     unsafe for these rules: it cuts on a ``;`` or ``|`` that is INSIDE a quoted
     argument, so ``pkill -f '[;]*kirocrew'`` loses its own target. ``shlex``
     resolves the quotes first, so a quoted separator stays part of one token.
+
+    Line continuations are folded away FIRST, because the shell removes
+    ``\\`` + newline while READING, before it tokenizes anything, so the two
+    characters vanish rather than reaching the operator split as a ``[;&|\\n]+``
+    SEPARATOR. Folding keeps an assignment and the invocation it feeds in one
+    command: ``T=$(ca\\`` + newline + ``se …); kirocrew $T`` resolves ``$T`` and
+    forms the ``kirocrew token`` argv pair the self-protection check needs, the
+    same command bash assembles and runs.
+
+    The fold is the quote- and escape-aware :func:`_fold_line_continuations`,
+    NOT the bare :func:`_shell_join_continuations` regex. Only a LONE
+    ``\\`` + newline is a continuation; an EVEN backslash run before the newline
+    is an escaped literal backslash that ENDS the line, so bash starts a new
+    command. ``true\\\\`` + newline + ``python -m kirocrew token`` runs the mint
+    on the second line, and a bare regex that folds any ``\\`` before a newline
+    would join the two, mangle the ``python`` token, and hide the mint from the
+    argv check while bash still runs it. ``_fold_line_continuations`` folds only
+    the lone case and leaves the escaped run intact, matching bash.
     """
     try:
         return _resolve_function_aliases(
-            _resolve_local_assignments(normalize_shell_command(text_lower))
+            _resolve_local_assignments(
+                normalize_shell_command(_fold_line_continuations(text_lower))
+            )
         )
     except Exception:
         return []

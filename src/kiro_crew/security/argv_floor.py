@@ -774,8 +774,8 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
 #     text, because empty-quote glue hides the verb exactly as it hides the
 #     name (`python -c "ex""ec(...)"` carries no name and no other machinery,
 #     yet the floor denies it);
-#   * the literal name after stripping quotes/backslashes (`k""iro""crew`,
-#     `ki\rocrew` — shlex removes those before the predicates compare).
+#   * the literal name once quotes, backslashes and a `\`+newline continuation
+#     come off (`k""iro""crew`, `ki\rocrew`, `kiro\`+nl+`_crew` — shlex folds them).
 # When none of these is present, no predicate can return True, so the descent
 # is skipped. False positives (e.g. any `$VAR` in a command) merely fall back
 # to the full scan — the safe direction.
@@ -808,7 +808,7 @@ def _self_floor_can_fire(text_lower: str) -> bool:
     # `k""iro""crew token`, `"kirocrew" token`, `python -c "ex""ec(...)"`.
     # Both must be re-checked here -- testing only the name would let a glued
     # `exec(` payload skip the descent while the floor still denies it.
-    stripped = _SELF_FLOOR_QUOTE_JUNK_RE.sub("", text_lower)
+    stripped = _SELF_FLOOR_QUOTE_JUNK_RE.sub("", _shell_join_continuations(text_lower))
     if _SELF_FLOOR_NAME_HINT_RE.search(stripped):
         return True
     return bool(_INLINE_DYNAMIC_EXEC_RE.search(stripped))

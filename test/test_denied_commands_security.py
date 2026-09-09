@@ -5676,8 +5676,11 @@ class TestDenyMatchingIsQuoteNormalized:
         assert fold("'A\\\nA' BB") == "'A\\\nA' BB"
         assert fold("$'A\\\nA' BB") == "$'A\\\nA' BB"
         assert fold('$"A\\\nA" BB') == '$"AA" BB'
-        # CRLF input folds the same way.
-        assert fold("A\\\r\nA BB") == "AA BB"
+        # ``\<CR><LF>`` is NOT a continuation: the backslash escapes the CR into a
+        # literal carriage return and the LF then ENDS the command. Measured --
+        # ``printf "%q " A\<CR><LF>A BB`` prints ``$'A\r'`` and then runs ``A`` as a
+        # separate command, so the two lines must NOT be joined here.
+        assert fold("A\\\r\nA BB") == "A\\\r\nA BB"
         # A backslash escaping something else is untouched, and cannot open a quote.
         assert fold("a\\'b\\\nc") == "a\\'bc"
 
