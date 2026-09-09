@@ -78,6 +78,11 @@ import { stubDashboardApi, logPageProblems, json } from './lib/stub-dashboard-ap
 import { SURFACES, LOCALES, VIEWPORTS, FIXTURE_DETAIL_APP } from './lib/i18n-surfaces.mjs'
 import { browserBundle } from './lib/render-scan.mjs'
 import {
+  SETTLE_POLL_MS,
+  SETTLE_TIMEOUT_MS,
+  createSettleTracker,
+} from './lib/render-settle.mjs'
+import {
   BUCKETS,
   BUCKET_MEANING,
   LEDGER_COMMENT,
@@ -900,6 +905,14 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
         // (exit 2) rather than as findings.
         const pageErrors = []
         page.on('pageerror', err => pageErrors.push(String(err.message || err)))
+        // Cumulative counters, deliberately never reset per surface. A request that
+        // outlives the surface that started it still settles, so the difference
+        // stays honest across the loop; resetting would strand those stragglers and
+        // leave the count permanently short.
+        const net = { started: 0, settled: 0, get inflight() { return this.started - this.settled } }
+        page.on('request', () => { net.started += 1 })
+        page.on('requestfinished', () => { net.settled += 1 })
+        page.on('requestfailed', () => { net.settled += 1 })
         await stubDashboardApi(page, {
           theme: 'dark',
           extra: (path, route) => FIXTURE_OVERRIDES(locale.code, path, route),
@@ -933,9 +946,15 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
               + 'the wrong shape for this surface (see lib/boot-api.mjs for the two shapes that '
               + 'error-boundary the whole shell). Re-run with --verbose to see the page errors.')
           }
-          // Panels that fetch after mount need a beat more; a half-rendered surface
-          // under-reports rather than failing loudly.
-          await page.waitForTimeout(surface.settle || 250)
+          // Panels that fetch after mount need a beat more. `settle` stays as the
+          // FLOOR for that beat, but it is no longer the whole of it: a fixed sleep
+          // made the wait a race whose loss was silent, so the surface now has to
+          // actually go quiet before it is scanned (lib/render-settle.mjs has the
+          // two conditions and the `app-detail` regression that came from checking
+          // neither). The floor and the quiet window OVERLAP rather than stack, so a
+          // surface that was already settled during its old sleep waits no longer
+          // than it did before.
+          await waitForSurfaceQuiet(page, net, surface, label)
           // Every width this gate reports is a text measurement, and text measures
           // differently in the fallback face than in the real one. Scanning before
           // the webfonts land made the layout bucket differ by 2 between identical
@@ -995,6 +1014,47 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
   // required a real locale precisely so this assertion could not go quiet; that
   // requirement now belongs to that script, which the i18n runner fails closed on.
   return { all, unresolved }
+}
+
+/**
+ * Hold until the surface stops changing, or fail saying it never did.
+ *
+ * The old wait was `surface.settle` milliseconds and nothing else, which made every
+ * post-mount fetch a race the gate could lose without saying so -- the scan just
+ * measured the loading skeleton and charged the surface a smaller number. `[vs-base]`
+ * then read one lost race on the base sweep as findings the branch had added.
+ *
+ * `settle` survives as a MINIMUM, because a page that has not dispatched its fetch
+ * yet is indistinguishable from one that never will. It runs CONCURRENTLY with the
+ * quiet window rather than ahead of it: sampling starts immediately, so a surface
+ * that settles inside its old sleep returns at the same moment it always did, and
+ * only a surface that needed longer costs longer.
+ *
+ * Reaching the cap is INFRASTRUCTURE broken, in the same sense as a surface that
+ * never painted: a page that keeps mutating cannot be measured twice and compared,
+ * so the run must say which surface it was rather than quietly scan it mid-flight.
+ */
+async function waitForSurfaceQuiet(page, net, surface, label) {
+  const tracker = createSettleTracker()
+  const started = Date.now()
+  const floor = started + (surface.settle || 250)
+  const deadline = started + SETTLE_TIMEOUT_MS
+  for (;;) {
+    const shot = await page.evaluate(() => ({
+      chars: document.body.innerText.trim().length,
+      nodes: document.querySelectorAll('*').length,
+    }))
+    const quiet = tracker.observe({ ...shot, inflight: net.inflight })
+    if (quiet && Date.now() >= floor) return
+    if (Date.now() >= deadline) break
+    await page.waitForTimeout(SETTLE_POLL_MS)
+  }
+  const seen = tracker.last || { chars: 0, nodes: 0 }
+  die(`[${label}] ${surface.url} never went quiet in ${SETTLE_TIMEOUT_MS}ms `
+    + `(${net.inflight} request(s) in flight, ${seen.chars} chars, ${seen.nodes} nodes). `
+    + 'A surface that keeps changing cannot be compared against a second sweep. Give it a '
+    + 'deterministic fixture in FIXTURE_OVERRIDES, or drop it from lib/i18n-surfaces.mjs '
+    + 'with a comment saying why.')
 }
 
 /**
