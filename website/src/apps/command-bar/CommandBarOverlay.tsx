@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowRight,
   Check,
@@ -445,6 +445,7 @@ export default function CommandBarOverlay({
   // that read the cache.
   const chatFoldersRef = useRef<unknown>(chatFolders)
   chatFoldersRef.current = chatFolders
+  const queryClient = useQueryClient()
 
   useEffect(() => {
     if (!open) return
@@ -821,6 +822,11 @@ export default function CommandBarOverlay({
                   Array.isArray(chatFoldersRef.current)
                     ? (chatFoldersRef.current as ChatFolderRow[])
                     : undefined,
+                  // A folder this run created is not in the cache it just read, and the
+                  // WebSocket push that would seed it is not guaranteed to arrive. Left
+                  // uninvalidated, the sidebar can keep rendering a tree without the new
+                  // folder and the next run reads the same stale list.
+                  () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
                 )
               }
             } finally {
@@ -840,7 +846,7 @@ export default function CommandBarOverlay({
           },
         )
     },
-    [dispatch, navigate, onClose],
+    [dispatch, navigate, onClose, queryClient],
   )
 
   const activateRoot = useCallback(

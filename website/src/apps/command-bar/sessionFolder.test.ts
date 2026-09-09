@@ -166,6 +166,46 @@ describe('fileSessionInCommandFolder', () => {
     expect(created()).toEqual([['Review all PRs', 'p']])
   })
 
+  it('re-reads once and reuses the server folder when the cache is stale about it', async () => {
+    // A warm cache that has not heard about a folder an earlier run created would
+    // otherwise make a duplicate of it on every run.
+    serve([
+      { id: 'p', name: COMMAND_SESSION_FOLDER, parent_id: '' },
+      { id: 'l', name: 'Review all PRs', parent_id: 'p' },
+    ])
+    const stale = [{ id: 'p', name: COMMAND_SESSION_FOLDER, parent_id: '' }]
+    const leaf = await fileSessionInCommandFolder('slot-stale', 'Review all PRs', stale)
+    expect(chatFolders).toHaveBeenCalledTimes(1)
+    expect(created()).toEqual([])
+    expect(leaf).toBe('l')
+  })
+
+  it('spends only one re-read even when both folders miss', async () => {
+    serve([])
+    const stale = [{ id: 'x', name: 'Something else', parent_id: '' }]
+    await fileSessionInCommandFolder('slot-two-miss', 'Review all PRs', stale)
+    expect(chatFolders).toHaveBeenCalledTimes(1)
+    expect(created()).toEqual([
+      [COMMAND_SESSION_FOLDER, undefined],
+      ['Review all PRs', 'new-1'],
+    ])
+  })
+
+  it('reports a create so the caller can invalidate, and stays quiet when it reused', async () => {
+    serve([])
+    const onCreated = vi.fn()
+    await fileSessionInCommandFolder('slot-new-folder', 'Review all PRs', undefined, onCreated)
+    expect(onCreated).toHaveBeenCalledTimes(1)
+
+    onCreated.mockClear()
+    serve([
+      { id: 'p', name: COMMAND_SESSION_FOLDER, parent_id: '' },
+      { id: 'l', name: 'Review all PRs', parent_id: 'p' },
+    ])
+    await fileSessionInCommandFolder('slot-reuse', 'Review all PRs', undefined, onCreated)
+    expect(onCreated).not.toHaveBeenCalled()
+  })
+
   it('does nothing without a slot key or a command title', async () => {
     serve([])
     expect(await fileSessionInCommandFolder('', 'Review all PRs')).toBeNull()
@@ -203,6 +243,92 @@ describe('commandFolderName', () => {
   it('does not collide a row with itself', () => {
     const commands = map(cmd('app:a:one', 'Only row', 'A'))
     expect(commandFolderName(commands, 'app:a:one')).toBe('Only row')
+  })
+
+  it('keeps the discriminator when both colliding titles are at the length limit', () => {
+    // The clamp and the discriminator fight otherwise: append then slice(0,100) and two
+    // 100-character colliding titles come back byte-identical, back in one leaf.
+    const long = 'C'.repeat(120)
+    const commands = map(cmd('app:a:one', long, 'App A'), cmd('app:b:two', long, 'App B'))
+    const a = commandFolderName(commands, 'app:a:one')
+    const b = commandFolderName(commands, 'app:b:two')
+    expect(a).not.toBe(b)
+    expect(a.endsWith('(App A)')).toBe(true)
+    expect(b.endsWith('(App B)')).toBe(true)
+    // Both fit the server's own limit, so neither is truncated back into the other.
+    expect(a.length).toBeLessThanOrEqual(100)
+    expect(b.length).toBeLessThanOrEqual(100)
+  })
+
+  it('bounds a long app label so the title is not crowded out', () => {
+    const commands = map(
+      cmd('app:a:one', 'Same title', 'L'.repeat(80)),
+      cmd('app:b:two', 'Same title', 'M'.repeat(80)),
+    )
+    const a = commandFolderName(commands, 'app:a:one')
+    expect(a.length).toBeLessThanOrEqual(100)
+    expect(a.startsWith('Same title')).toBe(true)
+    expect(a).not.toBe(commandFolderName(commands, 'app:b:two'))
+  })
+
+  it('uses the row id when one app contributes two rows with the same title', () => {
+    // The app label separates nothing here, so both rows would get an identical suffix
+    // and land back in one leaf.
+    const commands = map(
+      cmd('app:pr-bulk-ops:review-all', 'Review all PRs', 'PR Bulk Ops'),
+      cmd('app:pr-bulk-ops:review-mine', 'Review all PRs', 'PR Bulk Ops'),
+    )
+    const a = commandFolderName(commands, 'app:pr-bulk-ops:review-all')
+    const b = commandFolderName(commands, 'app:pr-bulk-ops:review-mine')
+    expect(a).toBe('Review all PRs (review-all)')
+    expect(b).toBe('Review all PRs (review-mine)')
+    expect(a).not.toBe(b)
+  })
+
+  it('falls back to a hash when even the bounded readable tag collides', () => {
+    // Two distinct apps whose labels agree on their first 32 characters: bounding makes
+    // the readable tag identical, so it separates nothing and the id hash takes over.
+    const shared = 'X'.repeat(40)
+    const commands = map(
+      cmd('app:a:one', 'Same title', shared + 'AAA'),
+      cmd('app:b:two', 'Same title', shared + 'BBB'),
+    )
+    const a = commandFolderName(commands, 'app:a:one')
+    const b = commandFolderName(commands, 'app:b:two')
+    expect(a).not.toBe(b)
+    expect(a).toMatch(/^Same title \([0-9a-f]{8}\)$/)
+    expect(b).toMatch(/^Same title \([0-9a-f]{8}\)$/)
+  })
+
+  it('separates two distinct titles that agree on their first 100 characters', () => {
+    // Raw-title comparison finds no collision here, adds no discriminator, and lets the
+    // server file both commands into one folder -- reached without a duplicate title.
+    const shared = 'D'.repeat(100)
+    const commands = map(
+      cmd('app:a:one', shared + 'first', 'App A'),
+      cmd('app:b:two', shared + 'second', 'App B'),
+    )
+    const a = commandFolderName(commands, 'app:a:one')
+    const b = commandFolderName(commands, 'app:b:two')
+    expect(a).not.toBe(b)
+    expect(a.endsWith('(App A)')).toBe(true)
+    expect(b.endsWith('(App B)')).toBe(true)
+  })
+
+  it('never splits a surrogate pair when truncating', () => {
+    // `slice` counts UTF-16 units, so a title whose boundary falls inside an emoji loses
+    // half a character and the name carries a lone surrogate -- an invalid string, made
+    // durable.
+    const emoji = 'A' + '\u{1F600}'.repeat(80)
+    const commands = map(cmd('app:a:one', emoji, 'App A'), cmd('app:b:two', emoji, 'App B'))
+    for (const id of ['app:a:one', 'app:b:two']) {
+      const name = commandFolderName(commands, id)
+      // A lone surrogate is a code unit with no pair; iterating by code point and
+      // re-joining is lossless only when none was split.
+      expect([...name].join('')).toBe(name)
+      expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(name)).toBe(false)
+      expect([...name].length).toBeLessThanOrEqual(100)
+    }
   })
 
   it('answers empty for an unknown id or a blank title', () => {

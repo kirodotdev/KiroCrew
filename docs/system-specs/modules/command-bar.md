@@ -281,8 +281,12 @@ Three rules keep this cosmetic rather than load-bearing:
   /api/chat/folders` walks the on-disk session list synchronously to count archived
   sessions per folder, so fetching it per run would pay for a filesystem scan — scaling
   with the reader's history — to learn what the `['chat-folders']` cache already holds.
-  The launcher subscribes to that cache the same way it subscribes to the app list; a
-  cold cache falls back to one fetch.
+  The launcher subscribes to that cache the same way it subscribes to the app list. A
+  cache HIT is trusted; a MISS is not, because it might only mean the cache has not
+  heard about a folder an earlier run created, and a warm cache stale about exactly that
+  folder would duplicate it on every run. The first miss spends one authoritative read
+  and re-checks before creating anything, so the common path issues no request at all
+  and the worst path issues one.
 - **Contributed rows only.** The Ask row uses the same seeding path but carries a
   sentence the reader wrote; it belongs wherever they are working, not under a
   command's name.
@@ -304,10 +308,14 @@ The leaf name is clamped to the 100 characters the server stores, because a mani
 title may be 120. Without the clamp the create is silently shortened, the next run's
 lookup for the full title misses, and every run makes another folder — the one failure
 mode here that compounds rather than staying cosmetic. When two rows currently offered
-carry the SAME title, the contributing app's label is appended to both, because a leaf
-keyed on the title alone would interleave two commands the reader cannot tell apart —
-the very thing this filing prevents. The label is appended only on a collision: always
-would put a redundant parenthesis on every folder for a case almost nobody has. Two
+carry the SAME title, a discriminator is appended to both — the contributing app's label
+between two apps, and the row's own id when the collision is inside ONE app, where the
+label separates nothing. A leaf keyed on the title alone would interleave two commands
+the reader cannot tell apart, which is the very thing this filing prevents; and a
+discriminator is appended only on a collision, because always would put a redundant
+parenthesis on every folder for a case almost nobody has. The suffix gets its own room
+inside the stored limit rather than being appended and clamped after, since clamping the
+finished name slices the discriminator off in exactly the case it exists for. Two
 commands fired at the same instant can each find the parent missing and create it twice;
 the loser's folder is an empty duplicate, which is cheaper than putting a lock in front
 of the reader's session appearing at all.
