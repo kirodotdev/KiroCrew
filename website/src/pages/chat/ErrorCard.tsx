@@ -5,6 +5,7 @@ import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { chatErrorDisplayText } from '../../lib/chatErrorRecovery'
 import type { ChatMessage } from '../../types'
+import { withOriginLink } from '../../components/withOriginLink'
 
 /** Row kind the backend stamps on a terminal model-entitlement rejection
  *  (`chat_utils.MODEL_UNENTITLED_KIND`). Both carriers are load-bearing for the
@@ -157,7 +158,7 @@ export const ErrorCard = memo(function ErrorCard({
         data-auth-required="true"
       >
         <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-          {content}
+          {withOriginLink(content)}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -194,7 +195,7 @@ export const ErrorCard = memo(function ErrorCard({
         data-testid="error-card"
       >
         <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-          {displayText}
+          {withOriginLink(displayText)}
         </div>
         {onPickModel && onOpenDefaultModel && (
           // Both actions are needed, and a primary/secondary pair reads as
@@ -249,7 +250,7 @@ export const ErrorCard = memo(function ErrorCard({
         data-testid="error-card"
         style={{ overflowWrap: 'anywhere' }}
       >
-        {displayText}
+        {withOriginLink(displayText)}
         {elsewhere && (
           <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-elsewhere-hint">
             {i18nT(elsewhereKey!)}
@@ -265,7 +266,7 @@ export const ErrorCard = memo(function ErrorCard({
       data-continuable="true"
     >
       <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-        {displayText}
+        {withOriginLink(displayText)}
       </div>
       <button
         type="button"
