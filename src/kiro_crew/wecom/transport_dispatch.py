@@ -356,8 +356,17 @@ class WeComDispatcher:
         operator-set name for ``[CURRENT USER]``, mirroring Slack's name fallback.
         """
         for u in getattr(self.cfg.wecom, "allowed_users", []):
-            if u.get("userid") == userid and u.get("name"):
-                return u["name"]
+            if u.get("userid") == userid:
+                # Return the operator-set name ONLY when it is a non-empty
+                # string. A truthy non-string (e.g. YAML ``name: 123`` coerced
+                # to int) would otherwise flow into ``[CURRENT USER]`` marker
+                # scrubbing, which assumes ``str`` and raises — crashing every
+                # turn for that user. The loader type-checks ``userid`` but not
+                # ``name``, so guard it here.
+                name = u.get("name")
+                if isinstance(name, str) and name:
+                    return name
+                return userid
         return userid
 
     def _session_key(self, userid: str) -> str:

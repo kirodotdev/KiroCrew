@@ -748,3 +748,18 @@ class TestWeComDisplayName:
         d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient(), cfg=cfg)
         # No name on the entry -> the raw userid, never an empty label.
         assert d._display_name("NoName") == "NoName"
+
+    def test_falls_back_to_userid_when_name_not_a_string(self) -> None:
+        # YAML ``name: 123`` loads as an int; the loader type-checks only
+        # ``userid``, so a non-string name reaches here. It must NOT be returned
+        # (it would crash [CURRENT USER] marker scrubbing, which assumes str) --
+        # fall back to the userid instead.
+        cfg = self._cfg_with_users([{"userid": "IntName", "name": 123}])
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient(), cfg=cfg)
+        assert d._display_name("IntName") == "IntName"
+
+    def test_falls_back_to_userid_when_name_is_empty_string(self) -> None:
+        cfg = self._cfg_with_users([{"userid": "Blank", "name": ""}])
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient(), cfg=cfg)
+        # Empty string is not a usable label -> the raw userid.
+        assert d._display_name("Blank") == "Blank"
