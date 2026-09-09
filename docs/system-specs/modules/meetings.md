@@ -163,6 +163,14 @@ Dictionary terms and aliases round-trip through UTF-8 TOML, including supplement
 Unicode characters. Quotes, backslashes, and control characters remain escaped;
 the serializer does not emit JSON surrogate-pair escapes that TOML rejects.
 
+Writing those characters literally means a term has to BE encodable, so `add_term`
+refuses a code point in the surrogate range U+D800–U+DFFF — which a JSON request
+body can spell (`{"correct": "\ud800"}`) but UTF-8 cannot represent. The refusal
+sits next to the empty-term and length checks, BEFORE the process-wide dictionary
+is replaced, so a term the file can never hold does not become the one live
+transcript lines are corrected against. The route maps that `ValueError` to a 400
+like any other invalid term.
+
 ## Lifecycle
 
 ```

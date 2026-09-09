@@ -53,6 +53,17 @@ _MAX_ALIAS_LEN = 120
 _MAX_CORRECT_LEN = 120
 _DICTIONARY_HEADER = "# Domain dictionary for meetings speech-to-text correction\n"
 
+# A code point in U+D800–U+DFFF is half of a UTF-16 pair and is not a character.
+# Python's JSON decoder still produces one from a request body spelling it out
+# (``{"correct": "\ud800"}``), and a `str` can hold it — but UTF-8 has no encoding
+# for it, so such a term can never round-trip through the dictionary file. It is
+# refused at the mutation boundary, where `add_term` already rejects the empty and
+# the over-long term, rather than at the serializer: raising once the in-memory
+# terms have been replaced would leave the shared dictionary holding a term that
+# `save` can never write, so the corrections applied to live transcripts and the
+# document on disk would disagree until the next reload.
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
 
 def _literal_replacement(value: str) -> Callable[[re.Match[str]], str]:
     """A ``re.sub`` replacement that inserts *value* verbatim.
@@ -154,9 +165,22 @@ class DomainDictionary:
     def render_toml(self) -> str:
         """Render the current terms back to TOML.
 
-        JSON quoting protects quotes, backslashes, and control characters.
-        Non-ASCII characters stay literal: TOML does not accept JSON's UTF-16
-        surrogate-pair escapes. DEL must still be escaped for a TOML basic string.
+        Values go through ``json.dumps`` because TOML basic strings and JSON
+        strings share an escaping grammar for the characters that matter here —
+        so a quote or backslash in a term can never break out of its string and
+        inject a new ``[[term]]`` table.
+
+        They are dumped with ``ensure_ascii=False`` because the two grammars part
+        company above U+FFFF: JSON escapes a supplementary character as a UTF-16
+        surrogate PAIR, which TOML refuses ("Escaped character is not a Unicode
+        scalar value"), and the whole document was then discarded on the next
+        load. Written literally it round-trips. DEL is the one character JSON
+        leaves raw that a TOML basic string forbids, so it is escaped by hand.
+
+        Writing them literally means the terms have to BE encodable, which is why
+        :meth:`add_term` refuses a surrogate code point (``_SURROGATE_RE``) and the
+        parse in :meth:`load` cannot produce one — ``read_text`` would have failed
+        on the bytes first.
         """
         parts = [_DICTIONARY_HEADER]
         for correct, aliases in self.terms:
@@ -180,6 +204,8 @@ class DomainDictionary:
             raise ValueError("correct and at least one alias are required")
         if len(correct) > _MAX_CORRECT_LEN or any(len(a) > _MAX_ALIAS_LEN for a in clean):
             raise ValueError("term or alias is too long")
+        if _SURROGATE_RE.search(correct) or any(_SURROGATE_RE.search(a) for a in clean):
+            raise ValueError("term or alias contains an unpaired surrogate code point")
         if len(self.terms) >= k.MAX_DICTIONARY_TERMS:
             raise ValueError(f"dictionary is limited to {k.MAX_DICTIONARY_TERMS} terms")
         existing = [(c, a) for c, a in self.terms if c.lower() != correct.lower()]

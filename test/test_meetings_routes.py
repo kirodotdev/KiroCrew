@@ -231,6 +231,50 @@ class TestDictionaryRoutes:
             ).status == 400
 
     @pytest.mark.asyncio
+    async def test_a_refused_surrogate_term_never_reaches_the_shared_dictionary(
+        self, app, root: Path
+    ):
+        """``"\\ud800"`` is legal JSON but has no UTF-8 encoding.
+
+        Sent as raw bytes rather than through ``json=``: the client's own encoder
+        would refuse it, while a real HTTP client puts the escape on the wire and
+        the SERVER's ``json.loads`` is what materializes the surrogate.
+
+        The status was already 400 before the fix — ``UnicodeEncodeError`` is a
+        ``ValueError``, so the write blew up into the handler's own 400 branch and
+        wore a codec message. What that hid is the ordering: ``add_term`` had
+        already replaced the terms on the PROCESS-WIDE dictionary
+        (``domain.session._dictionary``, which every transcript line is corrected
+        against at ``session.py``'s ``_dictionary.correct``) and only then failed to
+        write, leaving live corrections running against a term no file holds.
+        """
+        async with client_for(app) as client:
+            resp = await client.post(
+                f"{BASE}/dictionary", json={"correct": "DynamoDB", "aliases": ["dynamo db"]}
+            )
+            assert resp.status == 200
+            before = store.dictionary_path(root).read_bytes()
+
+            resp = await client.post(
+                f"{BASE}/dictionary",
+                data=b'{"correct": "\\ud800", "aliases": ["lone half"]}',
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+            # Asserted BEFORE any further dictionary route: every one of them
+            # reloads from disk first, which would wash the bad term back out.
+            assert all("\ud800" not in c for c, _ in sess.shared_dictionary().terms)
+            # A validation message, not whatever the codec happened to say.
+            assert "surrogate" in (await resp.json())["error"]
+            assert "codec" not in (await resp.json())["error"]
+
+            resp = await client.get(f"{BASE}/dictionary")
+            assert any(t["correct"] == "DynamoDB" for t in (await resp.json())["terms"])
+
+        # ...and nothing was written.
+        assert store.dictionary_path(root).read_bytes() == before
+
+    @pytest.mark.asyncio
     async def test_remove_unknown_is_404(self, app):
         async with client_for(app) as client:
             resp = await client.post(f"{BASE}/dictionary/remove", json={"correct": "Ghost"})
