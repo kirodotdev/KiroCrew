@@ -1803,6 +1803,11 @@ def _parse_sessions() -> dict:
     now_dt = datetime.now()
     today_str = now_dt.strftime("%Y-%m-%d")
 
+    # Set when the directory could not be read at all. Carried ALONGSIDE the
+    # statistics rather than instead of them: every consumer of this payload
+    # reads the period keys unconditionally, so an error-only object is not a
+    # degraded answer, it is a differently-shaped one.
+    read_error: dict[str, str] = {}
     try:
         entries = list(sessions_dir.iterdir())
     except FileNotFoundError:
@@ -1810,10 +1815,14 @@ def _parse_sessions() -> dict:
         # complete zero statistics as an existing, empty directory.
         entries = []
     except OSError as exc:
-        # The OSError carries a filesystem path; keep it server-side and return
-        # a generic message (the ``error`` field is rendered verbatim in the UI).
+        # The OSError carries a filesystem path; keep it server-side and report a
+        # generic message (the ``error`` field is rendered verbatim in the UI).
         logger.warning("usage: cannot read sessions directory: %s", exc)
-        return {"error": "cannot read sessions directory", "code": "sessions_dir_unreadable"}
+        entries = []
+        read_error = {
+            "error": "cannot read sessions directory",
+            "code": "sessions_dir_unreadable",
+        }
 
     for f in entries:
         if f.suffix != ".jsonl":
@@ -1945,6 +1954,11 @@ def _parse_sessions() -> dict:
         # session count with a positive refusal count is the exact silent
         # failure this field makes visible.
         "refused_transcripts": refused_transcripts,
+        # Present only when the directory read itself failed. ``api_kiro_usage``
+        # keys its no-cache decision on this, and the zeros above are then a
+        # SHAPE, not a measurement -- which is why the message has to travel with
+        # them rather than replace them.
+        **read_error,
     }
 
 

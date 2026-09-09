@@ -18,7 +18,12 @@ returns the same complete zero-valued session statistics as an empty directory,
 including `today`, `this_week`, `this_month`, and an empty `daily_history`.
 Reading usage does not create the directory, and available billing is preserved.
 The normal usage cache TTL applies; later session files are counted on refresh.
-Other directory read failures remain errors and are not cached as zero usage.
+Other directory read failures report the reason ALONGSIDE that same complete
+zero-valued shape rather than instead of it: the response carries `error` and
+`code` next to the statistics, is still not cached, and the client raises the
+server's message rather than reading a period key that is not there. The zeros
+on that path are a shape, not a measurement, which is what the `error` field
+says.
 
 ## Self-Learning (`learn.py`)
 

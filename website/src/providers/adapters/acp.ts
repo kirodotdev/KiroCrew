@@ -255,6 +255,13 @@ export class AcpAdapter implements ProviderAdapter {
   async fetchUsage(): Promise<NormalizedUsage> {
     const data = await api.kiroUsage()
     const s = data.sessions
+    // The route answers 200 even when the transcript directory could not be
+    // read, because billing is a separate half of the payload. `error` is the
+    // server's own message for that failure, and the statistics beside it are
+    // a zero SHAPE rather than a measurement -- so reporting the reason is the
+    // only honest reading. Raising here puts it on the same channel a non-2xx
+    // takes, which the Usage tab already renders verbatim.
+    if (s?.error) throw new Error(String(s.error))
     const b = data.billing || {}
     return {
       sessions: {
