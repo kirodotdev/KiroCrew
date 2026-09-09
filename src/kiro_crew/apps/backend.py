@@ -1897,7 +1897,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         _platform_extra["KIROCREW_PROFILE"] = os.environ["KIROCREW_PROFILE"]
     for _policy_env in ("KIROCREW_SECURITY_POLICY", "KIROCREW_ADMISSION_POLICY"):
         # Forward the governance trust-root path overrides alongside the profile.
-        # These are the fleet operator's highest-priority policy sources
+        # These are the operator's local policy sources
         # (governance.load_security_policy / admission), and minimal_env() strips
         # them. Now that the backend boots the platform context itself, dropping
         # them would make the child resolve its ceiling from the on-disk /
