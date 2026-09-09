@@ -87,7 +87,7 @@ const goalLoop = (
   kind: 'legacy_goal_loop', id: `loop-${slotKey}`, slotKey, message: '', idleSecs: 60,
   maxCycles, cycleCount, active, lastFireAt: 0, stoppedReason: '',
 })
-import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
+import dashboardReducer, { fetchSlots, sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import type { ChatMessage, ChatSlot } from '../types'
@@ -1004,6 +1004,45 @@ describe('chatSlice slot reconcile from the authoritative slots list', () => {
     expect(chat(store).slotMessages.gone).toBeUndefined()
     expect(chat(store).followups.gone).toBeUndefined()
     expect(chat(store).slotContextPct.gone).toBeUndefined()
+  })
+
+  it('retires a folder-suggestion card once any client files the session', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    store.dispatch(setFolderSuggestion({ slot: 'front', folderId: 'f1', folderName: 'Work', breadcrumb: 'Work' }))
+    store.dispatch(setFolderSuggestion({ slot: 'back', folderId: 'f1', folderName: 'Work', breadcrumb: 'Work' }))
+
+    // A frame that still shows both sessions unfiled leaves both cards alone.
+    store.dispatch(sseSlots([slotRow('front'), slotRow('back')]))
+    expect(chat(store).folderSuggestions.front).toBeDefined()
+    expect(chat(store).folderSuggestions.back).toBeDefined()
+
+    // Another window accepted the card (or dragged the session into a folder):
+    // the broadcast snapshot now carries folder_id, and the card must go —
+    // including for the ACTIVE slot, which the residue reconcile never touches.
+    store.dispatch(sseSlots([slotRow('front', { folder_id: 'f1' }), slotRow('back')]))
+    expect(chat(store).folderSuggestions.front).toBeUndefined()
+    expect(chat(store).folderSuggestions.back).toBeDefined()
+  })
+
+  it('trusts a fetch reply for card retirement only before the first live snapshot', async () => {
+    // Before any live frame: the reply is the only authority, so it retires.
+    apiMock.chatSlots.mockResolvedValueOnce([slotRow('s1', { folder_id: 'f1' })])
+    const cold = makeStore()
+    cold.dispatch(setFolderSuggestion({ slot: 's1', folderId: 'f1', folderName: 'Work', breadcrumb: 'Work' }))
+    await cold.dispatch(fetchSlots())
+    expect(chat(cold).folderSuggestions.s1).toBeUndefined()
+
+    // After a live frame: a reply can be STALE — a filed session's key reused
+    // by a fresh session would still carry the old tenant's folder_id, and
+    // clearing on it would delete the replacement's one-shot card (never
+    // re-offered). Live frames own the cleanup once seen.
+    apiMock.chatSlots.mockResolvedValueOnce([slotRow('s1', { folder_id: 'f1' })])
+    const warm = makeStore()
+    warm.dispatch(sseSlots([slotRow('s1')]))
+    warm.dispatch(setFolderSuggestion({ slot: 's1', folderId: 'f2', folderName: 'Later', breadcrumb: 'Later' }))
+    await warm.dispatch(fetchSlots())
+    expect(chat(warm).folderSuggestions.s1).toBeDefined()
   })
 })
 
