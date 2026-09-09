@@ -53,6 +53,20 @@ def _make_app() -> tuple[web.Application, AsyncMock]:
     return app, ingest_spy
 
 
+async def _await_background_ingest(ingest_spy) -> None:
+    """Wait until the upload's background task has actually called ``ingest_file``.
+
+    A single ``asyncio.sleep(0)`` is not enough: the task stamps the row 'syncing'
+    off the loop first, so reaching ``ingest_file`` costs a worker-thread hop, not
+    one event-loop tick. Polling asserts what these tests are about -- what the
+    ingest was called WITH -- instead of which await happens to come first.
+    """
+    for _ in range(200):
+        if ingest_spy.await_args is not None:
+            return
+        await asyncio.sleep(0.01)
+
+
 def _minimal_zip_bytes() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -204,7 +218,7 @@ async def test_admission_token_is_handed_to_the_background_ingest(mock_sel):
     status, body = await _post(app, b"# notes\n", "notes.md", "text/markdown")
 
     assert status == 200, body
-    await asyncio.sleep(0)  # let the background task run
+    await _await_background_ingest(ingest_spy)
     assert ingest_spy.await_args is not None, "background ingest never ran"
     assert ingest_spy.await_args.kwargs["import_budget_token"] == 7
 
@@ -227,7 +241,7 @@ async def test_an_admitted_upload_never_reserves_a_second_time(mock_sel):
     status, body = await _post(app, b"# notes\n", "notes.md", "text/markdown")
 
     assert status == 200, body
-    await asyncio.sleep(0)
+    await _await_background_ingest(ingest_spy)
     assert ingest_spy.await_args is not None, "background ingest never ran"
     kwargs = ingest_spy.await_args.kwargs
     assert kwargs["count_toward_import_budget"] is False, (

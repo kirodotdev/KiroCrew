@@ -221,9 +221,14 @@ class TestAddSourceLocalFile:
                 "name": "ingest.md", "source_type": "local_file", "uri": str(test_file)
             })
             assert resp.status == 201
-            # Give the background task a moment
+            # The task claims 'syncing' off the loop before it ingests, so reaching
+            # ingest_file costs a worker-thread hop. Poll rather than sleep a fixed
+            # span, which races that on a loaded runner.
             import asyncio
-            await asyncio.sleep(0.1)
+            for _ in range(200):
+                if pipeline.ingest_file.called:
+                    break
+                await asyncio.sleep(0.01)
             pipeline.ingest_file.assert_called_once()
 
     @pytest.mark.asyncio

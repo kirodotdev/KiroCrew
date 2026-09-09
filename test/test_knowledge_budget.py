@@ -831,12 +831,19 @@ class TestBackgroundDeferralStaysRetryable:
 
     @staticmethod
     def _recording_store():
+        class _Cursor:
+            # The sync claim decides whether it won the row from rowcount, so the
+            # fake has to answer it. 1 = this call took the claim, which is what
+            # puts the task on the path these tests are about.
+            rowcount = 1
+
         class _DB:
             def __init__(self):
-                self.statements: list[str] = []
+                self.statements: list[tuple[str, tuple]] = []
 
             def execute(self, sql, params=()):
-                self.statements.append(sql)
+                self.statements.append((sql, tuple(params)))
+                return _Cursor()
 
             def commit(self):
                 pass
@@ -847,9 +854,23 @@ class TestBackgroundDeferralStaysRetryable:
 
         return _Store()
 
-    @staticmethod
-    def _states(store):
-        return [s for s in store.db.statements if "sync_status" in s]
+    _TERMINAL_STATES = ("pending", "error", "synced")
+
+    @classmethod
+    def _states(cls, store):
+        """The terminal states written, as VALUES rather than as SQL text.
+
+        Status writes go through one parameterized helper, so the state is in the
+        parameters. The 'syncing' claim is not a terminal state and carries its
+        value as a literal, so it does not appear here.
+        """
+        return [
+            value
+            for sql, params in store.db.statements
+            if "sync_status" in sql
+            for value in params
+            if value in cls._TERMINAL_STATES
+        ]
 
     def test_local_file_ingest_defers_to_pending(self, tmp_path):
         from types import SimpleNamespace
@@ -865,10 +886,7 @@ class TestBackgroundDeferralStaysRetryable:
 
         asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), "src-1"))
 
-        states = self._states(store)
-        assert len(states) == 1, states
-        assert "'pending'" in states[0]
-        assert "'error'" not in states[0]
+        assert self._states(store) == ["pending"], store.db.statements
 
     def test_local_file_ingest_still_errors_on_a_real_failure(self, tmp_path):
         from types import SimpleNamespace
@@ -882,9 +900,7 @@ class TestBackgroundDeferralStaysRetryable:
 
         asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), "src-1"))
 
-        states = self._states(store)
-        assert len(states) == 1, states
-        assert "'error'" in states[0]
+        assert self._states(store) == ["error"], store.db.statements
 
 
 class TestUploadRefusesBeforeAccepting:

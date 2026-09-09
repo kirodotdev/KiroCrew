@@ -68,15 +68,31 @@ _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 # interprocedural half of #3057).
 #
 # Both narrowings below are temporary and exist for the same reason: this store
-# still has 85 recorded on-loop callers -- the whole of
+# still has on-loop callers left -- the lines in
 # ``.github/sync-io-in-async-baseline.txt``, all of it knowledge paths, owned by
 # the cleanup at #7019.
+#
+# ``dashboard/handlers/knowledge.py`` takes the store through a worker for every
+# take of its OWN, endpoints and background tasks alike. It is not the whole
+# story, so the claim is scoped deliberately: the connector branch of
+# ``sync_source`` awaits ``SyncScheduler.sync_source``, which writes the row
+# inline from an async method (``sync.py``'s ``update_source`` after a successful
+# fetch, and ``_record_failure``), so a handler still reaches the store on the
+# loop ONE FRAME DOWN. That path is interprocedural backlog, invisible to the
+# lexical baseline, and stays with the cleanup rather than with this file.
+#
+# Two takes are left in the lexical baseline. The watcher's self-heal rebuild
+# finalizes its job row inline on its cancellation path, where an interrupted
+# ``to_thread`` could drop the write -- ``start_rebuild_job`` sweeps a stale
+# 'processing' row to 'abandoned', so the single-flight guard recovers either
+# way. And ``dashboard/state.py`` builds this store lazily, whose migrations run
+# under ``allow_on_loop()`` below.
 #
 # * ``strict_env=STORE_STRICT_ENV`` keeps this store off the SHARED
 #   ``KIROCREW_STRICT_ON_LOOP_PERSIST`` switch, which ``setup.py``'s ``test_e2e``
 #   and ``ci.yml`` already export into the e2e gateway for history's clean
-#   surface. On the shared flag, the on-loop ``/api/knowledge/stats`` and
-#   ``/api/knowledge/namespaces`` handlers would raise and 500 the e2e run.
+#   surface. On the shared flag, the watcher's finalize would raise inside the
+#   e2e gateway.
 # * ``dev_mode_arms_strict=False`` keeps a developer gateway from raising on that
 #   same backlog, which would report tracked work as a regression and push the
 #   developer to unset ``KIROCREW_DEV_MODE`` -- silencing history.py's guard too.
@@ -1048,17 +1064,25 @@ class KnowledgeStore:
         safe = {k: v for k, v in fields.items() if k in self._ITEM_COLUMNS}
         if not safe:
             return
-        # Read old FTS values BEFORE the update
-        fts_fields = {"title", "content", "tags"} & set(fields)
-        old_row = None
-        if fts_fields:
-            old_row = self.db.execute(
-                "SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)
-            ).fetchone()
         cols = ", ".join(f"{k} = ?" for k in safe)
         vals = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in safe.values()]
+        fts_fields = {"title", "content", "tags"} & set(fields)
+        # The write lock comes first, BEFORE the old-row read, because the FTS
+        # delete is built from what that read returns. Two concurrent PATCHes of
+        # one item would otherwise both read the same old title, and the loser
+        # would unindex terms the winner had already replaced -- leaving the item
+        # searchable under a superseded title, with nothing that repairs it
+        # (``ensure_fts_index_current`` re-indexes on a term-representation
+        # version bump, never on content staleness). Holding the lock across the
+        # read costs one indexed lookup by id, and it is the shape
+        # ``merge_source_properties`` documents for the same reason.
         self.db.execute("BEGIN IMMEDIATE")
         try:
+            old_row = None
+            if fts_fields:
+                old_row = self.db.execute(
+                    "SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)
+                ).fetchone()
             self.db.execute(f"UPDATE items SET {cols} WHERE id = ?", (*vals, item_id))  # noqa: S608
             # Sync FTS: delete with OLD values, insert with NEW values
             if old_row:
@@ -1559,6 +1583,68 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     moved = True
             self.db.execute("COMMIT")
             return moved
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def merge_source_properties(self, source_id: str, *, set_keys: dict | None = None,
+                                remove_keys: tuple[str, ...] = (),
+                                sync_status: str | None = None) -> dict | None:
+        """Apply a key delta to one source's ``properties``, in ONE write-locked take.
+
+        Returns the properties as persisted, or None when the row is gone.
+
+        ``properties`` is a whole-column rewrite, so a read-modify-write split
+        across two statements loses a concurrent writer's change: whoever writes
+        last replaces the other's blob wholesale, and a dropped ``scan_paused``
+        means a folder the user paused keeps being walked. This takes the write
+        lock BEFORE reading (``BEGIN IMMEDIATE``, the shape
+        :meth:`retire_auto_registered_folder` uses), so no other writer can land
+        between this read and this write, and guards the UPDATE with the blob it
+        read (``WHERE properties = ?``, the shape :meth:`_retire_one_in_txn`
+        uses). Under the lock that guard cannot fail, which is the point: it
+        states the invariant in SQL, so a future caller that drops the
+        transaction gets a no-op rather than a silent overwrite.
+
+        A failed ``BEGIN IMMEDIATE`` is NOT swallowed here, unlike in
+        :meth:`retire_auto_registered_folder`: that sweep gets another pass, a
+        request does not, so a lock timeout has to reach the caller instead of
+        being reported as a missing row.
+
+        ``sync_status`` is written to the COLUMN and stripped from the blob by
+        ``_without_sync_status``, for the reason that helper documents.
+
+        Synchronous and takes the write lock, so an event-loop caller hands it to
+        ``asyncio.to_thread``.
+        """
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT properties FROM sources WHERE id = ?", (source_id,)).fetchone()
+            if row is None:
+                self.db.execute("COMMIT")
+                return None
+            try:
+                props = json.loads(row["properties"] or "{}")
+            except (ValueError, TypeError, RecursionError):
+                props = {}
+            if not isinstance(props, dict):
+                props = {}
+            for key in remove_keys:
+                props.pop(key, None)
+            props.update(set_keys or {})
+            text = _without_sync_status(json.dumps(props))
+            if sync_status is None:
+                cur = self.db.execute(
+                    "UPDATE sources SET properties = ? WHERE id = ? AND properties = ?",
+                    (text, source_id, row["properties"]))
+            else:
+                cur = self.db.execute(
+                    "UPDATE sources SET properties = ?, sync_status = ? "
+                    "WHERE id = ? AND properties = ?",
+                    (text, sync_status, source_id, row["properties"]))
+            self.db.execute("COMMIT")
+            return props if cur.rowcount > 0 else None
         except Exception:
             self.db.execute("ROLLBACK")
             raise
