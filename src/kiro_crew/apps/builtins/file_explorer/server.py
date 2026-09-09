@@ -631,6 +631,9 @@ def _git_status(repo_root: Path) -> dict:
             cmd_branch,
             capture_output=True,
             text=True,
+            # git writes refnames in UTF-8; `text=True` alone would decode them
+            # with the host's locale codec. See the note on the status call below.
+            encoding="utf-8",
             timeout=GIT_TIMEOUT_SEC,
             check=False,
         )
@@ -645,6 +648,16 @@ def _git_status(repo_root: Path) -> dict:
             cmd_status,
             capture_output=True,
             text=True,
+            # `-z` is what makes this mandatory. Without it git C-quotes a
+            # non-ASCII path into pure ASCII (`"caf\303\251.txt"`); WITH it the
+            # path comes back verbatim as raw UTF-8 bytes. `text=True` alone then
+            # hands those bytes to the host's locale codec, so on a Windows
+            # console codepage (cp950, cp932, cp1252, ...) one file with a
+            # non-ASCII name either raises UnicodeDecodeError -- which neither
+            # `except` clause here catches, so the whole repo's status 500s -- or
+            # silently mojibakes the path so it matches no tree entry. git's
+            # output is UTF-8, so name the encoding rather than inheriting one.
+            encoding="utf-8",
             timeout=GIT_TIMEOUT_SEC,
             check=False,
         )
@@ -774,6 +787,14 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
             wrapped_cmd,
             capture_output=True,
             text=True,
+            # ripgrep's `--json` stream is UTF-8 by definition, and it carries
+            # both the matched path and the matched line, so a non-ASCII byte is
+            # the norm rather than the exception. Same reasoning as the git calls
+            # in `_git_status`: `text=True` alone would decode it with the host
+            # code page, and a `UnicodeDecodeError` is not an `OSError`, so it
+            # would escape the fallback below and 500 the search instead of
+            # degrading to `_search_python`.
+            encoding="utf-8",
             timeout=SEARCH_TIMEOUT_SEC,
             check=False,
         )
