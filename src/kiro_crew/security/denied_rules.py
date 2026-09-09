@@ -1288,20 +1288,74 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="local-destructive-rm-rf-root",
-        pattern="rm -rf /.*",
+        # Flag-spelling tolerant with NO ``.*`` gap: every gap is a
+        # literal single space or a run of single-letter flag tokens, so the
+        # pattern stays ONE fragment and the matcher keeps exact full-input
+        # semantics -- a ``.*`` gap would match across ``;``/newlines and
+        # fabricate a command out of two harmless ones (pinned by
+        # ``test_the_view_never_crosses_a_separator``). The runs use a bare
+        # ``*`` over a quantifier-free body, which ``is_safe_user_regex``
+        # accepts; multi-space views (e.g. from a stripped ``" "`` word) still
+        # miss, preserving that documented residual. ``rm`` is token-anchored
+        # (start, whitespace, separator, brace, slash, or backtick before it),
+        # with one deliberate exception: a QUOTE-glued ``rm`` still matches
+        # when a separator follows later in the string. That is what keeps the
+        # Pass-1 whole-string closure for pipelines (``grep 'rm -rf /...' |
+        # python`` must deny even though the literal is quoted), while a lone
+        # ``"rm" -rf /`` still misses raw text (the respelling-proof twin
+        # needs that) and falls through to the normalized view. ``/bin/rm``,
+        # ``{rm;}``, or a backtick-run program still match. Leading ``--`` ends option parsing (``rm -- -rf /``
+        # names files, stays allowed); trailing ``--``/``--no-preserve-root``
+        # after real flags changes nothing and stays denied.
+        # One unquoted operand may precede the flags (``rm junk -rf /``,
+        # covering the cited bypass shape); more than one operand, a quoted
+        # operand, an operand between the flags and the path, or
+        # getopt-permuted trailing flags (``rm / -rf``) still miss -- spelling
+        # any of those needs a repeated operand gap the ReDoS screens forbid.
+        # Other residuals: interposed LONG flags (``-r --verbose -f``) and
+        # leading long-flag padding.
+        pattern=(
+            r'(?:(?<![^\s;|&(){}/`])rm|["\']rm(?=.*[;|&\n]))(?: -[a-z])* '
+            r"(?:(?!--)[^\s;|&()\"']+ )?"
+            r"(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*"
+            r"|(?:-[a-z]*r[a-z]*|--recursive)(?: -[a-z])* "
+            r"(?:-[a-z]*f[a-z]*|--force)"
+            r"|(?:-[a-z]*f[a-z]*|--force)(?: -[a-z])* "
+            r"(?:-[a-z]*r[a-z]*|--recursive))"
+            r"(?: --no-preserve-root| --)? /.*"
+        ),
         category="local-destructive",
         description=(
             "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which "
-            "can wipe the entire operating system and all data."
+            "can wipe the entire operating system and all data. Packed (-fr, -rfv), split (-r -f), "
+            "and long-option (--recursive/--force) spellings match, with runs of single-letter "
+            "flags allowed around them."
         ),
     ),
     DeniedCommandRule(
         id="local-destructive-rm-rf-home",
-        pattern="rm -rf ~.*",
+        # Same flag core as the root rule above, so the same no-``.*``-gap
+        # reasoning applies. The path additionally covers the $HOME spellings
+        # the shell expands to ~: a braced name needs its closing
+        # brace (with or without a ``:-``-family operator), and a bare $HOME
+        # carries a variable-name boundary so ``$HOMEx`` stays allowed.
+        pattern=(
+            r'(?:(?<![^\s;|&(){}/`])rm|["\']rm(?=.*[;|&\n]))(?: -[a-z])* '
+            r"(?:(?!--)[^\s;|&()\"']+ )?"
+            r"(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*"
+            r"|(?:-[a-z]*r[a-z]*|--recursive)(?: -[a-z])* "
+            r"(?:-[a-z]*f[a-z]*|--force)"
+            r"|(?:-[a-z]*f[a-z]*|--force)(?: -[a-z])* "
+            r"(?:-[a-z]*r[a-z]*|--recursive))"
+            r"(?: --no-preserve-root| --)? "
+            r'"?(?:~|\$HOME(?![A-Za-z0-9_])'
+            r"|\$\{HOME\}|\$\{HOME:[^}]*\}).*"
+        ),
         category="local-destructive",
         description=(
             "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which "
-            "would destroy all personal files and config."
+            "would destroy all personal files and config. Same flag spellings as the root rule, "
+            "plus the $HOME/${HOME} spellings the shell expands to ~."
         ),
     ),
     DeniedCommandRule(
@@ -1746,15 +1800,20 @@ BUILTIN_DENY_PATTERNS: list[str] = [r.pattern for r in BUILTIN_DENIED_RULES]
 # enrichment, and they never enter ``BUILTIN_DENY_PATTERNS`` or the golden
 # manifest.
 #
-# Currently EMPTY, on purpose.  Entries here would alias the pre-widening
-# spellings of the ``restart`` / ``update`` / ``cloud`` / ``gateway restart``
-# rows, and those rows do not exist: their enforcement is the
-# ungated argv floor (``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), which no opt-out
-# can reach, so there is nothing left for such a pin to force back on.  A
-# persisted pin in either spelling resolves to ``None`` and is reported by
-# ``_resolved_pin_ids`` as pinning nothing -- which is the truth, and preferable
-# to resolving it onto an id the catalog cannot display or toggle.
-_LEGACY_RULE_ID_BY_PATTERN: dict[str, str] = {}
+# It held four more entries once, aliasing pre-widening spellings of the
+# ``restart`` / ``update`` / ``cloud`` / ``gateway restart`` rows, and those
+# rows are gone: their enforcement is the ungated argv floor
+# (``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), which no opt-out can reach, so
+# there is nothing left for such a pin to force back on. A persisted pin in
+# either of THOSE spellings now resolves to ``None`` and is reported by
+# ``_resolved_pin_ids`` as pinning nothing -- which is the truth, and
+# preferable to resolving it onto an id the catalog cannot display or toggle.
+# The two entries below are the live case of the same mechanism: the rm rules
+# still exist, so their pre-widening spellings keep resolving to them.
+_LEGACY_RULE_ID_BY_PATTERN: dict[str, str] = {
+    "rm -rf /.*": "local-destructive-rm-rf-root",
+    "rm -rf ~.*": "local-destructive-rm-rf-home",
+}
 
 
 def _rule_id_for_pattern(pattern: str) -> "str | None":
@@ -2152,13 +2211,24 @@ def _exception_eligible(view: str) -> bool:
 # a deny pattern AND one of that pattern's exceptions, the deny is skipped.
 # This avoids a blanket allowlist that could bypass unrelated deny rules.
 #
-# Scoped to the two ``local-destructive`` rm rules: they are plain literal
-# strings, so they are the ones an ordinary search for their own subject
-# matter trips over.
+# Scoped to the two ``local-destructive`` rm rules: they guard the shapes an
+# ordinary search for their own subject matter trips over. The legacy pins
+# stay so a persisted pre-widening policy keeps resolving; the live (widened)
+# patterns are registered below from the catalog itself.
 _DENY_EXCEPTIONS: dict[str, list[str]] = {
     "rm -rf /.*": list(_INERT_SEARCH_GLOBS),
     "rm -rf ~.*": list(_INERT_SEARCH_GLOBS),
 }
+
+# The composed rm-rule patterns match the same subjects as the legacy pins
+# above, so they need the same carve-out keys as the legacy pins. Registered from the
+# live rules rather than restating long literals that would drift.
+for _rm_rule in BUILTIN_DENIED_RULES:
+    if _rm_rule.id in (
+        "local-destructive-rm-rf-root",
+        "local-destructive-rm-rf-home",
+    ):
+        _DENY_EXCEPTIONS.setdefault(_rm_rule.pattern, list(_INERT_SEARCH_GLOBS))
 
 
 # ── ReDoS mitigation for the regex deny tier ──

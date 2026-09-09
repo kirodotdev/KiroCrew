@@ -371,7 +371,13 @@ class TestSelfProtectionFlagInterposition:
         """
         from kiro_crew import security
 
-        assert security._LEGACY_RULE_ID_BY_PATTERN == {}
+        # The map holds exactly the live-case aliases: the pre-widening rm
+        # spellings keep resolving to their (still existing) rules. The stale
+        # spellings below are for DELETED rows, so they must resolve to None.
+        assert security._LEGACY_RULE_ID_BY_PATTERN == {
+            "rm -rf /.*": "local-destructive-rm-rf-root",
+            "rm -rf ~.*": "local-destructive-rm-rf-home",
+        }
         for stale in (
             ".*kiro.?crew restart.*",
             ".*kiro.?crew(?:\\s+--?[a-z-]+(?:[= ]\\S+)?)*\\s+restart.*",
@@ -5275,7 +5281,8 @@ class TestDenyMatchingIsQuoteNormalized:
     segment as a SECOND view, additively.
     """
 
-    # One rule (``rm -rf /.*``), every spelling a shell reduces to ``rm -rf /``.
+    # The root rm rule (local-destructive-rm-rf-root): every spelling a shell
+    # reduces to ``rm -rf /``.
     # Deliberately no ``$HOME`` / ``~`` spelling here: the view does not expand,
     # so those belong to the path-identity layer, not to this one.
     RESPELLINGS = (
@@ -5993,31 +6000,28 @@ class TestDenyMatchingIsQuoteNormalized:
         assert is_denied(r"$'mkfs\0junk' /dev/sda") is not None
 
     def test_flag_interposition_is_a_catalog_gap_not_a_view_gap(self):
-        """DOCUMENTED GAP, with the evidence that places it outside this change.
+        """CLOSED GAP (was documented-open; flipped when the rule was widened).
 
         ``$'rm\\0junk' -rf --no-preserve-root /`` normalizes to exactly the command
-        bash runs -- the view is correct -- but the rule ``rm -rf /.*`` requires its
-        text contiguous and does not tolerate an interposed flag, so nothing matches.
-        The PLAIN spelling is allowed too, on base and here alike, which is what
-        shows this is the built-in rule's authoring rather than anything
-        normalization can reach: no view can make a non-matching pattern match.
-
-        Closing it means editing a shipped rule's regex, which changes matching for
-        the whole catalog and is a separate decision.  Pinned so the gap is findable;
-        when it is closed, the first assertion flips.
+        bash runs -- the view was always correct -- but the old rule required its
+        text contiguous and did not tolerate an interposed flag, so nothing matched.
+        The widened rule spells the flag run (packed, split, and long-option
+        forms), so the plain interposed spelling is refused now, in every
+        view that renders it. The assertions below pin the closure: the first one
+        is the flip this docstring always pointed at.
         """
         from kiro_crew import security
 
-        # The catalog cannot see the flag-interposed form in ANY spelling...
-        assert is_denied("rm -rf --no-preserve-root /") is None
-        # ...while the contiguous shape the rule is authored for is refused.
+        # The catalog now sees the flag-interposed form in every spelling...
+        assert is_denied("rm -rf --no-preserve-root /") is not None
+        # ...while the contiguous shape the rule was authored for stays refused.
         assert is_denied("rm -rf /") is not None
         # ...and the view for the escaped spelling IS the command bash runs.
         views = security._deny_segment_views(r"$'rm\0junk' -rf --no-preserve-root /")
         assert "rm -rf --no-preserve-root /" in views, views
 
     def test_two_accepted_over_blocks_are_pinned_not_implied(self):
-        """ACCEPTED residuals from the GPT 5.6 lane's advisory findings.
+        """One ACCEPTED and one CLOSED over-block from the GPT 5.6 lane's findings.
 
         Both are FALSE POSITIVES, not bypasses, and both were measured:
 
@@ -6030,17 +6034,18 @@ class TestDenyMatchingIsQuoteNormalized:
           name; re-joining tokens with spaces turns those intra-word spaces into
           argv boundaries.
 
-        Accepted rather than fixed, on the asymmetry this file already documents
+        The second stays accepted, on the asymmetry this file already documents
         for its data-consumer denylist: a false positive is "annoying, visible, and
-        safe", while the inverse is a silent bypass -- and ``is_denied``'s own
-        docstring states over-blocking is the safer direction for this pass.  Both
-        suggested remedies push toward LESS denial, and the second one would have to
-        mask intra-token whitespace, which is the mechanism that makes a re-spelled
-        command's argv read as the command in the first place.  Pinned so the
-        behaviour is findable and deliberate; if either is closed, its assertion
-        flips.
+        safe", while the inverse is a silent bypass.  Its suggested remedy would
+        have to mask intra-token whitespace, which is the mechanism that makes a
+        re-spelled command's argv read as the command in the first place.
+        The first is closed since the rm rules anchor ``rm`` to a token start:
+        the double-quoted ANSI-C word is inert (bash never decodes it there),
+        while every spelling that does execute still denies through a view that
+        strips the quotes (the respelling cross above stays green).  Pinned so
+        the behaviour is findable and deliberate.
         """
-        assert is_denied("echo \"$'r\\155 -rf /'\"") is not None
+        assert is_denied("echo \"$'r\\155 -rf /'\"") is None
         assert is_denied("echo $'r\\155 -rf /'") is not None
 
     def test_a_single_segment_command_is_not_walked_twice(self):
@@ -8659,3 +8664,112 @@ class TestHostsAliasPublicationWindow:
         # ``ssh dev-dsk`` shape).
         assert _denied_by("ssh farbox uptime") is None
         assert started == []
+
+
+class TestRmFlagVariantsStayDenied:
+    """The rm-rf-root/home rules must not depend on the exact ``-rf`` spelling.
+
+    Packed reorder (``-fr``), combos (``-rfv``), split pairs (``-r -f``), and
+    long options (``--recursive``/``--force``/``--no-preserve-root``) are the
+    same recursive-force deletion.
+    """
+
+    def test_flag_variants_on_root_are_denied(self):
+        for cmd in (
+            "rm -rf /",
+            "rm -fr /",
+            "rm -rfv /tmp/x",
+            "rm -r -f /",
+            "rm -f -r /",
+            "rm --recursive --force /",
+            "rm --force --recursive /",
+            "rm -rf --no-preserve-root /",
+            "rm -r --force /",
+            "rm --recursive -f /",
+            "rm -RF /",
+            # A non-root path under the flags keeps main's historical verdict:
+            # the rule guards the / shape, and narrowing that over-block is a
+            # separate decision, not part of this widening.
+            "rm -rf /tmp/x",
+            # Redundant padding must not exhaust the flag run: leading
+            # runs of single-letter flags as well as runs between the r- and
+            # f-carrying tokens. (Padding with LONG flags, e.g. five
+            # ``--verbose``, is a documented residual -- spelling it needs a
+            # star over quants the ReDoS screen forbids.)
+            "rm -v -v -v -v -v -rf /",
+            "rm -v -v -v -v -v -v -v -v -v -v -rf /",
+            "rm -r -v -v -v -v -v -f /",
+            "rm --recursive -v -v -v -v -v --force /",
+            # ``--`` after real flags changes nothing.
+            "rm -rf -- /",
+            # One interspersed operand does not exonerate (the cited bypass
+            # shape is the first of these).
+            "rm harmless -rf --no-preserve-root /",
+            "rm harmless -rf /",
+            "rm -v harmless -rf /",
+            "rm - -rf /",
+            # The program need not be a bare ``rm``: a path, a brace group,
+            # or a substitution runs the same binary.
+            "/bin/rm -rf /",
+            "{rm -rf /;}",
+            "`rm -rf /`",
+            "sudo rm -rf /",
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_flag_variants_on_home_are_denied(self):
+        for cmd in (
+            "rm -rf ~",
+            "rm -fr ~",
+            "rm -rfv ~/x",
+            "rm -r -f ~",
+            "rm --recursive --force ~",
+        ):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_non_recursive_force_spellings_stay_allowed(self):
+        """Only the recursive+force combination is gated: ``-f`` without
+        ``-r``, ``-r`` without ``-f``, and flagless ``rm`` keep passing, and
+        so does a lone ``--recursive`` (it still prompts). ``--`` before the
+        flags ends option parsing, so ``rm -- -rf /`` names files, not flags.
+        """
+        for cmd in (
+            "rm -f /tmp/x",
+            "rm -r /tmp/x",
+            "rm /tmp/x",
+            "rm -v /tmp/x",
+            "rm --recursive /tmp/x",
+            "rm -rf",
+            "rm -- -rf /",
+            "rm -- --force --recursive /",
+        ):
+            assert is_denied(cmd) is None, cmd
+
+
+class TestRmHomeEnvSpellingsStayDenied:
+    """$HOME / ${HOME} expand to ~, so the home rule must cover them."""
+
+    def test_home_env_spellings_denied(self):
+        for cmd in [
+            "rm -rf $HOME",
+            "rm -rf $HOME/docs",
+            "rm -rf ${HOME}",
+            "rm -rf ${HOME}/docs",
+            # Braced parameter expansions resolve to home too.
+            "rm -rf ${HOME:?}",
+            "rm -rf ${HOME:-/tmp/fallback}",
+            "rm -rf ${HOME:=/tmp/fallback}",
+            "rm -rf ${HOME:+/tmp/other}",
+            'rm -rf "$HOME"',
+            'rm -rf "$HOME"/docs',
+            "rm -rf ~",
+            "rm -rf ~/docs",
+        ]:
+            assert is_denied(cmd) is not None, f"should deny {cmd!r}"
+        # A different variable name must not match.
+        assert is_denied("rm -rf ${HOMEx}") is None, "should allow ${HOMEx}"
+        assert is_denied("rm -rf $HOMExyz") is None, "should allow $HOMExyz"
+
+    def test_lookalikes_stay_allowed(self):
+        for cmd in ["rm -f ~", "rm ~", "rm -rf", "rm -rf ./rel", "rm -rf file~"]:
+            assert is_denied(cmd) is None, f"should allow {cmd!r}"
