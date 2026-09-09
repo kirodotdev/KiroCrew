@@ -4,6 +4,10 @@
 
 Installed apps declare notification channels in `app.json` and publish through `POST /api/notifications/push` with an app token. `dashboard.handlers.notifications_push.api_push_notification` resolves the producer from the verified token rather than the request body, requires a manifest-declared channel, and uses the state-owned rate limiter. `NotificationBus.push` enriches the payload and calls `DashboardState._deliver_note`, which redacts, applies channel settings, appends the note, broadcasts it, and queues persistence.
 
+### Reaching the endpoint from an entryPoint backend
+
+A `backend.entryPoint` app runs as a separate loopback process, so it must learn the gateway's own address before it can push. The gateway injects that at spawn time as one generic environment variable (see `docs/app-kit/api-reference.md` -> Backend Environment Variables): `KIROCREW_GATEWAY_ORIGIN`, the gateway's `http://127.0.0.1:<bound port>`. It is set ONLY from the port the gateway ACTUALLY bound (its exported `KIROCREW_BOUND_PORT`, numeric and in `1..65535`), never the app's own `PORT`, an inherited `KIROCREW_PORT`, a config value, a default, or a request-derived value. Without that bound-port evidence the variable is omitted, so a backend that needs a callback base fails closed (stays dormant) rather than pushing to a guessed address. When the origin is present the backend pushes to `POST {KIROCREW_GATEWAY_ORIGIN}/api/notifications/push`, authenticating with its app secret (`.app_secret`, owner-only `0600`). In-gateway route apps (`backend.routes`) have no separate process and push in-process (see `ops-mission-control` `notify_out`), so they need no injected origin.
+
 ## API
 
 ### POST /api/notifications/push
