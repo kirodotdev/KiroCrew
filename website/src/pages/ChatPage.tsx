@@ -2642,7 +2642,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const planActionMutationRef = useRef(planActionMutation)
   planActionMutationRef.current = planActionMutation
 
-  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean) => {
+  // Resolves true when the server accepted the message (dispatched, queued,
+  // or received-but-late), false when nothing was delivered (offline, empty,
+  // intercepted locally, transport error, refused). UI reactions all stay
+  // inside send(); the verdict exists for callers that persist state only on
+  // delivery (ArtifactPanel's submit-to-chat batch marks comments sent on it).
+  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean): Promise<boolean> => {
     // Defense-in-depth: ChatInput already gates Send/Optimize buttons and
     // the keyboard Enter shortcut on `connected`, but a future caller (a
     // programmatic dispatch from a hotkey, a follow-up option click, an
@@ -2650,14 +2655,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // clear the draft via setInput('') below — losing the user's typed
     // message with no recovery path is the offline-UX regression we're
     // guarding against. Cheap belt-and-braces.
-    if (!connected) return
+    if (!connected) return false
     const raw = (optionText || inputRef.current).trim()
  // Capture + clear the widget-origin tag: attribute this
     // turn to a widget only if the composer still carries the exact text a
     // widget action pre-filled. Cleared on every send so it can't go stale.
     const widgetOrigin = !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
     widgetPrefillRef.current = null
-    if (!raw && !pendingFilesRef.current.length && !pendingSessionsRef.current.length) return
+    if (!raw && !pendingFilesRef.current.length && !pendingSessionsRef.current.length) return false
 
     // Sending while STREAMING dictation is live ends the dictation. The panel
     // advertises "Enter to send", so this path is reachable by design — and
@@ -2734,7 +2739,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             message: slashResult.error || i18nT('pages.chatPage.side_command_not_run'),
           })
         }
-        return
+        return false
       }
     }
 
@@ -2743,7 +2748,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (kq && !optionText) {
       knowledgeFetchRef.current.searchKnowledge(kq)
       setInput('')
-      return
+      return false
     }
 
     // Snapshot the staged attachments BEFORE the composer is cleared below, so a
@@ -2987,7 +2992,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           setSessionRefDraft(sessionRefDrafts.current, uiSlot, restoredRefs)
           saveDrafts()
         }
-        return
+        return false
       }
       const result = created
       slot = result.key;
@@ -3134,9 +3139,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // core copy the other surfaces use, instead of a bare "Connection error".
       failLocalTurn({ role: 'error', content: i18nT('pages.chatPage.send_failed_connection'), cls: '' })
       restoreComposerAfterFailedSend()
-      return
+      return false
     }
-    if (receipt.status === 'response-late') return
+    // Received by the server; only the answer is late — a delivery for the verdict.
+    if (receipt.status === 'response-late') return true
     const accepted = receipt.status === 'dispatched' || receipt.status === 'queued'
     if (body.queued && llmTxt === typedTxtDirs) {
       // The server queued this send and its receipt names the entry:
@@ -3254,6 +3260,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // The user answered in the composer instead of the card; a blocking card
     // is resolved over the network, so this cannot be a store-only retirement.
     void resolveAskAfterSend(body, slot === entrySendSlot ? askAtSend : null, dispatch)
+    // The delivery verdict (see the callback's doc above). Only an explicit
+    // `refused` reads as not-delivered here; `unknown` (a 2xx whose body did
+    // not parse) may have started a turn, so it counts as delivered for the
+    // same reason the composer above does not restore on it — a retry it
+    // invited could duplicate a delivered turn.
+    return receipt.status !== 'refused'
     // `send` is deliberately kept stable: it reads volatile values (agent,
     // model, project, mode, colorTheme, activeSlot) through refs so it does not
     // re-create on every keystroke/theme/agent change (it is passed to children
@@ -3283,10 +3295,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Defense-in-depth: the panels' submit buttons are gated on `connected`,
     // but bail here too so an offline call can't switch the active session
     // and then have send() silently drop the message.
-    if (!connected) return
+    if (!connected) return false
     const target = tabsCtl.activeTab?.slot ?? null
     if (target && target !== activeSlot) dispatch(switchSlot(target))
-    send(message, target ?? undefined)
+    // The delivery verdict flows back to the panel: ArtifactPanel marks a
+    // comment batch as sent only when this resolves true.
+    return send(message, target ?? undefined)
   }, [connected, tabsCtl.activeTab, activeSlot, dispatch, send])
 
   // Auto-send when navigated with ?autoSend=1 or ?token= with prompt
