@@ -754,7 +754,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             session_key,
         )
         # Durability, at the ONE point where the payload is still in memory and
-        # the turn is provably unopened (issue #2217). Every other outcome of this
+        # the turn is provably unopened. Every other outcome of this
         # dispatch — a completed turn, a turn that ran and failed — is already
         # recorded somewhere, which is why nothing is spooled on those paths and
         # why a replay cannot double-answer. Best-effort by construction: the
