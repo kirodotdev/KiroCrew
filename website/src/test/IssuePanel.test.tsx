@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { IssueSource } from '../types'
 import type { PullRequestLink } from '../utils/pullRequestLinks'
@@ -245,5 +245,23 @@ describe('IssuePanel', () => {
 
     const tabs = await screen.findAllByRole('tab')
     for (const tab of tabs) expect(tab.textContent ?? '').not.toContain('group-a/svc')
+  })
+
+  it('clamps the cached-refresh notice to one line so it cannot push Retry out of the compact row', async () => {
+    renderPanel({ issues: [links[0]] })
+    await screen.findByText('Crash on empty label list')
+
+    mockApi.fetchIssueSource.mockRejectedValue(new Error('gh: 503 upstream unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh issue' }))
+
+    const notice = await screen.findByTestId('issue-panel-refresh-error')
+    const msg = within(notice).getByText(/showing the last loaded version/)
+    expect(msg).toHaveClass('line-clamp-1')
+    // `truncate` would be inert on the inline-flex root, and its nowrap inherits
+    // down and cancels the wrap the message declares for itself.
+    expect(notice.className).not.toMatch(/truncate|whitespace-nowrap/)
+    // Localised: the longest catalogs wrap this label onto a second line.
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    expect(retry).toHaveClass('shrink-0', 'whitespace-nowrap')
   })
 })

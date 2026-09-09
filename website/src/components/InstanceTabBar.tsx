@@ -1176,10 +1176,13 @@ export default function InstanceTabBar({
         {/* Only a 403 (feature gated) used to be interpreted; every other
             listInstances failure was dropped and the bar simply showed no
             crews. askAgent on: the bar holds no draft. */}
+        {/* Clamped on the message, not `truncate` on the root: the notice root is
+            a flex container, where text-overflow is inert and nowrap only blocks the break. */}
         {listFailure && (
           <ErrorNotice
             variant="inline"
-            className="ml-2 min-w-0 truncate max-w-[320px]"
+            className="ml-2 min-w-0 max-w-[320px]"
+            messageClassName="line-clamp-1"
             message={listFailure}
             askAgent
             testId="instance-tab-bar-list-error"
