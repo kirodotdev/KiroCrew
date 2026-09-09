@@ -127,6 +127,131 @@ async def api_taskrunner_status(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
+def _validate_spec_path(raw: str) -> tuple[str | None, str]:
+    """Resolve and validate a caller-supplied spec path off the event loop.
+
+    Returns ``(resolved_path, "")`` on success, or ``(None, code)`` where
+    ``code`` is the machine-readable failure identifier the handler maps to
+    its error response (``invalid_spec_path`` or ``access_denied``).
+    """
+    resolved = Path(raw).resolve()
+    if ".." in Path(raw).parts or not resolved.is_file():
+        return None, "invalid_spec_path"
+    if is_sensitive_path(str(resolved)):
+        return None, "access_denied"
+    return str(resolved), ""
+
+
+def _write_inline_spec(work_dir: str | Path, content: str) -> Path:
+    """Materialize an inline spec. Blocking; call from a worker thread."""
+    fpath = Path(work_dir) / f"TASK_{uuid.uuid4().hex[:8]}.md"
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    fpath.write_text(content, encoding="utf-8")
+    return fpath
+
+
+def _make_plan_dir(work_dir: Path) -> tuple[str, Path]:
+    """Claim a fresh plan directory. Blocking; call from a worker thread."""
+    while True:
+        new_id = f"plan_{uuid.uuid4().hex[:8]}"
+        task_dir = work_dir / new_id
+        try:
+            task_dir.mkdir(parents=True, exist_ok=False)
+            return new_id, task_dir
+        except FileExistsError:
+            continue
+
+
+async def _drain_worker(worker: asyncio.Task) -> None:
+    """Wait for an already-dispatched worker across repeated cancellation.
+
+    Cancelling ``asyncio.to_thread`` never stops its thread.  An owned file or
+    directory could otherwise appear after the handler has lost the path needed
+    to remove it.  Callers drain first, inspect the worker result, clean up, and
+    only then propagate cancellation.
+    """
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            continue
+        except Exception:
+            break
+
+
+async def _remove_owned_path(path: Path, *, directory: bool = False) -> None:
+    """Remove a handler-owned path off-loop and settle the worker on cancel."""
+    operation = path.rmdir if directory else lambda: path.unlink(missing_ok=True)
+    worker = asyncio.create_task(asyncio.to_thread(operation))
+    try:
+        await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        await _drain_worker(worker)
+        raise
+
+
+async def _materialize_inline_spec(work_dir: str | Path, content: str) -> Path:
+    """Write an inline spec without letting cancellation orphan the result."""
+    worker = asyncio.create_task(asyncio.to_thread(_write_inline_spec, work_dir, content))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError as cancelled:
+        await _drain_worker(worker)
+        try:
+            fpath = worker.result()
+        except Exception:
+            pass
+        else:
+            try:
+                await _remove_owned_path(fpath)
+            except asyncio.CancelledError:
+                pass
+            except OSError:
+                logger.warning("failed to remove cancelled inline spec %s", fpath, exc_info=True)
+        raise cancelled
+
+
+def _spec_retained_by_run(state: DashboardState, spec_path: Path) -> bool:
+    """True when a registered run still references *spec_path* as its spec.
+
+    ``start_background`` can be cancelled AFTER it registered the run
+    placeholder (its internal rollback covers only the persistence hop), in
+    which case the run — and the dashboard surface reading it — legitimately
+    owns the spec file now: deleting it would corrupt a retained run. Ownership
+    of a handler-created spec transfers the moment any run records its path.
+    """
+    runner = state.task_runner
+    if runner is None:
+        return False
+    target = str(spec_path)
+    return any(run.spec_path == target for run in runner._runs.values())
+
+
+async def _claim_plan_dir(work_dir: Path) -> tuple[str, Path]:
+    """Claim a plan directory without letting cancellation orphan the result."""
+    worker = asyncio.create_task(asyncio.to_thread(_make_plan_dir, work_dir))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError as cancelled:
+        await _drain_worker(worker)
+        try:
+            _new_id, task_dir = worker.result()
+        except Exception:
+            pass
+        else:
+            try:
+                await _remove_owned_path(task_dir, directory=True)
+            except asyncio.CancelledError:
+                pass
+            except OSError:
+                logger.warning(
+                    "failed to remove cancelled chat plan directory %s",
+                    task_dir,
+                    exc_info=True,
+                )
+        raise cancelled
+
+
 async def api_taskrunner_start(request: web.Request) -> web.Response:
     """POST /api/taskrunner — start a task from a spec file path or inline content.
 
@@ -149,12 +274,16 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     # use share one value — no gap where spec_path could differ from what was
     # checked, and the containment guard is visible to static analysis.
     if not spec_path.startswith("__inline__:"):
-        resolved = Path(spec_path).resolve()
-        if ".." in Path(spec_path).parts or not resolved.is_file():
-            return web.json_response({"error": "invalid spec path"}, status=400)
-        if is_sensitive_path(str(resolved)):
-            return web.json_response({"error": "access denied"}, status=403)
-        spec_path = str(resolved)
+        validated, failure = await asyncio.to_thread(_validate_spec_path, spec_path)
+        if validated is None:
+            if failure == "access_denied":
+                return web.json_response(
+                    {"error": "access denied", "code": "access_denied"}, status=403
+                )
+            return web.json_response(
+                {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
+            )
+        spec_path = validated
 
     # Handle inline spec content
     created_spec: Path | None = None
@@ -162,11 +291,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         content = spec_path[len("__inline__:") :]
         if not content.strip():
             return web.json_response({"error": "empty spec content"}, status=400)
-        work_dir = state.task_runner._work_dir
-        fname = f"TASK_{uuid.uuid4().hex[:8]}.md"
-        fpath = Path(work_dir) / fname
-        fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath.write_text(content, encoding="utf-8")
+        fpath = await _materialize_inline_spec(state.task_runner._work_dir, content)
         created_spec = fpath
         spec_path = str(fpath)
 
@@ -189,21 +314,34 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             workspace_dir=workspace_dir,
             auto_approve=auto_approve,
         )
-    except Exception as exc:
-        # The handler owns the temp file ONLY when it created it: a rejected
-        # start must not strand TASK_*.md orphans in the work dir, and an
-        # external spec the caller passed by path must never be deleted.
+    except BaseException as exc:
+        # The handler owns the temp file ONLY when it created it AND no run
+        # retains it: a rejected start must not strand TASK_*.md orphans in
+        # the work dir, an external spec the caller passed by path must never
+        # be deleted, and a spec a registered run still references must never
+        # be deleted either — ``start_background`` cancelled after admission
+        # retains the run placeholder (its rollback covers only the
+        # persistence hop), so ownership has transferred to the run.
+        # ``BaseException`` (mirroring the from_chat rollback below) so a
+        # request cancelled during ``start_background`` also cleans up — the
+        # spec-write hop is shielded, but the very next await used to leak.
         # Cleanup is best-effort — its failure must not replace the startup
         # error the client is about to receive.
-        if created_spec is not None:
+        if created_spec is not None and not _spec_retained_by_run(state, created_spec):
             try:
-                created_spec.unlink(missing_ok=True)
+                await _remove_owned_path(created_spec)
+            except asyncio.CancelledError:
+                # The removal worker was drained to completion; the pending
+                # cancellation is re-delivered by the raise below / next await.
+                pass
             except OSError:
                 logger.warning(
                     "failed to remove inline spec %s after a rejected start",
                     created_spec,
                     exc_info=True,
                 )
+        if not isinstance(exc, Exception):
+            raise  # CancelledError and friends: propagate after cleanup.
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "spec": spec_path, "task_id": task_id})
 
@@ -671,14 +809,7 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
         if task_id:
             run = await state.task_runner.update_plan(task_id, steps)
         else:
-            while True:
-                new_id = f"plan_{uuid.uuid4().hex[:8]}"
-                task_dir = state.task_runner._work_dir / new_id
-                try:
-                    task_dir.mkdir(parents=True, exist_ok=False)
-                    break
-                except FileExistsError:
-                    continue
+            new_id, task_dir = await _claim_plan_dir(state.task_runner._work_dir)
             original_input = str(body.get("original_input", ""))
             run = Project(
                 spec_path="",
@@ -702,7 +833,7 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
                     await asyncio.shield(cleanup_task)
                 finally:
                     try:
-                        task_dir.rmdir()
+                        await _remove_owned_path(task_dir, directory=True)
                     except OSError:
                         logger.warning("Failed to remove rejected chat plan directory %s", task_dir)
                 raise
