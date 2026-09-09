@@ -27,13 +27,13 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.crew_companion.hooks import get_appearances, get_store
-from kiro_crew.apps.builtins.crew_companion.pack_transfer import (
+from kiro_crew.appearance_packs.transfer import (
     export_bundle,
     fetch_petdex_pet,
     import_bundle,
     save_sprite_pack,
 )
+from kiro_crew.apps.builtins.crew_companion.hooks import get_appearances, get_store
 from kiro_crew.apps.manager import is_app_enabled
 
 logger = logging.getLogger(__name__)

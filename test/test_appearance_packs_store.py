@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from kiro_crew.apps.builtins.crew_companion.appearances import (
+from kiro_crew.appearance_packs.store import (
     DEFAULT_PACK,
     AppearanceStore,
 )

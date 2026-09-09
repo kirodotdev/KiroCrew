@@ -26,7 +26,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.apps.builtins.crew_companion import appearances as ap
+from kiro_crew.appearance_packs import store as ap
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.dashboard import appearances as shared
 
@@ -804,7 +804,7 @@ class TestPetdexRoute:
     @pytest.mark.asyncio
     async def test_a_hit_is_handed_back(self, monkeypatch):
         monkeypatch.setattr(
-            "kiro_crew.apps.builtins.crew_companion.pack_transfer.fetch_petdex_pet",
+            "kiro_crew.appearance_packs.transfer.fetch_petdex_pet",
             lambda raw: {"ok": True, "slug": "kirby", "spriteBase64": _b64(_PNG)},
         )
         async with TestClient(TestServer(_app())) as client:
@@ -819,7 +819,7 @@ class TestPetdexRoute:
         """A miss or an unreachable registry is what the import dialog shows,
         not a client error — the same contract the app's own route has."""
         monkeypatch.setattr(
-            "kiro_crew.apps.builtins.crew_companion.pack_transfer.fetch_petdex_pet",
+            "kiro_crew.appearance_packs.transfer.fetch_petdex_pet",
             lambda raw: {"ok": False, "error": "Could not reach PetDex"},
         )
         async with TestClient(TestServer(_app())) as client:
@@ -831,7 +831,7 @@ class TestPetdexRoute:
     async def test_a_body_that_is_not_an_object_is_treated_as_empty(self, monkeypatch):
         seen: list[object] = []
         monkeypatch.setattr(
-            "kiro_crew.apps.builtins.crew_companion.pack_transfer.fetch_petdex_pet",
+            "kiro_crew.appearance_packs.transfer.fetch_petdex_pet",
             lambda raw: seen.append(raw) or {"ok": False, "error": "no"},
         )
         async with TestClient(TestServer(_app())) as client:
@@ -1292,7 +1292,7 @@ class TestAnAuditNeverDecidesTheOperation:
     @pytest.mark.asyncio
     async def test_a_petdex_fetch_still_answers(self, sel_is_down, monkeypatch):
         monkeypatch.setattr(
-            "kiro_crew.apps.builtins.crew_companion.pack_transfer.fetch_petdex_pet",
+            "kiro_crew.appearance_packs.transfer.fetch_petdex_pet",
             lambda raw: {"ok": False, "error": "no"},
         )
         async with TestClient(TestServer(_app())) as client:
@@ -1383,17 +1383,17 @@ class TestLibraryMutationsAreSerialized:
 
 
 class TestTheDashboardAddsNoBootPathImportOfPackTransfer:
-    """This module and its handler defer `pack_transfer` to call time.
+    """This module and its handler defer `appearance_packs.transfer` to call time.
 
-    `pack_transfer` builds a urllib opener at module scope, and the dashboard
-    route table imports the handler module before the socket binds. What THIS
-    PR controls is its own two modules: neither may import `pack_transfer` at
-    module scope. That includes the store class itself: it lives inside the
-    Companion app package, whose initializer imports its routes and, through
-    them, `pack_transfer` -- so a module-scope import of ANYTHING under the app
-    package reaches the opener. Both dashboard modules therefore import from the
-    neutral `appearance_packs` leaf at module scope and the app package only
-    inside the functions that need it.
+    `transfer` builds a urllib opener at module scope, and the dashboard route
+    table imports the handler module before the socket binds, so neither
+    dashboard module may import it at module scope. `appearance_packs.store`
+    may: it does no module-scope work, which is why it is a normal top-level
+    import here.
+
+    Neither may import the Crew Companion app package at all. That app is
+    optional (`defaultEnabled: false`), so a crew's face must be drawn by code
+    that does not live inside it: the appearance library imports no app.
     """
 
     @pytest.mark.parametrize(
@@ -1411,7 +1411,23 @@ class TestTheDashboardAddsNoBootPathImportOfPackTransfer:
         ]
         assert offenders == [], offenders
 
-    def test_importing_the_dashboard_modules_does_not_load_the_app_package(self):
+    @pytest.mark.parametrize(
+        "module",
+        ["kiro_crew.dashboard.appearances", "kiro_crew.dashboard.handlers.appearances"],
+    )
+    def test_no_module_scope_transfer_import(self, module):
+        """The opener is what must not be built at import time."""
+        import importlib
+
+        source = Path(importlib.import_module(module).__file__).read_text(encoding="utf-8")
+        offenders = [
+            line
+            for line in source.splitlines()
+            if line.startswith(("from ", "import ")) and "appearance_packs.transfer" in line
+        ]
+        assert offenders == [], offenders
+
+    def test_importing_the_dashboard_modules_loads_neither_the_app_nor_the_opener(self):
         """Proved in a fresh interpreter, not by reading source.
 
         A `TYPE_CHECKING` guard or a function-local import that is wrong in
@@ -1425,8 +1441,9 @@ class TestTheDashboardAddsNoBootPathImportOfPackTransfer:
             "import sys\n"
             "import kiro_crew.dashboard.appearances\n"
             "import kiro_crew.dashboard.handlers.appearances\n"
-            "loaded = sorted(m for m in sys.modules if 'crew_companion' in m)\n"
-            "print(loaded)\n"
+            "bad = [m for m in sys.modules if 'crew_companion' in m]\n"
+            "bad += [m for m in sys.modules if m.endswith('appearance_packs.transfer')]\n"
+            "print(sorted(bad))\n"
         )
         out = subprocess.run(
             [sys.executable, "-B", "-c", code],  # -B: no __pycache__ in the checkout

@@ -1,9 +1,9 @@
 """Pack transfer — export, import, and the PetDex registry.
 
-Split out from ``appearances.py`` because this is where the companion stops dealing
-only with its own files and starts accepting content from outside: a bundle the user
-picked, or a sprite sheet fetched from the internet. That boundary deserves to be
-read in one place.
+Separate from ``store.py`` because this is where a library stops dealing only with
+its own files and starts accepting content from outside: a bundle the user picked,
+or a sprite sheet fetched from the internet. That boundary deserves to be read in
+one place.
 
 Three rules hold everywhere in this module:
 
@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from kiro_crew.apps.builtins.crew_companion.appearances import (
+from kiro_crew.appearance_packs.store import (
     DEFAULT_PACK,
     MAX_FILE_BYTES,
     _safe_filename,
@@ -104,7 +104,7 @@ def _petdex_asset_url(candidate: Any) -> str | None:
         return None
     host = (parsed.hostname or "").lower()
     if host != PETDEX_HOST and not host.endswith(f".{PETDEX_HOST}"):
-        logger.warning("crew-companion: refusing off-host PetDex asset: %s", host)
+        logger.warning("appearance-packs: refusing off-host PetDex asset: %s", host)
         return None
     return candidate
 
@@ -125,7 +125,7 @@ class _PinnedRedirects(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
         if _petdex_asset_url(newurl) is None:
-            logger.warning("crew-companion: refusing PetDex redirect to %s", newurl)
+            logger.warning("appearance-packs: refusing PetDex redirect to %s", newurl)
             return None
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -173,7 +173,7 @@ def fetch_petdex_pet(raw_input: Any) -> dict[str, Any]:
     try:
         manifest = _get(PETDEX_MANIFEST_URL, as_json=True)
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        logger.warning("crew-companion: PetDex manifest fetch failed: %s", exc)
+        logger.warning("appearance-packs: PetDex manifest fetch failed: %s", exc)
         return {"ok": False, "error": "Could not reach PetDex"}
 
     pets = manifest.get("pets") if isinstance(manifest, dict) else None
@@ -197,7 +197,7 @@ def fetch_petdex_pet(raw_input: Any) -> dict[str, Any]:
     try:
         sheet = _get(sheet_url, as_json=False)
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        logger.warning("crew-companion: PetDex sprite fetch failed: %s", exc)
+        logger.warning("appearance-packs: PetDex sprite fetch failed: %s", exc)
         return {"ok": False, "error": "Could not download that pet's art"}
 
     display_name = str(pet.get("displayName") or slug)
@@ -211,7 +211,7 @@ def fetch_petdex_pet(raw_input: Any) -> dict[str, Any]:
                 display_name = str(detail.get("displayName") or display_name)
                 description = str(detail.get("description") or "")
         except (urllib.error.URLError, OSError, ValueError):
-            logger.debug("crew-companion: PetDex pet.json unavailable")
+            logger.debug("appearance-packs: PetDex pet.json unavailable")
 
     return {
         "ok": True,

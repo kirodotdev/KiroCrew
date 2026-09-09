@@ -77,7 +77,7 @@ def _max_bundle_bytes() -> int:
     pack. It is cheap, but ``no-new-work-on-gateway-boot-path`` is about the
     class, not the cost: the first request pays it instead.
     """
-    from kiro_crew.apps.builtins.crew_companion.pack_transfer import MAX_BUNDLE_BYTES
+    from kiro_crew.appearance_packs.transfer import MAX_BUNDLE_BYTES
 
     return MAX_BUNDLE_BYTES
 
@@ -387,7 +387,7 @@ async def api_appearances_petdex_fetch(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         body = {}
     # boot path: see _max_bundle_bytes.
-    from kiro_crew.apps.builtins.crew_companion.pack_transfer import fetch_petdex_pet
+    from kiro_crew.appearance_packs.transfer import fetch_petdex_pet
 
     result = await asyncio.to_thread(fetch_petdex_pet, body.get("input", ""))
     _audit(

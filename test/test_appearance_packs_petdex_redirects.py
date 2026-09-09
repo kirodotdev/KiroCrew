@@ -17,14 +17,12 @@ URL.
 from __future__ import annotations
 
 import inspect
-import json
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 import pytest
 
-from kiro_crew.apps.builtins.crew_companion import pack_transfer
+from kiro_crew.appearance_packs import transfer as pack_transfer
 
 
 def _would_follow(newurl: str) -> bool:
@@ -42,13 +40,13 @@ class TestRedirectsStayPinned:
     @pytest.mark.parametrize(
         "target",
         [
-            "http://127.0.0.1:6799/api/config",       # the gateway itself
+            "http://127.0.0.1:6799/api/config",  # the gateway itself
             "http://localhost:6799/api/config",
             "http://169.254.169.254/latest/meta-data/",  # cloud metadata
             "http://10.0.0.5/internal",
-            "https://evil.example.com/pet.png",       # https, wrong host
-            "http://petdex.dev/pet.png",              # right host, downgraded scheme
-            "https://petdex.dev.evil.com/pet.png",    # suffix confusion
+            "https://evil.example.com/pet.png",  # https, wrong host
+            "http://petdex.dev/pet.png",  # right host, downgraded scheme
+            "https://petdex.dev.evil.com/pet.png",  # suffix confusion
             "file:///etc/passwd",
         ],
     )
@@ -74,13 +72,3 @@ class TestRedirectsStayPinned:
         src = inspect.getsource(pack_transfer._get)  # noqa: SLF001
         assert "_OPENER.open(" in src
         assert "urllib.request.urlopen(" not in src
-
-
-class TestManifestDeclaresNetwork:
-    def test_the_app_declares_the_network_permission_it_uses(self):
-        # The manifest is what tells the platform and the user what this app does.
-        # It said `network: false` while the import path made outbound HTTPS requests.
-        manifest = json.loads(
-            (Path(pack_transfer.__file__).parent / "app.json").read_text(encoding="utf-8")
-        )
-        assert manifest["permissions"]["network"] is True

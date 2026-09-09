@@ -21,7 +21,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.apps.builtins.crew_companion.appearances import AppearanceStore
+from kiro_crew.appearance_packs.store import AppearanceStore
 from kiro_crew.apps.builtins.crew_companion.store import CompanionStore
 
 logger = logging.getLogger(__name__)

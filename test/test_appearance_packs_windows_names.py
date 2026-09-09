@@ -1,6 +1,6 @@
 """Windows-name validation for pack ids and pack member filenames.
 
-The two validators in ``appearances`` are the only boundary between a pack
+The two validators in ``appearance_packs.store`` are the only boundary between a pack
 manifest (or a route parameter) and a real path on disk, so a name Windows
 treats specially has to be refused there or not at all.
 
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.apps.builtins.crew_companion import appearances as ap
+from kiro_crew.appearance_packs import store as ap
 
 _RESERVED_IDS = ["con", "CON", "nul", "NUL", "prn", "aux", "com1", "COM9", "lpt1", "lpt9"]
 _RESERVED_FILES = ["nul.svg", "NUL.svg", "con.json", "aux.png", "com1.svg", "lpt9.svg"]

@@ -8,10 +8,10 @@ could persist a reference the store is obliged to refuse.
 
 The two sides cannot share the store's own copy of the rule.
 ``config/sections.py`` is deliberately one-way ("it must not import the loader,
-schema, or validation modules") and reaching into an app package from it would
-invert the dependency and pull that app's tree into every config load. So the
-rule lives here, in a module that imports nothing but ``typing``, and both
-sides read it.
+schema, or validation modules") and the store reads the filesystem, so pulling
+it into a config load would put ``json``/``shutil`` and a directory walk behind
+every load. So the rule lives here, in a module that imports nothing but the
+standard library, and both sides read it.
 
 The character class is what the pack store has always enforced, unchanged:
 ``str.isalnum`` plus dash and underscore. ``isalnum`` is Unicode-aware, so the
@@ -29,8 +29,8 @@ from typing import Any
 
 #: The pack every install has: its art ships inside the frontend bundle, so it
 #: has no directory on disk and is never imported, exported or deleted. Lives
-#: here rather than in the Companion store module so the dashboard can name it
-#: without importing the app package (whose initializer pulls in its routes).
+#: here rather than in the store module so the config and the dashboard can name
+#: it without importing a filesystem reader.
 DEFAULT_PACK = "kiro-ghost"
 
 #: Cap on a pack id. Long enough for a descriptive name, short enough that the

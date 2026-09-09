@@ -36,21 +36,19 @@ import base64
 import binascii
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from kiro_crew.appearance_packs import pack_id_key, safe_pack_id
+from kiro_crew.appearance_packs.store import AppearanceStore
 from kiro_crew.config.paths import data_home
 from kiro_crew.loop_lock import LoopBoundLock
-
-if TYPE_CHECKING:
-    from kiro_crew.apps.builtins.crew_companion.appearances import AppearanceStore
 
 #: The crew library's directory under the data home. A directory of its own
 #: rather than a bare ``appearances/`` at the top level, because the store keeps
 #: its colour maps beside the packs and both belong to the same library.
 LIBRARY_DIRNAME = "appearance-library"
 
-_store: "AppearanceStore | None" = None
+_store: AppearanceStore | None = None
 _store_lock = threading.Lock()
 
 #: Serializes every MUTATION of the crew library (import, delete). ``LoopBoundLock``
@@ -74,16 +72,8 @@ def library_dir() -> Path:
     return data_home() / LIBRARY_DIRNAME
 
 
-def get_appearance_store() -> "AppearanceStore":
+def get_appearance_store() -> AppearanceStore:
     """The process-wide crew appearance store, built on first use."""
-    # boot path: the store class lives inside the Crew Companion app package,
-    # whose initializer imports its routes and, through them, `pack_transfer`
-    # (which builds a urllib opener at module scope). The dashboard route table
-    # imports this module before the socket binds, so importing the app here at
-    # module scope would put that work on every gateway launch. First request
-    # instead -- the same deferral `import_pack` below already applies.
-    from kiro_crew.apps.builtins.crew_companion.appearances import AppearanceStore
-
     global _store
     with _store_lock:
         if _store is None:
@@ -387,13 +377,15 @@ async def import_pack(payload: object) -> dict:
     and running under ``_drained_to_thread`` means a cancelled request cannot
     release the lock with the write still in flight.
     """
-    # boot path: pack_transfer builds a urllib opener at module scope, and this
-    # module is imported by the dashboard's route table before the socket binds;
-    # importing it here means the first import request pays that, not the launch.
-    from kiro_crew.apps.builtins.crew_companion.pack_transfer import import_bundle
+    # boot path: `appearance_packs.transfer` builds a urllib opener at module
+    # scope, and this module is imported by the dashboard's route table before
+    # the socket binds; importing it here means the first import request pays
+    # that, not the launch. The store itself does no such work, so it is a
+    # normal top-level import.
+    from kiro_crew.appearance_packs.transfer import import_bundle
     from kiro_crew.dashboard.handlers.agents import _drained_to_thread
 
-    def _check_then_import(store: "AppearanceStore") -> dict:
+    def _check_then_import(store: AppearanceStore) -> dict:
         # Both halves off the event loop: the reference check decodes every
         # distinct sprite the manifest names, which on a bundle at the size cap
         # is real CPU work, and a synchronous stretch that long on the loop is

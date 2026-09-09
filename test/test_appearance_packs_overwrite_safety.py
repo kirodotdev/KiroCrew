@@ -17,7 +17,7 @@ import os
 
 import pytest
 
-from kiro_crew.apps.builtins.crew_companion import appearances as ap
+from kiro_crew.appearance_packs import store as ap
 
 
 class TestFilenameValidation:

@@ -210,6 +210,17 @@ def test_declares_an_in_process_backend_that_imports() -> None:
     assert callable(routes_mod.register_routes)
 
 
+def test_declares_the_network_permission_its_routes_use() -> None:
+    """The manifest states what the app does, and its routes reach the internet.
+
+    The appearance routes import ``appearance_packs.transfer``, whose PetDex
+    fetch makes outbound HTTPS requests. The manifest said ``network: false``
+    while that was true, so the platform and the user were told the wrong
+    thing. Moving the fetch into core does not change who calls it.
+    """
+    assert _raw()["permissions"]["network"] is True
+
+
 def test_requires_the_desktop_app_declaratively() -> None:
     """A flag the shell reads, not a shell command it runs.
 

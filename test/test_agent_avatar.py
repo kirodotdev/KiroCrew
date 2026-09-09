@@ -1370,7 +1370,7 @@ class TestSafeAvatarPackKind:
         because a second list is what would drift: a crew could then persist an
         id the store refuses to look up.
         """
-        from kiro_crew.apps.builtins.crew_companion import appearances as store_mod
+        from kiro_crew.appearance_packs import store as store_mod
 
         assert store_mod._safe_id("aurora-1") == safe_pack_id("aurora-1")
         assert store_mod._safe_id("a/b") is safe_pack_id("a/b") is None
