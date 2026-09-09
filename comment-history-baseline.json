@@ -410,7 +410,7 @@
     "src/kiro_crew/mcp_cleanup.py": 2,
     "src/kiro_crew/mcp_computer.py": 4,
     "src/kiro_crew/mcp_core.py": 8,
-    "src/kiro_crew/mcp_cron.py": 12,
+    "src/kiro_crew/mcp_cron.py": 11,
     "src/kiro_crew/mcp_dashboard.py": 4,
     "src/kiro_crew/mcp_discovery.py": 18,
     "src/kiro_crew/mcp_gateway/app_call.py": 1,

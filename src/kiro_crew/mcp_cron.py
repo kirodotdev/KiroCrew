@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,7 @@ from kiro_crew.cron import (
     is_valid_skip_date,
     is_valid_timezone,
     lookup_cron_folder_id,
+    parse_time_string,
 )
 from kiro_crew.cron_script import (
     compute_secret_env_pin,
@@ -75,25 +76,6 @@ from kiro_crew.sel import sel
 from kiro_crew.validation import MCP_CRON_SCHEMAS, ValidationError, validate_tool_args
 
 logger = logging.getLogger(__name__)
-
-# Patterns for _parse_time_string
-_RE_IN_DURATION = re.compile(
-    r"^in\s+(\d+)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hr|hour|hours)$", re.I
-)
-_UNIT_SECS = {
-    "s": 1,
-    "sec": 1,
-    "second": 1,
-    "seconds": 1,
-    "m": 60,
-    "min": 60,
-    "minute": 60,
-    "minutes": 60,
-    "h": 3600,
-    "hr": 3600,
-    "hour": 3600,
-    "hours": 3600,
-}
 
 
 def _sub_floor_timeout_note(timeout_secs_val: object) -> str:
@@ -1031,49 +1013,6 @@ def _resolve_cron_folder(ref: str, *, session_key: str | None) -> tuple[str, str
     if not fid:
         return "", f"could not create cron folder {redact(ref)}: no id returned"
     return fid, None
-
-
-def _parse_time_string(s: str) -> float | str:
-    """Parse a human time string into a Unix timestamp. Returns error string on failure."""
-    s = s.strip()
-    _, tz = get_local_tz()
-    now = datetime.now(tz)
-
-    # "in 5 minutes", "in 2 hours"
-    m = _RE_IN_DURATION.match(s)
-    if m:
-        secs = int(m.group(1)) * _UNIT_SECS[m.group(2).lower()]
-        return time.time() + secs
-
-    # Try common formats with optional "tomorrow"
-    tomorrow = False
-    text = s
-    if text.lower().startswith("tomorrow"):
-        tomorrow = True
-        text = re.sub(r"^at\b\s*", "", text[8:].strip())
-
-    # "5pm", "5:30pm", "17:00", "9:30am"
-    for fmt in ("%I%p", "%I:%M%p", "%H:%M", "%I %p", "%I:%M %p"):
-        try:
-            parsed = datetime.strptime(text, fmt)
-            result = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
-            if tomorrow:
-                result += timedelta(days=1)
-            elif result <= now:
-                result += timedelta(days=1)  # "5pm" when it's already 6pm → tomorrow
-            return result.timestamp()
-        except ValueError:
-            continue
-
-    # ISO-ish: "2026-03-28 14:00", "2026-03-28T14:00"
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            parsed = datetime.strptime(text, fmt).replace(tzinfo=now.tzinfo)
-            return parsed.timestamp()
-        except ValueError:
-            continue
-
-    return f"Error: could not parse time '{s}'. Examples: '5pm', 'in 30 minutes', 'tomorrow 9am'"
 
 
 def _list_tools() -> list[dict[str, Any]]:
@@ -2171,7 +2110,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if delay is not None and at_ts is None:
             at_ts = time.time() + delay
         if at_time is not None and at_ts is None:
-            parsed = _parse_time_string(at_time)
+            parsed = parse_time_string(at_time)
             if isinstance(parsed, str):
                 return parsed  # error message
             at_ts = parsed

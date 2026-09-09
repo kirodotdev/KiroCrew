@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -23,6 +24,7 @@ from kiro_crew.cron import (
     CronStoreBusy,
     CronStoreUnreadable,
     is_valid_timezone,
+    parse_time_string,
 )
 from kiro_crew.cron_script import (
     _read_script_body,
@@ -53,10 +55,12 @@ from kiro_crew.validation import (
     _MODEL_NAME_RE,
     CHANNEL_ID_RE,
     CHANNEL_MAX_LEN,
+    CRON_ADD_SCHEMA,
     LEARN_ADD_SCHEMA,
     MAX_CRON_MESSAGE,
     MAX_SHORT_STRING,
     SLACK_THREAD_TS_RE,
+    FieldSpec,
     ValidationError,
     normalize_lesson_category,
     validate_string_field,
@@ -313,6 +317,148 @@ async def _resolve_and_supersede(
 # ── Cron / Lessons ──
 
 
+def _schema_field(field_name: str) -> FieldSpec | None:
+    """Return *field_name*'s :class:`FieldSpec` from ``CRON_ADD_SCHEMA``, or ``None``.
+
+    Every limit this route applies to a one-shot field is read through here
+    rather than restated, because the route's contract is that it validates the
+    same bodies the ``cron_add`` tool does: a copied limit is a limit that drifts
+    the moment the schema's is retuned, and the drift reappears as the divergence
+    this route exists to close. That covers the numeric bounds AND ``at_time``'s
+    length — a longer string than the tool accepts is how an oversized duration
+    reaches the parser in the first place.
+    """
+    for spec in CRON_ADD_SCHEMA.fields:
+        if spec.name == field_name:
+            return spec
+    return None
+
+
+def _resolve_one_shot_at(body: dict[str, Any]) -> tuple[float | None, web.Response | None]:
+    """Resolve a one-shot fire time from ``at`` / ``delay`` / ``at_time``.
+
+    Returns ``(at_ts, None)`` on success — with ``at_ts`` ``None`` when the body
+    names no one-shot at all, which is the recurring case and not an error — or
+    ``(None, response)`` carrying a 400 the caller returns verbatim.
+
+    Mirrors ``cron_add``'s **parser and precedence**: ``at`` (absolute epoch
+    seconds) wins, then ``delay`` (seconds from now), then ``at_time`` (human
+    string, parsed in the CONFIGURED timezone by the shared
+    :func:`parse_time_string`), so a one-shot body means the same instant
+    whichever door received it. The acceptance sets are NOT identical: the
+    resolved-instant ceiling below is stricter than the tool, which bounds only
+    its raw fields.
+
+    Four things this refuses that the declared type alone would let through:
+
+    * a bool for ``at``/``delay`` — ``isinstance(True, int)`` is true in Python,
+      so a bare ``isinstance`` check would silently read ``True`` as ``1``;
+    * a value ``float()`` cannot even represent. JSON integers are unbounded, and
+      ``float(10**400)`` raises ``OverflowError`` — uncaught, that is a bare 500
+      on a request that never reaches the store;
+    * a non-finite float — ``json.loads`` accepts ``NaN`` and ``Infinity`` by
+      default, and ``NaN`` defeats every comparison below (each is false), which
+      would persist a job whose next run can never arrive;
+    * a value outside the schema's own bounds. An unbounded far-future ``at`` is
+      not merely a silly job: ``format_schedule`` renders it through
+      ``datetime.fromtimestamp``, which raises above year 9999, and it does so
+      inside the comprehension that serializes EVERY job — so one poisoned
+      record turns the whole cron listing into a 500 until it is deleted by id.
+      ``{"at": 1.75e12}`` (epoch MILLIseconds — the ordinary ``Date.now()``
+      mistake) is exactly that shape, which is why the bound is enforced here
+      rather than left to the store;
+    * a time already gone, which would otherwise fire the moment the scheduler
+      next ticks rather than when the caller asked.
+    """
+
+    def _number(field: str) -> tuple[float | None, web.Response | None]:
+        spec = _schema_field(field)
+
+        def refuse(why: str) -> tuple[None, web.Response]:
+            return None, web.json_response(
+                {"error": f"'{field}' {why}", "code": f"invalid_{field}"}, status=400
+            )
+
+        raw = body.get(field)
+        if raw is None:
+            return None, None
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return refuse("must be a number")
+        try:
+            val = float(raw)
+        except OverflowError:
+            # A JSON integer has no width limit, so this arrives from the wire.
+            # Refused as out-of-range rather than propagating: it is by definition
+            # past any ceiling the schema declares.
+            return refuse("is too large")
+        if not math.isfinite(val):
+            return refuse("must be a finite number")
+        lo = spec.min_val if spec else None
+        hi = spec.max_val if spec else None
+        if (lo is not None and val < lo) or (hi is not None and val > hi):
+            return refuse(f"must be between {lo} and {hi}")
+        return val, None
+
+    at_ts, err = _number("at")
+    if err is not None:
+        return None, err
+    if at_ts is None:
+        delay, err = _number("delay")
+        if err is not None:
+            return None, err
+        if delay is not None:
+            at_ts = time.time() + delay
+    if at_ts is None:
+        # Length from the schema, not MAX_SHORT_STRING: a string longer than the
+        # tool accepts is how an oversized relative duration ("in <hundreds of
+        # digits> hours") reaches the parser, where the arithmetic overflows.
+        at_time_spec = _schema_field("at_time")
+        at_time_max = at_time_spec.max_len if at_time_spec and at_time_spec.max_len else 100
+        try:
+            at_time = validate_string_field(body, "at_time", max_len=at_time_max)
+        except ValidationError as exc:
+            return None, web.json_response(
+                {"error": str(exc), "code": "invalid_at_time"}, status=400
+            )
+        if at_time:
+            parsed = parse_time_string(at_time)
+            if isinstance(parsed, str):
+                # parse_time_string reports failure as an already-prefixed
+                # "Error: ..." string; strip the prefix so the JSON body is not
+                # doubly labelled once the client reads `error`.
+                return None, web.json_response(
+                    {
+                        "error": parsed.removeprefix("Error: "),
+                        "code": "invalid_at_time",
+                    },
+                    status=400,
+                )
+            at_ts = parsed
+    # The resolved instant carries the same ceiling as a raw ``at``, whatever
+    # produced it. ``delay`` cannot escape its own bound, but ``at_time``'s
+    # relative form has none — ``"in 999999999 hours"`` parses to a timestamp
+    # ``datetime.fromtimestamp`` cannot render, which is the poisoned record that
+    # 500s the listing. Bounding the raw fields alone would leave that door open.
+    if at_ts is not None:
+        at_spec = _schema_field("at")
+        lo = at_spec.min_val if at_spec else None
+        hi = at_spec.max_val if at_spec else None
+        if (lo is not None and at_ts < lo) or (hi is not None and at_ts > hi):
+            return None, web.json_response(
+                {
+                    "error": f"resolved time is outside the supported range ({lo} to {hi})",
+                    "code": "at_out_of_range",
+                },
+                status=400,
+            )
+    if at_ts is not None and at_ts < time.time():
+        return None, web.json_response(
+            {"error": "requested time is in the past", "code": "at_in_past"},
+            status=400,
+        )
+    return at_ts, None
+
+
 async def api_crons_create(request: web.Request) -> web.Response:
     """POST /api/crons — create a cron job."""
     state: DashboardState = request.app["state"]
@@ -345,6 +491,13 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if not every and not cron_expr and schedule:
         # Treat schedule string as cron expr if 5-field, else as interval
         cron_expr = schedule if len(schedule.split()) == 5 else None
+    # One-shot scheduling, mirroring cron_add's `at` / `delay` / `at_time`.
+    # Precedence matches the tool exactly (`at` wins, then `delay`, then
+    # `at_time`) so the same request body cannot mean two different instants
+    # depending on which entry point received it.
+    at_ts, at_err = _resolve_one_shot_at(body)
+    if at_err is not None:
+        return at_err
     if channel and not CHANNEL_ID_RE.match(channel):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     if approval_mode and approval_mode not in {"", "auto"}:
@@ -411,26 +564,40 @@ async def api_crons_create(request: web.Request) -> web.Response:
     }
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
+    # Which schedule this job carries. Resolved to kwargs FIRST, then handed to a
+    # single add_job_async call: one call site means the store-failure handling
+    # below is written once and cannot drift between the three schedule shapes.
+    schedule_kwargs: dict[str, Any]
     if every:
         try:
             every = int(every)
         except (ValueError, TypeError):
-            return web.json_response({"error": "'every' must be an integer"}, status=400)
-        try:
-            job = await state.crons.add_job_async(name, message, every_secs=every, **add_kwargs)
-        except CronStoreBusy:
-            return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
-        except CronStoreUnreadable as exc:
-            return _cron_unreadable_response(exc)
+            return web.json_response(
+                {"error": "'every' must be an integer", "code": "invalid_every"}, status=400
+            )
+        schedule_kwargs = {"every_secs": every}
     elif cron_expr:
-        try:
-            job = await state.crons.add_job_async(name, message, cron_expr=cron_expr, **add_kwargs)
-        except CronStoreBusy:
-            return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
-        except CronStoreUnreadable as exc:
-            return _cron_unreadable_response(exc)
+        schedule_kwargs = {"cron_expr": cron_expr}
+    elif at_ts is not None:
+        # One-shot: `delete_after_run` is derived here rather than accepted from
+        # the body, exactly as cron_add derives it (`delete_after_run=bool(at_ts)`).
+        # A caller-supplied flag would allow a job with a single fire time that
+        # never leaves the store, which the scheduler has no way to run again.
+        schedule_kwargs = {"at_ts": at_ts, "delete_after_run": True}
     else:
-        return web.json_response({"error": "schedule, every, or cron required"}, status=400)
+        return web.json_response(
+            {
+                "error": "schedule, every, cron, at, delay, or at_time required",
+                "code": "missing_schedule",
+            },
+            status=400,
+        )
+    try:
+        job = await state.crons.add_job_async(name, message, **schedule_kwargs, **add_kwargs)
+    except CronStoreBusy:
+        return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    except CronStoreUnreadable as exc:
+        return _cron_unreadable_response(exc)
     state.push_refresh("crons")
     return web.json_response({"ok": True, "id": job.id})
 
