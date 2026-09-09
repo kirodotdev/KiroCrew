@@ -34,7 +34,6 @@ vi.mock('react-virtuoso', () => ({
 }))
 
 const sendChat = vi.fn()
-const steerChat = vi.fn()
 const slotRow = () => ({
   key: 'slot-a', messages: 1, running: true, mode: '',
   pending_approval: false, waiting_for_input: false, last_activity_ts: undefined,
@@ -45,7 +44,6 @@ vi.mock('../api/client', () => ({
     chatSlots: vi.fn().mockImplementation(() => Promise.resolve([slotRow()])),
     chatSlotDetail: vi.fn().mockImplementation(() => Promise.resolve({ messages: [{ role: 'assistant', content: 'hi', cls: '' }], running: true, has_more: false, total: 1 })),
     sendChat: (...a: unknown[]) => sendChat(...a),
-    steerChat: (...a: unknown[]) => steerChat(...a),
     chatHistory: vi.fn().mockResolvedValue({ sessions: [] }),
     models: vi.fn().mockResolvedValue([]),
     agents: vi.fn().mockResolvedValue([]),
@@ -150,7 +148,6 @@ beforeEach(() => {
   localStorage.clear()
   sendChat.mockReset()
   sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) })
-  steerChat.mockReset()
 })
 
 describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, () => {

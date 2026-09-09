@@ -29,7 +29,6 @@ import { i18nT } from '../i18n/t'
 const apiMocks = vi.hoisted(() => ({
   chatSlotDetail: vi.fn(),
   sendChat: vi.fn(),
-  steerChat: vi.fn(),
   resolveApproval: vi.fn(),
   createChatSlot: vi.fn(),
 }))
@@ -144,7 +143,6 @@ beforeEach(() => {
   HTMLCanvasElement.prototype.getContext = vi.fn(stubCtx) as unknown as HTMLCanvasElement['getContext']
   apiMocks.chatSlotDetail.mockResolvedValue({ messages: [] })
   apiMocks.sendChat.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({ ok: true }) })
-  apiMocks.steerChat.mockResolvedValue({})
   apiMocks.resolveApproval.mockResolvedValue({})
   apiMocks.createChatSlot.mockResolvedValue({})
 })
@@ -521,8 +519,9 @@ describe('useSceneInteraction — composer', () => {
     fireEvent.click(sendButton())
     await flush()
 
-    expect(apiMocks.sendChat).toHaveBeenCalledWith('ship it', 'a')
-    expect(apiMocks.steerChat).not.toHaveBeenCalled()
+    // Through the chat-core transport: (message, slot, colorTheme, deadline
+    // signal, meta, steer). An idle agent is a plain send, not a steer.
+    expect(apiMocks.sendChat).toHaveBeenCalledWith('ship it', 'a', undefined, expect.any(AbortSignal), undefined, false)
     expect(screen.getByText('ship it')).toBeInTheDocument()
     expect(
       screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.message_sent') }),
@@ -544,8 +543,62 @@ describe('useSceneInteraction — composer', () => {
     fireEvent.click(sendButton())
     await flush()
 
-    expect(apiMocks.steerChat).toHaveBeenCalledWith('stop there', 'a')
-    expect(apiMocks.sendChat).not.toHaveBeenCalled()
+    // Same transport call, `steer: true`: a flag of the endpoint, not a
+    // separate helper (the dedicated steer helper is gone).
+    expect(apiMocks.sendChat).toHaveBeenCalledWith('stop there', 'a', undefined, expect.any(AbortSignal), undefined, true)
+  })
+
+  it('a refused steer reports on the composer like a refused send', async () => {
+    apiMocks.sendChat.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({ ok: false, error: 'turn already ended' }) })
+    renderScene({ sources: [source({ id: 'slot-a', running: true })] })
+    await clickAt(100, 100)
+
+    fireEvent.change(messageBox(), { target: { value: 'stop there' } })
+    fireEvent.click(sendButton())
+    await flush()
+
+    expect(
+      screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).toBeInTheDocument()
+    expect(messageBox()).toHaveValue('stop there')
+  })
+
+  it('a send whose receipt is late hands the text back with the delivery-unconfirmed copy', async () => {
+    // The transport's deadline fires before ANY receipt. Nothing proves the
+    // gateway saw the request, and the draft was cleared at send start, so
+    // silence would discard the user's text: it comes back as a failed send
+    // whose reason says to check the transcript before sending again.
+    apiMocks.sendChat.mockImplementation((...args: unknown[]) => new Promise((_res, rej) => {
+      const signal = args[3] as AbortSignal
+      signal.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError')))
+    }))
+    renderScene({ sources: [] })
+    await clickAt(100, 100)
+
+    fireEvent.change(messageBox(), { target: { value: 'ship it' } })
+    fireEvent.click(sendButton())
+    await flush()
+    await act(async () => { vi.advanceTimersByTime(10_500) })
+    await flush()
+
+    // Not the red Retry treatment: unconfirmed keeps the neutral Send button so
+    // the warn line, not the button, is the signal.
+    expect(
+      screen.queryByRole('button', { name: i18nT('hooks.useSceneInteraction.retry_sending_message') }),
+    ).not.toBeInTheDocument()
+    expect(sendButton()).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: i18nT('hooks.useSceneInteraction.message_sent') }),
+    ).not.toBeInTheDocument()
+    // Handed back, not echoed as delivered.
+    expect(messageBox()).toHaveValue('ship it')
+    expect(screen.queryByText('ship it')).not.toBeInTheDocument()
+    // Unconfirmed is a warning, not an error: a warn-tone status line carries
+    // the delivery-unconfirmed copy UNWRAPPED; no ErrorNotice, no "Send failed".
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    const notice = screen.getByRole('status')
+    expect(notice).toHaveTextContent(i18nT('pages.chatPage.delivery_unconfirmed') as string)
+    expect(notice).not.toHaveTextContent(i18nT('pages.chatPage.send_failed') as string)
   })
 
   it('uses the plain message placeholder with no live source', async () => {
@@ -587,7 +640,7 @@ describe('useSceneInteraction — composer', () => {
 
     fireEvent.keyDown(messageBox(), { key: 'Enter' })
     await flush()
-    expect(apiMocks.sendChat).toHaveBeenCalledWith('via keyboard', 'a')
+    expect(apiMocks.sendChat).toHaveBeenCalledWith('via keyboard', 'a', undefined, expect.any(AbortSignal), undefined, false)
   })
 
   it('disables the send button until the draft has content', async () => {
@@ -906,9 +959,11 @@ describe('useSceneInteraction — composer', () => {
     fireEvent.click(sendButton())
     await flush()
 
-    // Visible (role=status), not a hover-only tooltip, and FRAMED so the raw
-    // backend reason reads as a refused send rather than an agent error.
-    const status = screen.getByRole('status')
+    // Visible (an ErrorNotice, role=alert), not a hover-only tooltip, and FRAMED
+    // so the raw backend reason reads as a refused send rather than an agent
+    // error. No hand-off button: the composer holds the restored draft.
+    const status = screen.getByRole('alert')
+    expect(status.querySelector('button')).toBeNull()
     expect(status).toHaveTextContent(
       i18nT('pages.chatPage.send_failed_with_error', { error: 'slot agent mismatch' }) as string,
     )

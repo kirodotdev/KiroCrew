@@ -34,7 +34,6 @@ vi.mock('react-virtuoso', () => ({
 }))
 
 const sendChat = vi.fn()
-const steerChat = vi.fn()
 /** ChatPage re-reads both the slot list and the slot detail after mount, so the
  *  fixtures have to agree with the store seed or the refresh erases the state
  *  under test (the wave flag, or `running`). */
@@ -50,7 +49,6 @@ vi.mock('../api/client', () => ({
     chatSlots: vi.fn().mockImplementation(() => Promise.resolve(slotsFixture.rows)),
     chatSlotDetail: vi.fn().mockImplementation(() => Promise.resolve({ messages: [{ role: 'assistant', content: 'hi', cls: '' }], running: detail.running, has_more: false, total: 1 })),
     sendChat: (...a: unknown[]) => sendChat(...a),
-    steerChat: (...a: unknown[]) => steerChat(...a),
     chatHistory: vi.fn().mockResolvedValue({ sessions: [] }),
     models: vi.fn().mockResolvedValue([]),
     agents: vi.fn().mockResolvedValue([]),
@@ -147,7 +145,6 @@ beforeEach(() => {
   localStorage.clear()
   sendChat.mockReset()
   sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) })
-  steerChat.mockReset()
 })
 
 describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
@@ -192,8 +189,6 @@ describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
     expect(steerArgOf(sendChat.mock.calls[0])).toBe(true)
     expect(sendChat.mock.calls[0][2]).toBeUndefined()
     expect((sendChat.mock.calls[0][4] as { sendId?: string }).sendId).toBeTruthy()
-    // The bespoke mid-turn helper is no longer a send path on this surface.
-    expect(steerChat).not.toHaveBeenCalled()
   })
 
   it('leaves an ordinary idle send unflagged', async () => {

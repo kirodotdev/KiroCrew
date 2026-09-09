@@ -1332,10 +1332,14 @@ describe('App routing', () => {
         // cannot leave it queued for a later, unrelated message.
         { source: 'feature-request', maxAge: 60 },
       )
+      // sendTurn's dashboard wire passes (message, slot, agent, signal, memoryMode, steer).
       expect(api.sendChat).toHaveBeenCalledWith(
         'I’d like to request a feature!',
         'feature-slot',
         expect.any(String),
+        expect.any(AbortSignal),
+        undefined,
+        undefined,
       )
     })
     expect(api.sendChat).not.toHaveBeenCalledWith(

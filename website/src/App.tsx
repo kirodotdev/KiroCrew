@@ -16,7 +16,7 @@ import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/arti
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
 import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
-import { readSendReceipt } from './utils/sendDelivery'
+import { sendTurn } from './chat-core/transport/sendTurn'
 import { updateAffordance } from './utils/updateAffordance'
 import { isNewSection } from './utils/releaseVersion'
 import { metricColor } from './utils/metricColor'
@@ -2951,17 +2951,20 @@ export default function App() {
       // feature-request workflow to a later, unrelated message.
       await api.chatSlotContext(slot, FEATURE_REQUEST_PROMPT_FALLBACK, { source: 'feature-request', maxAge: 60 })
     } catch { /* Send the visible request even if hidden context is unavailable. */ }
-    try {
-      const r = await api.sendChat(visibleMessage, slot, colorTheme)
-      const { body, outcome } = await readSendReceipt(r)
-      // Resolution is not success: the server accepted neither `ok` nor
-      // `queued`, so no turn started and no WS response is coming. An UNKNOWN
-      // outcome (a 2xx whose body would not parse) is deliberately silent — the
-      // request WAS accepted, so a turn may be running, and this row is the only
-      // signal the pill has: claiming a failure it cannot prove tells the user to
-      // resend a request that already went out.
-      if (outcome === 'refused') reportFailedSend(typeof body.error === 'string' ? body.error : undefined)
-    } catch { reportFailedSend() }
+    // The chat-core transport owns the receipt contract (`?ws=1` JSON receipt,
+    // HTTP 4xx/5xx RESOLVE rather than reject, deadline) and never rejects.
+    const receipt = await sendTurn({ message: visibleMessage, slot, colorTheme })
+    // Resolution is not success: `refused` means the server accepted neither
+    // `ok` nor `queued`, so no turn started and no WS response is coming, and
+    // `transport-error` means the request never left. Both get the error row.
+    // The indeterminate statuses are deliberately silent -- `unknown` (a 2xx
+    // whose body would not parse) means the request WAS accepted, and
+    // `response-late` (deadline before a receipt) means it may have been; in
+    // both a turn may be running, and this row is the only signal the pill
+    // has: claiming a failure it cannot prove tells the user to resend a
+    // request that already went out.
+    if (receipt.status === 'refused') reportFailedSend(receipt.reason)
+    else if (receipt.status === 'transport-error') reportFailedSend()
   }, [dispatch, navigate, colorTheme, appStore])
 
   const toggleNav = () => {

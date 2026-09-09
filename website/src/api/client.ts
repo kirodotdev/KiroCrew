@@ -1511,6 +1511,27 @@ const apiFailure = (r: Response, errText: string): ApiError => {
   return new ApiError(r.status, message, errText, authRequired || staleOwnerSession)
 }
 
+/**
+ * The auth-recovery half of `j` for a response that is handed back RAW instead
+ * of parsed (the chat-core transport's wire): the pre-body 403 `X-Auth-Required`
+ * hook, and the body-borne stale-owner code a 401 carries -- read off a CLONE so
+ * the caller's own `json()` still works. Fire-and-forget: the recovery prompts
+ * are idempotent and the receipt read must not wait on them. A 2xx also clears
+ * a stale session-expired banner, exactly as `j` does -- a send that succeeds
+ * after auth was restored elsewhere must not leave the banner up.
+ */
+function sendResponseAuthRecovery(r: Response): Response {
+  checkSessionExpired(r)
+  if (r.ok) removeAuthBanner()
+  if (r.status === 401) {
+    // Best-effort: a wire may hand back a Response-like without `clone`.
+    try {
+      void r.clone().text().then((body) => noteStaleOwnerResponse(r.status, body)).catch(() => {})
+    } catch { /* not a real Response; nothing to read */ }
+  }
+  return r
+}
+
 const j = async (r: Response) => {
   checkSessionExpired(r)
   if (r.ok) removeAuthBanner()
@@ -3202,26 +3223,24 @@ export const api = {
     // whenever Browser Mode is enabled in Settings (a durable capability),
     // gated there rather than per turn.
     //
-    // `steer` carries the user's "act on this now" intent into a send that
-    // starts its OWN turn. The slot is idle, so there is no running turn to
-    // inject into; the flag's only effect server-side is to skip the hold that
-    // parks a user message behind still-running sub-agents. Sent through this
-    // endpoint rather than steerChat because a new turn needs `ws=1` to stream.
+    // `steer` carries the user's "act on this now" intent. Mid-turn it injects
+    // into the RUNNING turn instead of queueing (the backend falls back to the
+    // queue if steer is unavailable, so the text is never dropped, and answers
+    // `{ok, steered}`); on an idle slot there is no running turn to inject into
+    // and the flag's only effect server-side is to skip the hold that parks a
+    // user message behind still-running sub-agents. One wire for both: this is
+    // the fetch seam under the chat-core `sendTurn`, which every steer now
+    // rides (there is no separate steer helper).
+    //
+    // The response is handed back RAW (the chat-core transport reads the
+    // receipt itself; a 4xx/5xx must resolve, not throw like `j`), but it still
+    // runs the same auth recovery every `j`-parsed call has -- see
+    // `sendResponseAuthRecovery` -- instead of surfacing an expired or
+    // stale-owner session as a bare "refused" send. The steer helper this
+    // replaced went through `j` and had both; the transport must not lose them.
     const themeConsent = themeConsentSha(colorTheme)
-    return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: true } : {}) }), signal })
+    return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: true } : {}) }), signal }).then(sendResponseAuthRecovery)
   },
-  // Mid-turn steer: inject into the RUNNING turn instead of queueing. Fire-and-forget
-  // JSON response ({ok, steered}); the backend falls back to queue if steer is
-  // unavailable so the text is never dropped.
-  // `ws=1` because a steer that races `chat_done` falls through to the plain send
-  // path, whose JSON receipt is gated on it — without it that arm streams SSE.
-  // `sendId` is the client-minted correlation id stamped on the optimistic steer
-  // bubble (same convention as the plain send path). It rides in `meta`, which
-  // BOTH backend paths persist — the accepted-steer row and the new-turn row a
-  // steer that races chat_done falls onto — so the bubble is reconcilable, and
-  // its accepted-vs-new-turn ambiguity resolvable, by id identity (#6075).
-  steerChat: (message: string, slot?: string, sendId?: string) =>
-    fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, steer: true, ...(sendId ? { meta: { sendId } } : {}) }) }).then(j),
   sessionsHealth: () => fetch('/api/sessions/health').then(j),
   // Knowledge
   knowledgeSearch: (q: string) => get(`/api/knowledge/search-for-context?q=${encodeURIComponent(q)}`).then(j),

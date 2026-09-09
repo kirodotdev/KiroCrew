@@ -6,7 +6,7 @@ created: 2026-08-22
 last-audited: 2026-09-05
 audited-at: 8ed028b0b
 doc-pr:
-implementation-prs: ["#5128", "#5909", "#8599", "#8631", "#8655", "#8689", "#9576"]
+implementation-prs: ["#5128", "#5909", "#8599", "#8631", "#8655", "#8689", "#9576", "#9593"]
 tracking-issues: ["#8651", "#9570"]
 supersedes: []
 superseded-by: []
@@ -93,7 +93,7 @@ Background: P3's ChatEmbed adoption (#8631) mounts the real `ChatInput`, whose s
 | P2 | ChatPage send + steer → `sendTurn` (`steer`, `colorTheme` flags) | [#8689](https://github.com/kirodotdev/KiroCrew/pull/8689) | in review |
 | P2 | issue-radar / auto-improvement `agentSession` seeds → `sendTurn` (#9570 batch A) | [#9576](https://github.com/kirodotdev/KiroCrew/pull/9576) | in review |
 | P2 | design-critique, design-tweak, mochi `panelBridge` → `sendTurn`; receipt defects fixed (#9570 batch B) | — | not started |
-| P2 | `useSceneInteraction` (last `api.steerChat` caller), `App.tsx` feedback → `sendTurn` (#9570 batch C) | — | not started |
+| P2 | `useSceneInteraction` (last `api.steerChat` caller), `App.tsx` feedback → `sendTurn`; `api.steerChat` deleted (#9570 batch C) | [#9593](https://github.com/kirodotdev/KiroCrew/pull/9593) | in review (stacked on #9576) |
 | P3 | Store-free `ChatInput` seam | [#8651](https://github.com/kirodotdev/KiroCrew/issues/8651) | design draft pending |
 | P5-a | `ChatPage.renderMessage` → registry (`resolveRenderer` over `mergeRenderers`; page chrome as host entries) | [#8713](https://github.com/kirodotdev/KiroCrew/pull/8713) | merged |
 | P5-b | One dashboard row set: ChatPage spreads `createTranscriptRenderers`, the factory ChatPane already used; page-specific behaviour becomes factory options | [#8733](https://github.com/kirodotdev/KiroCrew/pull/8733) | merged |

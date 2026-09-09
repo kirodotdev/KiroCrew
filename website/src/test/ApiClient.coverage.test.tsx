@@ -33,6 +33,7 @@ import {
   __resetAuthRecoveryStateForTests,
   SEARCH_MIN_CHARS,
 } from '../api/client'
+import { STALE_OWNER_SESSION_CODE, __resetStaleOwnerHandlerForTests, installStaleOwnerHandler } from '../api/staleOwnerSignal'
 import { recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel } from '../utils/resizeImage'
@@ -68,6 +69,7 @@ function res(
     json: async () => (typeof body === 'string' ? JSON.parse(body) : body),
     text: async () => text,
     blob: async () => new Blob([text]),
+    clone: () => res(status, body, opts),
   } as unknown as Response
 }
 
@@ -1127,10 +1129,52 @@ describe('sendChat theme consent', () => {
     expect(call().init?.signal).toBe(ctl.signal)
   })
 
-  it('steerChat always injects into the running turn', async () => {
-    await api.steerChat('now', 'chat-1')
-    expect(call().url).toBe('/api/chat?ws=1')
-    expect(call().body).toEqual({ message: 'now', slot: 'chat-1', steer: true })
+  it('hands the raw response back but still runs session-expiry recovery on a 403 auth challenge', async () => {
+    // The transport reads the receipt itself, so a 4xx must RESOLVE -- but an
+    // expired session must not degrade into a bare "refused" send: the same
+    // silent-refresh path every `j`-parsed call takes runs first. (The steer
+    // helper this wire replaced went through `j` and had it.)
+    __resetAuthRecoveryStateForTests()
+    fetchMock.mockResolvedValueOnce(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
+    fetchMock.mockResolvedValue(okJson({ ok: true }))
+    const r = await api.sendChat('hi', 'chat-1')
+    expect(r.status).toBe(403)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/auth/refresh', expect.anything()))
+  })
+
+  it('clears a stale session-expired banner when the send itself succeeds', async () => {
+    // `j` dismisses the banner on any 2xx; the raw-response wire must too, or a
+    // steer that succeeds after auth was restored in another tab leaves the
+    // banner up until some unrelated parsed request happens to land.
+    __resetAuthRecoveryStateForTests()
+    fetchMock.mockResolvedValue(res(401, 'revoked'))
+    checkSessionExpired(res(403, '', { headers: { 'X-Auth-Required': 'true' } }))
+    await vi.waitFor(() => expect(document.getElementById('mc-session-expired')).not.toBeNull())
+    try {
+      fetchMock.mockResolvedValue(okJson({ ok: true }))
+      const r = await api.sendChat('hi', 'chat-1')
+      expect(r.ok).toBe(true)
+      expect(document.getElementById('mc-session-expired')).toBeNull()
+    } finally {
+      document.getElementById('mc-session-expired')?.remove()
+    }
+  })
+
+  it('raises the stale-owner prompt on a 401 stale-session body, and the receipt stays readable', async () => {
+    // The stale-owner code travels in the BODY, which the pre-body hook cannot
+    // read; the wire reads it off a clone so the transport's own `json()` still
+    // works. (`steerChat` reached this through `j`; the transport must too.)
+    const onStale = vi.fn()
+    installStaleOwnerHandler(onStale)
+    try {
+      fetchMock.mockResolvedValueOnce(res(401, { error: 'sign in again', code: STALE_OWNER_SESSION_CODE }))
+      const r = await api.sendChat('hi', 'chat-1')
+      expect(r.status).toBe(401)
+      await expect(r.json()).resolves.toMatchObject({ code: STALE_OWNER_SESSION_CODE })
+      await vi.waitFor(() => expect(onStale).toHaveBeenCalled())
+    } finally {
+      __resetStaleOwnerHandlerForTests()
+    }
   })
 })
 
