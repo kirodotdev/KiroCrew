@@ -895,10 +895,15 @@ class _Session:
     # must re-inject the cancelled turn (user prompt + partial assistant) as a
     # preamble on the next prompt. One-shot: consumers clear after use.
     prev_turn_cancelled: bool = False
-    # Set when a provider switch is detected (e.g. kiro→CC or CC→kiro).
-    # Consumed one-shot by the next prompt builder to inject history replay
-    # from KiroCrew's conversation_log. Ensures replay fires exactly once
-    # per switch, even if the session is reused across multiple prompts.
+    # Set when a provider switch, failed native resume, or Tool Search
+    # compatibility fallback creates a fresh provider that still needs Kiro Crew
+    # history. Non-destructive slash commands read without clearing; a confirmed
+    # native `/clear` consumes it so replay cannot undo the user's deletion. Every
+    # other replay-bearing turn consumes it only after the provider yields the
+    # first event. A cancelled terminal re-arms it before cancellation handling
+    # because kiro-cli discards that accepted turn. This preserves replay across
+    # empty streams, pre-output failures, and soft Stops while surviving loss of
+    # the separate ``first_turn`` observation.
     provider_switch_replay: bool = False
     # Set of msg_ts values cancelled (message deleted while processing)
     cancelled: set[str] = field(default_factory=set)
@@ -2068,6 +2073,34 @@ class SessionManager:
     def consume_needs_reinjection(self, key: str) -> bool:
         """Consume a live session's reinjection marker."""
         return self._compaction.consume_needs_reinjection(key)
+
+    def provider_switch_replay_pending(self, key: str) -> bool:
+        """Return whether a live session still owes conversation replay.
+
+        The first real claimant can be a native non-destructive slash command,
+        which deliberately bypasses prompt construction. Reading without clearing
+        lets that command finish while preserving replay for the next prompt. A
+        confirmed ``/clear`` is the exception and consumes the marker at its
+        provider event.
+        """
+        session = self._sessions.get(self._fold_key(key))
+        return bool(session is not None and session.provider_switch_replay)
+
+    def mark_provider_switch_replay(self, key: str) -> bool:
+        """Re-arm replay after an accepted turn is discarded by cancellation."""
+        session = self._sessions.get(self._fold_key(key))
+        if session is None:
+            return False
+        session.provider_switch_replay = True
+        return True
+
+    def consume_provider_switch_replay(self, key: str) -> bool:
+        """Clear replay after the provider yields the prompt's first event."""
+        session = self._sessions.get(self._fold_key(key))
+        if session is None or not session.provider_switch_replay:
+            return False
+        session.provider_switch_replay = False
+        return True
 
     def consume_replay_suppression(self, key: str) -> bool:
         """Read *and clear* whether *key*'s next cold start must skip replay.

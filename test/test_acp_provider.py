@@ -1097,6 +1097,90 @@ class TestLoadSessionWithRetry:
         assert sleep_mock.await_count == 0
 
 
+class TestToolSearchResumeCompatibility:
+    """Dashboard-native ``session/load`` loses deferred-tool activation state.
+
+    A dashboard Tool Search session therefore resumes through a fresh native
+    session plus Kiro Crew's conversation-log replay. Operators who disable Tool
+    Search, and every non-dashboard dispatcher, keep native resume.
+    """
+
+    @staticmethod
+    def _provider(tool_search: bool) -> AcpProvider:
+        provider = _build_provider(backend="")
+        provider._client._work_dir = "/tmp/ws"
+        provider._client._agent = "kirocrew"
+        provider._client._sandbox_mode = "auto"
+        provider._client._extra_env = {}
+        provider._client._mcp_gateway_overlay = None
+        provider._client._mcp_gateway_socket = None
+        provider._client._resume_session_id = "old-sess-id"
+        provider._client._session_key = "dashboard:chat-1"
+        provider._client._channel_id = None
+        provider._client._model = "auto"
+        provider._tool_search = tool_search
+        return provider
+
+    @staticmethod
+    async def _start(provider: AcpProvider) -> MagicMock:
+        handle = MagicMock()
+        handle.session_id = "live-sess-id"
+        handle.available_models = []
+        handle.set_model = AsyncMock()
+
+        runtime = MagicMock()
+        runtime.pid = 4321
+        runtime.spawn = AsyncMock()
+        runtime.is_alive = MagicMock(return_value=True)
+        runtime.saw_not_logged_in = MagicMock(return_value=False)
+        runtime.kill = AsyncMock()
+        runtime.load_session = AsyncMock(return_value=handle)
+        runtime.create_session = AsyncMock(return_value=handle)
+
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=runtime),
+            patch(
+                "kiro_crew.providers.acp.AcpSessionProvider",
+                side_effect=lambda h, r, **kw: MagicMock(_handle=h, _runtime=r, resumed=False),
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            await provider._start_kiro_runtime()
+        return runtime
+
+    @pytest.mark.asyncio
+    async def test_enabled_uses_fresh_session_with_history_replay(self):
+        provider = self._provider(tool_search=True)
+
+        runtime = await self._start(provider)
+
+        runtime.load_session.assert_not_awaited()
+        runtime.create_session.assert_awaited_once()
+        assert provider._history_replay_needed is True
+
+    @pytest.mark.asyncio
+    async def test_disabled_preserves_native_session_load(self):
+        provider = self._provider(tool_search=False)
+
+        runtime = await self._start(provider)
+
+        runtime.load_session.assert_awaited_once()
+        runtime.create_session.assert_not_awaited()
+        assert provider._history_replay_needed is False
+
+    @pytest.mark.asyncio
+    async def test_enabled_linked_slack_session_preserves_native_load(self):
+        provider = self._provider(tool_search=True)
+        provider._client._session_key = "dashboard:chat-linked"
+        provider._client._channel_id = "C123"
+
+        runtime = await self._start(provider)
+
+        runtime.load_session.assert_awaited_once()
+        runtime.create_session.assert_not_awaited()
+        assert provider._history_replay_needed is False
+
+
 class TestStartKiroRuntimeModelEntitlement:
     """_start_kiro_runtime withholds a configured model the account cannot run.
 

@@ -6910,6 +6910,18 @@ async def _run_chat(
         # as is gone. Retiring it here means this turn cold-starts on the current
         # account instead of running as the previous one.
         await _retire_sessions_on_identity_change(state)
+        # A linked channel can retain a dashboard-owned key. Resolve both the
+        # dedicated Slack field and any inbound-capable channel-neutral mirror
+        # before provider construction, so a restart cannot erase the dispatcher
+        # signal that distinguishes a linked turn from a direct dashboard turn.
+        # Outbound-only mirrors do not own inbound resume and stay direct turns.
+        _mirror_link = state.sessions.get_mirror_link(session_key)
+        _mirror_resumes = state.sessions.mirror_accepts_inbound(session_key)
+        _provider_channel_id = getattr(slot, "_slack_channel", "") or (
+            getattr(_mirror_link, "channel_id", "")
+            if _mirror_link is not None and _mirror_resumes
+            else ""
+        )
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -6919,9 +6931,21 @@ async def _run_chat(
             crew_agent=crew_alias,
             model=slot.model or agent_model or default_model or None,
             cwd=slot.project or None,
+            # The persisted channel stays separate from the dashboard-owned key
+            # so provider startup can distinguish a linked dispatcher from a
+            # direct dashboard turn.
+            channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
         )
         _acquired = True
+        # A fresh provider can still owe Kiro Crew history after its one-shot
+        # ``is_new`` observation was consumed by a slash command. Keep that debt
+        # separate from provider creation: slash commands bypass ContextBuilder,
+        # while the next ordinary prompt must behave as the context-bearing first
+        # turn and acknowledge replay only after assembly succeeds.
+        _replay_pending = state.sessions.provider_switch_replay_pending(session_key) is True
+        _replay_consumed_this_turn = False
+        _context_is_new = is_new or _replay_pending
         # A member DM's first turn carries the four-layer member section as
         # session-start context. Record that it is at stake HERE — the moment
         # the session client exists — not at the context build: every early
@@ -6940,7 +6964,7 @@ async def _run_chat(
         _member_session_start_pending = (
             slot.mode == "member"
             and member_lifecycle(
-                is_new_session=is_new,
+                is_new_session=_context_is_new,
                 resumed=resumed,
                 minimal_context=False,
                 needs_reinjection=False,
@@ -7291,7 +7315,11 @@ async def _run_chat(
 
                 if isinstance(client, AcpProvider) and client.client.resumed:
                     _provider_has_history = True
-            if is_new and not _provider_has_history and state.context_builder.conversation_log:
+            if (
+                _context_is_new
+                and not _provider_has_history
+                and state.context_builder.conversation_log
+            ):
                 # Consumed HERE rather than before the branch, so only a real cold
                 # start can spend the flag: a warm turn that never rebuilds history
                 # must not burn the one chance the reset asked for.
@@ -7373,7 +7401,7 @@ async def _run_chat(
             # Folder breadcrumb: inject once per session, and again after a
             # folder move (no session reset — it's just a label refresh).
             folder_path = None
-            if is_new or slot._folder_changed:
+            if _context_is_new or slot._folder_changed:
                 folder_path = state.folder_breadcrumb(slot.folder_id) or None
                 slot._folder_changed = False
             _color_theme = getattr(slot, "color_theme", "")
@@ -7390,7 +7418,11 @@ async def _run_chat(
             # A governance-evaluation error therefore denies (persona skipped
             # for that turn; the chat itself is unaffected).
             _persona_permitted = True
-            if is_new and isinstance(_color_theme, str) and _color_theme.startswith("custom-"):
+            if (
+                _context_is_new
+                and isinstance(_color_theme, str)
+                and _color_theme.startswith("custom-")
+            ):
                 from kiro_crew.platform.governance_profiles import governance_permits
 
                 _decision = governance_permits(
@@ -7410,7 +7442,7 @@ async def _run_chat(
                 persona_message = _maybe_inject_persona(
                     message,
                     _color_theme,
-                    is_new,
+                    _context_is_new,
                     theme_consent_sha=getattr(slot, "theme_consent_sha", None),
                 )
                 message, persona_context = _detach_appended_context(message, persona_message)
@@ -7444,7 +7476,7 @@ async def _run_chat(
             full_message, _ = await run_in_embed_pool(
                 state.context_builder.build_message,
                 message,
-                is_new,
+                _context_is_new,
                 session_key,
                 agent=kiro_agent or slot.agent or None,
                 resumed=resumed,
@@ -7496,7 +7528,7 @@ async def _run_chat(
         # build_session_context already injects recent() from JSONL, so this
         # only adds value when in-memory messages are newer than disk.
         # Skip for soft stops — session is preserved, no re-injection needed.
-        if is_new and slot.messages:
+        if _context_is_new and slot.messages:
             # Check if last stop was soft (session preserved, no re-injection).
             # cls is a JSON-encoded dict (see api_chat_slot_stop); parse it.
             _last_stop_soft = False
@@ -7612,7 +7644,7 @@ async def _run_chat(
                 user_offset=_user_prepend_offset,
                 user_span=_span_arg,
             )
-            slot_ctx_phase = PHASE_SESSION_START if is_new else PHASE_PER_TURN
+            slot_ctx_phase = PHASE_SESSION_START if _context_is_new else PHASE_PER_TURN
             # Named rather than counted: naming only four blocks by hand
             # under-describes most of the bytes being reported.
             _named = ", ".join(
@@ -7764,6 +7796,14 @@ async def _run_chat(
             monitor_completion.mark_accepted()
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
+            # Async-generator creation is not prompt acceptance. The first
+            # provider event is the earliest evidence that the replay-bearing
+            # prompt entered the turn; pre-output errors and empty streams never
+            # reach this branch and therefore preserve replay for the retry.
+            if _replay_pending and not is_slash:
+                state.sessions.consume_provider_switch_replay(session_key)
+                _replay_pending = False
+                _replay_consumed_this_turn = True
             # Heartbeat every 5s during long operations
             if time.time() - last_heartbeat > 5:
                 state.broadcast_ws("heartbeat", {"slot": slot.key, "ts": time.time()})
@@ -9932,6 +9972,14 @@ async def _run_chat(
                         assistant_text = ""
                         _wsred.reset()
             elif event.kind == EVENT_CLEAR_STATUS:
+                # A confirmed native clear is the one destructive slash command:
+                # replaying the persisted Kiro Crew history afterwards would undo
+                # the user's clear. Retire either an unconsumed slash lease or the
+                # consumed-turn marker before any terminal can re-arm it.
+                if _replay_pending:
+                    state.sessions.consume_provider_switch_replay(session_key)
+                    _replay_pending = False
+                _replay_consumed_this_turn = False
                 slot.messages.clear()
                 # The boundary was captured against the pre-clear message
                 # count; the list is now empty, so reset it to 0 or the
@@ -10429,6 +10477,14 @@ async def _run_chat(
                         slot.key,
                     )
                 break
+
+        # A soft Stop makes kiro-cli discard the accepted turn. If that turn
+        # carried the one-shot history replay, restore the lease before any
+        # cancellation branch returns so the next prompt receives the full older
+        # conversation as well as the cancelled-turn preamble.
+        if _stop_reason == STOP_REASON_CANCELLED and _replay_consumed_this_turn:
+            state.sessions.mark_provider_switch_replay(session_key)
+            _replay_pending = True
 
         # Turn stream ended: flush any withheld thinking tail (a thinking-final
         # turn never hit the loop-top flush for a following non-thinking event).

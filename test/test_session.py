@@ -5179,6 +5179,20 @@ class TestLoadRecoveryHistoryReplay:
         assert sess.provider_switch_replay is False
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_replay_marker_survives_reads_until_prompt_acknowledges_it(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=self._factory(True))
+        await mgr.get_or_create("thread1")
+
+        assert mgr.provider_switch_replay_pending("thread1") is True
+        assert mgr.provider_switch_replay_pending("thread1") is True
+        assert mgr.consume_provider_switch_replay("thread1") is True
+        assert mgr.provider_switch_replay_pending("thread1") is False
+        assert mgr.consume_provider_switch_replay("thread1") is False
+        assert mgr.mark_provider_switch_replay("thread1") is True
+        assert mgr.provider_switch_replay_pending("thread1") is True
+        await mgr.close_all()
+
 
 class TestIneffectiveCompactionCooldown:
     """A compaction that completes but frees no meaningful headroom keeps the

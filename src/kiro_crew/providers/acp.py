@@ -812,8 +812,33 @@ class AcpProvider(LLMProvider):
         mcp_gateway_overlay = getattr(self._client, "_mcp_gateway_overlay", None)
         mcp_gateway_socket = getattr(self._client, "_mcp_gateway_socket", None)
 
-        # Check for session resume
+        # Check for session resume. A direct dashboard turn (dashboard session
+        # key with no channel identity) can restore the transcript without
+        # restoring Tool Search's activated schemas: the loader still runs, but
+        # a tool it reports as loaded remains absent on the next inference. A
+        # fresh native session rebuilds that registry, while
+        # ``_history_replay_needed`` preserves the Kiro Crew conversation. Linked
+        # Slack and other channel dispatchers keep native resume until they own
+        # the same replay-lease contract end to end.
         resume_sid = getattr(self._client, "_resume_session_id", "")
+        session_key = getattr(self._client, "_session_key", None)
+        channel_id = getattr(self._client, "_channel_id", None)
+        if (
+            resume_sid
+            and self._tool_search is True
+            and self._client.backend == ACP_BACKEND_KIRO
+            and not channel_id
+            and telemetry_channel_of(session_key if isinstance(session_key, str) else None)
+            == "dashboard"
+        ):
+            logger.info(
+                "Tool Search is enabled; replacing native session/load for %s "
+                "with a fresh session and conversation replay",
+                resume_sid,
+            )
+            self._history_replay_needed = True
+            meta["resume_outcome"] = "tool_search_replay"
+            resume_sid = ""
 
         # Preserve the configured model so we can re-apply it once the session
         # is live. AcpClient sends session/set_model in its handshake; the runtime
