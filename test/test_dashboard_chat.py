@@ -4639,7 +4639,7 @@ class TestSessionRename:
             assert data["title"] == "My Chat"
             assert slot.title == "My Chat"
             assert slot._titled is True
-            state.push_slot_title.assert_called_once_with("s1", "My Chat")
+            state.push_slot_title.assert_called_once_with("s1", "My Chat", epoch=slot._title_epoch)
 
     @pytest.mark.asyncio
     async def test_rename_not_found(self, tmp_path, monkeypatch):
@@ -4688,7 +4688,9 @@ class TestSessionRename:
             assert resp.status == 200
             assert len(data["title"]) == 200
             assert state._slots["s1"].title == "x" * 200
-            state.push_slot_title.assert_called_once_with("s1", "x" * 200)
+            state.push_slot_title.assert_called_once_with(
+                "s1", "x" * 200, epoch=state._slots["s1"]._title_epoch
+            )
 
     @pytest.mark.asyncio
     async def test_resumed_session_preserves_title(self, tmp_path, monkeypatch):

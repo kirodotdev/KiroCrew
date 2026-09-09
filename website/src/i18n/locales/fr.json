@@ -7448,6 +7448,7 @@
       "mark_as_read": "Marquer comme lu",
       "mark_as_unread": "Marquer comme non lu",
       "move_to_folder": "Déplacer vers un dossier…",
+      "offline_reason": "Passerelle hors ligne — les actions grisées nécessitent une connexion",
       "open_in_new_tab": "Ouvrir dans un onglet de session",
       "pin": "Épingler",
       "pop_out_to_window": "Détacher dans une fenêtre",
@@ -7464,6 +7465,7 @@
     },
     "sessionColorSwatches": {
       "custom_color": "Couleur personnalisée",
+      "custom_color_picker": "Sélecteur de couleur personnalisée",
       "hex_color_code": "Code couleur hexadécimal",
       "no_color": "Aucune couleur"
     },
@@ -10144,10 +10146,13 @@
       "screenshot_failed_reason": "Échec de la capture d’écran : {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Impossible de renommer la session",
+      "could_not_rename_to": "Impossible de renommer en « {{name}} »",
+      "rename_already_saving": "Un renommage est déjà en cours d'enregistrement pour cette session — ton brouillon est conservé ; réessaie dans un instant",
       "could_not_generate_title": "Impossible de générer un titre",
       "could_not_open_side_chat": "Impossible d’ouvrir le chat annexe",
       "side_command_not_run": "La commande /side n’a pas été exécutée. Votre message est toujours dans le champ de saisie.",
-      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe"
+      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe",
+      "rename_reverted_try_again": "Le titre précédent a été rétabli — réessayez."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",
@@ -15054,9 +15059,31 @@
       "saving": "Enregistrement..."
     },
     "offline": {
+      "change_folder_settings": "modifier les réglages du dossier",
+      "change_tags": "modifier les étiquettes",
+      "close_sessions": "fermer des sessions",
+      "create_folders": "créer des dossiers",
+      "create_sessions": "créer des sessions",
+      "delete_folders": "supprimer des dossiers",
       "disabled_gateway_offline": "{{label}} désactivé — passerelle hors ligne",
+      "export_sessions": "exporter des sessions",
       "gateway_offline_reconnect": "Passerelle hors ligne — reconnecte-toi pour {{action}}",
-      "submit_comments": "envoyer les commentaires"
+      "hide_folders": "masquer des dossiers",
+      "move_folders": "déplacer des dossiers",
+      "move_sessions": "déplacer des sessions",
+      "optimize": "optimiser des prompts",
+      "pin_sessions": "épingler des sessions",
+      "recolor_sessions": "recolorer des sessions",
+      "regenerate_titles": "régénérer des titres",
+      "reload_sessions": "recharger des sessions",
+      "rename_folders": "renommer des dossiers",
+      "rename_sessions": "renommer des sessions",
+      "resume_sessions": "reprendre des sessions",
+      "send": "envoyer",
+      "send_to_instances": "envoyer vers des instances",
+      "submit_comments": "envoyer les commentaires",
+      "switch_session_modes": "changer de mode de session",
+      "switch_sessions": "changer de session"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Votre navigateur a bloqué la fenêtre détachée. Autorisez les fenêtres pop-up pour ce site et réessayez."

@@ -549,3 +549,22 @@ describe('ErrorNotice', () => {
     expect(screen.queryByRole('button', { name: /dismiss/i })).not.toBeInTheDocument()
   })
 })
+
+describe('ErrorNotice \u2013 the wrapping row is opt-in', () => {
+  const actionOf = () => screen.getByRole('button', { name: /ask the agent/i })
+  const rootOf = (id: string) => screen.getByTestId(id)
+
+  it('leaves the action a SIBLING of the message by default', () => {
+    render(<ErrorNotice message="Boom" askAgent testId="notice-default" />)
+    // Every pre-existing caller renders through this branch, so the action must
+    // stay a direct child of the root rather than moving inside a wrapper.
+    expect(actionOf().parentElement).toBe(rootOf('notice-default'))
+  })
+
+  it('nests the action beside the message once wrapAction is set', () => {
+    render(<ErrorNotice message="Boom" askAgent wrapAction testId="notice-wrapped" />)
+    const holder = actionOf().parentElement as HTMLElement
+    expect(holder).not.toBe(rootOf('notice-wrapped'))
+    expect(holder.className).toContain('flex-wrap')
+  })
+})

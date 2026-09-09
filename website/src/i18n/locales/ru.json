@@ -7558,6 +7558,7 @@
       "mark_as_read": "Отметить как прочитанное",
       "mark_as_unread": "Отметить как непрочитанное",
       "move_to_folder": "Переместить в папку…",
+      "offline_reason": "Шлюз не в сети — неактивным действиям нужно подключение",
       "open_in_new_tab": "Открыть во вкладке сессии",
       "pin": "Закрепить",
       "pop_out_to_window": "Открыть в отдельном окне",
@@ -7574,6 +7575,7 @@
     },
     "sessionColorSwatches": {
       "custom_color": "Пользовательский цвет",
+      "custom_color_picker": "Выбор пользовательского цвета",
       "hex_color_code": "Шестнадцатеричный код цвета",
       "no_color": "Без цвета"
     },
@@ -10287,10 +10289,13 @@
       "screenshot_failed_reason": "Не удалось сделать снимок экрана: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Не удалось переименовать сессию",
+      "could_not_rename_to": "Не удалось переименовать в «{{name}}»",
+      "rename_already_saving": "Переименование этого сеанса уже сохраняется — твой черновик сохранён, попробуй снова через мгновение",
       "could_not_generate_title": "Не удалось создать заголовок",
       "could_not_open_side_chat": "Не удалось открыть боковой чат",
       "side_command_not_run": "Команда /side не была выполнена. Ваше сообщение осталось в поле ввода.",
-      "could_not_send_to_side_chat": "Не удалось отправить в боковой чат"
+      "could_not_send_to_side_chat": "Не удалось отправить в боковой чат",
+      "rename_reverted_try_again": "Предыдущее название восстановлено — попробуйте снова."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",
@@ -15245,9 +15250,31 @@
       "saving": "Сохранение..."
     },
     "offline": {
+      "change_folder_settings": "изменять настройки папки",
+      "change_tags": "изменять теги",
+      "close_sessions": "закрывать сеансы",
+      "create_folders": "создавать папки",
+      "create_sessions": "создавать сеансы",
+      "delete_folders": "удалять папки",
       "disabled_gateway_offline": "{{label}}: недоступно — шлюз не в сети",
+      "export_sessions": "экспортировать сеансы",
       "gateway_offline_reconnect": "Шлюз не в сети — подключись снова, чтобы {{action}}",
-      "submit_comments": "отправить комментарии"
+      "hide_folders": "скрывать папки",
+      "move_folders": "перемещать папки",
+      "move_sessions": "перемещать сеансы",
+      "optimize": "оптимизировать промпты",
+      "pin_sessions": "закреплять сеансы",
+      "recolor_sessions": "менять цвет сеансов",
+      "regenerate_titles": "заново создавать заголовки",
+      "reload_sessions": "перезагружать сеансы",
+      "rename_folders": "переименовывать папки",
+      "rename_sessions": "переименовывать сеансы",
+      "resume_sessions": "возобновлять сеансы",
+      "send": "отправлять",
+      "send_to_instances": "отправлять на экземпляры",
+      "submit_comments": "отправить комментарии",
+      "switch_session_modes": "переключать режимы сеанса",
+      "switch_sessions": "переключать сеансы"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Браузер заблокировал отдельное окно. Разреши всплывающие окна для этого сайта и попробуй снова."

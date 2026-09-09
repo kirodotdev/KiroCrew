@@ -7228,6 +7228,7 @@
       "mark_as_read": "읽음으로 표시",
       "mark_as_unread": "읽지 않음으로 표시",
       "move_to_folder": "폴더로 이동…",
+      "offline_reason": "게이트웨이가 오프라인입니다 — 흐리게 표시된 작업에는 연결이 필요합니다",
       "open_in_new_tab": "세션 탭에서 열기",
       "pin": "고정",
       "pop_out_to_window": "별도 창으로 분리",
@@ -7244,6 +7245,7 @@
     },
     "sessionColorSwatches": {
       "custom_color": "사용자 지정 색상",
+      "custom_color_picker": "사용자 지정 색상 선택기",
       "hex_color_code": "16진수 색상 코드",
       "no_color": "색 없음"
     },
@@ -9858,10 +9860,13 @@
       "screenshot_failed_reason": "스크린샷 실패: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "세션 이름을 바꿀 수 없습니다",
+      "could_not_rename_to": "‘{{name}}’(으)로 이름을 바꿀 수 없습니다",
+      "rename_already_saving": "이 세션의 이름 변경이 이미 저장되고 있습니다 — 입력한 내용은 유지됩니다. 잠시 후 다시 시도하세요",
       "could_not_generate_title": "제목을 생성할 수 없습니다",
       "could_not_open_side_chat": "사이드 채팅을 열 수 없습니다",
       "side_command_not_run": "/side 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",
-      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다"
+      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다",
+      "rename_reverted_try_again": "이전 제목으로 되돌렸습니다. 다시 시도해 주세요."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",
@@ -14671,9 +14676,31 @@
       "saving": "저장 중…"
     },
     "offline": {
+      "change_folder_settings": "폴더 설정을 변경",
+      "change_tags": "태그를 변경",
+      "close_sessions": "세션을 종료",
+      "create_folders": "폴더를 생성",
+      "create_sessions": "세션을 생성",
+      "delete_folders": "폴더를 삭제",
       "disabled_gateway_offline": "{{label}}이(가) 비활성화되었습니다 — 게이트웨이가 오프라인입니다",
+      "export_sessions": "세션을 내보내기",
       "gateway_offline_reconnect": "게이트웨이가 오프라인입니다 — {{action}}하려면 다시 연결하세요",
-      "submit_comments": "댓글 제출"
+      "hide_folders": "폴더를 숨기기",
+      "move_folders": "폴더를 이동",
+      "move_sessions": "세션을 이동",
+      "optimize": "프롬프트를 최적화",
+      "pin_sessions": "세션을 고정",
+      "recolor_sessions": "세션 색상을 변경",
+      "regenerate_titles": "제목을 다시 생성",
+      "reload_sessions": "세션을 다시 로드",
+      "rename_folders": "폴더 이름을 변경",
+      "rename_sessions": "세션 이름을 변경",
+      "resume_sessions": "세션을 재개",
+      "send": "전송",
+      "send_to_instances": "인스턴스로 전송",
+      "submit_comments": "댓글 제출",
+      "switch_session_modes": "세션 모드를 변경",
+      "switch_sessions": "세션을 전환"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "브라우저가 팝아웃 창을 차단했습니다. 이 사이트의 팝업을 허용한 다음 다시 시도하세요."

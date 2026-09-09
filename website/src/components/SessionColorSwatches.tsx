@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { store, useAppDispatch } from '../store'
+import { store, useAppDispatch, useAppStore } from '../store'
+import { useConnected } from '../hooks/useConnected'
 import { sseSlotColor } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { colorName } from '../utils/sessionColors'
+import { offlineProps } from '../utils/offline'
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -55,6 +57,11 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   // back over the second's success. Only the latest write may roll back.
   const writeGenRef = useRef(0)
   if (HEX_RE.test(draft)) lastValidRef.current = draft
+
+  // Both writes are PATCHes, so the row carries the same affordance as its
+  // dimmed menu siblings rather than accepting a click that cannot land.
+  const connected = useConnected()
+  const boundStore = useAppStore()
 
   const readSlot = () => store.getState().dashboard.slots.find(s => s.key === slotKey)
 
@@ -122,6 +129,9 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   }
 
   const commitHex = (value: string) => {
+    // Live store, not the render closure: the debounce timer holds the commitHex
+    // from the drag's render, whose `connected` predates the drop it must catch.
+    if (!boundStore.getState().dashboard.connected) return
     if (!HEX_RE.test(value)) return
     // A direct commit (Enter/blur) supersedes a pending wheel commit too.
     if (commitTimerRef.current) clearTimeout(commitTimerRef.current)
@@ -144,10 +154,10 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
     // Every affordance inside is a real <button> or <input>.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- stopPropagation barrier, not an activatable control; there is no behaviour for a keyboard to be given
     <div onKeyDown={e => e.stopPropagation()}>
-      <div className="flex items-center gap-1.5 px-3 py-1.5">
-        <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('components.sessionColorSwatches.no_color')} />
+      <div className={`flex items-center gap-1.5 px-3 py-1.5 ${connected ? '' : 'opacity-40'}`} {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'))}>
+        <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 disabled:cursor-not-allowed disabled:hover:scale-100 ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} disabled={!connected} title={i18nT('components.sessionColorSwatches.no_color')} />
         {paletteColors.map((c, i) => (
-          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
+          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:scale-125 disabled:cursor-not-allowed disabled:hover:scale-100 ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} disabled={!connected} title={colorName(c)} />
         ))}
         <button
           type="button"
@@ -160,6 +170,7 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
           // color; the actual hex shows in the tooltip and on the row itself.
           style={{ background: 'conic-gradient(from 0deg, #f66 0deg, #fc6 60deg, #6d6 120deg, #6cc 180deg, #66f 240deg, #c6f 300deg, #f66 360deg)' }}
           onClick={() => setCustomOpen(o => !o)}
+          disabled={!connected}
         />
       </div>
       {customOpen && (
@@ -168,7 +179,8 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
             type="color"
             value={lastValidRef.current}
             onChange={e => onWheelChange(e.target.value)}
-            aria-label={i18nT('components.sessionColorSwatches.custom_color')}
+            aria-label={i18nT('components.sessionColorSwatches.custom_color_picker')}
+            disabled={!connected}
             className="w-6 h-6 rounded cursor-pointer border border-border bg-transparent p-0"
           />
           <input
@@ -187,6 +199,7 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
             }}
             {...ime.bindComposition({ onBlur: () => { if (dirtyRef.current) commitHex(draft) } })}
             aria-label={i18nT('components.sessionColorSwatches.hex_color_code')}
+            disabled={!connected}
             placeholder="#4f8ef7"
             className="w-[76px] bg-bg-accent border border-border rounded px-1.5 py-0.5 text-[11px] font-mono text-text outline-none focus-visible:border-accent"
           />

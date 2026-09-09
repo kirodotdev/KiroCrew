@@ -11,6 +11,8 @@ import {
 } from './ui/context-menu'
 
 import { i18nT } from '../i18n/t'
+import { offlineProps } from '../utils/offline'
+import { useConnected } from '../hooks/useConnected'
 
 /** Per-instance outcome of the most recent send attempt in this open menu. */
 type SendState =
@@ -137,6 +139,9 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
 }
 
 export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstanceSubmenuProps) {
+  // Read here rather than taken as a prop: every caller wants the same gate, and
+  // an optional one left a caller ungated.
+  const connected = useConnected()
   const [states, setStates] = useState<Record<string, SendState>>({})
 
   const { data } = useQuery({
@@ -185,9 +190,14 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
 
+  // Held closed rather than `disabled`: Radix drops a disabled trigger from
+  // roving focus, so offline keyboard users skipped it silently.
   return (
-    <Sub>
-      <SubTrigger>
+    <Sub open={connected ? undefined : false}>
+      <SubTrigger
+        {...offlineProps(connected, i18nT('utils.offline.send_to_instances'))}
+        className={connected ? undefined : 'opacity-40 text-muted'}
+      >
         <Send size={13} className="shrink-0 text-muted" />
         <span className="flex-1">{i18nT('components.sendToInstanceSubmenu.send_a_copy_to')}</span>
         <ChevronRight size={12} className="text-muted" />
@@ -196,7 +206,9 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
         <InstanceSendItems
           instances={instances}
           states={states}
-          onSend={(id) => sendMutation.mutate({ id })}
+          // Refused at the sink as well as the trigger: the touch submenu opened
+          // regardless until now, and its sibling FolderMoveSubmenu guards onPick.
+          onSend={(id) => { if (!connected) return; sendMutation.mutate({ id }) }}
           Item={Item}
         />
       </SubContent>

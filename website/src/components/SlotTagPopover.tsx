@@ -4,9 +4,11 @@ import { X, Check } from 'lucide-react'
 import type { ChatTag } from '../types'
 import { api } from '../api/client'
 import { useAppSelector } from '../store'
+import { useConnected } from '../hooks/useConnected'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { offlineProps } from '../utils/offline'
 import { Input } from './ui'
 import ErrorNotice from './ErrorNotice'
 
@@ -128,6 +130,10 @@ const readRejection = (error: unknown): RejectionPayload => {
 export default function SlotTagPopover() {
   const { slotKey, close } = useTagPopover()
   const slot = useAppSelector(s => (slotKey ? s.dashboard.slots.find(x => x.key === slotKey) : undefined))
+  // The picker itself is a local read off cached slot state, so it opens offline;
+  // only the two writes below need a live gateway.
+  const connected = useConnected()
+  const offlineVerb = i18nT('utils.offline.change_tags')
   const queryClient = useQueryClient()
   const ime = useImeGuard()
   const listRef = useRef<HTMLDivElement>(null)
@@ -319,6 +325,9 @@ export default function SlotTagPopover() {
   if (!slotKey) return null
   const currentTags = new Set(pending ?? slot?.tags ?? [])
   const toggle = (tagId: string) => {
+    // Refuse before painting the optimistic overlay: a guess we cannot send is
+    // the offline draft-loss shape this PR exists to close.
+    if (!connected) return
     const base = pendingRef.current ?? slot?.tags ?? []
     const baselineTags = [...slotTagsRef.current]
     const baselineRevision = slotTagsRevisionRef.current
@@ -653,7 +662,8 @@ export default function SlotTagPopover() {
             const on = currentTags.has(t.id)
             return (
               <button key={t.id} role="menuitemcheckbox" aria-checked={on} type="button" data-option tabIndex={-1}
-                className={`flex items-center gap-2 px-2 py-1 rounded text-left cursor-pointer bg-transparent border-none transition-all ${on ? 'bg-accent-subtle text-text-strong' : 'text-text hover:bg-bg-hover'}`}
+                className={`flex items-center gap-2 px-2 py-1 rounded text-left cursor-pointer bg-transparent border-none transition-all ${on ? 'bg-accent-subtle text-text-strong' : 'text-text hover:bg-bg-hover'} ${connected ? '' : 'opacity-40'}`}
+                {...offlineProps(connected, offlineVerb, t.name)}
                 onClick={() => toggle(t.id)}>
                 <span className="w-3 h-3 rounded-sm border border-border shrink-0" style={{ background: t.color }} />
                 <span className="flex-1 truncate">{t.name}</span>
@@ -674,8 +684,11 @@ export default function SlotTagPopover() {
           <Input
             className="flex-1 text-[12px] py-1"
             placeholder={i18nT('components.slotTagPopover.new_tag')}
+            disabled={!connected}
+            {...offlineProps(connected, offlineVerb, i18nT('components.slotTagPopover.new_tag'))}
             {...ime.bindEnter<HTMLInputElement>({
               onEnter: () => {
+                if (!connected) return
                 const el = document.activeElement as HTMLInputElement | null
                 const name = (el?.value || '').trim()
                 if (!name) return
@@ -687,6 +700,13 @@ export default function SlotTagPopover() {
             })}
           />
         </div>
+        {/* Persistent rather than click-triggered: a disabled control fires no
+            event, so a refusal shown only on activation could never explain it. */}
+        {!connected && (
+          <div role="status" data-testid="tag-offline-reason" className="mt-2 text-[11px] text-muted px-1">
+            {i18nT('utils.offline.gateway_offline_reconnect', { action: offlineVerb })}
+          </div>
+        )}
       </div>
     </div>
   )

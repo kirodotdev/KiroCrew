@@ -35,15 +35,25 @@ const cfgMock = vi.hoisted(() => ({ loadChatConfig: vi.fn(() => ({ confirmCloseS
 vi.mock('../pages/chat/ChatSettings', () => cfgMock)
 
 import { store } from '../store'
-import { sseSlots, markSlotUnread, updateSlotPin } from '../store/dashboardSlice'
+import { sseSlots, markSlotUnread, updateSlotPin, sseSlotTitle } from '../store/dashboardSlice'
 import { useSessionActions } from '../hooks/useSessionActions'
 
 const SLOT = 'chat-actions-1'
+const OTHER = 'chat-actions-2'
 
 function seed(pinned = false) {
   const slot: ChatSlot = { key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '' }
   store.dispatch(sseSlots([slot]))
   store.dispatch(updateSlotPin({ key: SLOT, pinned }))
+}
+
+// Two sessions, so a rename can be aimed at one that is NOT the one being pinned.
+function seedPair() {
+  store.dispatch(sseSlots([
+    { key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '' } as ChatSlot,
+    { key: OTHER, title: 'Other', messages: 0, running: false, folder_id: '' } as ChatSlot,
+  ]))
+  store.dispatch(updateSlotPin({ key: SLOT, pinned: false }))
 }
 const slotOf = () => store.getState().dashboard.slots.find(s => s.key === SLOT)
 const unread = () => store.getState().dashboard.unreadSlots.includes(SLOT)
@@ -103,6 +113,72 @@ describe('useSessionActions', () => {
     expect(slotOf()?.pinned).toBe(true)
     await waitFor(() => expect(mocks.setSlotPin).toHaveBeenCalledWith(SLOT, true))
     expect(slotOf()?.pinned).toBe(true)                        // no rollback
+  })
+
+  // Paired with the frame test below: this one says a title event must NOT take
+  // pin ownership away, that one says a real full frame still must.
+  it('a title event mid-flight does NOT defeat a pin rollback', async () => {
+    mocks.setSlotPin.mockRejectedValueOnce(new Error('boom'))
+    let dropGateway: (reason: Error) => void = () => {}
+    mocks.chatSlots.mockImplementation(
+      () => new Promise<ChatSlot[]>((_resolve, reject) => { dropGateway = reject }),
+    )
+    seedPair()
+    const a = renderActions()
+    act(() => a.current.togglePin(SLOT))
+    expect(slotOf()?.pinned).toBe(true)
+    await waitFor(() => expect(mocks.chatSlots).toHaveBeenCalled())
+    act(() => { store.dispatch(sseSlotTitle({ key: OTHER, title: 'Renamed elsewhere' })) })
+    act(() => dropGateway(new Error('gateway drop')))
+    await waitFor(() => expect(slotOf()?.pinned).toBe(false))
+  })
+
+  it('an authoritative slots frame mid-flight DOES hand pin ownership away', async () => {
+    mocks.setSlotPin.mockRejectedValueOnce(new Error('boom'))
+    let dropGateway: (reason: Error) => void = () => {}
+    mocks.chatSlots.mockImplementation(
+      () => new Promise<ChatSlot[]>((_resolve, reject) => { dropGateway = reject }),
+    )
+    seedPair()
+    const a = renderActions()
+    act(() => a.current.togglePin(SLOT))
+    expect(slotOf()?.pinned).toBe(true)
+    await waitFor(() => expect(mocks.chatSlots).toHaveBeenCalled())
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '', pinned: true } as ChatSlot,
+        { key: OTHER, title: 'Other', messages: 0, running: false, folder_id: '' } as ChatSlot,
+      ]))
+    })
+    act(() => dropGateway(new Error('gateway drop')))
+    // The frame is the truth now, so the local rollback stands down and the
+    // server's pinned state survives instead of being reverted under it.
+    await waitFor(() => expect(mocks.setSlotPin).toHaveBeenCalled())
+    expect(slotOf()?.pinned).toBe(true)
+  })
+
+  // Paced reveals tick per chunk, so a title write on the global counter would
+  // spend the reconcile's bounded retry budget on every pin the user clicked.
+  it('paced auto-title reveals do not drive the pin reconcile into its retry fallback', async () => {
+    let releaseSnapshot: (rows: ChatSlot[]) => void = () => {}
+    mocks.chatSlots.mockImplementation(
+      () => new Promise<ChatSlot[]>(resolve => { releaseSnapshot = resolve }),
+    )
+    seedPair()
+    const a = renderActions()
+    act(() => a.current.togglePin(SLOT))
+    await waitFor(() => expect(mocks.chatSlots).toHaveBeenCalledTimes(1))
+    act(() => {
+      for (const title of ['Ren', 'Renam', 'Renamed live']) {
+        store.dispatch(sseSlotTitle({ key: OTHER, title }))
+      }
+    })
+    act(() => releaseSnapshot([
+      { key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '', pinned: true } as ChatSlot,
+      { key: OTHER, title: 'Renamed live', messages: 0, running: false, folder_id: '' } as ChatSlot,
+    ]))
+    await waitFor(() => expect(slotOf()?.pinned).toBe(true))
+    expect(mocks.chatSlots).toHaveBeenCalledTimes(1)
   })
 
   it('close honours confirmCloseSession', () => {

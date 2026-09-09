@@ -93,7 +93,7 @@ ContextMenuSeparator.displayName = ContextMenuPrimitive.Separator.displayName
 const ContextMenuSubTrigger = React.forwardRef<
   React.ComponentRef<typeof ContextMenuPrimitive.SubTrigger>,
   React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.SubTrigger> & { inset?: boolean }
->(({ className, inset, children, onClick, onKeyDown, ...props }, ref) => {
+>(({ className, inset, children, onClick, onKeyDown, disabled, ...props }, ref) => {
   const ctx = React.useContext(ContextSubPhoneContext)
   if (ctx?.isPhone) {
     return (
@@ -103,6 +103,9 @@ const ContextMenuSubTrigger = React.forwardRef<
         expanded={ctx.expanded}
         onToggle={ctx.toggle}
         className={className}
+        // Explicit, not via the spread: that cast erases `disabled`, and losing it
+        // here is what let a gated submenu still open under a touch pointer.
+        disabled={disabled}
         onClick={onClick as unknown as React.MouseEventHandler<HTMLDivElement> | undefined}
         onKeyDown={onKeyDown as unknown as React.KeyboardEventHandler<HTMLDivElement> | undefined}
         {...(props as React.HTMLAttributes<HTMLDivElement>)}
@@ -114,6 +117,7 @@ const ContextMenuSubTrigger = React.forwardRef<
   return (
     <ContextMenuPrimitive.SubTrigger
       ref={ref}
+      disabled={disabled}
       className={cn(
         'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] outline-none transition-colors',
         'focus:bg-bg-hover data-[state=open]:bg-bg-hover',

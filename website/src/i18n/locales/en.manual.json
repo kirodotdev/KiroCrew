@@ -3907,10 +3907,13 @@
       "screenshot_failed_reason": "Screenshot failed: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Couldn't rename the session",
+      "could_not_rename_to": "Couldn't rename to \"{{name}}\"",
+      "rename_already_saving": "A rename is already saving for this session — your draft is kept; try again in a moment",
       "could_not_generate_title": "Couldn't generate a title",
       "could_not_open_side_chat": "Couldn't open the side chat",
       "side_command_not_run": "The /side command was not run. Your message is still in the composer.",
-      "could_not_send_to_side_chat": "Couldn't send to the side chat"
+      "could_not_send_to_side_chat": "Couldn't send to the side chat",
+      "rename_reverted_try_again": "The previous title was restored — try again."
     },
     "chatSidebar": {
       "answered_by": "answered by {{agent}}",
@@ -6223,9 +6226,31 @@
       "saving": "Saving..."
     },
     "offline": {
+      "change_folder_settings": "change folder settings",
+      "change_tags": "change tags",
+      "close_sessions": "close sessions",
+      "create_folders": "create folders",
+      "create_sessions": "create sessions",
+      "delete_folders": "delete folders",
       "disabled_gateway_offline": "{{label}} disabled — gateway offline",
+      "export_sessions": "export sessions",
       "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}",
-      "submit_comments": "submit comments"
+      "hide_folders": "hide folders",
+      "move_folders": "move folders",
+      "move_sessions": "move sessions",
+      "optimize": "optimize prompts",
+      "pin_sessions": "pin sessions",
+      "recolor_sessions": "recolor sessions",
+      "regenerate_titles": "regenerate titles",
+      "reload_sessions": "reload sessions",
+      "rename_folders": "rename folders",
+      "rename_sessions": "rename sessions",
+      "resume_sessions": "resume sessions",
+      "send": "send",
+      "send_to_instances": "send to instances",
+      "submit_comments": "submit comments",
+      "switch_session_modes": "switch session modes",
+      "switch_sessions": "switch sessions"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Your browser blocked the pop-out window. Allow pop-ups for this site and try again."

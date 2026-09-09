@@ -1317,7 +1317,7 @@ export function useWebSocket() {
             break
           }
           case 'slot_title':
-            dispatch(sseSlotTitle(data as { key: string; title: string }))
+            dispatch(sseSlotTitle(data as { key: string; title: string; epoch?: number }))
             break
           case 'session_summary': {
             // A turn finished and the backend regenerated this session's intent

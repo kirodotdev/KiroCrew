@@ -13,12 +13,18 @@
  * commits) before any switch, which the last case pins down.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { __resetRenameSlotStateForTests } from '../hooks/useRenameSlot'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
+import {
+  recordError,
+  __resetErrorJournalForTests,
+} from '../utils/errorReport'
 import { ThemeProvider } from '../hooks/useTheme'
 
 // The non-editing title renders through TypewriterText; keep the text visible
@@ -106,7 +112,7 @@ const renderChatPage = () => {
   apiMocks.renameSlot = vi.fn().mockResolvedValue({})
   const store = createTestStore({
     dashboard: {
-      status: { platform: 'darwin' }, connected: false,
+      status: { platform: 'darwin' }, connected: true,
       slots, slotsLoaded: true, approvalMode: 'normal', channelTrusted: false, refreshTrigger: 0,
       unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
@@ -149,7 +155,46 @@ const switchToB = (store: ReturnType<typeof createTestStore>) => {
 }
 
 describe('ChatPage – header rename is pinned to the session it opened on', () => {
-  beforeEach(() => { Object.keys(apiMocks).forEach(k => delete apiMocks[k]) })
+  beforeEach(() => { Object.keys(apiMocks).forEach(k => delete apiMocks[k]); __resetRenameSlotStateForTests() })
+
+  it('the header title carries the offline affordance BEFORE the click, like its sidebar siblings', async () => {
+    const store = renderChatPage()
+    // The testid is on the inner text span; the affordance rides the clickable.
+    const clickable = () => screen.getByTestId('header-title').closest('[aria-disabled]') as HTMLElement | null
+    await screen.findByTestId('header-title')
+    // Control: connected it is not marked, so the true below is the gate firing
+    // rather than a permanently-disabled control.
+    expect(clickable()?.getAttribute('aria-disabled')).toBe('false')
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(clickable()?.getAttribute('aria-disabled')).toBe('true')
+    expect(clickable()?.getAttribute('title')).toMatch(/offline/i)
+  })
+
+  it('tapping the title while offline refuses at entry, as the sidebar does', async () => {
+    const store = renderChatPage()
+    const label = await screen.findByTestId('header-title')
+    // Control: connected, this same gesture DOES open the editor — so the absence
+    // below is the gate firing rather than the click missing its target.
+    act(() => { fireEvent.click(label) })
+    expect(screen.getByDisplayValue(TITLE_A)).toBeTruthy()
+    act(() => { fireEvent.keyDown(screen.getByDisplayValue(TITLE_A), { key: 'Escape' }) })
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { fireEvent.click(screen.getByTestId('header-title')) })
+    expect(screen.queryByDisplayValue(TITLE_A)).toBeNull()
+    expect(await screen.findByTestId('action-error')).toBeInTheDocument()
+  })
+
+  it('the ENTRY refusal offers no hand-off either, since its composer cannot send', async () => {
+    // Entry leaves no editor open, so an editingTitle-only gate lets the button
+    // through — into a composer whose Send is itself offline-disabled.
+    const store = renderChatPage()
+    await screen.findByTestId('header-title')
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { fireEvent.click(screen.getByTestId('header-title')) })
+    expect(await screen.findByTestId('action-error')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue(TITLE_A)).toBeNull()
+    expect(screen.queryByText(/Ask the agent/i)).toBeNull()
+  })
 
   it('tapping the title opens an editor seeded with that session title', async () => {
     renderChatPage()
@@ -174,12 +219,188 @@ describe('ChatPage – header rename is pinned to the session it opened on', () 
     expect(apiMocks.renameSlot).not.toHaveBeenCalled()
   })
 
+  it('a disconnect landing before rerender still refuses the header commit', async () => {
+    // The blur reads live store state, not the render-time closure: a disconnect
+    // dispatched without an intervening rerender must still refuse.
+    const store = renderChatPage()
+    const input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Typed while dropping' } }) })
+    store.dispatch({ type: 'dashboard/sseDisconnected' })
+    await act(async () => { fireEvent.blur(input) })
+    expect(apiMocks.renameSlot).not.toHaveBeenCalled()
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe(TITLE_A)
+  })
+
+  it('the header refuses to commit a rename while the gateway is offline', async () => {
+    // Entry is gated now, so the only way to hold an offline editor is to open it
+    // while connected and lose the gateway with the draft still open.
+    const store = renderChatPage()
+    const input = await openRename()
+    act(() => { store.dispatch({ type: 'dashboard/sseDisconnected' }) })
+    act(() => { fireEvent.change(input, { target: { value: 'Renamed offline' } }) })
+    act(() => { fireEvent.blur(input) })
+    expect(apiMocks.renameSlot).not.toHaveBeenCalled()
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe(TITLE_A)
+  })
+
+  it('the offline refusal does NOT offer the hand-off that would drop the kept draft', async () => {
+    // The refusal keeps the editor open on purpose, so the notice beside it must
+    // not offer an action that switches away and discards the draft.
+    const store = renderChatPage()
+    const input = await openRename()
+    act(() => { store.dispatch({ type: 'dashboard/sseDisconnected' }) })
+    act(() => { fireEvent.change(input, { target: { value: 'Kept draft' } }) })
+    await act(async () => { fireEvent.blur(input) })
+    expect(await screen.findByTestId('action-error')).toBeInTheDocument()
+    expect((input as HTMLInputElement).value).toBe('Kept draft')
+    expect(screen.queryByText(/Ask the agent/i)).toBeNull()
+  })
+
+  it('the icon-only regenerate button keeps an accessible name while CONNECTED', () => {
+    // offlineProps emits a label only when offline, so a caller that hands it the
+    // label and drops its own leaves the normal case with no accessible name.
+    renderChatPage()
+    expect(screen.getByRole('button', { name: /regenerate/i })).toBeInTheDocument()
+  })
+
+  it('a header rename repaints the SERVER-normalized title, not the over-length one typed', async () => {
+    // The endpoint truncates to 200 chars, so a dropped title frame would leave a
+    // string on screen that was never stored.
+    const typed = 'y'.repeat(250)
+    const stored = typed.slice(0, 200)
+    const store = renderChatPage()
+    apiMocks.renameSlot = vi.fn().mockResolvedValue({ ok: true, title: stored })
+    const input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: typed } }) })
+    await act(async () => { fireEvent.blur(input) })
+    expect(apiMocks.renameSlot).toHaveBeenCalledWith('chat-a', typed, expect.any(AbortSignal))
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe(stored)
+  })
+
+  it('a header rename the server did NOT normalize is left exactly as typed', async () => {
+    const store = renderChatPage()
+    apiMocks.renameSlot = vi.fn().mockResolvedValue({ ok: true, title: 'Short name' })
+    const input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Short name' } }) })
+    await act(async () => { fireEvent.blur(input) })
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Short name')
+  })
+
+  it('a header rename the server PUSHED is not rolled back when its response is lost', async () => {
+    // The endpoint pushes its title event BEFORE it replies, so a dropped reply
+    // must not undo a title the server already acknowledged.
+    let reject: (e: Error) => void = () => {}
+    const store = renderChatPage()
+    apiMocks.renameSlot = vi.fn(() => new Promise((_r, rej) => { reject = rej }))
+    const input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Pushed name' } }) })
+    await act(async () => { fireEvent.blur(input) })
+    await waitFor(() => expect(apiMocks.renameSlot).toHaveBeenCalledWith('chat-a', 'Pushed name', expect.any(AbortSignal)))
+    act(() => { store.dispatch({ type: 'dashboard/sseSlotTitle', payload: { key: 'chat-a', title: 'Pushed name' } }) })
+    await act(async () => { reject(new Error('response lost')) })
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Pushed name')
+  })
+
+  it('a failed header rename reverts the painted title instead of leaving it', async () => {
+    const store = renderChatPage()
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('nope'))
+    const input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Renamed alpha' } }) })
+    act(() => { fireEvent.blur(input) })
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Renamed alpha')
+    await waitFor(() => {
+      expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe(TITLE_A)
+    })
+  })
+
+  it('the failure notice shows translated text, not the transport message', async () => {
+    // `e.message` is for the error journal, which the hand-off keys on; a reader
+    // seeing "Failed to fetch" under a friendly title is the defect.
+    renderChatPage()
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('Request failed with status 500'))
+    const input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Renamed alpha' } }) })
+    act(() => { fireEvent.blur(input) })
+    const notice = await screen.findByTestId('action-error')
+    expect(notice.textContent).not.toContain('Request failed with status 500')
+    expect(notice.textContent).toContain('The previous title was restored')
+  })
+
+  it('a SECOND distinct failure hands its own report to the agent, not the first one', async () => {
+    // The dedupe keyed on title+message only, and both are generic constants now,
+    // so two unrelated failures collapsed and Ask-agent kept the FIRST report.
+    __resetErrorJournalForTests()
+    recordError({ source: 'api', message: 'first failure', endpoint: '/api/one', status: 500 })
+    recordError({ source: 'api', message: 'second failure', endpoint: '/api/two', status: 503 })
+
+    renderChatPage()
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('first failure'))
+    let input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Attempt one' } }) })
+    act(() => { fireEvent.blur(input) })
+    await screen.findByTestId('action-error')
+
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('second failure'))
+    input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Attempt two' } }) })
+    act(() => { fireEvent.blur(input) })
+    await waitFor(() => expect(screen.getByText(/Ask the agent/i)).toBeTruthy())
+
+    // A mounted ChatPage DRAINS the hand-off queue as soon as it is staged, so
+    // read the sessionStorage write itself rather than the surviving queue.
+    const staged: string[] = []
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, k: string, v: string) {
+      staged.push(v)
+      return Storage.prototype.setItem.wrappedMethod?.call(this, k, v)
+    } as never)
+    act(() => { fireEvent.click(screen.getByText(/Ask the agent/i)) })
+    setItem.mockRestore()
+    const all = staged.join('\n')
+    expect(all).toContain('/api/two')
+    expect(all).not.toContain('/api/one')
+  })
+
+  it('an offline refusal is retired on reconnect, and an unrelated error is not', async () => {
+    // Its Ask-agent button returns at the same instant the reason stops being
+    // true, so the notice would forward a failure that no longer applies.
+    const store = renderChatPage()
+    await screen.findByTestId('header-title')
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { fireEvent.click(screen.getByTestId('header-title')) })
+    expect(await screen.findByTestId('action-error')).toBeInTheDocument()
+    act(() => { store.dispatch(sseConnected()) })
+    await waitFor(() => expect(screen.queryByTestId('action-error')).toBeNull())
+
+    // Control: a failure that has nothing to do with the gateway must survive,
+    // since this notice is a shared channel.
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('server said no'))
+    const input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Rejected' } }) })
+    act(() => { fireEvent.blur(input) })
+    expect(await screen.findByTestId('action-error')).toBeInTheDocument()
+    act(() => { store.dispatch(sseConnected()) })
+    expect(screen.getByTestId('action-error')).toBeInTheDocument()
+  })
+
+  it('the header paint does NOT advance the title generation, only a server event does', async () => {
+    // Paired: the optimistic paint is a client guess, so unrelated optimistic
+    // writes must not read it as the server having spoken.
+    const store = renderChatPage()
+    const input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Renamed alpha' } }) })
+    act(() => { fireEvent.blur(input) })
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Renamed alpha')
+    expect(store.getState().dashboard.slotTitleGenerations?.['chat-a'] ?? 0).toBe(0)
+    act(() => { store.dispatch({ type: 'dashboard/sseSlotTitle', payload: { key: 'chat-a', title: 'Server says' } }) })
+    expect(store.getState().dashboard.slotTitleGenerations?.['chat-a'] ?? 0).toBe(1)
+  })
+
   it('renaming within one session still commits on blur', async () => {
     renderChatPage()
     const input = await openRename()
     act(() => { fireEvent.change(input, { target: { value: 'Renamed alpha' } }) })
-    act(() => { fireEvent.blur(input) })
-    expect(apiMocks.renameSlot).toHaveBeenCalledWith('chat-a', 'Renamed alpha')
+    await act(async () => { fireEvent.blur(input) })
+    await waitFor(() => expect(apiMocks.renameSlot).toHaveBeenCalledWith('chat-a', 'Renamed alpha', expect.any(AbortSignal)))
   })
 
   it('returning to the session does not revive the abandoned draft', async () => {
@@ -271,58 +492,44 @@ describe('ChatPage - a refused header rename reverts the optimistic title (#1020
     expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Newer concurrent title')
   })
 
-  it('overlapping refused renames revert to the confirmed title, not to each other', async () => {
+  it('a refused rename reverts immediately, so no later attempt can revert to it', async () => {
+    // #10203 repaired overlapping refused renames; useRenameSlot removes the window
+    // instead — the revert is immediate and a concurrent commit is refused.
     const store = renderChatPage()
-    // First rename is refused and the recovery re-read is held pending, so the
-    // store keeps the first refused optimistic value on screen. The re-read is
-    // deduped through queryClient.fetchQuery, so a second attempt joins this
-    // same in-flight request.
     const input = await openRename()
     apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('refused'))
-    let rejectSlots!: (e: unknown) => void
-    apiMocks.chatSlots = vi.fn().mockReturnValue(new Promise((_r, rej) => { rejectSlots = rej }))
+    apiMocks.chatSlots = vi.fn().mockRejectedValue(new Error('gateway down'))
     act(() => { fireEvent.change(input, { target: { value: 'Refused B' } }) })
     act(() => { fireEvent.blur(input) })
-    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
-    // Second rename while the first recovery is pending: also refused. Its
-    // re-read joins the shared in-flight request, which then fails outright ->
-    // local fallback. It must restore the confirmed pre-rename baseline, not
-    // the first attempt's refused value.
-    const label = await screen.findByTestId('header-title')
-    act(() => { fireEvent.click(label) })
-    const second = screen.getByDisplayValue('Refused B') as HTMLInputElement
-    act(() => { fireEvent.change(second, { target: { value: 'Refused C' } }) })
-    act(() => { fireEvent.blur(second) })
-    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
-    act(() => { rejectSlots(new Error('gateway down')) })
+    // Straight back to the confirmed title, with no re-read needed — the case
+    // upstream's fallback existed for is the only path here.
     await waitFor(() => {
       expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe(TITLE_A)
     })
+    // And the refused value never lingers for a second attempt to adopt.
+    expect(screen.queryByDisplayValue('Refused B')).toBeNull()
   })
 
-  it('a pending failure never drags a confirmed external rename back to the baseline', async () => {
+  it('a refused rename never drags a confirmed external rename back to the baseline', async () => {
     const store = renderChatPage()
-    // First rename is refused with its re-read held pending (baseline = TITLE_A).
+    // No recovery re-read exists to hold pending, so chatSlots rejects per call
+    // rather than being held: an eagerly-built rejection would have no consumer.
     const input = await openRename()
     apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('refused'))
-    let rejectSlots!: (e: unknown) => void
-    apiMocks.chatSlots = vi.fn().mockReturnValue(new Promise((_r, rej) => { rejectSlots = rej }))
+    apiMocks.chatSlots = vi.fn().mockRejectedValue(new Error('gateway down'))
     act(() => { fireEvent.change(input, { target: { value: 'Refused B' } }) })
     act(() => { fireEvent.blur(input) })
     await act(async () => { await new Promise(r => setTimeout(r, 0)) })
     // Another client's CONFIRMED rename lands over SSE while B is pending.
     act(() => { store.dispatch({ type: 'dashboard/sseSlotTitle', payload: { key: 'chat-a', title: 'Confirmed external' } }) })
-    // A second refused rename commits on top of the confirmed value; the shared
-    // re-read then fails outright -> local fallback. The baseline must have
-    // been refreshed to the confirmed title at commit time, so the fallback
-    // restores 'Confirmed external', never the stale TITLE_A.
+    // A second refused rename commits on top of the confirmed value. The revert
+    // must stand down to 'Confirmed external', never to the stale TITLE_A.
     const label = await screen.findByTestId('header-title')
     act(() => { fireEvent.click(label) })
     const second = screen.getByDisplayValue('Confirmed external') as HTMLInputElement
     act(() => { fireEvent.change(second, { target: { value: 'Refused C' } }) })
     act(() => { fireEvent.blur(second) })
     await act(async () => { await new Promise(r => setTimeout(r, 0)) })
-    act(() => { rejectSlots(new Error('gateway down')) })
     await waitFor(() => {
       expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Confirmed external')
     })

@@ -7228,6 +7228,7 @@
       "mark_as_read": "标记为已读",
       "mark_as_unread": "标记为未读",
       "move_to_folder": "移动到文件夹…",
+      "offline_reason": "网关离线 — 变暗的操作需要连接",
       "open_in_new_tab": "在会话标签页中打开",
       "pin": "置顶",
       "pop_out_to_window": "弹出为独立窗口",
@@ -7244,6 +7245,7 @@
     },
     "sessionColorSwatches": {
       "custom_color": "自定义颜色",
+      "custom_color_picker": "自定义颜色选择器",
       "hex_color_code": "十六进制颜色代码",
       "no_color": "无颜色"
     },
@@ -9858,10 +9860,13 @@
       "screenshot_failed_reason": "截图失败：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "无法重命名会话",
+      "could_not_rename_to": "无法重命名为“{{name}}”",
+      "rename_already_saving": "此会话的重命名已在保存中 — 你输入的内容会保留，请稍后重试",
       "could_not_generate_title": "无法生成标题",
       "could_not_open_side_chat": "无法打开随手问",
       "side_command_not_run": "/side 命令未执行。你的消息仍保留在输入框中。",
-      "could_not_send_to_side_chat": "无法发送到随手问"
+      "could_not_send_to_side_chat": "无法发送到随手问",
+      "rename_reverted_try_again": "已恢复为原标题，请重试。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
@@ -14671,9 +14676,31 @@
       "saving": "保存中…"
     },
     "offline": {
+      "change_folder_settings": "更改文件夹设置",
+      "change_tags": "更改标签",
+      "close_sessions": "关闭会话",
+      "create_folders": "创建文件夹",
+      "create_sessions": "创建会话",
+      "delete_folders": "删除文件夹",
       "disabled_gateway_offline": "{{label}} 已禁用 — 网关离线",
+      "export_sessions": "导出会话",
       "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}",
-      "submit_comments": "提交评论"
+      "hide_folders": "隐藏文件夹",
+      "move_folders": "移动文件夹",
+      "move_sessions": "移动会话",
+      "optimize": "优化提示词",
+      "pin_sessions": "置顶会话",
+      "recolor_sessions": "更改会话颜色",
+      "regenerate_titles": "重新生成标题",
+      "reload_sessions": "重新加载会话",
+      "rename_folders": "重命名文件夹",
+      "rename_sessions": "重命名会话",
+      "resume_sessions": "恢复会话",
+      "send": "发送",
+      "send_to_instances": "发送到实例",
+      "submit_comments": "提交评论",
+      "switch_session_modes": "切换会话模式",
+      "switch_sessions": "切换会话"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "浏览器阻止了弹出窗口。允许此站点的弹出窗口后重试。"

@@ -6,6 +6,9 @@ import { Badge, Btn, Input, IconButton } from '../ui'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../ui/dropdown-menu'
 import { timeAgo as _timeAgo } from '../../utils/timeAgo'
 import FolderMoveSubmenu from '../FolderMoveSubmenu'
+import OfflineMenuReason from '../OfflineMenuReason'
+import { offlineProps } from '../../utils/offline'
+import { useConnected } from '../../hooks/useConnected'
 import { DndDraggable, DndDroppable } from '../dnd'
 import { childFolders, isDescendantFolder, folderSubtreeStats } from '../../utils/artifactFolderTree'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -65,9 +68,9 @@ export type FolderActions = {
  *  The palette is the shared folder catalog (folderColorCatalog.tsx), so
  *  artifact folders and chat folders offer the same hues and the aria labels
  *  reuse the localized color names. */
-export function FolderColorSwatches({ value, onPick, size = 16 }: { value?: string; onPick: (color: string) => void; size?: number }) {
+export function FolderColorSwatches({ value, onPick, size = 16, disabled = false }: { value?: string; onPick: (color: string) => void; size?: number; disabled?: boolean }) {
   return (
-    <div className="flex items-center gap-1.5 flex-wrap" role="radiogroup" aria-label={i18nT('pages.artifactsPage.folder_color')}>
+    <div className={`flex items-center gap-1.5 flex-wrap ${disabled ? 'opacity-40' : ''}`} role="radiogroup" aria-label={i18nT('pages.artifactsPage.folder_color')}>
       {FOLDER_COLOR_PALETTE.map(({ value: c, label }) => (
         <button
           key={c}
@@ -76,9 +79,10 @@ export function FolderColorSwatches({ value, onPick, size = 16 }: { value?: stri
           aria-checked={value === c}
           aria-label={label()}
           title={label()}
-          onClick={(e) => { e.stopPropagation(); onPick(c) }}
+          disabled={disabled}
+          onClick={(e) => { e.stopPropagation(); if (disabled) return; onPick(c) }}
           onPointerDown={(e) => e.stopPropagation()}
-          className={`rounded-full border cursor-pointer transition-transform hover:scale-110 ${
+          className={`rounded-full border cursor-pointer transition-transform hover:scale-110 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 ${
             value === c ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg border-transparent' : 'border-border'
           }`}
           style={{ width: size, height: size, background: c }}
@@ -90,9 +94,10 @@ export function FolderColorSwatches({ value, onPick, size = 16 }: { value?: stri
         aria-checked={!value}
         aria-label={i18nT('pages.artifactsPage.no_color')}
         title={i18nT('pages.artifactsPage.no_color')}
-        onClick={(e) => { e.stopPropagation(); onPick('') }}
+        disabled={disabled}
+        onClick={(e) => { e.stopPropagation(); if (disabled) return; onPick('') }}
         onPointerDown={(e) => e.stopPropagation()}
-        className={`rounded-full border cursor-pointer transition-transform hover:scale-110 flex items-center justify-center text-muted bg-transparent ${
+        className={`rounded-full border cursor-pointer transition-transform hover:scale-110 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 flex items-center justify-center text-muted bg-transparent ${
           !value ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg border-transparent' : 'border-border'
         }`}
         style={{ width: size, height: size }}
@@ -168,6 +173,7 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
  * excludes the folder's own subtree — a folder can't become its own descendant. */
 export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; folders: ArtifactFolder[]; actions: FolderActions }) {
   const moveTargets = folders.filter(f => !isDescendantFolder(folders, folder.id, f.id))
+  const connected = useConnected()
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -182,26 +188,37 @@ export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolde
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-        <DropdownMenuItem onSelect={() => actions.onRename(folder)}>
+        <DropdownMenuItem
+          className={connected ? undefined : 'opacity-40 text-muted'}
+          {...offlineProps(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.artifactsPage.rename'))}
+          onSelect={e => { if (!connected) { e.preventDefault(); return } actions.onRename(folder) }}
+        >
           <Pencil size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.rename')}
         </DropdownMenuItem>
         <FolderMoveSubmenu
           variant="dropdown"
           folders={moveTargets}
           currentFolderId={folder.parent_id || null}
-          onPick={(pid) => actions.onMove(folder, pid || '')}
+          onPick={(pid) => { if (!connected) return; actions.onMove(folder, pid || '') }}
         />
         <DropdownMenuSeparator />
         {/* Color swatches live inline (not a menu item) so picking one doesn't
             navigate — the menu closes after the pick via the row's own click. */}
         <div className="px-2 py-1.5">
           <div className="text-[11px] text-muted mb-1.5">{i18nT('pages.artifactsPage.color')}</div>
-          <FolderColorSwatches value={folder.color} onPick={(c) => actions.onSetColor(folder, c)} />
+          <FolderColorSwatches value={folder.color} disabled={!connected} onPick={(c) => actions.onSetColor(folder, c)} />
         </div>
         <DropdownMenuSeparator />
-        <DropdownMenuItem className="text-danger" onSelect={() => actions.onDelete(folder)}>
+        <DropdownMenuItem
+          className={`text-danger${connected ? '' : ' opacity-40'}`}
+          {...offlineProps(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.artifactsPage.delete'))}
+          onSelect={e => { if (!connected) { e.preventDefault(); return } actions.onDelete(folder) }}
+        >
           <Trash2 size={13} className="shrink-0" /> {i18nT('pages.artifactsPage.delete')}
         </DropdownMenuItem>
+        {/* LAST, matching SessionActionsMenu: a drop while the menu is open would
+            otherwise shift every row under a mid-aim pointer. */}
+        <OfflineMenuReason testId="artifact-folder-offline-reason" />
       </DropdownMenuContent>
     </DropdownMenu>
   )

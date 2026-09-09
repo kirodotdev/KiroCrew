@@ -4485,7 +4485,7 @@ function ChatInput({
                       disabled={disabled || !connected}
                       aria-label={i18nT('components.chatInput.send')}
                       data-testid="steer-only-send"
-                      {...offlineProps(connected, 'send', i18nT('components.chatInput.send'))}
+                      {...offlineProps(connected, i18nT('utils.offline.send'), i18nT('components.chatInput.send'))}
                     >
                       <ArrowUp size={18} />
                     </button>
@@ -4544,7 +4544,7 @@ function ChatInput({
                 disabled={!value.trim() || optimizePending || !connected}
                 aria-label={optimizePending && !optimizing ? i18nT('components.chatInput.optimize_prompt_busy_optimizing_another_chat') : i18nT('components.chatInput.optimize_prompt')}
                 title={optimizePending && !optimizing ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : i18nT('components.chatInput.optimize_prompt_2', { shortcut: platformShortcut('Cmd+Shift+Enter') })}
-                {...offlineProps(connected, 'optimize', 'Optimize')}
+                {...offlineProps(connected, i18nT('utils.offline.optimize'), i18nT('components.chatInput.optimize_prompt'))}
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
               </button>}
@@ -4581,7 +4581,7 @@ function ChatInput({
                   disabled={continuing || disabled || optimizing || !connected}
                   title={continueLabel}
                   data-testid="composer-continue"
-                  {...offlineProps(connected, 'continue', continueLabel)}
+                  {...offlineProps(connected, i18nT('utils.offline.resume_sessions'), continueLabel)}
                 >
                   {continuing ? <Loader2 size={14} className="animate-spin" /> : <RotateCw size={14} />}
                   {i18nT('components.chatInput.resume')}
@@ -4592,7 +4592,7 @@ function ChatInput({
                 onClick={fireComposer}
                 disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
                 aria-label={i18nT('components.chatInput.send')}
-                {...offlineProps(connected, 'send', 'Send')}
+                {...offlineProps(connected, i18nT('utils.offline.send'), i18nT('components.chatInput.send'))}
               >
                 <ArrowUp size={18} />
               </button>

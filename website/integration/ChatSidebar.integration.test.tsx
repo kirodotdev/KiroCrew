@@ -6,7 +6,8 @@ vi.mock('@radix-ui/react-dropdown-menu', () => import('./__mocks__/@radix-ui/rea
 vi.mock('@radix-ui/react-context-menu', () => import('./__mocks__/@radix-ui/react-context-menu'))
 
 import ChatSidebar from '../src/pages/ChatSidebar'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders, createTestStore } from './helpers'
+import { sseConnected } from '../src/store/dashboardSlice'
 import { server } from './mocks/server'
 import { http, HttpResponse } from 'msw'
 import { __resetAuthRecoveryStateForTests } from '../src/api/client'
@@ -79,6 +80,14 @@ describe('ChatSidebar Folder Grouping', () => {
     cleanup()
     ;(document.activeElement as HTMLElement | null)?.blur?.()
   })
+
+  // Rename is guarded on a live gateway, and createTestStore()'s default is
+  // dashboard.connected=false — so the rename cases must say they are online.
+  function renderConnected(ui: Parameters<typeof renderWithProviders>[0]) {
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    return renderWithProviders(ui, { store })
+  }
 
   it('renders all sessions without folders by default', async () => {
     renderWithProviders(<ChatSidebar {...defaultProps} />)
@@ -267,7 +276,10 @@ describe('ChatSidebar Folder Grouping', () => {
       }),
     )
     const slotsWithFolder = [{ ...baseSlots[0], folder_id: 'f1' }, baseSlots[1], baseSlots[2]]
-    renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithFolder} />)
+    // Deleting a folder is a gateway write, so this case must say it is online.
+    const store = createTestStore()
+    store.dispatch(sseConnected())
+    renderWithProviders(<ChatSidebar {...defaultProps} slots={slotsWithFolder} />, { store })
     await waitFor(() => expect(screen.getByText('Delete Me')).toBeInTheDocument())
     expect(screen.getByText('Pipeline debug')).toBeInTheDocument()
 
@@ -315,7 +327,7 @@ describe('ChatSidebar Folder Grouping', () => {
         return HttpResponse.json(folders.find(f => f.id === params.id))
       }),
     )
-    renderWithProviders(<ChatSidebar {...defaultProps} />)
+    renderConnected(<ChatSidebar {...defaultProps} />)
     await waitFor(() => expect(screen.getByText('Old Name')).toBeInTheDocument())
 
     await user.dblClick(screen.getByText('Old Name'))
@@ -347,7 +359,7 @@ describe('ChatSidebar Folder Grouping', () => {
         return HttpResponse.json(folders.find(f => f.id === params.id))
       }),
     )
-    renderWithProviders(<ChatSidebar {...defaultProps} />)
+    renderConnected(<ChatSidebar {...defaultProps} />)
     await waitFor(() => expect(screen.getByText('Old Name')).toBeInTheDocument())
 
     fireEvent.click(screen.getByTestId('folder-menu-f1'))

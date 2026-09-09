@@ -111,7 +111,9 @@ const ARG_MEMORY_MODE = 4
 function renderSidebar() {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [], approvalMode: 'normal',
+      // These cases assert the create REACHES the server, and the creators are
+      // gateway-gated, so the fixture has to declare a live gateway.
+      status: {}, connected: true, slots: [], approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',

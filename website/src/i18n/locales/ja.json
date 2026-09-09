@@ -7228,6 +7228,7 @@
       "mark_as_read": "読了にマーク",
       "mark_as_unread": "未読にマーク",
       "move_to_folder": "フォルダーに移動…",
+      "offline_reason": "ゲートウェイがオフラインです — グレー表示の操作には接続が必要です",
       "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
@@ -7244,6 +7245,7 @@
     },
     "sessionColorSwatches": {
       "custom_color": "カスタムカラー",
+      "custom_color_picker": "カスタムカラーピッカー",
       "hex_color_code": "16進カラーコード",
       "no_color": "色なし"
     },
@@ -9858,10 +9860,13 @@
       "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "セッション名を変更できませんでした",
+      "could_not_rename_to": "「{{name}}」への名前の変更に失敗しました",
+      "rename_already_saving": "このセッションの名前変更は既に保存中です — 入力内容は保持されます。少し待ってからもう一度お試しください",
       "could_not_generate_title": "タイトルを生成できませんでした",
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
-      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした"
+      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
+      "rename_reverted_try_again": "以前のタイトルに戻しました。もう一度お試しください。"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",
@@ -14671,9 +14676,31 @@
       "saving": "保存中…"
     },
     "offline": {
+      "change_folder_settings": "フォルダー設定を変更",
+      "change_tags": "タグを変更",
+      "close_sessions": "セッションを終了",
+      "create_folders": "フォルダーを作成",
+      "create_sessions": "セッションを作成",
+      "delete_folders": "フォルダーを削除",
       "disabled_gateway_offline": "{{label}} は無効です — ゲートウェイがオフラインです",
+      "export_sessions": "セッションをエクスポート",
       "gateway_offline_reconnect": "ゲートウェイがオフラインです — {{action}}するには再接続してください",
-      "submit_comments": "コメントを送信"
+      "hide_folders": "フォルダーを非表示に",
+      "move_folders": "フォルダーを移動",
+      "move_sessions": "セッションを移動",
+      "optimize": "プロンプトを最適化",
+      "pin_sessions": "セッションをピン留め",
+      "recolor_sessions": "セッションの色を変更",
+      "regenerate_titles": "タイトルを再生成",
+      "reload_sessions": "セッションを再読み込み",
+      "rename_folders": "フォルダー名を変更",
+      "rename_sessions": "セッション名を変更",
+      "resume_sessions": "セッションを再開",
+      "send": "送信",
+      "send_to_instances": "インスタンスに送信",
+      "submit_comments": "コメントを送信",
+      "switch_session_modes": "セッションモードを変更",
+      "switch_sessions": "セッションを変更"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "ブラウザーがポップアップウィンドウをブロックしました。このサイトのポップアップを許可して、もう一度お試しください。"

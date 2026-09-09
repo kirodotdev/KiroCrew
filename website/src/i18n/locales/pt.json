@@ -7448,6 +7448,7 @@
       "mark_as_read": "Marcar como lida",
       "mark_as_unread": "Marcar como não lida",
       "move_to_folder": "Mover para pasta…",
+      "offline_reason": "Gateway offline — as ações esmaecidas precisam de conexão",
       "open_in_new_tab": "Abrir em uma aba de sessão",
       "pin": "Fixar",
       "pop_out_to_window": "Destacar em uma janela",
@@ -7464,6 +7465,7 @@
     },
     "sessionColorSwatches": {
       "custom_color": "Cor personalizada",
+      "custom_color_picker": "Seletor de cor personalizada",
       "hex_color_code": "Código de cor hexadecimal",
       "no_color": "Sem cor"
     },
@@ -10144,10 +10146,13 @@
       "screenshot_failed_reason": "Falha na captura de tela: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Não foi possível renomear a sessão",
+      "could_not_rename_to": "Não foi possível renomear para “{{name}}”",
+      "rename_already_saving": "Já há uma renomeação sendo salva para esta sessão — seu rascunho é mantido; tente de novo em um instante",
       "could_not_generate_title": "Não foi possível gerar um título",
       "could_not_open_side_chat": "Não foi possível abrir o chat lateral",
       "side_command_not_run": "O comando /side não foi executado. Sua mensagem continua no editor.",
-      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral"
+      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral",
+      "rename_reverted_try_again": "O título anterior foi restaurado — tente novamente."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",
@@ -15053,9 +15058,31 @@
       "saving": "Salvando..."
     },
     "offline": {
+      "change_folder_settings": "alterar as configurações da pasta",
+      "change_tags": "alterar as etiquetas",
+      "close_sessions": "fechar sessões",
+      "create_folders": "criar pastas",
+      "create_sessions": "criar sessões",
+      "delete_folders": "excluir pastas",
       "disabled_gateway_offline": "{{label}} indisponível — gateway offline",
+      "export_sessions": "exportar sessões",
       "gateway_offline_reconnect": "Gateway offline — reconecte para {{action}}",
-      "submit_comments": "enviar comentários"
+      "hide_folders": "ocultar pastas",
+      "move_folders": "mover pastas",
+      "move_sessions": "mover sessões",
+      "optimize": "otimizar prompts",
+      "pin_sessions": "fixar sessões",
+      "recolor_sessions": "recolorir sessões",
+      "regenerate_titles": "regenerar títulos",
+      "reload_sessions": "recarregar sessões",
+      "rename_folders": "renomear pastas",
+      "rename_sessions": "renomear sessões",
+      "resume_sessions": "retomar sessões",
+      "send": "enviar",
+      "send_to_instances": "enviar para instâncias",
+      "submit_comments": "enviar comentários",
+      "switch_session_modes": "alternar os modos de sessão",
+      "switch_sessions": "alternar sessões"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Seu navegador bloqueou a janela destacada. Permita pop-ups para este site e tente novamente."

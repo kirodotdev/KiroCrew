@@ -7338,6 +7338,7 @@
       "mark_as_read": "पढ़ा हुआ चिह्नित करें",
       "mark_as_unread": "अनपढ़ा चिह्नित करें",
       "move_to_folder": "फ़ोल्डर में ले जाएँ…",
+      "offline_reason": "गेटवे ऑफ़लाइन — धुँधले विकल्पों के लिए कनेक्शन ज़रूरी है",
       "open_in_new_tab": "सत्र टैब में खोलें",
       "pin": "पिन करें",
       "pop_out_to_window": "अलग विंडो में खोलें",
@@ -7354,6 +7355,7 @@
     },
     "sessionColorSwatches": {
       "custom_color": "कस्टम रंग",
+      "custom_color_picker": "कस्टम रंग चुनने वाला",
       "hex_color_code": "हेक्स रंग कोड",
       "no_color": "कोई रंग नहीं"
     },
@@ -10001,10 +10003,13 @@
       "screenshot_failed_reason": "स्क्रीनशॉट विफल: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "सत्र का नाम नहीं बदल सके",
+      "could_not_rename_to": "“{{name}}” में नाम नहीं बदल सके",
+      "rename_already_saving": "इस सेशन का नाम बदलना पहले से ही सहेजा जा रहा है — तुम्हारा ड्राफ़्ट सुरक्षित है; थोड़ी देर में फिर कोशिश करो",
       "could_not_generate_title": "शीर्षक नहीं बना सके",
       "could_not_open_side_chat": "साइड चैट नहीं खुल सकी",
       "side_command_not_run": "/side कमांड नहीं चला। तुम्हारा संदेश अभी भी कंपोज़र में है।",
-      "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके"
+      "could_not_send_to_side_chat": "साइड चैट में नहीं भेज सके",
+      "rename_reverted_try_again": "पिछला शीर्षक पुनर्स्थापित कर दिया गया — फिर से प्रयास करें।"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",
@@ -14863,9 +14868,31 @@
       "saving": "सहेजा जा रहा है..."
     },
     "offline": {
+      "change_folder_settings": "फ़ोल्डर सेटिंग्स बदलने",
+      "change_tags": "टैग बदलने",
+      "close_sessions": "सेशन बंद करने",
+      "create_folders": "फ़ोल्डर बनाने",
+      "create_sessions": "सेशन बनाने",
+      "delete_folders": "फ़ोल्डर मिटाने",
       "disabled_gateway_offline": "{{label}} बंद — गेटवे ऑफ़लाइन",
+      "export_sessions": "सेशन एक्सपोर्ट करने",
       "gateway_offline_reconnect": "गेटवे ऑफ़लाइन — {{action}} के लिए फिर से कनेक्ट करो",
-      "submit_comments": "टिप्पणियाँ सबमिट करने"
+      "hide_folders": "फ़ोल्डर छिपाने",
+      "move_folders": "फ़ोल्डर ले जाने",
+      "move_sessions": "सेशन ले जाने",
+      "optimize": "प्रॉम्प्ट ऑप्टिमाइज़ करने",
+      "pin_sessions": "सेशन पिन करने",
+      "recolor_sessions": "सेशन का रंग बदलने",
+      "regenerate_titles": "शीर्षक फिर से बनाने",
+      "reload_sessions": "सेशन फिर से लोड करने",
+      "rename_folders": "फ़ोल्डर का नाम बदलने",
+      "rename_sessions": "सेशन का नाम बदलने",
+      "resume_sessions": "सेशन फिर से शुरू करने",
+      "send": "भेजने",
+      "send_to_instances": "इंस्टेंस पर भेजने",
+      "submit_comments": "टिप्पणियाँ सबमिट करने",
+      "switch_session_modes": "सेशन मोड बदलने",
+      "switch_sessions": "सेशन बदलने"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "तुम्हारे ब्राउज़र ने पॉप-आउट विंडो ब्लॉक कर दी। इस साइट के लिए पॉप-अप की अनुमति दें और फिर कोशिश करें।"

@@ -11,6 +11,7 @@ import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { offlineProps } from '../utils/offline'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
 import { isBrowseCommand } from '../utils/browseCommand'
@@ -59,6 +60,7 @@ import { performSlotSwitch } from '../lib/slotSwitch'
 import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
+import { useRenameSlot } from '../hooks/useRenameSlot'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
@@ -243,6 +245,7 @@ import {
   handoffToChat,
   persistClaimedChatHandoffs,
   subscribeChatHandoff,
+  type ErrorReport,
 } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { openPanelView, claimAppAutoOpen } from '../hooks/usePanelTabs'
@@ -527,6 +530,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const connected = useConnected()
+  const renameSlotShared = useRenameSlot((message: string, _subject: string, report?: ErrorReport) => {
+    showActionError(message || i18nT('pages.chatPage.rename_reverted_try_again'), i18nT('pages.chatPage.could_not_rename_session'), report)
+  })
   // Create-in-flight, so the flyout's New button can go inert exactly like the
   // sidebar's does instead of accepting a second click.
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
@@ -964,12 +970,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // ErrorNotice; the newest failure wins, the same shape as `refusedPress`.
   // `title` is optional because several sites already own a whole-sentence
   // message ("Fork failed: …") that must stay intact for the error-journal match.
-  const [actionError, setActionError] = useState<{ title?: string; message: string } | null>(null)
-  const showActionError = useCallback((message: string, title?: string) => {
-    // Same failure re-reported (an effect re-run, a retry that fails the same
-    // way) keeps the stored object, so React bails out instead of re-rendering.
-    setActionError(prev => (prev && prev.message === message && prev.title === title) ? prev : { title, message })
+  const [actionError, setActionError] = useState<{ title?: string; message: string; report?: ErrorReport; offline?: boolean } | null>(null)
+  const showActionError = useCallback((message: string, title?: string, report?: ErrorReport, offline?: boolean) => {
+    // Same failure re-reported keeps the stored object so React bails out. The
+    // report id is part of that identity: title and message are generic constants.
+    setActionError(prev => (
+      prev && prev.message === message && prev.title === title && prev.report?.id === report?.id
+    ) ? prev : { title, message, report, offline })
   }, [])
+  // An offline refusal stops being true once the gateway is back, and its
+  // Ask-agent button returns at that instant — so retire only those.
+  const wasConnectedForError = useRef(connected)
+  useEffect(() => {
+    if (connected && !wasConnectedForError.current) setActionError(prev => (prev?.offline ? null : prev))
+    wasConnectedForError.current = connected
+  }, [connected])
   // NOT fire-and-forget: the receipt is the only thing that knows whether the
   // text reached the running turn, and the optimistic bubble asserts that it did.
   // The same `/api/chat` POST as `send()` with the `steer` flag, through the
@@ -3985,17 +4000,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
 
   const cancelTitleRef = useRef(false)
-  // #10203: per-slot recovery state for header-rename failures. `gen` is a
-  // monotonic attempt generation: a recovery may apply ONLY while its own
-  // attempt is still the slot's latest, so a delayed recovery can never
-  // overwrite anything a newer attempt (failed or successful) did -- title
-  // equality alone cannot tell a stale optimistic value from a newer confirmed
-  // rename to the identical string. `baseline` is the last CONFIRMED title;
-  // `inflight` holds this slot's own un-settled optimistic titles, so a store
-  // title outside that set refreshes the baseline at commit time (a success
-  // here, or another client's rename delivered over SSE). The entry is dropped
-  // when the last pending attempt settles.
-  const renameRecoveryRef = useRef(new Map<string, { baseline: string; inflight: Set<string>; gen: number }>())
   // The session-title field is an Enter-to-commit input; the guard owns both the
   // composition latch and the keypress, so the rename cannot fire on the Enter that
   // commits an IME candidate.
@@ -6356,11 +6360,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="sid-error"
         />
+        {/* The hand-off is off while the title editor is open: the offline refusal
+            deliberately keeps that draft, and switching away would drop it. */}
         <ErrorNotice
           title={actionError?.title}
           message={actionError?.message}
+          report={actionError?.report}
           onDismiss={() => setActionError(null)}
-          askAgent
+          askAgent={connected && !editingTitle}
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="action-error"
         />
@@ -6579,30 +6586,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md bg-bg-hover">
                   {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
                   {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
-                  {/* #10203: a refused rename must also revert the optimistic sseSlotTitle.
-                      Recovery re-reads the server truth (deduped through queryClient.fetchQuery)
-                      and applies ONLY this slot's title -- never the whole snapshot, whose late
-                      fulfillment could transiently clobber a newer concurrent write of another
-                      slot. A recovery may apply only while ITS OWN attempt is the slot's latest
-                      generation AND the store still holds its refused value, so a delayed
-                      recovery can never overwrite a newer attempt's outcome -- including a newer
-                      confirmed rename to the identical string, which title equality alone cannot
-                      distinguish. When the re-read fails (transport or auth failure takes
-                      renameSlot and chatSlots down together) fall back to a local revert to the
-                      recovery baseline in renameRecoveryRef: the last CONFIRMED title, refreshed
-                      at commit time from any store title that is not one of this slot's own
-                      pending optimistic values. */}
-                  <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-none md:max-w-[50vw] focus:!shadow-none focus-visible:border-b focus-visible:border-accent" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} {...titleIme.bindComposition<HTMLInputElement>({ onBlur: () => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { const key = activeSlot; const refused = titleDraft.trim(); const rec = renameRecoveryRef.current.get(key) ?? { baseline: title, inflight: new Set<string>(), gen: 0 }; const current = boundStore.getState().dashboard.slots.find(s => s.key === key)?.title ?? title; if (!rec.inflight.has(current)) rec.baseline = current; rec.inflight.add(refused); rec.gen++; const myGen = rec.gen; renameRecoveryRef.current.set(key, rec); const settle = () => { rec.inflight.delete(refused); if (rec.inflight.size === 0 && rec.gen === myGen) renameRecoveryRef.current.delete(key) }; const mayRecover = () => rec.gen === myGen && boundStore.getState().dashboard.slots.find(s => s.key === key)?.title === refused; dispatch(sseSlotTitle({ key, title: refused })); api.renameSlot(key, refused).then(() => { if (rec.gen === myGen) rec.baseline = refused; settle() }, async e => { showActionError(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT('pages.chatPage.could_not_rename_session')); try { const server = (await queryClient.fetchQuery({ queryKey: ['chat-slots'], queryFn: () => api.chatSlots(), staleTime: 0, gcTime: 0 })).find((s: { key: string; title?: string }) => s.key === key); if (server?.title !== undefined && rec.gen === myGen) rec.baseline = server.title; if (mayRecover()) dispatch(sseSlotTitle({ key, title: server?.title ?? rec.baseline })) } catch { if (mayRecover()) dispatch(sseSlotTitle({ key, title: rec.baseline })) } finally { settle() } }) } cancelTitleRef.current = false; setEditingTitleSlot(null) } })} onKeyDown={e => { if (e.key === 'Enter' && titleIme.claimEnter(e)) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { titleIme.reset(); cancelTitleRef.current = true; setEditingTitleSlot(null) } }} />
+                  {/* Rename goes through useRenameSlot: one in flight per slot, so two
+                      refused renames cannot overlap and #10203's recovery race cannot arise. */}
+                  <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-none md:max-w-[50vw] focus:!shadow-none focus-visible:border-b focus-visible:border-accent" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} {...titleIme.bindComposition<HTMLInputElement>({ onBlur: () => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { if (!boundStore.getState().dashboard.connected) { showActionError(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_sessions') }), i18nT('pages.chatPage.could_not_rename_session'), undefined, true); cancelTitleRef.current = false; return } if (!renameSlotShared({ key: activeSlot, next: titleDraft.trim() })) { cancelTitleRef.current = false; return } } cancelTitleRef.current = false; setEditingTitleSlot(null) } })} onKeyDown={e => { if (e.key === 'Enter' && titleIme.claimEnter(e)) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { titleIme.reset(); cancelTitleRef.current = true; setEditingTitleSlot(null) } }} />
                 </div>
               ) : (
                 <div className="cursor-text flex min-w-0 items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md group-hover/header:bg-bg-hover transition-colors">
-                  <Clickable className="flex min-w-0 items-center gap-1" onClick={() => { if (activeSlot && generatingTitleSlots.has(activeSlot)) return; setEditingTitleSlot(activeSlot); setTitleDraft(title) }}>
+                  <Clickable className={`flex min-w-0 items-center gap-1${connected ? '' : ' opacity-40'}`} {...offlineProps(connected, i18nT('utils.offline.rename_sessions'), title)} onClick={() => { if (activeSlot && generatingTitleSlots.has(activeSlot)) return; if (!boundStore.getState().dashboard.connected) { showActionError(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_sessions') }), i18nT('pages.chatPage.could_not_rename_session'), undefined, true); return } setEditingTitleSlot(activeSlot); setTitleDraft(title) }}>
                     {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
                     {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
                     <TypewriterText text={title} className="session-header-title text-sm font-semibold text-muted font-body truncate min-w-0 md:max-w-[50vw]" />
                     <Pen size={13} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-60 transition-opacity" />
                   </Clickable>
-                  {activeSlot && (generatingTitleSlots.has(activeSlot) ? <Loader size={16} className="shrink-0 text-accent animate-spin" /> : <Btn aria-label={i18nT('pages.chatPage.regenerate_title_with_llm')} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-40 hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0" title={i18nT('pages.chatPage.regenerate_title_with_llm')} onClick={e => { e.stopPropagation(); if (!activeSlot || generatingTitleSlots.has(activeSlot)) return; const slot = activeSlot; setGeneratingTitleSlots(prev => new Set(prev).add(slot)); api.generateTitle(slot).then(r => { /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */ if (r.title) dispatch(sseSlotTitle({ key: slot, title: r.title })) }).catch(e => {
+                  {activeSlot && (generatingTitleSlots.has(activeSlot) ? <Loader size={16} className="shrink-0 text-accent animate-spin" /> : <Btn aria-label={i18nT('pages.chatPage.regenerate_title_with_llm')} title={i18nT('pages.chatPage.regenerate_title_with_llm')} {...offlineProps(connected, i18nT('utils.offline.regenerate_titles'), i18nT('pages.chatPage.regenerate_title_with_llm'))} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-40 hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0" onClick={e => { e.stopPropagation(); if (!activeSlot || generatingTitleSlots.has(activeSlot)) return; if (!boundStore.getState().dashboard.connected) { showActionError(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.regenerate_titles') }), i18nT('pages.chatPage.could_not_generate_title'), undefined, true); return } const slot = activeSlot; setGeneratingTitleSlots(prev => new Set(prev).add(slot)); api.generateTitle(slot).then(r => { /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */ if (r.title) dispatch(sseSlotTitle({ key: slot, title: r.title })) }).catch(e => {
                     showActionError(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT('pages.chatPage.could_not_generate_title'))
                   }).finally(() => setGeneratingTitleSlots(prev => { const next = new Set(prev); next.delete(slot); return next })) }}><Sparkles size={16} /></Btn>)}
                 </div>
