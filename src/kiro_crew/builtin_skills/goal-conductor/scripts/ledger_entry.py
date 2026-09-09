@@ -2,15 +2,14 @@
 """Ledger item-entry codec - the one code owner of the conductor's entry format.
 
 The goal-conductor's only compaction-surviving state is the per-work-item entry
-it writes into the session ledger's ``artifacts`` map. Before this script, that
-format existed only as prose plus a worked example in SKILL.md, and the model
-re-derived it every patrol cycle - which produced two real defects during
-review of PR #5652: an acceptance spec that lived only in model context (lost
-on compaction), and an entry written as a nested JSON object, which the ledger
-rejects with ``artifacts_not_string_map`` so nothing persisted at all.
+it writes into the session ledger's ``artifacts`` map. A format the model
+re-derives from prose every patrol cycle costs two defects this codec exists to
+remove: an acceptance spec that lives only in model context, so compaction loses
+it, and an entry written as a nested JSON object, which the ledger rejects with
+``artifacts_not_string_map`` so nothing persists at all.
 
 This script owns the format. The conductor calls it; it never hand-rolls the
-encoding again.
+encoding.
 
 Usage:
     python3 ledger_entry.py {encode|decode|validate|rotate} < input.json

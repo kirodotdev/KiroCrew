@@ -73,8 +73,8 @@ def rollup(
         except OSError:
             # An unreadable shard means the total is INCOMPLETE. Do not crash
             # (the readable shards still inform the monotone `exhausted` case),
-            # but the scan may no longer claim completeness: flag it like a
-            # truncation so an under-budget answer is never reported `within`.
+            # but the scan cannot claim completeness: flag it like a truncation
+            # so an under-budget answer is never reported `within`.
             truncated = True
             continue
         for line in lines:

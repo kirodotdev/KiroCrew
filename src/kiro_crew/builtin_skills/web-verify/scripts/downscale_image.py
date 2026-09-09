@@ -119,7 +119,7 @@ def shrink(path: str) -> tuple[bool, str]:
     second handle opened for writing on the same path is refused
     (``PermissionError``) — which is exactly how this failed the Windows CI shard
     while passing on POSIX. The replace is also atomic, so an interrupted save
-    cannot leave a truncated image where a valid one used to be.
+    cannot leave a truncated image in place of the valid one.
     """
     assert Image is not None  # main() re-execs before reaching here
 

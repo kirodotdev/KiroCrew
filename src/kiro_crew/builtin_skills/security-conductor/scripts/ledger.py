@@ -1122,7 +1122,7 @@ def _dispatch(
         # operator re-proposing an identity that is already approved, or one that was
         # retired by hand, is told what the table holds.
         state = _read_golden_path_state(conn, path_id)
-        active = (1 if state[0] else 0) if state is not None else 0
+        active = int(state[0]) if state is not None else 0
         _emit({"id": path_id, "created": created, "active": active})
         return 0
 
