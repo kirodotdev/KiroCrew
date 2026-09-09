@@ -174,8 +174,24 @@ _BUTTON_LABEL_CHARS = 80
 
 # kiro-cli's inline "[STEERING steer-<id>: …]" steer-ack marker (see the
 # Telegram renderer for the full rationale — Discord likewise has no parser).
-_STEER_MARKER_RE = re.compile(r"\[STEERING\b[^\]\r\n]*\]", re.IGNORECASE)
-_STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f]+\s*:\s*([^\]\r\n]*)\]", re.IGNORECASE)
+#
+# The frame is recognised by its GRAMMAR, and that is where the summary is
+# allowed to contain newlines: ``messaging.driver._STEER_MARKER_RE`` reads the
+# same frame with ``re.DOTALL``, ``constants._STEERING_TAIL_PREFIX_RE`` closes
+# that grammar's prefix with ``re.DOTALL`` too, and the dashboard's own parser
+# (``website/src/app-sdk/protocol/steering.ts``) spells the summary
+# ``[\s\S]*?``. kiro-cli's rephrase is free to wrap, so a class that stopped at
+# the first line end left a real marker unrecognised. ``]`` is the terminator
+# this grammar actually has.
+#
+# Requiring ``steer-<id>`` rather than a bare ``[STEERING`` is the ruling
+# ``messaging.driver`` already applies: opening with the sentinel is not being a
+# marker, so prose that merely mentions it stays visible now that the class no
+# longer stops at a line end. The id class matches driver's, and is the SAME in
+# both patterns, because the summary is matched at the offset the marker pattern
+# chose -- a narrower id class there would silently drop the summary.
+_STEER_MARKER_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+(?:\s*:[^\]]*)?\]", re.IGNORECASE)
+_STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f-]+\s*:\s*([^\]]*)\]", re.IGNORECASE)
 
 
 def _extract_options(text: str) -> tuple[str, list[str]]:

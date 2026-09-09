@@ -33,6 +33,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.autonudge import AutoNudgeService
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.discord import renderer as discord_renderer
 from kiro_crew.discord.attachments import process_discord_attachments
 from kiro_crew.discord.client import (
     _INTENT_DIRECT_MESSAGES,
@@ -68,6 +69,7 @@ from kiro_crew.discord.transport_dispatch import (
     _STEER_ACK_EMOJI,
     DiscordDispatcher,
 )
+from kiro_crew.messaging import driver as messaging_driver
 from kiro_crew.messaging.attachments import cleanup
 from kiro_crew.messaging.link import (
     UNBIND_REASON_UNSPECIFIED,
@@ -1139,6 +1141,78 @@ class TestStripSteering:
     def test_an_unclosed_marker_cannot_span_table_rows(self) -> None:
         text = "[STEERING steer-deadbeef |\n| --- | --- |"
         assert _strip_steering(text) == text
+
+    def test_removes_a_marker_whose_summary_wrapped(self) -> None:
+        """kiro-cli's rephrase is free to wrap, and the frame is still a frame.
+
+        Every other reader of this frame says so: ``messaging.driver`` matches it
+        with ``re.DOTALL``, ``constants._STEERING_TAIL_PREFIX_RE`` closes the same
+        grammar's prefix with ``re.DOTALL``, and the dashboard's parser spells the
+        summary ``[\\s\\S]*?``. A class that stopped at the first line end left the
+        marker in the delivered Discord message.
+        """
+        text = "before [STEERING steer-ab12: switching to the job id\nand re-running it] after"
+        out = _strip_steering(text)
+        assert "STEERING" not in out
+        assert out.startswith("before") and out.endswith("after")
+
+    def test_the_chip_summary_survives_a_wrapped_marker(self) -> None:
+        """``_rotate_at_markers`` reads the summary at the offset the marker
+        pattern chose, so the two must agree on the same frame: a summary the
+        marker matched but this one did not leaves the steer chip blank."""
+        text = "[STEERING steer-ab12: switching to the job id\nand re-running it]"
+        marker = discord_renderer._STEER_MARKER_RE.search(text)
+        assert marker is not None
+        summary = discord_renderer._STEER_SUMMARY_RE.match(text, marker.start())
+        assert summary is not None
+        assert summary.group(1) == "switching to the job id\nand re-running it"
+
+    def test_a_dashed_steer_id_is_one_frame_to_both_patterns(self) -> None:
+        """``messaging.driver`` accepts ``[0-9a-f-]+`` for the id, so a dashed id
+        is a real frame; the two patterns here have to agree about it."""
+        text = "[STEERING steer-a180-ae7f: checked] tail"
+        marker = discord_renderer._STEER_MARKER_RE.search(text)
+        assert marker is not None
+        summary = discord_renderer._STEER_SUMMARY_RE.match(text, marker.start())
+        assert summary is not None and summary.group(1) == "checked"
+        assert _strip_steering(text).strip() == "tail"
+
+    def test_prose_that_merely_opens_with_the_sentinel_stays(self) -> None:
+        """The counterpart to allowing newlines, and the reason it is safe.
+
+        ``messaging.driver`` already rules that opening with the sentinel is not
+        being a marker. Without the id requirement, a class that spans lines would
+        swallow from ``[STEERING`` to any later ``]`` -- here a Markdown link two
+        lines down.
+        """
+        text = "[STEERING is the feature I mean\n\nsee the [docs](x) for it"
+        assert _strip_steering(text) == text
+
+    def test_the_grammar_agrees_with_the_messaging_driver(self) -> None:
+        """One frame, two readers: a corpus both must classify the same way.
+
+        This renderer is defence for callers that bypass ``TurnDriver``, so the
+        two spellings answer the same question about the same bytes; a divergence
+        is how one surface starts delivering what the other removes.
+        """
+        frames = [
+            "[STEERING steer-ab12: checked]",
+            "[STEERING steer-a180ae7f: 已并行查询悉尼天气,一并答复。]",
+            "[STEERING steer-a180-ae7f: checked]",
+            "[STEERING steer-ab12: line one\nline two]",
+            "[STEERING steer-ab12]",
+        ]
+        not_frames = [
+            "[STEERING is the feature I mean]",
+            "[STEERING steer-: empty id]",
+            "[STEERING steer-zzzz: not hex]",
+        ]
+        for text in frames:
+            assert discord_renderer._STEER_MARKER_RE.fullmatch(text), text
+            assert messaging_driver._STEER_MARKER_RE.match(text), text
+        for text in not_frames:
+            assert discord_renderer._STEER_MARKER_RE.fullmatch(text) is None, text
+            assert messaging_driver._STEER_MARKER_RE.match(text) is None, text
 
 
 class TestFindButtonLabel:
