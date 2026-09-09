@@ -14051,6 +14051,7 @@
     "membersPage": {
       "agent_template": "에이전트 템플릿",
       "configuration": "구성",
+      "crew_summary": "멤버 요약",
       "details": "상세",
       "edit_in_crew_manager": "크루 관리 페이지에서 편집",
       "edit_member": "멤버 편집",
@@ -14110,7 +14111,6 @@
       "patrol_last_wake_ago": "마지막 웨이크 {{when}}",
       "patrol_none": "예정된 순찰이 없습니다.",
       "patrol_error": "이 멤버의 순찰 상태를 불러오지 못했습니다.",
-      "side_chat_draft_waiting": "이 멤버의 사이드 채팅에 보내지 않은 질문이 있습니다",
       "patrol_error_roster": "멤버 목록의 순찰 상태를 불러오지 못했습니다.",
       "patrol_badge": "순찰 중 · {{cycle}}",
       "patrol_next_in": "{{time}} 후 예정",

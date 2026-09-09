@@ -14604,6 +14604,7 @@
     "membersPage": {
       "agent_template": "Шаблон агента",
       "configuration": "Конфигурация",
+      "crew_summary": "Сводка участника",
       "details": "Подробности",
       "edit_in_crew_manager": "Изменить в менеджере команд",
       "edit_member": "Изменить участника",
@@ -14666,7 +14667,6 @@
       "patrol_last_wake_ago": "Последнее пробуждение {{when}}",
       "patrol_none": "Патруль не запланирован.",
       "patrol_error": "Не удалось загрузить состояние патруля этого участника.",
-      "side_chat_draft_waiting": "В боковом чате этого участника ждёт неотправленный вопрос",
       "patrol_error_roster": "Не удалось загрузить состояние патруля для списка.",
       "patrol_badge": "Патрулирует · {{cycle}}",
       "patrol_next_in": "Через {{time}}",

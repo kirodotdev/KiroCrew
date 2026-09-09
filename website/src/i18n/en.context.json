@@ -267,7 +267,6 @@
     "pages.mcpGatewayCard.rss": "\"RSS\" = resident set size, the process's physical memory use, labelling a byte count. NOT the web feed format.",
     "pages.mcpGatewayCard.s": "The unit \"s\" = seconds, rendered directly after a number (`30s`). Not a plural marker.",
     "pages.membersPage.edit_member": "Accessible name and tooltip of a clickable crew face on the Crew Members chat page: opens that member's whole editor (name, template, model, workspace, triggers, avatar), NOT only the avatar builder. \"Edit\" as an imperative verb; \"member\" = a crew member (an agent), same noun as member_count.",
-    "pages.membersPage.side_chat_draft_waiting": "Tooltip on the \"Side Chat\" button in the Crew Members detail drawer header. The button appears only while the member's Side Chat holds text the user typed but did not send; the tooltip tells them that is why it is there. \"Side Chat\" is the panel's own name — translate it the same way as pages.chat.sidePanel.menu_side.",
     "pages.overview.memoryTab.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
     "pages.overview.portabilityTab.kb": "The unit \"KB\" = kilobytes, rendered after a numeric size. NOT \"knowledge base\", which is a separate feature in this product that shares the abbreviation in English.",
     "pages.overview.tokenDailyChart.all": "Filter option meaning no filter — show every item. A quantifier over the list beside it, not the adjective \"whole\".",

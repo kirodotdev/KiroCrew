@@ -7,10 +7,14 @@
  *
  * The page realizes the B+C merged design: a member list on the left, the
  * selected member's pinned DM thread in the center (the real chat stack,
- * hosted the way split-view panes host it), and a toggleable read-only
- * detail drawer on the right. Configuration WRITES are deliberately absent —
- * both Edit affordances navigate to the existing crew manager
- * (/capabilities?tab=crews), so this page never becomes a second editor.
+ * hosted the way split-view panes host it), and on the right the SAME tabbed
+ * side panel the chat page docks — permanent, no close control — whose first
+ * tab is the member's Crew summary (read-only observation) and whose + menu
+ * offers the chat panel's own views (Files, Artifacts, Terminal, Browser…)
+ * against the member's DM slot, because a member thread IS a chat slot.
+ * Configuration WRITES are deliberately absent — both Edit affordances
+ * navigate to the existing crew manager (/capabilities?tab=crews), so this
+ * page never becomes a second editor.
  *
  * Identity is the exact CREW NAME, never the slug: slugification is lossy
  * (`Oncall` and `oncall` share a slug and therefore one thread directory),
@@ -27,7 +31,7 @@
  * opened is remembered per browser: a visit that names no member lands on
  * the remembered one (else the first row), never on the empty column.
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Circle, Clock, ExternalLink, Goal, Pencil, Star, UserPlus, Users, Webhook } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
@@ -60,17 +64,17 @@ import { markSlotRead } from '../../store/dashboardSlice'
 import CrewAvatar from '../../components/CrewAvatar'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
-import SideChat from '../chat/SideChat'
-import { useSideChatDraft } from '../../chat-core/composer/sideChatDrafts'
-import DetailPanel from '../../components/DetailPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
 import { SearchInput } from '../../components/ui'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { sidePanelDockMotion } from '../chat/sidePanelMount'
-import { CHAT_PANE_MIN_W } from '../chat/SidePanel'
+import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
+import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
+import { CHAT_TRANSCRIPT_VIEWS, VIEW_DATA_SOURCE, useAnyLiveAppTab, usePanelTabs, type ViewKind } from '../../hooks/usePanelTabs'
+import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
+import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import ResizeHandle from '../../components/ResizeHandle'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { loadColumnWidth } from '../../lib/columnWidth'
@@ -137,18 +141,57 @@ const ROSTER_MIN = 200
 const ROSTER_MAX = 420
 const ROSTER_DEFAULT = 264
 const ROSTER_WIDTH_KEY = 'mc-members-roster-width'
-/** Detail drawer width bounds. The default matches the pre-DetailPanel fixed
- *  300px so the migration changes capability (drag-to-resize), not the resting
- *  look. Width persists under its own key, independent of the roster's. */
-const DRAWER_MIN = 240
-const DRAWER_DEFAULT = 300
-const DRAWER_WIDTH_KEY = 'mc-members-drawer-width'
-/** Space DetailPanel must keep clear for its left-side siblings when dragged
- *  wide: the live roster width is added at the call site. The thread minimum
- *  is chat's own CHAT_PANE_MIN_W (the members thread IS a ChatPane), plus this
- *  page's three inter-column gap-2s (24px), so one constant owns the
- *  usable-pane floor and a future change there carries over. */
-const THREAD_MIN_RESERVE = CHAT_PANE_MIN_W + 24
+/** The permanent first tab of the member's side panel. Its id is what
+ *  `usePanelTabs` stores as the strip's focus while it is selected, so it must
+ *  not collide with a chat `TabKind` — `'summary'` is the chat page's
+ *  session-summary view, a different thing (that one summarises a transcript;
+ *  this one describes a member). */
+export const CREW_SUMMARY_TAB_ID = 'crew-summary'
+/** Chat-panel views this page withholds from the strip and the + menu
+ *  (`SidePanel.hiddenViews`). The unfed half is DERIVED, not enumerated: every
+ *  view `VIEW_DATA_SOURCE` classifies as `chat-transcript` (Changes / Issues /
+ *  Links / Pins today) reads indexes ChatPage builds over the transcript, none
+ *  of which runs here, so each would render an affirmative "none" — and a new
+ *  transcript-fed view must be classified where kinds are defined before it can
+ *  exist, so it cannot arrive here unwithheld. `summary` is the one addition
+ *  by choice: the chat page's SESSION summary has data, but next to the "Crew
+ *  summary" chip it is an indistinguishable sibling label. Exported so the
+ *  test pins the set. */
+export const MEMBERS_UNFED_VIEWS: readonly ViewKind[] = [...CHAT_TRANSCRIPT_VIEWS, 'summary']
+/** Everything this page withholds once the thread is confirmed. Today that is
+ *  exactly the unfed set: Side chat IS offered — its composer draft lives in
+ *  the chat-core store (`sideChatDrafts`, per slot, persisted), so `SidePanel`
+ *  unmounting the body on a tab or member switch loses nothing, and the
+ *  selection toolbar's "Ask about this" needs the tab as its landing
+ *  (`openMemberSideChat`). Kept as its own name so the "withheld" and "unfed"
+ *  reasons stay separable if they diverge again. Exported so the test pins
+ *  the set. */
+export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [...MEMBERS_UNFED_VIEWS]
+/** Everything the panel withholds while the thread is UNCONFIRMED: every
+ *  classified view, plus Terminal and app tabs. Derived from
+ *  `VIEW_DATA_SOURCE` (the exhaustive `Record<ViewKind, …>`) rather than
+ *  enumerated, so the same guarantee the unfed set has holds here too — a new
+ *  `ViewKind` cannot arrive in this window offered; it is withheld by
+ *  construction until the slot it would bind to exists. Exported so the test
+ *  pins the set against the classification. */
+export const MEMBERS_UNCONFIRMED_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [
+  ...(Object.keys(VIEW_DATA_SOURCE) as ViewKind[]), 'terminal', 'app',
+]
+/** This page's three inter-column gap-2s (24px) — space the side panel must
+ *  keep clear beside the roster so a drag can never fold the thread to zero.
+ *  The thread's own minimum is already inside the panel's shell reserve
+ *  (`SIDE_PANEL_RESERVED_W` budgets the nav rail plus a chat-pane minimum). */
+const PANEL_GAPS_W = 24
+/** Whether the side panel can sit BESIDE the thread as a permanent column,
+ *  or must become an overlay the user opens. Beside needs the shell reserve
+ *  (nav rail + a usable thread) plus the live roster width plus the panel's
+ *  own minimum — the same arithmetic the chat page's `sidePanelFillWidth` does
+ *  for its two columns, with the roster added. Pure, so the boundary is
+ *  tested directly. Mobile always overlays (its viewport seats neither). */
+export function panelSitsBeside({ winW, rosterW, isMobile }: { winW: number; rosterW: number; isMobile: boolean }): boolean {
+  if (isMobile) return false
+  return winW - rosterW - PANEL_GAPS_W >= SIDE_PANEL_RESERVED_W + SIDE_PANEL_MIN_W
+}
 /** Punctuation, not prose: joins an activity label to its project name, and a
  *  driving row's title to its status word in the hover title. */
 const PROJECT_SEPARATOR = ' \u00b7 '
@@ -206,6 +249,9 @@ const DRIVING_STATUS: Record<TabStatus, { cls: string; text: string; label: stri
 }
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
 const loadRosterWidth = () => loadColumnWidth(ROSTER_WIDTH_KEY, ROSTER_MIN, ROSTER_MAX, ROSTER_DEFAULT)
+/** The chat side panel's right-dock mount preset — module-pure, so one
+ *  constant serves every render. */
+const dockMotion = sidePanelDockMotion('right')
 /** The auto-nudge service's terminal codes (`NudgeLoop.stopped_reason`) a
  *  member slot can actually receive, each mapped to the sentence the patrol
  *  block shows for a stopped loop. A code not listed here — a future terminal
@@ -316,31 +362,26 @@ export default function MembersPage() {
   // and the stored width is simply unused. Clamp + persist live in the shared
   // useColumnResize hook — the same primitive every resizable column uses.
   const roster = useColumnResize(ROSTER_WIDTH_KEY, loadRosterWidth, ROSTER_MIN, ROSTER_MAX)
-  // Open by default only where the 300px rail has room; on narrow viewports
-  // the drawer overlays the thread, so it must start closed. Initializer-only
-  // (no resize listener): matching the width at mount is enough — the toggle
-  // is one tap away and chasing live resizes would fight the user's choice.
-  const [drawerOpen, setDrawerOpen] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches,
-  )
-  // What the drawer shows: the member's details (default), or the Side Chat
-  // for the member's thread — the isolated /side conversation the selection
-  // toolbar's "Ask" seeds. The Members page has no activity panel (the chat
-  // page's Side Chat home), so the drawer is where that surface lives here;
-  // the thread stays the thread, the aside is where you ask about it.
-  const [drawerView, setDrawerView] = useState<'details' | 'side'>('details')
-  // Id of the sr-only description beside the drawer's draft-gated "Side Chat" pill.
-  const sideChatPillHintId = useId()
-  const openMemberSideChat = useCallback(() => {
-    setDrawerView('side')
-    setDrawerOpen(true)
+  // Where the side panel lives. Wide enough (see panelSitsBeside) it is a
+  // permanent column beside the thread with no close control — the chat page's
+  // panel, docked. Narrower, it is an overlay the header button opens and the
+  // panel's own close control dismisses, because a column that cannot be
+  // dismissed would otherwise fold the thread to nothing. The window width is
+  // tracked live (not sampled at mount) so crossing the boundary re-docks.
+  const isMobile = useIsMobile()
+  const [winW, setWinW] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 0))
+  useEffect(() => {
+    const onResize = () => setWinW(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
   }, [])
-  const closeDrawer = useCallback(() => {
-    setDrawerOpen(false)
-    // Closing forgets the view: the header's Details toggle reopens details,
-    // never a stale Side Chat the user already dismissed.
-    setDrawerView('details')
-  }, [])
+  const beside = panelSitsBeside({ winW, rosterW: roster.width, isMobile })
+  const [overlayOpen, setOverlayOpen] = useState(false)
+  // `overlayOpen` is overlay-mode state only. Reset it whenever the panel docks
+  // (a widening window, a narrower roster), so an open overlay does not lie in
+  // wait and pop back over the thread the moment the window narrows again.
+  useEffect(() => { if (beside) setOverlayOpen(false) }, [beside])
+  const panelVisible = beside || overlayOpen
   // Live presence rides the already-subscribed WS `slots` frames — the roster
   // endpoint only fills the cold-start gap (its `running` is a snapshot).
   const liveSlots = useAppSelector((s) => s.dashboard.slots)
@@ -476,13 +517,6 @@ export default function MembersPage() {
     },
     [mutateStar],
   )
-  // The chat side panel's right-dock mount preset — module-pure, so one
-  // constant serves every render.
-  const drawerMotion = sidePanelDockMotion('right')
-  // Drives the drawer's two shells: fixed overlay + dock motion below md,
-  // DetailPanel's own docked width animation on md+ (same breakpoint as the
-  // width-gated drawerOpen initializer above).
-  const isMobile = useIsMobile()
   const starredCount = useMemo(() => members.filter((m) => !!m.starred).length, [members])
   // Per-bucket counts on the origin chips: the one-word labels do not explain
   // themselves and their tooltips never fire on touch, so each chip shows what
@@ -539,9 +573,106 @@ export default function MembersPage() {
   // the structured report and the agent hand-off survive.
   const activeCollision = active ? threadOutcome?.collision ?? '' : ''
   const activeThreadFailed = !!active && !!threadOutcome?.failed
-  // The member's unsent Side Chat draft, live from the chat-core store; it
-  // decides whether the details view offers a way back into the Side Chat.
-  const memberSideDraft = useSideChatDraft(activeSlot).text
+  // The thread open. A mutation, not a query: the endpoint is a write (the
+  // idempotent creator/repairer of member slots), so it is issued on EVERY
+  // open — never served from cache — and its answer is what the cache holds.
+  // Outcomes are keyed by the member the POST was FOR, so a late answer for a
+  // member the user has already left lands in that member's entry, not the
+  // open one's. The roster row is patched with a freshly confirmed key so the
+  // row's live readings (presence dot, unread, patrol badge) resolve to the
+  // same slot the thread mounted on, without a roster refetch that would
+  // re-sort the list under the cursor.
+  const setThreadOutcome = useCallback(
+    (name: string, update: (prev: MemberThreadOutcome | undefined) => MemberThreadOutcome) =>
+      queryClient.setQueryData<MemberThreadOutcome>(memberThreadQueryKey(name), update),
+    [queryClient],
+  )
+  // Per-member sequence of thread POSTs. Within ONE member only the LATEST
+  // request may write its verdict back: an older answer arriving after a newer
+  // one (a re-click on a slow link) is dropped whole, because letting a stale
+  // success overwrite the refusal the newest POST just recorded would re-bind
+  // the side panel to a key the endpoint has since refused — aiming Side chat
+  // / Artifacts / Terminal at a foreign session. Dropping it loses nothing:
+  // every open re-POSTs. Across members the rule above stands untouched (a
+  // late answer for another member is that member's newest, so it lands).
+  const threadReqSeq = useRef<Record<string, number>>({})
+  const openThread = useMutation({
+    mutationFn: (m: MemberRosterRow) => api.memberThread(m.slug),
+    onMutate: (m) => {
+      // A previous verdict for this member is retired while the re-POST is
+      // out: a confirmed key keeps rendering (the cached thread stays up), a
+      // collision or failure line comes down until the new answer is in.
+      setThreadOutcome(m.name, (prev) => ({ slot_key: prev?.slot_key ?? '' }))
+      // The sequence number rides the mutation context to onSuccess/onError.
+      const seq = (threadReqSeq.current[m.name] ?? 0) + 1
+      threadReqSeq.current[m.name] = seq
+      return seq
+    },
+    onSuccess: (r, m, seq) => {
+      if (seq !== threadReqSeq.current[m.name]) return
+      if (r.member !== m.name) {
+        // The slug's thread belongs to another crew (lossy-slug collision,
+        // first-bound-wins). Mounting it would be a silent misroute — the
+        // defining failure for a page whose premise is identity.
+        setThreadOutcome(m.name, () => ({ slot_key: '', collision: r.member }))
+        return
+      }
+      setThreadOutcome(m.name, () => ({ slot_key: r.slot_key }))
+      if (m.slot_key !== r.slot_key) {
+        queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+          rows?.map((row) => (row.name === m.name ? { ...row, slot_key: r.slot_key, bound: true } : row)),
+        )
+      }
+    },
+    onError: (_err, m, seq) => {
+      if (seq !== threadReqSeq.current[m.name]) return
+      setThreadOutcome(m.name, (prev) => ({ slot_key: prev?.slot_key ?? '', failed: true }))
+    },
+  })
+  const { mutate: postThread } = openThread
+  // The cached key is trusted only for as long as the gateway is known not to
+  // have restarted. A dropped-then-restored socket is the one client-visible
+  // sign that it may have (a restart drops an unmessaged member slot while
+  // its binding survives), so on a RECONNECT the open member's thread is
+  // re-confirmed by the same idempotent POST every open makes — the mounted
+  // pane stays up meanwhile, exactly as during any other repair. The
+  // websocket hook forgets the entries nobody is looking at at the same
+  // moment. Only a true->false->true sequence seen by THIS mounted page
+  // counts: the first connect after a reload is not a reconnect, and the
+  // roster-driven open already confirms the thread then.
+  const connected = useConnected()
+  const hadConnectionRef = useRef(false)
+  const activeRowRef = useRef<MemberRosterRow | undefined>(undefined)
+  activeRowRef.current = active
+  useEffect(() => {
+    if (!connected) return
+    if (hadConnectionRef.current && activeRowRef.current) postThread(activeRowRef.current)
+    hadConnectionRef.current = true
+  }, [connected, postThread])
+
+  // The member whose thread POST is IN FLIGHT — the mutation's own pending
+  // reading, which follows the LATEST call: a fast re-click (two POSTs out)
+  // stays pending until the second answers, so the first one's completion
+  // cannot re-bind the panel while the second is still unanswered. While it
+  // is in flight the cached key is only a render hint for the thread column:
+  // the side panel must not bind to it, because the POST may come back
+  // refusing that very key (renamed / deleted member, a stale binding another
+  // session now occupies) and a panel action dispatched in the window — an
+  // artifact involvement write, a Side chat turn — cannot be recalled by the
+  // unbind that follows.
+  const pendingThreadFor = openThread.isPending ? openThread.variables?.name ?? '' : ''
+  // The slot the SIDE PANEL may bind: the cached key only once the CURRENT
+  // open's POST has confirmed it. Empty for the whole in-flight window, so no
+  // slot-bound view is offered and no document action can record against a
+  // key the endpoint is about to refuse — and empty again after a REFUSAL: a
+  // 409 means the canonical key is occupied by a session that is not this
+  // member's (or the endpoint could not repair it), so a cached key kept
+  // through it would leave every slot-bound panel view (Side chat, Artifacts,
+  // Files…) aimed at a foreign session. The panel falls back to the slot-free
+  // Crew summary; the thread column keeps rendering the cached key under its
+  // own failure notice (its pre-existing contract, see activeThreadFailed).
+  const confirmedSlot =
+    active && (pendingThreadFor === active.name || activeThreadFailed) ? '' : activeSlot
 
   // Sessions this member is driving: every live slot whose `created_by` is the
   // member's DM slot key. A member dispatches its real work into worker
@@ -566,6 +697,128 @@ export default function MembersPage() {
   // closes) or the member does, either of which re-sorts from scratch by
   // recency. Same rule as the roster order above, and the same reason.
   const committedDrivingRef = useRef<{ member: string; keys: string[] }>({ member: '', keys: [] })
+  // The side panel's tab strip, bucketed by the member's slot key exactly as
+  // the chat page buckets by chat slot: switching members swaps the whole strip
+  // and switching back restores it. Keyed on the POST-CONFIRMED `activeSlot`
+  // ONLY — never the roster's derived key. That key is a stale binding until
+  // the thread endpoint confirms it (see the `slots` comment above): an
+  // ordinary slot can occupy the canonical key after a restart, the POST then
+  // answers 409 and `activeSlot` stays empty, and a panel bound to the derived
+  // key would aim Side chat / Terminal / Summary at that unrelated session.
+  // While no confirmed slot exists the strip lives in the shared no-slot bucket
+  // and every slot-bound view is withheld (`hiddenViews` below); the Crew
+  // summary needs no slot and stays.
+  const panelTabDescriptors = usePanelTabDescriptors()
+  const tabsCtl = usePanelTabs(activeSlot || null, panelTabDescriptors, { leadingId: CREW_SUMMARY_TAB_ID })
+  // The member slot's project directory (the WS slots frame carries it) roots
+  // the Files tab and is the cwd a Terminal tab spawns in. Only a record from
+  // the CURRENT snapshot counts: a reconnect drops `slotsLoaded` but keeps the
+  // pre-disconnect `slots` until the fresh frame lands, and the thread POST
+  // can confirm inside that window — binding to the stale record would root
+  // Files / Terminal in whatever project the key had BEFORE the restart, and a
+  // save or command dispatched then would land in the wrong workspace. The
+  // record must also be the member's own (`mode === 'member'`): a 200 confirm
+  // names the member slot, never an ordinary session that happens to hold
+  // the canonical key (that case answers 409 and never confirms).
+  const activeLiveSlot = useMemo(
+    () => (confirmedSlot && slotsLoaded
+      ? liveSlots.find((s) => s.key === confirmedSlot && s.mode === 'member')
+      : undefined),
+    [liveSlots, slotsLoaded, confirmedSlot],
+  )
+  const projectDir = activeLiveSlot?.project || undefined
+  // Terminal needs the slot RECORD, not just the confirmed key: the thread
+  // POST answers before the WS `slots` frame that carries the slot's project,
+  // and a shell spawned in that window would take `cwd: undefined` — the
+  // backend's HOME fallback — with no re-rooting once the frame lands. Gate on
+  // the record being present, not on `project` being set: a member with no
+  // project legitimately opens its shell in the fallback cwd, exactly as a
+  // project-less chat does.
+  const slotRecordPresent = !!activeLiveSlot
+  // Views this host withdraws from the strip and the + menu. Always: the views
+  // fed by ChatPage-owned transcript indexes (pull-request / issue / link
+  // extraction, the pins query) — this page has none of those, and an empty
+  // Changes chip on the monitoring page would assert "nothing changed" while a
+  // member is editing. `summary` (the chat page's SESSION summary) is withheld
+  // too: one click from the "Crew summary" chip, two sibling labels a reader
+  // cannot tell apart. Until the thread is confirmed, EVERY slot-bound view is
+  // withheld as well, per the binding rule above — and so is Terminal: while
+  // unconfirmed the strip sits in the shared no-slot bucket, so a PTY opened
+  // then would be orphaned (live shell, unreachable tab) the moment the
+  // confirmation re-keys the strip to the member's slot; app-contributed tabs
+  // (`'app'`) likewise, since the re-key would remount their `AppHost` and
+  // discard the app's own unsaved state. Terminal stays withheld a moment
+  // longer — until the WS slots frame carries the confirmed slot, so its cwd
+  // is known (see slotRecordPresent).
+  const hiddenViews = useMemo<ReadonlySet<SidePanelWithholdable>>(
+    () =>
+      new Set<SidePanelWithholdable>(
+        !confirmedSlot
+          ? MEMBERS_UNCONFIRMED_WITHHELD_VIEWS
+          : !slotRecordPresent
+            ? [...MEMBERS_WITHHELD_VIEWS, 'terminal']
+            : MEMBERS_WITHHELD_VIEWS,
+      ),
+    [confirmedSlot, slotRecordPresent],
+  )
+  // The selection toolbar's "Ask about this" on the thread: the Side Chat for
+  // this member lives in the panel's Side tab (the chat page's home for it),
+  // so opening it means focusing that tab — and, in overlay mode, revealing
+  // the panel, since a hidden tab is not "on screen". Only the endpoint-
+  // confirmed slot may host it (the pane is keyed on that same slot, so the
+  // two agree); `false` tells the selection seam the Ask did NOT happen, so
+  // it never seeds a quote into a Side Chat that never opened.
+  const openMemberSideChat = useCallback((slot: string): boolean => {
+    if (!confirmedSlot || slot !== confirmedSlot) return false
+    tabsCtl.openView('side')
+    if (!beside) setOverlayOpen(true)
+    return true
+  }, [confirmedSlot, tabsCtl, beside])
+  // Whether the Crew summary body is on screen — the gate for its data reads
+  // and its countdown tick, so a member whose panel shows a terminal does not
+  // pay for a summary nobody is looking at. Read from what the panel SHOWS
+  // (`onActiveTabChange`), not from the stored focus: a stored focus on a
+  // withheld view falls back to the summary in the strip without moving the
+  // store, and the summary must load when it is the one on screen.
+  const [shownTabId, setShownTabId] = useState<string | null>(null)
+  const summaryVisible = panelVisible && (shownTabId ?? tabsCtl.activeId) === CREW_SUMMARY_TAB_ID
+  const closeOverlay = useCallback(() => setOverlayOpen(false), [])
+  // Mount continuity — the chat page's rule, verbatim: a live Browser tab (its
+  // WebContentsView) or a body-owning app tab (any slot's) cannot survive a
+  // remount, so while one exists a closed overlay is kept mounted and hidden
+  // rather than unmounted. There is no find pane on this page.
+  const hasLiveAppTab = useAnyLiveAppTab()
+  const hasBrowserTab = tabsCtl.tabs.some((tab) => tab.kind === 'browser')
+  const mountInput = { activityOpen: panelVisible, hasLiveAppTab, hasBrowserTab, searchOpen: false }
+  const panelMounted = shouldMountSidePanel(mountInput)
+  const panelHidden = isSidePanelHidden(mountInput)
+  // File / artifact / save for the panel's Files, Artifacts and document tabs —
+  // the chat page's own implementation, not a copy. A failed read is reported
+  // above the thread; an open while the panel is an OVERLAY reveals it, since
+  // the tab it focused is otherwise hidden behind a closed panel. Docked, the
+  // open needs nothing — and must not arm `overlayOpen`, or a later narrowing
+  // of the window would find the overlay already open over the thread.
+  const activeSlotRef = useRef<string | null>(confirmedSlot || null)
+  activeSlotRef.current = confirmedSlot || null
+  const besideRef = useRef(beside)
+  besideRef.current = beside
+  const [actionError, setActionError] = useState('')
+  // A failed document read is reported above the thread. In overlay mode the
+  // open panel covers exactly that spot — the click that failed happened inside
+  // it — so the overlay closes as the notice appears; otherwise the failure is
+  // silent to the person who caused it.
+  const showActionError = useCallback((message: string) => {
+    setActionError(message)
+    if (!besideRef.current) setOverlayOpen(false)
+  }, [])
+  const revealPanelAfterOpen = useCallback(() => { if (!besideRef.current) setOverlayOpen(true) }, [])
+  const { openFile, openArtifact, saveFile } = usePanelDocumentActions({
+    tabsCtl,
+    slotRef: activeSlotRef,
+    queryClient,
+    showActionError,
+    onOpened: revealPanelAfterOpen,
+  })
   const drivingSessions = useMemo(() => {
     if (!activeMemberKey) return []
     const mine = liveSlots.filter((s) => !!s.created_by && s.created_by === activeMemberKey)
@@ -588,22 +841,22 @@ export default function MembersPage() {
   const drivingExpanded = drivingExpandedFor === activeMemberKey
   const visibleDriving = drivingExpanded ? drivingSessions : drivingSessions.slice(0, DRIVING_VISIBLE)
 
-  // Recent-activity pointers for the drawer, read when it opens for a member
-  // and cached per exact member NAME, not slug — slugs are lossy, and the
-  // whole point of the backend's member filter is that two names sharing a
-  // slug have distinct histories. Real recorded signal only — the drawer
-  // derives its counts from these instead of fabricating stats. Three states
-  // per member: no answer yet = still loading, failed with no answer = error,
-  // answered = loaded. A pending or failed read must not render the
-  // affirmative "no activity"; a refetch error after a good read keeps the
-  // last entries. The finite staleTime is the roster's: a return to the
-  // drawer shows the cached pointers and refreshes them behind.
+  // Recent-activity pointers for the Crew summary tab, read when it is on
+  // screen for a member and cached per exact member NAME, not slug — slugs are
+  // lossy, and the whole point of the backend's member filter is that two
+  // names sharing a slug have distinct histories. Real recorded signal only —
+  // the summary derives its counts from these instead of fabricating stats.
+  // Three states per member: no answer yet = still loading, failed with no
+  // answer = error, answered = loaded. A pending or failed read must not
+  // render the affirmative "no activity"; a refetch error after a good read
+  // keeps the last entries. The finite staleTime is the roster's: a return to
+  // the summary shows the cached pointers and refreshes them behind.
   const activeSlug = active?.slug ?? ''
   const activeMemberName = active?.name ?? ''
   const activityQuery = useQuery({
     queryKey: memberActivityQueryKey(activeSlug, activeMemberName),
     queryFn: () => api.memberActivity(activeSlug, activeMemberName),
-    enabled: !!activeSlug && !!activeMemberName && drawerOpen,
+    enabled: !!activeSlug && !!activeMemberName && summaryVisible,
     staleTime: membersRosterQuery.staleTime,
   })
   const activityLoading = activityQuery.data === undefined && !activityQuery.isError
@@ -617,19 +870,20 @@ export default function MembersPage() {
   // Wake sources — global lists (crons, webhook tokens, the default crew),
   // shared with the crew editor and the Schedule page through the same query
   // keys (one fetch serves all of them; a mint / revoke / save anywhere
-  // reaches this drawer through their invalidations), read once the drawer
-  // opens and filtered per member at render. `failed` is kept distinct from
-  // empty: absence of an answer and an answer of "none" must not render the
-  // same (a failed fetch would otherwise show the affirmative "nothing wakes
-  // this member", a false statement). Every source must have answered before
-  // the block asserts anything; one failing with nothing cached is the error.
-  const cronsQuery = useQuery({ ...cronJobsQuery, enabled: drawerOpen })
+  // reaches this summary through their invalidations), read once the Crew
+  // summary is on screen and filtered per member at render. `failed` is kept
+  // distinct from empty: absence of an answer and an answer of "none" must not
+  // render the same (a failed fetch would otherwise show the affirmative
+  // "nothing wakes this member", a false statement). Every source must have
+  // answered before the block asserts anything; one failing with nothing
+  // cached is the error.
+  const cronsQuery = useQuery({ ...cronJobsQuery, enabled: summaryVisible })
   const hooksQuery = useQuery<{ tokens?: WebhookTokenEntry[] }>({
     queryKey: crewWebhooksQueryKey,
     queryFn: () => api.webhooks(),
-    enabled: drawerOpen,
+    enabled: summaryVisible,
   })
-  const defaultAgentQ = useQuery({ ...defaultAgentQuery, enabled: drawerOpen })
+  const defaultAgentQ = useQuery({ ...defaultAgentQuery, enabled: summaryVisible })
   const wakeSources = [cronsQuery, hooksQuery, defaultAgentQ]
   const wakeFailed = wakeSources.some((q) => q.data === undefined && q.isError)
   const wakeLoaded = wakeFailed || wakeSources.every((q) => q.data !== undefined)
@@ -770,11 +1024,11 @@ export default function MembersPage() {
     : activePatrol
       ? 'stopped'
       : 'none'
-  // Clock for the "next wake" countdown, ticking only while the drawer shows
+  // Clock for the "next wake" countdown, ticking only while the summary shows
   // an active loop — the same deadline-preserving reading the composer's goal
   // chip renders (see nextCycleText), on a coarser tick.
   const [nowTs, setNowTs] = useState(() => Date.now() / 1000)
-  const patrolTicking = drawerOpen && patrolState === 'active'
+  const patrolTicking = summaryVisible && patrolState === 'active'
   useEffect(() => {
     if (!patrolTicking) return
     setNowTs(Date.now() / 1000)
@@ -784,68 +1038,6 @@ export default function MembersPage() {
   // The roster badge's mount/unmount tween honours the OS motion preference:
   // the state change still happens, it just cuts instead of fading.
   const reduceMotion = useReducedMotion()
-
-  // The thread open. A mutation, not a query: the endpoint is a write (the
-  // idempotent creator/repairer of member slots), so it is issued on EVERY
-  // open — never served from cache — and its answer is what the cache holds.
-  // Outcomes are keyed by the member the POST was FOR, so a late answer for a
-  // member the user has already left lands in that member's entry, not the
-  // open one's. The roster row is patched with a freshly confirmed key so the
-  // row's live readings (presence dot, unread, patrol badge) resolve to the
-  // same slot the thread mounted on, without a roster refetch that would
-  // re-sort the list under the cursor.
-  const setThreadOutcome = useCallback(
-    (name: string, update: (prev: MemberThreadOutcome | undefined) => MemberThreadOutcome) =>
-      queryClient.setQueryData<MemberThreadOutcome>(memberThreadQueryKey(name), update),
-    [queryClient],
-  )
-  const openThread = useMutation({
-    mutationFn: (m: MemberRosterRow) => api.memberThread(m.slug),
-    onMutate: (m) => {
-      // A previous verdict for this member is retired while the re-POST is
-      // out: a confirmed key keeps rendering (the cached thread stays up), a
-      // collision or failure line comes down until the new answer is in.
-      setThreadOutcome(m.name, (prev) => ({ slot_key: prev?.slot_key ?? '' }))
-    },
-    onSuccess: (r, m) => {
-      if (r.member !== m.name) {
-        // The slug's thread belongs to another crew (lossy-slug collision,
-        // first-bound-wins). Mounting it would be a silent misroute — the
-        // defining failure for a page whose premise is identity.
-        setThreadOutcome(m.name, () => ({ slot_key: '', collision: r.member }))
-        return
-      }
-      setThreadOutcome(m.name, () => ({ slot_key: r.slot_key }))
-      if (m.slot_key !== r.slot_key) {
-        queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
-          rows?.map((row) => (row.name === m.name ? { ...row, slot_key: r.slot_key, bound: true } : row)),
-        )
-      }
-    },
-    onError: (_err, m) => {
-      setThreadOutcome(m.name, (prev) => ({ slot_key: prev?.slot_key ?? '', failed: true }))
-    },
-  })
-  const { mutate: postThread } = openThread
-  // The cached key is trusted only for as long as the gateway is known not to
-  // have restarted. A dropped-then-restored socket is the one client-visible
-  // sign that it may have (a restart drops an unmessaged member slot while
-  // its binding survives), so on a RECONNECT the open member's thread is
-  // re-confirmed by the same idempotent POST every open makes — the mounted
-  // pane stays up meanwhile, exactly as during any other repair. The
-  // websocket hook forgets the entries nobody is looking at at the same
-  // moment. Only a true->false->true sequence seen by THIS mounted page
-  // counts: the first connect after a reload is not a reconnect, and the
-  // roster-driven open already confirms the thread then.
-  const connected = useConnected()
-  const hadConnectionRef = useRef(false)
-  const activeRowRef = useRef<MemberRosterRow | undefined>(undefined)
-  activeRowRef.current = active
-  useEffect(() => {
-    if (!connected) return
-    if (hadConnectionRef.current && activeRowRef.current) postThread(activeRowRef.current)
-    hadConnectionRef.current = true
-  }, [connected, postThread])
 
   // Open a member's thread and remember it as the last one opened. Called by
   // the URL sync effect only (plus the same-member re-click below), so every
@@ -859,15 +1051,15 @@ export default function MembersPage() {
       activeNameRef.current = m.name
       setActiveName(m.name)
       if (remember) safeSetItem(LAST_MEMBER_KEY, m.name)
-      // A Side Chat view belongs to the member it was asked about. Switching
-      // members returns the drawer to details rather than carrying the view
-      // over to a thread the user has not asked anything about yet.
-      setDrawerView('details')
+      // A Side Chat belongs to the member it was asked about; nothing to reset
+      // here — the panel's strip is bucketed per member slot, so switching
+      // members swaps the whole strip and a Side tab stays with its member.
       // ALWAYS post, even when a slot key is already cached: the endpoint is
       // the idempotent creator/repairer, and the backend can lose the live
       // slot between opens (archive, restart with a stale binding) — a cached
       // key mounted without the POST would point at nothing. The cache only
-      // decides what to render while the POST is in flight.
+      // decides what to render while the POST is in flight — and, for the side
+      // panel, not even that (see confirmedSlot).
       postThread(m)
     },
     [postThread],
@@ -968,15 +1160,15 @@ export default function MembersPage() {
   }, [loaded, loadError, urlMember, members, orderedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching])
 
   return (
-    // pb-2 on the root is the one shared bottom inset: the card columns and
-    // the detail drawer all end 8px above the window edge (the chat SidePanel's
-    // mb-2). No right padding here — the drawer docks FLUSH to the window's
-    // right edge; the card columns' pr-2 lives on the inner wrapper below. The
-    // drawer must stay a DIRECT child of this row: DetailPanel measures its
-    // parent to cap the drag width against roster + thread.
-    <div className="flex h-full min-h-0 pb-2" data-testid="members-page">
+    // No bottom inset on the root: the card columns carry their own pb-2 and
+    // the side panel brings the chat SidePanel's mb-2, so all three end 8px
+    // above the window edge without stacking two insets. No right padding
+    // either — the panel docks FLUSH to the window's right edge, exactly as it
+    // does in the chat page's actbar column; the card columns' pr-2 lives on
+    // the inner wrapper below.
+    <div className="flex h-full min-h-0" data-testid="members-page">
       {/* Card columns (roster + thread) keep the page's original insets. */}
-      <div className="flex flex-1 min-w-0 gap-2 pr-2">
+      <div className="flex flex-1 min-w-0 gap-2 pr-2 pb-2">
       {/* Member list. Below md the page is single-pane: the roster IS the
           page until a member is picked, then the thread takes over and the
           header's back button returns here. Two fixed rails (264+300px)
@@ -1398,7 +1590,11 @@ export default function MembersPage() {
                   <Pencil size={13} className="lucide-inline" />
                 </button>
               </div>
-              {/* One action in the header: toggle the detail drawer — same
+              {/* The header carries NO panel control while the panel sits
+                  beside the thread: that panel is permanent, so a toggle would
+                  promise a close the strip does not offer. Only when the window
+                  is too narrow for a column (see panelSitsBeside) does the
+                  panel become an overlay, and then this is its opener — same
                   icon and hit-target as the chat page's side-panel toggle, so
                   the two surfaces teach one gesture. The pin chip was removed:
                   every member thread is pinned by construction (a server
@@ -1406,18 +1602,33 @@ export default function MembersPage() {
                   the user a term for a thing that can never be otherwise.
                   The member's edit entry is not a peer of this toggle: it is
                   the pencil inside the title row, revealed on hover. */}
-              <button
-                onClick={() => { if (drawerOpen) closeDrawer(); else setDrawerOpen(true) }}
-                className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-                aria-pressed={drawerOpen}
-                aria-controls="member-drawer"
-                aria-label={t('pages.membersPage.details')}
-                title={t('pages.membersPage.details')}
-                data-testid="member-drawer-toggle"
-              >
-                <PanelRightSolid size={15} />
-              </button>
+              {!beside && (
+                <button
+                  onClick={() => setOverlayOpen((v) => !v)}
+                  className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                  aria-pressed={overlayOpen}
+                  aria-controls="member-side-panel"
+                  aria-label={t('pages.membersPage.details')}
+                  title={t('pages.membersPage.details')}
+                  data-testid="member-panel-toggle"
+                >
+                  <PanelRightSolid size={15} />
+                </button>
+              )}
             </header>
+            {/* A failed document read from the panel's Files / Artifacts tabs.
+                Reported here, above the thread, rather than inside the tab
+                that failed to open — there is no such tab. Dismissable. No
+                hand-off: the ChatPane below holds the DM composer draft as
+                unsaved local state (its own notices say the same), and the
+                agent hand-off navigates away, which would unmount it. */}
+            {actionError && (
+              <ErrorNotice
+                message={actionError}
+                onDismiss={() => setActionError('')}
+                testId="member-panel-action-error"
+              />
+            )}
             {gone && gone.shown === active.name && (
               /* Decision-critical (the user is about to type into a thread they
                  did not ask for), so it wears the warn tone at body size, not
@@ -1497,53 +1708,31 @@ export default function MembersPage() {
       </section>
       </div>
 
-      {/* Detail drawer — read-only observation; writes live in the crew manager.
-          The shell is the shared DetailPanel wearing the chat SidePanel's
-          frame: a left-rounded card docked FLUSH to the window's right edge,
-          top/bottom/left borders, an 8px bottom inset, and an elevated header
-          band — so the two right panels read as one family. Same
-          header idiom (close + identity + title), same body padding, and the
-          same drag-to-resize handle with a persisted width. On md+
-          DetailPanel's own width spring is the one mount animation. Below md
-          the drawer overlays the thread instead of claiming row width (and
-          starts closed there — the width-gated useState above); that branch
-          keeps the side-panel dock motion on a fixed-position wrapper, where
-          drag-resize is moot because the overlay spans a fixed 300px. */}
-      <AnimatePresence>
-        {active && drawerOpen && (() => {
-          // Only the endpoint-confirmed slot (`activeSlot`, filled by
-          // POST /api/members/{slug}/thread) may host a Side Chat — never the
-          // roster's `slot_key`, which the thread opener can reject (a lossy-
-          // slug collision hands another crew's key). A question typed here
-          // goes to whatever slot the panel is bound to, so an unconfirmed key
-          // would be a silent cross-crew misroute. Same rule as the thread
-          // pane itself.
-          const showSide = drawerView === 'side' && !!activeSlot
-          const view = showSide ? (
-            /* The Side Chat for this member's thread. Same id as the details
-               body: the header's Details toggle controls the one drawer,
-               whichever view it shows. SideChat sizes itself as a flex column
-               (flex-1 / min-h-0) inside DetailPanel's noPadding body. */
-            <div id="member-drawer" data-testid="member-side-chat" aria-label={t('pages.chat.sidePanel.menu_side')} className="flex-1 min-h-0 flex flex-col">
-              <ErrorBoundary>
-                <SideChat slot={activeSlot} />
-              </ErrorBoundary>
-            </div>
-          ) : (
-            /* Keeps the old aside's id: the roster header's Details toggle
-               points here via aria-controls. */
-            <div id="member-drawer" data-testid="member-drawer" aria-label={t('pages.membersPage.details')}>
-          {/* Live status line — working now, or the last time anything
-              happened on the thread. Identity (avatar + name) moved into the
-              DetailPanel header, so the body opens with the status alone. */}
-          <div className="text-[11px] truncate mb-3" data-testid="member-drawer-status">
-            {isRunning(active) ? (
-              <span className="text-ok">{t('pages.membersPage.drawer_working')}</span>
-            ) : active.last_active_ts ? (
-              <span className="text-muted">{timeAgo(active.last_active_ts)}</span>
-            ) : (
-              <span className="text-muted">{'\u00a0'}</span>
-            )}
+      {/* Side panel — the chat page's tabbed SidePanel, docked to this page.
+          Read-only observation lives in its permanent first tab (Crew
+          summary); writes live in the crew manager. The + menu is the chat
+          panel's own (Files / Artifacts / Terminal / Browser / Side chat …),
+          all against the member's DM slot, and the strip is bucketed per
+          member so it follows the roster selection. Wide windows dock it as a
+          column with NO close control (it is part of the page, like the roster);
+          narrow ones make it an overlay the header button opens, with the
+          panel's own close control, on the chat page's dock motion. */}
+      {active && (() => {
+          const summaryBody = (
+            <div className="px-3 py-3" data-testid="member-crew-summary" aria-label={t('pages.membersPage.crew_summary')}>
+          {/* Identity + live status line — working now, or the last time
+              anything happened on the thread. The chip above names the tab
+              (Crew summary) and wears the face; this row names the member. */}
+          <div className="flex items-center gap-2 mb-3 min-w-0">
+            <CrewAvatar seed={active.name} avatar={active.avatar} size={22} />
+            <span className="text-[13px] font-semibold truncate">{active.name}</span>
+            <span className="text-[11px] truncate ml-auto shrink-0" data-testid="member-summary-status">
+              {isRunning(active) ? (
+                <span className="text-ok">{t('pages.membersPage.drawer_working')}</span>
+              ) : active.last_active_ts ? (
+                <span className="text-muted">{timeAgo(active.last_active_ts)}</span>
+              ) : null}
+            </span>
           </div>
           {/* Honest counters only — both derive from the recorded activity
               log. Semantic stats the backend cannot attest (PRs, triages,
@@ -1942,118 +2131,126 @@ export default function MembersPage() {
           </button>
             </div>
           )
-          /* The two views swap in place; a hard cut reads as "the card got
-             replaced by something else". A short crossfade keyed on the view
-             gives the eye the one beat it needs to read the header's new
-             title ("Side Chat" / the member) and the Details way back.
-             `mode="wait"` so the outgoing view fades before the incoming
-             one mounts — the two have different heights and a simultaneous
-             swap would jump. `initial={false}`: the drawer's own mount
-             animation is DetailPanel's; the first view must not fade in on
-             top of it. */
-          const body = (
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={showSide ? 'side' : 'details'}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.12, ease: 'linear' }}
-                className={showSide ? 'flex-1 min-h-0 flex flex-col' : undefined}
-              >
-                {view}
-              </motion.div>
+          const leadingTab: SidePanelLeadingTab = {
+            id: CREW_SUMMARY_TAB_ID,
+            title: t('pages.membersPage.crew_summary'),
+            // The member's face, not a kind glyph: the chip is the one place
+            // the strip says WHOSE panel this is, and it changes with the
+            // roster selection — unlike the chat page's ListTree Summary tab,
+            // which summarises a transcript.
+            icon: <CrewAvatar seed={active.name} avatar={active.avatar} size={16} />,
+            render: () => summaryBody,
+          }
+          // Everything both placements share. Two different keys do two
+          // different jobs here. `slot` is the IDENTITY of the panel's bodies —
+          // the key a Browser tab's native WebContentsView, an app frame and
+          // every document body are keyed by — so it is the same key the strip
+          // is bucketed on (`activeSlot`, the key the LAST successful open
+          // confirmed) and it holds steady through a re-POST: the transient
+          // withdrawal while a thread is being revalidated (a routine WS
+          // reconnect re-POSTs) must hide the slot-bound views, not re-key them
+          // — a Browser body re-keyed to '' and back would `close()` its live
+          // WebContentsView and lose history and form state. WHICH views may be
+          // offered is `hiddenViews`' job, gated on `confirmedSlot`: until the
+          // CURRENT open's POST confirms the key (and after a refusal) every
+          // slot-bound view is withheld, so nothing can be dispatched against a
+          // key the endpoint may refuse; the document actions above bind to
+          // `confirmedSlot` for the same reason. No bottom dock: this page has
+          // no bottom grid row for it to move into.
+          const panelProps = {
+            tabsCtl,
+            slot: activeSlot,
+            hiddenViews,
+            onActiveTabChange: setShownTabId,
+            projectDir,
+            onFileOpen: openFile,
+            onArtifactOpen: openArtifact,
+            onFileSave: saveFile,
+            leadingTab,
+            slotTitle: active.name,
+            canDockBottom: false,
+          }
+          // ONE SidePanel instance for both placements. Docked and overlay differ
+          // only in the wrapper (an in-flow column vs a fixed sheet below the
+          // 42px app topbar) and in the motion axis (the chat page's width
+          // reveal vs a slide from the right edge), so they share one keyed
+          // element and the panel is never remounted by a placement flip — a
+          // live Browser tab's WebContentsView, like an app tab's frame, does
+          // not survive a remount. For the same reason a CLOSED overlay stays
+          // MOUNTED and hidden while such a tab exists (`shouldMountSidePanel`
+          // / `isSidePanelHidden`, the chat page's exact rule); with no live
+          // tab it unmounts on close, which preserves the exit motion. Both
+          // axes are named in every target — see sidePanelDockMotion for why an
+          // axis left out of `animate` freezes at its last value.
+          // Two nested motion elements in BOTH placements so the SidePanel
+          // instance is the same React subtree whichever way it is shown. Docked:
+          // the outer is the chat page's width reveal and the inner is inert.
+          // Overlay: the outer is a full-bleed SCRIM below the 42px app topbar
+          // (fades in; a click on it closes the overlay — the whole chat column
+          // is dimmed rather than left peeking out as a sliver beside the panel,
+          // which read as a rendering fault) and the inner slides the panel in
+          // from the right edge. Both axes are named in every target — see
+          // sidePanelDockMotion for why an axis left out of `animate` freezes.
+          const outerMotion = beside
+            ? dockMotion
+            : {
+              initial: { opacity: 0, width: 'auto', height: '100%' },
+              animate: { opacity: 1, width: 'auto', height: '100%' },
+              exit: { opacity: 0, width: 'auto', height: '100%' },
+            }
+          const innerMotion = beside
+            ? { initial: { x: 0 }, animate: { x: 0 }, exit: { x: 0 } }
+            : { initial: { x: '100%' }, animate: { x: 0 }, exit: { x: '100%' } }
+          return (
+            <AnimatePresence initial={false}>
+              {panelMounted && (
+                <motion.div
+                  key="member-side-panel"
+                  id="member-side-panel"
+                  initial={outerMotion.initial}
+                  animate={outerMotion.animate}
+                  exit={outerMotion.exit}
+                  transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+                  className={beside
+                    ? 'h-full overflow-visible flex justify-end shrink-0'
+                    /* The overlay MUST be dismissable, so it is the one placement
+                       that hands the panel an onClose — and the scrim is a second
+                       dismiss, the drawer convention. On a phone the panel's
+                       mobile `100%` width fills the scrim; on a tablet-width
+                       window the panel keeps its own (resizable, persisted)
+                       width against the dimmed chat. */
+                    : 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-40 flex justify-end bg-bg/60 backdrop-blur-sm'}
+                  style={panelHidden ? { display: 'none' } : undefined}
+                  onClick={beside ? undefined : (e) => { if (e.target === e.currentTarget) closeOverlay() }}
+                  data-testid="member-side-panel"
+                  data-placement={beside ? 'docked' : 'overlay'}
+                >
+                  <motion.div
+                    initial={innerMotion.initial}
+                    animate={innerMotion.animate}
+                    exit={innerMotion.exit}
+                    transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+                    className={beside ? 'h-full flex justify-end' : 'h-full flex justify-end max-w-full'}
+                  >
+                    <SidePanel
+                      {...panelProps}
+                      panelHidden={panelHidden}
+                      /* Docked: permanent — no onClose, so the strip renders no
+                         close control and Escape inside a view does nothing.
+                         `extraReserveW` keeps the live roster width plus the
+                         page's gaps clear on top of the shell reserve, so a drag
+                         can never fold the thread to nothing (the contract the
+                         old drawer's reserveWidth carried). Overlay: the panel
+                         covers the thread, so nothing to reserve. */
+                      onClose={beside ? undefined : closeOverlay}
+                      extraReserveW={beside ? roster.width + PANEL_GAPS_W : 0}
+                    />
+                  </motion.div>
+                </motion.div>
+              )}
             </AnimatePresence>
           )
-          const panelProps = {
-            icon: <CrewAvatar seed={active.name} avatar={active.avatar} size={22} />,
-            // The Side Chat view names itself; identity stays on the avatar.
-            title: showSide ? t('pages.chat.sidePanel.menu_side') : active.name,
-            onClose: closeDrawer,
-            initialWidth: DRAWER_DEFAULT,
-            minWidth: DRAWER_MIN,
-            storageKey: DRAWER_WIDTH_KEY,
-            // The Side Chat fills the body edge to edge (its own transcript
-            // padding and composer band); details keep the panel's padding.
-            noPadding: showSide,
-            // The way back and forth between the two views. From the Side
-            // Chat, "Details" returns to the member card. From the details,
-            // "Side Chat" is offered only while the member's Side Chat holds
-            // an unsent draft: the toolbar's Ask is how a Side Chat starts (it
-            // has a selection in hand), but a user who checked the details or
-            // closed the drawer mid-question must be able to return to what
-            // they were typing without re-selecting text — which would append
-            // a second quote onto it.
-            headerActions: showSide ? (
-              <button
-                onClick={() => setDrawerView('details')}
-                className="text-[12px] px-2 py-1 rounded-md bg-transparent border-none text-muted hover:text-text hover:bg-bg-hover cursor-pointer transition-colors"
-                data-testid="member-drawer-details"
-              >
-                {t('pages.membersPage.details')}
-              </button>
-            ) : activeSlot && memberSideDraft.trim() ? (
-              // The button exists only because a draft does, so it says so:
-              // the dot is the same "something is waiting here" mark the
-              // roster uses for an unread reply, and the tooltip names what —
-              // otherwise a user who closed the drawer mid-question comes back
-              // to a button that was not there before, with no cue it holds
-              // their text. The tooltip doubles as the accessible description
-              // (a hover title never reaches keyboard or screen-reader users).
-              <>
-                <button
-                  onClick={() => setDrawerView('side')}
-                  className="flex items-center gap-1.5 text-[12px] px-2 py-1 rounded-md bg-transparent border-none text-muted hover:text-text hover:bg-bg-hover cursor-pointer transition-colors"
-                  title={t('pages.membersPage.side_chat_draft_waiting')}
-                  aria-describedby={sideChatPillHintId}
-                  data-testid="member-drawer-side-chat"
-                >
-                  <span aria-hidden className="inline-block w-1.5 h-1.5 rounded-full bg-accent" />
-                  {t('pages.chat.sidePanel.menu_side')}
-                </button>
-                <span id={sideChatPillHintId} className="sr-only">{t('pages.membersPage.side_chat_draft_waiting')}</span>
-              </>
-            ) : undefined,
-          }
-          return isMobile ? (
-            <motion.div
-              key="member-drawer-motion"
-              initial={drawerMotion.initial}
-              animate={drawerMotion.animate}
-              exit={drawerMotion.exit}
-              transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-              className="fixed top-safe bottom-safe right-safe z-40 w-[300px] max-w-full bg-bg-elevated border-l border-border"
-            >
-              {/* `embedded`: fill the fixed wrapper AND drop the resize
-                  handle — the overlay spans a fixed 300px, and a live handle
-                  here would persist a mobile-clamped width over the user's
-                  chosen desktop width. Edge chrome (left border, elevated bg)
-                  lives on the wrapper above. */}
-              <DetailPanel {...panelProps} embedded>
-                {body}
-              </DetailPanel>
-            </motion.div>
-          ) : (
-            /* The frame is the chat SidePanel's exact recipe (SidePanel.tsx
-               root + strip): left-rounded card with top/bottom/left borders,
-               flush against the window's right edge, 8px bottom inset, and an
-               elevated header band that carries the top-left corner; the 8px
-               bottom inset comes from the page root's pb-2. reserveWidth keeps
-               the live roster width plus a usable thread minimum clear, so
-               dragging the panel wide can never collapse the DM thread to zero
-               (same contract as ChatPage's panelReserve). */
-            <DetailPanel
-              key="member-drawer-panel"
-              {...panelProps}
-              reserveWidth={roster.width + THREAD_MIN_RESERVE}
-              frameClassName="border-l border-t border-b border-border rounded-l-xl bg-bg"
-              headerClassName="border-border bg-bg-elevated rounded-tl-xl"
-            >
-              {body}
-            </DetailPanel>
-          )
         })()}
-      </AnimatePresence>
     </div>
   )
 }

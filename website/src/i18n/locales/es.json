@@ -14420,6 +14420,7 @@
     "membersPage": {
       "agent_template": "Plantilla de agente",
       "configuration": "Configuración",
+      "crew_summary": "Resumen del miembro",
       "details": "Detalles",
       "edit_in_crew_manager": "Editar en el gestor de equipos",
       "edit_member": "Editar miembro",
@@ -14481,7 +14482,6 @@
       "patrol_last_wake_ago": "Último despertar {{when}}",
       "patrol_none": "No hay patrulla programada.",
       "patrol_error": "No se pudo cargar el estado de patrulla de este miembro.",
-      "side_chat_draft_waiting": "Hay una pregunta sin enviar en el Chat lateral de este miembro",
       "patrol_error_roster": "No se pudo cargar el estado de patrulla de la lista.",
       "patrol_badge": "En patrulla · {{cycle}}",
       "patrol_next_in": "Dentro de {{time}}",

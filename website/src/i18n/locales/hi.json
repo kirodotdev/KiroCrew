@@ -14236,6 +14236,7 @@
     "membersPage": {
       "agent_template": "एजेंट टेम्पलेट",
       "configuration": "कॉन्फ़िगरेशन",
+      "crew_summary": "सदस्य सारांश",
       "details": "विवरण",
       "edit_in_crew_manager": "क्रू प्रबंधक में संपादित करें",
       "edit_member": "सदस्य संपादित करें",
@@ -14296,7 +14297,6 @@
       "patrol_last_wake_ago": "अंतिम वेक {{when}}",
       "patrol_none": "कोई पेट्रोल तय नहीं है।",
       "patrol_error": "इस सदस्य की पेट्रोल स्थिति लोड नहीं हो सकी।",
-      "side_chat_draft_waiting": "इस सदस्य की साइड चैट में एक न भेजा गया प्रश्न प्रतीक्षा में है",
       "patrol_error_roster": "रोस्टर की पेट्रोल स्थिति लोड नहीं हो सकी।",
       "patrol_badge": "पेट्रोल पर · {{cycle}}",
       "patrol_next_in": "{{time}} में बाकी",

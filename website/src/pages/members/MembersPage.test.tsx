@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
-import { markSlotUnread, sseSlots } from '../../store/dashboardSlice'
+import { markSlotUnread, sseConnected, sseSlots } from '../../store/dashboardSlice'
 
 /* ── api client mock ─────────────────────────────────────────────────────
  * The page reads exactly two endpoints; mocking them keeps every case
@@ -22,8 +22,45 @@ vi.mock('../../api/client', () => ({
     // the default is "feature on, nothing armed" so every other case renders
     // the page without a loop in the way.
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
+    // The side panel's + menu gates its Summary row on this read; "disabled"
+    // keeps the chat-style Summary row out of the menu so the Crew summary tab
+    // is the one summary these cases see.
+    sessionSummary: vi.fn(() => Promise.resolve({ enabled: false })),
   },
 }))
+
+/* The page now hosts the chat page's SidePanel. Its strip and + menu are what
+ * these cases drive; the heavy tab BODIES (editors, terminals, previews) are
+ * not, so they are stubbed the way the panel's own suites stub them
+ * (test/sidePanelPinnedAlwaysPresent.test.tsx). Terminal is reported ENABLED
+ * so the + menu case below can assert the per-chat Terminal row is offered on
+ * a member DM. */
+vi.mock('../chat/ActivityViewer', () => ({ default: () => null }))
+vi.mock('../chat/FilesHomePanel', () => ({ default: () => null }))
+vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
+vi.mock('../../components/DiffPanel', () => ({ default: () => null }))
+vi.mock('../../components/DetailPanel', () => ({ default: () => null }))
+vi.mock('../../components/MarkdownPanel', () => ({ default: () => null }))
+vi.mock('../../components/ArtifactPanel', () => ({ default: () => null }))
+// The Browser body's IDENTITY is what one case below pins (the slot key the
+// native WebContentsView is keyed by must not flip during a thread re-POST),
+// so this stub exposes it instead of rendering nothing.
+vi.mock('../../components/WebPreviewPanel', () => ({
+  default: ({ sessionKey }: { sessionKey: string }) => (
+    <div data-testid="web-preview-stub" data-session-key={sessionKey} />
+  ),
+}))
+vi.mock('../../components/McpAppFrame', () => ({ default: () => null }))
+vi.mock('../../components/CliPanel', () => ({
+  default: () => null,
+  disposeTerminalSession: vi.fn(),
+  useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
+}))
+vi.mock('../../utils/terminalRegistry', () => ({
+  useTerminalEnabled: () => true,
+  useTerminalTitle: () => 'Terminal',
+}))
+vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 
 /* ChatPane is the full chat stack (WS, Redux slot machinery). The page's own
  * contract is only "mount it with the thread's slot key", so a stub that
@@ -60,10 +97,21 @@ vi.mock('react-router-dom', async (importOriginal) => {
 })
 
 import { api } from '../../api/client'
-import MembersPage, { resolveDefaultMember } from './MembersPage'
+import MembersPage, { CREW_SUMMARY_TAB_ID, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_UNFED_VIEWS, MEMBERS_WITHHELD_VIEWS, panelSitsBeside, resolveDefaultMember } from './MembersPage'
+import { __resetPanelTabs, VIEW_DATA_SOURCE } from '../../hooks/usePanelTabs'
 
 /** The page's own memory key (mirrors the constant in MembersPage.tsx). */
 const LAST_MEMBER_KEY = 'mc-members-last-member'
+
+/** A window wide enough to dock the side panel BESIDE the thread (see
+ *  panelSitsBeside): roster 264 + gaps 24 + shell reserve 560 + panel min 320
+ *  = 1168. happy-dom's default is narrower, which would put every case in
+ *  overlay mode with the panel closed. Narrow-window cases set their own. */
+const WIDE_WINDOW = 1440
+const NARROW_WINDOW = 1000
+function setWindowWidth(px: number) {
+  Object.defineProperty(window, 'innerWidth', { value: px, configurable: true, writable: true })
+}
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -133,7 +181,7 @@ function LocationProbe() {
 }
 const currentUrl = () => screen.getByTestId('location-probe').textContent
 
-/* The open member's name also renders in the thread header (and the drawer),
+/* The open member's name also renders in the thread header (and the Crew summary tab),
  * so a bare screen query by name is ambiguous once anything is open — and
  * something is open from the first paint now. Scope name lookups to the
  * roster column. */
@@ -158,6 +206,10 @@ beforeEach(() => {
   vi.mocked(api.autonudgeList).mockImplementation(() => Promise.resolve({ enabled: true, loops: [] }))
   // The remembered member must not leak between cases.
   localStorage.clear()
+  // The side panel's tab strip is a module-level, persisted store; a tab
+  // opened in one case would otherwise be on the strip in the next.
+  __resetPanelTabs()
+  setWindowWidth(WIDE_WINDOW)
 })
 
 describe('MembersPage roster', () => {
@@ -389,14 +441,14 @@ describe('MembersPage thread', () => {
   })
 })
 
-describe('MembersPage drawer and edit jump', () => {
+describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
   it('shows the read-only config summary and the shared-memory disclosure', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall', model: 'claude-opus-5' })])
     fireEvent.click(await rosterRow('oncall'))
-    const drawer = await screen.findByTestId('member-drawer')
-    expect(drawer).toHaveTextContent('kirocrew')
-    expect(drawer).toHaveTextContent('claude-opus-5')
-    expect(drawer).toHaveTextContent(/share one memory/i)
+    const summary = await screen.findByTestId('member-crew-summary')
+    expect(summary).toHaveTextContent('kirocrew')
+    expect(summary).toHaveTextContent('claude-opus-5')
+    expect(summary).toHaveTextContent(/share one memory/i)
   })
 
   it('words the disclosure for a member on a dedicated store: markdown separate, conversation shared', async () => {
@@ -410,11 +462,11 @@ describe('MembersPage drawer and edit jump', () => {
       row({ name: 'beta', slug: 'beta', memory_store: 'default' }),
     ])
     fireEvent.click(await screen.findByText('oncall'))
-    const drawer = await screen.findByTestId('member-drawer')
-    expect(drawer).toHaveTextContent(/from the oncall-own store/i)
-    expect(drawer).toHaveTextContent(/not separated yet/i)
-    expect(drawer).toHaveTextContent(/still known to every member/i)
-    expect(drawer).not.toHaveTextContent(/share one memory/i)
+    const summary = await screen.findByTestId('member-crew-summary')
+    expect(summary).toHaveTextContent(/from the oncall-own store/i)
+    expect(summary).toHaveTextContent(/not separated yet/i)
+    expect(summary).toHaveTextContent(/still known to every member/i)
+    expect(summary).not.toHaveTextContent(/share one memory/i)
   })
 
   it('keys the wording on the store itself, not on roster membership', async () => {
@@ -426,40 +478,403 @@ describe('MembersPage drawer and edit jump', () => {
       row({ name: 'beta', slug: 'beta', memory_store: 'triage' }),
     ])
     fireEvent.click(await screen.findByText('oncall'))
-    const drawer = await screen.findByTestId('member-drawer')
-    expect(drawer).toHaveTextContent(/from the triage store/i)
-    expect(drawer).not.toHaveTextContent(/share one memory/i)
+    const summary = await screen.findByTestId('member-crew-summary')
+    expect(summary).toHaveTextContent(/from the triage store/i)
+    expect(summary).not.toHaveTextContent(/share one memory/i)
   })
 
-  it('toggles the drawer via the Details button', async () => {
+  it('docks the chat SidePanel beside the thread on a wide window: permanent, no Details toggle, no close control', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    expect(await screen.findByTestId('member-drawer')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /details/i }))
-    // AnimatePresence keeps the drawer mounted for the exit tween — wait for
-    // the removal instead of asserting synchronously.
-    await waitFor(() => expect(screen.queryByTestId('member-drawer')).toBeNull())
-  })
-
-  it('the drawer is hosted in the shared DetailPanel: drag-resize handle present, header close works', async () => {
-    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
-    fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('member-drawer')
-    // DetailPanel's resize splitter — the affordance the hand-rolled aside
-    // never had. Its presence pins that the drawer went through the shared
+    expect(await screen.findByTestId('member-crew-summary')).toBeInTheDocument()
+    // The panel is part of the page while a member is open, like the roster:
+    // nothing in the header opens or closes it, and its strip renders no
+    // close control (the chat page's panel shows one because ChatPage passes
+    // onClose; this page does not).
+    expect(screen.queryByTestId('member-panel-toggle')).toBeNull()
+    expect(screen.queryByRole('button', { name: /close panel/i })).toBeNull()
+    // The strip is the SidePanel's: its own resize splitter (the same shared
+    // handle the chat page drags) pins that the page mounted the real
     // component rather than a lookalike.
     expect(screen.getByRole('separator', { name: /resize/i })).toBeInTheDocument()
-    // DetailPanel's own header close button (replaces the old mobile-only X).
-    fireEvent.click(screen.getByRole('button', { name: /close panel/i }))
-    await waitFor(() => expect(screen.queryByTestId('member-drawer')).toBeNull())
   })
 
-  it('the edit affordance lives in the drawer only and navigates to this member\'s editor in the crew manager', async () => {
+  it('the Crew summary is the FIRST tab, selected by default, and has no close control', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    // Edit is a rare secondary action: it must NOT be a header-level peer of
-    // Details (issue #9425 placed it INSIDE the title row instead, revealed
-    // on hover — see the "member edit entry" block below).
+    await screen.findByTestId('member-crew-summary')
+    const tabs = screen.getAllByRole('tab')
+    // Ahead of the pinned Changes / Artifacts / Files block, not merely present.
+    expect(tabs[0]).toBe(screen.getByTestId('side-panel-leading-tab'))
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
+    expect(tabs[0]).toHaveAccessibleName(/crew summary/i)
+    // Structure, not label: no nested button means no close (or transfer) control.
+    expect(tabs[0].querySelectorAll('button')).toHaveLength(0)
+    // The chat page's own Summary (session summary) is a different tab and
+    // must not be what the strip opened on — the ids are distinct by contract.
+    expect(CREW_SUMMARY_TAB_ID).not.toBe('summary')
+  })
+
+  it('selecting another tab swaps the body; the Crew summary comes back on its chip', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    // The pinned Artifacts view is always on the strip (SidePanel contract).
+    fireEvent.click(screen.getByRole('tab', { name: 'Artifacts' }))
+    await waitFor(() => expect(screen.queryByTestId('member-crew-summary')).toBeNull())
+    fireEvent.click(screen.getByTestId('side-panel-leading-tab'))
+    expect(await screen.findByTestId('member-crew-summary')).toBeInTheDocument()
+  })
+
+  it('the + menu offers the chat panel\'s per-chat Terminal on a member DM (a member thread is a chat slot)', async () => {
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    // The WS slots frame has delivered the member slot's record (its project
+    // is the shell's cwd) — the condition Terminal waits for.
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0, project: '/srv/oncall' }] as never))
+    })
+    // Radix opens the dropdown on pointerdown (mouse), not click.
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: 'Side Chat' })).toBeInTheDocument()
+    // And the leading tab is never offered there: it is permanent, not a view.
+    expect(within(menu).queryByRole('menuitem', { name: /crew summary/i })).toBeNull()
+  })
+
+  it('withholds the views this page cannot feed: no Changes chip, no Pins / Issues / Links / Summary rows', async () => {
+    // The set itself is the contract the design lanes asked for: every view
+    // fed by ChatPage-owned transcript indexes, plus the chat page's session
+    // Summary (an indistinguishable sibling of the Crew summary chip).
+    expect([...MEMBERS_UNFED_VIEWS].sort()).toEqual(['changes', 'issues', 'links', 'pins', 'summary'])
+    // Nothing else is withheld once the thread is confirmed: Side chat is
+    // offered (its draft persists in the chat-core store, and the selection
+    // toolbar's Ask lands in it — MembersPage.sideChat.test.tsx).
+    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual([...MEMBERS_UNFED_VIEWS].sort())
+    // While the thread is unconfirmed EVERY classified view is withheld, plus
+    // Terminal and app tabs — derived from the classification, so a new
+    // ViewKind lands in this set without anyone listing it.
+    expect([...MEMBERS_UNCONFIRMED_WITHHELD_VIEWS].sort()).toEqual(
+      [...(Object.keys(VIEW_DATA_SOURCE) as string[]), 'terminal', 'app'].sort(),
+    )
+    expect(MEMBERS_UNCONFIRMED_WITHHELD_VIEWS).toEqual(expect.arrayContaining([...MEMBERS_WITHHELD_VIEWS]))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    // Pinned block: Crew summary, Artifacts, Files — and NOT Changes.
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual([
+      'Crew summary', 'Artifacts', 'Files',
+    ])
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    const menu = await screen.findByRole('menu')
+    for (const name of ['Pins', 'Issues', 'Links', 'Summary']) {
+      expect(within(menu).queryByRole('menuitem', { name })).toBeNull()
+    }
+  })
+
+  it('Terminal waits for the slot RECORD, not just the confirmed key: no shell before the WS slots frame carries its cwd', async () => {
+    // The thread POST answers before the `slots` frame that carries the slot's
+    // project. A shell opened in that window would spawn with no cwd (the
+    // backend's HOME fallback) and never re-root, so Terminal is withheld until
+    // the record is present; the other slot-bound views are already offered.
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    let menu = await screen.findByRole('menu')
+    expect(within(menu).queryByRole('menuitem', { name: 'Terminal' })).toBeNull()
+    expect(within(menu).getByRole('menuitem', { name: 'Side Chat' })).toBeInTheDocument()
+    fireEvent.keyDown(menu, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    // The frame lands: Terminal is offered.
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
+    })
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument()
+  })
+
+  it('a slot record left over from before a reconnect does not root the panel: Terminal waits for the fresh snapshot', async () => {
+    // A reconnect drops `slotsLoaded` but keeps the pre-disconnect records
+    // until the fresh frame lands. A record present in that window may name
+    // the project the key had BEFORE a restart, so a shell spawned (or a file
+    // saved) against it would land in the wrong workspace. The record must
+    // come from the current snapshot: withheld while unloaded, offered once
+    // the frame arrives — even when it is byte-identical.
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0, project: '/srv/old' }] as never))
+    })
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    let menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument()
+    fireEvent.keyDown(menu, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    // Reconnect: the stale record survives in the store, but is no longer a
+    // current snapshot.
+    act(() => { store.dispatch(sseConnected()) })
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    menu = await screen.findByRole('menu')
+    expect(within(menu).queryByRole('menuitem', { name: 'Terminal' })).toBeNull()
+    expect(within(menu).getByRole('menuitem', { name: 'Side Chat' })).toBeInTheDocument()
+    fireEvent.keyDown(menu, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    // The fresh frame lands: bound again, to the record it carries.
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0, project: '/srv/new' }] as never))
+    })
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument()
+  })
+
+  it('a re-open with a cached key keeps the panel UNBOUND while its POST is in flight, then rebinds on confirmation', async () => {
+    // First open confirms `member-oncall`. The repair re-click re-POSTs; until
+    // that answer lands the cached key is only the thread column's render
+    // hint — the panel offers no slot-bound view, so nothing can be dispatched
+    // against a key the endpoint may be about to refuse.
+    let resolveRepost: (v: unknown) => void = () => {}
+    const pending = new Promise((resolve) => { resolveRepost = resolve })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    await screen.findByRole('tab', { name: 'Artifacts' })
+    ;(api.memberThread as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
+    fireEvent.click(await rosterRow('oncall'))
+    // In flight: thread still renders the cached key, panel is summary-only.
+    await waitFor(() =>
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+    )
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    // Confirmed: the slot-bound views return.
+    act(() => { resolveRepost({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: false }) })
+    await screen.findByRole('tab', { name: 'Artifacts' })
+  })
+
+  it('a thread re-POST withholds the Browser view but never re-keys its body: the native view stays mounted on the same slot', async () => {
+    // A Browser tab's body is a native WebContentsView keyed by the slot the
+    // panel hands it. The revalidation window (a routine WS reconnect
+    // re-POSTs) must HIDE slot-bound views, not re-key them: a body keyed to
+    // '' and back would close its WebContentsView and lose browsing history
+    // and form state. So the panel's `slot` is the strip's bucket key (the
+    // last confirmed key), steady through the window; only the strip and the
+    // + menu (hiddenViews) react to the in-flight state.
+    let resolveRepost: (v: unknown) => void = () => {}
+    const pending = new Promise((resolve) => { resolveRepost = resolve })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    await screen.findByRole('tab', { name: 'Artifacts' })
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    const menu = await screen.findByRole('menu')
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Browser' }))
+    const body = await screen.findByTestId('web-preview-stub')
+    expect(body).toHaveAttribute('data-session-key', 'member-oncall')
+    // Re-open with the POST hanging: the Browser CHIP is withheld…
+    ;(api.memberThread as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() =>
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+    )
+    // …while its BODY is the same mounted element, on the same key — not
+    // unmounted, not re-keyed to the empty slot.
+    expect(screen.getByTestId('web-preview-stub')).toBe(body)
+    expect(body).toHaveAttribute('data-session-key', 'member-oncall')
+    act(() => { resolveRepost({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: false }) })
+    await screen.findByRole('tab', { name: 'Browser' })
+    expect(screen.getByTestId('web-preview-stub')).toBe(body)
+    expect(body).toHaveAttribute('data-session-key', 'member-oncall')
+  })
+
+  it('a stored tab focus survives the re-open round-trip: Artifacts stays focused, not reset to Crew summary', async () => {
+    // While the re-open POST is in flight every slot view is withheld and the
+    // strip falls back to the Crew summary — but that fallback must not be
+    // written into the bucket, or every switch would wipe the user's focus.
+    let resolveRepost: (v: unknown) => void = () => {}
+    const pending = new Promise((resolve) => { resolveRepost = resolve })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    fireEvent.click(screen.getByRole('tab', { name: 'Artifacts' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Artifacts' })).toHaveAttribute('aria-selected', 'true'))
+    ;(api.memberThread as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
+    fireEvent.click(await rosterRow('oncall'))
+    // In flight: summary shown as the fallback (and its body loads).
+    expect(await screen.findByTestId('member-crew-summary')).toBeInTheDocument()
+    act(() => { resolveRepost({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: false }) })
+    // Confirmed: the stored focus is back on Artifacts, untouched by the fallback.
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Artifacts' })).toHaveAttribute('aria-selected', 'true'))
+    expect(screen.queryByTestId('member-crew-summary')).toBeNull()
+  })
+
+  it('a STALE success cannot rebind a key the latest refusal unbound: only the newest POST writes', async () => {
+    // Two re-clicks on a slow link: the first POST hangs, the second answers
+    // 409 (the key is foreign now) and unbinds the panel. When the first
+    // finally resolves with the old key it is dropped whole — the panel stays
+    // unbound rather than silently pointing at the refused session. The thread
+    // column keeps the cached conversation up under its reconnect notice (the
+    // page's own failed-repair contract); it is the PANEL that must not bind.
+    let resolveFirst: (v: unknown) => void = () => {}
+    const first = new Promise((resolve) => { resolveFirst = resolve })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    ;(api.memberThread as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(first)
+      .mockRejectedValueOnce(new Error('409'))
+    fireEvent.click(await rosterRow('oncall'))
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
+    await waitFor(() =>
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+    )
+    act(() => { resolveFirst({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: false }) })
+    // Still unbound after the stale answer: the refusal stands, no slot-bound views.
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    expect(screen.getByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary'])
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+  })
+
+  it('binds the panel to the POST-confirmed slot only: a rejected thread leaves every slot-bound view withheld', async () => {
+    // The roster binding says `member-oncall`, but the thread endpoint refuses
+    // (a stale binding whose canonical key an ordinary slot now occupies). The
+    // panel must not aim Side chat / Artifacts / Files at that occupant: with no
+    // confirmed slot, only the slot-free Crew summary is on the strip and the
+    // + menu offers nothing slot-bound.
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { thread: new Error('409') })
+    await screen.findByText(/Could not open this member's conversation/i)
+    expect(await screen.findByTestId('member-crew-summary')).toBeInTheDocument()
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary'])
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    const menu = await screen.findByRole('menu')
+    for (const name of ['Side Chat', 'Browser', 'Artifacts', 'Files', 'Subagents', 'Workflows', 'Git', 'Terminal']) {
+      expect(within(menu).queryByRole('menuitem', { name })).toBeNull()
+    }
+    // Terminal too: while unconfirmed the strip lives in the shared no-slot
+    // bucket, and a PTY opened there would be orphaned when the confirmation
+    // re-keys the strip to the member's slot.
+  })
+
+  it('a refused re-open UNBINDS the panel while the cached thread stays up under the reconnect notice', async () => {
+    // First open confirms `member-oncall`; the repair re-click then gets a 409
+    // (the canonical key now belongs to a session that is not this member's).
+    // Keeping the cached key for the panel would leave its views aimed at that
+    // foreign session, so the refusal clears the PANEL binding. The thread
+    // column is the other contract: it keeps the conversation the user is
+    // looking at and says the reconnect failed, not the open.
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    expect(screen.getByRole('tab', { name: 'Artifacts' })).toBeInTheDocument()
+    ;(api.memberThread as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('409'))
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
+    await waitFor(() =>
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+    )
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+  })
+
+  it('an overlay opened on a narrow window does not lie in wait: docking resets it, so re-narrowing finds it closed', async () => {
+    setWindowWidth(NARROW_WINDOW)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('chat-pane-stub')
+    fireEvent.click(screen.getByTestId('member-panel-toggle'))
+    expect(await screen.findByTestId('member-crew-summary')).toBeInTheDocument()
+    // Widen: the panel docks (no toggle, no close control)…
+    setWindowWidth(WIDE_WINDOW)
+    fireEvent(window, new Event('resize'))
+    await waitFor(() => expect(screen.queryByTestId('member-panel-toggle')).toBeNull())
+    expect(screen.queryByRole('button', { name: /close panel/i })).toBeNull()
+    // …and narrowing again finds the overlay CLOSED, not popped back over the thread.
+    setWindowWidth(NARROW_WINDOW)
+    fireEvent(window, new Event('resize'))
+    await waitFor(() => expect(screen.getByTestId('member-panel-toggle')).toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByTestId('member-crew-summary')).toBeNull())
+  })
+
+  it('narrow window: the panel becomes an overlay the Details button opens and its own close control dismisses', async () => {
+    setWindowWidth(NARROW_WINDOW)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('chat-pane-stub')
+    // Closed by default: an always-open overlay would cover the thread.
+    expect(screen.queryByTestId('member-crew-summary')).toBeNull()
+    fireEvent.click(screen.getByTestId('member-panel-toggle'))
+    expect(await screen.findByTestId('member-crew-summary')).toBeInTheDocument()
+    // An overlay MUST be dismissable, so here the strip does render the close
+    // control the docked column omits.
+    fireEvent.click(screen.getByRole('button', { name: /close panel/i }))
+    // AnimatePresence keeps the overlay mounted for the exit tween — wait for
+    // the removal instead of asserting synchronously.
+    await waitFor(() => expect(screen.queryByTestId('member-crew-summary')).toBeNull())
+  })
+
+  it('the overlay is a full-bleed scrim: clicking the dimmed chat closes it, clicking inside the panel does not', async () => {
+    setWindowWidth(NARROW_WINDOW)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('chat-pane-stub')
+    fireEvent.click(screen.getByTestId('member-panel-toggle'))
+    const overlay = await screen.findByTestId('member-side-panel')
+    expect(overlay).toHaveAttribute('data-placement', 'overlay')
+    // Inside the panel: no dismissal.
+    fireEvent.click(screen.getByTestId('member-crew-summary'))
+    expect(screen.getByTestId('member-crew-summary')).toBeInTheDocument()
+    // On the scrim itself: dismissed.
+    fireEvent.click(overlay)
+    await waitFor(() => expect(screen.queryByTestId('member-crew-summary')).toBeNull())
+  })
+
+  it('panelSitsBeside: the docking boundary is the shell reserve + roster + gaps + panel minimum', () => {
+    // 560 (rail + chat minimum) + 320 (panel min) + 264 (roster) + 24 (gaps) = 1168.
+    expect(panelSitsBeside({ winW: 1168, rosterW: 264, isMobile: false })).toBe(true)
+    expect(panelSitsBeside({ winW: 1167, rosterW: 264, isMobile: false })).toBe(false)
+    // A wider roster needs a wider window; mobile never docks.
+    expect(panelSitsBeside({ winW: 1168, rosterW: 300, isMobile: false })).toBe(false)
+    expect(panelSitsBeside({ winW: 2000, rosterW: 264, isMobile: true })).toBe(false)
+  })
+
+  it('the edit affordance lives in the Crew summary tab only and navigates to this member\'s editor in the crew manager', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    // Edit is a rare secondary action: it must NOT be a header-level peer.
     expect(screen.queryByTestId('member-edit-jump')).toBeNull()
     // Mutation check: the assertion is on the DESTINATION (explicit ?tab=crews
     // beats CapabilitiesPage's remembered last tab, and ?crew=<name> opens
@@ -492,7 +907,7 @@ describe('MembersPage drawer and edit jump', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
   })
 
-  it('the drawer renders the recorded activity timeline and honest counters derived from it', async () => {
+  it('the Crew summary renders the recorded activity timeline and honest counters derived from it', async () => {
     const now = Date.now() / 1000
     vi.mocked(api.memberActivity).mockResolvedValue({
       slug: 'oncall',
@@ -520,7 +935,7 @@ describe('MembersPage drawer and edit jump', () => {
     expect(stats).toHaveTextContent('2')
   })
 
-  it('the drawer lists wake sources filtered to the member, via the shared predicates', async () => {
+  it('the Crew summary lists wake sources filtered to the member, via the shared predicates', async () => {
     vi.mocked(api.crons).mockResolvedValue({
       jobs: [
         { id: 'j1', name: 'nightly-triage', message: '', enabled: true, schedule: '0 2 * * *', last_status: '', agent: 'oncall' },
@@ -701,7 +1116,7 @@ describe('MembersPage unread drain', () => {
   })
 })
 
-describe('MembersPage drawer — driving sessions', () => {
+describe('MembersPage Crew summary — driving sessions', () => {
   // The member operating model: the DM thread dispatches work into worker
   // sessions it opens (session_create) and steers (session_send). The backend
   // fences a member caller to the slots it created, so `created_by` on the
@@ -724,7 +1139,7 @@ describe('MembersPage drawer — driving sessions', () => {
       utils.store.dispatch(sseSlots(liveSlots as never))
     })
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('member-drawer')
+    await screen.findByTestId('member-crew-summary')
     return utils
   }
 
@@ -733,7 +1148,7 @@ describe('MembersPage drawer — driving sessions', () => {
     // ambiguous (cold open / WS reconnect) and must not read as a verdict.
     const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('member-drawer')
+    await screen.findByTestId('member-crew-summary')
     expect(screen.getByTestId('member-driving-loading')).toBeInTheDocument()
     expect(screen.queryByTestId('member-driving-empty')).toBeNull()
     // The first real snapshot (no worker of ours in it) settles the verdict.
@@ -867,7 +1282,7 @@ describe('MembersPage drawer — driving sessions', () => {
     expect(running).toHaveAttribute('title', expect.stringMatching(/working/i))
   })
 
-  it('the fold is per member: expanding one member does not leak into the next drawer opened', async () => {
+  it('the fold is per member: expanding one member does not leak into the next summary opened', async () => {
     const utils = await renderPage([
       row({ bound: true, slot_key: 'member-oncall' }),
       row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
@@ -886,7 +1301,7 @@ describe('MembersPage drawer — driving sessions', () => {
       )
     })
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('member-drawer')
+    await screen.findByTestId('member-crew-summary')
     fireEvent.click(screen.getByTestId('member-driving-toggle'))
     expect(screen.getAllByTestId('member-driving-row')).toHaveLength(6)
     fireEvent.click(await rosterRow('research'))
@@ -921,7 +1336,7 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, ...registry })
     const utils = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('member-drawer')
+    await screen.findByTestId('member-crew-summary')
     await waitFor(() => expect(screen.queryByTestId('member-patrol-loading')).toBeNull())
     return utils
   }
@@ -1007,7 +1422,7 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('member-drawer')
+    await screen.findByTestId('member-crew-summary')
     // The shared ErrorNotice (structured context + agent hand-off), not a
     // hand-rolled alert box.
     const notice = await screen.findByTestId('member-patrol-error')
@@ -1019,7 +1434,7 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     expect(screen.getByTestId('member-roster-patrol-error')).toHaveAttribute('role', 'alert')
   })
 
-  it('a failed registry read is announced on the roster even with no drawer open', async () => {
+  it('a failed registry read is announced on the roster even with no summary open', async () => {
     ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
@@ -1119,12 +1534,15 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(btn).toHaveAccessibleName('Edit member')
     expect(btn).toHaveAttribute('title', 'Edit member')
     expect(btn.querySelector('svg')).not.toBeNull()
-    // It sits INSIDE the title row, after the name — not a header-level peer
-    // of the drawer toggle.
+    // It sits INSIDE the title row, right AFTER the name — never a
+    // header-level peer (docked wide, the header carries no panel control at
+    // all; the panel is a permanent column).
     const titleRow = screen.getByTestId('member-title-row')
     expect(titleRow).toContainElement(btn)
     expect(titleRow.textContent).toContain('oncall')
-    expect(titleRow.compareDocumentPosition(screen.getByTestId('member-drawer-toggle')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const nameEl = within(titleRow).getByText('oncall')
+    expect(nameEl.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByTestId('member-panel-toggle')).toBeNull()
     fireEvent.click(btn)
     // Mutation check on the DESTINATION: this page never writes — the crew
     // manager opens THIS crew's editor. No `&avatar=1`: the builder is one
@@ -1141,8 +1559,8 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(cls).toContain('opacity-0')
     expect(cls).toContain('group-hover/title:opacity-100')
     expect(cls).toContain('focus-visible:opacity-100')
-    // Reveal is scoped to the TITLE row, so hovering the drawer toggle to the
-    // right does not summon it.
+    // Reveal is scoped to the TITLE row, so hovering the panel toggle (overlay
+    // mode) to the right does not summon it.
     expect(screen.getByTestId('member-title-row').className).toContain('group/title')
     // Transition present, deferring to prefers-reduced-motion.
     expect(cls).toContain('transition-opacity')
@@ -1153,12 +1571,12 @@ describe('MembersPage member edit entry (issue #9425)', () => {
 
   it('the chat surface\'s avatar is just an avatar: no scrim, no badge, no chip, no text "Edit avatar" button', async () => {
     // The #9116 shapes the user rejected: the face wrapped as an "Edit avatar"
-    // button, a full-width "Edit avatar" text button in the drawer and an
+    // button, a full-width "Edit avatar" text button in the summary and an
     // "Edit this avatar" chip beside the header face. The default-face
     // fixture (`{}`) is exactly the one that used to summon the chip.
     await renderPage([row({ bound: true, slot_key: 'member-oncall', avatar: {} })])
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('member-drawer')
+    await screen.findByTestId('member-crew-summary')
     expect(screen.queryByTestId('member-avatar-button')).toBeNull()
     expect(screen.queryByTestId('avatar-edit-scrim')).toBeNull()
     expect(screen.queryByTestId('avatar-edit-badge')).toBeNull()
@@ -1179,10 +1597,10 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(header.className).toMatch(/\bpy-2\b/)
   })
 
-  it('the drawer\'s one text route agrees with the pencil on the destination', async () => {
+  it('the Crew summary\'s one text route agrees with the pencil on the destination', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('member-drawer')
+    await screen.findByTestId('member-crew-summary')
     fireEvent.click(screen.getByTestId('member-edit-in-manager'))
     expect(navigateSpy).toHaveBeenCalledWith(EDIT_LINK)
   })
@@ -1501,13 +1919,12 @@ describe('MembersPage default member, memory and URL', () => {
   describe('below md', () => {
     // happy-dom ships matchMedia on the prototype; the setup polyfill (if it
     // ran) puts one on the instance. Save whatever own descriptor exists and
-    // put it back, so the override never outlives its case: the page's drawer
-    // initializer calls matchMedia unguarded, and useIsMobile caches on the
-    // function's identity.
+    // put it back, so the override never outlives its case: useIsMobile caches
+    // on the function's identity.
     const ownDescriptor = Object.getOwnPropertyDescriptor(window, 'matchMedia')
     beforeEach(() => {
-      // Narrow viewport: useIsMobile's max-width query matches, the page's own
-      // min-width drawer gate does not.
+      // Narrow viewport: useIsMobile's max-width query matches, so the side
+      // panel is an overlay (panelSitsBeside is false on mobile).
       window.matchMedia = vi.fn().mockImplementation((q: string) => ({
         matches: /max-width/.test(q),
         media: q,

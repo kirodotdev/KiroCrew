@@ -14235,6 +14235,7 @@
     "membersPage": {
       "agent_template": "Agent-Vorlage",
       "configuration": "Konfiguration",
+      "crew_summary": "Crew-Übersicht",
       "details": "Details",
       "edit_in_crew_manager": "In der Crew-Verwaltung bearbeiten",
       "edit_member": "Mitglied bearbeiten",
@@ -14295,7 +14296,6 @@
       "patrol_last_wake_ago": "Letztes Aufwecken {{when}}",
       "patrol_none": "Keine Patrouille geplant.",
       "patrol_error": "Patrouillenstatus dieses Mitglieds konnte nicht geladen werden.",
-      "side_chat_draft_waiting": "Im Seitenchat dieses Mitglieds wartet eine nicht gesendete Frage",
       "patrol_error_roster": "Patrouillenstatus für die Liste konnte nicht geladen werden.",
       "patrol_badge": "Auf Patrouille · {{cycle}}",
       "patrol_next_in": "Fällig in {{time}}",

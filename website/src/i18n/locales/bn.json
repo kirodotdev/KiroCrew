@@ -14236,6 +14236,7 @@
     "membersPage": {
       "agent_template": "এজেন্ট টেমপ্লেট",
       "configuration": "কনফিগারেশন",
+      "crew_summary": "সদস্যের সারসংক্ষেপ",
       "details": "বিস্তারিত",
       "edit_in_crew_manager": "ক্রু ম্যানেজারে সম্পাদনা করুন",
       "edit_member": "সদস্য সম্পাদনা করুন",
@@ -14296,7 +14297,6 @@
       "patrol_last_wake_ago": "সর্বশেষ ওয়েক {{when}}",
       "patrol_none": "কোনো পেট্রোল নির্ধারিত নেই।",
       "patrol_error": "এই সদস্যের পেট্রোল অবস্থা লোড করা যায়নি।",
-      "side_chat_draft_waiting": "এই সদস্যের সাইড চ্যাটে একটি না-পাঠানো প্রশ্ন অপেক্ষা করছে",
       "patrol_error_roster": "তালিকার পেট্রোল অবস্থা লোড করা যায়নি।",
       "patrol_badge": "পেট্রোলে · {{cycle}}",
       "patrol_next_in": "{{time}} পরে",

@@ -14051,6 +14051,7 @@
     "membersPage": {
       "agent_template": "エージェントテンプレート",
       "configuration": "設定",
+      "crew_summary": "メンバー概要",
       "details": "詳細",
       "edit_in_crew_manager": "クルー管理ページで編集",
       "edit_member": "メンバーを編集",
@@ -14110,7 +14111,6 @@
       "patrol_last_wake_ago": "最後の起動 {{when}}",
       "patrol_none": "パトロールは予定されていません。",
       "patrol_error": "このメンバーのパトロール状態を読み込めませんでした。",
-      "side_chat_draft_waiting": "このメンバーのサイドチャットに未送信の質問があります",
       "patrol_error_roster": "メンバー一覧のパトロール状態を読み込めませんでした。",
       "patrol_badge": "パトロール中 · {{cycle}}",
       "patrol_next_in": "あと{{time}}",

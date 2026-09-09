@@ -1,13 +1,16 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
-import { writeSideChatDraft } from '../../chat-core/composer/sideChatDrafts'
+import { __resetPanelTabs } from '../../hooks/usePanelTabs'
 
-/* The Members page has no activity panel — the chat page's home for the Side
- * Chat — so the selection toolbar's "Ask" on a member thread needs a surface
- * of its own: the detail drawer, switched to a Side Chat view bound to the
- * member's slot. These tests pin that wiring end to end from the page's side:
- * the pane is handed an opener, the opener puts the member's Side Chat in the
- * drawer, and the drawer's Details action / close find their way back. */
+/* The selection toolbar's "Ask about this" on a member thread lands in the
+ * page's side panel: the chat page's tabbed SidePanel is docked here, and its
+ * Side tab is the Side Chat's home, exactly as on the chat page. These tests
+ * pin that wiring end to end from the page's side: the pane is handed an
+ * opener, the opener focuses the Side tab for the MEMBER slot (revealing the
+ * overlay on a narrow window), a member switch swaps the whole strip so a Side
+ * Chat stays with the member it was asked about, and an unconfirmed thread key
+ * gets no Side Chat at all. */
 
 vi.mock('../../api/client', () => ({
   api: {
@@ -16,26 +19,47 @@ vi.mock('../../api/client', () => ({
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
     webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
-    // Same defaults as MembersPage.test.tsx: the drawer's wake block reads
-    // the default crew, the auto-patrol block reads the loop registry.
     defaultAgent: vi.fn(() => Promise.resolve({ default_agent: '' })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
   },
 }))
 
+/* The panel's bodies: everything but the Side view renders nothing; the Side
+ * view echoes the slot it is bound to, which is the assertion that matters. */
+vi.mock('../chat/ActivityViewer', () => ({
+  default: ({ view, slot }: { view: string; slot: string }) =>
+    view === 'side' ? <div data-testid="side-chat-stub">{slot}</div> : null,
+}))
+vi.mock('../chat/FilesHomePanel', () => ({ default: () => null }))
+vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
+vi.mock('../../components/DiffPanel', () => ({ default: () => null }))
+vi.mock('../../components/MarkdownPanel', () => ({ default: () => null }))
+vi.mock('../../components/ArtifactPanel', () => ({ default: () => null }))
+vi.mock('../../components/WebPreviewPanel', () => ({ default: () => null }))
+vi.mock('../../components/McpAppFrame', () => ({ default: () => null }))
+vi.mock('../../components/CliPanel', () => ({
+  default: () => null,
+  disposeTerminalSession: vi.fn(),
+  useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
+}))
+vi.mock('../../utils/terminalRegistry', () => ({
+  useTerminalEnabled: () => true,
+  useTerminalTitle: () => 'Terminal',
+}))
+vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
+
 /* The stub exposes the host-provided opener as a button, so a test can press
  * "Ask" the way the pane's selection toolbar would (the toolbar itself is the
- * pane's business — see ChatPane.selectionActions.test.tsx). */
+ * pane's business — see ChatPane.selectionActions.test.tsx), and records the
+ * opener's verdict, which is what decides whether the seam seeds the quote. */
+const verdicts: unknown[] = []
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, openSideChat }: { slotKey: string; openSideChat?: (slot: string) => void }) => (
+  default: ({ slotKey, openSideChat }: { slotKey: string; openSideChat?: (slot: string) => unknown }) => (
     <div data-testid="chat-pane-stub">
       {slotKey}
-      {openSideChat && <button onClick={() => openSideChat(slotKey)}>stub-ask</button>}
+      {openSideChat && <button onClick={() => { verdicts.push(openSideChat(slotKey)) }}>stub-ask</button>}
     </div>
   ),
-}))
-vi.mock('../chat/SideChat', () => ({
-  default: ({ slot }: { slot: string }) => <div data-testid="side-chat-stub">{slot}</div>,
 }))
 
 const navigateSpy = vi.fn()
@@ -47,6 +71,12 @@ vi.mock('react-router-dom', async (importOriginal) => {
 import { api } from '../../api/client'
 import MembersPage from './MembersPage'
 
+const WIDE_WINDOW = 1440
+const NARROW_WINDOW = 1000
+function setWindowWidth(px: number) {
+  Object.defineProperty(window, 'innerWidth', { value: px, configurable: true, writable: true })
+}
+
 function row(overrides: Record<string, unknown> = {}) {
   return {
     name: 'oncall', slug: 'oncall', bound: false, slot_key: '', running: false,
@@ -55,82 +85,72 @@ function row(overrides: Record<string, unknown> = {}) {
   }
 }
 
+/** Tab names as the strip exposes them: pinned chips carry an aria-label,
+ *  dynamic tabs (the Side tab) render their title as text -- `name` reads both. */
+const tabLabels = () => screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label') ?? t.textContent?.trim() ?? '')
+const sideTab = () => screen.queryByRole('tab', { name: 'Side Chat' })
+
 async function openThread() {
   ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: [row()], default_agent: 'kirocrew' })
   ;(api.memberThread as ReturnType<typeof vi.fn>).mockResolvedValue({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: true })
-  // Wide viewport: the drawer starts open on details, as it does on desktop.
-  Object.defineProperty(window, 'matchMedia', {
-    writable: true,
-    value: vi.fn().mockImplementation((q: string) => ({ matches: q.includes('min-width'), addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })),
-  })
   renderWithProviders(<MembersPage />)
   fireEvent.click(await screen.findByText('oncall'))
   await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall'))
 }
 
-beforeEach(() => { vi.clearAllMocks() })
+beforeEach(() => {
+  vi.clearAllMocks()
+  verdicts.length = 0
+  localStorage.clear()
+  __resetPanelTabs()
+  setWindowWidth(WIDE_WINDOW)
+})
 
-describe('MembersPage Side Chat drawer (selection Ask)', () => {
+describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
   it('hands the thread pane a Side Chat opener — the pane offers Ask only because of it', async () => {
     await openThread()
     expect(screen.getByRole('button', { name: 'stub-ask' })).toBeInTheDocument()
   })
 
-  it('Ask swaps the drawer to the Side Chat for the MEMBER slot, and Details brings the details back', async () => {
+  it('Ask opens the Side tab in the docked panel, bound to the MEMBER slot, and reports the Ask as done', async () => {
     await openThread()
-    expect(screen.getByTestId('member-drawer')).toBeInTheDocument()
-    expect(screen.queryByTestId('member-side-chat')).toBeNull()
+    await screen.findByTestId('member-crew-summary')
+    expect(tabLabels()).not.toContain('Side Chat')
 
     act(() => { fireEvent.click(screen.getByRole('button', { name: 'stub-ask' })) })
-    const side = await screen.findByTestId('member-side-chat')
+    // `true`: the seam may seed the selection into this slot's Side Chat draft.
+    expect(verdicts).toEqual([true])
+    await waitFor(() => expect(sideTab()).toBeInTheDocument())
+    expect(sideTab()).toHaveAttribute('aria-selected', 'true')
     // Bound to the member's own thread slot — the context the question is about.
-    expect(side.querySelector('[data-testid="side-chat-stub"]')).toHaveTextContent('member-oncall')
-    // The views crossfade (mode="wait"), so the outgoing details leave a beat later.
-    await waitFor(() => expect(screen.queryByTestId('member-drawer')).toBeNull())
-    // The header names the view; the avatar keeps the identity.
-    expect(screen.getByText('Side Chat')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByTestId('member-drawer-details'))
-    await waitFor(() => expect(screen.getByTestId('member-drawer')).toBeInTheDocument())
-    await waitFor(() => expect(screen.queryByTestId('member-side-chat')).toBeNull())
+    expect(await screen.findByTestId('side-chat-stub')).toHaveTextContent('member-oncall')
   })
 
-  it('the details view offers a way back into the Side Chat only while the member holds an unsent draft', async () => {
+  it('Side Chat is offered from the + menu too: its draft lives in the chat-core store, so the panel unmounting the body loses nothing', async () => {
     await openThread()
-    // No draft → no way in except the toolbar's Ask.
-    expect(screen.queryByTestId('member-drawer-side-chat')).toBeNull()
-    // A draft appears (typed in the Side Chat, then the user went to Details).
-    act(() => { writeSideChatDraft('member-oncall', 'half a question') })
-    const back = await screen.findByTestId('member-drawer-side-chat')
-    expect(back).toHaveTextContent('Side Chat')
-    // It appears out of nowhere for a user who left mid-question, so it says
-    // why it is there.
-    expect(back).toHaveAttribute('title', expect.stringContaining('unsent question'))
-    expect(back).toHaveAccessibleDescription(/unsent question/)
-    fireEvent.click(back)
-    await screen.findByTestId('member-side-chat')
-    // Draft cleared (sent) → the entry disappears again.
-    fireEvent.click(screen.getByTestId('member-drawer-details'))
-    await waitFor(() => expect(screen.getByTestId('member-drawer')).toBeInTheDocument())
-    act(() => { writeSideChatDraft('member-oncall', '') })
-    await waitFor(() => expect(screen.queryByTestId('member-drawer-side-chat')).toBeNull())
+    await screen.findByTestId('member-crew-summary')
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'Open side panel tab' }),
+      { button: 0, ctrlKey: false, pointerType: 'mouse' },
+    )
+    await screen.findByRole('menu')
+    expect(screen.getByRole('menuitem', { name: 'Side Chat' })).toBeInTheDocument()
   })
 
-  it('closing the drawer forgets the Side Chat view: the Details toggle reopens details', async () => {
+  it('narrow window: Ask reveals the overlay with the Side tab shown', async () => {
+    setWindowWidth(NARROW_WINDOW)
     await openThread()
+    // Overlay closed by default — the panel is not on screen.
+    expect(screen.queryByTestId('member-crew-summary')).toBeNull()
     act(() => { fireEvent.click(screen.getByRole('button', { name: 'stub-ask' })) })
-    await screen.findByTestId('member-side-chat')
-
-    // Header toggle closes the open drawer …
-    fireEvent.click(screen.getByTestId('member-drawer-toggle'))
-    await waitFor(() => expect(screen.queryByTestId('member-side-chat')).toBeNull())
-    // … and reopens it on details, not on the dismissed Side Chat.
-    fireEvent.click(screen.getByTestId('member-drawer-toggle'))
-    await waitFor(() => expect(screen.getByTestId('member-drawer')).toBeInTheDocument())
-    await waitFor(() => expect(screen.queryByTestId('member-side-chat')).toBeNull())
+    expect(verdicts).toEqual([true])
+    const overlay = await screen.findByTestId('member-side-panel')
+    expect(overlay).toHaveAttribute('data-placement', 'overlay')
+    await waitFor(() => expect(sideTab()).toHaveAttribute('aria-selected', 'true'))
+    expect(await screen.findByTestId('side-chat-stub')).toHaveTextContent('member-oncall')
   })
 
-  it('switching members returns the drawer to details — a Side Chat is about the member it was asked on', async () => {
+  it('switching members swaps the strip — a Side Chat is about the member it was asked on', async () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
       members: [row(), row({ name: 'fixer', slug: 'fixer' })],
       default_agent: 'kirocrew',
@@ -138,24 +158,25 @@ describe('MembersPage Side Chat drawer (selection Ask)', () => {
     ;(api.memberThread as ReturnType<typeof vi.fn>).mockImplementation((slug: string) =>
       Promise.resolve({ slot_key: `member-${slug}`, slug, member: slug, created: true }),
     )
-    Object.defineProperty(window, 'matchMedia', {
-      writable: true,
-      value: vi.fn().mockImplementation((q: string) => ({ matches: q.includes('min-width'), addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })),
-    })
     renderWithProviders(<MembersPage />)
     fireEvent.click(await screen.findByText('oncall'))
     await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall'))
     act(() => { fireEvent.click(screen.getByRole('button', { name: 'stub-ask' })) })
-    await screen.findByTestId('member-side-chat')
+    await waitFor(() => expect(sideTab()).toBeInTheDocument())
 
     fireEvent.click(screen.getByText('fixer'))
     await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-fixer'))
-    // Details for fixer, not oncall's Side Chat carried across.
-    await waitFor(() => expect(screen.getByTestId('member-drawer')).toBeInTheDocument())
-    await waitFor(() => expect(screen.queryByTestId('member-side-chat')).toBeNull())
+    // fixer's own strip: no Side tab carried across from oncall.
+    await waitFor(() => expect(tabLabels()).not.toContain('Side Chat'))
+    expect(screen.queryByTestId('side-chat-stub')).toBeNull()
+
+    // Back to oncall: the Side tab is still on ITS strip.
+    fireEvent.click(screen.getByText('oncall'))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall'))
+    await waitFor(() => expect(tabLabels()).toContain('Side Chat'))
   })
 
-  it('never mounts a Side Chat on a thread key the opener rejected (slug collision)', async () => {
+  it('never offers a Side Chat on a thread key the opener rejected (slug collision)', async () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
       // `other` claims a bound roster key the thread endpoint will NOT confirm
       // for it: the slug's thread belongs to another crew.
@@ -167,23 +188,19 @@ describe('MembersPage Side Chat drawer (selection Ask)', () => {
         ? { slot_key: 'member-other', slug, member: 'someone-else', created: false }
         : { slot_key: `member-${slug}`, slug, member: slug, created: true }),
     )
-    Object.defineProperty(window, 'matchMedia', {
-      writable: true,
-      value: vi.fn().mockImplementation((q: string) => ({ matches: q.includes('min-width'), addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })),
-    })
     renderWithProviders(<MembersPage />)
     fireEvent.click(await screen.findByText('oncall'))
     await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall'))
     act(() => { fireEvent.click(screen.getByRole('button', { name: 'stub-ask' })) })
-    await screen.findByTestId('member-side-chat')
+    await waitFor(() => expect(sideTab()).toBeInTheDocument())
 
     fireEvent.click(screen.getByText('other'))
     // The collision surfaces as its own notice; no pane, so no Ask …
     await screen.findByTestId('member-thread-collision')
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
-    // … and no Side Chat on the roster's unconfirmed `member-other` key either.
-    // (waitFor: the previous member's Side Chat is still crossfading out.)
-    await waitFor(() => expect(screen.queryByTestId('member-side-chat')).toBeNull())
+    // … and the strip is the slot-free bucket: only the Crew summary, no Side
+    // Chat on the roster's unconfirmed `member-other` key.
+    await waitFor(() => expect(tabLabels()).toEqual(['Crew summary']))
     expect(screen.queryByTestId('side-chat-stub')).toBeNull()
   })
 })

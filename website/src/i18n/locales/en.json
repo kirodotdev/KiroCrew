@@ -6958,6 +6958,7 @@
     "membersPage": {
       "agent_template": "Agent template",
       "configuration": "Configuration",
+      "crew_summary": "Crew summary",
       "details": "Details",
       "edit_in_crew_manager": "Edit in crew manager",
       "edit_member": "Edit member",
@@ -7018,7 +7019,6 @@
       "patrol_last_wake_ago": "Last wake {{when}}",
       "patrol_none": "No patrol scheduled.",
       "patrol_error": "Couldn't load this member's patrol status.",
-      "side_chat_draft_waiting": "An unsent question is waiting in this member’s Side Chat",
       "patrol_error_roster": "Couldn't load patrol status for the roster.",
       "patrol_badge": "On patrol · {{cycle}}",
       "patrol_next_in": "Due in {{time}}",

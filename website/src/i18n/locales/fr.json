@@ -14420,6 +14420,7 @@
     "membersPage": {
       "agent_template": "Modèle d'agent",
       "configuration": "Configuration",
+      "crew_summary": "Résumé du membre",
       "details": "Détails",
       "edit_in_crew_manager": "Modifier dans le gestionnaire d'équipes",
       "edit_member": "Modifier le membre",
@@ -14481,7 +14482,6 @@
       "patrol_last_wake_ago": "Dernier réveil {{when}}",
       "patrol_none": "Aucune patrouille planifiée.",
       "patrol_error": "Impossible de charger l'état de patrouille de ce membre.",
-      "side_chat_draft_waiting": "Une question non envoyée attend dans le Chat annexe de ce membre",
       "patrol_error_roster": "Impossible de charger l'état de patrouille de la liste.",
       "patrol_badge": "En patrouille · {{cycle}}",
       "patrol_next_in": "Dans {{time}}",

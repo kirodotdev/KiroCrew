@@ -14051,6 +14051,7 @@
     "membersPage": {
       "agent_template": "Agent 模板",
       "configuration": "配置",
+      "crew_summary": "成员概览",
       "details": "详情",
       "edit_in_crew_manager": "在团队管理页中编辑",
       "edit_member": "编辑成员",
@@ -14110,7 +14111,6 @@
       "patrol_last_wake_ago": "上次唤醒：{{when}}",
       "patrol_none": "未安排巡逻。",
       "patrol_error": "无法加载此成员的巡逻状态。",
-      "side_chat_draft_waiting": "这位成员的随手问里还有一条未发送的问题",
       "patrol_error_roster": "无法加载成员列表的巡逻状态。",
       "patrol_badge": "巡逻中 · {{cycle}}",
       "patrol_next_in": "还有 {{time}}",
