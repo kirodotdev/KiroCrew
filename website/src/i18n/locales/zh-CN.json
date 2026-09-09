@@ -9641,7 +9641,6 @@
       "upload_failed_error": "上传失败：{{error}}",
       "what_can_i_do_for_you": "我能帮你做什么？",
       "worktree_creation_returned_no_path": "创建工作树未返回路径",
-      "loading_earlier_messages": "正在加载较早的消息…",
       "send_failed_with_error": "发送失败：{{error}}",
       "delivery_unconfirmed": "尚未确认送达——你的文字已放回输入框；再次发送前请先查看对话记录。",
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",

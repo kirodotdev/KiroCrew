@@ -252,7 +252,7 @@ export const PierrePatch = memo(function PierrePatch({ patch, options, className
   )
 })
 
-export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, fallbackText, fallbackClassName, fallbackContentStyle, onVisible, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
+export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, options, className, fallbackText, fallbackClassName, fallbackContentStyle, onVisible, fallbackHeader, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
   oldFile: FileContents | null
   newFile: FileContents | null
   options?: PierreDiffOptions
@@ -265,6 +265,12 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   fallbackContentStyle?: CSSProperties
   /** Called after WarmSwap reveals the real implementation. */
   onVisible?: () => void
+  /** Rendered ABOVE the fallback text, for a caller whose surface carries its
+   *  own header row. Pierre paints its header inside the impl, so a caller that
+   *  unmounts its own header to make room sees the row lose its identity strip
+   *  — filename, counts, the disclosure control — while the chunk loads, which
+   *  reads as the row vanishing and coming back. */
+  fallbackHeader?: () => React.ReactNode
   /** Injected into the file header's metadata slot. Also rendered while
    *  `options.collapsed` is set, where the header IS the whole surface. */
   renderHeaderMetadata?: () => React.ReactNode
@@ -273,6 +279,22 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   /** Injected directly after the filename in the header. */
   renderHeaderFilenameSuffix?: () => React.ReactNode
 }) {
+  // BEFORE the budget bail-out: a hook may not sit behind a conditional return,
+  // and the oversized path below returns early.
+  const farm = useContext(PierreFarmHoldContext)
+  // `onVisible` means "the real implementation is on screen now", and WarmSwap is
+  // what normally fires it — but the paths below return the impl DIRECTLY, so this
+  // surface no longer warm-swaps and nothing would ever announce the reveal. The
+  // caller uses it to move focus into the diff once it exists, so losing it strands
+  // the focus, not just an event.
+  //
+  // Fired for the path that used to be the warm one. A collapsed pair is excluded
+  // because it never announced either: it is a ~32px header that renders under the
+  // paint threshold by design.
+  const revealedImmediately = !farm && !options?.collapsed
+  useEffect(() => {
+    if (revealedImmediately) onVisible?.()
+  }, [revealedImmediately, onVisible])
   if (!isPierreFilePairWithinBudget(oldFile, newFile)) {
     return (
       <PlainFilePairFallback
@@ -288,10 +310,13 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
     )
   }
   const fallbackNode = (
-    <PlainCodeFallback
-      text={fallbackText ?? (newFile ?? oldFile)?.contents ?? ''}
-      className={fallbackClassName}
-    />
+    <>
+      {fallbackHeader?.()}
+      <PlainCodeFallback
+        text={fallbackText ?? (newFile ?? oldFile)?.contents ?? ''}
+        className={fallbackClassName}
+      />
+    </>
   )
   const impl = (
     <Suspense fallback={fallbackNode}>
@@ -307,20 +332,30 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
     </Suspense>
   )
 
+  // Measure-farm render: the fallback IS the measured geometry, so mounting the
+  // impl here would burn main thread on a surface that is never shown. Kept even
+  // though this surface no longer warm-swaps, because that property belongs to
+  // the farm rather than to WarmSwap.
+  if (farm) return fallbackNode
   // A collapsed pair renders ONLY its header (~32px) — under the paint
   // threshold by design — so it must not warm-swap or it would sit on the
-  // fallback until the deadline. Expanded pairs get the same treatment as
-  // Patch: readable text holds the layout until the diff paints.
-  if (options?.collapsed) return impl
-  return (
-    <WarmSwap
-      warmKey={warmKeyOf((newFile ?? oldFile)?.contents ?? '')}
-      fallback={fallbackNode}
-      onVisible={onVisible}
-    >
-      {impl}
-    </WarmSwap>
-  )
+  // fallback until the deadline.
+  //
+  // An EXPANDED pair does not warm-swap either, for the reason `PierreCode`
+  // already exempts its whole-file surfaces: this is a Pierre-WINDOWED surface,
+  // and inside the warm box it is `absolute inset-0 … invisible`, so it windows
+  // against a hidden, parent-sized viewport and renders no rows at all. Nothing
+  // then invalidates that measurement when the box is revealed, so the row stays
+  // blank until an unrelated scroll makes Pierre measure again — which is the
+  // defect this exemption removes. The Suspense fallback above still covers the
+  // chunk load, so the reader is never left with an empty box while it arrives.
+  //
+  // The tradeoff is deliberate: growth now lands in the layout as it paints
+  // instead of behind a held fallback. That is the jump WarmSwap was written to
+  // absorb, and it is absorbed elsewhere now — an accordion's growth is rooted
+  // below the header the reader pressed, which the transcript's own reprice
+  // treats as zero compensation rather than a shift to correct.
+  return impl
 })
 
 export type { BaseCodeOptions, PierreDiffOptions, FileContents }

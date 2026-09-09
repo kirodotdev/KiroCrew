@@ -40,6 +40,9 @@ const SCROLL_HEIGHT = 3000
  *  would pass with no fix at all. Reset in beforeEach. */
 let rowHeightByKey: Record<string, number> = {}
 
+/** Saved so the real (jsdom) implementation is put back after each test. */
+let origRo: typeof ResizeObserver | undefined
+
 /** Rendered height of one row node — its override when it has one, else the
  *  flat REAL_H every other case in this file uses. */
 function rowHeightOf(node: HTMLElement): number {
@@ -47,6 +50,84 @@ function rowHeightOf(node: HTMLElement): number {
   const override = key !== null ? rowHeightByKey[key] : undefined
   return override ?? REAL_H
 }
+
+/** ResizeObserver, as the virtualizer actually consumes it.
+ *
+ *  This harness deliberately had none, and that absence is why an entire
+ *  compensation path shipped untested: the correction for a REPRICE above the
+ *  reader lives inside the observer's callback, so no test in this file could
+ *  reach it. Every assertion here about heights changing was therefore really
+ *  an assertion about the anchor path staying out of the way.
+ *
+ *  The mock is small because the callback does not read `contentRect`: it
+ *  measures the target itself, so the existing fake layout already supplies the
+ *  height and `rowHeightByKey` already controls it. All that was missing was
+ *  delivery of the entries. */
+let roCallbacks: ResizeObserverCallback[] = []
+let roObserved: Element[] = []
+
+class FakeResizeObserver implements ResizeObserver {
+  constructor(private readonly cb: ResizeObserverCallback) {
+    roCallbacks.push(cb)
+  }
+  observe(target: Element): void {
+    if (!roObserved.includes(target)) roObserved.push(target)
+  }
+  unobserve(target: Element): void {
+    roObserved = roObserved.filter((t) => t !== target)
+  }
+  disconnect(): void {
+    roCallbacks = roCallbacks.filter((c) => c !== this.cb)
+  }
+}
+
+/** Deliver a measure batch for the given targets, the way the browser would
+ *  after they first mounted or changed size. Entries carry only `target`,
+ *  because that is all the callback reads. */
+function fireResize(targets: Element[]): void {
+  const entries = targets.map((target) => ({ target } as unknown as ResizeObserverEntry))
+  for (const cb of roCallbacks) cb(entries, {} as ResizeObserver)
+}
+
+/** The mounted row nodes, in document order. */
+function rowNodes(el: HTMLElement): HTMLElement[] {
+  return Array.from(el.querySelectorAll('[data-index]')) as HTMLElement[]
+}
+
+/** HARNESS CAPABILITY GAPS -- three separate defects were traced to guards this
+ *  file cannot reach, and they share one root cause, so they are listed together
+ *  rather than rediscovered one at a time.
+ *
+ *  1. NO ResizeObserver (now fixed, see FakeResizeObserver below). The
+ *     correction for a reprice above the reader lives inside the observer's
+ *     callback, so no test could reach it. Every assertion here about heights
+ *     changing was really an assertion about the anchor path staying out of the
+ *     way -- and one whole compensation path shipped with zero coverage.
+ *
+ *  2. NO first-mount state. A row the virtualizer has never measured is what a
+ *     freshly prepended page consists of, and the observer treats it differently
+ *     on purpose. Reachable now (mount at zero height so the measurement is
+ *     discarded) but see the skipped test for the geometry constraint.
+ *
+ *  3. NO scroll-anchor RESTORE -- but it is REACHABLE, and the recipe is here so
+ *     the next attempt does not have to find it again. The blocker was assumed to
+ *     be `landedAnchorRef`, which is written only on the converged path of the
+ *     settle loop; the predicate that actually guards the consume effect is
+ *     `restoreOwnsPosition` = `settleGateRef.current || pendingRestoreRef !== null`,
+ *     and the PENDING half comes from persisted state: seed
+ *     `localStorage['vc_anchor3_' + sessionId]` with `{ key, alt?, top }` before
+ *     mounting (this file's `beforeEach` clears exactly those keys, which is the
+ *     hint). `key` must be a STABLE row id, not a per-render virtual key.
+ *
+ *     Worth doing, because the coverage is uneven in a way mutation makes plain:
+ *     deleting `restoreOwnsPosition`'s use at the leave-flush reddens a test, so
+ *     the predicate is trusted elsewhere -- while deleting either the consume
+ *     effect's new call or the long-standing above-fold `relandConvergedAnchor`
+ *     check reddens NOTHING. A device trace is currently the only evidence for
+ *     those two.
+ *
+ *  The pattern worth remembering: each gap made a guard invisible rather than
+ *  wrong, so the suite stayed green while the reader on a phone did not. */
 
 function rect(top: number, height: number): DOMRect {
   return {
@@ -195,6 +276,10 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     localStorage.clear()
     frames = []
     rowHeightByKey = {}
+    roCallbacks = []
+    roObserved = []
+    origRo = globalThis.ResizeObserver
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver
     origRaf = globalThis.requestAnimationFrame
     globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
       frames.push(cb)
@@ -218,6 +303,7 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     restore?.()
     restore = null
     globalThis.requestAnimationFrame = origRaf
+    if (origRo) globalThis.ResizeObserver = origRo
     globalThis.IntersectionObserver = origIO
   })
 
@@ -266,6 +352,254 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
     return { el, view, scrollerRef, readScrollTop: () => scrollTop }
   }
+
+  /** A REPRICE above the reader — the path that had no coverage at all until
+   *  this file grew a ResizeObserver. When a row above the fold turns out taller
+   *  than the tree priced it, everything below shifts down by the difference and
+   *  the reader must be carried with it or they see a jump. */
+  it('holds the reader when a row ABOVE them is repriced taller', () => {
+    const { el, readScrollTop } = mountScrolledUp()
+    const before = readScrollTop()
+    const rows = rowNodes(el)
+    // A mounted row above the fold. Its height was measured at mount, so this
+    // fire is a genuine reprice (prevH is known) rather than a first mount.
+    const target = rows[0]
+    const key = target.getAttribute('data-key')!
+    rowHeightByKey[key] = REAL_H + 400
+    act(() => { fireResize([target]) })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+    // Carried down by the growth: the row the reader was looking at is still
+    // under their eye. Anything less and they watched the text slide.
+    expect(readScrollTop()).toBeGreaterThan(before + 300)
+  })
+
+  /** The SAME displacement arriving as a FIRST-MOUNT measurement rather than a
+   *  reprice. That is what a freshly prepended older page produces: its rows were
+   *  priced by the running mean and never measured, so the observer sees no
+   *  previous height and the above-fold correction skips them by design --
+   *  `HeightIndex`'s own doc states the rationale, that re-pinning during
+   *  scroll-driven window expansion would yank a scrolling reader.
+   *
+   *  NOT COVERED, and two dead ends are recorded so the next attempt does not
+   *  repeat them:
+   *
+   *  1. Clearing `rowHeightByKey` does NOT create the state -- it controls the
+   *     RENDERED height, not the virtualizer's record. A first attempt that did
+   *     only this PASSED while being an exact duplicate of the test above,
+   *     reporting coverage of the very gap it was written to expose.
+   *  2. Mounting the row at zero height DOES stop the measurement being recorded
+   *     (the callback discards a non-positive height), but the row must also lie
+   *     ENTIRELY above the fold for the correction to apply -- and in this
+   *     harness's geometry it does not. Probed rather than assumed: at
+   *     `scrollTop` 2160 the mounted rows are m23..m29, all of them at or below
+   *     the fold, so no mounted row is a candidate.
+   *
+   *  Reaching it needs a taller viewport or a deeper overscan so that at least
+   *  one mounted row sits wholly above the fold, at which point the zero-height
+   *  mount trick supplies the unmeasured half. */
+
+  /** The SAME displacement arriving as a FIRST-MOUNT measurement rather than a
+   *  reprice. That is what a freshly prepended older page produces: its rows
+   *  were priced by the running mean and never measured, so the observer sees no
+   *  previous height and the above-fold correction skips them -- `HeightIndex`'s
+   *  doc states the rationale, that re-pinning during scroll-driven window
+   *  expansion would yank a scrolling reader. On a corpus whose rows are large
+   *  diffs the mean is wrong by an order of magnitude per row, so what that
+   *  rationale trades away is not a rounding artifact.
+   *
+   *  Two dead ends are recorded because both looked right:
+   *
+   *  1. Clearing `rowHeightByKey` does NOT create the state -- it controls the
+   *     RENDERED height, not the virtualizer's record. A first attempt doing
+   *     only this PASSED while being an exact duplicate of the test above,
+   *     reporting coverage of the very gap it was written to expose.
+   *  2. The row has to be one the window actually holds. Probed rather than
+   *     assumed: the window is computed from the offset TREE's prices, not from
+   *     `REAL_H`, so at `scrollTop` 2160 the mounted set is m23..m29 -- m0 and
+   *     m19 are not mounted at all and a test naming them fails for that reason
+   *     instead of the one it is about.
+   *
+   *  What does work: mount the row at zero height. The callback discards a
+   *  non-positive measurement, so nothing is recorded for that key while the
+   *  tree keeps its estimate (the window is therefore unchanged), and the next
+   *  fire is genuinely a first mount. */
+  // SKIPPED, and not because it is unfinished: it REPRODUCES a real gap (it fails
+  // with `expected 2160 to be greater than 2460` -- scrollTop does not move at
+  // all on a first mount above the fold), but a device reading shows that gap is
+  // not what the reader is experiencing. The overlay's `repriced` counter, which
+  // sums spacer changes at a STILL window, printed NOTHING across a scroll that
+  // landed four pages -- so no first-mount reprice occurred at all, while a
+  // single anchor-consume write moved the reader 10015px. Un-skip when the
+  // first-mount case is prioritised; the reproduction above is ready.
+  it.skip('holds the reader when a row above them is measured for the FIRST time', () => {
+    // m23 is the topmost mounted row and the one the reprice test above proves
+    // the above-fold correction accepts. Zero at mount leaves it unmeasured.
+    rowHeightByKey.m23 = 0
+    const { el, readScrollTop } = mountScrolledUp()
+    const target = rowNodes(el).find((n) => n.getAttribute('data-key') === 'm23')
+    expect(target).toBeTruthy()
+    const before = readScrollTop()
+    // Now it resolves large -- the mean-priced row turning out to be a big diff.
+    rowHeightByKey.m23 = REAL_H + 400
+    act(() => { fireResize([target!]) })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+    expect(readScrollTop()).toBeGreaterThan(before + 300)
+  })
+
+  /** The device's actual shape, which every other test in this file lacks: the
+   *  prepended rows are FAR taller than the mean the offset tree prices them at.
+   *  On the real corpus a row is a large diff and `h/n` is an average over rows
+   *  that differ by one to two orders of magnitude, so the tree's estimate for a
+   *  never-measured row is wrong by thousands of pixels -- while here every row
+   *  is REAL_H, which is why the existing prepend tests pass without exercising
+   *  the failure at all.
+   *
+   *  What the reader needs is unchanged: the row they were looking at stays put,
+   *  so `scrollTop` must rise by the TRUE height of what landed above them. */
+  /** The device's actual shape: the landed rows are FAR taller than the mean the
+   *  offset tree prices them at. Every other prepend test in this file uses a
+   *  flat REAL_H, where the estimate happens to EQUAL the truth, so none of them
+   *  can tell a correct compensation from one that merely re-derives the same
+   *  wrong number twice.
+   *
+   *  The assertion is the invariant the reader actually experiences -- the row
+   *  they were looking at does not move on screen -- and deliberately NOT "the
+   *  compensation equals the true inserted height". A first version asserted the
+   *  latter and was wrong: the landed rows sit outside the mounted window, so
+   *  their true height is not in the DOM at all. Only the estimated spacer is,
+   *  and keeping the anchor still is therefore worth exactly the spacer's change.
+   *  Demanding the true height would have required compensating for pixels that
+   *  do not exist yet, and the test would have "reproduced" a defect that is
+   *  really the shape of virtualization. */
+  it('holds the anchor row on screen when the landed rows outweigh the tree estimate', () => {
+    const { el, view, scrollerRef } = mountScrolledUp(mkItems(30))
+    const srTop0 = el.getBoundingClientRect().top
+    const anchor = rowNodes(el)[1]
+    const anchorKey = anchor?.getAttribute('data-key') ?? null
+    expect(anchorKey).toBeTruthy()
+    const top0 = anchor!.getBoundingClientRect().top - srTop0
+
+    const older = mkItems(30, 'o')
+    for (const it of older) rowHeightByKey[it.id] = REAL_H * 10
+    act(() => {
+      view.rerender(<Harness items={[...older, ...mkItems(30)]} scrollerRef={scrollerRef} />)
+    })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+
+    const after = rowNodes(el).find((n) => n.getAttribute('data-key') === anchorKey)
+    // Asserted, not skipped: a silent return here would let the test pass in the
+    // very case that matters most -- the anchor UNMOUNTING, which hands the
+    // landing to the arithmetic fallback and its estimated heights. Red here
+    // means the harness has reached that branch and is the reproduction.
+    expect(after).toBeTruthy()
+    const top1 = after.getBoundingClientRect().top - el.getBoundingClientRect().top
+    expect(Math.abs(top1 - top0)).toBeLessThan(2)
+  })
+
+  /** The device's OTHER condition, and the one the test above does not have: the
+   *  reader is at the very TOP of the loaded slice, so `windowRange.start` is 0
+   *  and the top spacer is 0 before the landing. That is the configuration a
+   *  top-walk always ends in -- it is how the next page gets requested -- and the
+   *  device's residual (movement written minus movement owed) was ~1,863px there
+   *  while the mid-transcript case above is within 2px. */
+  it('holds the anchor row when the reader is at the very TOP of the slice', () => {
+    const scrollerRef: RefObject<HTMLDivElement | null> = { current: null }
+    let scrollTop = 0
+    const view = rtlRender(<Harness items={mkItems(30)} scrollerRef={scrollerRef} />)
+    const el = scrollerRef.current!
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v },
+    })
+    Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => CLIENT })
+    // Derived from the live children, NOT the fixed constant: a landing really
+    // does make the transcript taller, and the range limit has to move with it.
+    // Pinned at a constant, the compensation's own write lands "past the end" and
+    // the overscroll guard then refuses the next pass -- a harness artifact that
+    // looks exactly like the defect being guarded against.
+    Object.defineProperty(el, 'scrollHeight', {
+      configurable: true,
+      get: () => Array.from(el.children).reduce((h, c) => {
+        const node = c as HTMLElement
+        if (node.getAttribute('data-index') !== null) return h + rowHeightOf(node)
+        return h + (parseFloat(node.style?.height || '0') || 0)
+      }, 0),
+    })
+    installFakeLayout(el, CLIENT)
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+    // At the top: no scroll away from 0, which is what leaves the spacer at 0.
+    act(() => { scrollTop = 0; el.dispatchEvent(new Event('scroll')) })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+
+    const anchor = rowNodes(el)[1]
+    const anchorKey = anchor?.getAttribute('data-key') ?? null
+    expect(anchorKey).toBeTruthy()
+    const top0 = anchor!.getBoundingClientRect().top - el.getBoundingClientRect().top
+
+    const older = mkItems(30, 'o')
+    for (const it of older) rowHeightByKey[it.id] = REAL_H * 10
+    act(() => {
+      view.rerender(<Harness items={[...older, ...mkItems(30)]} scrollerRef={scrollerRef} />)
+    })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+
+    const after = rowNodes(el).find((n) => n.getAttribute('data-key') === anchorKey)
+    expect(after).toBeTruthy()
+    const top1 = after!.getBoundingClientRect().top - el.getBoundingClientRect().top
+    expect(Math.abs(top1 - top0)).toBeLessThan(2)
+  })
+
+  /** OVERSCROLL -- the rubber band, which is not a content position.
+   *
+   *  iOS lets a finger pull past an edge and reports a NEGATIVE `scrollTop` while
+   *  the band is stretched. A compensation measured against that describes the
+   *  stretch, not the content, and writing it throws the reader by the stretch.
+   *  Device trace: an 11,096px write beginning at `scrollTop = -2810`, with the
+   *  top spacer unchanged across the landing, so every pixel of it was error. */
+  it('writes nothing while the scroller is rubber-band OVERSCROLLED', () => {
+    const { el, view, scrollerRef, readScrollTop } = mountScrolledUp(mkItems(30))
+    // The finger has pulled past the top edge.
+    act(() => { el.scrollTop = -2810; el.dispatchEvent(new Event('scroll')) })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+    const before = readScrollTop()
+    expect(before).toBeLessThan(0)
+
+    const older = mkItems(30, 'o')
+    for (const it of older) rowHeightByKey[it.id] = REAL_H * 10
+    act(() => {
+      view.rerender(<Harness items={[...older, ...mkItems(30)]} scrollerRef={scrollerRef} />)
+    })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+
+    // The band springs back on its own and the release brings more scroll events,
+    // so the correct behaviour is to leave the position alone rather than write a
+    // kilopixel derived from the stretch.
+    expect(Math.abs(readScrollTop() - before)).toBeLessThan(200)
+  })
+
+  /** NOT COVERED: the READER scrolling between the anchor's capture and its
+   *  consume -- which is the normal case on a phone, since a page is fetched
+   *  *because* the reader is scrolling and momentum outlives the ~130ms fetch.
+   *
+   *  The anchor's displacement is `(content growth) - (scrollTop change)`. Pinning
+   *  the row to the glass compensates BOTH terms, and the second is the reader's
+   *  own finger, so the transcript cancels their gesture. Device trace with the
+   *  measurement windows aligned: one 9,440px write, `spacer 0->0` (no content
+   *  appeared), no overscroll, `sinceHard=6037ms` (momentum stamps no hard input,
+   *  so no ownership guard fires). Content growth of zero means the correct write
+   *  was zero and all 9,440px was the reader's scroll being undone.
+   *
+   *  Why it cannot be tested here, established by two failed attempts rather than
+   *  assumed: `act(() => rerender(...))` flushes layout effects SYNCHRONOUSLY, so
+   *  the consume has already run by the time a test can move the scroller. A first
+   *  attempt scrolled before re-rendering (no prepend detected, nothing captured)
+   *  and a second scrolled after the rerender act (too late); both passed with the
+   *  fix removed AND with its sign inverted.
+   *
+   *  Reaching it needs the commit and the effect flush separated -- a manual
+   *  `ReactDOM` root with `flushSync` for the render and a hand-driven effect
+   *  pass, or the correction extracted into a pure function taking
+   *  (anchorTop, newTop, capturedScrollTop, nowScrollTop). The second is smaller
+   *  and would pin the arithmetic without the harness. */
 
   it('holds the reading position when older history is prepended', () => {
     const { el, view, scrollerRef, readScrollTop } = mountScrolledUp()

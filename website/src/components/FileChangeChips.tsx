@@ -117,7 +117,10 @@ function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onTogg
   removed: number
   isArtifact?: boolean
   onFileOpen?: (path: string) => void
-  onToggle: () => void
+  /** Absent when the row has nothing to disclose. The control is then withheld
+   *  rather than rendered inert: a chevron that does nothing is worse than none,
+   *  because it invites the tap that makes the row look broken. */
+  onToggle?: () => void
 }) {
   const name = basename(fc.path)
   return (
@@ -129,15 +132,21 @@ function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onTogg
       data-testid={`fcc-header-${fc.path}`}
       className="flex items-center gap-2 min-h-[36px] px-[10px] py-1.5 bg-[color-mix(in_srgb,var(--bg-elevated)_50%,var(--bg))] font-mono text-[12px] leading-[18px] text-muted"
     >
-      <button
-        data-testid={`fcc-toggle-${fc.path}`}
-        onClick={e => { e.stopPropagation(); onToggle() }}
-        aria-expanded={false}
-        aria-label={i18nT('components.fileChangeChips.toggle_diff', { path: fc.path })}
-        className="shrink-0 flex items-center justify-center w-[16px] h-[16px] rounded text-muted hover:text-text cursor-pointer bg-transparent border-none"
-      >
-        <ChevronRight size={13} />
-      </button>
+      {onToggle ? (
+        <button
+          data-testid={`fcc-toggle-${fc.path}`}
+          onClick={e => { e.stopPropagation(); onToggle() }}
+          aria-expanded={false}
+          aria-label={i18nT('components.fileChangeChips.toggle_diff', { path: fc.path })}
+          className="shrink-0 flex items-center justify-center w-[16px] h-[16px] rounded text-muted hover:text-text cursor-pointer bg-transparent border-none"
+        >
+          <ChevronRight size={13} />
+        </button>
+      ) : (
+        /* Same box, so the filename does not shift left on the rows that have
+           nothing to disclose and the column stays aligned down the card. */
+        <span className="shrink-0 w-[16px] h-[16px]" aria-hidden />
+      )}
       <FileDiff size={13} className="shrink-0 text-muted" aria-hidden />
       {onFileOpen ? (
         <button
@@ -183,14 +192,41 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
   const openFocusPending = useRef(false)
   const collapseFocusPending = useRef(false)
   const [focusProxy, setFocusProxy] = useState(false)
-  const renderPierre = open || closing
+  // NOTHING TO SHOW: the captured before/after are byte-identical, so Pierre can
+  // only ever paint an empty diff. Offering a disclosure here spends a tap to
+  // replace the header with the warm fallback's plain text and then collapse to
+  // nothing — the row appears to flash and vanish, which is indistinguishable
+  // from a broken diff.
+  const nothingToShow = fc.before === fc.after
+  const renderPierre = !nothingToShow && (open || closing)
   // Pierre titles the header from `name`; the full path would wrap the row and
   // bury the filename, so the row shows the basename and the path stays on the
   // Open button's tooltip.
   const name = basename(fc.path)
   const toggleLabel = i18nT('components.fileChangeChips.toggle_diff', { path: fc.path })
-  const oldFile = useMemo(() => ({ name, contents: fc.before }), [name, fc.before])
-  const newFile = useMemo(() => ({ name, contents: fc.after }), [name, fc.after])
+  // PIN the contents at the moment the row opened. A row can be re-rendered with
+  // a replaced payload while it is open (a slot-list refresh, a later turn editing
+  // the same file), and swapping the diff out from under a reader mid-read is the
+  // defect this prevents: they lose their place in a diff they were still reading.
+  // The next open takes whatever the contents are by then. Pierre also derives the
+  // expanded header's own +/- numbers from these same contents, so body and header
+  // stay consistent by construction; the COLLAPSED row's counts come from the card
+  // and keep describing the change as it currently stands.
+  //
+  // Derived during render rather than through state, so opening a row still costs
+  // exactly ONE Pierre render — a `setPinned` effect would add a second pass on
+  // every open, which is churn on the most render-sensitive rows in the app. The
+  // write is idempotent and reads only this render's props, so a double-invoked
+  // render reaches the same pin.
+  const fcBefore = fc.before ?? ''
+  const fcAfter = fc.after ?? ''
+  const pinRef = useRef<{ before: string; after: string } | null>(null)
+  if (!renderPierre) pinRef.current = null
+  else if (!pinRef.current) pinRef.current = { before: fcBefore, after: fcAfter }
+  const before = pinRef.current ? pinRef.current.before : fcBefore
+  const after = pinRef.current ? pinRef.current.after : fcAfter
+  const oldFile = useMemo(() => ({ name, contents: before }), [name, before])
+  const newFile = useMemo(() => ({ name, contents: after }), [name, after])
   // Depend on WHETHER a file-open handler exists, never on its identity: the
   // options only splice a CSS block in when the title is clickable, so an
   // unstable callback from a parent must not re-create `options` — Pierre
@@ -367,6 +403,23 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
           fallbackClassName="max-h-[376px] overflow-auto"
           fallbackContentStyle={FALLBACK_CONTENT_STYLE}
           onVisible={completeOpenFocus}
+          // Opening SWAPS this row's own header out for Pierre's, and Pierre's
+          // arrives only once the impl paints — so without this the row loses
+          // its filename, counts and disclosure control for the whole warm
+          // window, which reads as the row flashing away and coming back. The
+          // collapsed header is the same strip, so keeping it up bridges the
+          // handoff; WarmSwap drops it the moment the real header exists, and
+          // clips the fallback to the known painted height, so it adds nothing.
+          fallbackHeader={() => (
+            <CollapsedRowHeader
+              fc={fc}
+              added={added}
+              removed={removed}
+              isArtifact={isArtifact}
+              onFileOpen={onFileOpen}
+              onToggle={toggle}
+            />
+          )}
           renderHeaderPrefix={prefix}
           renderHeaderFilenameSuffix={filenameSuffix}
           renderHeaderMetadata={metadata}
@@ -378,7 +431,7 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
           removed={removed}
           isArtifact={isArtifact}
           onFileOpen={onFileOpen}
-          onToggle={toggle}
+          onToggle={nothingToShow ? undefined : toggle}
         />
       )}
     </div>

@@ -30,9 +30,12 @@ describe('real-gesture authorization', () => {
   it('refreshes the gesture stamp from gestures only, not from scroll', () => {
     // Our own compensation write fires `scroll`. If that refreshed the stamp the
     // window would be self-renewing and the latch would be back under a new name.
-    const i = SRC.indexOf('lastRealInputAtRef.current = Date.now()')
+    // Anchored on the handler's own declaration, which is unique. Anchoring on
+    // the stamp assignment matched an unrelated `= 0` reset earlier in the file
+    // and sliced an empty window, which passes nothing rather than failing loudly.
+    const i = SRC.indexOf('const noteInput')
     expect(i).toBeGreaterThan(-1)
-    const setter = SRC.slice(SRC.lastIndexOf('const noteInput', i), SRC.indexOf('addEventListener', i) + 1600)
+    const setter = SRC.slice(i, SRC.indexOf('addEventListener', i) + 1600)
     expect(setter).toMatch(/'wheel', noteInput/)
     expect(setter).toMatch(/'touchmove', noteInput/)
     // A pointer and a wheel are not the only human ways to reach the top. Gating on
@@ -43,6 +46,20 @@ describe('real-gesture authorization', () => {
     expect(setter).toMatch(/'keydown', noteInput/)
     expect(setter).toMatch(/'pointerdown', noteInput/)
     expect(setter).not.toMatch(/'scroll', noteInput/)
+  })
+
+  it('does not count a TAP as a gesture toward older history', () => {
+    // `pointerdown` earns its place through the scrollbar-thumb drag, which needs
+    // a mouse or a pen. Under a finger the same event fires for every tap in the
+    // transcript -- opening a diff row, pressing a button -- so counting it made
+    // the page budget self-refilling on a phone and the walk drained the whole
+    // history. Touch scrolling is already covered by `touchmove`, so excluding
+    // the touch pointer costs the vocabulary nothing.
+    const i = SRC.indexOf('const noteInput')
+    const body = SRC.slice(i, SRC.indexOf('lastRealInputAtRef.current =', i))
+    expect(body).toMatch(/pointerType === 'touch'/)
+    // The guard has to precede the stamp, or it records the very input it rejects.
+    expect(body).toMatch(/return\s*$/m)
   })
 
   it('binds the keyboard vocabulary to the SCROLLER, never the document', () => {

@@ -9782,7 +9782,6 @@
       "upload_failed_error": "अपलोड विफल: {{error}}",
       "what_can_i_do_for_you": "मैं आपके लिए क्या कर सकता हूँ?",
       "worktree_creation_returned_no_path": "वर्कट्री बनाने पर कोई पथ नहीं मिला",
-      "loading_earlier_messages": "पुराने संदेश लोड हो रहे हैं…",
       "send_failed_with_error": "भेजना विफल: {{error}}",
       "delivery_unconfirmed": "डिलीवरी की पुष्टि नहीं हुई — तुम्हारा टेक्स्ट इनपुट बॉक्स में वापस आ गया है; दोबारा भेजने से पहले बातचीत देखो।",
       "could_not_read_file_reason": "{{path}} पढ़ा नहीं जा सका ({{reason}})",

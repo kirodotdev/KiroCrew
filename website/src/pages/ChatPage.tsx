@@ -91,7 +91,7 @@ import { useChatPageSessionController } from './chat/useChatPageSessionControlle
 import { useChatPageResourcesController } from './chat/useChatPageResourcesController'
 import EarlierMessagesBar from './chat/EarlierMessagesBar'
 import TranscriptScrollShell from './chat/TranscriptScrollShell'
-import { devLog, devWatchMessages, inspectorOn } from '../dev/scrollInspector'
+import { devLog, devOlderLatency, devWatchMessages, inspectorOn } from '../dev/scrollInspector'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { addPendingFile, prepareSendPayload, buildRelMap, hasExactRelMention, normalizeWindowsPath, parseDirTokens, serializeDirTokens, spliceDirTokens } from '../utils/fileTokens'
 import { makeRelative } from '../components/FilePickerMenu'
@@ -106,18 +106,59 @@ const OLDER_RETRY_COOLDOWN_MS = 1500
  * it is the backstop that guarantees progress while the reader holds the top,
  * not the fast path (the sentinel/crossing triggers still fire first). */
 const OLDER_TOP_POLL_MS = 700
+/** How near the top of the loaded slice authorizes an automatic older page,
+ *  in viewport heights.
+ *
+ *  The requirement this serves is an INVARIANT, not a threshold: the reader must
+ *  never catch up with the head of the loaded slice, so the page has to be not
+ *  merely started but FINISHED before they arrive.
+ *
+ *  ABSOLUTE pixels, not viewport multiples, because the two terms this lead has
+ *  to cover are both absolute. Latency is the dominant one: a fetch plus a
+ *  measured landing is a few hundred ms whatever the screen, and at fling speed
+ *  (~5000px/s on a phone) that alone eats thousands of pixels. A viewport
+ *  multiple made the lead grow with the screen while the thing it pays for did
+ *  not, so a desktop got a lead far beyond the distance it needed and a phone's
+ *  was set by whatever the browser chrome left over.
+ *
+ *  This distance is only half the answer, and the smaller half: the trigger also
+ *  fires on the SCROLL EVENT rather than waiting for the next poll tick, because
+ *  one OLDER_TOP_POLL_MS of delay is itself worth more travel than the whole lead
+ *  (700ms at fling speed is ~3500px). The poll remains as the backstop for the
+ *  cases no scroll event covers — a landing that leaves the reader already inside
+ *  the lead, and momentum that has stopped firing events. */
+const OLDER_WALK_TRIGGER_PX = 2000
 /**
  * How long after the reader's last scroll the top-of-transcript walk keeps
  * paging. Past this they have stopped climbing, and a page landing then is
  * movement they did not ask for.
  */
-const OLDER_WALK_ACTIVE_MS = 1500
+/** How long the scroller must be STILL before an automatic page may load, on a
+ *  browser that does NOT do scroll anchoring itself.
+ *
+ *  The bounce needs motion. A landing's compensation lands the reader within a
+ *  pixel of where they were -- read back after the write, `off=1` -- and the jolt
+ *  is still visible, because a programmatic `scrollTop` write during an iOS fling
+ *  perturbs the fling itself: the position ends up right and the MOTION does not.
+ *  The reader's own observation is the cleanest statement of it -- at `to-top = 0`
+ *  loading never bounces, and `to-top = 0` is exactly the state where they have
+ *  stopped, since a fling cannot persist against the top edge.
+ *
+ *  100ms, matching matrix-react-sdk's `ScrollPanel`, which arrived at the same
+ *  number for the same reason: "To maintain scroll position after the portion
+ *  above the viewport changes height, we need to set the scrollTop... We do this
+ *  100ms after the user has stopped scrolling, so setting scrollTop has no nasty
+ *  side-effects." Every estimate-based virtualizer that ships a chat list lands
+ *  here -- react-virtuoso has an iOS-only glitch report for attempting it live,
+ *  virtua's README says the user must release the scroll, TanStack Virtual carries
+ *  a code path literally named for deferring the adjustment on iOS. A shorter wait
+ *  is not a better one: 20ms is barely past a frame interval, so it lets the TAIL
+ *  of a fling through, which is exactly when the surface is still drifting.
+ */
+const OLDER_WALK_QUIET_MS = 100
 // Idle prefetch: quiet time required before background pages load, and the
 // poll cadence. Quiet > the farm's deep-idle threshold is deliberate — the
 // farm gets first claim on idle time; prefetch only runs once it is caught up.
-// A page may LAND only after the scroller has been still this long: landing
-// compensation writes scrollTop, and mid-momentum writes fight the fling.
-const OLDER_LANDING_SETTLE_MS = 400
 /** A transcript at least this much taller than its viewport is scrollable
  *  in earnest: the reader can climb to ask for history, so nothing fetches
  *  it for them. Below it, auto-fill is load-bearing (no scrollbar exists). */
@@ -151,6 +192,14 @@ export function shouldAutoFillOlder(g: { scrollHeight: number; clientHeight: num
  *  window ages out on its own: a gesture burst buys a bounded run of pages, not
  *  the rest of the session. */
 const REAL_GESTURE_AUTH_MS = 20000
+/** Gap that separates one expression of intent from the next.
+ *
+ *  A continuous drag fires `touchmove` about every 16ms and a wheel spin comes in
+ *  bursts, so anything shorter than this treats one gesture as many and refills
+ *  the older-history page budget faster than the walk can spend it. Long enough
+ *  to cover the gaps inside one drag; short enough that a deliberate second flick
+ *  is a second expression and earns a fresh budget. */
+const REAL_GESTURE_COALESCE_MS = 300
 
 /**
  * Height of the transcript's tail spacer, in px.
@@ -1134,6 +1183,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The walk poll's own budget and last-gesture stamp. Refs so neither survives
   // only as long as the effect that reads them -- see the note at their use.
   const walkPagesSinceInputRef = useRef(0)
+  // Older-page latency, split by owner. `fetch` = dispatch to data-in-store;
+  // `paint` = data-in-store to really on screen (measured geometry, not
+  // estimates). Diagnostics only: nothing gates on these.
+  const olderFetchStartRef = useRef(0)
+  const olderFetchMsRef = useRef(0)
+  const olderHeightAtStartRef = useRef(0)
   const walkLastInputAtRef = useRef(Number.NEGATIVE_INFINITY)
   // Entering a session is not a request for history, so a session must never
   // INHERIT authorization. Every one of these is written in exactly one place --
@@ -4753,6 +4808,62 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // window like any other item. See useVirtualChat call below for the
   // memory-vs-flicker trade-off rationale.)
 
+  // Both EDGES of an older page, with the distance to the top at each. The
+  // question a trace has to answer is whether the page started early enough to
+  // FINISH before the reader arrived, and a start-only line cannot say that.
+  // Driven by the state change rather than the walk's 700ms poll, which would
+  // miss a page that began and landed inside one tick.
+  useEffect(() => {
+    if (!inspectorOn()) return
+    const el = vScrollerElRef.current
+    const vp = el && el.clientHeight > 0 ? (el.scrollTop / el.clientHeight).toFixed(1) : '?'
+    const px = el ? Math.round(el.scrollTop) : -1
+    devLog('OLDER', `${loadingOlder ? 'START' : 'END'} to-top ${px}px=${vp}vp`)
+    // Split the wait into the two halves that have different owners, because
+    // "loading is too slow" is unactionable until it says WHICH half. `fetch` is
+    // the request itself — the backend's work plus the wire. `paint` is
+    // everything after the data is in the store until the page is really on
+    // screen: the reducer, the regroup, the render, and the measurement that
+    // replaces its estimated heights with real ones. A reader does not
+    // experience the first half ending; they experience the second one.
+    const now = Date.now()
+    if (loadingOlder) {
+      olderFetchStartRef.current = now
+      olderHeightAtStartRef.current = el ? el.scrollHeight : 0
+    } else if (olderFetchStartRef.current > 0) {
+      olderFetchMsRef.current = now - olderFetchStartRef.current
+      olderFetchStartRef.current = 0
+      // Closed on the second frame after the store write, which is the earliest
+      // moment the landed rows have actually been PAINTED: one frame for React to
+      // commit, one for the browser to present it. This used to close when the
+      // walk's measurement sweep passed -- that sweep is gone (it waited on an
+      // idle-only farm, so it could only ever pass at rest), and its removal
+      // silently took this timing with it: the overlay simply stopped printing a
+      // `lat` line, which is the failure mode an instrument must not have.
+      const landedAt = now
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          devOlderLatency(olderFetchMsRef.current, Date.now() - landedAt)
+          // The landing's own HEIGHT, read HERE and not in the effect body. The
+          // effect runs in the same commit as the store update, before React has
+          // rendered the new rows, so a synchronous scrollHeight read reports the
+          // height the transcript had BEFORE the page -- which printed as a
+          // 100-message page adding 32px and looked exactly like a real defect.
+          // Two frames later the rows exist and the spacer has been repriced.
+          //
+          // Printed against the trigger because that comparison is the question:
+          // a page that adds less than OLDER_WALK_TRIGGER_PX leaves the reader
+          // still inside the lead, so nearTop stays true and the next tick fires
+          // again -- chain-loading that is really a page too short to clear its
+          // own trigger.
+          const el2 = vScrollerElRef.current
+          const grew = (el2 ? el2.scrollHeight : 0) - olderHeightAtStartRef.current
+          devLog('OLDER', `grew +${Math.round(grew)}px vs trigger ${OLDER_WALK_TRIGGER_PX}px`)
+        })
+      })
+    }
+  }, [loadingOlder])
+
   // THE admission rule for every AUTOMATIC older fetch: the control that offers
   // history must be on the reader's screen. See earlierAffordanceInView for why
   // this replaces the per-trigger geometry/latch proxies, each of which had a
@@ -4766,6 +4877,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return earlierAffordanceInView(
       br ? { top: br.top, bottom: br.bottom } : null,
       { top: vr.top, bottom: vr.bottom },
+      // ZERO lead: the affordance must be genuinely ON SCREEN, not merely within
+      // reach of it. Spending the walk's trigger distance here meant the bar
+      // counted as "in view" while still 2,000px above the viewport, so history
+      // loaded before the reader had any way to see that it was going to -- the
+      // reported "it loads without me seeing Load previous".
+      //
+      // The coupling this replaces existed so the affordance gate could never be
+      // stricter than the trigger and veto every page. It cannot deadlock: the
+      // reader reaches the bar by scrolling, and once it is on screen both gates
+      // agree.
+      0,
     )
   }, [])
 
@@ -4981,11 +5103,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // 'it just keeps loading previous after a refresh'. Requiring one real
     // input event this session before any poll-issued fetch turns the walk
     // back into what its own comment promises: reader-initiated.
-    const noteInput = () => {
-      walkLastInputAtRef.current = Date.now()
-      walkPagesSinceInputRef.current = 0
-      lastRealInputAtRef.current = Date.now()
-      sentinelPagesSinceInputRef.current = 0
+    const noteInput = (e?: Event) => {
+      // A TAP IS NOT A SCROLL. `pointerdown` is in this vocabulary for the
+      // scrollbar-thumb drag — a pointer affordance that exists under a mouse or
+      // a pen and has no equivalent under a finger, since touch scrolling is
+      // already covered by `touchmove`. On a touch device every tap fires
+      // `pointerdown`, including the tap that opens a diff row, so counting it
+      // refilled the older-history page budget on ANY interaction at all: the
+      // walk then drained a long history a few taps at a time, with nothing the
+      // reader did resembling a request for older messages. Excluding the touch
+      // pointer keeps the drag path this event was added for and drops only the
+      // gesture that was never evidence of reading upward.
+      if (e && e.type === 'pointerdown' && (e as PointerEvent).pointerType === 'touch') return
+      const now = Date.now()
+      // ONE EXPRESSION OF INTENT, not one event. A continuous drag fires
+      // `touchmove` around sixty times a second, so refilling the page budget on
+      // every event made "two pages per expression of intent" mean two pages per
+      // EVENT — no bound at all while a finger is moving. That went unnoticed only
+      // because a separate stillness gate used to ensure paging happened when
+      // these events were NOT firing; the budget was never doing the bounding by
+      // itself. Coalescing a stream into the gesture it actually is puts the bound
+      // back where the comment on OLDER_WALK_MAX_PAGES_PER_INPUT says it lives.
+      if (now - lastRealInputAtRef.current > REAL_GESTURE_COALESCE_MS) {
+        walkPagesSinceInputRef.current = 0
+        sentinelPagesSinceInputRef.current = 0
+      }
+      walkLastInputAtRef.current = now
+      lastRealInputAtRef.current = now
     }
     el?.addEventListener('wheel', noteInput, { passive: true })
     el?.addEventListener('touchmove', noteInput, { passive: true })
@@ -5008,18 +5152,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     let lastLanding = 0
     let prevLoading = false
     // Any scroll event — momentum coasting included, which fires no
-    // wheel/touchmove — marks the transcript as still MOVING. A landing's
-    // prepend compensation writes scrollTop, and on iOS a programmatic write
-    // mid-momentum fights the fling's own curve: the reader sees the view
-    // snap. Pages land only when the scroller is fully settled.
+    // wheel/touchmove — records that the transcript is MOVING. It no longer
+    // CANCELS a page: a reader climbing toward the top has already said which
+    // direction they want, and speed does not weaken that intent, so the fetch
+    // is allowed to be in flight while they are still travelling. What the
+    // timestamp still governs is the UPPER bound below — a reader who has come
+    // to rest is no longer climbing and gets no further pages.
     let lastScrollEvt = 0
-    const noteScroll = () => {
-      lastScrollEvt = Date.now()
-      // Motion kills any in-flight page: landings commit only while still.
-      abortActiveOlderFetch()
-    }
-    el?.addEventListener('scroll', noteScroll, { passive: true })
-    const t = setInterval(() => {
+    let attemptRaf = 0
+    // ONE gate chain, two callers. The scroll event is what makes the lead
+    // usable — waiting for the next tick costs more travel than the whole
+    // OLDER_WALK_TRIGGER_PX budget at fling speed — but a SECOND copy of the
+    // chain for it is how one copy silently drifts from the other, so both
+    // callers run this body.
+    const attemptOlderWalk = () => {
       const el2 = virt.scrollerRef?.current
       if (!el2 || el2.clientHeight <= 0) return
       const chat = store.getState().chat
@@ -5036,7 +5182,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // which is what "reader-initiated" has to mean.
       if (!shouldContinueOlderWalk({
         sawRealInput: Date.now() - lastRealInputAtRef.current <= REAL_GESTURE_AUTH_MS,
-        nearTop: el2.scrollTop <= el2.clientHeight,
+        nearTop: el2.scrollTop <= OLDER_WALK_TRIGGER_PX,
         walking,
         pagesSinceInput: walkPagesSinceInputRef.current,
       })) return
@@ -5046,64 +5192,96 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // driven) still page history the moment they actually climb.
       if (vGetFollowRef.current()) return
       if (!earlierBarInViewRef.current()) return
-      if (Date.now() - lastScrollEvt < OLDER_LANDING_SETTLE_MS) return
-      // ...and stops entirely once they are no longer climbing. The settle gate
-      // above only says "not mid-gesture", so on its own it made a reader who
-      // STOPPED near the top the ideal candidate: they would sit still and watch
-      // several pages land under them, one prepend each, which is felt as the
-      // transcript starting to move on its own a second after they let go.
-      // History still reaches back as far as they like -- it loads while they
-      // climb, which is when they are asking for it.
-      if (Date.now() - lastScrollEvt > OLDER_WALK_ACTIVE_MS) return
+      // STILLNESS, not activity. The gate used to require a scroll event within a
+      // recent-activity window -- history loaded WHILE the reader climbed, on the
+      // reasoning that a fast climb wants it sooner. That is the reading that
+      // produced a jolt on every landing: a page arriving mid-gesture has to be
+      // compensated against a scroller that is still moving, and no compensation
+      // makes that invisible.
+      //
+      // Applied unconditionally, and that is a deliberate retreat from splitting it
+      // by platform capability. Gating it on the presence of the CSS scroll-anchoring
+      // property (spelled out nowhere here on purpose -- a source-level guard test
+      // reads prose as the violation it is looking for) looked
+      // right -- with CSS scroll anchoring the compositor absorbs a prepend before
+      // paint, so rest is genuinely unnecessary there -- and it failed on the one
+      // platform it existed for. WebKit has now LANDED the property (bug 307734),
+      // so it parses and answers the probe on a device where the anchoring does not
+      // hold a virtualized list; WebKit's own tracker says as much about an earlier
+      // round of this ("the supported listing is misleading, it is currently not
+      // implemented"). Presence of a property is not evidence of a behaviour, and a
+      // capability split on a signal that cannot be verified fails toward loading
+      // mid-fling -- the exact thing this gate exists to prevent.
+      //
+      // The failure is worth recording because the symptom did not look like this
+      // gate at all: with the gate off, a fling near the top drives `scrollTop`
+      // NEGATIVE (iOS rubber band -- measured at -2810), `isOverscrolled` correctly
+      // refuses to treat a stretch as a content position and skips compensation, so
+      // the reader is not advanced, the affordance stays on screen, and the level-
+      // triggered poll re-fires. Reported as "it loads continuously", caused by a
+      // position that was never held. Bringing it back on a BEHAVIOURAL probe (did
+      // a prepend land already-correct before we wrote anything?) is a real option;
+      // a property name is not.
+      if (Date.now() - lastScrollEvt < OLDER_WALK_QUIET_MS) return
       if (!chat.slotHasMore || chat.loadingOlder || chat.slotOlderError) return
       if (chat.slotCursorKey !== chat.activeSlot) return
-      // Same contract as the idle prefetch: a page lands only on FULLY
-      // MEASURED geometry. Without this the walk outran the farm and piled
-      // unmeasured rows over the parked reader -- every measurement landing
-      // was an estimate correction under their eyes (reproduced on the rig
-      // as per-landing twitches at the top). Turn-grouped pages measure in
-      // ~1-2s, so the walk's pace barely changes.
-      const nRows = displayItemsRef.current.length
-      for (let i = 0; i < nRows; i++) { if (!virt.farmIsMeasured(i)) return }
+      // NO measurement gate. This used to require the rows above and around the
+      // reader to carry farm-measured heights, and that is a structural
+      // contradiction with the thing it asked: the measure farm runs in IDLE TIME
+      // by design, precisely so it does not correct heights under the reader's
+      // finger. A gate that waits on it therefore fires only when the reader has
+      // stopped -- reported from the device as "it still only loads previous once
+      // I completely stop scrolling", and narrowing WHICH rows it swept did not
+      // help, because the blocking row was index 0: freshly prepended, never
+      // mounted, so the farm is the only thing that can ever measure it.
+      //
+      // It also did not protect the case it was built for. Its rationale was
+      // per-landing twitches for a PARKED reader -- but a parked reader is exactly
+      // when the farm IS running, so the gate passed and pages landed anyway. What
+      // decides pages for them now is the stillness gate below, which loads FOR a
+      // parked reader on purpose: at rest is the one state where a landing cannot
+      // be felt. So the gate blocked the reader who needed history and was inert for
+      // the reader it was meant to shield.
+      //
+      // The hazard itself is already owned: a correction above the reader is what
+      // repriceAboveFoldDelta compensates, and that is the mechanism's whole
+      // purpose. One mechanism corrects the position at a time; this was a second,
+      // redundant one whose cost was the entire feature.
       walkPagesSinceInputRef.current += 1
       if (inspectorOn()) devLog('OLDER', `walk p${walkPagesSinceInputRef.current}`)
       void dispatch(loadOlderMessages())
-    }, OLDER_TOP_POLL_MS)
+    }
+    const noteScroll = () => {
+      lastScrollEvt = Date.now()
+      // Motion kills any page already in flight, not just the next one. The
+      // stillness gate below decides whether to START a fetch, and it is checked
+      // when the fetch begins -- a reader who was at rest then flings during the
+      // ~130ms round trip would otherwise get a landing mid-gesture, which is the
+      // one moment the compensation cannot be invisible. Landings commit only while
+      // still, so the two halves have to agree: one refuses to start, this one
+      // refuses to finish.
+      abortActiveOlderFetch()
+      // Coalesced to one attempt per FRAME, not per event: a fling delivers many
+      // scroll events per frame and the chain ends in an O(rows) measurement
+      // sweep, so running it per event would spend the reader's frame budget on
+      // the very gesture this is meant to keep smooth. Cancel-and-reschedule
+      // rather than latch-on-pending — a dropped frame handle must not wedge the
+      // trigger for the rest of the mount.
+      if (attemptRaf) cancelAnimationFrame(attemptRaf)
+      attemptRaf = requestAnimationFrame(() => { attemptRaf = 0; attemptOlderWalk() })
+    }
+    el?.addEventListener('scroll', noteScroll, { passive: true })
+    const t = setInterval(attemptOlderWalk, OLDER_TOP_POLL_MS)
     return () => {
       clearInterval(t)
+      if (attemptRaf) cancelAnimationFrame(attemptRaf)
       el?.removeEventListener('scroll', noteScroll)
       el?.removeEventListener('wheel', noteInput)
       el?.removeEventListener('touchmove', noteInput)
       el?.removeEventListener('keydown', noteInput)
       el?.removeEventListener('pointerdown', noteInput)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- listeners re-arm on these triggers only; handlers read refs
   }, [slotHasMore, dispatch, virt.scrollerRef])
-
-  // The sticky in-flight spinner is only meaningful where pages LAND — at the
-  // top of the loaded transcript. `loadingOlder` is now true for the whole
-  // automatic walk (a dozen pages back-to-back), so gating the spinner on the
-  // fetch alone kept it pinned over the reader even mid-transcript. Track
-  // "near the top" cheaply: the setState is value-stable away from the
-  // threshold, so mid-scroll updates bail before rendering.
-  const [spinnerNearTop, setSpinnerNearTop] = useState(true)
-  useEffect(() => {
-    const el = virt.scrollerRef?.current
-    if (!el) return
-    let raf = 0
-    const onScroll = () => {
-      // Cancel-and-reschedule, never latch-on-pending (frameSchedulerLatch
-      // guard): a dropped frame handle must not wedge the near-top signal.
-      if (raf) cancelAnimationFrame(raf)
-      raf = requestAnimationFrame(() => {
-        raf = 0
-        setSpinnerNearTop(el.scrollTop < el.clientHeight * 1.5)
-      })
-    }
-    onScroll()
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => { el.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
-  }, [virt.scrollerRef, activeSlot])
 
   // A failed older-page fetch PARKS pagination: the top sentinel is already
   // inside the viewport, so no new crossing ever fires and automatic paging
@@ -7160,8 +7338,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               scrollerRef={scrollerRef}
               onScroll={onScrollPin}
               virt={virt}
-              loadingOlder={loadingOlder}
-              spinnerNearTop={spinnerNearTop}
               // Second half of the fade-band clearance, alongside
               // TRANSCRIPT_TAIL_SPACER_PX. Unlike the tail spacer this one also
               // applies to a transcript short enough not to scroll, so both are

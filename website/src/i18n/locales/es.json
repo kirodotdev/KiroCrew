@@ -9923,7 +9923,6 @@
       "upload_failed_error": "Error al subir: {{error}}",
       "what_can_i_do_for_you": "¿Qué puedo hacer por ti?",
       "worktree_creation_returned_no_path": "La creación del worktree no devolvió ninguna ruta",
-      "loading_earlier_messages": "Cargando mensajes anteriores…",
       "send_failed_with_error": "Error al enviar: {{error}}",
       "delivery_unconfirmed": "Entrega sin confirmar: tu texto ha vuelto al cuadro de redacción; revisa la conversación antes de enviarlo de nuevo.",
       "could_not_read_file_reason": "No se pudo leer {{path}} ({{reason}})",

@@ -9923,7 +9923,6 @@
       "upload_failed_error": "Falha no envio: {{error}}",
       "what_can_i_do_for_you": "O que posso fazer por você?",
       "worktree_creation_returned_no_path": "A criação da worktree não retornou nenhum caminho",
-      "loading_earlier_messages": "Carregando mensagens anteriores…",
       "send_failed_with_error": "Falha ao enviar: {{error}}",
       "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
       "could_not_read_file_reason": "Não foi possível ler {{path}} ({{reason}})",

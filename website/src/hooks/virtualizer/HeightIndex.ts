@@ -11,6 +11,7 @@ import { OffsetIndex } from './WindowCalculator'
  * reads the caller's live refs at call time) because the owner is constructed
  * during render, one statement before the item array it will be asked about.
  */
+
 type RowKeyResolver = (index: number) => string | null
 
 /**
@@ -142,12 +143,17 @@ export class HeightIndex {
     if (key === null) return this.estimate
     const cached = this.cache.peek(key)
     if (cached !== undefined) return Math.max(cached, 1)
-    // A content-aware per-row estimate beats the running mean where content is
-    // bimodal: a code-fenced row is often 5-30x the mean, and mounting it near
-    // the top used to land a huge height correction that read as a scroll jump
-    // (which the top-parked pagination poll then amplified into runaway page
-    // loads). The resolver answers only for rows it can price (code fences at
-    // known per-line metrics); everything else keeps the measured mean.
+    // NO ESTIMATE HERE, and this is a product rule rather than a tuning choice:
+    // a price is either COMPUTED or WAITED FOR. Every landing jump measured
+    // tonight traces to a row priced by a guess -- the mean under-prices a
+    // code-fenced row 5-30x, the compensation's anchor-miss fallback then
+    // under-compensates by the shortfall, and the reader is thrown by it. A
+    // calibrated guess is still a guess and fails the same way, just less often,
+    // which is worse: it removes the symptom that would have found it.
+    //
+    // The mean stays only as the floor for a row nothing else can answer for.
+    // Making the landing path never REACH this line -- by measuring the incoming
+    // rows before they enter the tree -- is the actual fix.
     return this.cache.averageHeight(this.estimate)
   }
 

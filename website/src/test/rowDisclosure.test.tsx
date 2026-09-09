@@ -20,11 +20,15 @@ function Probe({ id }: { id?: string }) {
 /** `mounted` mirrors the virtualizer: false means the row is not rendered. */
 function Host({ children }: { children: (mounted: boolean) => React.ReactNode }) {
   const [mounted, setMounted] = useState(true)
-  const [slot, setSlot] = useState('slot-a')
+  const [slot, setSlot] = useState<string | null>('slot-a')
   return (
     <RowDisclosureProvider resetKey={slot}>
       <button data-testid="recycle" onClick={() => setMounted(m => !m)}>recycle</button>
       <button data-testid="switch-slot" onClick={() => setSlot('slot-b')}>switch</button>
+      {/* ChatPage clears the active slot whenever the slot list momentarily does
+          not contain it; an auto-select then restores the SAME slot. */}
+      <button data-testid="clear-slot" onClick={() => setSlot(null)}>clear</button>
+      <button data-testid="restore-slot" onClick={() => setSlot('slot-a')}>restore</button>
       {children(mounted)}
     </RowDisclosureProvider>
   )
@@ -69,6 +73,24 @@ describe('useRowDisclosure', () => {
     render(<Host>{m => (m ? <Probe id="row-1" /> : null)}</Host>)
     fireEvent.click(screen.getByRole('button', { name: 'row-1' }))
     expect(expandedOf('row-1')).toBe('true')
+    fireEvent.click(screen.getByTestId('switch-slot'))
+    expect(expandedOf('row-1')).toBe('false')
+  })
+
+  it('keeps choices when the active slot is momentarily unknown and comes back', () => {
+    render(<Host>{m => (m ? <Probe id="row-1" /> : null)}</Host>)
+    fireEvent.click(screen.getByRole('button', { name: 'row-1' }))
+    expect(expandedOf('row-1')).toBe('true')
+    // No slot is active for a beat — a slot-list refresh, not a navigation.
+    fireEvent.click(screen.getByTestId('clear-slot'))
+    fireEvent.click(screen.getByTestId('restore-slot'))
+    expect(expandedOf('row-1')).toBe('true')
+  })
+
+  it('still drops choices when the unknown beat lands on a DIFFERENT slot', () => {
+    render(<Host>{m => (m ? <Probe id="row-1" /> : null)}</Host>)
+    fireEvent.click(screen.getByRole('button', { name: 'row-1' }))
+    fireEvent.click(screen.getByTestId('clear-slot'))
     fireEvent.click(screen.getByTestId('switch-slot'))
     expect(expandedOf('row-1')).toBe('false')
   })

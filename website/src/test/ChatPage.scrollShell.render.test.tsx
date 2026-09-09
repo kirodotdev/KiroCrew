@@ -22,7 +22,7 @@ initI18n('en')
 
 const ref = () => ({ current: null as HTMLDivElement | null })
 
-function mount(loadingOlder: boolean) {
+function mount() {
   const scrollerRef = ref()
   const virt = { topSentinelRef: ref(), bottomSentinelRef: ref(), offsetBefore: 123, offsetAfter: 456 }
   const utils = render(
@@ -30,7 +30,6 @@ function mount(loadingOlder: boolean) {
       scrollerRef={scrollerRef}
       onScroll={() => {}}
       virt={virt}
-      loadingOlder={loadingOlder}
       scrollerStyle={{ paddingBottom: 16 }}
       aboveRows={<div data-testid="slot-above" />}
       belowRows={<div data-testid="slot-below" />}
@@ -43,7 +42,7 @@ function mount(loadingOlder: boolean) {
 
 describe('TranscriptScrollShell DOM contract', () => {
   it('renders the skeleton in order: header spacer, aboveRows, top sentinel, top spacer, rows, bottom spacer, bottom sentinel, belowRows', () => {
-    const { scrollerRef, virt } = mount(false)
+    const { scrollerRef, virt } = mount()
     const scroller = scrollerRef.current!
     expect(scroller).toBeTruthy()
     const kids = Array.from(scroller.children)
@@ -69,20 +68,15 @@ describe('TranscriptScrollShell DOM contract', () => {
     expect(new Set(order).size).toBe(order.length)
   })
 
-  it('mounts the older-messages spinner between the top sentinel and the top spacer only while loadingOlder', () => {
-    const off = mount(false)
-    expect(off.queryByTestId('older-messages-loading')).toBeNull()
-    off.unmount()
-
-    const { scrollerRef, virt, queryByTestId } = mount(true)
-    const spinner = queryByTestId('older-messages-loading')!
-    expect(spinner).toBeTruthy()
-    const kids = Array.from(scrollerRef.current!.children)
-    const spinnerIdx = kids.indexOf(spinner)
-    const sentinelIdx = kids.indexOf(virt.topSentinelRef.current!)
-    const topSpacerIdx = kids.findIndex(k => (k as HTMLElement).style.height === '123px')
-    expect(spinnerIdx).toBeGreaterThan(sentinelIdx)
-    expect(spinnerIdx).toBeLessThan(topSpacerIdx)
+  it('shows NO loading overlay for older pages, in any state', () => {
+    // Automatic paging has to be imperceptible: the reader did not ask for the
+    // fetch, so announcing it turns a silent prefetch into an event, and a badge
+    // pinned under the header floats over whatever they are actually reading.
+    // Feedback for the MANUAL path lives on EarlierMessagesBar, which is on
+    // screen exactly when the reader reached for it. The shell therefore takes no
+    // loading prop at all — there is no state in which it can draw one.
+    const { queryByTestId } = mount()
+    expect(queryByTestId('older-messages-loading')).toBeNull()
   })
 
   it('fires onScroll from the scroller element itself', () => {
@@ -95,7 +89,6 @@ describe('TranscriptScrollShell DOM contract', () => {
         scrollerRef={scrollerRef}
         onScroll={() => { calls++ }}
         virt={{ topSentinelRef: ref(), bottomSentinelRef: ref(), offsetBefore: 0, offsetAfter: 0 }}
-        loadingOlder={false}
       >
         <div />
       </TranscriptScrollShell>,
@@ -111,7 +104,6 @@ describe('TranscriptScrollShell DOM contract', () => {
         scrollerRef={scrollerRef}
         onScroll={() => {}}
         virt={{ topSentinelRef: ref(), bottomSentinelRef: ref(), offsetBefore: 0, offsetAfter: 0 }}
-        loadingOlder={false}
         scrollerStyle={{ overflowX: 'auto', overflowY: 'visible', paddingBottom: 16 } as React.CSSProperties}
       >
         <div />
@@ -143,7 +135,6 @@ describe('ChatPage invocation: slot membership and prop threading', () => {
       'scrollerRef={scrollerRef}',
       'onScroll={onScrollPin}',
       'virt={virt}',
-      'loadingOlder={loadingOlder}',
       // A PREFIX, not the whole literal: the style object also carries the
       // restore-gate visibility flip, so pinning the closing braces would pin the
       // gate's presence into a test about prop THREADING. This still fails on a

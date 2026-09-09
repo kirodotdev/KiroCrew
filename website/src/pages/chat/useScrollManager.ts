@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react'
+import { devLog, inspectorOn } from '../../dev/scrollInspector'
 
 /**
  * Scroll management hook for chat — provides scroller ref, isAtBottom
@@ -17,6 +18,12 @@ export function useScrollManager() {
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = scrollerRef.current
     if (!el) return
+    // Logged through the SAME tag the virtualizer's chokepoint uses, because
+    // this module writes the very element the virtualizer owns (see ChatPage's
+    // note that the two share `scrollerRef`) while bypassing that chokepoint --
+    // so without this line the movement is invisible to the write log and shows
+    // up only as unattributed displacement.
+    if (inspectorOn()) devLog('WRITE', `sm-bottom ${Math.round(el.scrollTop)}->${Math.round(el.scrollHeight)}`)
     if (typeof el.scrollTo === 'function') {
       el.scrollTo({ top: el.scrollHeight, behavior })
     } else {
@@ -58,6 +65,7 @@ export function useScrollManager() {
     else if (align === 'end') top = elTop - container.clientHeight + el.offsetHeight
     else top = elTop + offset // 'start' — offset is usually negative to clear the header
     top = Math.max(0, Math.min(max, top))
+    if (inspectorOn()) devLog('WRITE', `sm-index ${Math.round(container.scrollTop)}->${Math.round(top)}`)
     if (typeof container.scrollTo === 'function') container.scrollTo({ top, behavior })
     else container.scrollTop = top
     return true

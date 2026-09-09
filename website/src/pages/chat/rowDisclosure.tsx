@@ -73,9 +73,27 @@ export function RowDisclosureProvider({ resetKey, children }: { resetKey?: strin
   const storeRef = useRef<RowDisclosureStore | null>(null)
   if (!storeRef.current) storeRef.current = new RowDisclosureStore()
   const store = storeRef.current
+  // Only a move to a DIFFERENT, KNOWN slot may drop the recorded choices.
+  // `resetKey` is null whenever no slot is active, and that is an ABSENCE OF
+  // INFORMATION rather than the reader leaving the conversation: ChatPage clears
+  // the active slot as soon as the slot list does not contain it, and an
+  // auto-select puts the same slot straight back — so a list refresh alone
+  // produced key -> null -> key. Resetting on that closed every open row in a
+  // transcript nobody had navigated away from, mid-read. Skipping the null keeps
+  // the per-slot guarantee intact, because a switch to another session still
+  // arrives as a different known key and still resets.
+  //
   // Reset in an effect, not during render: reset() notifies subscribers, and
   // doing that mid-render would set state on other components while rendering.
-  useEffect(() => { store.reset() }, [resetKey, store])
+  const lastKnownRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (resetKey == null) return
+    const prev = lastKnownRef.current
+    lastKnownRef.current = resetKey
+    // The first key seen is a baseline, not a switch: the store is empty anyway
+    // and resetting would notify subscribers for nothing.
+    if (prev !== null && prev !== resetKey) store.reset()
+  }, [resetKey, store])
   return <RowDisclosureContext.Provider value={store}>{children}</RowDisclosureContext.Provider>
 }
 

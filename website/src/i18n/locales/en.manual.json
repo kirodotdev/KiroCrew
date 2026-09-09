@@ -3713,7 +3713,6 @@
       "upload_failed_check_file_type_and_size_max_50_mb": "Upload failed — check file type and size (max 50 MB)",
       "upload_failed_error": "Upload failed: {{error}}",
       "worktree_creation_returned_no_path": "Worktree creation returned no path",
-      "loading_earlier_messages": "Loading earlier messages…",
       "send_failed_with_error": "Send failed: {{error}}",
       "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the transcript before sending it again.",
       "could_not_read_file_reason": "Could not read {{path}} ({{reason}})",

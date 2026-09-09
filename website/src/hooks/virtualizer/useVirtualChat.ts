@@ -34,6 +34,53 @@
 // compensated after it. The CSS is retained — reliance on it is reduced, not
 // replaced.
 //
+// WHAT CHANGED UNDER THIS PASS: iOS now anchors too, so we are the SECOND
+// controller, not the only one.
+//
+// The pass was written for a world where Chromium and Firefox anchored and WebKit
+// did not — so on a phone the whole weight sat here, and on desktop these writes
+// were a near-zero-delta backstop. That split no longer holds. WebKit landed
+// scroll anchoring (bug 307734, "[Scroll anchoring] Enable in stable"), and it has
+// reached a real device: an off-screen probe on iOS Safari reports the property
+// present AND a prepend above a parked scroll position actually moving `scrollTop`
+// by the inserted height. Measured, not inferred from a version string — and it
+// refuted the opposite prediction, so it is recorded rather than remembered.
+//
+// The consequence is NOT that the pass is wrong. Measured on a device where the
+// browser anchors, a clean landing is exact and invisible:
+//
+//   CORR d=8360 owed=8360 res=0 painted=0
+//   WRITE resize 0->8360
+//   HELD was=111 now=111 off=0
+//
+// One write, every pixel of it owed, zero residual, the anchor row read back
+// unmoved, and `painted=0` -- no frame was ever presented with the content
+// displaced. So exactness is reachable and this is the shape to protect.
+//
+// What the second controller costs shows up on the landings that ALSO run the
+// above-fold reprice, as a run of writes that CONVERGE rather than correct --
+// device reading, seven inside 100ms:
+//
+//   13274->13282 (+8) ->13287 (+5) ->13291 (+4) ->13294 (+3)
+//   ->13295 (+2) ->13295 (+1) ->13296 (+1)
+//
+// That shape is two controllers settling against each other. It lands correct to
+// a pixel (`HELD off=1`) while the MOTION is wrong, and the reader sees content
+// that was already loaded shift slightly instead of standing still. Subtle, and
+// real, and confined to that path rather than inherent to the compensation.
+//
+// The fix this points at is NOT another correction: it is to ask BEFORE writing
+// whether the anchor row already sits where it was captured, and to write nothing
+// when it does — the readback that currently reports `HELD`, moved ahead of the
+// write. That also happens to be the only honest basis for a per-platform split:
+// a browser earns "we stay out of it" by demonstrating the hold on this landing,
+// never by exposing a property name. A split keyed to the property was shipped
+// and withdrawn precisely because it turned off the stillness gate while leaving
+// these writes in place, which is the worst of both.
+//
+// Not done here deliberately: one mechanism corrects the position at a time, and
+// changing which one that is deserves its own change with its own device pass.
+//
 // Render contract for callers:
 //   - Wrap the scroll container with `scrollerRef`
 //   - Render the items in `virtualItems`: when `item.mounted` is true render
@@ -120,7 +167,6 @@ import {
   bottomTarget,
   evaluateAutoPin,
 } from './FollowController'
-import { noteUserScrollActivity } from '../../lib/scrollQuiet'
 import type {
   UseVirtualChatOptions,
   UseVirtualChatReturn,
@@ -241,7 +287,8 @@ const NEAR_JUMP_OVERSCAN_MULT = 4
 // at scroll-event rate. Trailing-edge, non-resetting timer: it fires at most
 // once per window even during a continuous scroll/stream, so "returned to the
 // bottom" reliably clears the anchor instead of being starved by resets.
-import { devLog, devWatchScroller, inspectorOn, keyShape, shortId } from '../../dev/scrollInspector'
+import { contentShiftFor } from './anchorCorrection'
+import { devLog, devScrollTop, devSpacer, devWatchScroller, inspectorOn, keyShape, shortId } from '../../dev/scrollInspector'
 
 /** How long an anchored entry may hold its caller's skeleton waiting for the
  *  anchored row to hydrate. A transcript arrives in CHUNKS, not at once: the
@@ -304,6 +351,12 @@ const ANCHOR_RESTORE_SETTLE_MS = 600
  *  sit above what the two coordinate systems can disagree about while staying
  *  far below the errors this exists to fix (measured: 111px on one frame). */
 const ANCHOR_SETTLE_TOLERANCE_PX = 1.5
+/** How long a press keeps locating a disclosure's growth. One toggle grows its row
+ *  across several ResizeObserver fires as the revealed content renders (a long tool
+ *  output paints over many frames), and the window has to outlast all of them or the
+ *  later fires get compensated as if they were a re-measure. Bounded so an unrelated
+ *  reprice seconds after a tap is not silently exempted. */
+const DISCLOSURE_PRESS_WINDOW_MS = 1500
 
 /**
  * Whether a prepend SHIFT COMPENSATION may write the scroll position.
@@ -362,7 +415,14 @@ function captureTopAnchorFrom(
   el: HTMLDivElement,
   entries: Iterable<[Element, number]>,
   keyAt: (index: number) => string | null,
-): { key: string; top: number; index: number } | null {
+  offsetAt: (index: number) => number,
+  /** The running total of our own scrollTop writes at this instant. Travels with
+   *  the anchor for the same reason `scrollTop` does: the correction needs to know
+   *  how much of the drift since capture was the reader and how much was us, and
+   *  that is a DIFFERENCE against this baseline. Without it the two are
+   *  indistinguishable and a concurrent reprice gets paid for twice. */
+  writeSum: number,
+): { key: string; top: number; index: number; scrollTop: number; contentOffset: number; writeSum: number } | null {
   if (typeof el.getBoundingClientRect !== 'function') return null
   const srTop = el.getBoundingClientRect().top
   let bestIdx = Infinity
@@ -382,7 +442,33 @@ function captureTopAnchorFrom(
       bestKey = key
     }
   }
-  return bestKey !== null ? { key: bestKey, top: bestTop, index: bestIdx } : null
+  // The scroll position this measurement was taken in travels WITH the anchor, and
+  // so does the row's CONTENT offset -- how much transcript lies above it.
+  //
+  // `top` alone is not enough to correct anything: it is a screen position, and a
+  // screen position means one thing at one scrollTop and something else at
+  // another. Recording it here rather than in a ref beside one call site is the
+  // difference between a correction that works everywhere and one that silently
+  // no-ops -- a first attempt read the value from a ref that only the PREPEND path
+  // populates, so on a device the splice path kept writing kilopixels while the
+  // fix looked applied.
+  //
+  // `contentOffset` is what makes the correction CHECKABLE. The top spacer looks
+  // like the content above the reader but is not: once the window starts at index
+  // 0 -- the state every top-walk ends in -- prepended rows mount ABOVE the anchor
+  // instead of growing the spacer, so the spacer reads 0 before and after while
+  // thousands of pixels really did arrive. The anchor's own offset does not care
+  // which side of the window boundary the growth landed on.
+  return bestKey !== null
+    ? {
+      key: bestKey,
+      top: bestTop,
+      index: bestIdx,
+      scrollTop: el.scrollTop,
+      contentOffset: offsetAt(bestIdx),
+      writeSum,
+    }
+    : null
 }
 
 /** Positional re-identification, shared by TRIGGER 1's and the splice
@@ -432,17 +518,38 @@ function nearestSurvivorShiftFrom<T>(
 /** Screen offset of the mounted row whose key matches, relative to the
  *  scroller's top; null when it is not mounted. Pure over its inputs like the
  *  capture above, so both anchor consumers resolve a row the same way. */
+/** True while the scroller sits OUTSIDE its own range -- the elastic rubber-band
+ *  state iOS enters when a finger pulls past an edge.
+ *
+ *  A position outside [0, max] is not a content position, so any displacement
+ *  measured against it describes how far the BAND is stretched rather than how far
+ *  the content moved. Every corrector that writes `scrollTop` has to consult this,
+ *  which is why it is one function rather than the same comparison spelled at each
+ *  site: a corrector that forgot it wrote 11,096px from a `scrollTop` of -2810 on a
+ *  device while no content had appeared above the reader at all. */
+function isOverscrolled(el: HTMLElement): boolean {
+  const max = Math.max(0, el.scrollHeight - el.clientHeight)
+  return el.scrollTop < 0 || el.scrollTop > max
+}
+
 function rowTopFrom(
   el: HTMLDivElement,
   entries: Iterable<[Element, number]>,
   keyAt: (index: number) => string | null,
   key: string,
-): number | null {
+): { top: number; index: number } | null {
   if (typeof el.getBoundingClientRect !== 'function') return null
   for (const [node, idx] of entries) {
     if (keyAt(idx) !== key) continue
     const srTop = el.getBoundingClientRect().top
-    return (node as HTMLElement).getBoundingClientRect().top - srTop
+    // The index comes back with the position because the CALLER's stored index is
+    // stale by now: a landing renumbers every row, so the same number names a
+    // different row afterwards. Resolving by key and reporting where that key
+    // actually landed is the only way to ask the offset tree about the same row
+    // twice -- computing "how much arrived above it" from the old number answered
+    // for whichever row inherited that slot, which on a device read as zero while
+    // thousands of pixels had arrived.
+    return { top: (node as HTMLElement).getBoundingClientRect().top - srTop, index: idx }
   }
   return null
 }
@@ -680,6 +787,11 @@ export function useVirtualChat<T>(
 
   // One shared ResizeObserver; Element → index map resolves heights cheaply.
   const elIndexRef = useRef<Map<Element, number>>(new Map())
+  /** The reader's last press inside the scroller: which row, at what viewport Y.
+   *  Read by the above-fold reprice to locate a disclosure's insertion point --
+   *  see the pointerdown listener for why a press position is a measurement of
+   *  that point rather than a guess about intent. */
+  const pressRef = useRef<{ index: number; y: number; at: number } | null>(null)
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
 
   // Live items array (lets imperative callbacks read current state).
@@ -701,6 +813,30 @@ export function useVirtualChat<T>(
   // beating the RO-vs-scroll-event race.
   const stickRef = useRef<boolean>(followOutput)
   const lastWriteTopRef = useRef<number>(-1)
+  /** Running total of every scrollTop pixel THIS CODE has written.
+   *
+   *  Exists so the correction can tell the reader's finger from its own earlier
+   *  hand. `contentShiftFor` isolates the content term by adding back the scrollTop
+   *  change since capture, on the premise that the change is the reader scrolling.
+   *  It is not always: a device frame carried `repriced 3078px in 7` writes landing
+   *  between one anchor's capture and its consume, so the drift added back was our
+   *  own reprice, and the correction paid for it twice --
+   *
+   *    CORR d=-267 owed=-354 res=86 painted=1   WRITE resize 7562->7295
+   *    HELD was=-31 now=236 off=268
+   *
+   *  -- where the row's MEASURED displacement was 1px and the write was 267.
+   *
+   *  Accumulated at the one chokepoint every write already passes through, so a new
+   *  writer cannot forget to register. The REQUESTED delta is what accumulates, not
+   *  a readback: reading `scrollTop` after the write forces a synchronous layout on
+   *  a path that runs per frame during a fling. The cost of that choice is real and
+   *  bounded -- a write the engine CLAMPS registers more than it moved, so the
+   *  subtraction over-credits us -- and it is the `UNOWNED <px> clamp` instrument's
+   *  job to make that visible. Writes at the range edges, where clamping happens,
+   *  are already refused by `isOverscrolled`.
+   */
+  const writeSumRef = useRef(0)
   // `lastWriteClientHRef`: the scroller's `clientHeight` at the moment
   // `lastWriteTopRef` was recorded — i.e. the viewport box that value was a
   // bottom FOR. Kept in lockstep with it (`-1` alongside `-1`) so the pin
@@ -874,7 +1010,23 @@ export function useVirtualChat<T>(
    *   'ready'           — window shift captured; correct only. No re-derive:
    *                       the shift already is the window's own decision.
    */
-  const shiftAnchorRef = useRef<{ key: string; top: number } | null>(null)
+  // Carries the scroll position its `top` was measured in -- see
+  // captureTopAnchorFrom. `heightAnchorPendingRef` above already pairs a
+  // measurement with its scrollTop for the same reason.
+  // Set once the offset tree for this render exists; at capture time it still
+  // holds the PREVIOUS commit's tree, which is the 'before' value a correction needs.
+  const offsetOfRef = useRef<(index: number) => number>(() => 0)
+  const shiftAnchorRef = useRef<{
+    key: string
+    top: number
+    scrollTop: number
+    index: number
+    contentOffset: number
+    /** Our own write total at capture. Paired with `scrollTop` for the same reason
+     *  `scrollTop` is paired with `top`: the drift since capture is only usable once
+     *  it is split into the reader's part and ours. */
+    writeSum: number
+  } | null>(null)
   const shiftStageRef = useRef<'awaiting-rebase' | 'rebased' | 'ready' | null>(null)
   /** How far DOWN the anchored row moved in the list (new index minus old), set
    *  by TRIGGER 1's capture and consumed by part 1. Equal to the net count growth
@@ -955,6 +1107,38 @@ export function useVirtualChat<T>(
   // Guards the shared slot: a prepend capture in THIS render must not then be
   // overwritten by the window-shift branch below (a re-base changes the range).
   let anchorCapturedThisRender = false
+  // Did the browser PAINT between an anchor's capture and its correction?
+  //
+  // The reader's final position is right -- read back after the write, the anchor
+  // lands 1px from where it was captured. Yet the jolt is visible, and those two
+  // facts are only compatible if a frame was PRESENTED while the correction was
+  // still pending: the row sits thousands of pixels low for one paint, then snaps.
+  // Every other measurement here is taken inside the same tick as the write, so
+  // none of them can see that frame.
+  //
+  // A rAF armed at capture answers it: if the callback runs before the consume,
+  // the browser reached a paint in between.
+  const paintedBeforeCorrectionRef = useRef(false)
+  const armPaintProbe = () => {
+    if (!inspectorOn()) return
+    paintedBeforeCorrectionRef.current = false
+    requestAnimationFrame(() => { paintedBeforeCorrectionRef.current = true })
+  }
+  // Resolves a row index to how much transcript lies ABOVE it, read through a ref
+  // so every capture site gets it without passing it.
+  //
+  // A ref rather than the tree itself, for two reasons that both matter. The tree
+  // is built later in this render, so naming it here is a temporal-dead-zone
+  // crash; and what a capture WANTS is the offset as it stood BEFORE this commit,
+  // which is exactly what the ref still holds at that moment. A wrapper rather
+  // than a fourth argument at each site because there are nine of them, and the
+  // failure mode of forgetting one is silent: the anchor records 0, the residual
+  // it is meant to expose reads as zero error, and the site looks fixed.
+  const captureAnchor = (
+    el: HTMLDivElement,
+    entries: Iterable<[Element, number]>,
+    keyAt: (index: number) => string | null,
+  ) => captureTopAnchorFrom(el, entries, keyAt, offsetOfRef.current, writeSumRef.current)
   // A front-insert grows the count AND changes index 0's key. A slot switch does
   // both, hence the session guard; a plain append leaves index 0 alone.
   const _t1Armed =
@@ -987,7 +1171,7 @@ export function useVirtualChat<T>(
     const newIndexById = new Map<string, number>()
     for (let i = 0; i < items.length; i++) newIndexById.set(idOfNew(items[i], i), i)
     let prependAnchor = prependEl
-      ? captureTopAnchorFrom(prependEl, elIndexRef.current.entries(), (idx) => {
+      ? captureAnchor(prependEl, elIndexRef.current.entries(), (idx) => {
           const it = prependPrev.items[idx]
           if (!it) return null
           const k = idOfPrev(it, idx)
@@ -1038,7 +1222,7 @@ export function useVirtualChat<T>(
       // anywhere does the net count stand in -- the reader then keeps their
       // distance from the END, the one thing a full re-identification of a
       // chat transcript preserves.
-      prependAnchor = captureTopAnchorFrom(prependEl, elIndexRef.current.entries(), (idx) => {
+      prependAnchor = captureAnchor(prependEl, elIndexRef.current.entries(), (idx) => {
         const j = idx + shiftAt(idx)
         const it = items[j]
         return it ? idOfNew(it, j) : null
@@ -1048,19 +1232,38 @@ export function useVirtualChat<T>(
     // Part 1 re-bases by the reader's own displacement, in either direction --
     // rows coalescing ABOVE the reader while the tail grows moves them UP even
     // though the count grew -- which is what keeps the anchored row mounted for
-    // part 2 to measure. A displacement of zero leaves nothing to re-base; a
-    // height change above an unmoved row is trigger 7's case, not this one.
+    // part 2 to measure. A displacement of zero leaves nothing to re-base, so
+    // it skips straight to the measurement as TRIGGER 7 below.
     if (prependAnchor && prependShift !== 0) {
       shiftAnchorRef.current = prependAnchor
       shiftStageRef.current = 'awaiting-rebase'
       prependCountRef.current = prependShift
       anchorCapturedThisRender = true
     } else if (prependAnchor) {
-      // Anchored but unmoved: the landing did not displace the reader's rows,
-      // so the arithmetic fallback must not fire either (compensating an
-      // insert that is not above the reader would itself be the lurch).
+      // TRIGGER 7 -- ABSORBED LANDING. The page merged into a display row that
+      // already existed (same turn), so every row KEPT its index and there is
+      // nothing to re-base. What changed is that row's CONTENT: it grew, above
+      // the reader, and nothing was correcting for it.
+      //
+      // The arithmetic fallback must still NOT fire: compensating an insert
+      // that is not above the reader would itself be the lurch, so its inputs
+      // stay cleared. What does apply is the anchor's own measurement. The
+      // consume pass that already serves the splice triggers re-finds this key
+      // after the commit, reads its new offset, and corrects by the delta --
+      // so this case is handled by the SAME corrector as every other one
+      // rather than a second mechanism racing it.
+      //
+      // Nothing here is estimated: the correction is the difference between two
+      // real `getBoundingClientRect` readings of one row mounted in both
+      // commits. That does NOT make it sufficient -- if the spacer above it was
+      // priced by the running mean, the difference faithfully measures a
+      // displacement caused by a fiction. Device evidence for that separate
+      // defect is on the anchor path proper, not here.
       prependNetRef.current = 0
       prependPreScrollTopRef.current = -1
+      shiftAnchorRef.current = prependAnchor
+      shiftStageRef.current = 'ready'
+      anchorCapturedThisRender = true
     }
   }
   // ---- Count-change classification, read BEFORE the mirror advances ----
@@ -1165,7 +1368,7 @@ export function useVirtualChat<T>(
     if ((midListInserted || rowsRemoved || rowSwapped) && !anchorCapturedThisRender && !stickRef.current) {
       const spliceEl = scrollerRef.current
       let spliceAnchor = spliceEl
-        ? captureTopAnchorFrom(spliceEl, elIndexRef.current.entries(), (idx) => {
+        ? captureAnchor(spliceEl, elIndexRef.current.entries(), (idx) => {
             // PREVIOUS items at the node's PREVIOUS index, filtered to rows that
             // survive this commit — trigger 1's resolution, for the same reason:
             // it is the only mapping that names the row the node actually shows.
@@ -1197,7 +1400,7 @@ export function useVirtualChat<T>(
         // The positional anchor names a row of the NEW list, so it is priced by
         // the CURRENT render's getKey paired with the current items — the same
         // pairing contract as TRIGGER 1's fallback.
-        spliceAnchor = captureTopAnchorFrom(spliceEl, elIndexRef.current.entries(), (idx) => {
+        spliceAnchor = captureAnchor(spliceEl, elIndexRef.current.entries(), (idx) => {
           const j = idx + shiftAt(idx)
           const it = items[j]
           return it ? getKey(it, j) : null
@@ -1345,7 +1548,7 @@ export function useVirtualChat<T>(
   ) {
     const shiftEl = scrollerRef.current
     const shiftAnchor = shiftEl
-      ? captureTopAnchorFrom(shiftEl, elIndexRef.current.entries(), (idx) => {
+      ? captureAnchor(shiftEl, elIndexRef.current.entries(), (idx) => {
           const it = items[idx]
           return it ? (getStableIdRef.current ? getStableIdRef.current(it, idx) : getKey(it, idx)) : null
         })
@@ -1370,7 +1573,7 @@ export function useVirtualChat<T>(
   if (!anchorCapturedThisRender && tailAppended && windowRange.start === windowRangeRef.current.start && !stickRef.current) {
     const appendEl = scrollerRef.current
     const appendAnchor = appendEl
-      ? captureTopAnchorFrom(appendEl, elIndexRef.current.entries(), (idx) => {
+      ? captureAnchor(appendEl, elIndexRef.current.entries(), (idx) => {
           const it = items[idx]
           return it ? getKey(it, idx) : null
         })
@@ -1411,6 +1614,31 @@ export function useVirtualChat<T>(
   // whose debounced save would clear the very anchor being restored.
   // `undefined` means "not yet latched for this session" (first render).
   const pendingRestoreRef = useRef<ScrollAnchor | null | undefined>(undefined)
+  /** A restore has just GIVEN UP, so the position basis around it is abandoned.
+   *
+   *  Giving up is not a quiet no-op: it releases the restore, re-arms follow, and
+   *  takes the default bottom placement, which moves `scrollTop` by whatever that
+   *  costs. An anchor capture taken before that, consumed after it, is priced
+   *  against a layout that no longer exists — and the correction computed from it
+   *  is confident and wrong at kilopixel scale.
+   *
+   *  Device frame that named it, on entry to a session whose stored row never
+   *  arrived (`ENTER RESTORE.giveup n=0`), two corrections back to back:
+   *
+   *    CORR d=-1016 owed=-1262 res=246 painted=1   WRITE resize 6404->5388
+   *    CORR d=1448  owed=1484  res=-36 painted=1   WRITE resize 6590->8038
+   *
+   *  Both `painted=1`, so both were presented to the reader: a ~2.4kpx double
+   *  jolt on entering a session. `res` looked small in each, which is exactly why
+   *  the residual alone could never have found this — both figures came from the
+   *  same abandoned capture, so they agreed with each other and not with the glass.
+   *
+   *  Consumed rather than merely read: the flag is cleared by the first consume
+   *  that sees it, so it suppresses the correction straddling the giveup and
+   *  nothing after. A latch that only turned on would silence the corrector for
+   *  the rest of the mount.
+   */
+  const restoreGaveUpRef = useRef(false)
   // Wall-clock ceiling for the pending restore of the CURRENT session.
   const restoreDeadlineRef = useRef<number>(0)
   // Highest item count seen while a restore is pending; growth past it renews the wait.
@@ -1422,6 +1650,41 @@ export function useVirtualChat<T>(
   // render cancelled it. It aborts itself on a session change or a real user
   // scroll, which is what actually bounds it.
   const settleRafRef = useRef(0)
+  /** The landing a restore CONVERGED on, kept authoritative after the settle stops.
+   *
+   *  Convergence proves the anchor stopped moving for the frames the settle watched
+   *  -- a 600ms budget -- but height truth keeps arriving for seconds after that, as
+   *  rows above the reader mount and get measured. Those repricings are real, and the
+   *  above-fold compensation answers them by SLIDING the reader to keep content
+   *  visually still. That is correct in isolation and wrong here: the reader was
+   *  placed at an ABSOLUTE target (row X at offset Y), so a relative slide walks them
+   *  off it a little at a time. Measured on a phone parked ~450 messages up:
+   *  `SETTLE.ok a=6355` followed 0.7s later by `MSGS+ 449->459` and
+   *  `WRITE abovefold 6337->6209` -- 128px of drift after the landing was already
+   *  right.
+   *
+   *  Keeping the settle LOOP running instead is the other failure: it becomes the
+   *  second half of a tug-of-war with the same compensation (`abovefold 6957->6933`
+   *  answered by `settle 6933->6957`), so this is deliberately a memory, not a loop --
+   *  one re-placement per repricing batch, no polling.
+   *
+   *  Authoritative until the reader takes over (their first hard input) or the session
+   *  changes; `at` is what dates it against `lastHardInputAtRef`.
+   *
+   *  Carries the ANCHOR, not just the index it resolved to. An index is a position,
+   *  not an identity: a later prepend slides every row's index, so re-measuring "the
+   *  row at index 2" would measure a DIFFERENT row and dutifully place THAT one at the
+   *  remembered offset -- a large bogus jump, reported from a phone as the view being
+   *  pushed further than before this existed. Identity is re-checked on every use, and
+   *  a mismatch hands the batch back to the relative compensation, which is the right
+   *  answer for a prepend anyway: rows really were inserted above, so sliding to stay
+   *  still is what the reader wants. */
+  const landedAnchorRef = useRef<{
+    session: string
+    index: number
+    anchor: ScrollAnchor
+    at: number
+  } | null>(null)
   /** True only while the settle loop is measuring its anchor row and correcting
    *  against it. A settle that cannot find the row holds its gate but corrects
    *  nothing, and must not keep the other compensations standing down. */
@@ -1539,6 +1802,9 @@ export function useVirtualChat<T>(
       }
       if (ctx && ctx.session === prevSession && el && !restoreOwnsPosition()) {
         const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
+      // Hunt for movement no logged write explains (see devScrollTop). Reads
+      // nothing extra: `geom` was already sampled on this line.
+      devScrollTop(geom.scrollTop, Math.max(0, geom.scrollHeight - geom.clientHeight))
         // `stick` is the AUTHORITATIVE bottom truth here: while follow is
         // engaged the reader IS at the bottom semantically, even when the pin
         // trails the last streamed growth by a frame -- exactly the instant a
@@ -1549,7 +1815,7 @@ export function useVirtualChat<T>(
         if (stickRef.current || computeAtBottom(geom, bottomThreshold)) {
           clearScrollAnchor(prevSession)
         } else {
-          const a = captureTopAnchorFrom(el, elIndexRef.current.entries(), (idx) => {
+          const a = captureAnchor(el, elIndexRef.current.entries(), (idx) => {
             const it = ctx.items[idx]
             if (!it) return null
             // The stable id is a pure function of the ITEM, so the live fn is
@@ -1771,7 +2037,7 @@ export function useVirtualChat<T>(
       // fixed-velocity probe saw a 749px one-frame lurch with every anchor
       // counter silent.
       if (!stickRef.current && scrollerRef.current) {
-        const a = captureTopAnchorFrom(scrollerRef.current, elIndexRef.current.entries(), (i) => {
+        const a = captureAnchor(scrollerRef.current, elIndexRef.current.entries(), (i) => {
           const it = itemsRef.current[i]
           return it ? getKeyRef.current(it, i) : null
         })
@@ -1855,6 +2121,14 @@ export function useVirtualChat<T>(
   const heightCommit = useSyncExternalStore(offsetIndex.subscribe, offsetIndex.getVersion)
   const totalHeight = offsetIndex.totalHeight()
   const offsetBefore = offsetIndex.offsetOf(windowRange.start)
+  // Point the capture-time resolver at THIS render's tree, from here on. Anything
+  // captured earlier in this same render already read the previous one, which is
+  // the baseline a correction has to compare against.
+  offsetOfRef.current = (index: number) => offsetIndex.offsetOf(index)
+  // Report the top spacer so a REPRICE above the reader (a first mount replacing
+  // the running mean with a real height) can be told apart from the reader
+  // simply having scrolled. Behaviour-neutral: the inspector is off by default.
+  devSpacer(offsetBefore, windowRange.start)
   // Height of all items AFTER the window — used as the bottom spacer so the
   // scroll content keeps its full size while only the window renders real DOM.
   const offsetAfter = Math.max(0, totalHeight - offsetIndex.offsetOf(windowRange.end))
@@ -1874,7 +2148,7 @@ export function useVirtualChat<T>(
   const captureTopAnchor = useCallback((): ScrollAnchor | null => {
     const el = scrollerRef.current
     if (!el) return null
-    const a = captureTopAnchorFrom(el, elIndexRef.current.entries(), (idx) => {
+    const a = captureAnchor(el, elIndexRef.current.entries(), (idx) => {
       const it = itemsRef.current[idx]
       if (!it) return null
       // Same vocabulary findAnchorIndex resolves in -- see its comment.
@@ -2085,6 +2359,9 @@ export function useVirtualChat<T>(
       who?: string,
     ) => {
       if (inspectorOn()) devLog('WRITE', `${who ?? '?'} ${Math.round(el.scrollTop)}->${Math.round(top)}${behavior === 'smooth' ? ' smooth' : ''}`)
+      // Registered BEFORE the write, while `el.scrollTop` is still the old value --
+      // afterwards the delta is unrecoverable without forcing a layout.
+      writeSumRef.current += top - el.scrollTop
       if (typeof el.scrollTo === 'function') el.scrollTo({ top, behavior })
       else el.scrollTop = top
       lastWriteTopRef.current = accounting === 'pin' ? top : -1
@@ -2156,6 +2433,84 @@ export function useVirtualChat<T>(
     },
     [detachSmoothAbort],
   )
+
+  /**
+   * Re-solve a converged restore's ABSOLUTE placement after rows above it were
+   * repriced. Returns true when it owns the correction, so the caller's relative
+   * compensation stands down for that batch.
+   *
+   * This is the whole difference between the two ways to answer a late reprice.
+   * `scrollTop += delta` keeps the reader still relative to CONTENT, which is what
+   * a reader who scrolled themselves there wants. A restored reader was instead put
+   * at a stated target -- row X, `top` px below the viewport edge -- and the only
+   * faithful answer is to put them back on it: read where the row IS now and correct
+   * by the difference. Same arithmetic the settle frames use, applied once per batch
+   * instead of on a loop, which is what keeps it out of a tug-of-war with the
+   * compensation it replaces.
+   *
+   * Declines (returns false) whenever it cannot be sure -- no memory, a different
+   * session, the reader has taken over, the row is unmounted, or a degenerate rect --
+   * and the caller's existing behaviour stands.
+   */
+  const relandConvergedAnchor = useCallback((el: HTMLDivElement): boolean => {
+    const landed = landedAnchorRef.current
+    if (!landed) return false
+    if (landed.session !== sessionIdRef.current) {
+      landedAnchorRef.current = null
+      return false
+    }
+    // The reader's own input ends the landing's authority: from their first real
+    // gesture the position is theirs, and holding them to a remembered offset would
+    // be the same self-authorizing mistake as reading our own write as consent.
+    if (lastHardInputAtRef.current > landed.at) {
+      landedAnchorRef.current = null
+      return false
+    }
+    // Following the bottom means the bottom owns the position, and the landing is
+    // over -- jump-to-latest re-pins without necessarily stamping a hard input, so
+    // without this the remembered offset would fight the pin for as long as the row
+    // stayed mounted.
+    if (stickRef.current) {
+      landedAnchorRef.current = null
+      return false
+    }
+    let node: HTMLElement | null = null
+    for (const [nEl, i] of elIndexRef.current.entries()) {
+      if (i === landed.index) { node = nEl as HTMLElement; break }
+    }
+    if (!node || typeof node.getBoundingClientRect !== 'function') return false
+    if (typeof el.getBoundingClientRect !== 'function') return false
+    // The row at that index must still BE the anchored row. Checked with the same
+    // identity pair the settle re-checks every frame -- tail plus alt -- because a
+    // prepend renames indices out from under this memory and measuring the wrong row
+    // is worse than not correcting at all.
+    const its = itemsRef.current
+    const it = its[landed.index]
+    const idFn = getStableIdRef.current
+    const rowId = it ? (idFn ? idFn(it, landed.index) : getKeyRef.current(it, landed.index)) : null
+    if (!anchorMatchesRow({
+      anchor: landed.anchor,
+      tailId: rowId,
+      altId: it ? altIdAtIndex(landed.index) : null,
+    })) {
+      if (inspectorOn()) devLog('RELAND.x', `idx=${landed.index} moved -- handing back to abovefold`)
+      landedAnchorRef.current = null
+      return false
+    }
+    const rect = node.getBoundingClientRect()
+    if (rect.height <= 0) return false
+    const delta = rect.top - el.getBoundingClientRect().top - landed.anchor.top
+    if (Math.abs(delta) > ANCHOR_SETTLE_TOLERANCE_PX) {
+      writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin', 'reland')
+    }
+    return true
+  }, [writeScrollTop, altIdAtIndex])
+  // Read through a ref inside the ResizeObserver effect: naming the callback in that
+  // effect's dependency array would tear the observer down and re-attach it whenever
+  // the callback's identity changed, which is the re-attachment churn this file
+  // deliberately avoids elsewhere.
+  const relandRef = useRef(relandConvergedAnchor)
+  relandRef.current = relandConvergedAnchor
 
  const pinAuto = useCallback(() => {
     const el = scrollerRef.current
@@ -2237,12 +2592,6 @@ export function useVirtualChat<T>(
     let rafId = 0
     const onScroll = () => {
       const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
-      // Quiescence signal for the older-page flush hold (scrollQuiet.ts).
-      // Self-scroll pin writes are excluded: our own corrections must not
-      // hold a fetched page hostage -- only the READER's activity defers it.
-      if (!smoothPinActiveRef.current && !isSelfScroll(geom.scrollTop, lastWriteTopRef.current)) {
-        noteUserScrollActivity()
-      }
       const atBottom = computeAtBottom(geom, bottomThreshold)
       setIsAtBottom((prev) => {
         if (prev === atBottom) return prev
@@ -2381,6 +2730,27 @@ export function useVirtualChat<T>(
       }
     }
     el.addEventListener('scroll', onScroll, { passive: true })
+    // Where the reader last PRESSED, and in which row. A disclosure toggle grows
+    // its row from the press point DOWNWARD, so this is the insertion point the
+    // above-fold reprice cannot otherwise know: that rule assumes a height change
+    // is distributed through the row (true of a re-measure) and therefore
+    // compensates a straddling row in full. For an expansion that is wrong by the
+    // whole delta -- everything above the press, including the header just tapped,
+    // does not move. Recording the press POSITION rather than inferring intent
+    // keeps this a measurement: the reader can only press what they can see, so a
+    // press at or below the fold proves the growth is below it too.
+    const onPointerDown = (e: PointerEvent) => {
+      let node: Element | null = e.target as Element | null
+      let idx: number | undefined
+      while (node && idx === undefined) {
+        idx = elIndexRef.current.get(node)
+        node = node.parentElement
+      }
+      pressRef.current = idx === undefined
+        ? null
+        : { index: idx, y: e.clientY, at: performance.now() }
+    }
+    el.addEventListener('pointerdown', onPointerDown, { passive: true })
     // A fresh element has no direction history — do not measure its first user
     // scroll against a previous scroller's position.
     lastObservedTopRef.current = -1
@@ -2399,6 +2769,7 @@ export function useVirtualChat<T>(
     onScroll()
     return () => {
       el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('pointerdown', onPointerDown)
       detachIntent()
       // Cancel any frame queued by the last scroll so it can't fire a
       // setWindowRange after unmount/re-run. Reset the ref too, or a re-run
@@ -2574,6 +2945,18 @@ export function useVirtualChat<T>(
               prevHeight: prevH,
               newHeight: newH,
               foldTop: el.getBoundingClientRect().top,
+              // A press the reader just made inside THIS row, at or below the fold,
+              // locates the growth below their eye line. The window is generous
+              // because one toggle grows the row over several observer fires as the
+              // revealed content renders, and every one of those fires would
+              // otherwise be compensated -- measured on a phone as seven
+              // `abovefold` writes in a decisecond totalling +149px, which walked
+              // the tapped header up off the screen.
+              pressBelowFoldInRow:
+                pressRef.current !== null &&
+                pressRef.current.index === idx &&
+                performance.now() - pressRef.current.at < DISCLOSURE_PRESS_WINDOW_MS &&
+                pressRef.current.y >= el.getBoundingClientRect().top,
             })
             // Which row grew decides whether growth is FOLLOWABLE. Streaming
             // and widget-load growth happens at the TAIL, where following it
@@ -2638,8 +3021,10 @@ export function useVirtualChat<T>(
       // A restore owns the position while its gate is up (see the shift-consume
       // effect): repricing rows above the fold shifts the reader to stay still,
       // which fights an absolute placement rather than preserving it.
-      if (shiftCompensationAllowed({ stick: stickRef.current, settleMeasuring: settleMeasuringRef.current }) && Math.abs(aboveFoldReprice) > 0.5) {
-        writeScrollTop(el, el.scrollTop + aboveFoldReprice, 'auto', 'pin', 'abovefold')
+      if (Math.abs(aboveFoldReprice) > 0.5 && !isOverscrolled(el) && !relandRef.current(el)) {
+        if (shiftCompensationAllowed({ stick: stickRef.current, settleMeasuring: settleMeasuringRef.current })) {
+          writeScrollTop(el, el.scrollTop + aboveFoldReprice, 'auto', 'pin', 'abovefold')
+        }
       }
       if ((genuineResize || firstMount || viewportResized) && !streamingRowResized && isRailSettling()) {
         railSettleFollowRef.current = railSettleFollowRef.current || stickRef.current
@@ -2885,12 +3270,34 @@ export function useVirtualChat<T>(
         // ANCHOR-MISS FALLBACK: no surviving row to measure against (and the
         // positional re-identification found nothing either), so compensate
         // by arithmetic instead of standing down. The offset tree was synced
-        // render-phase this commit, and a top-walk page lands only on
-        // farm-measured geometry, so the inserted block's height is exact
-        // there (and a fair estimate elsewhere -- either beats a full-page
-        // lurch). Same-commit pre-paint: rebase the window so mounted rows
-        // keep their identity, then advance scrollTop by the block just
-        // inserted above the reader.
+        // render-phase this commit, so the sum below is the tree's own answer.
+        //
+        // What that sum is WORTH depends on whether the tree has measured the
+        // rows it is pricing, and for a freshly prepended row it has not: index
+        // 0 has never been mounted, so `getHeight` answers with the running
+        // mean of everything measured so far. That is an estimate, and the
+        // device shows what it costs -- a page whose real height is thousands
+        // of pixels priced at the mean produces a displacement of the
+        // difference, which is then never taken back: the reprice that would
+        // correct it happens at FIRST MOUNT, and the above-fold corrector
+        // deliberately skips first mounts.
+        //
+        // This branch used to be able to claim the sum was exact, because a
+        // gate held every top-walk page until the idle measuring pass had
+        // sized its rows. That gate is gone, and correctly so: it could only
+        // ever open once the reader stopped, which is exactly what made
+        // loading require a stop. Its removal did not make this arithmetic
+        // wrong -- it made it visibly approximate, which it always was for any
+        // row the pass had not reached.
+        //
+        // The invariant to restore is NOT "wait before fetching" but "no
+        // unmeasured height enters the offset tree": price the inserted rows at
+        // splice time, where their heights can be computed, rather than
+        // reprice them here after the reader has already been moved.
+        //
+        // Same-commit pre-paint: rebase the window so mounted rows keep their
+        // identity, then advance scrollTop by the block just inserted above
+        // the reader.
         setWindowRange((r) => ({
           start: Math.min(itemCount, r.start + net),
           end: Math.min(itemCount, r.end + net),
@@ -2913,6 +3320,13 @@ export function useVirtualChat<T>(
     shiftStageRef.current = 'rebased'
     shiftInsertedRef.current = net
     rebaseScheduledRef.current = true
+    // Armed HERE, not at the anchor's capture. The question is whether a frame is
+    // PRESENTED between the content growing and the correction landing -- and a
+    // capture can precede the payload by the whole fetch (measured: 0.36s, some
+    // twenty frames), during which paints happen with nothing displaced yet
+    // because the content has not arrived. Armed at capture the probe answered
+    // "did any frame pass", which is not the reader's question.
+    armPaintProbe()
     // Signed: the anchored row's displacement, so the re-based range contains it
     // whichever way it moved. Clamped to the list on both ends.
     const clamp = (i: number) => Math.max(0, Math.min(itemCount, i))
@@ -3003,7 +3417,67 @@ export function useVirtualChat<T>(
     // `stickRef` alone could not cover this: it stands down for follow-the-tail,
     // which is a DIFFERENT owner of the position. Both are cases of a
     // correction measured against one position being applied to another.
+    // Stand down for the two cases this effect must not fight, and note that
+    // they are checked with DIFFERENT predicates because they are different
+    // facts: `shiftCompensationAllowed` asks whether a compensation is wanted at
+    // all, while `relandRef` asks whether a scroll-anchor RESTORE currently owns
+    // the position.
+    //
+    // The restore half was missing here, and it is what the reader felt. A
+    // restore places them at an absolute offset computed against a transcript
+    // that ALREADY contains the landed rows, so it moves the anchor row itself
+    // -- and this effect then measures that movement faithfully and "corrects"
+    // it, which UNDOES the restore. Device trace, one upward scroll that landed
+    // four pages: `ENTER RESTORE.OK` immediately followed by
+    // `WRITE resize 1259->11274`, a single 10,015px write, while the transcript
+    // had grown only 168px. A 10,015px visual displacement cannot come from
+    // 168px of new content; it came from the restore.
+    //
+    // The above-fold reprice path already guarded on this. Keeping the two in
+    // step matters more than the one line: the anchor path has now twice been
+    // found missing a guard its siblings have (the other being the native
+    // scroll-anchoring subtraction, which only the arithmetic fallback makes).
     if (!shiftCompensationAllowed({ stick: stickRef.current, settleMeasuring: settleMeasuringRef.current })) return
+    // A restore IN FLIGHT owns the position outright, so this correction must not
+    // run at all: the restore is on its way to an absolute offset computed
+    // against a transcript that already contains the landed rows, and holding the
+    // anchor row still is precisely the thing that undoes it.
+    //
+    // Device trace, one landing: `ENTER RESTORE.OK` immediately followed by
+    // `WRITE resize 1652->18173` -- one 16,521px write while the transcript had
+    // grown 46px. Solving the anchor identity `top = C - S` for that pair gives
+    // S1 - S0 = 46 - 16521 = -16475: the restore had moved the reader UP 16.5k px
+    // and this correction pushed them back DOWN to where the row used to sit. The
+    // delta was measured correctly; keeping that row still was the wrong goal.
+    //
+    // Two predicates, in this order, because they answer different questions and
+    // the second one WRITES:
+    //   - `restoreOwnsPosition` -- a restore is pending or its settle gate is up.
+    //     Its own doc names reaching for `pendingRestore` instead as the defect,
+    //     and every other caller uses it; this effect was the one that did not.
+    //   - `relandConvergedAnchor` -- a restore already CONVERGED, and when it
+    //     answers true it has re-placed the reader itself.
+    // Checked in-flight first so the converged path is never asked to write
+    // during a restore that has not finished choosing the position.
+    // OVERSCROLL. `scrollTop` outside [0, max] is not a content position at all:
+    // it is the elastic rubber-band state iOS enters when a finger pulls past an
+    // edge. A delta measured against it describes how far the BAND is stretched,
+    // not how far the content moved, and writing that delta throws the reader by
+    // the stretch.
+    //
+    // Device trace: `WRITE resize -2810->8286` -- an 11,096px write starting from
+    // a NEGATIVE scrollTop, with `spacer 0->0` proving no content had appeared
+    // above the reader and the landing (`MSGS+ +1`) arriving afterwards. The whole
+    // movement was error. A negative `to-top` had shown up twice before that and
+    // was dismissed as a platform artifact both times; it was the defect.
+    //
+    // Standing down is safe here in a way it is not elsewhere: the band always
+    // springs back and the release fires more scroll events, so the geometry gets
+    // another chance a frame later. A correction computed against a stretched band
+    // cannot be salvaged.
+    if (isOverscrolled(el)) return
+    if (restoreOwnsPosition()) return
+    if (relandRef.current(el)) return
     // CONSUME-MISS FALLBACK: the anchor row can vanish between capture and
     // consume (unmounted by a concurrent recompute on a slow device). For a
     // prepend the compensation is still knowable by arithmetic -- the block
@@ -3022,18 +3496,120 @@ export function useVirtualChat<T>(
       if (remainder > 0.5) writeScrollTop(el, el.scrollTop + remainder, 'auto', 'pin', 'reprice2')
     }
     if (!pending) { fallbackCompensate(); if (insertedForFallback > 0) recomputeWindow(); return }
-    const newTop = rowTopFrom(el, elIndexRef.current.entries(), (idx) => {
+    const found = rowTopFrom(el, elIndexRef.current.entries(), (idx) => {
       const it = itemsRef.current[idx]
       return it ? anchorIdOf(it, idx) : null
     }, pending.key)
-    if (newTop === null) { fallbackCompensate(); if (insertedForFallback > 0) recomputeWindow(); return }
-    const delta = newTop - pending.top
+    if (found === null) { fallbackCompensate(); if (insertedForFallback > 0) recomputeWindow(); return }
+    const newTop = found.top
+    // The anchor's on-screen displacement, which is NOT the correction.
+    //
+    //   delta = (content growth above the reader) - (scrollTop change)
+    //
+    // Both terms are real, and only the FIRST is ours to compensate. Writing
+    // `delta` keeps the anchor row pinned to the glass -- which also cancels
+    // whatever the READER did with their finger in between, because their scroll
+    // is the second term. Device trace, aligned windows: a single 9,440px write
+    // with `spacer 0->0` (no content appeared at all) and no overscroll, so
+    // scrollTop had changed by -9,440 and every pixel written was the reader's own
+    // upward scroll being undone. `sinceHard=6037ms` is why no input guard caught
+    // it: momentum scrolling stamps no hard input, so "the user owns the position"
+    // never became true.
+    //
+    // Adding the scroll change back leaves the content term alone:
+    //
+    //   contentShift = delta + (scrollTopNow - scrollTopAtCapture)
+    //
+    // With the reader still, the two spellings are identical -- which is why
+    // every harness test agreed to within 2px and none of them caught this: a
+    // test never moves the scroller between capture and consume.
+    const delta = contentShiftFor({
+      capturedTop: pending.top,
+      capturedScrollTop: pending.scrollTop,
+      currentTop: newTop,
+      currentScrollTop: el.scrollTop,
+      capturedWriteSum: pending.writeSum,
+      currentWriteSum: writeSumRef.current,
+    })
+    // The correction, checked against the transcript itself.
+    //
+    // `delta` is derived from screen positions; the anchor's CONTENT offset is the
+    // independent answer to the same question -- how much transcript arrived above
+    // this row -- and the two must agree. Logged rather than enforced because the
+    // offset tree prices never-mounted rows at a mean, so a disagreement can mean
+    // either a wrong correction or a wrong price, and silently trusting one over
+    // the other is how five different explanations each looked confirmed tonight.
+    //
+    // This replaces the top spacer as the reference. The spacer is NOT the content
+    // above the reader: once the window starts at index 0 -- the state every
+    // top-walk ends in -- prepended rows mount above the anchor rather than growing
+    // the spacer, so it read `0 -> 0` on the device across landings that really did
+    // add thousands of pixels, and every residual measured against it was inflated
+    // by the whole mounted growth.
+    if (inspectorOn()) {
+      const owed = offsetOfRef.current(found.index) - pending.contentOffset
+      devLog('CORR', `d=${Math.round(delta)} owed=${Math.round(owed)} res=${Math.round(delta - owed)}`
+        + ` painted=${paintedBeforeCorrectionRef.current ? 1 : 0}`)
+    }
+    // Ground truth, read back AFTER the write lands.
+    //
+    // Everything else here is a prediction: `delta` says how far the row moved,
+    // `owed` says how much transcript arrived, and both can look right while the
+    // reader still sees a jolt. The only measurement that answers the reader's
+    // actual complaint is where the anchor row ENDS UP -- if it returns to the
+    // screen position it was captured at, nothing moved under them, whatever the
+    // other two numbers say. Scheduled after the write rather than computed,
+    // because a prediction of the outcome is what has been wrong five times.
+    const verifyAnchor = () => {
+      if (!inspectorOn()) return
+      const again = rowTopFrom(el, elIndexRef.current.entries(), (idx) => {
+        const it = itemsRef.current[idx]
+        return it ? anchorIdOf(it, idx) : null
+      }, pending.key)
+      if (again === null) { devLog('HELD', 'anchor gone'); return }
+      devLog('HELD', `was=${Math.round(pending.top)} now=${Math.round(again.top)} off=${Math.round(again.top - pending.top)}`)
+    }
     // Instant, and accounted as a 'pin' write: this is our own correction, so
     // the follow guard must recognise the resulting scroll event as self-scroll
     // rather than user input. Routed through the chokepoint so the accounting
     // cannot be forgotten here (see writeScrollTop).
-    if (Math.abs(delta) > 0.5) {
+    // TWO conditions, and they answer different questions.
+    //
+    // `delta` says how much correction is OWED. `displaced` says whether the reader
+    // has actually seen the anchor row move -- measured on the glass, immediately
+    // before the write, as the row's distance from where it was captured.
+    //
+    // If the row is exactly where it was captured, nothing moved under the reader,
+    // and a write of any size CREATES the displacement it claims to repair. Not
+    // hypothetical: on the entry frame below `displaced` was 0px both times while
+    // `delta` asked for -1016 and then +1448, and both writes were painted.
+    //
+    //   CORR d=-1016 owed=-1262 res=246 painted=1   WRITE resize 6404->5388
+    //   HELD was=-380 now=636 off=1016
+    //
+    // `off` is NOT evidence of a failed hold, and reading it that way cost an
+    // explanation: substituting the definitions gives `off = -S`, where S is the
+    // scrollTop drift since capture. It measures who ELSE moved the scroller in
+    // between, and off == the write means the drift was our own.
+    //
+    // The gate is on the MEASUREMENT rather than on the derived figure because the
+    // derived one is what was wrong: `delta` and `owed` disagreed by only 246px, so
+    // they corroborated each other while both were priced against an abandoned
+    // capture. A number checked against another number from the same source is not
+    // checked.
+    const displaced = newTop - pending.top
+    // A restore that gave up moves scrollTop on its way out, so a capture straddling
+    // it is priced against a layout that no longer exists.
+    const abandoned = restoreGaveUpRef.current
+    if (abandoned) {
+      restoreGaveUpRef.current = false
+      if (inspectorOn()) devLog('CORR.drop', `giveup d=${Math.round(delta)} disp=${Math.round(displaced)}`)
+    }
+    if (!abandoned && Math.abs(displaced) > 0.5 && Math.abs(delta) > 0.5) {
       writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin', 'resize')
+      // Same tick, after the write: layout is already forced by the read inside,
+      // so this costs nothing extra and answers whether the reader actually held.
+      verifyAnchor()
       // Re-baseline a pending height anchor: its capture may have read the
       // UNCOMPENSATED geometry mid-transaction (see syncHeightsNow). After
       // this write the row sits where the reader sees it, so refreshing the
@@ -3163,7 +3739,7 @@ export function useVirtualChat<T>(
         const it = itemsRef.current[idx]
         return it ? anchorIdOf(it, idx) : null
       }, cand.key)
-      if (t !== null) { newTop = t; capturedTop = cand.top; break }
+      if (t !== null) { newTop = t.top; capturedTop = cand.top; break }
     }
     if (newTop === null) return
     const delta = newTop - capturedTop
@@ -3354,6 +3930,10 @@ export function useVirtualChat<T>(
       shiftStageRef.current = null
       shiftInsertedRef.current = 0
       prependPreScrollTopRef.current = -1
+      // A previous restore's landing is not this one's target. Dropped with the
+      // other superseded captures so the re-placement helper cannot hold the
+      // reader to an offset from the session or row they just left.
+      landedAnchorRef.current = null
       const count = itemsRef.current.length
       setWindowRange(computeJumpWindow(index, count, overscan))
       stickRef.current = false
@@ -3487,6 +4067,16 @@ export function useVirtualChat<T>(
               hasPrevious,
             })) {
               if (settleGateRef.current && inspectorOn()) devLog('SETTLE.ok', `f${n} d=${delta.toFixed(1)} a=${Math.round(aboveNow)}`)
+              // The landing outlives the loop. Recorded ONLY here -- on the
+              // converged path -- because the abort paths below reach `lower()`
+              // without ever agreeing with the anchor, and a landing nobody
+              // verified is not a target worth holding the reader to.
+              landedAnchorRef.current = {
+                session,
+                index,
+                anchor,
+                at: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+              }
               // STOP, do not merely lower the gate. Convergence already requires
               // the height above the anchor to have stopped moving, so there is
               // nothing left to correct -- and once the gate is down the shift compensations
@@ -3614,6 +4204,10 @@ export function useVirtualChat<T>(
       const _its = itemsRef.current
       devLog('GIVEUP.rows', `${_its.length}: ${_its.slice(0, 7).map((it, i) => keyShape(_idFn ? _idFn(it, i) : getKeyRef.current(it, i))).join(' ')}`)
       pendingRestoreRef.current = null
+      // The basis is abandoned, not merely unused: re-arming follow and taking the
+      // default placement moves scrollTop, so any capture in flight is now priced
+      // against a layout that is gone.
+      restoreGaveUpRef.current = true
       stickRef.current = followOutput
       setRestoreEval((n) => n + 1)
     }

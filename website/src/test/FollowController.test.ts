@@ -20,6 +20,7 @@ import {
   SELF_SCROLL_EPSILON,
   DEFAULT_BOTTOM_THRESHOLD,
   FOLLOW_REENGAGE_PX,
+  repriceAboveFoldDelta,
 } from '../hooks/virtualizer/FollowController'
 
 describe('geometry helpers', () => {
@@ -623,5 +624,52 @@ describe('both consumers report the viewport signal', () => {
     expect(src).toMatch(/prevScrollTopRef\.current = geom\.scrollTop\s*\n\s*lastScrollClientHRef\.current = geom\.clientHeight/)
     // Not reusing the write-tracking ref, whose meaning is different.
     expect(args).not.toContain('lastWriteClientHRef')
+  })
+})
+
+describe('repriceAboveFoldDelta', () => {
+  const fold = 100
+
+  it('compensates a row entirely above the fold by its full change', () => {
+    expect(repriceAboveFoldDelta({ rowTop: -500, prevHeight: 200, newHeight: 260, foldTop: fold }))
+      .toBe(60)
+  })
+
+  it('ignores a row that starts at or below the fold', () => {
+    // It grows downward, away from everything on screen, and its own top holds.
+    expect(repriceAboveFoldDelta({ rowTop: fold, prevHeight: 200, newHeight: 900, foldTop: fold }))
+      .toBe(0)
+  })
+
+  it('compensates a STRADDLING row in full when the change is a re-measure', () => {
+    // Deliberate: a re-measure redistributes through the row, so the reader is
+    // displaced by the whole delta even though part of the row is on screen.
+    expect(repriceAboveFoldDelta({ rowTop: -50, prevHeight: 200, newHeight: 176, foldTop: fold }))
+      .toBe(-24)
+  })
+
+  it('compensates NOTHING when the reader pressed inside that row below the fold', () => {
+    // A disclosure the reader opened. The growth is rooted at their press, so
+    // everything above it -- the header they tapped included -- does not move, and
+    // the straddling rule's full-delta answer would shove that header off screen.
+    // Chat rows are whole turns and routinely taller than the viewport, so a
+    // disclosure's row almost always straddles: this is the common case, not an edge.
+    expect(repriceAboveFoldDelta({
+      rowTop: -50,
+      prevHeight: 200,
+      newHeight: 1400,
+      foldTop: fold,
+      pressBelowFoldInRow: true,
+    })).toBe(0)
+  })
+
+  it('still compensates a straddling row when no press located the growth', () => {
+    // The flag is the ONLY thing that exempts a straddling row; absent or false
+    // leaves the measured re-measure behaviour exactly as it was.
+    for (const press of [undefined, false]) {
+      expect(repriceAboveFoldDelta({
+        rowTop: -50, prevHeight: 200, newHeight: 1400, foldTop: fold, pressBelowFoldInRow: press,
+      })).toBe(1200)
+    }
   })
 })

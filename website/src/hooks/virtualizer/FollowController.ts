@@ -147,7 +147,17 @@ export function repriceAboveFoldDelta(input: {
   newHeight: number
   /** Viewport-relative top of the scroll container. */
   foldTop: number
+  /** The reader pressed inside THIS row, at or below the fold, moments ago — so the
+   *  height change is an expansion rooted at that press, not a distributed
+   *  re-measure. Everything above the press (their eye line included) stays exactly
+   *  where it was, so the correct compensation is NONE. Without this the straddling
+   *  rule below answers with the full delta and shoves the tapped header off screen. */
+  pressBelowFoldInRow?: boolean
 }): number {
+  // A reader-rooted expansion moves only what is BELOW the press. Checked before
+  // the straddling rule because a disclosure's row almost always straddles: rows
+  // are whole turns and routinely taller than the viewport.
+  if (input.pressBelowFoldInRow) return 0
   // The test is on the row's TOP, not its whole box. A reprice does not move a
   // row's top -- it moves its BOTTOM, and with it everything below, so a row
   // that STRADDLES the top edge displaces the reader by the full change just

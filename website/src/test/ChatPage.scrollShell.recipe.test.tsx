@@ -111,7 +111,7 @@ describe('scroll shell: the scroller element contract', () => {
 })
 
 describe('scroll shell: element order inside the scroller', () => {
-  it('keeps the SKELETON sequence that moves as one unit: header spacer, top sentinel, loading, top spacer, bottom spacer, bottom sentinel', () => {
+  it('keeps the SKELETON sequence that moves as one unit: header spacer, top sentinel, top spacer, bottom spacer, bottom sentinel', () => {
     // Order is the contract the virtualizer's IO wiring assumes; a reorder can
     // compile, render, and still break window expansion. Anchors here are the
     // skeleton pieces that live (and move) TOGETHER, so the pin holds whether
@@ -123,7 +123,6 @@ describe('scroll shell: element order inside the scroller', () => {
     const anchors = [
       '<div className="h-16" />',
       'ref={virt.topSentinelRef}',
-      'data-testid="older-messages-loading"',
       'height: virt.offsetBefore',
       'height: virt.offsetAfter',
       'ref={virt.bottomSentinelRef}',
@@ -163,28 +162,26 @@ describe('scroll shell: element order inside the scroller', () => {
     expect(SHELL).toContain('{slotHasMore && cursorIsForActiveSlot && (')
   })
 
-  it('keeps the loading spinner an ABSOLUTE overlay below the header, anchor-exempt, badge-backed', () => {
-    // Slice the WHOLE conditional block (gate to the next skeleton comment) so
-    // the class is bound to the spinner element itself — a SHELL-wide contain
-    // would stay green with the literal parked in a comment anywhere.
+  it('carries NO loading overlay for older pages anywhere in the shell', () => {
+    // Automatic paging is imperceptible by contract: the reader did not ask for
+    // the fetch, and a badge pinned under the header floats over what they are
+    // reading. Feedback for the MANUAL path belongs to EarlierMessagesBar, which
+    // is on screen exactly when the reader reached for it.
     //
-    // ABSOLUTE, not sticky: a sticky element still owns flow space, so
-    // mounting/unmounting it on every loadingOlder flip inserted/removed its
-    // own ~32px above the content — ±32px content twitches for a reader parked
-    // at the top, once per landing (momentum rig). The opaque background moved
-    // from the box to an inner badge, since a zero-footprint overlay now sits
-    // OVER transcript text and the glyph has to stay legible.
-    const spinner = between('{loadingOlder && spinnerNearTop !== false && (', '{/* Top spacer')
-    expect(spinner).toContain('className="absolute top-16 inset-x-0 z-[1] flex justify-center py-2 pointer-events-none"')
-    expect(spinner).toContain('data-testid="older-messages-loading"')
-    expect(spinner).toContain("overflowAnchor: 'none'")
-    expect(spinner).toContain("background: 'var(--bg)'")
-    expect(spinner).toContain('<Loader size={16} className="animate-spin text-muted" />')
-    // The overlay has no flow footprint, so its class must not go sticky
-    // again. Asserted against the className ATTRIBUTE, not the whole slice:
-    // the block's own comment explains why sticky was wrong, and a slice-wide
-    // negative would read that prose as the violation.
-    expect(spinner).not.toMatch(/className="[^"]*sticky/)
+    // Pinned as an ABSENCE across the whole shell, not as the shape of a
+    // particular element: the failure this guards against is someone reaching for
+    // a spinner again, in any form. The earlier contract (absolute overlay, never
+    // sticky, opaque inner badge) existed because a sticky one owned flow space
+    // and inserted/removed ~32px per landing — ±32px twitches for a reader parked
+    // at the top, measured on the momentum rig. Not drawing one at all cannot
+    // regress that way.
+    // Scoped to the shell component's OWN source, not the concatenation: the
+    // page legitimately spins for other things (a turn in flight, a pending
+    // action), so a pin across both files would read those as this violation.
+    const shellOnly = readFileSync(resolve(__dirname, '../pages/chat/TranscriptScrollShell.tsx'), 'utf8')
+    expect(shellOnly).not.toContain('older-messages-loading')
+    expect(shellOnly).not.toContain('animate-spin')
+    expect(shellOnly).not.toContain('loadingOlder')
   })
 })
 
@@ -233,10 +230,12 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
     expect(SRC).toContain("import TranscriptScrollShell from './chat/TranscriptScrollShell'")
     expect(SRC).toContain('scrollerRef={scrollerRef}')
     expect(SRC).toContain('virt={virt}')
-    // Two consumers thread loadingOlder (the pinned-banner row props and the
-    // shell call); a bare contain() would let either deletion hide behind the
-    // other, so pin the count.
-    expect((SRC.match(/loadingOlder=\{loadingOlder\}/g) ?? []).length).toBeGreaterThanOrEqual(2)
+    // `loadingOlder` reaches exactly ONE consumer now — the assistant row, which
+    // renders the manual affordance's own in-place state. The shell no longer
+    // takes it at all: an automatic page draws nothing, so there is nothing for
+    // it to thread. Pinned as a count so a second consumer reappearing is a
+    // failure rather than a silent return of the overlay.
+    expect((SRC.match(/loadingOlder=\{loadingOlder\}/g) ?? []).length).toBe(1)
   })
 })
 

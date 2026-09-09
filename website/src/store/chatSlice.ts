@@ -1,7 +1,6 @@
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
-import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { api } from '../api/client'
-import { devLog, inspectorOn } from '../dev/scrollInspector'
+import { devLog, devOlderSpans, inspectorOn } from '../dev/scrollInspector'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
@@ -3042,15 +3041,48 @@ export const loadOlderMessages = createAsyncThunk(
       const isNarrow = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
         && window.matchMedia('(max-width: 640px)').matches
       const walkLimit = isNarrow ? OLDER_PAGE_LIMIT : OLDER_WALK_PAGE_LIMIT
+      // Timed SEPARATELY from the hold below. A single span covering both is
+      // ambiguous by construction: 0.1s of network plus the 2.5s hold cap and
+      // 2.3s of payload plus a 0.1s hold produce the same number, and they call
+      // for opposite fixes.
+      const netStart = Date.now()
       const d = await api.chatSlotDetail(slot, walkLimit, state.slotOldestIndex, controller.signal)
-      // LANDING BUFFER: the fetch overlaps the reader's gesture, but the
-      // MUTATION must not -- splicing rows mid-glide races the pre-paint
-      // anchor machinery against the gesture's own pixel-addressed window
-      // recompute (phone rig: kilopixel per-landing jumps whose anchor
-      // consume mis-bound and stood down). Hold the payload until the
-      // scroller has been quiet for a beat; bounded, so a reader who never
-      // pauses still gets the page (see scrollQuiet.ts).
-      await whenScrollQuiet(controller.signal)
+      const netMs = Date.now() - netStart
+      // NO LANDING BUFFER. The payload used to be held here until the scroller
+      // had been quiet for a beat, because splicing rows mid-glide raced the
+      // pre-paint anchor machinery against the pixel-addressed window recompute
+      // the gesture itself schedules (phone rig: per-landing kilopixel jumps).
+      //
+      // Measured on the device with the two spans split apart, that hold was
+      // 1.95s of a 2.1s wait -- 92% -- while the request itself was 0.16s. And it
+      // is not a tunable: it ends when the READER stops, so its length is however
+      // long they keep scrolling, which is exactly the gesture that needs the
+      // page. Capping it lower does not help either; this hold ended on
+      // quiescence, well inside the 2.5s cap.
+      //
+      // So the page lands immediately and the anchor machinery is asked to hold
+      // the position during a gesture. That machinery has been rebuilt since the
+      // rig measurement (the straddling full-delta rule, and the render-phase
+      // capture keyed on the range actually moving up), so whether those jumps
+      // still reproduce is a device question, not an archive one.
+      //
+      // The hold's own module is gone with it -- it had no other reader, and a
+      // dead one would keep every user scroll stamping a timestamp nothing
+      // consumes. What replaced it sits on the TRIGGER side instead: the walk
+      // refuses to start a fetch while the scroller is moving, and motion aborts
+      // a page already in flight, so the two ends agree without a buffer in the
+      // middle.
+      //
+      // If the jumps DO reproduce, the fix is not to reinstate a wait -- it is to
+      // stop splicing at all: ship geometry up front (ids + heights) and hydrate
+      // content in place, so rows are never inserted and there is nothing for a
+      // gesture to race. The overlay reports the request span alone now; a second
+      // number would have to be added back to it to measure a hold, which is a
+      // visible edit rather than a constant reading zero forever.
+      devOlderSpans(netMs)
+      // Kept although the wait is gone: a slot switch can land between the
+      // response and this return, and splicing a page from the chat the reader
+      // just left is worse than serving nothing.
       if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
       return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
     } catch (e) {

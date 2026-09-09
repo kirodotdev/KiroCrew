@@ -1,16 +1,16 @@
 /**
- * Regression test: paging older history shows a visible loading indicator.
+ * Regression test: paging older history shows NO transcript-level indicator.
  *
- * `loadingOlder` was already tracked in the store and already read by ChatPage,
- * but only as a re-entrancy guard — nothing rendered it. A fetch in flight was
- * therefore indistinguishable from nothing happening, so a stalled paging
- * trigger looked exactly like a session that simply had no more history.
+ * It used to. `loadingOlder` was rendered as a badge pinned under the header so a
+ * stalled paging trigger could be told apart from a session with no more history.
+ * That reasoning holds for a fetch the reader ASKED for and inverts for one they
+ * did not: automatic paging is meant to be imperceptible, and a badge under the
+ * header floats over whatever they are actually reading. Feedback for the manual
+ * path moved to where the press happened — the earlier-messages bar renders its
+ * own in-place loading state and is on screen exactly when it is reachable.
  *
- * The three cases below are the whole contract: absent when idle (so the
- * assertion is not passing on a permanently-mounted node), present while the
- * fetch is pending, and gone again when it settles — asserted on the rejected
- * path, which is the one a user hits when the request fails and the spinner
- * would otherwise be left spinning forever.
+ * So the contract is now an ABSENCE in every state of `loadingOlder`, plus the
+ * bar's own mount/unmount rules, which the rest of this file pins.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
@@ -182,49 +182,29 @@ describe('ChatPage – older-messages loading indicator', () => {
     expect(screen.queryByTestId(INDICATOR)).toBeNull()
   })
 
-  it('shows a labelled status region while an older page is in flight', async () => {
+  it('stays absent even while an older page IS in flight', async () => {
+    // Automatic paging must be imperceptible. The reader did not ask for the
+    // fetch, so announcing it turns a silent prefetch into an event, and the
+    // badge was pinned under the header where it floated over whatever they were
+    // actually reading. Feedback for the MANUAL path lives on the
+    // earlier-messages bar, which is on screen exactly when the reader reached
+    // for it — so no state of `loadingOlder` may draw a transcript-level overlay.
     const store = renderChatPage()
     await seed(store)
 
     act(() => { store.dispatch(pending) })
+    // Given a beat to appear, it must still not be there.
+    await waitFor(() => {
+      expect(store.getState().chat.loadingOlder).toBe(true)
+    })
+    expect(screen.queryByTestId(INDICATOR)).toBeNull()
 
-    const el = await screen.findByTestId(INDICATOR)
-    // A bare spinner is an unnamed live region: screen readers announce the
-    // region with no content, since the icon contributes no text.
-    expect(el.getAttribute('role')).toBe('status')
-    expect(el.getAttribute('aria-label')).toBe(i18nT('pages.chatPage.loading_earlier_messages'))
-    // The label must say WHAT is loading: a bare "Loading…" in a live region
-    // tells a screen-reader user nothing about which region moved.
-    expect(el.getAttribute('aria-label')).not.toBe(i18nT('pages.chatPage.loading'))
-    // Not the browser's scroll anchor: it must not shift the list as it mounts.
-    expect(el.style.overflowAnchor).toBe('none')
-    // Pinned, not parked at the list top: the only trigger fires from the pins
-    // panel, so an unpinned indicator renders off-screen in a long session.
-    // ABSOLUTE overlay with zero layout footprint: a sticky element still
-    // owned flow space, so each loadingOlder flip inserted/removed ~32px
-    // above the content -- a per-landing twitch for a reader parked at the
-    // top (measured on the momentum rig).
-    expect(el.className).toContain('absolute')
-    expect(el.className).not.toContain('sticky')
-    expect(el.className).toContain('top-16')
-    // The container is a transparent zero-footprint overlay; opacity lives
-    // on the BADGE child, or the messages scrolling beneath show through.
-    const badge = el.querySelector('span') as HTMLElement
-    expect(badge).not.toBeNull()
-    expect(badge.style.background).not.toBe('')
-  })
-
-  it('clears when the older page fails, so it cannot spin forever', async () => {
-    const store = renderChatPage()
-    await seed(store)
-
-    act(() => { store.dispatch(pending) })
-    await screen.findByTestId(INDICATOR)
-
+    // ...and settling changes nothing, so there is no spin-forever state either.
     act(() => { store.dispatch(rejected) })
     await waitFor(() => {
-      expect(screen.queryByTestId(INDICATOR)).toBeNull()
+      expect(store.getState().chat.loadingOlder).toBe(false)
     })
+    expect(screen.queryByTestId(INDICATOR)).toBeNull()
   })
 
   // Control for the case below: with has-more reported and the cursor keyed, it mounts.

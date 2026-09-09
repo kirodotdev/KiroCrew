@@ -51,17 +51,21 @@ describe('WarmSwap', () => {
     expect(screen.queryByTestId('impl')).toBeNull()
   })
 
-  it('notifies FilePair when WarmSwap reveals the implementation', async () => {
-    let roCallback: (() => void) | null = null
+  it('does not wrap an expanded FilePair in the invisible warm box', async () => {
+    // A FilePair is windowed by Pierre itself, exactly like PierreCode's
+    // whole-file surfaces. Inside the warm box it is `absolute inset-0 …
+    // invisible`, so it windows against a hidden, parent-sized viewport and
+    // renders no rows; nothing invalidates that when the box is revealed, so the
+    // row stayed blank until an unrelated scroll made Pierre measure again.
+    // Observed on a phone as an expanded diff that only appeared after a scroll.
     class StubRO {
-      constructor(cb: () => void) { roCallback = cb }
       observe() {}
       disconnect() {}
     }
     vi.stubGlobal('ResizeObserver', StubRO)
-    let height = 0
-    const spy = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height)
-    const onVisible = vi.fn()
+    // Height stays 0: with a warm box this would hold the fallback (or reveal an
+    // empty impl at the deadline). Without one the impl is simply mounted.
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(0)
     try {
       render(
         <PierreFilePair
@@ -69,14 +73,13 @@ describe('WarmSwap', () => {
           newFile={{ name: 'a.ts', contents: 'after' }}
           fallbackText="bounded"
           fallbackClassName="max-h-[376px] overflow-auto"
-          onVisible={onVisible}
         />,
       )
-      expect(await screen.findByTestId('impl')).toBeTruthy()
-      expect(onVisible).not.toHaveBeenCalled()
-      height = 120
-      await act(async () => { roCallback?.() })
-      expect(onVisible).toHaveBeenCalledTimes(1)
+      const impl = await screen.findByTestId('impl')
+      expect((impl.parentElement as HTMLElement).className ?? '').not.toContain('invisible')
+      // And the warm fallback is gone once the impl is up — it is the Suspense
+      // fallback now, covering only the chunk load.
+      expect(screen.queryByText('bounded')).toBeNull()
     } finally {
       spy.mockRestore()
     }

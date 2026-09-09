@@ -9782,7 +9782,6 @@
       "upload_failed_error": "আপলোড ব্যর্থ: {{error}}",
       "what_can_i_do_for_you": "আপনার জন্য কী করতে পারি?",
       "worktree_creation_returned_no_path": "worktree তৈরি করে কোনো পাথ ফেরত আসেনি",
-      "loading_earlier_messages": "পূর্ববর্তী বার্তা লোড হচ্ছে…",
       "send_failed_with_error": "পাঠানো যায়নি: {{error}}",
       "delivery_unconfirmed": "ডেলিভারি নিশ্চিত হয়নি — আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে; আবার পাঠানোর আগে কথোপকথনটি দেখে নিন।",
       "could_not_read_file_reason": "{{path}} পড়া যায়নি ({{reason}})",
