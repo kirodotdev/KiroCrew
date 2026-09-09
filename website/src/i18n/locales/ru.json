@@ -7561,6 +7561,7 @@
       "unknown_error": "Неизвестная ошибка"
     },
     "sessionActionsMenu": {
+      "follow_sort_order": "Следовать сортировке (все закреплённые)",
       "bring_back_to_main": "Вернуть в главное окно",
       "close_session": "Закрыть сеанс",
       "copy_link": "Копировать ссылку",

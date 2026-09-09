@@ -24,6 +24,7 @@ import { isEmbeddedPane } from './lib/embedded'
 // what registers every language; plain `./i18n` is English-only, so importing it
 // here would render English for every user whatever language they picked.
 import { initI18n } from './i18n/all'
+import { adoptStoredPinnedOrderAsManual } from './utils/pinnedSessionOrder'
 import { LanguageProvider } from './i18n/LanguageProvider'
 import App from './App'
 import { queryClient } from './api/queryClient'
@@ -51,6 +52,10 @@ initRum(__APP_VERSION__)
 // the very first paint is already in the right language; LanguageProvider then
 // reconciles against the server-authoritative config value.
 initI18n()
+
+// Rank became opt-in in this release, so an order stored before it is adopted once as a stated
+// arrangement. Before the first paint, so the initial sidebar render already reflects it.
+adoptStoredPinnedOrderAsManual()
 
 // Page zoom is off on touch: the shell is an application, not a document. The
 // viewport meta and the root `touch-action` cover Blink/Gecko; this covers
