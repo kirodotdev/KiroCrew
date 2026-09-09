@@ -174,7 +174,11 @@ describe('ArtifactsPage — card previews per kind', () => {
     const arts = [mkArtifact('app-config', { kind: 'json' })]
     seed({ artifacts: arts, full: { content: '{"a":1,"b":[2]}' } })
     renderWithProviders(<ArtifactsPage />)
-    await waitFor(() => expect(screen.getByText(/"a": 1/)).toBeInTheDocument())
+    // Same boundary as the unparseable-JSON case below: the pretty-printed text
+    // appears only once the ['artifact', slug] query resolves and ContentThumb
+    // re-renders with `full.content`, which outlasted the default 1000ms poll
+    // under load in one of four full runs.
+    await waitFor(() => expect(screen.getByText(/"a": 1/)).toBeInTheDocument(), { timeout: 5000 })
   })
 
   it('keeps unparseable JSON as its raw text instead of blanking the preview', async () => {

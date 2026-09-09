@@ -794,7 +794,13 @@ class TestCloneLifecycleAndExport:
             max_nudges=3,
             interval_s=0.0,
         )
-        _await_status(reg, "fp-once", {pr_watchers.STATUS_EXHAUSTED})
+        # Three times the file-wide budget, named: this test runs a REAL clone and
+        # then three passes that are each several git subprocesses on Windows-speed
+        # process spawns, on a host shared with five other workers. One full run
+        # in five saw every pass complete ("pass 3/3") with only the exhausted
+        # transition still outstanding at WAIT_S -- a bounded wait asserting too
+        # early, not a stuck watcher.
+        _await_status(reg, "fp-once", {pr_watchers.STATUS_EXHAUSTED}, timeout=WAIT_S * 3)
         assert marks == [False, True, True], "the clone must persist across passes"
 
 

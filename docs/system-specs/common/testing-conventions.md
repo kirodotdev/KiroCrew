@@ -674,7 +674,9 @@ Two things the survey CANNOT tell you, both of which misled the first pass:
   fit, or an `lru_cache` keyed on the tree root (so a test that points the scan at a fake
   tree under `tmp_path` gets its own entry). Bound the retention — the corpus helper
   exposes `_clear_caches()` for a module-scoped teardown, because ~160 MB of parsed source
-  held for the life of the worker is paid by every later test on it.
+  held for the life of the worker is paid by every later test on it. And mark the module
+  as one `xdist_group` (see "Keeping the suite fast"): a per-module cache that xdist
+  spreads over five workers is warmed five times.
 
 The second full-run audit (five backend + five frontend runs against a clean `main`)
 found these further classes. Each one passed on the host that wrote it.
@@ -810,6 +812,177 @@ write under the real home — the recipe is in "The measurement" above), and com
   (`browser_cli.cli_path()` returned the developer's mise shim after `HOME` and `PATH`
   were pinned). Pin every input the resolver reads AND reset its cache in the test.
 
+### What a second five-run pass found (Windows host, ~88k tests per run)
+
+The measurement above was repeated on `main` two days later, on a Windows developer
+machine, with a per-test probe (RSS, threads, environment, CWD) and a before/after
+snapshot of the operator's home. Three files appeared in the real `~/.kiro/crew` on every
+run, and each named a class the floor did not yet close.
+
+- **`monkeypatch.undo()` takes the floor down with it.** `undo()` reverts EVERY record on
+  the instance it is called on, and the rootdir floor used to patch through the same
+  function-scoped `monkeypatch` a test receives. About ninety tests call `undo()` mid-way
+  to drop one of their own patches before a final assertion; every one of them also
+  unpinned `KIROCREW_HOME` for the rest of the test. `test_session_storage` then ran
+  `empty_trash()` against the operator's REAL trash and left `trash/session-storage.lock`
+  behind. Fix, structural: the floor fixtures patch through their own `_floor_monkeypatch`
+  instance, undone at their own teardown, so a test's `undo()` reverts only the test's
+  records (`TestTheFloorSurvivesATestsOwnUndo` ratchets it). Fix, local: a patch you need
+  to drop before the test ends belongs in `with pytest.MonkeyPatch.context() as patched:`,
+  never behind `monkeypatch.undo()` — the shared instance also carries every fixture the
+  test requested (`stores` sets `KIROCREW_HOME` through it), and those are gone too.
+- **A detached boot task resolves the data home after the test has returned.**
+  `_start_channel_transports` schedules `_replay_spooled_inbound` with
+  `asyncio.create_task` and never awaits it; the task runs `inbound_spool.peek_next`
+  through `asyncio.to_thread`, and `spool_path()` inside it read `data_home()` on a worker
+  thread that was still running when the starting test's pins had been undone —
+  `~/.kiro/crew/inbound-spool/refused.jsonl.lock`, attributed to whichever test came next.
+  Same shape as the breadcrumb pump above, one layer up: a detached task is a background
+  worker. Fixed in production, at the calling side: the scheduler resolves
+  `spool_path()` on the loop as it creates the task and hands the path in, so the
+  worker thread reads a location fixed at boot rather than whatever the environment
+  names when it happens to run (`TestInboundReplayResolvesItsSpoolWhenScheduled` pins
+  it). When you add a detached task, resolve every environment-derived input where the
+  task is scheduled, or give the tests a handle to await.
+- **What a closed loop leaves behind runs after the pins are gone.** pytest-asyncio 0.20
+  ends a test's loop with a bare `loop.close()`. Two things survive that: a task the
+  code under test detached and the test never awaited — destroyed with the loop, its
+  coroutine gets `GeneratorExit` at garbage collection, so its `finally` blocks run
+  *then*; `_run_chat`'s queue-cycle `finally` reaches a synchronous
+  `KiroCrewConfig.load()` — and a default-executor job (`asyncio.to_thread`,
+  `run_in_executor(None, ...)`), which `close()` abandons without waiting. Either one
+  resolving `config_dir()` after `KIROCREW_HOME` is unpinned creates the operator's
+  `~/.kiro/crew` and refreshes the breadcrumb: a fresh fake `HOME` grew both after four
+  subagent `on_done` tests, none of which failed. Structural fix in the floor's
+  `tryfirst` teardown hook, beside the receipt-worker join: cancel every pending task
+  and run the loop until they finish, then `shutdown_default_executor` — what
+  `asyncio.run` does at shutdown — bounded, and before any fixture teardown so the pins
+  still hold. A test that leaves an unstarted turn behind now shows up as a
+  `coroutine ... was never awaited` warning at that point instead of as residue.
+- **A default that bypasses the data-home pin BY DESIGN.** `PodConfig.load()` derives
+  `pods_dir` from `_default_home()` — the operator's real `~/.kiro/crew/pods` — precisely so
+  a pod running with its own isolated `KIROCREW_HOME` cannot redirect the host's pod
+  registry, and `pod_root` from `Path.home()/.kirocrew-pods`. A fixture that was simply
+  `PodConfig.load()` therefore recorded `viability-*.refused` notes into the real pod plane.
+  The floor now pins `KIROCREW_POD_ROOT` and `KIROCREW_POD_ENV_DIR` per test
+  (`TestThePodPlaneIsPinnedForEveryTestpath`); `test_pod.py` clears them deliberately
+  because its subject includes the home-derived defaults, with `HOME` redirected first.
+- **A collection-time probe reads the operator's config.** `test_app_backend.py`'s
+  `_sandbox_can_spawn()` runs at import, before any per-test pin, and called
+  `wrap_argv()` — which loads `KiroCrewConfig` from the REAL `~/.kiro/crew/config.json`.
+  A developer box that carries `sandbox_allow_unsandboxed_exec=true` (the only way Kiro Crew
+  runs on Windows) made the probe say "can spawn", and the three tests it gates then ran
+  under the fixture's default config and failed closed, while CI skipped them. A
+  `skipif` helper must observe what the tests will observe: run it under an empty
+  `KIROCREW_HOME`. The pattern to grep for is a module-level `def _can_*()` (or
+  `_has_*`, `_probe_*`) used by a `skipif` whose body touches `KiroCrewConfig`,
+  `config_dir()`, `data_home()` or `Path.home()`.
+- **`monkeypatch.delenv` records nothing for an absent variable, and an after-the-fact
+  `delenv` records the leaked value.** Both spellings were found around variables the code
+  under test WRITES: `_export_bound_port` publishing `KIROCREW_BOUND_PORT`, `cli.main`
+  pinning `KIROCREW_PROJECT_DIR`, the Webex save handler exporting the token, a cron
+  preview applying `--env`, `load_credentials` propagating `OWNER_ID`. `delenv(name,
+  raising=False)` BEFORE the write does not restore (pytest only records an undo for a key
+  that existed); `delenv(name)` AFTER the write records the written token as the value to
+  put back, so teardown re-instates it. Use `test/conftest.py`'s
+  `forget_env_at_teardown(monkeypatch, *names)`, which records the pre-test state as the
+  undo; the floor does the same for its four cleared names.
+- **Production mutates `PATH` for the life of the worker.** The doctor's media section
+  calls `transcribe.ensure_ffmpeg_in_path()`, which prepends a host-specific directory to
+  `os.environ["PATH"]`; the first doctor test on a worker changed `PATH` for every later
+  test. `TestDoctor` records `PATH` through monkeypatch (`monkeypatch.setenv("PATH",
+  os.environ["PATH"])`) so it is restored whatever the doctor did.
+
+Beyond the residue, five runs turned up exactly three tests that flipped between runs
+with nothing in the host or the TEMP placement to blame, and the pull request's own CI
+added a fourth; each was a real defect:
+
+- **`os.replace` on Windows loses to a reader holding the destination.** Three tests in
+  three files failed once each with `PermissionError: [WinError 5]` from the same line in
+  `history_projection.py`, where the projection swapped a freshly written temp file over
+  the live one. A scanner (the indexer's own reader, or the antivirus) that has the
+  destination open for a few milliseconds is enough. Production fix: the swap goes
+  through `atomic_write.replace_with_retry`, which already existed for exactly this
+  and retries `WinError 5`/`32` briefly, off-loop only. The tests were right to fail.
+- **A single-flight test that did not establish the concurrency it asserted.**
+  `test_skills_catalog_cache` gathers eight readers of one catalog and asserts one
+  assembly. The counting stub returned instantly, so the leader's executor job was done
+  before the loop reached the `await` — Python 3.13 sets the wrapped future's state
+  synchronously when the pool thread has finished — and awaiting a done future does not
+  yield. The leader completed with a waiter count of one, offered nothing, and the second
+  reader assembled again: `2 == 1`, once in five runs. The stub is now gated on a
+  `threading.Event` released only after all eight readers are registered. The production
+  coalescing was never wrong; "readers that arrive while a scan is in flight share it"
+  is only testable while a scan is in flight.
+- **A wall-clock ceiling sized for one pass, spent on three.** `test_pr_watchers`'
+  three-pass clone test waited `WAIT_S` (10 s) for `exhausted`, and the failing snapshot
+  showed `pass 3/3` complete with only the final status flip outstanding: a real clone
+  plus three passes of several git subprocesses each, on a host shared with five other
+  workers, is more than ten seconds on Windows. It now waits a named `WAIT_S * 3` with
+  the reason next to it — class 5 above, not a stuck watcher.
+- **Two `resolve()` calls that disagree by a prefix.** The CI Windows shard failed
+  `test_work_ledger`'s four-threads-bind-one-worker test with one thread reporting
+  `path traversal blocked for worker key` — for a key with no traversal in it. The
+  guard resolved the child and the base in two separate calls; on Windows,
+  `Path.resolve()` on a FILE another thread is replacing at that instant comes back as
+  `\\?\C:\...` (`ntpath.realpath` drops the extended-length prefix only after a
+  re-check that fails when the file has just been swapped), the directory resolves to
+  `C:\...`, and `is_relative_to` reads the prefix as an escape. Reproduced locally in
+  about four runs of ten by pointing the temp root at its 8.3 short name, the shape of
+  the runner's `C:\Users\RUNNER~1`. Production fix: `session_ledger.resolved_within`
+  resolves the base once, builds the child from it, and strips the prefix from both
+  sides; the three ledger guards go through it. Ninety repeated runs pass.
+
+### What the host lends the suite, and must not
+
+The same pass found ~140 tests that pass on the CI runners and fail on an ordinary
+developer machine — not flakes, but assertions about the HOST dressed up as assertions
+about the code. Each is a hermeticity gap, and each has one fix:
+
+- **A POSIX literal is not an absolute path on Windows from Python 3.13.**
+  `ntpath.isabs("/opt/shims")` is True on 3.12 and False on 3.13 (a path without a drive is
+  relative to the current drive), and production filters and validates paths with
+  `os.path.isabs` — spec `PATH` entries, trusted binaries, upload roots, socket paths. A
+  fixture spelled `"/usr/bin"` therefore exercised the REJECTION branch on 3.13. Spell
+  fixture paths with `test/conftest.py`'s `host_abs("usr", "bin")`; judge a path that
+  belongs to a SIMULATED platform with that platform's module (`posixpath.isabs` when the
+  test set `sys.platform = "darwin"`). CI runs 3.12 only, so nothing there will catch it.
+- **Python 3.13 dedents docstrings.** `__doc__` no longer occurs verbatim in
+  `inspect.getsource()`, so a source ratchet that subtracted `func.__doc__` from the source
+  left the docstring in place and flagged its own prose. Strip a docstring structurally
+  (`ast.parse` → drop the first statement → `ast.unparse`), never by text replacement.
+- **Trusted-directory resolvers versus per-user installs.** `platform_compat.trusted_git_bin`
+  and the `gh` resolver deliberately refuse binaries outside fixed system directories; a
+  developer's Git for Windows lives under `%LOCALAPPDATA%\Programs\Git`, so every real-repo
+  assertion in `test_governance_updates` answered "unreadable git config" and the
+  auto-update tests passed vacuously on the refusal branch. When the subject is what the
+  seam does with the tool's ANSWERS, pin the resolver (to the fixture's own `git`, or to a
+  fake absolute path when the spawn is faked); the resolver's own tests patch it explicitly.
+- **`tmp_path` has ancestors.** A walk that runs to the filesystem root — the kirocrew
+  launcher resolver's `.venv` search, `artifact_source`'s project-marker walk — finds what
+  sits above the temp root: with `TMPDIR` inside a checkout that is a real
+  `.venv/Scripts/kirocrew.exe`, and under `~/.kiro/crew/workspace` a `.kiro` marker, so
+  "a plain directory" classified as a project and "no launcher anywhere" found one. Confine
+  the walk to `tmp_path` at the validator (`launchers_confined_to_tmp`,
+  `cap_project_root_walk`) rather than assuming the host's temp root is bare.
+- **"A port nothing listens on" is a property of the host.** Endpoint agents on managed
+  machines intercept loopback connects and answer every port with HTTP 200 (a SOAP envelope
+  from `127.0.0.1:1`), so a test that provoked `transfer_unreachable` by POSTing to port 1
+  got a delivered bundle instead. Model the connect failure at the client seam.
+- **Real symlinks and long paths are capabilities, not platforms.** An unelevated Windows
+  shell cannot create a symlink (WinError 1314); a stock one refuses a path past 260
+  characters. Tests whose contract IS the link go in `test/requires-real-symlinks.txt`
+  (89 added this pass — the conftest skips them only when the probe fails); tests that
+  need a directory that resolves elsewhere use `make_dir_link` (a junction) and keep their
+  Windows coverage; a test that needs a 240-character leaf probes the path first and skips
+  on the host that cannot hold it.
+- **`"python3"` is not on PATH on Windows.** Spawn the interpreter as `sys.executable`; a
+  literal name fails with cmd's 9009 and every verdict downstream reads as a plain failure.
+- **The interpreter decides where recursion gives way.** A test that pinned "decode
+  succeeds but encode fails" for a 2,000-deep JSON body met an interpreter that did both;
+  assert the invariant across all three outcomes, and walk a deep structure iteratively
+  in the assertion itself.
+
 ## Running the suite: the defaults, and how to narrow safely
 
 The checkpoint run is the whole suite with the configured defaults:
@@ -936,6 +1109,26 @@ and both fail silently if skipped: naming files on the command line bypasses
 the way `scripts/ci-surface-tests.py` does, and files sharing an `xdist_group`
 (`subprocess_spawn`, `mcp_gateway`, `serial`) must land in the same process or they
 lose the serialization the mark exists to provide.
+
+### Where the temp root points, and what else is running
+
+Two things about the HOST decided the outcome of a full run before any test did:
+
+- **`TMPDIR`/`TEMP` must not sit under `~/.kiro` or inside a checkout.** Every temp root
+  in the suite derives from it, so `tmp_path` inherits its ANCESTRY: under
+  `~/.kiro/crew/workspace` the isolation floor's own self-tests fail (the pinned home is
+  "a real home path"), the file-explorer and design-tweak suites classify every fixture
+  as sensitive or as inside a project, and a walk that runs to the filesystem root finds
+  the checkout's `.venv`. About a hundred false reds, none of them defects. An agent
+  shell here pre-seeds exactly that (`TEMP` under `~/.kiro/crew/scratch`); export a
+  short neutral root (`C:\kc-tmp`, `/tmp/kc`) before a full run.
+- **Do not co-schedule the backend suite with `vitest run --coverage` on one machine.**
+  Eight xdist workers at ~1.8 GiB each plus twelve coverage forks exhausted a 32 GiB
+  host with 10 GiB of page file: the workers died with `RuntimeError: can't start new
+  thread` inside pytest-timeout (an INTERNALERROR that ends the whole run, not a red
+  test) and vitest lost files to `Worker forks emitted error`, four runs out of four,
+  with every worker otherwise healthy (≤19 threads, no RSS growth). Run the two suites
+  back to back; the pytest-only run finished in 64 minutes at `-n 6`.
 
 ### A multi-test `--override-ini` MUST re-state the xdist flags
 
@@ -1392,6 +1585,18 @@ Two more, from a 5x full-suite run whose per-test probe recorded wall time and R
   `node_modules`, `.venv`, `dist`, and `__pycache__`, and hand every test the same
   parsed set. The assertions do not change, so the planted-violation check below is
   how you prove nothing got weaker.
+- **A module-cached walk that is still paid once per worker.** Caching per module
+  is not the whole fix under xdist: `--dist loadgroup` hands an unmarked module's
+  tests to whichever workers are free, and each worker warms its own copy of the
+  cache. Five full runs measured `test_spawn_audit.py` at 5 workers × 40–75 s and
+  `test_lazy_data_home_paths.py` at up to 3 workers × 27–159 s — eighteen such
+  modules re-did their one scan ~4 times each, about 22 CPU-minutes per run that no
+  test needed. The fix is one line at module scope,
+  `pytestmark = pytest.mark.xdist_group(name="tree_scan_<module>")`, one group PER
+  FILE: the module's tests then land on one worker and the cache is computed once
+  per run, while different ratchet files still scan in parallel. Do not put every
+  ratchet in one shared group — that serializes several minutes of scanning onto a
+  single worker while the others sit idle at the tail.
 
 Neither of these shows up as a *failure*, which is why they survive: the suite is
 green, just three times slower than it needs to be, and every timing-sensitive test

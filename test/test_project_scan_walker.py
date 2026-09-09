@@ -31,6 +31,7 @@ from typing import Any
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew.project_scan import (
     Candidate,
     CandidateTree,
@@ -485,6 +486,15 @@ class TestDirectorySwapRace:
         share an inode number and be indistinguishable by identity; keeping the
         directory alive guarantees the link is a different inode. ``park`` must
         sit outside the scan root so the moved directory is not itself scanned.
+
+        The link is staged through ``conftest.make_dir_link`` -- a symlink on POSIX,
+        a junction on Windows -- so the Windows-shape case below runs on an
+        unelevated Windows host instead of dying inside the walker's directory read
+        with WinError 1314 (which the walker records as a warning and reports as an
+        empty tree, failing the test for the wrong reason). ``realpath`` resolves a
+        junction exactly as it resolves a symlink, which is the property under test.
+        The swap is armed by ``park``'s existence rather than ``is_symlink()``,
+        which is False for a junction.
         """
 
         from kiro_crew import project_scan
@@ -495,9 +505,9 @@ class TestDirectorySwapRace:
             directory: str, manifests: frozenset[str], identity: tuple[int, int] | None = None
         ) -> object:
             contents = original(directory, manifests, identity)
-            if os.path.samefile(directory, when_listing) and not replace.is_symlink():
+            if os.path.samefile(directory, when_listing) and not park.exists():
                 replace.rename(park)
-                replace.symlink_to(with_link_to, target_is_directory=True)
+                make_dir_link(replace, with_link_to)
             return contents
 
         monkeypatch.setattr(project_scan, "_read_dir", swapping_read_dir)

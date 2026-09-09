@@ -13,8 +13,14 @@ from __future__ import annotations
 import json
 import os
 
+from conftest import host_abs
 from kiro_crew.config import loader as L
 from kiro_crew.config.loader import KiroCrewConfig, McpConfig
+
+#: The published directory must survive ``augmented_path``'s ``os.path.isabs``
+#: filter, and from Python 3.13 ``ntpath.isabs("/opt/pixi/bin")`` is False (no
+#: drive) -- so the fixture is spelled absolutely for the running host.
+_PIXI_BIN = host_abs("opt", "pixi", "bin")
 
 
 def _load_from(tmp_path, monkeypatch, data: dict) -> KiroCrewConfig:
@@ -71,17 +77,17 @@ def test_load_publishes_the_setting_to_the_search_path(tmp_path, monkeypatch):
     import kiro_crew.env as env_mod
 
     monkeypatch.setattr(env_mod, "_config_path_dirs", ())
-    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": ["/opt/pixi/bin"]}})
-    assert "/opt/pixi/bin" in env_mod.mcp_search_path("").split(os.pathsep)
+    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": [_PIXI_BIN]}})
+    assert _PIXI_BIN in env_mod.mcp_search_path("").split(os.pathsep)
 
 
 def test_load_republishes_so_a_removed_setting_clears(tmp_path, monkeypatch):
     import kiro_crew.env as env_mod
 
     monkeypatch.setattr(env_mod, "_config_path_dirs", ())
-    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": ["/opt/pixi/bin"]}})
+    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": [_PIXI_BIN]}})
     _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": []}})
-    assert "/opt/pixi/bin" not in env_mod.mcp_search_path("").split(os.pathsep)
+    assert _PIXI_BIN not in env_mod.mcp_search_path("").split(os.pathsep)
 
 
 def test_defaults_path_also_clears_a_stale_snapshot(tmp_path, monkeypatch):
@@ -94,8 +100,8 @@ def test_defaults_path_also_clears_a_stale_snapshot(tmp_path, monkeypatch):
     import kiro_crew.env as env_mod
 
     monkeypatch.setattr(env_mod, "_config_path_dirs", ())
-    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": ["/opt/pixi/bin"]}})
-    assert "/opt/pixi/bin" in env_mod.mcp_search_path("").split(os.pathsep)
+    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": [_PIXI_BIN]}})
+    assert _PIXI_BIN in env_mod.mcp_search_path("").split(os.pathsep)
 
     # Now point the loader at a home with no config files at all.
     empty = tmp_path / "empty"
@@ -104,7 +110,7 @@ def test_defaults_path_also_clears_a_stale_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(L, "config_dir", lambda: empty)
     monkeypatch.setattr(L, "config_local_path", lambda: empty / "config.local.json")
     KiroCrewConfig.load()
-    assert "/opt/pixi/bin" not in env_mod.mcp_search_path("").split(os.pathsep)
+    assert _PIXI_BIN not in env_mod.mcp_search_path("").split(os.pathsep)
 
 
 def test_section_is_in_the_schema_registry():

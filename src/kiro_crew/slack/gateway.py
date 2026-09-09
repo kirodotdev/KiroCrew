@@ -11853,13 +11853,21 @@ class GatewayOrchestrator:
         await loop.run_in_executor(maintenance_executor(), self._badge_unready_channels, boot)
         self._channel_handles = await registry.start_channels(self, descriptors, permitted)
         # Tell the sender of whatever the SHUTDOWN GATE refused on the way down
-        # that it was never processed (issue #2217). Ordered AFTER the transports
+        # that it was never processed. Ordered AFTER the transports
         # because the notice is sent through the channel that received the
         # message, and detached from boot so a slow platform send cannot hold the
-        # gateway's start open.
-        self._inbound_replay_task = asyncio.create_task(self._replay_spooled_inbound())
+        # gateway's start open. The spool's location is resolved HERE, on the
+        # loop, as the task is scheduled: the pass reads the spool on a worker
+        # thread, and a path resolved there would name whatever data home the
+        # environment holds at that later moment -- not the one this gateway
+        # booted under. Under the test suite that moment is after the starting
+        # test's pins are gone; five full runs left a lock file in the operator's
+        # REAL data home that way.
+        self._inbound_replay_task = asyncio.create_task(
+            self._replay_spooled_inbound(spool=inbound_spool.spool_path())
+        )
 
-    async def _replay_spooled_inbound(self) -> None:
+    async def _replay_spooled_inbound(self, *, spool: Path | None = None) -> None:
         """Notice inbound messages the shutdown gate refused before this start.
 
         The spool is written only at the refusal point, so every entry is a turn
@@ -11869,10 +11877,14 @@ class GatewayOrchestrator:
         Entirely best-effort: this runs as a detached boot task, so an exception
         escaping here would be an unretrieved task exception rather than
         anything a user could act on.
+
+        *spool* is the spool file to read, resolved by the scheduler on the loop;
+        ``None`` lets the pass resolve it itself, which is only right when the
+        caller awaits the pass inline.
         """
         try:
             transports = getattr(self.dashboard_state, "channel_transports", None) or {}
-            await inbound_spool.replay_spooled(transports=transports)
+            await inbound_spool.replay_spooled(transports=transports, path=spool)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -11928,7 +11940,7 @@ _SLICE_LIMITS_TASK: "asyncio.Task[None] | None" = None
 # Strong ref to the fire-and-forget agents-dir janitor sweep launched at boot
 # (the loop holds tasks weakly, so without this it could be GC'd mid-flight).
 _AGENTS_JANITOR_TASK: "asyncio.Task[None] | None" = None
-#: Strong ref for the liveness-keyed agent-scratch sweep loop (#5063).
+#: Strong ref for the liveness-keyed agent-scratch sweep loop.
 _AGENT_SCRATCH_SWEEP_TASK: "asyncio.Task[None] | None" = None
 
 

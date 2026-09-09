@@ -201,6 +201,77 @@ def make_dir_link(link: pathlib.Path, target: pathlib.Path) -> None:
     link.symlink_to(target, target_is_directory=True)
 
 
+def host_abs(*parts: str) -> str:
+    """A fixture path that is absolute on THIS host: ``/opt/shims`` or ``C:\\opt\\shims``.
+
+    Production filters and validates paths with ``os.path.isabs`` -- spec PATH
+    entries, trusted binaries, upload references, socket paths -- and from
+    Python 3.13 ``ntpath.isabs`` rejects a bare leading slash (a path
+    without a drive is relative to the current drive). A POSIX literal such as
+    ``"/usr/bin"`` therefore changes meaning per interpreter on Windows: absolute
+    on 3.12, relative on 3.13, so a test written with one silently exercises the
+    rejection branch there. Spell fixtures through this helper instead; it touches
+    no filesystem, and its result is what ``os.path.isabs`` accepts everywhere.
+    """
+    return os.path.abspath(os.path.join(os.sep, *parts))
+
+
+def forget_env_at_teardown(monkeypatch, *names: str) -> None:
+    """Make ``monkeypatch`` remove *names* from ``os.environ`` at teardown.
+
+    For a variable the code under test is about to WRITE (a saved channel token
+    exported for the running gateway, a ``PORT`` a booted server publishes, a
+    ``--env`` a CLI applies), neither obvious spelling restores the environment:
+
+    * ``monkeypatch.delenv(name, raising=False)`` BEFORE the write records nothing
+      when the variable is absent -- pytest only records an undo for a key that
+      existed -- so the value written later survives the test;
+    * ``monkeypatch.delenv(name)`` AFTER the write records the written value as
+      the thing to restore, so teardown puts the token BACK.
+
+    Both shapes were found leaking across tests in a full run. This records the
+    current state (absent or present) as the undo, so teardown returns the
+    variable to exactly what it was before the test, whatever the test wrote.
+    """
+    for name in names:
+        if name in os.environ:
+            monkeypatch.delenv(name)
+        else:
+            monkeypatch.setenv(name, "")  # records "was absent" as the undo
+            monkeypatch.delenv(name)
+
+
+def cap_project_root_walk(monkeypatch, ceiling: pathlib.Path) -> None:
+    """Make ``kiro_crew.artifact_source`` see NO project root above ``ceiling``.
+
+    ``classify_source`` walks up from a file looking for ``PROJECT_ROOT_MARKERS``
+    (``.git``, ``Makefile``, ``package.json``, ``.kiro``, ...), so a test that
+    asserts COPY for "a plain directory" under ``tmp_path`` is also asserting
+    that nothing ABOVE ``tmp_path`` carries a marker. That is not the test's to
+    decide: pytest's temp root sits wherever ``TMPDIR`` points, and a checkout or
+    a ``.kiro`` workspace a few levels up turns the whole temp tree into a
+    project. Observed with ``TMPDIR`` under ``~/.kiro/crew/workspace``: every
+    such assertion answered LINK to that workspace instead of COPY.
+
+    Directories outside ``ceiling`` report no marker; inside it the real probe
+    runs, so the markers a test plants (``proj/.git``) still count. Pair it with
+    the ``_tempdir`` narrowing these tests already do -- the two seams together
+    make the rest of ``tmp_path`` ordinary, UNMARKED filesystem.
+    """
+    from kiro_crew import artifact_source
+
+    real_marker = artifact_source.project_root_marker
+    top = os.path.normcase(os.path.realpath(str(ceiling)))
+
+    def _capped(directory: str) -> str | None:
+        here = os.path.normcase(os.path.realpath(directory))
+        if here != top and not here.startswith(top + os.sep):
+            return None
+        return real_marker(directory)
+
+    monkeypatch.setattr(artifact_source, "project_root_marker", _capped)
+
+
 #: ``pytest_collection_modifyitems`` -- which applies the
 #: ``windows-expected-failures.txt`` skips -- lives in the ROOTDIR ``conftest.py``.
 #: That list already names node ids under

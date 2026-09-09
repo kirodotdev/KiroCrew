@@ -28,6 +28,7 @@ from aiohttp import web
 
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
+from conftest import forget_env_at_teardown
 from kiro_crew.subagent import AGENT_NOT_FOUND_CODE
 
 
@@ -1776,11 +1777,12 @@ class TestConfigGetHandlers:
         monkeypatch.delenv("SLACK_APP_TOKEN", raising=False)
         # load_credentials() propagates .env values into os.environ via
         # setdefault() so spawned children inherit them (real, deliberate
-        # behavior). monkeypatch.delenv(raising=False) snapshots whatever is
-        # currently there (present or absent) and restores exactly that at
-        # teardown, so this protects the var regardless of what an earlier
-        # test in this worker left behind.
-        monkeypatch.delenv("OWNER_ID", raising=False)
+        # behavior). A bare monkeypatch.delenv(raising=False) is NOT enough here:
+        # when the variable is absent pytest records no undo, so the OWNER_ID this
+        # load writes survived the test and reached later ones on the worker
+        # (observed in a full run). The helper records the pre-test state --
+        # present or absent -- as the undo, so teardown restores exactly that.
+        forget_env_at_teardown(monkeypatch, "OWNER_ID")
         self._isolate(
             monkeypatch,
             tmp_path,

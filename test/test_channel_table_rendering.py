@@ -8,6 +8,7 @@ converts, that the turn's canonical text does not, and that a target declaring
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import replace
 from typing import Any
@@ -1063,7 +1064,12 @@ class TestTableCardNeverBuriesAnUpload:
         renderer = DiscordRenderer(
             client, "chan", DISCORD_CAPABILITIES, session_key="sk", uploads_allowed=True
         )
-        renderer.authorize_upload_root("/tmp")  # string only; touches no filesystem
+        # String only; touches no filesystem. Spelled from the host's own root
+        # rather than "/tmp": authorize_upload_root() keeps only an ABSOLUTE root,
+        # and ntpath.isabs("/tmp") is False from Python 3.13 (a bare slash without
+        # a drive is relative to the current drive on Windows), which leaves uploads
+        # disabled and fails every test on this fixture there.
+        renderer.authorize_upload_root(os.path.abspath(os.sep))
         assert renderer._uploads_enabled(), "fixture must model an upload-capable transport"
         return client, renderer
 

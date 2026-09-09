@@ -39,6 +39,14 @@ from functools import lru_cache
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+# One xdist worker for the whole module: every test here derives from ONE module-cached
+# scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
+# spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
+# per full run for this file alone. Grouping keeps the cache single-copy per run.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_test_lazy_data_home_paths")
+
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 PATHS_MODULE = SRC / "config" / "paths.py"
 

@@ -91,6 +91,16 @@ function echoThread(slug: string) {
  *  the thread-endpoint mock BEFORE mount: the page opens a member on its own
  *  as soon as the roster is in, so a mock installed after render would miss
  *  that first POST. */
+/**
+ * Ceiling for a wait on the chat pane. `renderPage` returns once the roster
+ * fetch has been ISSUED; the pane sits behind a real chain after that -- members
+ * resolve, the roster commits, the auto-open effect POSTs `memberThread`, that
+ * resolves, and the pane mounts. Under load (a shared host, coverage
+ * instrumentation) that ran past the 1000ms default in one of four full runs; a
+ * named ceiling, not a longer guess -- website/docs/testing.md.
+ */
+const PANE_READY = { timeout: 5000 }
+
 async function renderPage(
   members = [row()],
   defaultAgent = 'kirocrew',
@@ -282,7 +292,7 @@ describe('MembersPage thread', () => {
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('oncall'))
     // The stub echoes the slot key: proves ChatPane received THE member slot,
     // not a fresh ordinary slot. Mutating the mounted key breaks this line.
-    const pane = await screen.findByTestId('chat-pane-stub')
+    const pane = await screen.findByTestId('chat-pane-stub', PANE_READY)
     expect(pane).toHaveTextContent('member-oncall')
     // The host declares the pin: ChatPane must not offer the agent picker
     // (every selection would 409 against the server-side pin).
@@ -320,7 +330,7 @@ describe('MembersPage thread', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('oncall'))
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-oncall')
   })
 
   it('surfaces a visible error when thread creation fails', async () => {
@@ -358,7 +368,7 @@ describe('MembersPage thread', () => {
     ])
     // Let the page's own first open (alpha, first row) settle before queuing
     // the one-shot responses, so the re-click below is the call that hangs.
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
     ;(api.memberThread as ReturnType<typeof vi.fn>)
       .mockReturnValueOnce(pendingA)
       .mockResolvedValueOnce({
@@ -614,7 +624,7 @@ describe('MembersPage unread drain', () => {
       store.dispatch(markSlotUnread('member-oncall'))
     })
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('chat-pane-stub')
+    await screen.findByTestId('chat-pane-stub', PANE_READY)
     await waitFor(() =>
       expect(store.getState().dashboard.unreadSlots).not.toContain('member-oncall'),
     )
@@ -623,7 +633,7 @@ describe('MembersPage unread drain', () => {
   it('a live message re-flagging the MOUNTED thread is drained again, not left as a stuck badge', async () => {
     const { store } = await renderPage()
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('chat-pane-stub')
+    await screen.findByTestId('chat-pane-stub', PANE_READY)
     // Simulate the websocket marker firing while the user is looking at the
     // thread (its check is against chat.activeSlot, which this page never sets).
     act(() => {
@@ -641,7 +651,7 @@ describe('MembersPage unread drain', () => {
       store.dispatch(markSlotUnread('chat-123'))
     })
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('chat-pane-stub')
+    await screen.findByTestId('chat-pane-stub', PANE_READY)
     expect(store.getState().dashboard.unreadSlots).toEqual(
       expect.arrayContaining(['member-research', 'chat-123']),
     )
@@ -655,7 +665,7 @@ describe('MembersPage unread drain', () => {
       row({ bound: true, slot_key: 'member-oncall' }),
       row({ name: 'scout', slug: 'scout' }),
     ])
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-scout')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-scout')
     expect(screen.queryByTestId('member-unread-dot')).toBeNull()
     act(() => {
       store.dispatch(markSlotUnread('member-oncall'))
@@ -670,7 +680,7 @@ describe('MembersPage unread drain', () => {
       row({ bound: true, slot_key: 'member-oncall' }),
       row({ name: 'scout', slug: 'scout' }),
     ])
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-scout')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-scout')
     act(() => {
       store.dispatch(markSlotUnread('member-oncall'))
     })
@@ -1143,7 +1153,7 @@ describe('MembersPage default member, memory and URL', () => {
     ])
     // No click: the most-recently-active member (the roster's first row) is
     // opened on arrival, its thread mounted, and the URL says so.
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-fresh-talker')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-fresh-talker')
     expect(api.memberThread).toHaveBeenCalledWith('fresh-talker')
     expect(screen.queryByText(/Pick a member/i)).toBeNull()
     expect(currentUrl()).toBe('/members?member=fresh-talker')
@@ -1198,7 +1208,7 @@ describe('MembersPage default member, memory and URL', () => {
   it('restores the remembered member on return (and after a reload)', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'beta')
     await renderPage(alphaBeta())
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-beta')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
     expect(api.memberThread).toHaveBeenCalledTimes(1)
     expect(api.memberThread).toHaveBeenCalledWith('beta')
     expect(currentUrl()).toBe('/members?member=beta')
@@ -1207,7 +1217,7 @@ describe('MembersPage default member, memory and URL', () => {
   it('a remembered member that was deleted or renamed falls back to the first row, without an error', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'ghost')
     await renderPage(alphaBeta())
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
     expect(screen.queryByRole('alert')).toBeNull()
     // Nobody was named, so nothing is announced: the memory just moves on.
     expect(screen.queryByTestId('member-gone-notice')).toBeNull()
@@ -1219,7 +1229,7 @@ describe('MembersPage default member, memory and URL', () => {
   it('a URL naming a member wins over the remembered one (shallow link)', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
     await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=beta' })
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-beta')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
     expect(api.memberThread).toHaveBeenCalledTimes(1)
     // Opening via the link also becomes the memory for the next visit.
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
@@ -1227,7 +1237,7 @@ describe('MembersPage default member, memory and URL', () => {
 
   it('a URL naming a member that is gone falls back to the first row and SAYS so', async () => {
     await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=ghost' })
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
     // The user asked for a specific member: the swap is announced above the
     // thread (a status, not an error — the fallback did open something).
     const notice = screen.getByTestId('member-gone-notice')
@@ -1252,7 +1262,7 @@ describe('MembersPage default member, memory and URL', () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'beta')
     await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=ghost' })
     // The remembered member, not the first row, is the stand-in.
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-beta')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
     expect(screen.getByTestId('member-gone-notice')).toHaveTextContent(/^Showing beta/)
     expect(currentUrl()).toBe('/members?member=beta')
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
@@ -1269,7 +1279,7 @@ describe('MembersPage default member, memory and URL', () => {
 
   it('clicking a member writes the URL and the memory', async () => {
     await renderPage(alphaBeta())
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
     fireEvent.click(await rosterRow('beta'))
     await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-beta'))
     expect(currentUrl()).toBe('/members?member=beta')
@@ -1312,7 +1322,7 @@ describe('MembersPage default member, memory and URL', () => {
     )
     fireEvent.click(screen.getByTestId('go-members'))
     // Arrival: the auto-open REPLACES the bare /members entry.
-    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
     expect(currentUrl()).toBe('/members?member=alpha')
     // Walk two members.
     fireEvent.click(await rosterRow('beta'))
@@ -1382,7 +1392,7 @@ describe('MembersPage default member, memory and URL', () => {
     it('tapping a member opens it; the header back POPS the entry the roster pushed', async () => {
       await renderPage(alphaBeta())
       fireEvent.click(await rosterRow('beta'))
-      expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-beta')
+      expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
       expect(currentUrl()).toBe('/members?member=beta')
       navigateSpy.mockClear()
       fireEvent.click(screen.getByTestId('member-back'))
@@ -1396,7 +1406,7 @@ describe('MembersPage default member, memory and URL', () => {
 
     it('from a deep link the header back drops the param in place — there is no roster entry behind it', async () => {
       await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=beta' })
-      expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-beta')
+      expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
       navigateSpy.mockClear()
       fireEvent.click(screen.getByTestId('member-back'))
       await waitFor(() => expect(screen.queryByTestId('chat-pane-stub')).toBeNull())

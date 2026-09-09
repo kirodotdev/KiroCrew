@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.history_cache import _FileChangeCacheEntry
 from kiro_crew.jsonl_util import bounded_raw_records
 
@@ -1232,7 +1232,13 @@ class SessionMetadataProjection:
                 os.write(descriptor, data)
             finally:
                 os.close(descriptor)
-            os.replace(temporary, str(path))
+            # The shared retrying rename, not a bare ``os.replace``: on Windows the
+            # rename fails with ``PermissionError`` while any other handle -- a
+            # concurrent transcript READER -- is open on the destination, and this
+            # path is hit right after a session writes, when readers are busiest.
+            # Three unrelated test files flaked on exactly this line in five full
+            # runs; the retry is what every other tmp-plus-rename writer here has.
+            replace_with_retry(temporary, path)
         except Exception:
             try:
                 os.unlink(temporary)

@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -38,11 +39,30 @@ def _sandbox_can_spawn() -> bool:
     probe: a spawn can fail for reasons a capability probe cannot see, and
     reusing wrap_argv() means this check can never drift from
     start_app_backend().
+
+    The probe runs under an EMPTY ``KIROCREW_HOME``. It is evaluated at
+    collection, before the per-test isolation fixture pins the data home, so a
+    bare ``wrap_argv()`` here reads the OPERATOR's real ``~/.kiro/crew/config.json``
+    -- and on a Windows or macOS developer machine that file routinely carries
+    ``agent.sandbox_allow_unsandboxed_exec=true`` (the only way Kiro Crew runs
+    there). That made the probe answer "can spawn" for a host with no sandbox
+    backend at all, and every test it gates then failed closed under the
+    fixture's default config, while CI (no operator config) skipped them. The
+    gate must observe what the tests will observe: the default config.
     """
     try:
         from kiro_crew import sandbox as _sb
 
-        argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
+        with tempfile.TemporaryDirectory() as empty_home:
+            saved = os.environ.get("KIROCREW_HOME")
+            os.environ["KIROCREW_HOME"] = empty_home
+            try:
+                argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
+            finally:
+                if saved is None:
+                    os.environ.pop("KIROCREW_HOME", None)
+                else:
+                    os.environ["KIROCREW_HOME"] = saved
     except Exception:  # noqa: BLE001 — any probe failure => treat as "can't spawn"
         return False
     try:

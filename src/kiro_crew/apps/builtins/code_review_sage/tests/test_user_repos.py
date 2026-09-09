@@ -19,6 +19,9 @@ from sage_lib import discovery, store
 
 from .test_backend_routes import _load_routes_module
 
+#: A fake resolved ``gh`` that is ABSOLUTE on this host; see test_discovery._FAKE_GH.
+_FAKE_GH = os.path.abspath(os.path.join(os.sep, "usr", "bin", "gh"))
+
 
 def _cp(stdout: str = "", returncode: int = 0, stderr: str = ""):
     """BYTES streams: ``run_gh`` decodes them itself, strictly as UTF-8."""
@@ -58,7 +61,7 @@ class _Home(unittest.TestCase):
 class TestListUserRepos(_Home):
     def _run(self, rows: list[dict], limit: int = 100):
         jsonl = "\n".join(json.dumps(r) for r in rows)
-        with patch.object(discovery, "gh_bin", return_value="/usr/bin/gh"), \
+        with patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
                 patch.object(discovery.subprocess, "run", return_value=_cp(stdout=jsonl)):
             return discovery.list_user_repos(limit=limit)
 
@@ -97,7 +100,7 @@ class TestListUserRepos(_Home):
             captured["argv"] = argv
             return _cp(stdout=json.dumps(_repo("widgets")))
 
-        with patch.object(discovery, "gh_bin", return_value="/usr/bin/gh"), \
+        with patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
                 patch.object(discovery.subprocess, "run", side_effect=fake_run):
             discovery.list_user_repos()
         path = captured["argv"][2]
@@ -114,7 +117,7 @@ class TestListUserRepos(_Home):
             captured["argv"] = argv
             return _cp(stdout="")
 
-        with patch.object(discovery, "gh_bin", return_value="/usr/bin/gh"), \
+        with patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
                 patch.object(discovery.subprocess, "run", side_effect=fake_run):
             discovery.list_user_repos(limit=99999)
         self.assertIn("per_page=100", captured["argv"][2])

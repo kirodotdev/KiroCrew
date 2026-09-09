@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from conftest import host_abs
 from kiro_crew.messaging.display_safety import canonicalize_display
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.whatsapp.group_gate import SILENCE_SENTINEL
@@ -328,8 +329,10 @@ class TestDisplaySafety:
         monkeypatch.setattr(module, "plan_uploads_off_loop", fake_plan)
         caps = TransportCapabilities(max_message_chars=4096, max_buttons=0, files_outbound=True)
         transport, client = FakeTransport(), FakeClient()
+        # The root only has to pass the absolute-path gate (the plan is faked above);
+        # spelled for the host because ``ntpath.isabs("/tmp")`` is False on 3.13.
         r = WhatsAppRenderer(
-            transport, client, "c@s.whatsapp.net", caps, upload_root=lambda: "/tmp"
+            transport, client, "c@s.whatsapp.net", caps, upload_root=lambda: host_abs("tmp")
         )
         await r.on_turn_start()
         await r.on_text_chunk("here is the chart")

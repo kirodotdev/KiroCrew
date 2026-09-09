@@ -67,6 +67,50 @@ def _make_orchestrator(
     return orch
 
 
+class TestInboundReplayResolvesItsSpoolWhenScheduled:
+    """The detached replay pass reads the spool THIS boot resolved, not a later one.
+
+    ``_start_channel_transports`` schedules ``_replay_spooled_inbound`` as a detached
+    task, and the pass reads the spool on a worker thread (``asyncio.to_thread``).
+    Resolving ``spool_path()`` there means resolving the data home at whatever
+    moment the thread runs -- under the suite, after the starting test's
+    ``KIROCREW_HOME`` pin is gone. Five full runs left
+    ``~/.kiro/crew/inbound-spool/refused.jsonl.lock`` in the operator's REAL data
+    home exactly this way. The scheduler now resolves the path on the loop as it
+    creates the task; this pins that the path the pass receives is the one in
+    force at schedule time.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_spool_path_is_fixed_when_the_task_is_created(self, monkeypatch, tmp_path):
+        from kiro_crew.messaging import inbound_spool
+
+        seen: list[Path | None] = []
+
+        async def _record(*, transports, path=None, now=None):
+            seen.append(path)
+            return inbound_spool.ReplayReport()
+
+        monkeypatch.setattr(inbound_spool, "replay_spooled", _record)
+        monkeypatch.setattr(gw, "_channel_transport_permitted", lambda member: False)
+        boot_home = tmp_path / "boot-home"
+        monkeypatch.setenv("KIROCREW_HOME", str(boot_home))
+        orch = _make_orchestrator()
+
+        await orch._start_channel_transports()
+        # The environment moves on BEFORE the detached task gets its first step --
+        # the shape a finished test's teardown has from the task's point of view.
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "later-home"))
+        replay = orch._inbound_replay_task
+        assert replay is not None
+        await asyncio.wait_for(replay, timeout=5.0)
+
+        assert seen == [boot_home / "inbound-spool" / "refused.jsonl"], (
+            "the replay pass was handed a spool resolved after scheduling -- a worker "
+            "thread would read (and lock) whatever data home the environment names then"
+        )
+
+
 # ─── Helper utilities ────────────────────────────────────────────────────
 
 
@@ -2877,6 +2921,15 @@ class TestAutoApplyUpdateGitPath:
         refusing before reaching the fetch/reset sequence they exist to cover. The
         refusals have their own tests in ``TestAutoApplyUpdatePreconditions`` and
         ``TestAutoApplyUpdateResetPath``.
+
+        The git binary is pinned too: ``_auto_apply_update`` resolves it through
+        ``platform_compat.trusted_git_bin`` (fixed trusted directories, never
+        PATH) and skips the whole update when that answers ``None``. Every spawn
+        below is faked, so the value only has to be an argv[0]; without the pin,
+        a host whose git lives outside those directories (a per-user Git for
+        Windows install) made every test here pass or fail on the refusal branch
+        instead of the sequence it covers. A test about the resolver itself
+        patches it again explicitly, and that inner patch wins.
         """
         with patch(
             "kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]
@@ -2887,6 +2940,9 @@ class TestAutoApplyUpdateGitPath:
             "kiro_crew.slack.gateway.tracks_upstream", return_value=True
         ), patch(
             "kiro_crew.slack.gateway.commits_ahead", return_value=0
+        ), patch(
+            "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
+            return_value="/trusted/bin/git",
         ):
             yield
 
@@ -3770,6 +3826,15 @@ class TestAutoApplyUpdateVenvPath:
         refusing before reaching the fetch/reset sequence they exist to cover. The
         refusals have their own tests in ``TestAutoApplyUpdatePreconditions`` and
         ``TestAutoApplyUpdateResetPath``.
+
+        The git binary is pinned too: ``_auto_apply_update`` resolves it through
+        ``platform_compat.trusted_git_bin`` (fixed trusted directories, never
+        PATH) and skips the whole update when that answers ``None``. Every spawn
+        below is faked, so the value only has to be an argv[0]; without the pin,
+        a host whose git lives outside those directories (a per-user Git for
+        Windows install) made every test here pass or fail on the refusal branch
+        instead of the sequence it covers. A test about the resolver itself
+        patches it again explicitly, and that inner patch wins.
         """
         with patch(
             "kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]
@@ -3780,6 +3845,9 @@ class TestAutoApplyUpdateVenvPath:
             "kiro_crew.slack.gateway.tracks_upstream", return_value=True
         ), patch(
             "kiro_crew.slack.gateway.commits_ahead", return_value=0
+        ), patch(
+            "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
+            return_value="/trusted/bin/git",
         ):
             yield
 
@@ -4580,6 +4648,15 @@ class TestAutoApplyUpdateResetPath:
         refusing before reaching the fetch/reset sequence they exist to cover. The
         refusals have their own tests in ``TestAutoApplyUpdatePreconditions`` and
         ``TestAutoApplyUpdateResetPath``.
+
+        The git binary is pinned too: ``_auto_apply_update`` resolves it through
+        ``platform_compat.trusted_git_bin`` (fixed trusted directories, never
+        PATH) and skips the whole update when that answers ``None``. Every spawn
+        below is faked, so the value only has to be an argv[0]; without the pin,
+        a host whose git lives outside those directories (a per-user Git for
+        Windows install) made every test here pass or fail on the refusal branch
+        instead of the sequence it covers. A test about the resolver itself
+        patches it again explicitly, and that inner patch wins.
         """
         with patch(
             "kiro_crew.slack.gateway.hidden_worktree_edits", return_value=[]
@@ -4590,6 +4667,9 @@ class TestAutoApplyUpdateResetPath:
             "kiro_crew.slack.gateway.tracks_upstream", return_value=True
         ), patch(
             "kiro_crew.slack.gateway.commits_ahead", return_value=0
+        ), patch(
+            "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
+            return_value="/trusted/bin/git",
         ):
             yield
 

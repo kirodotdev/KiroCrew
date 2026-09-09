@@ -30,6 +30,12 @@ if str(_APP_ROOT) not in sys.path:
 
 from sage_lib import discovery, store  # noqa: E402  (app root added to sys.path above)
 
+#: A fake resolved ``gh`` that is ABSOLUTE on this host. ``github_runner.run_gh``
+#: refuses any argv[0] that fails ``os.path.isabs``, and from Python 3.13
+#: ``ntpath.isabs("/usr/bin/gh")`` is False (no drive), so the POSIX literal made
+#: every stubbed call here fail on Windows before the stubbed subprocess ran.
+_FAKE_GH = os.path.abspath(os.path.join(os.sep, "usr", "bin", "gh"))
+
 
 def _proc(returncode=0, stdout="", stderr=""):
     """Stand in for what ``subprocess.run`` hands ``github_runner.run_gh``.
@@ -57,7 +63,7 @@ class TestRunGhJson(unittest.TestCase):
                '\n'
                '   \n'
                '{"type": "PullRequestEvent", "repo": "c/d"}\n')
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value="/usr/bin/gh"), \
+        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
              unittest.mock.patch.object(discovery.subprocess, "run",
                                         return_value=_proc(stdout=out)):
             rows = discovery.run_gh_json("users/x/events", jq=".[]")
@@ -71,32 +77,32 @@ class TestRunGhJson(unittest.TestCase):
             captured["kwargs"] = kwargs
             return _proc(stdout='{"repo": "a/b"}\n')
 
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value="/usr/bin/gh"), \
+        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
              unittest.mock.patch.object(discovery.subprocess, "run", side_effect=_fake_run):
             discovery.run_gh_json("users/x/events", jq=".[]")
         self.assertIsInstance(captured["argv"], list)
-        self.assertEqual(captured["argv"][:3], ["/usr/bin/gh", "api", "users/x/events"])
+        self.assertEqual(captured["argv"][:3], [_FAKE_GH, "api", "users/x/events"])
         self.assertIn("--jq", captured["argv"])
         # never a shell string
         self.assertNotIn("shell", captured["kwargs"])
         self.assertNotEqual(captured["kwargs"].get("shell"), True)
 
     def test_raises_on_wholly_unparseable_output(self):
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value="/usr/bin/gh"), \
+        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
              unittest.mock.patch.object(discovery.subprocess, "run",
                                         return_value=_proc(stdout="not json\nstill not json")):
             with self.assertRaises(discovery.GhError):
                 discovery.run_gh_json("users/x/events", jq=".[]")
 
     def test_raises_on_non_zero_exit(self):
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value="/usr/bin/gh"), \
+        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
              unittest.mock.patch.object(discovery.subprocess, "run",
                                         return_value=_proc(returncode=1, stderr="boom")):
             with self.assertRaises(discovery.GhError):
                 discovery.run_gh_json("users/x/events", jq=".[]")
 
     def test_auth_failure_maps_to_setup_error(self):
-        with unittest.mock.patch.object(discovery, "gh_bin", return_value="/usr/bin/gh"), \
+        with unittest.mock.patch.object(discovery, "gh_bin", return_value=_FAKE_GH), \
              unittest.mock.patch.object(
                 discovery.subprocess, "run",
                 return_value=_proc(returncode=1,

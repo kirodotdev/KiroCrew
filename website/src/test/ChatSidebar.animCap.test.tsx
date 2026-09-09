@@ -119,7 +119,14 @@ describe('SIDEBAR_ANIM_CAP layout-animation gate', () => {
     }
   })
 
-  it('drops layout projection above the cap', () => {
+  // Synchronous CPU, not a wait: this mounts 201 REAL sidebar rows through the
+  // sidebar's row component in one render, which is the only way to observe the
+  // gate flipping above the cap. Measured 4.1s / 9.8s / 8.6s / 17.6s across four
+  // full runs on a shared host under coverage -- past the file-wide 15s ceiling
+  // once. Nothing here awaits a timer or a promise, so no waitFor change helps;
+  // the work is bounded by the row count, and the ceiling is sized for a loaded
+  // host (website/docs/testing.md, "a synchronous simulation is CPU time").
+  it('drops layout projection above the cap', { timeout: 60_000 }, () => {
     renderSidebar(mkSlots(201))
     const rows = rowWrappers()
     expect(rows.length).toBe(201)

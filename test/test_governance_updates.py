@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 
 import pytest
 
+from conftest import host_abs
 from kiro_crew.platform import update_governance
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
@@ -20,6 +22,26 @@ from kiro_crew.platform.governance import (
     parse_profile,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+
+@pytest.fixture(autouse=True)
+def _production_git_is_the_fixture_git(monkeypatch):
+    """Point the update seam at the ``git`` this module's fixtures drive.
+
+    ``_init_repo`` and friends build real repositories with the ``git`` on
+    PATH, while production resolves git through
+    ``platform_compat.trusted_git_bin`` -- fixed trusted directories only, which
+    on Windows are the two Program Files roots. A per-user Git for Windows
+    install (``%LOCALAPPDATA%\\Programs\\Git``) is on PATH but deliberately NOT
+    trusted, so on such a host every real-repo assertion here answered
+    "unreadable git config" while the fixtures worked. The subject of these
+    tests is what the seam does with git's ANSWERS; which binary is trusted has
+    its own tests below, and they patch the resolver explicitly (a per-test
+    ``monkeypatch.setattr`` layers over this one and wins).
+    """
+    git = shutil.which("git")
+    if git:
+        monkeypatch.setattr(update_governance.platform_compat, "trusted_git_bin", lambda: git)
 
 
 def _policy(**updates: str) -> dict:
@@ -1010,10 +1032,15 @@ class TestRepoExecConfigRefusal:
         same PATH, which is most of that hole reopened. Every program-valued pin
         must therefore reach git as an absolute path.
         """
+        # Absolute on THIS host (see conftest.host_abs): the assertion below is
+        # ``os.path.isabs``, and from Python 3.13 ``ntpath.isabs("/usr/bin/ssh")``
+        # is False (no drive), so a POSIX literal fails the test on Windows for
+        # the wrong reason.
+        usr_bin = host_abs("usr", "bin")
         monkeypatch.setattr(
             update_governance.platform_compat,
             "trusted_system_bin",
-            lambda name: f"/usr/bin/{name}",
+            lambda name: os.path.join(usr_bin, name),
         )
         env = update_governance.git_neutralizer_env()
         count = int(env["GIT_CONFIG_COUNT"])

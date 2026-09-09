@@ -15,6 +15,7 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
+from conftest import host_abs
 from kiro_crew import platform_compat
 from kiro_crew.apps.bridges import (
     RegistrationResult,
@@ -970,14 +971,20 @@ class TestMCPRegistration:
 
         mcp_path = tmp_path / "mcp.json"
         monkeypatch.setattr(bmod, "_mcp_json_path", lambda: mcp_path)
-        monkeypatch.setenv("PATH", "/usr/bin")
+        # Absolute for THIS host (see conftest.host_abs): the manifest's entries go
+        # through the ``os.path.isabs`` filter in env._spec_path_entries, and from
+        # Python 3.13 a bare ``/opt/shims`` is not absolute under ntpath (no
+        # drive), so the POSIX literal was silently dropped on Windows.
+        shims = host_abs("opt", "shims")
+        usr_bin = host_abs("usr", "bin")
+        monkeypatch.setenv("PATH", usr_bin)
 
         src = _make_app_source(
             tmp_path,
             mcpServers={
                 "my-mcp": {
                     "command": "/opt/bin/tool",
-                    "env": {"PATH": "/opt/shims", "TOKEN": "t"},
+                    "env": {"PATH": shims, "TOKEN": "t"},
                 },
             },
         )
@@ -992,8 +999,8 @@ class TestMCPRegistration:
             "test-app:my-mcp"
         ]["env"]
         entries = written["PATH"].split(os.pathsep)
-        assert entries[0] == "/opt/shims", "manifest-authored entries stay first"
-        assert "/usr/bin" in entries, "inherited PATH must survive the override"
+        assert entries[0] == shims, "manifest-authored entries stay first"
+        assert usr_bin in entries, "inherited PATH must survive the override"
         assert written["TOKEN"] == "t"
 
     def test_http_mcp_url_port_rewritten_to_live_backend_port(self, tmp_path, app_env, monkeypatch):

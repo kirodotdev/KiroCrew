@@ -219,6 +219,88 @@ class TestTheWorkspaceRootIsPinnedForEveryTestpath:
         assert workspace_root().resolve() == mine.resolve()
 
 
+class TestThePodPlaneIsPinnedForEveryTestpath:
+    """``KIROCREW_POD_ROOT`` / ``KIROCREW_POD_ENV_DIR`` must be tmp dirs here.
+
+    A fourth axis, and one the data home cannot reach BY DESIGN:
+    ``pod.config.PodConfig.load()`` derives ``pods_dir`` from ``_default_home()`` --
+    the operator's real ``~/.kiro/crew/pods`` -- so that a pod process running with
+    its own isolated ``KIROCREW_HOME`` cannot redirect the host's pod registry into
+    a throwaway home, and ``pod_root`` from ``Path.home()/.kirocrew-pods``. A test
+    that boots a pod or records a refusal through an unpinned ``PodConfig.load()``
+    therefore writes ``<name>.env`` / ``<name>.refused`` into the developer's real
+    pod plane; five full-suite runs left ``viability-*.refused`` notes there.
+    """
+
+    def test_the_pod_env_dir_is_not_the_operators_real_home(self) -> None:
+        pods_dir = pathlib.Path(os.environ["KIROCREW_POD_ENV_DIR"]).resolve()
+
+        assert not _inside_a_guarded_root(
+            pods_dir
+        ), f"KIROCREW_POD_ENV_DIR is a real home path: {pods_dir}"
+
+    def test_the_pod_root_is_not_the_operators_real_home(self) -> None:
+        pod_root = pathlib.Path(os.environ["KIROCREW_POD_ROOT"]).resolve()
+
+        assert not _inside_a_guarded_root(
+            pod_root
+        ), f"KIROCREW_POD_ROOT is a real home path: {pod_root}"
+
+    def test_pod_config_resolves_to_those_same_pinned_dirs(self) -> None:
+        """``load()`` reads the environment fresh, so the pin only has to reach it."""
+        from kiro_crew.pod.config import PodConfig
+
+        cfg = PodConfig.load()
+
+        assert cfg.pods_dir.resolve() == pathlib.Path(os.environ["KIROCREW_POD_ENV_DIR"]).resolve()
+        assert cfg.pod_root.resolve() == pathlib.Path(os.environ["KIROCREW_POD_ROOT"]).resolve()
+        assert not _inside_a_guarded_root(cfg.refusal_file("probe").parent)
+
+    def test_a_test_can_still_override_the_pod_plane_itself(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor is a safety net, not a cage: a test that isolates itself wins."""
+        from kiro_crew.pod.config import PodConfig
+
+        mine = tmp_path / "my-own-pods"
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(mine))
+
+        assert PodConfig.load().pods_dir.resolve() == mine.resolve()
+
+
+class TestTheFloorSurvivesATestsOwnUndo:
+    """``monkeypatch.undo()`` inside a test must not take the floor down with it.
+
+    ``undo()`` reverts every record on the instance it is called on. Around ninety
+    tests call it mid-way to drop one of their own patches before a final
+    assertion; while the floor patched through the same shared ``monkeypatch``
+    fixture, each of those calls also unpinned ``KIROCREW_HOME`` (and every other
+    floor pin) for the rest of the test -- ``test_session_storage`` then ran
+    ``empty_trash()`` against the operator's real trash. The floor now patches
+    through its own ``MonkeyPatch`` instance, undone at its own teardown.
+    """
+
+    def test_undo_does_not_drop_the_data_home_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pinned = os.environ["KIROCREW_HOME"]
+        monkeypatch.setenv("KIROCREW_FLOOR_PROBE", "1")  # something for undo() to revert
+
+        monkeypatch.undo()
+
+        assert "KIROCREW_FLOOR_PROBE" not in os.environ, "undo() must still revert the test's own records"
+        assert os.environ.get("KIROCREW_HOME") == pinned
+        assert not _inside_a_guarded_root(pathlib.Path(pinned))
+
+    def test_undo_does_not_drop_the_other_pins_either(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        before = {k: os.environ.get(k) for k in ("KIROCREW_WORKSPACE", "KIROCREW_POD_ROOT", "KIROCREW_POD_ENV_DIR")}
+        monkeypatch.setenv("KIROCREW_FLOOR_PROBE", "1")
+
+        monkeypatch.undo()
+
+        assert {k: os.environ.get(k) for k in before} == before
+        for value in before.values():
+            assert value and not _inside_a_guarded_root(pathlib.Path(value))
+
+
 class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
     """The agent specs decide which MCP servers the operator's real agent has.
 
@@ -953,6 +1035,73 @@ class TestTheWorkingDirectoryIsRestored:
             f"CWD at fixture-finalizer time was {_CWD_ORDER.get('at_finalizer')!r}, "
             f"expected {_CWD_ORDER.get('expected')!r} -- the restore ran too late, so "
             "tmp_path cleanup would be asked to delete the process's own directory"
+        )
+
+
+class TestTheTestLoopIsRetiredBeforeThePinsLift:
+    """What a test's loop leaves behind must finish while ``KIROCREW_HOME`` is pinned.
+
+    pytest-asyncio 0.20 ends the loop with a bare ``loop.close()``: a still-pending
+    task's coroutine then runs its ``finally`` blocks at garbage collection, and a
+    default-executor job (``asyncio.to_thread``) is abandoned mid-flight. Either one
+    reaching ``config_dir()`` after the unpin resolves the OPERATOR's data home -- a fresh
+    fake ``HOME`` grew ``~/.kiro/crew`` and the breadcrumb behind four subagent
+    ``on_done`` tests. The floor retires both in its ``tryfirst`` teardown hook, before any
+    fixture teardown. Driven here on a private loop, through the same ``item.funcargs``
+    shape the hook reads.
+    """
+
+    def test_a_pending_task_and_an_executor_job_finish_inside_the_hook(self) -> None:
+        import asyncio
+        import threading
+        import types
+
+        loop = asyncio.new_event_loop()
+        try:
+            seen: list[str] = []
+            gate = threading.Event()
+
+            async def detached() -> None:
+                try:
+                    await asyncio.sleep(3600)
+                finally:
+                    seen.append("finally")  # runs at cancel, not at garbage collection
+
+            def job() -> None:
+                gate.wait(5.0)
+                seen.append("job")
+
+            async def arm() -> None:
+                asyncio.ensure_future(detached())
+                loop.run_in_executor(None, job)
+                await asyncio.sleep(0)  # let both start
+
+            loop.run_until_complete(arm())
+            gate.set()
+            item = types.SimpleNamespace(funcargs={"event_loop": loop})
+
+            _root._join_test_loop_executor(item)
+
+            assert sorted(seen) == ["finally", "job"], (
+                f"the hook left {set(['finally', 'job']) - set(seen)} to run after the pins "
+                "lift -- that is when a config load resolves the operator's home"
+            )
+            assert not [t for t in asyncio.all_tasks(loop) if not t.done()]
+            # Still a working loop: an inner fixture's async teardown may need one more
+            # to_thread, and shutdown_default_executor alone would have latched a refusal.
+            assert loop.run_until_complete(asyncio.to_thread(lambda: "ok")) == "ok"
+        finally:
+            loop.run_until_complete(loop.shutdown_default_executor())
+            loop.close()
+
+    def test_the_hook_runs_before_fixture_finalizers(self) -> None:
+        """Placement is the guarantee: a fixture would tear down after the unpin."""
+        source = _ROOT_CONFTEST.read_text(encoding="utf-8")
+        hook_at = source.index("def pytest_runtest_teardown(item, nextitem):")
+        body = source[hook_at : source.index("\ndef ", hook_at + 1)]
+        assert "_join_test_loop_executor(item)" in body, (
+            "the loop retirement is not called from the tryfirst pytest_runtest_teardown "
+            "hook; anywhere later, KIROCREW_HOME may already be unpinned when it runs"
         )
 
 

@@ -326,6 +326,31 @@ floor (`engines.node >=22`), while CI runs 24 — and added two rules:
   with that variable set `index.js` returns a path without touching the network. A test
   never needs the real binary — if yours seems to, it is testing Electron, not our code.
 
+### What a second set of full runs found
+
+Four more `vitest run --coverage` passes two days later, again on a loaded Windows host,
+found no deterministic failure and twelve intermittent cases — each red in exactly one
+of the four runs. Nine were the "real async chain behind the 1000ms default" shape
+above, and got a **named** ceiling next to the helper that owns the wait (`TREE_READY`,
+`PANE_READY`, `NOTICE_READY`; the approval ghost's 150ms settle-guard timer; the
+`['artifact', slug]` fetch). Two were new shapes, and each one is a rule:
+
+- **A wait that resolves on a row from the WRONG query.** The path bar's `complete` mock
+  answers every key with the same entry, so the suggestion row first rendered for the
+  PRE-debounce key (fetched on focus); 150ms later the debounced draft flipped the query
+  key, `data` reset to `undefined`, and the list was EMPTY for a tick until the new fetch
+  resolved. A Tab that landed in that tick found no suggestions. `findByText` had proved
+  a row existed, not that it was the row the assertion was about. Wait for the debounced
+  key's fetch to have been ISSUED (`toHaveBeenCalledWith`), then for its row.
+- **A one-shot rejection armed after the edit races the autosave debounce.** The
+  notebook test edited, then armed `saveNote.mockRejectedValueOnce`; under load the
+  `SAVE_DEBOUNCE_MS` autosave fired first against the default resolved mock, the buffer
+  read clean, and the vault was legitimately forgotten. Arm the outcome BEFORE the action
+  that starts the timer, and make it persistent when either of two paths may consume it.
+
+The remaining case was pure CPU (201 real sidebar rows in one synchronous render,
+4–18 s across the four runs) and got its own `it(name, { timeout }, fn)` ceiling.
+
 ## Manual procedures
 
 A few flows are deliberately not automated. They are documented rather than

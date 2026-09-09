@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import requires_symlinks
+from conftest import cap_project_root_walk, requires_symlinks
 from kiro_crew import artifact_source
 from kiro_crew.artifact_source import (
     COPY,
@@ -34,11 +34,16 @@ def narrow_tempdir(tmp_path: Path, monkeypatch) -> Path:
     """Point the disposable temp root at ``tmp_path/tmp`` only.
 
     Lets the rest of ``tmp_path`` act as ordinary (non-disposable) filesystem
-    so the link branches are reachable in a test.
+    so the link branches are reachable in a test. Ordinary also means UNMARKED:
+    the project-root walk is capped at ``tmp_path`` (see
+    ``conftest.cap_project_root_walk``), so a checkout or ``.kiro`` workspace
+    above the host's temp root cannot turn every "plain directory" here into a
+    project.
     """
     tmp = tmp_path / "tmp"
     tmp.mkdir()
     monkeypatch.setattr(artifact_source, "_tempdir", lambda: str(tmp))
+    cap_project_root_walk(monkeypatch, tmp_path)
     return tmp
 
 

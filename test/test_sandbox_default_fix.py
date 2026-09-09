@@ -13,7 +13,7 @@ Verifies the fixes from the security audit:
 from __future__ import annotations
 
 import logging
-import os
+import posixpath
 import sys
 
 import pytest
@@ -80,8 +80,11 @@ class TestFix2DelegationVerification:
         # Should have env -u prefix (scrubbing the sensitive var), pinned absolute:
         # this path applies no confinement of ours, so the scrub is the only
         # control, and a PATH-redirectable scrubber means it silently never runs.
-        assert os.path.isabs(argv[0]), f"expected pinned env scrubber, got {argv[0]!r}"
-        assert os.path.basename(argv[0]) == "env", "expected env scrub prefix on delegation"
+        # Judged with posixpath: the platform under simulation is darwin, and the
+        # host's own os.path (ntpath on a Windows runner, from Python 3.13) does
+        # not consider ``/usr/bin/env`` absolute.
+        assert posixpath.isabs(argv[0]), f"expected pinned env scrubber, got {argv[0]!r}"
+        assert posixpath.basename(argv[0]) == "env", "expected env scrub prefix on delegation"
         assert "-u" in argv
         assert "kiro-cli" in argv
         assert cleanup is None  # No seatbelt profile to clean up

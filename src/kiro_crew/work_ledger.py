@@ -65,7 +65,7 @@ from typing import Any, Iterator
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import file_lock
-from kiro_crew.session_ledger import _store_name
+from kiro_crew.session_ledger import _store_name, resolved_within
 
 logger = logging.getLogger(__name__)
 
@@ -482,10 +482,8 @@ def conductor_dir(slot_key: str) -> Path:
         raise WorkLedgerError(
             f"invalid slot key for work ledger: {slot_key!r}", code=CODE_INVALID_VALUE
         )
-    base = _work_ledger_root()
-    resolved = (base / _store_name(slot_key)).resolve()
-    parent = base.resolve()
-    if resolved == parent or not resolved.is_relative_to(parent):
+    resolved = resolved_within(_work_ledger_root(), _store_name(slot_key))
+    if resolved is None:
         raise WorkLedgerError(
             f"path traversal blocked for slot key: {slot_key!r}", code=CODE_INVALID_VALUE
         )
@@ -524,9 +522,8 @@ def binding_path(worker_slot_key: str) -> Path:
         raise WorkLedgerError(
             f"invalid worker slot key: {worker_slot_key!r}", code=CODE_INVALID_VALUE
         )
-    base = bindings_dir()
-    resolved = (base / f"{_store_name(worker_slot_key)}.json").resolve()
-    if not resolved.is_relative_to(base.resolve()):
+    resolved = resolved_within(bindings_dir(), f"{_store_name(worker_slot_key)}.json")
+    if resolved is None:
         raise WorkLedgerError(
             f"path traversal blocked for worker key: {worker_slot_key!r}",
             code=CODE_INVALID_VALUE,

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -98,10 +99,44 @@ class TestSkillsCatalogSingleFlight:
     """
 
     @pytest.mark.asyncio
-    async def test_concurrent_misses_coalesce_into_one_assembly(self, stub_assembly, loader):
-        results = await asyncio.gather(
+    async def test_concurrent_misses_coalesce_into_one_assembly(
+        self, stub_assembly, loader, monkeypatch
+    ):
+        # The contract is "readers that arrive WHILE an assembly is in flight share
+        # it", so the assembly must still be in flight when they arrive. The
+        # counting stub returns instantly, and that turned this into a race the
+        # test did not control: the leader's executor job can finish before the
+        # loop reaches the ``await`` -- Python 3.13 sets the wrapped future's state
+        # synchronously when the pool thread is already done -- and awaiting a
+        # done future does not yield. The leader then completes with a waiter
+        # count of 1, offers nothing, and the second reader assembles again
+        # (observed once in five full runs under load: n == 2). Hold the assembly
+        # on a gate until every reader has queued behind the leader; that is the
+        # situation being asserted, established rather than hoped for.
+        gate = threading.Event()
+        counting = prompts.collect_skills_blocking
+
+        def _gated(skills, package_skills, project_dir):
+            gate.wait(10)
+            return counting(skills, package_skills, project_dir)
+
+        monkeypatch.setattr(prompts, "collect_skills_blocking", _gated)
+        key = (loader, str(Path("/proj/a")))
+
+        burst = asyncio.gather(
             *[prompts._assemble_skills_catalog(loader, Path("/proj/a")) for _ in range(8)]
         )
+        for _ in range(10_000):
+            if prompts._catalog_waiters.get(key) == 8:
+                break
+            await asyncio.sleep(0)
+        else:
+            gate.set()
+            await burst
+            pytest.fail("the eight readers never all queued behind the leader")
+        gate.set()
+        results = await burst
+
         assert stub_assembly["n"] == 1, (
             "each concurrent reader assembled its own catalog; without coalescing the "
             "endpoint pays N scans exactly when it is contended"

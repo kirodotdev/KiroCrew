@@ -155,6 +155,17 @@ function staleRejection() {
   })
 }
 
+/**
+ * Ceiling for the first wait on the note tree. It sits behind a real chain, not
+ * a render: `mount()` awaits the page's dynamic import, then health ->
+ * listVaults -> listNotes resolve in sequence before the tree commits. Under load
+ * (a shared host, coverage instrumentation) that ran past the 1000ms default in
+ * one of four full runs, which is a bounded wait asserting too early, not a
+ * defect -- see website/docs/testing.md, "a real async chain behind the 1000ms
+ * default needs a named ceiling".
+ */
+const TREE_READY = { timeout: 5000 }
+
 async function mount() {
   const { default: MdNotebookPage } = await import('../apps/md-notebook/MdNotebookPage')
   const client = new QueryClient({
@@ -170,7 +181,7 @@ async function mount() {
 /** Mount and open `One.md`, so the pane holds a note. */
 async function mountWithNote() {
   const view = await mount()
-  await userEvent.click(await screen.findByRole('button', { name: 'One' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'One' }, TREE_READY))
   await screen.findByText('Body text')
   return view
 }
@@ -291,7 +302,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('persists the autosave and auto-sync switches toggled in Settings', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     // Autosave stays device-local — a local commit is this machine's business —
@@ -315,7 +326,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
       settings: { autoSync: true, autoSyncMins: 10, lastSync: {} },
     })
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
     // The interval renders only while auto sync is on, so finding it is also the
     // proof that the server's settings have been applied to the controls.
@@ -358,7 +369,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     localStorage.setItem('mdnb-auto-sync', 'true')
     localStorage.setItem('mdnb-auto-sync-mins', '30')
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     // No seeding write from the stale value, and the interval control — which
@@ -376,7 +387,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   it('rolls the auto-sync toggle back when the enable is rejected', async () => {
     api.saveSettings.mockRejectedValue(new Error('settings file is read-only'))
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     await userEvent.click(screen.getByRole('switch', { name: 'Auto sync' }))
@@ -395,7 +406,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   it('reports a settings write the backend refused rather than losing it silently', async () => {
     api.saveSettings.mockRejectedValue(new Error('settings file is read-only'))
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     // Unlike a device-local pref, this write can be refused — and the editor's own
@@ -407,7 +418,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('records a new manual-sync shortcut without that keystroke also syncing', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     await userEvent.click(screen.getByRole('button', { name: 'Manual sync shortcut' }))
@@ -456,7 +467,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     // Remove flow.
     api.forgetVault.mockRejectedValueOnce(new Error('registry is read-only'))
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     await userEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0])
@@ -494,8 +505,15 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   })
 
   it('refuses to forget a vault whose pending save was rejected', async () => {
+    // Every write is refused, and it is armed BEFORE the edit. The edit arms the
+    // SAVE_DEBOUNCE_MS autosave; under load that timer fired before a one-shot
+    // rejection armed after mountDirty(), the autosave landed against the default
+    // resolved mock, the buffer read clean, and the vault was legitimately
+    // forgotten. Persistent rejection makes the outcome the same whichever save
+    // -- the autosave or the forget's own flush -- reaches saveNote first: the
+    // edit stays unreconciled. beforeEach re-arms the resolved default.
+    api.saveNote.mockRejectedValue(staleRejection())
     await mountDirty()
-    api.saveNote.mockRejectedValueOnce(staleRejection())
     await openSettings()
 
     await userEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0])
@@ -508,7 +526,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('stores a GitHub credential entered in Settings', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     await userEvent.type(
@@ -528,7 +546,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     // recover.
     api.setPat.mockRejectedValueOnce(new Error('bad credentials'))
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     await userEvent.type(
@@ -554,7 +572,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     })
     api.setPat.mockRejectedValueOnce(new Error('network error'))
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     const clearBtn = await screen.findByRole('button', { name: 'Clear' })
@@ -572,7 +590,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
       hasGhAuth: false,
     })
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     await userEvent.click(screen.getByRole('switch', { name: 'Sync to Kiro Crew knowledge' }))
@@ -594,7 +612,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('opens another vault from Settings and returns to the note pane', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     await userEvent.click(screen.getByRole('button', { name: 'Open' }))
@@ -607,7 +625,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('reaches the connect screen from Settings and backs out of it', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await openSettings()
 
     await userEvent.click(screen.getByRole('button', { name: 'Connect a vault' }))
@@ -615,12 +633,12 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
     // A vault already exists, so the connect screen offers a way back.
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(await screen.findByRole('button', { name: 'One' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'One' }, TREE_READY)).toBeTruthy()
   })
 
   it('adds a vault from the connect screen and switches to it', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await userEvent.click(screen.getByRole('button', { name: 'Switch vault' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Connect a vault' }))
 
@@ -638,7 +656,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('switches vault with the keyboard from the vault menu', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await userEvent.click(screen.getByRole('button', { name: 'Switch vault' }))
 
     const option = await screen.findByRole('option', { name: /Archive/ })
@@ -652,7 +670,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('ignores selecting the vault that is already active', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     api.listNotes.mockClear()
     await userEvent.click(screen.getByRole('button', { name: 'Switch vault' }))
     await userEvent.click(await screen.findByRole('option', { name: /Notebook/ }))
@@ -688,7 +706,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   it('surfaces a failure to read the note that was clicked', async () => {
     api.readNote.mockRejectedValue(new Error('unreadable: bad encoding'))
     await mount()
-    await userEvent.click(await screen.findByRole('button', { name: 'One' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'One' }, TREE_READY))
 
     const alert = await screen.findByRole('alert', { timeout: 5_000 })
     expect(alert.textContent).toContain('unreadable: bad encoding')
@@ -723,7 +741,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   it('refuses a second delete while the first is still in flight', async () => {
     api.deleteNote.mockReturnValue(pending())
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
 
     await confirmDelete('One')
     await waitFor(() => expect(api.deleteNote).toHaveBeenCalledTimes(1))
@@ -768,7 +786,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('follows the open note and its pin through a rename', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     rowAction('One', 'Pin note')
     await userEvent.click(noteRow('One'))
     await screen.findByText('Body text')
@@ -787,7 +805,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('ignores a rename that strips down to an empty name', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     rowAction('One', 'Rename note')
     const field = await screen.findByRole('textbox', { name: 'Note name' })
     await userEvent.clear(field)
@@ -832,7 +850,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   it('reports a failed move rather than leaving the row renamed', async () => {
     api.moveNote.mockRejectedValue(new Error('destination exists'))
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     rowAction('One', 'Rename note')
     const field = await screen.findByRole('textbox', { name: 'Note name' })
     await userEvent.clear(field)
@@ -885,7 +903,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   it('reports a failed duplicate instead of silently doing nothing', async () => {
     api.duplicateNote.mockRejectedValue(new Error('disk quota exceeded'))
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     rowAction('One', 'Duplicate note')
 
     const alert = await screen.findByRole('alert', { timeout: 5_000 })
@@ -897,7 +915,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   it('nests a list item with Tab in the raw editor', async () => {
     api.readNote.mockResolvedValue(doc({ content: '- alpha\n- beta' }))
     await mount()
-    await userEvent.click(await screen.findByRole('button', { name: 'One' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'One' }, TREE_READY))
     await waitFor(() => expect(api.readNote).toHaveBeenCalled())
     await userEvent.click(screen.getByRole('button', { name: 'Markdown source' }))
     await waitFor(() => expect(rawEditor().value).toBe('- alpha\n- beta'))
@@ -1128,7 +1146,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('drags the notes panel wider and remembers the width', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     const handle = Array.from(document.querySelectorAll('div')).find(
       d => d.style.cursor === 'col-resize',
     )
@@ -1144,7 +1162,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('clamps a drag that overshoots the panel bounds', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     const handle = Array.from(document.querySelectorAll('div')).find(
       d => d.style.cursor === 'col-resize',
     )
@@ -1177,7 +1195,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
       results: [{ path: 'folder/Two.md', title: 'Two', snippet: 'a match', score: 1 }],
     })
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await userEvent.type(screen.getByRole('textbox', { name: 'Search notes' }), 'match')
 
     const hit = await screen.findByRole('button', { name: 'Two' })
@@ -1188,7 +1206,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   it('keeps quiet when the search request fails', async () => {
     api.search.mockRejectedValue(new Error('index rebuilding'))
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     await userEvent.type(screen.getByRole('textbox', { name: 'Search notes' }), 'match')
 
     // A failed search is not an error banner — it just has no hits to show.
@@ -1352,7 +1370,7 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
   it('discards a note read that a later open superseded', async () => {
     await mount()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
 
     const slow = deferred<ReturnType<typeof doc>>()
     api.readNote.mockReturnValueOnce(slow.promise)

@@ -56,6 +56,17 @@ class TestPinnedAtomicWrite(unittest.TestCase):
         length for exactly that reason.
         """
         target = self.tmp / ("x" * 240 + ".json")
+        # The subject is the staging NAME. A 240-char leaf under any temp dir is a
+        # PATH past Windows' 260-character cap, which the OS refuses outright
+        # (WinError 3) unless long paths are enabled -- true on the CI runners,
+        # false on a stock developer box. Probe the capability rather than the OS:
+        # a host that can hold the path keeps the coverage.
+        try:
+            with open(target, "wb"):
+                pass
+            target.unlink()
+        except OSError as exc:
+            self.skipTest(f"host cannot address a {len(str(target))}-char path: {exc}")
 
         store.atomic_write_locked(target, b"payload")
 

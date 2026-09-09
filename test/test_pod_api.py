@@ -1154,8 +1154,10 @@ class TestPodApiAuditAndCli:
         Both halves of the round trip recurse once per nesting level, and which
         one gives way depends on how much stack is left — measured here, depth
         20,000 fails to decode while depth 2,000 decodes and then fails to
-        ENCODE. So this asserts the invariant that holds either way rather than
-        pinning a threshold that shifts with the interpreter and the call depth.
+        ENCODE on one interpreter and round-trips whole on another. So this
+        asserts the invariant that holds in every case rather than pinning a
+        threshold that shifts with the interpreter, the platform's thread stack
+        and the call depth.
         """
         raw = "[" * depth + "]" * depth
         monkeypatch.setattr(rt, "pod_api", lambda *args, **kwargs: (200, raw))
@@ -1170,7 +1172,19 @@ class TestPodApiAuditAndCli:
         # The request itself succeeded, so its status survives whichever leg gave way.
         assert document["status"] == 200
         assert document["ok"] is True
-        assert document["body"] in (raw, "<body omitted: not serializable>")
+        body = document["body"]
+        if isinstance(body, list):
+            # Neither leg gave way -- an interpreter with a deeper effective stack
+            # (Python 3.13 on Windows decodes AND re-encodes depth 2,000) round-trips
+            # the body intact. The invariant is then that it is the SAME body,
+            # checked iteratively so the assertion itself cannot hit the budget.
+            nesting, node = 0, body
+            while isinstance(node, list) and node:
+                node, nesting = node[0], nesting + 1
+            assert isinstance(node, list) and not node, "innermost element must be the empty list"
+            assert nesting + 1 == depth
+        else:
+            assert body in (raw, "<body omitted: not serializable>")
 
     def test_a_decode_failure_no_one_enumerated_degrades_to_text(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

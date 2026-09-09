@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from conftest import cap_project_root_walk
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.dashboard.handlers.artifacts import (
@@ -103,12 +104,16 @@ def linkable_project(tmp_path: Path, monkeypatch):
     gets a ``.git`` marker to make it a real repo.
 
     Returns the project dir. Project-root discovery is stubbed to empty so the
-    test never reads the developer's real ``recent_projects.json``.
+    test never reads the developer's real ``recent_projects.json``. The marker
+    walk is capped at ``tmp_path`` (``conftest.cap_project_root_walk``) so only
+    the ``.git`` planted here can earn a LINK, whatever sits above the host's
+    temp root.
     """
     from kiro_crew import artifact_source
 
     (tmp_path / "tmp").mkdir()
     monkeypatch.setattr(artifact_source, "_tempdir", lambda: str(tmp_path / "tmp"))
+    cap_project_root_walk(monkeypatch, tmp_path)
     proj = tmp_path / "project"
     (proj / ".git").mkdir(parents=True)
     return proj
@@ -122,6 +127,7 @@ def disposable_file(tmp_path: Path, monkeypatch):
     tmp = tmp_path / "tmp"
     tmp.mkdir()
     monkeypatch.setattr(artifact_source, "_tempdir", lambda: str(tmp))
+    cap_project_root_walk(monkeypatch, tmp_path)
     target = tmp / "scratch.md"
     target.write_text("# scratch", encoding="utf-8")
     return target
@@ -1014,6 +1020,7 @@ class TestPromoteVerdict:
 
         (tmp_path / "tmp").mkdir()
         monkeypatch.setattr(artifact_source, "_tempdir", lambda: str(tmp_path / "tmp"))
+        cap_project_root_walk(monkeypatch, tmp_path)
         loose = tmp_path / "loose" / "doc.md"
         loose.parent.mkdir()
         loose.write_text("x", encoding="utf-8")

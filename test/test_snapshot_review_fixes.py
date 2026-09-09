@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from test_snapshot import _setup_fake_kirocrew, unpinnable_argv
 
+from conftest import make_dir_link
 from kiro_crew import snapshot as snap_mod
 from kiro_crew.snapshot import restore_main, snapshot_main
 
@@ -220,7 +221,6 @@ class TestADestinationRootSwappedAfterPreflightRefuses:
     def test_it_refuses_instead_of_reporting_a_complete_replace(
         self, tmp_path, monkeypatch, capsys
     ):
-        import os
         import shutil
 
         outside = tmp_path / "outside"
@@ -244,7 +244,11 @@ class TestADestinationRootSwappedAfterPreflightRefuses:
         def _preflight_then_swap(mc, components):
             real(mc, components)
             shutil.rmtree(home / "workspace")
-            os.symlink(str(outside / "victim"), str(home / "workspace"))
+            # A directory link: a junction on Windows, where os.symlink needs a
+            # privilege an ordinary shell lacks (WinError 1314 inside this hook
+            # meant the swap never fired and the test failed for the wrong reason).
+            # realpath resolves a junction outside the home exactly as a symlink.
+            make_dir_link(home / "workspace", outside / "victim")
             fired.append(True)
 
         monkeypatch.setattr(snap_mod, "_refuse_unsafe_destination_roots", _preflight_then_swap)
@@ -331,7 +335,6 @@ class TestMergeRefusesADestinationRootSwappedAfterPreflight:
     def test_it_refuses_instead_of_merging_outside_the_data_home(
         self, tmp_path, monkeypatch, capsys
     ):
-        import os
         import shutil
 
         outside = tmp_path / "outside"
@@ -355,7 +358,11 @@ class TestMergeRefusesADestinationRootSwappedAfterPreflight:
         def _preflight_then_swap(mc, components):
             real(mc, components)
             shutil.rmtree(home / "workspace")
-            os.symlink(str(outside / "victim"), str(home / "workspace"))
+            # A directory link: a junction on Windows, where os.symlink needs a
+            # privilege an ordinary shell lacks (WinError 1314 inside this hook
+            # meant the swap never fired and the test failed for the wrong reason).
+            # realpath resolves a junction outside the home exactly as a symlink.
+            make_dir_link(home / "workspace", outside / "victim")
             fired.append(True)
 
         monkeypatch.setattr(snap_mod, "_refuse_unsafe_destination_roots", _preflight_then_swap)

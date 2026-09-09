@@ -434,9 +434,14 @@ describe('ArtifactBodyIframe surfaces a frame showing something that is not ours
     await waitFor(() => {
       expect(document.querySelector('iframe')?.getAttribute('src'))
         .toBe('/sandbox-doc/fresh/tok')
+      // Same wait, not a synchronous read after it: the notice is cleared in the
+      // commit that registers the fresh document, which can land a frame after
+      // the one that re-pointed `src`. Under load that later frame had not
+      // painted yet and the notice was still on screen -- an assertion against
+      // a state the test had not established (website/docs/testing.md).
+      expect(screen.queryByText(/no longer showing/i)).toBeNull()
     })
     expect(mintSpy).toHaveBeenCalledTimes(2)
-    expect(screen.queryByText(/no longer showing/i)).toBeNull()
   })
 
   it('renders DIFFERENT copy for a failed mint than for a frame that stopped showing', async () => {

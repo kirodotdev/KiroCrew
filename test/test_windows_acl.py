@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from conftest import host_abs
 from kiro_crew import github_runner as runner
 from kiro_crew import platform_compat, windows_acl
 
@@ -514,7 +515,9 @@ class TestProviderOutputIsDecodedAsUtf8:
         monkeypatch.setattr(runner.subprocess, "run", _fake_run)
         monkeypatch.setattr(runner, "_audit_run", lambda *a, **k: None)
 
-        proc = runner.run_gh(["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="test")
+        proc = runner.run_gh(
+            [host_abs("usr", "bin", "gh"), "api", "user"], timeout=5, audit_caller="test"
+        )
 
         assert "encoding" not in seen and seen.get("text") is not True, (
             "run_gh must capture BYTES and decode in its own frame; letting "
@@ -533,7 +536,9 @@ class TestProviderOutputIsDecodedAsUtf8:
         monkeypatch.setattr(runner, "_audit_run", lambda *a, **k: None)
 
         with pytest.raises(runner.SetupError) as caught:
-            runner.run_gh(["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="test")
+            runner.run_gh(
+                [host_abs("usr", "bin", "gh"), "api", "user"], timeout=5, audit_caller="test"
+            )
 
         message = str(caught.value)
         assert "not valid UTF-8" in message

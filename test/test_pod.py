@@ -90,10 +90,19 @@ def _isolate_pod_host_state(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -
     that reads it, so a future path that resolves through the home is covered
     without a matching change here. ``USERPROFILE`` too, because Windows
     ``Path.home()`` reads that one. Tests that pin either themselves still win.
+
+    The rootdir conftest now ALSO pins ``KIROCREW_POD_ROOT`` / ``KIROCREW_POD_ENV_DIR``
+    for every test (the same leak, found again from a module without this fixture).
+    This module clears those two pins on purpose: its subject includes the
+    home-DERIVED defaults (``TestHostStateIsFenced`` asserts the pod dirs follow the
+    pinned home), and with ``HOME`` redirected above the derivation is already
+    hermetic. Tests here that set the variables themselves are unaffected.
     """
     home = tmp_path_factory.mktemp("pod-host-home")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("KIROCREW_POD_ROOT", raising=False)
+    monkeypatch.delenv("KIROCREW_POD_ENV_DIR", raising=False)
 
 
 @pytest.fixture(autouse=True)

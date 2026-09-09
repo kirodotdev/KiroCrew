@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
+from conftest import host_abs
 from kiro_crew import session_pid as sp
 from kiro_crew.mcp_gateway import gatewayd as gw
 
@@ -259,8 +260,10 @@ class TestIsSweepableOrphanGatewayd:
         for form in ("pair", "equals"):
             cmdline = _gatewayd_cmdline("gw.sock", socket_form=form)
             assert sp._is_sweepable_orphan_gatewayd(cmdline) is False
-        # Control: the same name as an absolute path (nonexistent) matches.
-        cmdline = _gatewayd_cmdline("/nonexistent-dir-3315/gw.sock")
+        # Control: the same name as an absolute path (nonexistent) matches. Spelled
+        # for the host: from Python 3.13 ``ntpath.isabs("/nonexistent-dir/gw.sock")``
+        # is False, which would make this control read as the relative case.
+        cmdline = _gatewayd_cmdline(host_abs("nonexistent-dir-3315", "gw.sock"))
         assert sp._is_sweepable_orphan_gatewayd(cmdline) is True
 
     def test_duplicate_socket_flags_use_the_last_occurrence(

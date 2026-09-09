@@ -284,7 +284,12 @@ describe('ChatInput approval flow', () => {
   it('shows tool input preview in expanded approval bar', async () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    await waitFor(() => expect(screen.getByText(/command/)).toBeInTheDocument())
+    // The preview lives in the approval GHOST, which mounts only after the
+    // 150ms settle guard (`ghostSettled`, a real setTimeout that lets the in-chat
+    // pill register first) and then through an AnimatePresence mount -- a chain
+    // that ran past the 1000ms default under load in one of four full runs. A
+    // named ceiling for that chain, not a longer guess (website/docs/testing.md).
+    await waitFor(() => expect(screen.getByText(/command/)).toBeInTheDocument(), { timeout: 5000 })
   })
 
   it('uses approvalFullCommand for TrustDropdown', () => {

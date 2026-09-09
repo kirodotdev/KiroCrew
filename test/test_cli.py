@@ -146,6 +146,19 @@ class TestDoctor:
 
         monkeypatch.setattr(_doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace")
 
+    @pytest.fixture(autouse=True)
+    def _restore_path(self, monkeypatch):
+        """Put ``PATH`` back after each doctor run.
+
+        The doctor's media section calls ``transcribe.ensure_ffmpeg_in_path()``,
+        which PREPENDS a candidate ffmpeg directory to the process ``PATH`` when
+        the host has one there -- a permanent mutation of the worker's environment
+        that every later test on that worker then inherits (observed as a PATH
+        change leaking out of the first doctor test in a full run). Recording the
+        value through monkeypatch restores it at teardown whatever the doctor did.
+        """
+        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+
     def test_doctor_with_kiro(self, tmp_path, monkeypatch):
         import kiro_crew.cli_doctor as _doc
 

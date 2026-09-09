@@ -1069,7 +1069,8 @@ async def test_send_bundle_refuses_when_no_credential_is_held():
 
 
 @pytest.mark.asyncio
-async def test_send_bundle_reports_an_unreachable_peer_without_leaking_the_bundle():
+async def test_send_bundle_reports_an_unreachable_peer_without_leaking_the_bundle(monkeypatch):
+    from kiro_crew.instances import ssh_tunnel_manager as mod
     from kiro_crew.instances.ssh_tunnel_manager import (
         SshTunnelManager,
         TunnelState,
@@ -1077,11 +1078,27 @@ async def test_send_bundle_reports_an_unreachable_peer_without_leaking_the_bundl
     )
 
     mgr = SshTunnelManager.__new__(SshTunnelManager)
-    # A port nothing listens on: the POST fails at connect.
     mgr._tokens = {"peer": "irrelevant-credential"}
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=1
     )
+
+    # The POST fails at CONNECT, modelled rather than provoked: "a port nothing
+    # listens on" is not a property a test can assume of the host. Endpoint
+    # agents on managed machines intercept loopback connects and answer every
+    # port with HTTP 200 (observed: a SOAP envelope from 127.0.0.1:1), which made
+    # this test report the peer reachable and the bundle delivered.
+    class _RefusingSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, json=None, headers=None):
+            raise ConnectionRefusedError(111, "connection refused")
+
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", lambda *a, **k: _RefusingSession())
     ok, payload = await mgr.send_session_bundle("peer", {"bundle_version": 1})
 
     assert ok is False

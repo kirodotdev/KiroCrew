@@ -122,6 +122,14 @@ const DOC = {
   backlinks: [{ sourcePath: 'folder/Two.md', line: 3, context: 'see [[One]]' }],
 }
 
+/**
+ * Ceiling for the first wait on the note tree: health -> listVaults -> listNotes
+ * resolve in sequence before the tree commits, a chain that ran past the 1000ms
+ * default under load in one of four full runs (website/docs/testing.md, "a real
+ * async chain behind the 1000ms default needs a named ceiling").
+ */
+const TREE_READY = { timeout: 5000 }
+
 function renderPage() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
@@ -136,7 +144,7 @@ function renderPage() {
 /** Render, wait for the panel, then open `One.md`. */
 async function renderWithOpenNote() {
   const view = await renderPage()
-  await userEvent.click(await screen.findByRole('button', { name: 'One' }))
+  await userEvent.click(await screen.findByRole('button', { name: 'One' }, TREE_READY))
   await screen.findByText('Body text')
   return view
 }
@@ -248,7 +256,7 @@ describe('MdNotebookPage', () => {
 
   it('renders the vault name, its notes in a folder tree, and the empty-body prompt', async () => {
     await renderPage()
-    expect(await screen.findByRole('button', { name: 'One' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'One' }, TREE_READY)).toBeTruthy()
     // Folders view is the default, so the nested note sits under a folder row.
     expect(screen.getByRole('button', { name: 'folder' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Two' })).toBeTruthy()
@@ -328,7 +336,7 @@ describe('MdNotebookPage', () => {
   it('does not restore a remembered note the vault no longer has', async () => {
     localStorage.setItem('mdnb-open-note', '"Deleted.md"')
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     expect(mockApi.readNote).not.toHaveBeenCalled()
   })
 
@@ -584,7 +592,7 @@ describe('MdNotebookPage', () => {
 
   it('runs a sync from the keyboard shortcut', async () => {
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     fireEvent.keyDown(window, { key: 's', metaKey: true })
     await waitFor(() => expect(mockApi.sync).toHaveBeenCalledWith('v1'))
   })
@@ -622,7 +630,7 @@ describe('MdNotebookPage', () => {
     expect(screen.queryByRole('button', { name: 'folder' })).toBeNull()
 
     await userEvent.clear(box)
-    expect(await screen.findByRole('button', { name: 'One' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'One' }, TREE_READY)).toBeTruthy()
   })
 
   it('says so when a search matches nothing', async () => {
@@ -696,14 +704,14 @@ describe('MdNotebookPage', () => {
     await renderPage()
     // A corrupt width must not collapse or overflow the panel — the list still
     // renders at the default width.
-    expect(await screen.findByRole('button', { name: 'One' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'One' }, TREE_READY)).toBeTruthy()
   })
 
   // ── settings ──────────────────────────────────────────────────────────────
 
   it('opens Settings as a page in the note pane', async () => {
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     // Two controls carry this name — the whole row and the gear pinned inside it.
     // The row is the one a user aims at.
     await userEvent.click(screen.getAllByRole('button', { name: 'Settings' })[0])
@@ -731,7 +739,7 @@ describe('MdNotebookPage', () => {
 
   it('duplicates a note and opens the copy', async () => {
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     clickRowAction('One', 'Duplicate note')
     await waitFor(() => expect(mockApi.duplicateNote).toHaveBeenCalledWith('v1', 'One.md'))
     await waitFor(() => expect(mockApi.readNote).toHaveBeenCalledWith('v1', 'One 1.md'))
@@ -739,7 +747,7 @@ describe('MdNotebookPage', () => {
 
   it('pins a note, persists the pin per vault, and offers to unpin', async () => {
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     clickRowAction('One', 'Pin note')
     expect(localStorage.getItem('mdnb-pinned-v1')).toBe('["One.md"]')
     expect(within(row('One')).getByRole('button', { name: 'Unpin note' })).toBeTruthy()
@@ -762,7 +770,7 @@ describe('MdNotebookPage', () => {
 
   it('strips path separators from a rename so a title edit cannot move the note', async () => {
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     clickRowAction('One', 'Rename note')
     const field = await screen.findByRole('textbox', { name: 'Note name' })
     await userEvent.clear(field)
@@ -792,7 +800,7 @@ describe('MdNotebookPage', () => {
 
   it('confirms before trashing a note, then removes it from the listing', async () => {
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     clickRowAction('One', 'Delete note')
     expect(await screen.findByRole('dialog')).toBeTruthy()
     expect(screen.getByText(/to trash\?/)).toBeTruthy()
@@ -804,7 +812,7 @@ describe('MdNotebookPage', () => {
 
   it('cancels the confirmation without deleting anything', async () => {
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     clickRowAction('One', 'Delete note')
     await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -814,7 +822,7 @@ describe('MdNotebookPage', () => {
   it('says nothing has been trashed yet rather than opening an empty folder', async () => {
     mockApi.openTrash.mockResolvedValue({ opened: false, empty: true, path: '' })
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     clickRowAction('One', 'Delete note')
     await userEvent.click(await screen.findByRole('button', { name: '.trash' }))
     expect(
@@ -831,7 +839,7 @@ describe('MdNotebookPage', () => {
       Object.assign(new Error('nope'), { body: { code: 'folder_open_unsupported' } }),
     )
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     clickRowAction('One', 'Delete note')
     await userEvent.click(await screen.findByRole('button', { name: '.trash' }))
     expect(
@@ -842,7 +850,7 @@ describe('MdNotebookPage', () => {
   it('reports a failed delete instead of leaving the row pending forever', async () => {
     mockApi.deleteNote.mockRejectedValue(new Error('permission denied'))
     await renderPage()
-    await screen.findByRole('button', { name: 'One' })
+    await screen.findByRole('button', { name: 'One' }, TREE_READY)
     clickRowAction('One', 'Delete note')
     await userEvent.click(await screen.findByRole('button', { name: 'Delete' }))
     const alert = await screen.findByRole('alert')
@@ -882,7 +890,7 @@ describe('MdNotebookPage', () => {
   it('ticks a task checkbox in the rendered view', async () => {
     mockApi.readNote.mockResolvedValue({ ...DOC, content: '- [ ] water the plants' })
     await renderPage()
-    await userEvent.click(await screen.findByRole('button', { name: 'One' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'One' }, TREE_READY))
     const box = (await screen.findByRole('checkbox')) as HTMLInputElement
     expect(box.checked).toBe(false)
     fireEvent.click(box)

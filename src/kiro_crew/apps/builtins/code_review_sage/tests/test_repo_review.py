@@ -16,6 +16,11 @@ from kiro_crew import platform_compat
 
 _needs_gh = pytest.mark.skipif(shutil.which("gh") is None, reason="gh CLI not installed")
 
+#: A fake resolved ``gh`` that is ABSOLUTE on this host. ``github_runner.run_gh``
+#: refuses any argv[0] failing ``os.path.isabs``, which from Python 3.13 rejects a
+#: bare ``/resolved-gh/gh`` on Windows (no drive). See test_discovery._FAKE_GH.
+_FAKE_GH = os.path.abspath(os.path.join(os.sep, "resolved-gh", "gh"))
+
 
 class TestParseRepoUrl(unittest.TestCase):
     def test_plain_repo_url(self):
@@ -75,7 +80,7 @@ class TestParseRepoUrl(unittest.TestCase):
 @_needs_gh
 class TestListOpenPrs(unittest.TestCase):
     def setUp(self):
-        patcher = patch.object(pipeline.discovery, "gh_bin", return_value="/resolved-gh/gh")
+        patcher = patch.object(pipeline.discovery, "gh_bin", return_value=_FAKE_GH)
         self._mock_gh_bin = patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -177,7 +182,7 @@ class TestListOpenPrs(unittest.TestCase):
 
         with unittest.mock.patch.dict(os.environ, {"AWS_SECRET_ACCESS_KEY": "aws-secret",
                                                    "GH_TOKEN": "gho_token"}), \
-                patch.object(pipeline.discovery, "gh_bin", return_value="/resolved-gh/gh"), \
+                patch.object(pipeline.discovery, "gh_bin", return_value=_FAKE_GH), \
                 patch.object(pipeline.subprocess, "run", side_effect=fake_run):
             pipeline.list_open_prs("o", "r")
         env = captured["kw"].get("env")

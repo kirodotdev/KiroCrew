@@ -962,6 +962,11 @@ async def _find_worktree_by_path(path: str) -> tuple[dict | None, str | None]:
     if not path:
         return None, "'path' must be a non-empty string"
     try:
+        # Explicit on every platform: POSIX ``realpath`` raises ValueError on an
+        # embedded NUL, but Windows' swallows it and resolves the string anyway,
+        # which would send garbage on to the enumeration instead of refusing it.
+        if "\x00" in path:
+            raise ValueError("embedded null byte")
         want = Path(path).resolve()
     except (OSError, ValueError, RuntimeError):
         return None, f"invalid path: {path!r}"

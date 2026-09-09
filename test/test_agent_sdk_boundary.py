@@ -28,6 +28,11 @@ from pathlib import Path
 
 import pytest
 
+# One xdist worker for the whole module: every test here derives from ONE module-cached
+# scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
+# spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
+# per full run for this file alone. Grouping keeps the cache single-copy per run.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_test_agent_sdk_boundary")
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / "scripts" / "check_agent_sdk_boundary.py"
 BASELINE = ROOT / ".github" / "agent-sdk-boundary-baseline.txt"

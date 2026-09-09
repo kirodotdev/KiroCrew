@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import host_abs
 from kiro_crew import env as env_mod
 from kiro_crew import platform_compat
 
@@ -121,9 +122,13 @@ def test_relative_marker_is_rejected(tmp_path, monkeypatch):
 def test_absolute_marker_first_line_is_taken(tmp_path, monkeypatch):
     home = tmp_path / "dh"
     home.mkdir()
-    (home / "node-bin-dir").write_text("/opt/node/bin\ntrailing junk\n")
+    # Spelled for the host (conftest.host_abs): the marker is validated with
+    # ``os.path.isabs``, which from Python 3.13 rejects a bare ``/opt/node/bin``
+    # on Windows (no drive).
+    node_bin = host_abs("opt", "node", "bin")
+    (home / "node-bin-dir").write_text(f"{node_bin}\ntrailing junk\n")
     monkeypatch.setattr(env_mod, "data_home", lambda: home, raising=True)
-    assert env_mod._marker_node_bin_dir() == "/opt/node/bin"
+    assert env_mod._marker_node_bin_dir() == node_bin
 
 
 def test_missing_marker_is_not_an_error(tmp_path, monkeypatch):
@@ -165,7 +170,8 @@ def test_validated_bin_dir_rejects(bad):
 
 
 def test_validated_bin_dir_accepts_and_strips():
-    assert env_mod._validated_bin_dir("  /opt/node/bin  ") == "/opt/node/bin"
+    node_bin = host_abs("opt", "node", "bin")
+    assert env_mod._validated_bin_dir(f"  {node_bin}  ") == node_bin
 
 
 def test_data_home_is_imported_at_module_scope():

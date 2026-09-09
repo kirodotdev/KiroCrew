@@ -149,6 +149,46 @@ def _ledger_root() -> Path:
     return data_home() / "ledger"
 
 
+_EXTENDED_LENGTH_PREFIX = "\\\\?\\"
+
+
+def _plain(path: Path) -> Path:
+    """*path* without Windows' extended-length prefix; unchanged elsewhere."""
+    text = str(path)
+    if text.startswith(_EXTENDED_LENGTH_PREFIX + "UNC\\"):
+        return Path("\\\\" + text[len(_EXTENDED_LENGTH_PREFIX) + 4 :])
+    if text.startswith(_EXTENDED_LENGTH_PREFIX):
+        return Path(text[len(_EXTENDED_LENGTH_PREFIX) :])
+    return path
+
+
+def resolved_within(base: Path, name: str) -> Path | None:
+    """``base / name`` resolved, or ``None`` when it does not stay inside *base*.
+
+    The symlink-safe containment check every ledger path goes through. Two
+    properties keep it honest under concurrency:
+
+    * The base is resolved ONCE and the child is built from the resolved base, so
+      both sides are spelled from the same ancestors.
+    * Both sides are stripped of Windows' extended-length prefix before the
+      comparison. ``Path.resolve()`` on a FILE that another thread is replacing at
+      that moment comes back as ``\\\\?\\C:\\...``: ``ntpath.realpath`` drops the
+      prefix only after re-checking the stripped spelling, and that re-check fails
+      when the file has just been swapped out. The directory, resolved separately,
+      comes back as ``C:\\...``, and ``is_relative_to`` then reads the prefix alone
+      as an escape. Four threads binding one worker at once reproduce it in about
+      four runs of ten on a short-name temp root; the CI Windows shard is one.
+
+    The root itself is not a member: a name that folds to nothing must not be
+    granted the whole store.
+    """
+    parent = _plain(base.resolve())
+    resolved = _plain((parent / name).resolve())
+    if resolved == parent or not resolved.is_relative_to(parent):
+        return None
+    return resolved
+
+
 def ledger_dir(slot_key: str) -> Path:
     """Validated per-session ledger directory for *slot_key*.
 
@@ -159,10 +199,8 @@ def ledger_dir(slot_key: str) -> Path:
     """
     if not slot_key or "\0" in slot_key or "/" in slot_key or "\\" in slot_key:
         raise ValueError(f"Invalid slot key for ledger: {slot_key!r}")
-    base = _ledger_root()
-    resolved = (base / _store_name(slot_key)).resolve()
-    parent = base.resolve()
-    if resolved == parent or not resolved.is_relative_to(parent):
+    resolved = resolved_within(_ledger_root(), _store_name(slot_key))
+    if resolved is None:
         raise ValueError(f"Path traversal blocked for slot key: {slot_key!r}")
     return resolved
 

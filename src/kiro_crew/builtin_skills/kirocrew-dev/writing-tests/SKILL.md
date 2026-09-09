@@ -95,10 +95,41 @@ it is a "your shell stops working" issue.
 safe — and it needs to be, because resolving it is **not a read**: it creates the home
 and its marker, and can run the `~/.kirocrew` → `~/.kiro/crew` migration.
 
-Two shapes escape the env var:
+Six shapes escape the env var:
 
+- **`monkeypatch.undo()` in the body of a test.** It reverts EVERY record on the shared
+  instance — your own patches, every fixture that set something through it (`stores`
+  pins `KIROCREW_HOME` that way), and until the floor got its own instance, the floor
+  itself. A restore that ran `empty_trash()` after `undo()` emptied the operator's real
+  trash. A patch you need to drop before the test ends goes in
+  `with pytest.MonkeyPatch.context() as patched:`; `undo()` is not a scoped tool.
+- **A detached task.** `asyncio.create_task(...)` at boot with no one awaiting it keeps
+  running after the test that started it has returned; when its work resolves a path
+  (`peek_next` → `spool_path()` → `data_home()`, on a `to_thread` worker) it resolves
+  the OPERATOR's home. Fixed where the task is scheduled: `_start_channel_transports`
+  resolves `spool_path()` on the loop and hands it to the task, so the worker reads a
+  location fixed at boot. Resolve every environment-derived input of a detached task on
+  the calling side before detaching, or give the test a handle it can await.
+- **What a closed loop leaves behind.** pytest-asyncio 0.20 ends the loop with a bare
+  `loop.close()`. A pending task's coroutine then gets `GeneratorExit` at garbage
+  collection, so its `finally` blocks run *then* (`_run_chat`'s queue cycle reaches a
+  sync `KiroCrewConfig.load()`); a default-executor job (`to_thread`) is abandoned
+  mid-flight. Both resolved `config_dir()` after the unpin and grew a fresh fake
+  `HOME`'s `~/.kiro/crew`. The floor's `tryfirst` teardown hook now cancels pending
+  tasks, runs them to completion and joins the executor while the pins hold, the way
+  `asyncio.run` shuts down. A `coroutine ... was never awaited` warning pointing at that
+  hook means your test left an unstarted turn behind: await it, or keep the patch that
+  was meant to catch it in force until it has run.
+- **A default that bypasses the pin on purpose.** `PodConfig.load()` derives the pod
+  plane from `_default_home()` / `Path.home()` so a pod cannot redirect the host's
+  registry; the floor pins `KIROCREW_POD_ROOT` / `KIROCREW_POD_ENV_DIR` for that reason.
+  A new resolver with its own default gets a floor pin AND a ratchet in
+  `test_host_isolation_floor.py` in the same change.
 - **Import-time from `config_dir()`** (`subagent_persistence._SUBAGENTS_DIR`): the var
-  is read after the module captured the path. Each has its own autouse pin.
+  is read after the module captured the path. Each has its own autouse pin. A
+  **collection-time probe** is the same shape one step earlier: a module-level
+  `_can_spawn()` used by a `skipif` runs before any pin and read the REAL
+  `config.json`; run such probes under an empty `KIROCREW_HOME`.
 - **Import-time from `Path.home()`**: `~/.kiro` is *kiro-cli's* home, machine-wide and
   shared with the real installed agent — `~/.kiro/settings/mcp.json` is the live
   agent's MCP server list. `_isolate_shared_kiro_paths` redirects these from a table,
@@ -262,6 +293,17 @@ testing-conventions § Determinism 1. Both the fixture and its ratchet are
 app suite cannot request the fixture and is not swept, so a test there that drives
 `SubagentManager.spawn` must pin the two guards itself.
 
+One more, for tests of a **single-flight or coalescing** path ("N concurrent readers
+share ONE scan"): the property only holds for readers that arrive WHILE the shared
+operation is in flight, so the test has to keep it in flight until they have. An
+instant stub does not: `asyncio.gather` starts the leader first, its executor job
+finishes on the pool thread before the loop reaches the `await`, and on Python 3.13
+the wrapped future is already done — awaiting a done future does not yield. The
+leader then completes with a waiter count of one and the next reader assembles again,
+once in five loaded runs. Gate the stub on a `threading.Event`, poll until every
+reader is registered, then release it. Whatever the count of assemblies asserts, the
+test must first establish the concurrency it is asserting about.
+
 ## Rule 3 — Cross-platform: macOS, Linux (x86_64 + arm64), Windows
 
 - **Route POSIX calls through `platform_compat`.** See docs/system-specs/common/platform-compat.md. Most
@@ -335,6 +377,12 @@ The recurring wins, in order of leverage:
 3. **An expensive immutable thing built per test** — a real `git` repo costs ~1–1.6s in
    subprocesses. Build it once `scope="session"` and `copytree` it per test; copy *from*
    the template rather than yielding it, so nothing one test does can reach another's.
+4. **A module-cached tree scan paid once per WORKER** — an `lru_cache`d `rglob` +
+   `ast.parse` of `src/` (~30 s) is computed again on every xdist worker the module's
+   tests land on; five full runs measured eighteen ratchet modules each re-scanning on
+   3–5 workers, ~22 CPU-minutes per run. Add
+   `pytestmark = pytest.mark.xdist_group(name="tree_scan_<module>")` — one group per
+   file, never one shared group — and the scan runs once per run.
 
 **After any speedup, mutate the production code the test covers and confirm the test
 still FAILS.** A test made faster by checking less is a regression. Restore from a copy
@@ -384,11 +432,34 @@ The consequence for how you write a test:
 - [ ] Globals mutated through `monkeypatch`, never raw assignment — including `os.environ`
       keys a REAL production startup path is known to write (`PLAYWRIGHT_MCP_OUTPUT_DIR`,
       `KIROCREW_TELEMETRY`, `PATH`), restored in the shared helper that drives it
+- [ ] A variable the code under test WRITES and that is absent before the test goes
+      through `forget_env_at_teardown(monkeypatch, name)` — `delenv(raising=False)` on an
+      absent key records no undo, and a `delenv` AFTER the write puts the written value back
+- [ ] No `monkeypatch.undo()` in a test body: it reverts every fixture's records too. A
+      patch you need to drop early lives in `with pytest.MonkeyPatch.context() as patched:`
+- [ ] No module-level `skipif` probe that reads `KiroCrewConfig` / `config_dir()` /
+      `Path.home()` — it runs before any pin and observes the operator's real config
+- [ ] Fixture paths are absolute on EVERY host: `host_abs("usr", "bin")`, never a `/usr/bin`
+      literal (`ntpath.isabs` rejects a driveless path from Python 3.13); a path that belongs
+      to a simulated platform is judged with that platform's module (`posixpath`)
+- [ ] Nothing assumes the ancestry of `tmp_path` is bare (no `.venv`, no project marker
+      above it), that `127.0.0.1:1` refuses connections, that `python3` is on PATH (spawn
+      `sys.executable`), or that `git`/`gh` sit in a trusted system directory
+- [ ] A source ratchet strips docstrings with `ast`, not by subtracting `__doc__` from
+      `inspect.getsource` (3.13 dedents docstrings)
+- [ ] A test whose contract IS a real symlink is listed in `test/requires-real-symlinks.txt`;
+      one that needs a directory that resolves elsewhere uses `make_dir_link`
 - [ ] No `AsyncMock` standing in for a synchronous method; every `cancel()` awaited
 - [ ] No module-level asyncio primitive (`Lock`/`Event`/`Future`/in-flight dict) reachable
       from the code under test without a per-test reset
 - [ ] Nothing can block forever: every await the test itself must unblock is wrapped in a
       bounded `wait_for`; no `sleep(0.05)` standing in for "let the other task register"
+- [ ] A test of a coalescing / single-flight path holds the shared operation open (a
+      gated stub) until every reader has registered, then releases it — an instant stub
+      lets the leader finish before the others arrive, and a done future never yields
+- [ ] A module that `rglob`+`ast.parse`s `src/` once per module also carries
+      `pytestmark = pytest.mark.xdist_group(name="tree_scan_<module>")`, or every xdist
+      worker it touches re-runs the scan
 - [ ] A fixture stamped from a module-level `NOW` is only compared by production code
       whose clock is pinned to that same `NOW` (a `frozen_clock` fixture) -- never two clocks
 - [ ] After `await handler(...)`, an assertion on something a worker thread emits via

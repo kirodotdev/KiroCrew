@@ -21,7 +21,7 @@ from mcp_merge_helpers import bundled_defaults as _bundled_defaults
 from mcp_merge_helpers import run_install_mcp_merge as _run_install_mcp_merge
 from windows_sim import replace_sharing_violation
 
-from conftest import requires_symlinks
+from conftest import host_abs, requires_symlinks
 from kiro_crew import agent_state
 from kiro_crew import atomic_write as aw
 from kiro_crew.agent import _MANAGED_MCP_ENTRY_KEYS, install_agent, migrate_agent_specs
@@ -36,6 +36,33 @@ def _reject_json_constant(name: str):  # pragma: no cover - raises by design
     would pass on a spec kiro-cli cannot read.
     """
     raise AssertionError(f"emitted spec carries the non-JSON constant {name!r}")
+
+
+@pytest.fixture
+def launchers_confined_to_tmp(tmp_path: Path):
+    """Let ``_resolve_kirocrew_bin`` accept only launchers the test wrote under ``tmp_path``.
+
+    Steps 1 and 2 of the resolver walk EVERY ancestor of the fake package dir,
+    and that dir sits under ``tmp_path`` -- so whatever the host keeps above the
+    temp root is a candidate too. A developer whose ``TMPDIR`` lives inside a
+    checkout has a real ``<checkout>/.venv/Scripts/kirocrew.exe`` (or
+    ``.venv/bin/kirocrew``) on that walk, and it wins over the launcher the test
+    built because step 1 runs to the filesystem root before step 2 starts.
+    Patching ``os.path.isfile`` does not close that door: the validator asks
+    ``Path.is_file`` and ``os.access``. Confining the validator itself makes the
+    resolver's answer a function of the tree the test built, wherever pytest put
+    it. Real validation still runs inside that tree, so a test that expects a
+    stale or dead launcher to be REJECTED keeps that assertion.
+    """
+    import kiro_crew.agent as agent_mod
+
+    real_works = agent_mod._launcher_works
+
+    def _confined(path: Path) -> bool:
+        return str(path).startswith(str(tmp_path)) and real_works(path)
+
+    with patch("kiro_crew.agent._launcher_works", side_effect=_confined):
+        yield
 
 
 def _run_install(tmp_path: Path, cfg_dir: Path, managed_mcps: dict | None = None, **kwargs) -> Path:  # type: ignore[return]
@@ -1202,6 +1229,7 @@ class TestAllSkillPathsLocalSymlinks:
         assert str(tmp_path / "project" / "skills") not in paths
 
 
+@pytest.mark.usefixtures("launchers_confined_to_tmp")
 class TestResolveKirocrewBin:
     """Tests for lazy kirocrew binary resolution."""
 
@@ -1777,7 +1805,9 @@ class TestKirocrewBinSubpath:
         shim.write_text('@echo off\r\n"%~dp0..\\python.exe" -s -m kiro_crew %*\r\n')
         assert _bin_is_usable(shim) is True
 
-    def test_resolver_walk_finds_cmd_shim_in_bundle_layout(self, tmp_path: Path, monkeypatch):
+    def test_resolver_walk_finds_cmd_shim_in_bundle_layout(
+        self, tmp_path: Path, monkeypatch, launchers_confined_to_tmp
+    ):
         """End-to-end: the parent walk PREFERS the bundle's .cmd on Windows.
 
         Pins the issue's failure mode: the bundle ships BOTH launchers, and
@@ -4941,6 +4971,11 @@ def _make_exec(tmp_path: Path, name: str) -> str:
     return str(p)
 
 
+def _abs(*parts: str) -> str:
+    """Host-absolute fixture path; see ``conftest.host_abs`` for why ``/opt/shims`` is not enough."""
+    return host_abs(*parts)
+
+
 class TestSpecEnvPathIsExpandedOnEmit:
     """A spec's ``env.PATH`` is written out as the full effective PATH.
 
@@ -4952,19 +4987,25 @@ class TestSpecEnvPathIsExpandedOnEmit:
     """
 
     def test_declared_path_is_expanded(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        # Host-absolute spellings: the spec's entries pass through the
+        # ``os.path.isabs`` filter in ``_spec_path_entries``, and from Python 3.13
+        # ``ntpath.isabs("/opt/shims")`` is False (no drive), so a POSIX spelling
+        # is dropped as "non-absolute" on Windows and the assertion below sees the
+        # augmentation first instead of the declared dir.
+        shims, usr_bin, bin_dir = _abs("opt", "shims"), _abs("usr", "bin"), _abs("bin")
+        monkeypatch.setenv("PATH", os.pathsep.join([usr_bin, bin_dir]))
         cfg_dir = _bundled_defaults(tmp_path)
         config = _run_install_mcp_merge(
             tmp_path,
             cfg_dir,
             cc_servers={},
-            kiro_servers={"wrapped": {"command": "/opt/wrapped", "env": {"PATH": "/opt/shims"}}},
+            kiro_servers={"wrapped": {"command": "/opt/wrapped", "env": {"PATH": shims}}},
         )
         emitted = config["mcpServers"]["wrapped"]["env"]["PATH"].split(os.pathsep)
         # The declared dir stays first, and the inherited PATH survives.
-        assert emitted[0] == "/opt/shims"
-        assert "/usr/bin" in emitted
-        assert "/bin" in emitted
+        assert emitted[0] == shims
+        assert usr_bin in emitted
+        assert bin_dir in emitted
 
     def test_other_env_keys_are_untouched(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setenv("PATH", "/usr/bin")
@@ -5078,9 +5119,9 @@ class TestSpecEnvPathIsExpandedOnEmit:
 
     def test_rebuild_is_stable(self, tmp_path: Path, monkeypatch) -> None:
         """install_agent runs on every start; the emitted PATH must not grow."""
-        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        monkeypatch.setenv("PATH", os.pathsep.join([_abs("usr", "bin"), _abs("bin")]))
         cfg_dir = _bundled_defaults(tmp_path)
-        servers = {"wrapped": {"command": "/opt/wrapped", "env": {"PATH": "/opt/shims"}}}
+        servers = {"wrapped": {"command": "/opt/wrapped", "env": {"PATH": _abs("opt", "shims")}}}
         first = _run_install_mcp_merge(
             tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers
         )["mcpServers"]["wrapped"]["env"]["PATH"]

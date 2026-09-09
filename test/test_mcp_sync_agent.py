@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from conftest import host_abs
 from kiro_crew.dashboard.handlers.agents import (
     api_capability_mcp_install,
     api_capability_mcp_uninstall,
@@ -1631,12 +1632,16 @@ class TestCcSidecarEnvEmission:
     def test_stdio_env_path_is_expanded_on_write(self, tmp_path, monkeypatch):
         from kiro_crew import mcp_discovery as md
 
-        monkeypatch.setenv("PATH", "/usr/bin")
+        # Spelled for the host (conftest.host_abs): the declared entry passes
+        # through the ``os.path.isabs`` filter in env._spec_path_entries, and from
+        # Python 3.13 a bare ``/opt/shims`` is not absolute under ntpath.
+        shims, usr_bin = host_abs("opt", "shims"), host_abs("usr", "bin")
+        monkeypatch.setenv("PATH", usr_bin)
         srv = md.McpServerInfo(
             name="tooling",
             command="/opt/bin/tooling",
             args=["--stdio"],
-            env={"PATH": "/opt/shims", "TOKEN": "t"},
+            env={"PATH": shims, "TOKEN": "t"},
             source="discovered",
         )
         sidecar = tmp_path / "cc.json"
@@ -1644,8 +1649,8 @@ class TestCcSidecarEnvEmission:
 
         written = json.loads(sidecar.read_text())["mcpServers"]["tooling"]
         entries = written["env"]["PATH"].split(os.pathsep)
-        assert entries[0] == "/opt/shims", "spec-authored entries stay first"
-        assert "/usr/bin" in entries, "inherited PATH must survive the override"
+        assert entries[0] == shims, "spec-authored entries stay first"
+        assert usr_bin in entries, "inherited PATH must survive the override"
         assert written["env"]["TOKEN"] == "t"
 
     def test_source_env_object_is_not_mutated(self, tmp_path, monkeypatch):
