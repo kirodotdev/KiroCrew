@@ -21,6 +21,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import KiroCrewConfig
@@ -31,7 +32,16 @@ FIELD = "agent.acp_backend"
 
 #: Known ids the public baseline deliberately does not offer, each entry carrying its
 #: reason in ``test_baseline_ships_every_known_backend``. Empty is the healthy state.
-NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
+#:
+#: ``ACP_BACKEND_OPENCODE`` is the one entry, for two reasons that are each a stage
+#: in ``harness-onboarding.md`` rather than an open question. Stage 5:
+#: ``backend_install`` has no ``_probe_opencode``, so a switch that rendered could
+#: not say what was missing when the session failed to start. Routing: its
+#: ``Routing.SPAWN_ENV`` is declared but not enforced -- the client sets the
+#: policy on the child environment, but nothing reads back the resolved policy
+#: (``opencode debug config``) yet. Closing either is a single stage; the second
+#: worked example in the onboarding doc names both.
+NOT_SHIPPED_SELECTABLE: frozenset = frozenset({ACP_BACKEND_OPENCODE})
 
 
 @pytest.fixture
@@ -151,9 +161,10 @@ def test_baseline_ships_every_known_backend():
 
     ``NOT_SHIPPED_SELECTABLE`` is where that reason goes. It is an explicit list
     rather than a relaxed assertion so a plain ``baseline != known`` still fails:
-    an id may sit outside the baseline only by being named there. It is empty
-    today — every known id is offered, so a switch that renders always has an
-    install probe behind it to explain a session that failed to start.
+    an id may sit outside the baseline only by being named there. Today it names
+    opencode, and the assertion below is the reason the name is not enough on its
+    own: the baseline literal still has to equal ``KNOWN - NOT_SHIPPED``, so an id
+    can neither slip into the baseline unnamed nor slip out of it unnamed.
     """
     baseline: List[str] = sorted(acp_backends.BASELINE_SELECTABLE_BACKENDS)
     assert baseline == sorted(

@@ -274,6 +274,9 @@ MAIN_ROUTING = {
     "kas": ("agent_spec", ("", ""), False),
     "claude": ("seeded_settings", ("", ""), False),
     "codex": ("session_config", ("mode", "read-only"), True),
+    # Declared-not-enforced, like claude: the policy travels in the spawn env, and
+    # nothing reads back the resolved block yet, so ``is_enforced`` stays False.
+    "opencode": ("spawn_env", ("", ""), False),
     "nope": ("unverified", ("", ""), False),
     "kiro": ("unverified", ("", ""), False),
 }
@@ -302,12 +305,14 @@ def test_codex_still_needs_its_read_only_mode() -> None:
 
 
 def test_known_membership_is_unchanged_by_the_move() -> None:
-    """``ACP_BACKENDS_KNOWN`` gained and lost nothing.
+    """``ACP_BACKENDS_KNOWN`` is exactly the five spelled ids.
 
     Membership is the gate on the ``acp_backend`` kwarg, so a widened set means
-    provider construction accepts a value it must reject.
+    provider construction accepts a value it must reject. ``opencode`` is known
+    but dormant (see ``BASELINE_SELECTABLE_BACKENDS``): spelled here so it can be
+    named in a policy, not offered.
     """
-    assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == ["", "claude", "codex", "kas"]
+    assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == ["", "claude", "codex", "kas", "opencode"]
 
 
 #: Every capability field for every known id, plus an unknown one.
@@ -321,6 +326,11 @@ EXPECTED_CAPABILITIES = {
     "kas": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
     "claude": (PROVIDER_CLAUDE_CODE, "claude_code", True, True, True),
     "codex": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, True, False),
+    # Codex-shaped: ``session/new`` advertises ``model`` and ``effort`` config
+    # options (measured, pinned in test/fixtures/acp_frames/opencode/), so the
+    # effort channel is real; no advertised-spelling fold and no measured inline
+    # compaction, so those stay False.
+    "opencode": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, True, False),
     "nope": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
 }
 

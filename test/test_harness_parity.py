@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 import os
 import subprocess
 import sys
 from dataclasses import fields
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,6 +33,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -45,6 +48,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_CODEX,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
+    PROVIDER_LABEL_OPENCODE,
 )
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
@@ -413,6 +417,7 @@ def test_every_known_backend_has_a_label() -> None:
         ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
         ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
         ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
+        ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
     }
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
         "a known backend has no PROVIDER_LABEL_* of its own, so it would persist "
@@ -490,6 +495,9 @@ def test_model_switch_channel_is_opt_in() -> None:
     """
     assert ACP_BACKEND_CLAUDE in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
     assert ACP_BACKEND_CODEX in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
+    # opencode joins on a measured advertisement (a ``model`` select option on
+    # session/new), the same evidence class the two adapters joined on.
+    assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
     assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
     assert ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION <= ACP_BACKENDS_KNOWN
     source = "\n".join(
@@ -518,6 +526,8 @@ def test_effort_channel_is_opt_in() -> None:
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_KIRO_SLASH_COMMANDS
     assert ACP_BACKEND_CODEX in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
     assert ACP_BACKEND_CODEX not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+    assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+    assert ACP_BACKEND_OPENCODE not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
     source = "\n".join(
         (
             inspect.getsource(providers_acp.AcpProvider.change_effort),
@@ -596,6 +606,183 @@ def test_codex_mcp_seam_defaults_to_empty() -> None:
     """
     client = acp_client.AcpClient.__new__(acp_client.AcpClient)
     assert client._codex_session_mcp_servers() == []
+
+
+# ---------------------------------------------------------------------------
+# opencode: the dormant seam (harness-onboarding.md, worked example 2)
+# ---------------------------------------------------------------------------
+
+
+def test_opencode_is_known_but_not_shipped_selectable() -> None:
+    """H1/H8: a harness the build can SPELL but no operator can CHOOSE.
+
+    The inverse of ``test_codex_is_selectable_and_answerable``, and the pair is the
+    point: codex is offered because ``backend_install`` can answer for it, opencode
+    is withheld because it cannot -- there is no ``_probe_opencode`` -- and because
+    its tool-permission routing is declared but not enforced. Asserted together so
+    that adding the id to the baseline without also closing both stages fails here
+    rather than shipping a switch with nothing behind it.
+    """
+    from kiro_crew.agent_sdk.backend_install import _PROBES
+
+    assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_KNOWN
+    assert ACP_BACKEND_OPENCODE not in BASELINE_SELECTABLE_BACKENDS
+    assert ACP_BACKEND_OPENCODE not in selectable_backends()
+    assert ACP_BACKEND_OPENCODE not in _PROBES, (
+        "a probe now exists: opencode's first dormant reason is closed, so revisit "
+        "NOT_SHIPPED_SELECTABLE in test_agent_backend_editable rather than leaving "
+        "the reason stale"
+    )
+    # Deniable BEFORE anything registers it -- the reason POLICY_ID_BY_BACKEND is
+    # required for a dormant id at all.
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+
+    assert POLICY_ID_BY_BACKEND[ACP_BACKEND_OPENCODE] == ACP_BACKEND_OPENCODE
+
+
+def test_opencode_routing_is_declared_and_truthfully_unenforced() -> None:
+    """A declared-but-unenforced mechanism must say so, and must not refuse.
+
+    ``SPAWN_ENV`` is the fifth routing kind and the second declared-not-enforced one
+    after ``SEEDED_SETTINGS``. Two things are pinned: the verdict is INDETERMINATE
+    with a reason that names what is missing (the read-back), and ``is_enforced``
+    is False -- so ``enforce_runtime_routing`` returns rather than raising, exactly
+    as for claude. Flipping either without implementing the read-back would assert a
+    guarantee nothing performs, which is the failure ``ENFORCED_ROUTINGS`` exists to
+    make loud.
+    """
+    from kiro_crew import acp_tool_gate
+
+    assert acp_tool_gate.routing_for(ACP_BACKEND_OPENCODE) is acp_tool_gate.Routing.SPAWN_ENV
+    verdict, reason = acp_tool_gate.routing_verdict(ACP_BACKEND_OPENCODE)
+    assert verdict is acp_tool_gate.Verdict.INDETERMINATE
+    assert "read back" in reason
+    assert acp_tool_gate.is_enforced(ACP_BACKEND_OPENCODE) is False
+    assert acp_tool_gate.Routing.SPAWN_ENV not in acp_tool_gate.ENFORCED_ROUTINGS
+    # Returns, does not raise: this core does not refuse over a guarantee it never
+    # attempted.
+    acp_tool_gate.enforce_runtime_routing(ACP_BACKEND_OPENCODE, "probe")
+
+
+def test_opencode_spawn_env_policy_enumerates_every_key_as_ask() -> None:
+    """The one implemented half of SPAWN_ENV is a complete, parseable policy.
+
+    Complete: an unenumerated key keeps the harness's own default (``read`` is
+    ``allow``), so a wildcard is not enough -- every key the harness resolves is
+    named. Parseable: the harness FAILS OPEN on JSON it cannot parse, so the value
+    must round-trip. And the second variable is what makes the first hold against a
+    project agent, whose rule would otherwise land after every environment rule.
+    """
+    from kiro_crew.acp_backends import spawn_env_policy_for
+
+    pairs = dict(spawn_env_policy_for(ACP_BACKEND_OPENCODE))
+    assert set(pairs) == {"OPENCODE_PERMISSION", "OPENCODE_DISABLE_PROJECT_CONFIG"}
+    assert pairs["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
+    policy = json.loads(pairs["OPENCODE_PERMISSION"])
+    assert policy and set(policy.values()) == {"ask"}
+    for key in ("read", "edit", "bash", "external_directory", "plan_enter", "plan_exit"):
+        assert key in policy, f"permission key {key!r} left to the harness default"
+    assert spawn_env_policy_for(ACP_BACKEND_CODEX) == ()
+    assert spawn_env_policy_for(ACP_BACKEND_KIRO) == ()
+
+
+def test_opencode_carries_its_own_provider_label() -> None:
+    """H11: same reason as codex -- an ``acp`` label would resume it as kiro."""
+    client = MagicMock()
+    client.backend = ACP_BACKEND_OPENCODE
+    provider = MagicMock(spec=providers_acp.AcpProvider)
+    provider.client = client
+    assert providers_acp.provider_label(provider) == PROVIDER_LABEL_OPENCODE
+    assert PROVIDER_LABEL_OPENCODE != PROVIDER_LABEL_DEFAULT
+
+
+def test_opencode_spawn_keeps_its_own_branch() -> None:
+    """H9/H10: opencode resolves its own executable and declares its own handshake.
+
+    Native ACP, so the branch is shorter than codex's -- no adapter, no node -- but
+    it must still be ITS branch: falling through to kiro would spawn kiro-cli under
+    an opencode label. The two things the branch must do beyond argv are also
+    pinned at the source: set the spawn-env policy, and refuse a workspace carrying
+    project plugins.
+    """
+    spawn_source = inspect.getsource(acp_client.AcpClient._spawn)
+    assert "_is_opencode" in spawn_source
+    assert "_resolve_opencode_bin" in spawn_source
+    assert "_opencode_project_plugin_dir" in spawn_source
+    assert "spawn_env_policy_for" in spawn_source
+    assert acp_client.PROTOCOL_VERSION_OPENCODE is not None
+    assert "PROTOCOL_VERSION_OPENCODE" in inspect.getsource(
+        acp_client.AcpClient._initialize_session
+    )
+
+
+def test_opencode_mcp_seam_defaults_to_empty_and_is_spliced_gated() -> None:
+    """The opencode seam follows the codex one: ``[]``, and spliced only for itself."""
+    client = acp_client.AcpClient.__new__(acp_client.AcpClient)
+    assert client._opencode_session_mcp_servers() == []
+    for fn in (
+        acp_client.AcpClient._new_session_following_substitution,
+        acp_client.AcpClient._initialize_session,
+    ):
+        source = inspect.getsource(fn)
+        if "_opencode_session_mcp_servers" not in source:
+            continue
+        assert "if self._is_opencode" in source, f"{fn.__name__}: opencode seam spliced ungated"
+
+
+def test_opencode_project_plugin_dir_refusal_covers_both_spellings(tmp_path) -> None:
+    """The plugins check is the only floor under a hazard no permission key reaches.
+
+    Both directory spellings the harness accepts are checked, in order, and an
+    empty workspace answers ``None`` so the refusal never fires on a clean tree.
+    """
+    assert acp_client._opencode_project_plugin_dir(tmp_path) is None
+    (tmp_path / ".opencode" / "plugin").mkdir(parents=True)
+    assert acp_client._opencode_project_plugin_dir(tmp_path) == tmp_path / ".opencode" / "plugin"
+    (tmp_path / ".opencode" / "plugins").mkdir()
+    assert acp_client._opencode_project_plugin_dir(tmp_path) == tmp_path / ".opencode" / "plugins"
+
+
+def test_opencode_resolver_prefers_override_then_internal_then_public(
+    tmp_path, monkeypatch
+) -> None:
+    """The three-rung ladder, in order, and a miss that still reports its PATH.
+
+    ``augmented_path`` is pinned to identity: it appends well-known install
+    directories, and a real ``opencode-internal`` in one of them (this host has
+    one) would make the ladder's middle rung untestable.
+    """
+    monkeypatch.setattr(acp_client, "augmented_path", lambda p: p)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    internal = bindir / acp_client.OPENCODE_BIN_INTERNAL
+    public = bindir / acp_client.OPENCODE_BIN
+    for exe in (internal, public):
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bindir))
+    monkeypatch.delenv(acp_client._ENV_OPENCODE_BIN, raising=False)
+
+    argv, _ = acp_client._resolve_opencode_bin()
+    assert argv is not None and Path(argv[0]).name == acp_client.OPENCODE_BIN_INTERNAL
+
+    internal.unlink()
+    argv, _ = acp_client._resolve_opencode_bin()
+    assert argv is not None and Path(argv[0]).name == acp_client.OPENCODE_BIN
+
+    override = tmp_path / "custom-opencode"
+    override.write_text("#!/bin/sh\n")
+    override.chmod(0o755)
+    monkeypatch.setenv(acp_client._ENV_OPENCODE_BIN, str(override))
+    argv, _ = acp_client._resolve_opencode_bin()
+    assert argv is not None
+    assert Path(argv[0]).resolve() == override.resolve()
+
+    monkeypatch.delenv(acp_client._ENV_OPENCODE_BIN)
+    public.unlink()
+    argv, searched = acp_client._resolve_opencode_bin()
+    assert argv is None
+    assert str(bindir) in searched
 
 
 def test_model_preflight_allows_unknown_advertised_set() -> None:

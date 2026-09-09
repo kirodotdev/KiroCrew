@@ -28,6 +28,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
@@ -80,6 +81,7 @@ class TestBackendPredicates:
             provider.is_claude_backend,
             provider.is_kas_backend,
             provider.is_codex_backend,
+            provider.is_opencode_backend,
         ]
         assert sum(held) == 1
 
@@ -110,6 +112,15 @@ class TestBackendPredicates:
         adapter — and without this assertion that edit would land green.
         """
         assert _build_provider(ACP_BACKEND_CODEX).is_acp_runtime_backend is False
+
+    def test_opencode_is_not_on_the_acp_runtime(self):
+        """Same claim for the dormant opencode seam: one ``opencode acp`` process per
+        session, so it belongs on AcpClient, and the predicate that names it is the
+        positive one."""
+        provider = _build_provider(ACP_BACKEND_OPENCODE)
+        assert provider.is_opencode_backend is True
+        assert provider.is_acp_runtime_backend is False
+        assert provider.is_codex_backend is False
 
 
 class TestUnknownBackendRejected:

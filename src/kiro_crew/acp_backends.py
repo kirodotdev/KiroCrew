@@ -33,8 +33,10 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for exist
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PERMISSION_CONFIG,
     ACP_BACKEND_ROUTING,
+    ACP_BACKEND_SPAWN_ENV_POLICY,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_COMPACT,
@@ -68,6 +70,7 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for exist
     routing_for,
     selectable_backend_values,
     selectable_backends,
+    spawn_env_policy_for,
 )
 
 __all__ = [
@@ -94,7 +97,9 @@ __all__ = [
     "ACP_BACKEND_CODEX",
     "ACP_BACKEND_KAS",
     "ACP_BACKEND_KIRO",
+    "ACP_BACKEND_OPENCODE",
     "ACP_BACKEND_PERMISSION_CONFIG",
+    "ACP_BACKEND_SPAWN_ENV_POLICY",
     "ACP_BACKEND_ROUTING",
     "BASELINE_SELECTABLE_BACKENDS",
     "GOVERNANCE_FLOOR_BACKEND",
@@ -110,4 +115,5 @@ __all__ = [
     "routing_for",
     "selectable_backend_values",
     "selectable_backends",
+    "spawn_env_policy_for",
 ]

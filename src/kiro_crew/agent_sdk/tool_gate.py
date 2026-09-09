@@ -36,6 +36,12 @@ stripped, so the precondition this mechanism would need is not established.
 ``routing_verdict`` reports that honestly as INDETERMINATE -- what is scoped is
 whether a non-ROUTED verdict REFUSES, not whether it is told truthfully. Widening the scope
 means implementing a mechanism, not editing an allowlist.
+
+``SPAWN_ENV`` (opencode) is declared-but-unenforced in the same sense, and the
+gap is narrower: the client sets the policy on the child environment, the harness
+prints its resolved permission block on ``opencode debug config``, so the read-back
+is a command to run rather than a feature to build. It joins ``ENFORCED_ROUTINGS``
+when that read-back and the project-plugins refusal exist -- not before.
 """
 
 from __future__ import annotations
@@ -47,9 +53,11 @@ from pathlib import PurePosixPath
 
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE,
     Routing,
     permission_config_for,
     routing_for,
+    spawn_env_policy_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +82,7 @@ UNENFORCED_CONTROLS = (
 #: login``-style advice aimed at a different harness.
 _LABELS: dict = {
     ACP_BACKEND_CODEX: "OpenAI Codex",
+    ACP_BACKEND_OPENCODE: "OpenCode",
 }
 
 #: The credential store each enforced harness must still be able to read.
@@ -336,6 +345,28 @@ def routing_verdict(backend: str) -> tuple:
             Verdict.INDETERMINATE,
             "this core seeds the harness's permission settings only into a file it "
             "owns, and nothing reads back whether they took effect",
+        )
+
+    if routing is Routing.SPAWN_ENV:
+        if not spawn_env_policy_for(backend):
+            # Declaring the mechanism with nothing to set is a registration bug,
+            # and it must not read as anything but indeterminate.
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares spawn-env routing but names no environment policy",
+            )
+        # Declared, not enforced. The client DOES set the policy on the child's
+        # environment, and that layer outranks every file a repository can write;
+        # what is missing is the other half of a guarantee -- reading back the
+        # resolved permission block after spawn, and refusing a workspace whose
+        # project plugins would load repository code into the harness process
+        # past the policy. Told truthfully; SPAWN_ENV is outside ENFORCED_ROUTINGS
+        # until both exist.
+        return (
+            Verdict.INDETERMINATE,
+            "this core sets the harness's permission policy on the child environment "
+            "but does not yet read back the resolved policy or refuse a workspace "
+            "carrying project plugins",
         )
 
     return (

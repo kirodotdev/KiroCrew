@@ -51,26 +51,32 @@ without crossing it.
 
 ## Stage 2 — an explicit decision for every capability set
 
-There are fifteen sets. **"Inherited the default" is not a decision** — a
+There are eighteen sets. **"Inherited the default" is not a decision** — a
 capability is granted by opt-in membership, never by negation (H6), so a set you
 do not think about is a set you have silently opted out of. That is usually
 right, and it must still be deliberate, because the review lane and the tests
 both read the membership as a claim. `ACP_BACKENDS_KNOWN` is not one of them: it
-is the membership floor, not a capability.
+is the membership floor, not a capability. The count is checked against the
+module, not against this page: `test_every_capability_set_has_a_disposition_row`
+fails when a set exists without a row in the module docstring's disposition
+table, so a set missing from the table below is a doc bug, not a hidden one.
 
 | Set | Grants |
 |---|---|
 | `ACP_BACKENDS_SESSION_SHARING` | One process may serve several sessions. Wrong membership hands a second session to a process that cannot hold it. |
 | `ACP_BACKENDS_STEER` | The `_session/steer` extension. A steer sent to a non-implementer answers `-32601`. |
 | `ACP_BACKENDS_INTERNAL_SANDBOX` | The harness sandboxes itself, so Kiro Crew's own wrapper stands down. Security-relevant: wrong membership hands isolation to a layer that never starts (H7). |
+| `ACP_BACKENDS_POD_HOME_REMAP` | A pod-spawned child has `$HOME` relocated onto the pod tree so its `$HOME`-derived credential artifacts stay pod-scoped. Its own set despite matching the sandbox set's membership today: "carries its own sandbox" and "keeps credentials under `$HOME`" are different questions. |
 | `ACP_BACKENDS_ACP_RUNTIME` | Driven through `AcpRuntime` rather than its own spawn branch. |
 | `ACP_BACKENDS_KIRO_IDENTITY_STORE` | Reads Kiro's identity/credential store. |
+| `ACP_BACKENDS_HOST_AUTH_CALLBACK` | The child may ask this host for an access token over `_kiro/auth/getAccessToken`, answered from Crew's own vault. Membership is what authorizes handing a credential to a child at all. |
 | `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` | Model switching lands as a config option rather than a protocol call. |
 | `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION` | Reasoning-effort push, same channel shape. |
 | `ACP_BACKENDS_KIRO_SLASH_COMMANDS` | Receives `_kiro.dev/commands/execute`, **and** gets the workspace `cli.json` overlay written for it. Membership decides both, so a non-member must not collect an overlay it never reads and the membership-gated clear can never remove. |
 | `ACP_BACKENDS_SESSION_MCP_ARRAY` | The harness reads its MCP surface from the `session/new` array rather than from Crew's agent spec. A non-member that is added here gets an empty array and works with every Crew tool silently absent. |
 | `ACP_BACKENDS_MEMBER_DISPATCH` | Crew's member-dispatch tools are mounted into a channel-member session, with the auto-approve grant that goes with them. A harness with no per-session mount to ride is excluded, which withholds only the extra grant. |
 | `ACP_BACKENDS_COMPACT` | The manual `/compact` entry points are offered. A non-member refuses the manual command up front rather than stranding the status waiter on a harness that emits no compaction status of its own. |
+| `ACP_BACKENDS_INLINE_COMPACTION` | A manual `/compact` finishes inside the `session/prompt` turn, so the turn's terminal frame is the done signal. A strict subset of `ACP_BACKENDS_COMPACT`; awaiting a member's status strands the waiter, telling a non-member it is done leaves the command unacknowledged. |
 | `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` | The advertised-model cache is fed on capture and the stored id is folded onto the served spelling, at spawn and on a warm-pool `set_model`. For harnesses whose wire ids are already exact this is a no-op they must not take on. |
 | `ACP_BACKENDS_SEED_LOCAL_SETTINGS` | A local settings file is seeded at spawn **and re-seeded on `set_model`**, so a warm-pool claim does not leave a stale model or allowlist behind. A harness with no such file is not a member. |
 | `ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD` | The dashboard's MCP sync leaves running sessions alone after a config write, because the harness reconciles the agent file itself. Membership is version-gated per process by `mcp_hot_reload_supported`, not granted by the harness name alone. |
@@ -109,6 +115,38 @@ Constants an adapter reads *itself* from the ambient environment do not get a
 constant here. Naming one implies a forwarding that does not exist — the Codex
 seam documents exactly this asymmetry against its Claude counterpart, which *is*
 explicitly forwarded.
+
+**A native ACP harness is the short form of this stage, not an exemption from
+it.** OpenCode serves ACP itself (`opencode acp`), so there is no adapter, no
+package entry, no dependency marker and no node to resolve — `_resolve_opencode_bin`
+is one executable found on one ladder. What the stage still requires is that the
+spawn be *its own arm*: its argv, its handshake literal, and — because this is
+where a harness is made to ask — its permission mechanism. For OpenCode that
+mechanism is the child **environment** (`Routing.SPAWN_ENV`, below), set in the
+spawn arm from the leaf table `ACP_BACKEND_SPAWN_ENV_POLICY` rather than spelled at
+the call site.
+
+## Stage 3a — how the harness is made to ask
+
+Every harness declares a `Routing` in `ACP_BACKEND_ROUTING`, and the declaration
+is a security claim: Kiro Crew's gate runs only from the permission-request
+branch, so a harness that does not ask is a harness where none of the deny rules
+execute. There are now five mechanisms, and the honest one for a new harness is
+usually not the enforced one:
+
+| Routing | Meaning | Enforced? |
+|---|---|---|
+| `AGENT_SPEC` | the spawn names an agent, so asking holds by construction | needs none |
+| `SESSION_CONFIG` | `session/new` advertises an option whose value makes tools ask; verified and applied before the first prompt | **yes** — the only member of `ENFORCED_ROUTINGS` |
+| `SEEDED_SETTINGS` | a settings file Crew writes; nothing reads back whether it took | declared, not enforced |
+| `SPAWN_ENV` | variables Crew sets on the child environment, a layer no repository file outranks; read-back is a known command (`opencode debug config`) that is not yet run | declared, not enforced |
+| `UNVERIFIED` | not established | always refuses |
+
+Declaring a mechanism this core does not enforce is correct when it is true.
+What is not correct is declaring `SESSION_CONFIG` for a harness that advertises
+no options, or `UNVERIFIED` for one whose mechanism has been measured — both
+misstate the evidence, in opposite directions. Adding a mechanism to
+`ENFORCED_ROUTINGS` means implementing its verification, not editing the set.
 
 ## Stage 4 — the handshake, as your own literal
 
@@ -216,3 +254,37 @@ The lesson worth carrying: the seam is dormant for exactly one reason, that
 reason is written down where the narrowing check reads it, and closing it is a
 single stage rather than a re-litigation. That is the shape to aim for — not
 "complete or nothing", but "incomplete at a named stage".
+
+## Worked example 2: the OpenCode seam
+
+The second harness to walk this list, and the first native-ACP one. It lands
+dormant with **two** named reasons, and the measurements that decided each stage
+are worth more than the decisions, so they are recorded here in brief.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_OPENCODE`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_OPENCODE`, policy name mapped. |
+| 2 capability sets | Decided for all eighteen: **in the two tuning channels, out of the other sixteen.** `session/new` advertises `model` and `effort` config options (measured, pinned in `test/fixtures/acp_frames/opencode/`), the same evidence class the two adapters joined on; the client re-checks `supports_config_option` before sending. Every exclusion has a measured or documented reason in the module: one process per session, no Kiro extensions, an in-process permission policy rather than an OS sandbox, XDG-rooted stores rather than `$HOME`, refusals arriving as plain text, an advertised model list with no measured spelling gap. This example is also what fixed the count above from fifteen to eighteen: three sets had been added to the module without a row on this page. |
+| 3 spawn path | Done, in the short native form — one executable (`opencode-internal`, then `opencode`, or `OPENCODE_BIN`), argv `acp --cwd <workspace>`, its own arm in `_spawn`. Two things the arm does beyond argv: set the spawn-env policy, and **refuse a workspace carrying `.opencode/plugins`** — repository code that loads into the harness process on the first prompt past every flag the harness offers (measured on 1.18.15), and that no permission key reaches. |
+| 3a routing | `SPAWN_ENV`, a **new mechanism**, declared and not enforced. `OPENCODE_PERMISSION` names every permission key `ask` (a wildcard leaves unenumerated keys at the harness's own `allow` default) and outranks a project `opencode.json` — measured: a project `{"bash": {"*": "allow"}}` still asked. `OPENCODE_DISABLE_PROJECT_CONFIG=1` is mandatory, not belt-and-braces: a project agent's `permission: allow` lands *after* every environment rule and last match wins, so only removing the layer beats it. What is missing for `ENFORCED_ROUTINGS` is the read-back — `opencode debug config` prints the resolved block, so this is a command to run, not a feature to build — and the routing verdict says exactly that. |
+| 4 handshake | Done — `PROTOCOL_VERSION_OPENCODE`, integer `1` like the two adapters, its own literal. |
+| 5 install probe | **Not done.** No `_probe_opencode`; the install row reads `unknown`. First dormant reason. |
+| 6 selectability | Dormant — named in `NOT_SHIPPED_SELECTABLE` with both reasons. |
+| residual | The passive-read gap has a *different shape* here, and it is smaller. On this harness a read **is** gateable: `read: ask` produces a real `session/request_permission`, which ACP v1 was thought unable to carry. The request itself arrives with `rawInput: {}` and no path — but the `tool_call_update` before it carries `{filePath}`, and `acp/_dispatch` recovers it by `toolCallId` (the same cache built for claude's empty-then-complete pattern), so the sensitive-path block does see the path. What the OS-boundary mask would add here is defence in depth, not the primary control; it is not yet applied because the routing is unenforced. The `mode` config option (`build`/`plan`) is an agent selector, not an ask-mode, and is not a permission lever. |
+| 7 live spill | Not reached. |
+
+Two things this example adds to the list itself. A **native harness still needs
+Stage 3** — the argument "it speaks ACP, there is nothing to spawn" hides the
+permission mechanism, which for this harness lives in the spawn. And **Stage 2 must
+be re-derived from the module, not from this page**: the set count here had
+drifted, and a harness that decided "all fifteen" would have inherited three
+defaults undecided.
+
+And one about evidence. Two of this seam's capability decisions were first written
+the wrong way round, on a probe that checked `session/new` for a `modes` key and
+never looked at `configOptions`, and on reading the permission request's
+`rawInput` without the `tool_call_update` that precedes it. Both were caught by the
+**frame-replay fixture** (`test/fixtures/acp_frames/<id>/`), because a recorded
+turn replayed through the real dispatch layer shows what the gate actually
+receives, where a bespoke probe shows what its author thought to ask. Record the
+corpus before deciding Stage 2, not after.

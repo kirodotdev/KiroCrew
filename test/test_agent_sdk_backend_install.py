@@ -574,7 +574,7 @@ class TestEndpointPayloadShape:
         assert response.status == 200
 
         rows = json.loads(response.text or "{}")["backends"]
-        assert [r["policy_id"] for r in rows] == ["claude", "codex", "kas", "kiro"]
+        assert [r["policy_id"] for r in rows] == ["claude", "codex", "kas", "kiro", "opencode"]
         for row in rows:
             assert set(row) == {
                 "id",
@@ -616,6 +616,16 @@ class TestEndpointPayloadShape:
         # ``selectable`` stays False here because this test PINS the live enum to
         # ``["", "kas"]`` above; it asserts the payload shape, not the registry.
         assert by_policy["codex"]["selectable"] is False
+        # opencode is the state codex was in before its probe landed: known, so it
+        # gets a row -- the endpoint lists every id the build can spell -- but with
+        # no entry in ``_PROBES`` the row can only read ``unknown`` and must name
+        # nothing to install. That is exactly why it is dormant rather than offered
+        # (NOT_SHIPPED_SELECTABLE), and this assertion is the one that flips when
+        # ``_probe_opencode`` arrives.
+        assert by_policy["opencode"]["installed"] == "unknown"
+        assert by_policy["opencode"]["missing_components"] == []
+        assert by_policy["opencode"]["install_command"] == ""
+        assert by_policy["opencode"]["selectable"] is False
 
     def test_an_unknown_row_names_no_components(self, monkeypatch):
         """The three-state rule, enforced at the payload boundary too.

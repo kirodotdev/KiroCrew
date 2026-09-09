@@ -81,6 +81,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_MEMBER_DISPATCH,
@@ -204,6 +205,10 @@ PROTOCOL_VERSION_CLAUDE = 1
 # H10 wants the handshake stated per harness, so a divergence is a one-line edit
 # here instead of a silent downgrade of whichever harness moved first.
 PROTOCOL_VERSION_CODEX = 1
+# opencode serves ACP natively (``opencode acp``) and its 1.18.15 ``initialize``
+# answers ``protocolVersion: 1``. Its own literal for the same H10 reason as
+# codex: three harnesses at the same integer is a coincidence, not a contract.
+PROTOCOL_VERSION_OPENCODE = 1
 DEFAULT_MODEL = "auto"
 
 KIRO_CLI_BIN = "kiro-cli"
@@ -649,6 +654,46 @@ def _resolve_claude_acp_bin() -> tuple[list[str] | None, str]:
 
 _codex_acp_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
 
+# ── opencode: a native ACP server, so no adapter, no npm package, no node ──
+# ``opencode acp`` speaks ACP over stdio itself. The whole Stage-3 apparatus the
+# two adapter-backed harnesses need -- package entry, hoisted-dependency marker,
+# node resolution -- does not apply: the resolver below finds ONE executable.
+#
+# Two spellings, in order. ``opencode-internal`` is the name an enterprise
+# distribution installs the fork under (its own binary, a separate name so it can
+# sit beside the public one); ``opencode`` is the public build. An operator with
+# both gets the internal one, which is the one their policy expects.
+OPENCODE_BIN = "opencode"
+OPENCODE_BIN_INTERNAL = "opencode-internal"
+OPENCODE_SUBCMD = "acp"
+# Explicit override, one path to one executable. Spelled ``OPENCODE_BIN`` to
+# match the harness's own ``OPENCODE_*`` environment family.
+_ENV_OPENCODE_BIN = "OPENCODE_BIN"
+_opencode_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
+
+
+def _resolve_opencode_bin() -> tuple[list[str] | None, str]:
+    """Find the opencode executable and the PATH searched for it.
+
+    Deliberately SHORTER than the two adapter resolvers: there is no entry
+    script to accept and no node to pick, so the only questions are "did the
+    operator point at one?" and "which spelling is on the PATH?". Same return
+    contract as :func:`_resolve_codex_acp_bin` so ``_spawn`` treats the three
+    non-kiro harnesses alike.
+    """
+    search_path = augmented_path(os.environ.get("PATH", ""))
+
+    override = os.environ.get(_ENV_OPENCODE_BIN)
+    if override and platform_compat.is_executable_file(override):
+        return [_normalize_exe_casing(override) or override], search_path
+
+    for name in (OPENCODE_BIN_INTERNAL, OPENCODE_BIN):
+        on_path = shutil.which(name, path=search_path)
+        if on_path and platform_compat.is_executable_file(on_path):
+            return [_normalize_exe_casing(on_path) or on_path], search_path
+
+    return None, search_path
+
 
 def _resolve_codex_acp_bin() -> tuple[list[str] | None, str]:
     """Find the codex-acp Node entry script and the PATH searched for it.
@@ -700,6 +745,32 @@ def _resolve_codex_acp_bin() -> tuple[list[str] | None, str]:
             return [node_on_path, resolved], search_path
 
     return None, search_path
+
+
+# The two spellings opencode accepts for the project plugin directory. Plural is
+# the documented one; singular is kept "for backwards compatibility" by the harness,
+# so a refusal that checked only the plural would be one rename from useless.
+_OPENCODE_PLUGIN_DIRS: tuple = (
+    Path(".opencode") / "plugins",
+    Path(".opencode") / "plugin",
+)
+
+
+def _opencode_project_plugin_dir(work_dir: Path) -> Path | None:
+    """The first project plugin directory under *work_dir*, or ``None``.
+
+    A plain ``is_dir`` on each spelling, in the order the harness would find them.
+    Only the workspace root is checked, matching what ``opencode acp --cwd``
+    treats as the project; a plugin directory the harness would discover by
+    walking UP to a git root is a gap this check does not close, and the spawn
+    path says so rather than pretending otherwise. Blocking filesystem work, so
+    callers run it off the event loop.
+    """
+    for rel in _OPENCODE_PLUGIN_DIRS:
+        candidate = work_dir / rel
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def _resolve_claude_code_executable() -> str | None:
@@ -3433,6 +3504,10 @@ class AcpClient:
         return self.backend == ACP_BACKEND_CODEX
 
     @property
+    def _is_opencode(self) -> bool:
+        return self.backend == ACP_BACKEND_OPENCODE
+
+    @property
     def _model_registry_namespace(self) -> str:
         """The model_registry namespace key for this backend (``claude_code`` /
         ``acp``). A registry index selector, NOT a provider-identity check — see
@@ -3457,7 +3532,8 @@ class AcpClient:
     def _is_kiro(self) -> bool:
         """True when this client drives kiro-cli (the AcpClient default).
 
-        AcpClient serves kiro-cli, claude-agent-acp and the dormant codex seam, so
+        AcpClient serves kiro-cli, claude-agent-acp, codex-acp and the dormant
+        opencode seam, so
         this is the positive spelling of the sites that used to read
         ``not self._is_claude`` (harness-parity H5). KAS runs on AcpRuntime, not
         AcpClient, so it never reaches this property.
@@ -3654,6 +3730,28 @@ class AcpClient:
         one server, so a single bad entry costs the whole session. An edition
         overriding this must drop any entry whose transport the adapter does not
         advertise.
+        """
+        return []
+
+    def _opencode_session_mcp_servers(self) -> list:
+        """MCP server array passed to an opencode ``session/new`` / ``session/load``.
+
+        The opencode twin of :meth:`_codex_session_mcp_servers`, ``[]`` for the
+        same fail-safe reason and one measured fact more. opencode's 1.18.15
+        ``initialize`` advertises ``mcpCapabilities: {http: true, sse: true}`` and
+        NO stdio, while every server Crew would project is a stdio command; an
+        entry here would therefore name a transport the harness did not advertise,
+        which on codex costs the whole ``session/new`` and has not been measured on
+        opencode. Unlike codex this seam is DORMANT -- opencode is not in
+        ``BASELINE_SELECTABLE_BACKENDS`` -- so no public build reaches the empty
+        array today.
+
+        The pooled broker stubs still arrive through ``_pooled_mcp_servers`` for
+        every backend alike, so "unprojected" is not "absent" here either. The
+        mirrors registry records this as opencode's declared state and names the
+        two channels a projection could take (its GLOBAL config-file ``mcp`` block,
+        or HTTP); the project-level file is not one of them, because the spawn
+        path sets ``OPENCODE_DISABLE_PROJECT_CONFIG=1``.
         """
         return []
 
@@ -5074,6 +5172,51 @@ class AcpClient:
             # backend's own carve-out primitive. Empty for every unenforced
             # harness. Pure path projection, no disk access, so no thread hop.
             adapter_expose = acp_tool_gate.adapter_expose_files(self.backend)
+        elif self._is_opencode:
+            # DORMANT: not in BASELINE_SELECTABLE_BACKENDS, so no public build
+            # reaches this arm today; the spawn path is complete regardless
+            # (harness-onboarding.md, "a dormant harness is not a stub"). opencode
+            # serves ACP itself, so the argv is the executable plus the ``acp``
+            # subcommand and the workspace -- no adapter, no node.
+            global _opencode_argv_cache  # noqa: PLW0603
+            if _opencode_argv_cache is _UNRESOLVED:
+                _opencode_argv_cache = await asyncio.to_thread(_resolve_opencode_bin)
+            cached_opencode_resolution = _opencode_argv_cache
+            opencode_argv, opencode_search_path = (
+                cached_opencode_resolution
+                if isinstance(cached_opencode_resolution, tuple)
+                else (None, "")
+            )
+            if not isinstance(opencode_argv, list) or not opencode_argv:
+                raise AcpError(
+                    f"{OPENCODE_BIN_INTERNAL} or {OPENCODE_BIN} not found "
+                    f"({describe_search_path(opencode_search_path)}). Install "
+                    f"opencode, or set {_ENV_OPENCODE_BIN} to its executable."
+                )
+            argv = [*opencode_argv, OPENCODE_SUBCMD, "--cwd", self._spawn_work_dir]
+            # Refuse a workspace that carries project PLUGINS. A repository's
+            # ``.opencode/plugins/*.js`` is arbitrary code loaded into the harness
+            # process -- the same process that decides whether to send
+            # ``session/request_permission`` at all -- and on 1.18.15 it loads on
+            # the first prompt even under ``--pure`` and
+            # ``OPENCODE_DISABLE_PROJECT_CONFIG`` (both block only the startup
+            # load). No permission key governs it, so the only floor is to not
+            # start. This is NOT the SPAWN_ENV enforcement (that is the resolved-
+            # policy read-back, still unwritten); it is the one hazard the policy
+            # cannot reach, refused whether or not the routing is enforced.
+            # OFF-LOOP for the same reason as the codex preflight: it stats the
+            # workspace, and a stalled mount must not hold the gateway loop.
+            plugin_dir = await asyncio.to_thread(
+                _opencode_project_plugin_dir, Path(self._spawn_work_dir)
+            )
+            if plugin_dir is not None:
+                raise AcpError(
+                    f"refusing to start {acp_tool_gate.label_for(self.backend)} in a "
+                    f"workspace carrying project plugins ({plugin_dir}): opencode "
+                    f"loads them into its own process on the first prompt, past "
+                    f"every permission rule Kiro Crew sets. Remove the directory or "
+                    f"start the session in a workspace that does not contain it."
+                )
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -5179,6 +5322,17 @@ class AcpClient:
             env["KIROCREW_CHANNEL_ID"] = self._channel_id
         else:
             env.pop("KIROCREW_CHANNEL_ID", None)
+        if self._is_opencode:
+            # The SPAWN_ENV routing's one implemented half. The pairs come from the
+            # leaf table (``ACP_BACKEND_SPAWN_ENV_POLICY``) so the policy has one
+            # owner; they are set LAST and unconditionally -- an operator's ambient
+            # ``OPENCODE_PERMISSION`` is not an override this core honours, because
+            # a permission policy with a local off-switch is not a policy
+            # (acp_tool_gate.enforce_runtime_routing says the same about opting out).
+            # Placed after ``_extra_env`` for the same reason. The read-back that
+            # would make this ROUTED does not exist yet; see Routing.SPAWN_ENV.
+            for name, value in acp_tool_gate.spawn_env_policy_for(self.backend):
+                env[name] = value
 
         # Resolve SSH_AUTH_SOCK dynamically — the gateway's env may be stale
         # after an ssh-agent restart — and KRB5CCNAME to a FILE: ccache (the
@@ -5877,6 +6031,7 @@ class AcpClient:
             "mcpServers": [
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
                 *(self._codex_session_mcp_servers() if self._is_codex else []),
+                *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
@@ -5948,7 +6103,11 @@ class AcpClient:
         protocol_version: int | str = (
             PROTOCOL_VERSION_CLAUDE
             if self._is_claude
-            else PROTOCOL_VERSION_CODEX if self._is_codex else PROTOCOL_VERSION
+            else (
+                PROTOCOL_VERSION_CODEX
+                if self._is_codex
+                else PROTOCOL_VERSION_OPENCODE if self._is_opencode else PROTOCOL_VERSION
+            )
         )
         init_id = await self._send_request(
             METHOD_INITIALIZE,
@@ -6013,6 +6172,7 @@ class AcpClient:
                         "mcpServers": [
                             *(self._claude_session_mcp_servers() if self._is_claude else []),
                             *(self._codex_session_mcp_servers() if self._is_codex else []),
+                            *(self._opencode_session_mcp_servers() if self._is_opencode else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }

@@ -15,6 +15,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
 )
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
@@ -55,6 +56,19 @@ NO_MIRROR: dict[str, str] = {
         "when that gateway is off. Do not shorten this to 'nothing is mounted': "
         "unprojected does not mean absent. Listed here to keep the omission "
         "explained; NOT a claim that it needs no mirror"
+    ),
+    ACP_BACKEND_OPENCODE: (
+        "opencode is DORMANT (not in BASELINE_SELECTABLE_BACKENDS), so no public build "
+        "serves a session on it yet; its AcpClient._opencode_session_mcp_servers "
+        "returns [] like codex's. Two facts fix the mirror's eventual shape rather "
+        "than leave it open: its 1.18.15 initialize advertises mcpCapabilities "
+        "{http, sse} and no stdio, so a projection of Crew's stdio servers would name "
+        "a transport it did not advertise; and its own config-file `mcp` block "
+        "(type: local, command array) is the channel its documentation uses for "
+        "local servers -- but the spawn path sets OPENCODE_DISABLE_PROJECT_CONFIG=1, "
+        "so a project-level file is not a channel Crew can use either. The mirror, "
+        "when written, is a GLOBAL-config or HTTP projection. Listed here to keep "
+        "the omission explained; NOT a claim that it needs no mirror"
     ),
 }
 
