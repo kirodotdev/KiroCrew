@@ -9599,7 +9599,7 @@
         "stopped": "থামানো হয়েছে"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "ব্যাকএন্ডে সমস্যা — আবার চেষ্টা করা হচ্ছে…",
+        "backend_hiccup_retrying": "সংযোগ অস্থির — আবার চেষ্টা করা হচ্ছে…",
         "collapse_agent_list": "সাবএজেন্ট তালিকা সংকুচিত করো",
         "expand_agent_list": "সাবএজেন্ট তালিকা প্রসারিত করো",
         "more_running_normally": "আরও কয়েকটি স্বাভাবিকভাবে চলছে…",
@@ -9683,6 +9683,12 @@
         "render_escaped_whitespace_as_real_line_breaks": "এস্কেপ করা হোয়াইটস্পেস সত্যিকারের লাইন ব্রেক হিসেবে দেখাও",
         "show_the_exact_payload_escaping_preserved": "হুবহু পেলোড দেখাও, এস্কেপিং অপরিবর্তিত",
         "waiting_for_approval": "অনুমোদনের অপেক্ষায়"
+      },
+      "transientNotice": {
+        "retrying": "সংযোগ অস্থির — আবার চেষ্টা করা হচ্ছে…",
+        "resuming": "সংযোগ অস্থির — আবার শুরু করা হচ্ছে…",
+        "restored": "সংযোগ পুনরুদ্ধার হয়েছে",
+        "give_up": "সংযোগ অস্থির — আবার চেষ্টা করুন।"
       },
       "turnBlock": {
         "hide_tool_calls": "টুল কলগুলো লুকান",

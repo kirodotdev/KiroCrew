@@ -2555,6 +2555,29 @@ SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
 #: been queued, so the frontend can tell a pending retry from a terminal failure.
 TRANSIENT_RETRY_KIND = "transient_retry"
 
+#: ``meta["notice"]`` on the three `error` rows the transient-5xx ladder appends
+#: (chat_runner ``acp_error_is_transient`` branches). The row's CONTENT is the
+#: English fallback below, read verbatim by non-dashboard consumers (channel
+#: mirrors, SSE, an older frontend); the dashboard ignores it and renders
+#: localized copy keyed on this token instead
+#: (``website/src/pages/chat/transientNotice.ts``). A structured token rather
+#: than prose-matching so the wording can change on either side without the
+#: other silently falling back to raw English -- the drift class
+#: ``test_recovery_marker_parity.py`` exists for. Both sides are still
+#: hand-synced (no shared schema), so ``test_transient_notice_parity.py`` pins
+#: these values against the frontend table.
+TRANSIENT_NOTICE_META_KEY = "notice"
+TRANSIENT_NOTICE_RETRYING = "transient_retrying"
+TRANSIENT_NOTICE_RESUMING = "transient_resuming"
+TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
+
+#: English fallback text for the rows above. Plain language on purpose: the
+#: failure is an upstream model-backend 5xx the gateway is already retrying
+#: against, and neither "backend" nor "hiccup" tells a reader that.
+TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
+TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
+TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
+
 #: Row-level kind for the terminal `error` row a prompt-time MODEL ENTITLEMENT
 #: rejection produces ("Your account does not have access to model 'X'"), so
 #: the frontend can offer the fix (open the model picker / change the default

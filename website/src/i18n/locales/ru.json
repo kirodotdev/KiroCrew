@@ -9867,7 +9867,7 @@
         "stopped": "Остановлен"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "сбой бэкенда — повтор…",
+        "backend_hiccup_retrying": "соединение нестабильно — повтор…",
         "collapse_agent_list": "Свернуть список субагентов",
         "expand_agent_list": "Развернуть список субагентов",
         "more_running_normally": "ещё выполняются нормально…",
@@ -9963,6 +9963,12 @@
         "render_escaped_whitespace_as_real_line_breaks": "Отображать экранированные пробелы как настоящие переводы строк",
         "show_the_exact_payload_escaping_preserved": "Показать точные данные, экранирование сохранено",
         "waiting_for_approval": "Ожидает подтверждения"
+      },
+      "transientNotice": {
+        "retrying": "Соединение нестабильно — повторяем…",
+        "resuming": "Соединение нестабильно — продолжаем…",
+        "restored": "Соединение восстановлено",
+        "give_up": "Соединение нестабильно — повторите попытку."
       },
       "turnBlock": {
         "hide_tool_calls": "Скрыть вызовы инструментов",

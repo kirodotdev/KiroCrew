@@ -9465,7 +9465,7 @@
         "stopped": "중지됨"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "백엔드 일시 오류 — 재시도 중…",
+        "backend_hiccup_retrying": "연결 불안정 — 재시도 중…",
         "collapse_agent_list": "서브에이전트 목록 접기",
         "expand_agent_list": "서브에이전트 목록 펼치기",
         "more_running_normally": "나머지는 정상 실행 중…",
@@ -9543,6 +9543,12 @@
         "render_escaped_whitespace_as_real_line_breaks": "이스케이프된 공백을 실제 줄바꿈으로 표시",
         "show_the_exact_payload_escaping_preserved": "이스케이프를 유지한 채 정확한 페이로드 표시",
         "waiting_for_approval": "승인 대기 중"
+      },
+      "transientNotice": {
+        "retrying": "연결이 불안정합니다 — 다시 시도 중…",
+        "resuming": "연결이 불안정합니다 — 이어서 진행 중…",
+        "restored": "연결이 복구되었습니다",
+        "give_up": "연결이 불안정합니다 — 다시 시도해 주세요."
       },
       "turnBlock": {
         "hide_tool_calls": "도구 호출 숨기기",

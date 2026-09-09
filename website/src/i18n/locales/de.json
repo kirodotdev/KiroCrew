@@ -9599,7 +9599,7 @@
         "stopped": "Gestoppt"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "Backend-Aussetzer — wird wiederholt…",
+        "backend_hiccup_retrying": "Verbindung instabil — wird wiederholt…",
         "collapse_agent_list": "Subagentenliste einklappen",
         "expand_agent_list": "Subagentenliste aufklappen",
         "more_running_normally": "weitere laufen normal…",
@@ -9683,6 +9683,12 @@
         "render_escaped_whitespace_as_real_line_breaks": "Maskierte Leerzeichen als echte Zeilenumbrüche darstellen",
         "show_the_exact_payload_escaping_preserved": "Exakte Payload anzeigen, Maskierung beibehalten",
         "waiting_for_approval": "Warten auf Genehmigung"
+      },
+      "transientNotice": {
+        "retrying": "Verbindung instabil — wird erneut versucht…",
+        "resuming": "Verbindung instabil — wird fortgesetzt…",
+        "restored": "Verbindung wiederhergestellt",
+        "give_up": "Verbindung instabil — bitte erneut versuchen."
       },
       "turnBlock": {
         "hide_tool_calls": "Werkzeugaufrufe ausblenden",

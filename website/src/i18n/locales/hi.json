@@ -9599,7 +9599,7 @@
         "stopped": "रोका गया"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "बैकएंड में अड़चन — पुनः प्रयास…",
+        "backend_hiccup_retrying": "कनेक्शन अस्थिर — पुनः प्रयास…",
         "collapse_agent_list": "सब-एजेंट सूची समेटें",
         "expand_agent_list": "सब-एजेंट सूची विस्तृत करें",
         "more_running_normally": "और सामान्य रूप से चल रहे…",
@@ -9683,6 +9683,12 @@
         "render_escaped_whitespace_as_real_line_breaks": "एस्केप किए गए व्हाइटस्पेस को असली लाइन ब्रेक के रूप में रेंडर करें",
         "show_the_exact_payload_escaping_preserved": "पेलोड बिलकुल वैसा ही दिखाएँ, एस्केपिंग बनी रहेगी",
         "waiting_for_approval": "स्वीकृति की प्रतीक्षा"
+      },
+      "transientNotice": {
+        "retrying": "कनेक्शन अस्थिर है — पुनः प्रयास हो रहा है…",
+        "resuming": "कनेक्शन अस्थिर है — फिर से शुरू हो रहा है…",
+        "restored": "कनेक्शन बहाल हो गया",
+        "give_up": "कनेक्शन अस्थिर है — फिर से कोशिश करें।"
       },
       "turnBlock": {
         "hide_tool_calls": "टूल कॉल छिपाएँ",

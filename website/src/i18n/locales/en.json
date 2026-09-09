@@ -6213,7 +6213,7 @@
         "stopping_in_progress": "Stopping in progress"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "backend hiccup — retrying…",
+        "backend_hiccup_retrying": "connection unstable — retrying…",
         "more_running_normally": "more running normally…",
         "no_activity_possibly_stalled": "No activity — possibly stalled",
         "possibly_stalled_at_tool": "possibly stalled at {{tool}} — no activity",
@@ -6248,6 +6248,12 @@
         "auto": "Auto",
         "null": "null",
         "waiting_for_approval": "Waiting for approval"
+      },
+      "transientNotice": {
+        "retrying": "Connection unstable — retrying…",
+        "resuming": "Connection unstable — resuming…",
+        "restored": "Connection restored",
+        "give_up": "Connection unstable — please try again."
       },
       "userMessage": {
         "cancel": "Cancel",

@@ -9465,7 +9465,7 @@
         "stopped": "已停止"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "后端异常 — 正在重试…",
+        "backend_hiccup_retrying": "连接不稳定 — 正在重试…",
         "collapse_agent_list": "折叠子代理列表",
         "expand_agent_list": "展开子代理列表",
         "more_running_normally": "个仍在正常运行…",
@@ -9543,6 +9543,12 @@
         "render_escaped_whitespace_as_real_line_breaks": "将转义的空白字符渲染为真实换行",
         "show_the_exact_payload_escaping_preserved": "显示精确载荷，保留转义",
         "waiting_for_approval": "等待审批"
+      },
+      "transientNotice": {
+        "retrying": "连接不稳定，正在重试…",
+        "resuming": "连接不稳定，正在恢复…",
+        "restored": "连接已恢复",
+        "give_up": "连接不稳定，请重试。"
       },
       "turnBlock": {
         "hide_tool_calls": "隐藏工具调用",

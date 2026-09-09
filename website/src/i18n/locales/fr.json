@@ -9733,7 +9733,7 @@
         "stopped": "Arrêté"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "incident du backend — nouvelle tentative…",
+        "backend_hiccup_retrying": "connexion instable — nouvelle tentative…",
         "collapse_agent_list": "Réduire la liste des sous-agents",
         "expand_agent_list": "Développer la liste des sous-agents",
         "more_running_normally": "autres en cours normalement…",
@@ -9823,6 +9823,12 @@
         "render_escaped_whitespace_as_real_line_breaks": "Afficher les espaces échappés comme de vrais sauts de ligne",
         "show_the_exact_payload_escaping_preserved": "Afficher la charge utile exacte, échappement conservé",
         "waiting_for_approval": "En attente d'approbation"
+      },
+      "transientNotice": {
+        "retrying": "Connexion instable — nouvelle tentative…",
+        "resuming": "Connexion instable — reprise en cours…",
+        "restored": "Connexion rétablie",
+        "give_up": "Connexion instable — veuillez réessayer."
       },
       "turnBlock": {
         "hide_tool_calls": "Masquer les appels d’outils",

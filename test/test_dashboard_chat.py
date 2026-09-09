@@ -17831,7 +17831,7 @@ class TestRunChatTransientRetry:
         assert any("ok-result" in t for t in self._assistant_texts(slot))
         assert not any(t.startswith("❌") for t in self._err_texts(slot))
         # The transient branch fired (status surfaced) ...
-        assert any("Backend hiccup" in t for t in self._err_texts(slot))
+        assert any("Connection unstable" in t for t in self._err_texts(slot))
         # ... and the notice is TAGGED, which is the only thing telling the UI a
         # recovery is pending; without it a stale pill re-runs the queued choice.
         from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND
@@ -17839,7 +17839,7 @@ class TestRunChatTransientRetry:
         _hiccups = [
             m
             for m in slot.messages
-            if m.get("role") == "error" and "Backend hiccup" in m.get("content", "")
+            if m.get("role") == "error" and "Connection unstable" in m.get("content", "")
         ]
         assert _hiccups, "no hiccup row to inspect"
         assert all((m.get("meta") or {}).get("kind") == TRANSIENT_RETRY_KIND for m in _hiccups)
@@ -17893,7 +17893,7 @@ class TestRunChatTransientRetry:
 
         assert call_count == 2  # one post-token retry
         # The recovery notice surfaced and no ❌ error was raised.
-        assert any("Backend hiccup" in t for t in self._err_texts(slot))
+        assert any("Connection unstable" in t for t in self._err_texts(slot))
         assert not any(t.startswith("❌") for t in self._err_texts(slot))
         # APPEND-ONLY: the partial is PRESERVED as a finalized assistant message,
         # AND the continued retry answer is appended below it. Both are present;
@@ -17966,7 +17966,7 @@ class TestRunChatTransientRetry:
         assert not any(m.get("role") == "chunk" for m in slot.messages)
         # The retry notice is shown (append-only: partial + notice regardless of
         # eligibility); no ❌ terminal error is raised here.
-        assert any("Backend hiccup" in t for t in self._err_texts(slot))
+        assert any("Connection unstable" in t for t in self._err_texts(slot))
         assert not any(t.startswith("❌") for t in self._err_texts(slot))
         # No chat_stream_reset broadcast — that event was removed entirely.
         assert not any(
@@ -18025,7 +18025,7 @@ class TestRunChatTransientRetry:
 
         assert call_count == 2  # post-tool transient now RECOVERS via continue
         # Recovery notice surfaced, no ❌ terminal error.
-        assert any("Backend hiccup" in t for t in self._err_texts(slot))
+        assert any("Connection unstable" in t for t in self._err_texts(slot))
         assert not any(t.startswith("❌") for t in self._err_texts(slot))
         # The partial text is preserved and the continued answer appended below.
         assert any("working" in t for t in self._assistant_texts(slot)), "partial must be preserved"
@@ -18073,6 +18073,24 @@ class TestRunChatTransientRetry:
 
         # Allowance untouched — the suppressed path never enqueued a recovery.
         assert slot._posttoken_retry_used is False
+        # And the row says so: nothing resumes, so it is the TERMINAL notice
+        # (give-up text + token, no retry kind) — never a pending "resuming…"
+        # the dashboard would draw as a soft notice with no way to continue.
+        from kiro_crew.dashboard.chat_utils import (
+            TRANSIENT_GIVE_UP_TEXT,
+            TRANSIENT_NOTICE_GIVE_UP,
+            TRANSIENT_RETRY_KIND,
+        )
+
+        _terminal = [
+            m
+            for m in slot.messages
+            if m.get("role") == "error" and "Connection unstable" in m.get("content", "")
+        ]
+        assert len(_terminal) == 1
+        assert _terminal[0]["content"] == TRANSIENT_GIVE_UP_TEXT
+        assert _terminal[0]["meta"].get("notice") == TRANSIENT_NOTICE_GIVE_UP
+        assert _terminal[0]["meta"].get("kind") != TRANSIENT_RETRY_KIND
 
         # ── Turn 2: Stop cleared → a genuine turn recovers once. ──
         call_count = 0
@@ -18171,7 +18189,7 @@ class TestRunChatTransientRetry:
         assert call_count == 1  # fail-fast, no retry
         assert slot._transient_5xx_retries == 0
         assert any(t.startswith("❌") for t in self._err_texts(slot))
-        assert not any("Backend hiccup" in t for t in self._err_texts(slot))
+        assert not any("Connection unstable" in t for t in self._err_texts(slot))
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -18272,7 +18290,7 @@ class TestRunChatTransientRetry:
         tail = slot.messages[n_before:]
         tail_errs = [m["content"] for m in tail if m.get("role") == "error"]
         tail_answers = [m["content"] for m in tail if m.get("role") == "assistant"]
-        assert any("Backend hiccup" in t for t in tail_errs)
+        assert any("Connection unstable" in t for t in tail_errs)
         assert not any(t.startswith("❌") for t in tail_errs)
         assert any("ok-result" in t for t in tail_answers)
         # Completed cycle → budget back to 0 via the happy-path reset.
@@ -18737,7 +18755,7 @@ class TestRunChatTransientRetry:
         # Recovered cleanly on the live session (no reset, no ❌).
         assert any("ok-result" in t for t in self._assistant_texts(slot))
         assert not any(t.startswith("❌") for t in self._err_texts(slot))
-        assert any("Backend hiccup" in t for t in self._err_texts(slot))
+        assert any("Connection unstable" in t for t in self._err_texts(slot))
         state.sessions.reset.assert_not_awaited()
         assert slot._transient_5xx_retries == 0
 

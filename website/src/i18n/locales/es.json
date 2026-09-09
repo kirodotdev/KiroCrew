@@ -9733,7 +9733,7 @@
         "stopped": "Detenido"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "problema del backend — reintentando…",
+        "backend_hiccup_retrying": "conexión inestable — reintentando…",
         "collapse_agent_list": "Contraer la lista de subagentes",
         "expand_agent_list": "Expandir la lista de subagentes",
         "more_running_normally": "más en ejecución normal…",
@@ -9823,6 +9823,12 @@
         "render_escaped_whitespace_as_real_line_breaks": "Mostrar los espacios escapados como saltos de línea reales",
         "show_the_exact_payload_escaping_preserved": "Mostrar el contenido exacto, con los escapes conservados",
         "waiting_for_approval": "Esperando aprobación"
+      },
+      "transientNotice": {
+        "retrying": "Conexión inestable — reintentando…",
+        "resuming": "Conexión inestable — reanudando…",
+        "restored": "Conexión restablecida",
+        "give_up": "Conexión inestable — inténtalo de nuevo."
       },
       "turnBlock": {
         "hide_tool_calls": "Ocultar llamadas a herramientas",

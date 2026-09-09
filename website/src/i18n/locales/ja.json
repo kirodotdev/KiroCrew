@@ -9465,7 +9465,7 @@
         "stopped": "停止"
       },
       "subagentProgressBar": {
-        "backend_hiccup_retrying": "バックエンドの一時的な問題 — 再試行中…",
+        "backend_hiccup_retrying": "接続が不安定 — 再試行中…",
         "collapse_agent_list": "サブエージェント一覧を折りたたむ",
         "expand_agent_list": "サブエージェント一覧を展開",
         "more_running_normally": "ほかは正常に実行中…",
@@ -9543,6 +9543,12 @@
         "render_escaped_whitespace_as_real_line_breaks": "エスケープされた空白を実際の改行として表示",
         "show_the_exact_payload_escaping_preserved": "エスケープを維持して正確なペイロードを表示",
         "waiting_for_approval": "承認待ち"
+      },
+      "transientNotice": {
+        "retrying": "接続が不安定です — 再試行中…",
+        "resuming": "接続が不安定です — 再開中…",
+        "restored": "接続が回復しました",
+        "give_up": "接続が不安定です — もう一度お試しください。"
       },
       "turnBlock": {
         "hide_tool_calls": "ツール呼び出しを非表示",
