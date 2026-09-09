@@ -789,6 +789,30 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
     return HookManager(scoped)
 
 
+_NO_RESPONSE = "_No response._"
+
+
+def _bare_tool_name(title: str) -> str:
+    """``Running: @server/Tool`` / ``mcp__server__Tool`` / ``Tool`` -> ``Tool``.
+
+    Same wire forms ``_is_heartbeat_safe_tool`` unwraps; kept separate
+    because that helper answers an allowlist question and this one only
+    needs the name.
+    """
+    name = (title or "").strip()
+    for prefix in _HEARTBEAT_STATUS_PREFIXES:
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        if len(parts) == 3:
+            name = parts[2]
+    if name.startswith("@") and "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    return name.strip()
+
+
 class _GateTally:
     """Tool-gate outcomes accumulated over one cron run.
 
@@ -808,14 +832,45 @@ class _GateTally:
         self.refused: list[str] = []
         self.approved = 0
         self.unresolved = 0
+        # An approved call whose bare tool name is ``send_message``. Titles
+        # arrive as ``Running: @server/send_message`` (kiro-cli) or
+        # ``mcp__server__send_message`` (ACP); ``_bare_tool_name`` strips
+        # either wrapper so the comparison is on the name alone.
+        self.delivered = False
 
     def note(self, title: str, approved: bool, security_blocked: bool) -> None:
         if approved:
             self.approved += 1
+            if _bare_tool_name(title) == "send_message":
+                self.delivered = True
         elif security_blocked:
             self.refused.append(title)
         else:
             self.unresolved += 1
+
+    def empty_reply_placeholder(self) -> str:
+        """Row text for a turn that returned no prose.
+
+        A silent cron is told to reply with nothing and deliver through
+        ``send_message``, so an empty reply is its normal shape -- but it is
+        also the shape of a turn that died before its first tool call. The
+        tally tells them apart: approved tool calls mean work happened, and a
+        ``send_message`` among them means a delivery was attempted. Attempted,
+        not confirmed: ``on_tool_gate`` fires at the permission decision and
+        never sees the tool's result, so the text does not claim the message
+        arrived.
+        """
+        if self.delivered:
+            return (
+                f"_Silent run completed -- delivery attempted via send_message"
+                f" ({self.approved} tool call{'s' if self.approved != 1 else ''} ran)._"
+            )
+        if self.approved:
+            return (
+                f"_Completed with no reply text -- {self.approved} tool call"
+                f"{'s' if self.approved != 1 else ''} ran._"
+            )
+        return _NO_RESPONSE
 
     @property
     def all_blocked(self) -> bool:
@@ -4812,7 +4867,7 @@ class GatewayOrchestrator:
                             fallback_models=configured_fallback_chain(),
                         )
                         if not result_text:
-                            result_text = "_No response._"
+                            result_text = _gate.empty_reply_placeholder()
                         result_text = _annotate_model_fallback(result_text, client)
                         logger.info("Cron '%s': agent '%s' completed", job.name, agent)
 
@@ -4952,7 +5007,7 @@ class GatewayOrchestrator:
                 )
 
                 if not result_text:
-                    result_text = "_No response._"
+                    result_text = _gate.empty_reply_placeholder()
 
                 if _model_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
