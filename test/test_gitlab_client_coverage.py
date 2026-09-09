@@ -460,8 +460,22 @@ def test_glab_api_sends_a_body_on_stdin_with_a_method(route):
         "projects/g%2Fp/issues/7", host="gitlab.com", method="PUT", body={"state_event": "close"}
     )
     call = router.calls[0]
-    assert call["argv"][3:] == ["--method", "PUT", "--input", "-"]
+    assert call["argv"][3:] == [
+        "--method",
+        "PUT",
+        "--header",
+        "Content-Type: application/json",
+        "--input",
+        "-",
+    ]
     assert json.loads(call["input"]) == {"state_event": "close"}
+
+
+def test_glab_api_sends_no_content_type_header_without_a_body(route):
+    router = route([("user", {"username": "u"})])
+    gl._glab_api("user", host="gitlab.com")
+    argv = router.calls[0]["argv"]
+    assert "--header" not in argv and "--input" not in argv
 
 
 def test_glab_api_rejects_unparseable_output(route):
