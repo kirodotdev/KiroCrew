@@ -1295,14 +1295,15 @@ describe('ChatInput', () => {
   })
 
   describe('split send button while running (steer default)', () => {
-    const runningProps = () => ({
+    const runningProps = (overrides: Record<string, unknown> = {}) => ({
       ...defaultProps,
       value: 'more',
       isRunning: true,
       canSteer: true,
       onStop: vi.fn(),
       onSend: vi.fn(),
-      onSteer: vi.fn(),
+      onSteer: vi.fn() as (() => void) | undefined,
+      ...overrides,
     })
 
     it('renders Steer as the default main action with a dropdown caret', () => {
@@ -1325,6 +1326,65 @@ describe('ChatInput', () => {
       fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
       expect(p.onSteer).toHaveBeenCalledTimes(1)
       expect(p.onSend).not.toHaveBeenCalled()
+    })
+
+    // ⌘↩ / Ctrl+Enter while the split is showing performs the OTHER action for
+    // that one send (#4608, the Claude Code / Codex gesture).
+    it('Ctrl+Enter queues (onSend) while running in steer mode — the one-off flip', () => {
+      const p = runningProps()
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter', ctrlKey: true })
+      expect(p.onSend).toHaveBeenCalledTimes(1)
+      expect(p.onSteer).not.toHaveBeenCalled()
+      // The flip is one-shot: the next plain Enter is back to the split's mode.
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(p.onSteer).toHaveBeenCalledTimes(1)
+    })
+
+    it('Ctrl+Enter steers while running in queue mode', () => {
+      safeSetItem('mc-busy-send-mode:no-slot', 'queue')
+      const p = runningProps()
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter', metaKey: true })
+      expect(p.onSteer).toHaveBeenCalledTimes(1)
+      expect(p.onSend).not.toHaveBeenCalled()
+    })
+
+    it('Ctrl+Enter is a plain send when the composer is idle (unchanged behaviour)', () => {
+      const p = runningProps({ isRunning: false })
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter', ctrlKey: true })
+      expect(p.onSend).toHaveBeenCalledTimes(1)
+      expect(p.onSteer).not.toHaveBeenCalled()
+    })
+
+    it('Ctrl+Enter cannot steer a slot with no steer path — it queues like Enter', () => {
+      const p = runningProps({ canSteer: false, onSteer: undefined })
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter', ctrlKey: true })
+      expect(p.onSend).toHaveBeenCalledTimes(1)
+    })
+
+    it('in ctrl-enter send mode the modified Enter is the send key, not a flip', () => {
+      const p = runningProps({ sendOnEnter: 'ctrl-enter' as const })
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter', ctrlKey: true })
+      expect(p.onSteer).toHaveBeenCalledTimes(1) // split mode (steer), no flip
+      expect(p.onSend).not.toHaveBeenCalled()
+    })
+
+    it('clicking the split main button never flips (a MouseEvent is not `true`)', () => {
+      const p = runningProps()
+      renderWithProviders(<ChatInput {...p} />)
+      fireEvent.click(screen.getByTestId('busy-send-button'))
+      expect(p.onSteer).toHaveBeenCalledTimes(1)
+      expect(p.onSend).not.toHaveBeenCalled()
+    })
+
+    it('the split menu names the flip chord', () => {
+      renderWithProviders(<ChatInput {...runningProps()} />)
+      fireEvent.click(screen.getByTestId('busy-send-caret'))
+      expect(screen.getByText(/queues this message instead/)).toBeInTheDocument()
     })
 
     it('dropdown switches to Queue — main button and Enter then queue, choice persists', () => {
@@ -1769,5 +1829,22 @@ describe('ChatInput composer paste-token expand', () => {
     ta.setSelectionRange(2, 2)
     fireEvent.click(ta, { detail: 2 })
     expect(ta.value).toBe(block.content) // expanded inline
+  })
+})
+
+describe('ChatInput — busy split menu hint is mode-gated', () => {
+  const props = (overrides: Record<string, unknown> = {}) => ({
+    value: 'more', onChange: vi.fn(), isRunning: true, canSteer: true, onStop: vi.fn(), onSend: vi.fn(), onSteer: vi.fn(), ...overrides,
+  })
+  it('names the concrete flip for the current mode in `enter` send mode', () => {
+    safeSetItem('mc-busy-send-mode:no-slot', 'queue')
+    renderWithProviders(<ChatInput {...props()} />)
+    fireEvent.click(screen.getByTestId('busy-send-caret'))
+    expect(screen.getByText(/steers with this message instead/)).toBeInTheDocument()
+  })
+  it('shows no flip hint in ctrl-enter mode, where the chord is the send key', () => {
+    renderWithProviders(<ChatInput {...props({ sendOnEnter: 'ctrl-enter' })} />)
+    fireEvent.click(screen.getByTestId('busy-send-caret'))
+    expect(screen.queryByText(/this message instead/)).not.toBeInTheDocument()
   })
 })

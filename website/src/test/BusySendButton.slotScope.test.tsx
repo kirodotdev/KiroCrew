@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { useBusySendMode, readBusySendMode, BUSY_SEND_MODE_LS_KEY } from '../components/BusySendButton'
+import { useBusySendMode, readBusySendMode, readBusySendDefault, setBusySendDefault, BUSY_SEND_MODE_LS_KEY } from '../components/BusySendButton'
 
 /**
  * Per-slot scoping of the busy-send (Steer/Queue) preference.
@@ -89,5 +89,23 @@ describe('useBusySendMode per-slot scoping', () => {
 
     expect(stayed.result.current[0]).toBe('queue')
     expect(moved.result.current[0]).toBe('steer')
+  })
+})
+
+describe('setBusySendDefault (Settings → Chat)', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('writes the unscoped default and moves only consumers whose slot has no scoped choice', () => {
+    const inheriting = renderHook(() => useBusySendMode('slot-inherits'))
+    const chosen = renderHook(() => useBusySendMode('slot-chosen'))
+    act(() => chosen.result.current[1]('steer')) // an explicit per-slot choice
+    expect(readBusySendDefault()).toBe('steer')
+    act(() => { setBusySendDefault('queue') })
+    expect(localStorage.getItem(BUSY_SEND_MODE_LS_KEY)).toBe('queue')
+    expect(readBusySendDefault()).toBe('queue')
+    expect(inheriting.result.current[0]).toBe('queue') // followed the default live
+    expect(chosen.result.current[0]).toBe('steer')     // kept its own choice
+    // A slot mounted later without a choice also inherits it.
+    expect(readBusySendMode('slot-new')).toBe('queue')
   })
 })

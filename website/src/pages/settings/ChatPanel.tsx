@@ -9,6 +9,8 @@ import { useAvailableModels } from '../../hooks/useAvailableModels'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
+import { readBusySendDefault, setBusySendDefault, type BusySendMode } from '../../components/BusySendButton'
+import { platformShortcut } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
 
@@ -295,6 +297,12 @@ export function ChatPanel() {
   }
 
   const [localBudget, setLocalBudget] = useState('')
+  // What Enter does while the agent is working, for sessions whose split button
+  // was never touched (those keep their own per-slot choice). Persisted by
+  // BusySendButton's default writer, not by ChatConfig: the per-slot choice and
+  // the default must share one storage family or the fallback chain breaks.
+  const [busyDefault, setBusyDefaultState] = useState<BusySendMode>(() => readBusySendDefault())
+  const setBusyDefault = (m: BusySendMode) => { setBusySendDefault(m); setBusyDefaultState(m) }
   const budgetInitRef = useRef(false)
   useEffect(() => {
     if (mcQ.data && !budgetInitRef.current) {
@@ -673,6 +681,18 @@ export function ChatPanel() {
             options={['enter', 'ctrl-enter', 'enter-ctrl-newline']}
             optionLabels={[i18nT('pages.settings.chatPanel.enter_sends'), i18nT('pages.settings.chatPanel.mod_enter_sends', { mod: isMac ? '⌘' : 'Ctrl' }), i18nT('pages.settings.chatPanel.enter_sends_mod_enter_newline', { mod: isMac ? '⌘' : 'Ctrl' })]}
             onChange={v => setChat('sendOnEnter', v as SendMode)}
+          />
+          <SettingsButtonGroup
+            label={i18nT('pages.settings.chatPanel.what_enter_does_while_the_agent_is_working')}
+            description={chatCfg.sendOnEnter === 'enter'
+              ? i18nT('pages.settings.chatPanel.busy_alt_action_desc', { chord: platformShortcut('Cmd+Enter') })
+              : i18nT('pages.settings.chatPanel.busy_alt_action_desc_no_chord')}
+            value={busyDefault}
+            options={[
+              { value: 'steer', label: i18nT('components.chatInput.steer') },
+              { value: 'queue', label: i18nT('components.chatInput.queue') },
+            ]}
+            onChange={v => setBusyDefault(v as BusySendMode)}
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.quick_send')} description={i18nT('pages.settings.chatPanel.click_a_suggested_reply_to_send_it_instantly', { mod: isMac ? '⇧' : 'Shift' })} checked={dashCfg.quick_send} onChange={v => setDash({ quick_send: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.merge_queued_messages')} description={i18nT('pages.settings.chatPanel.combine_follow_up_messages_into_a_single_labeled')} checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />

@@ -1174,6 +1174,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.what-enter-does-while-the-agent-is-working",
+    "label": "What Enter does while the agent is working",
+    "labelKey": "pages.settings.chatPanel.what_enter_does_while_the_agent_is_working",
+    "tab": "chat",
+    "type": "buttonGroup",
+    "occurrence": 1
+  },
+  {
     "id": "chat.widget-density",
     "label": "Widget Density",
     "labelKey": "pages.settings.chatPanel.widget_density",

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { ArrowUpFromLine, Check, ChevronDown, Target } from 'lucide-react'
 import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { platformShortcut } from '../utils/platform'
 
 import { i18nT } from '../i18n/t'
 
@@ -59,6 +60,28 @@ export function readBusySendMode(slotKey?: string | null): BusySendMode {
   return safeGetItem(BUSY_SEND_MODE_LS_KEY) === 'queue' ? 'queue' : 'steer'
 }
 
+/**
+ * The GLOBAL default — what Enter does while busy in a session whose split
+ * button was never touched. Settings → Chat writes it; `readBusySendMode` falls
+ * back to it for every slot without a scoped choice. Stored under the legacy
+ * unscoped key, which is exactly the inheritance the migration comment above
+ * describes: sessions that made their own choice keep it, everyone else follows.
+ */
+export function readBusySendDefault(): BusySendMode {
+  return safeGetItem(BUSY_SEND_MODE_LS_KEY) === 'queue' ? 'queue' : 'steer'
+}
+
+export function setBusySendDefault(mode: BusySendMode): boolean {
+  const ok = safeSetItem(BUSY_SEND_MODE_LS_KEY, mode)
+  // Mounted composers whose slot has NO scoped choice inherit the default, so
+  // they must move now, not on their next mount; scoped slots are untouched.
+  for (const [storageKey, subs] of modeListeners) {
+    if (safeGetItem(storageKey) !== null) continue
+    for (const fn of subs) fn(mode)
+  }
+  return ok
+}
+
 /** Live subscribers to the persisted mode, grouped by storage key. "What does
  *  Enter do while busy" is a PER-SLOT preference: the composers sharing one slot
  *  (main chat and its side panel) must move together the moment it changes —
@@ -113,12 +136,20 @@ export default function BusySendButton({
   onModeChange,
   onFire,
   disabled = false,
+  altChordAvailable = false,
 }: {
   mode: BusySendMode
   onModeChange: (m: BusySendMode) => void
   /** Fire the currently selected mode with the composer's text. */
   onFire: () => void
   disabled?: boolean
+  /**
+   * Whether ⌘↩ / Ctrl+Enter currently performs the OTHER action for one send.
+   * Only the host knows (it depends on the send-key mode), and the menu must not
+   * promise a chord that in `ctrl-enter` mode sends with the CURRENT action and
+   * in `enter-ctrl-newline` inserts a newline.
+   */
+  altChordAvailable?: boolean
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuRect, setMenuRect] = useState<DOMRect | null>(null)
@@ -223,6 +254,18 @@ export default function BusySendButton({
               {mode === m && <Check size={14} className="text-accent shrink-0" />}
             </button>
           ))}
+          {/* The keyboard gesture for a one-off flip, so the menu is not the only
+              way to reach the other action — named concretely (queue vs steer)
+              for the CURRENT mode, and only when the host says the chord is live.
+              A div (block) so the hint is its own text run, not glued onto the
+              last option's description. */}
+          {altChordAvailable && (
+            <div className="text-[11px] text-muted px-2 pt-1.5 pb-1 border-t border-border mt-1">
+              {mode === 'steer'
+                ? i18nT('components.chatInput.alt_action_hint_queues', { chord: platformShortcut('Cmd+Enter') })
+                : i18nT('components.chatInput.alt_action_hint_steers', { chord: platformShortcut('Cmd+Enter') })}
+            </div>
+          )}
         </div>,
         document.body
       )}

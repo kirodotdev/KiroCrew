@@ -1496,8 +1496,18 @@ function ChatInput({
   // not stopping, on a steer-capable slot, and the user hasn't switched the
   // split button to Queue. Everywhere else the composer falls back to onSend
   // (normal send, or server-side queue while busy).
-  const steerActive = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer && busySendMode === 'steer'
-  const fireComposer = useCallback(() => {
+  const busyChoiceAvailable = isRunning && (!stopState || stopState === 'idle') && !!canSteer && !!onSteer
+  const steerActive = busyChoiceAvailable && busySendMode === 'steer'
+  /**
+   * Fire the composer. `alternate === true` performs the OTHER busy action for
+   * this one send — queue when the split button says steer, steer when it says
+   * queue — the ⌘↩ / Ctrl+Enter gesture Claude Code and Codex users expect
+   * (#4608). Strictly `=== true`: this callback is also wired straight to
+   * `onClick`, which hands it a MouseEvent, and an event must read as "default",
+   * never as "flip". Outside the busy split (idle, stopping, no steer path) the
+   * flag is meaningless and a normal send happens.
+   */
+  const fireComposer = useCallback((alternate?: unknown) => {
     if (disabled) return
     // A batch dictation is still transcribing: block the send so the pending
     // transcript isn't left behind. Otherwise Enter/Send fires the current draft
@@ -1506,9 +1516,11 @@ function ChatInput({
     // sends the complete text. Covers both Enter (handleKeyDown) and the Send
     // button, since both route through here.
     if (voiceTranscribing) return
-    if (steerActive && onSteer) onSteer()
+    const flip = alternate === true && busyChoiceAvailable
+    const steerNow = flip ? !steerActive : steerActive
+    if (steerNow && onSteer) onSteer()
     else onSend()
-  }, [disabled, voiceTranscribing, steerActive, onSteer, onSend])
+  }, [disabled, voiceTranscribing, busyChoiceAvailable, steerActive, onSteer, onSend])
   const sendFollowUp = useCallback((text?: string, sourceKeyAtClick?: string | null) => {
     if (!disabled) onFollowUpSend?.(text, sourceKeyAtClick)
   }, [disabled, onFollowUpSend])
@@ -2714,7 +2726,15 @@ function ChatInput({
       // steer (default) acts on the text now; queue defers it.
       if (!ime.claimEnter(e)) return
       if (optimizingRef.current) return
-      if (connected) fireComposer()
+      // ⌘↩ / Ctrl+Enter while the busy split is showing performs the OTHER
+      // action for this send (steer ↔ queue) — the Claude Code / Codex gesture.
+      // Only in the `enter` send mode: in `ctrl-enter` the modified Enter IS the
+      // send key, and in `enter-ctrl-newline` the user gave it to newline (that
+      // branch returned above). Idle, the modified Enter is a plain send, as it
+      // always was. The flip lands in `fireComposer`, which ignores it whenever
+      // the split is not available, so this cannot steer a non-steerable slot.
+      const alternate = sendOnEnter === 'enter' && (e.metaKey || e.ctrlKey)
+      if (connected) fireComposer(alternate)
       return
     }
     // Prompt history: ↑/↓ cycles through prior user messages.
@@ -4343,6 +4363,7 @@ function ChatInput({
                     onModeChange={setBusySendMode}
                     onFire={fireComposer}
                     disabled={disabled}
+                    altChordAvailable={sendOnEnter === 'enter'}
                   />
                 ) : (
                   <button className="w-8 h-8 rounded-full bg-warn text-warn-fg border-none flex items-center justify-center cursor-pointer hover:bg-warn/80 disabled:opacity-30 disabled:cursor-not-allowed transition-all" onClick={fireComposer} disabled={disabled} title={i18nT('components.chatInput.queue_message')} aria-label={i18nT('components.chatInput.queue_message')}>
@@ -4362,6 +4383,7 @@ function ChatInput({
                   onModeChange={setBusySendMode}
                   onFire={fireComposer}
                   disabled
+                  altChordAvailable={sendOnEnter === 'enter'}
                 />
               )
             ) : (<>
