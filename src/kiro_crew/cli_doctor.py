@@ -1528,27 +1528,37 @@ def _doctor_sandbox(issues: list[str]) -> None:
     # Platforms with no OS-level backend to offer (Windows; macOS builds without
     # sandbox-exec) — a fact about the platform, not a fault of this install.
     # Report what that MEANS for spawns, not just that the backend is absent: with
-    # no backend the outcome is either "every agent subprocess is refused" or
-    # "every agent subprocess runs unconfined", and which one it is was the single
-    # thing this line used to leave unanswered.
+    # no backend the configured posture is either "refuse every agent subprocess"
+    # or "run them unconfined", and an operator reading this line needs to know
+    # which.
+    #
+    # Stated as the POSTURE, not as what will happen. A governance
+    # sandbox.min_level floor is resolved per spawn against the mode that spawn
+    # requested, so it is not foldable into one host-level answer — and on a
+    # governed host it makes wrap_argv refuse the very spawns a bare "they run
+    # unconfined" would promise. Each permitting branch therefore names the floor
+    # as the thing that overrides it.
     print("  backend:     ⏭  no OS-level sandbox backend on this platform")
     permitted_by = sandbox.unsandboxed_exec_permitted_by()
     if permitted_by == sandbox.UNSANDBOXED_BY_PLATFORM:
-        print("  exec:        ⚠️  agent subprocesses run WITHOUT OS-level isolation")
+        print("  exec:        ⚠️  configured to run agent subprocesses UNCONFINED")
         _print_wrapped(
             "This is the default for a platform with no backend to install: "
             "~/.aws, ~/.ssh and the rest of your home directory are readable by "
             "an agent subprocess, and only the bypassable app-level checks "
             "remain. Every such spawn is audited. To refuse them instead, set "
-            "agent.sandbox_allow_unsandboxed_exec=false; a governance "
-            "sandbox.min_level floor overrides the default fleet-wide."
+            "agent.sandbox_allow_unsandboxed_exec=false. A governance "
+            "sandbox.min_level floor overrides this and makes such spawns fail "
+            "closed, so a managed host refuses them despite this line."
         )
     elif permitted_by == sandbox.UNSANDBOXED_BY_OPERATOR:
-        print("  exec:        ⚠️  unconfined — agent.sandbox_allow_unsandboxed_exec=true")
+        print("  exec:        ⚠️  unconfined by declaration — sandbox_allow_unsandboxed_exec=true")
         _print_wrapped(
             "The operator declared this opt-in, so agent subprocesses run "
             "without OS-level isolation and every such spawn is audited. Remove "
-            "the key to fall back to this platform's default."
+            "the key to fall back to this platform's default. A governance "
+            "sandbox.min_level floor overrides the declaration and makes such "
+            "spawns fail closed."
         )
     else:
         print("  exec:        ⛔ agent subprocesses are REFUSED on this host")

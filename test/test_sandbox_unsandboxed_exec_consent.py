@@ -95,7 +95,28 @@ def _run_consent(
         path.write_text(json.dumps(result), encoding="utf-8")
         return result
 
+    def _declared_stub() -> bool:
+        """Presence of the key in either seeded file.
+
+        The step now asks the loader's shared reader rather than carrying its own
+        copy, so the seam moves here. Reading the two tmp files keeps the fixture's
+        `existing` / `overlay` arguments meaningful without pointing the real
+        loader's module-level paths at them.
+        """
+        for path in (cfg_file, local_file):
+            if not path.exists():
+                continue
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            agent = doc.get("agent") if isinstance(doc, dict) else None
+            if isinstance(agent, dict) and "sandbox_allow_unsandboxed_exec" in agent:
+                return True
+        return False
+
     monkeypatch.setattr(cli_setup, "unavailable_kind", lambda *a, **k: kind)
+    monkeypatch.setattr(cli_setup, "unsandboxed_exec_declared", _declared_stub)
     monkeypatch.setattr(
         cli_setup, "unsandboxed_exec_platform_default", lambda *a, **k: platform_allows
     )
@@ -103,7 +124,6 @@ def _run_consent(
     monkeypatch.setattr(cli_setup.sys.stdout, "isatty", lambda: tty, raising=False)
     monkeypatch.setattr(cli_setup, "sel", lambda: _FakeSel())
     monkeypatch.setattr(cli_setup, "config_path", lambda: cfg_file)
-    monkeypatch.setattr(cli_setup, "config_local_path", lambda: local_file)
     monkeypatch.setattr(cli_setup, "update_config_locked", _locked_write)
 
     def _ask(prompt):

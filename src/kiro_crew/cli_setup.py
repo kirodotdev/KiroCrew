@@ -26,13 +26,14 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     _default_workspace_base,
     _workspace_dir_file,
-    config_local_path,
     config_path,
     env_path,
+    unsandboxed_exec_declared,
+    unsandboxed_exec_platform_default,
     update_config_locked,
 )
 from kiro_crew.constants import DATA_WARNING, MIN_NODE_MAJOR
-from kiro_crew.sandbox import unavailable_kind, unsandboxed_exec_platform_default
+from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
@@ -900,6 +901,15 @@ def _setup_sandbox_consent() -> None:
     # default -- and on a platform whose default is "allowed" the old wording
     # ("subprocesses are refused") would be simply false.
     unconfined_by_default = unsandboxed_exec_platform_default()
+    # Nothing to surface once the operator DECLARED the key, in either state, in
+    # config.json OR the config.local.json overlay that deep-merges over it — the
+    # overlay wins at load time, so ignoring it would let this step address a user
+    # who already decided. This check comes BEFORE the non-TTY notice on purpose:
+    # that notice describes the PLATFORM DEFAULT, so printing it to a host that
+    # declared the opposite would tell an operator who locked the host down that it
+    # runs unconfined.
+    if unsandboxed_exec_declared():
+        return
     # A prompt nobody can see is a hang, not consent: `kirocrew update` runs
     # setup with its output captured and stdin on DEVNULL, so a question asked
     # there is invisible and reads EOF. This guard keeps the decision at a real
@@ -921,17 +931,6 @@ def _setup_sandbox_consent() -> None:
             print("     agent.sandbox_allow_unsandboxed_exec=true by hand to opt in.\n")
         return
 
-    def _declared(path: Path) -> bool:
-        """Whether *path* explicitly sets the key, in either state."""
-        if not path.exists():
-            return False
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return False
-        agent = doc.get("agent") if isinstance(doc, dict) else None
-        return isinstance(agent, dict) and "sandbox_allow_unsandboxed_exec" in agent
-
     cfg_file = config_path()
     cfg: dict = {}
     if cfg_file.exists():
@@ -948,8 +947,6 @@ def _setup_sandbox_consent() -> None:
             print(f"  ⚠️  {cfg_file} does not contain a JSON object; skipping.\n")
             return
         cfg = loaded
-    if _declared(cfg_file) or _declared(config_local_path()):
-        return
 
     print("── Sandbox ──\n")
     if unconfined_by_default:

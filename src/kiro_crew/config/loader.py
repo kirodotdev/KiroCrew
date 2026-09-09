@@ -21,6 +21,7 @@ import os
 import re as _re
 import shutil
 import stat as _stat
+import sys
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
@@ -499,24 +500,51 @@ def config_local_path() -> Path:
     return config_dir() / "config.local.json"
 
 
+def unsandboxed_exec_platform_default() -> bool:
+    """What an UNDECLARED ``agent.sandbox_allow_unsandboxed_exec`` resolves to here.
+
+    True on Windows, where Kiro Crew has no native OS wrapper to apply — no Linux
+    user namespace, no macOS ``sandbox-exec``, and nothing installable that would
+    produce one, so fail-closing there refuses every script cron, hook, app
+    backend, MCP probe and provider CLI on the platform in perpetuity, with no
+    operator action able to satisfy the check.
+
+    False everywhere else. A backend-less Linux or macOS host is one whose backend
+    is BROKEN or one AppArmor profile away from working, so it keeps fail-closing
+    and ``sandbox``'s guidance names the profile that restores isolation; running
+    unconfined there would hide a repairable host.
+
+    Resolved HERE, into the dataclass value, rather than downstream from whether
+    the key is present. Presence cannot carry the meaning safely:
+    :meth:`KiroCrewConfig.save` publishes the whole in-memory snapshot through
+    ``to_dict()`` -> ``asdict(self.agent)``, so every full-document write (the boot
+    default-config write, CLI one-shots) materializes this key. Were the effective
+    policy keyed on presence, that write would silently turn "never decided" into a
+    declared lockdown and re-brick every Windows spawn. Resolving into the value
+    makes such a round-trip write ``true`` on Windows, which changes nothing.
+
+    A function rather than a module constant so tests can pin the verdict without
+    patching ``sys.platform`` process-wide.
+    """
+    return sys.platform == "win32"
+
+
 def unsandboxed_exec_declared() -> bool:
     """Whether the operator explicitly DECLARED ``agent.sandbox_allow_unsandboxed_exec``.
 
     Reports key PRESENCE, in either state, in ``config.json`` or the
-    ``config.local.json`` overlay that deep-merges over it. That is the one thing
-    the dataclass cannot express: a deliberate ``false`` (keep this host
-    fail-closed) and an absent key (no decision recorded, so the platform default
-    applies) both arrive at :class:`AgentConfig` as ``False``.
+    ``config.local.json`` overlay that deep-merges over it.
 
-    Read raw rather than through the validated cache precisely because the cache
-    stores the RESOLVED value, which is the distinction being recovered here.
-    Both files are consulted because the overlay wins at load time, so a decision
-    recorded only there must still count as declared — the same reason
-    ``cli_setup``'s consent step consults both before deciding whether to ask.
+    DIAGNOSTIC ONLY — it must never gate execution. The effective policy is the
+    resolved dataclass value (see :func:`unsandboxed_exec_platform_default`); this
+    exists so a message can tell "you set this to false" apart from "you never set
+    it", and so the audit event can name an operator grant rather than a platform
+    one. Because a full-document ``save()`` materializes the key, a host that never
+    answered can read as declared afterwards — acceptable for a label, and the
+    reason this must not decide anything.
 
     An unreadable or non-object document contributes nothing: a corrupt config is
-    not a declaration. The caller decides what an absent declaration means;
-    ``sandbox`` owns that policy, not this loader.
+    not a declaration.
     """
     for path in (config_path(), config_local_path()):
         try:
@@ -2875,7 +2903,10 @@ class KiroCrewConfig:
                     agent_data.get("sandbox_allow_no_isolation", False)
                 ),
                 sandbox_allow_unsandboxed_exec=bool(
-                    agent_data.get("sandbox_allow_unsandboxed_exec", False)
+                    agent_data.get(
+                        "sandbox_allow_unsandboxed_exec",
+                        unsandboxed_exec_platform_default(),
+                    )
                 ),
                 apps_allow_third_party=_safe_bool(
                     agent_data.get("apps_allow_third_party", False), False
@@ -4143,6 +4174,31 @@ class KiroCrewConfig:
 
         d = self.to_dict()
 
+        # Strip the no-backend exec permission when the operator never DECLARED it.
+        #
+        # ``sandbox_allow_unsandboxed_exec`` is the one field whose ABSENCE is
+        # load-bearing: an absent key resolves through
+        # ``unsandboxed_exec_platform_default()`` (allow where no backend can be
+        # installed, fail-closed elsewhere), and absence is also what tells
+        # ``kirocrew setup`` there is still a decision to surface and the SEL audit
+        # that the platform rather than an operator permitted the spawn. Publishing
+        # a whole-document snapshot materializes every field, so without this strip
+        # any ``save()`` — the boot default-config write, a CLI one-shot — would
+        # freeze the resolved value in as a DECLARATION: writing ``false`` on such a
+        # host refuses every agent subprocess nobody asked to refuse, and writing
+        # ``true`` fakes a consent that was never given, skipping the very prompt
+        # that makes the posture explicit.
+        #
+        # Declaration is read from disk rather than tracked in memory because that is
+        # the same question every other consumer asks
+        # (``unsandboxed_exec_declared()``), so the writer cannot disagree with the
+        # reader about one host. On a fresh install there is no file yet, which reads
+        # as undeclared and is exactly right: the document this call creates should
+        # not contain the key at all.
+        if not unsandboxed_exec_declared():
+            agent_section = d.get("agent")
+            if isinstance(agent_section, dict):
+                agent_section.pop("sandbox_allow_unsandboxed_exec", None)
         # Strip overlay-owned values so they don't leak into config.json
         local_path = config_local_path()
         if local_path.is_file():

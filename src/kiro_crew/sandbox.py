@@ -5987,73 +5987,33 @@ UNSANDBOXED_BY_OPERATOR = "operator"
 UNSANDBOXED_BY_PLATFORM = "platform"
 
 
-def unsandboxed_exec_platform_default() -> bool:
-    """Whether an UNDECLARED opt-in resolves to allowed on this platform.
-
-    True on Windows, where Kiro Crew has no native OS wrapper to apply: there is
-    no Linux user namespace and no macOS ``sandbox-exec``, and unlike a
-    backend-less Linux host there is no profile to install that would produce
-    one. Leaving the effective default fail-closed there refuses every spawn that
-    is not covered by the kiro-cli internal-sandbox delegation or the first-party
-    carve-out — MCP servers, app backends and the provider CLIs — on a platform
-    where no operator action can ever satisfy the check.
-
-    False everywhere else. A backend-less Linux or macOS host is a host whose
-    backend is BROKEN or one profile away from working, so it keeps fail-closing
-    and ``_no_backend_guidance()`` names the profile that fixes it; silently
-    running unconfined there would hide a repairable host.
-
-    A function rather than a module constant so tests can substitute the platform
-    verdict without patching ``sys.platform`` process-wide.
-
-    Note what this does NOT narrow. A permitted spawn passes through without
-    re-classifying the probe failure, and a platform grant is deliberately no
-    different from an operator opt-in there: the "a ``transient`` failure still
-    raises" rule belongs to the first-party carve-out, which requires a
-    ``no_backend`` class, and the broad permission has never consulted the class.
-    Keeping the two identical leaves one set of semantics to reason about and costs
-    nothing real — the Windows probe records ``(False, "not Linux", "")``, so a
-    Windows host never classifies ``transient``, and ``foreign_sandbox`` is
-    detectable only on macOS, where this returns False.
-    """
-    return sys.platform == "win32"
-
-
 def _allow_unsandboxed_exec() -> bool:
     """Whether execution is permitted when NO sandbox backend is available.
 
-    Name, signature and meaning are unchanged from before the platform default
-    existed — it is still the one boolean gate ``wrap_argv`` consults, and the
-    seam a test patches to pin a host as permitting or refusing. Only the BODY
-    grew: an undeclared key now resolves through
-    :func:`unsandboxed_exec_platform_default` instead of always being ``False``.
+    Name, signature and meaning are unchanged: still the one boolean gate
+    ``wrap_argv`` consults, and the seam a test patches to pin a host as permitting
+    or refusing. It remains a plain read of
+    ``agent.sandbox_allow_unsandboxed_exec``, because that field now CARRIES the
+    effective policy — :func:`~kiro_crew.config.loader
+    .unsandboxed_exec_platform_default` is resolved into it at load time, so an
+    undeclared key already reads ``True`` on a platform with no installable
+    backend and a declared ``false`` still reads ``False`` everywhere.
 
-    Resolution order, and why:
+    Deliberately not keyed on whether the operator DECLARED the key. That would
+    make a full-document ``KiroCrewConfig.save()`` — which publishes
+    ``asdict(self.agent)``, materializing every field — turn "never decided" into
+    a declared lockdown and re-brick every spawn on such a platform. Meaning has
+    to live in the value, so that writing the resolved value back changes nothing.
 
-    1. a declared ``true`` permits, on every platform;
-    2. a declared ``false`` REFUSES, and outranks the platform default — an
-       operator who wrote it chose to keep this host fail-closed, and a platform
-       default must never silently overrule a recorded decision. Telling this case
-       apart from "never decided" is what
-       :func:`~kiro_crew.config.loader.unsandboxed_exec_declared` exists for,
-       because the dataclass reports both as ``False``;
-    3. otherwise the platform decides.
-
-    An unreadable config yields ``False``: it is not known whether the operator
-    declared a deliberate ``false``, and a broken config must never be a way to
+    An unreadable config yields ``False``: a broken config must never be a way to
     obtain a LOOSER sandbox than the operator configured.
     """
     try:
-        from kiro_crew.config.loader import (  # circular import: sandbox is a low-level dep
-            KiroCrewConfig,
-            unsandboxed_exec_declared,
+        from kiro_crew.config.loader import (
+            KiroCrewConfig,  # circular import: sandbox is a low-level dep of config.loader
         )
 
-        if bool(getattr(KiroCrewConfig.load().agent, "sandbox_allow_unsandboxed_exec", False)):
-            return True
-        if unsandboxed_exec_declared():
-            return False
-        return unsandboxed_exec_platform_default()
+        return bool(getattr(KiroCrewConfig.load().agent, "sandbox_allow_unsandboxed_exec", False))
     except Exception:
         return False
 
