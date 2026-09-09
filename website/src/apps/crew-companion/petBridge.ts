@@ -12,8 +12,8 @@
  * disambiguation stay exactly as written.
  */
 import { i18nT } from '../../i18n/t'
-import { OPTIONAL_STATES, REQUIRED_STATES } from './appearanceTypes'
-import type { AnimationFormat, PackMeta, SpriteConfig } from './appearanceTypes'
+import { OPTIONAL_STATES, REQUIRED_STATES } from '../../lib/appearancePacks/types'
+import type { AnimationFormat, PackMeta, SpriteConfig } from '../../lib/appearancePacks/types'
 import type { Reminder } from './types'
 import type { SpriteImportResult } from './spriteImportTypes'
 import { REMOVE_PATH, APPEARANCE_EXPORT_PATH, APPEARANCE_IMPORT_PATH, PETDEX_FETCH_PATH, APPEARANCES_PATH, APPEARANCE_COLOURS_PATH, APPEARANCE_DETAIL_PATH, APPEARANCE_SAVE_PATH, APPEARANCE_DELETE_PATH, CONFIG_PATH, REMINDERS_PATH } from './constants'

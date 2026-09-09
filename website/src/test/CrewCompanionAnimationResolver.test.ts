@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest'
 import { AnimationResolver, toDataUri } from '../apps/crew-companion/animationResolver'
 import { applySvgColorMap } from '../apps/crew-companion/colorCustomizer'
-import type { PackManifest } from '../apps/crew-companion/appearanceTypes'
+import type { PackManifest } from '../lib/appearancePacks/types'
 import type { PetState, PetMood } from '../apps/crew-companion/types'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────

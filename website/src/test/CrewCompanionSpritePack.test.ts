@@ -9,7 +9,7 @@
  *    overwrite target or a fresh one — never a slug of the display name
  */
 import { describe, expect, it } from 'vitest'
-import { OPTIONAL_STATES, REQUIRED_STATES } from '../apps/crew-companion/appearanceTypes'
+import { OPTIONAL_STATES, REQUIRED_STATES } from '../lib/appearancePacks/types'
 
 const known = new Set<string>([...REQUIRED_STATES, ...OPTIONAL_STATES])
 

@@ -10,10 +10,19 @@
  * style definition. Nothing is fetched, so this works offline and no crew name
  * ever leaves the machine (DiceBear's HTTP API is deliberately not used).
  *
+ * A crew may instead wear an APPEARANCE PACK (`avatar: {kind:'pack', id}`),
+ * whose art is drawn by somebody else and served per state from
+ * `GET /api/appearances/{id}/slot/{slot}`. That art is an `<img>` like an
+ * uploaded picture, so v1 renders SVG packs only — nothing here can play a
+ * Lottie document or step a sprite sheet, and the picker greys those out. The
+ * built-in `kiro-ghost` pack is the seeded ghost itself and is composed locally.
+ *
  * On top of that identity sits an optional REACTION layer: `state` picks one of
  * `working` / `done` / `error`, and the record's `expressions` map may give
  * that state its own eyes and mouth. Identity is never part of it — see
  * `lib/crewAvatarState.ts` — so a reacting crew still reads as the same crew.
+ * A pack's art has no face to overlay, so a pack keeps its sounds and ignores
+ * its expressions; `state` still picks which slot is drawn.
  *
  * Rendered as an `<img>` carrying a data URI rather than inlined SVG markup.
  * Two reasons, both load-bearing:
@@ -41,10 +50,12 @@ import {
   applyExpression,
   expressionFor,
   expressionsFrom,
+  soundsFrom,
   type AvatarExpressions,
   type AvatarFaceState,
   type AvatarSounds,
 } from '../lib/crewAvatarState'
+import { BUILTIN_PACK_ID, packSlotUrl } from '../lib/appearancePacks/library'
 
 /** Kiro's own ghost, built on the shipped mark. See `lib/kiroGhostAvatar.ts`. */
 const STYLE = kiroGhost
@@ -59,9 +70,13 @@ const STYLE = kiroGhost
  * leftover staging from an abandoned save must not ride into an unrelated
  * edit).
  *
+ * `pack` names an appearance pack from the crew appearance library; the art is
+ * served per state from `GET /api/appearances/{id}/slot/{slot}`. Nothing about
+ * the pack is copied into the record — `id` is the whole of it.
+ *
  * `traits` is OPTIONAL on the ghost tier: `{kind:'ghost', expressions}` with no
  * traits is a valid record and means "the name-derived face, plus these
- * reactions". Both tiers carry `expressions` / `sounds`, and a picture keeps
+ * reactions". Every tier carries `expressions` / `sounds`, and a picture keeps
  * its sounds even though it has no face to change. */
 export type CrewAvatarOverride =
   | { kind: 'ghost'; traits?: KiroGhostTraits; expressions?: AvatarExpressions; sounds?: AvatarSounds }
@@ -75,8 +90,44 @@ export type CrewAvatarOverride =
       expressions?: AvatarExpressions
       sounds?: AvatarSounds
     }
+  | { kind: 'pack'; id: string; expressions?: AvatarExpressions; sounds?: AvatarSounds }
 
 const TILE_RE = /^#[0-9a-f]{6}$/
+
+/** Cap on a pack id, mirroring `MAX_PACK_ID_LEN` in `appearance_packs.py`. */
+const MAX_PACK_ID_LEN = 64
+
+/**
+ * Letters, digits, dash and underscore — the backend's own rule (`safe_pack_id`:
+ * `c.isalnum() or c in "-_"`), and `isalnum()` is UNICODE-aware. `\p{L}` and
+ * `\p{N}` are what it accepts, so `auróra` and `아우로라` are legal ids that the
+ * importer really does install. An ASCII-only class read such a record as "no
+ * override", and the first unrelated save then wrote `{}` over it — the exact
+ * data loss this component's pack tier exists to stop.
+ */
+const PACK_ID_RE = /^[\p{L}\p{N}_-]+$/u
+
+/**
+ * Interpret a crew record's `avatar` field as an appearance-pack override.
+ * Returns the pack id, or `null` when the field is absent, junk, another tier,
+ * or names an id the library could not hold. Total for the same reason as
+ * `ghostTraitsFrom`: roster rows carry the field untyped.
+ *
+ * A rejected id resolves to "no override", which renders the name-derived
+ * ghost — the same thing an absent pack already shows.
+ */
+export function packAvatarFrom(avatar: unknown): { id: string } | null {
+  if (!avatar || typeof avatar !== 'object') return null
+  const a = avatar as Record<string, unknown>
+  if (a.kind !== 'pack' || typeof a.id !== 'string') return null
+  // Trimmed, because the backend trims before it stores or resolves: the pack it
+  // holds for `" aurora "` is `aurora`, so that is the id the slot URL must name.
+  const id = a.id.trim()
+  // Code POINTS, not UTF-16 units, so an astral character counts as the one
+  // character the backend counts it as.
+  if (!id || [...id].length > MAX_PACK_ID_LEN || !PACK_ID_RE.test(id)) return null
+  return { id }
+}
 
 /**
  * Interpret a crew record's `avatar` field as an uploaded-picture override.
@@ -138,7 +189,48 @@ export function ghostTraitsFrom(avatar: unknown): KiroGhostTraits | null {
  * override, and `{}` is truthy.
  */
 export function hasAvatarOverride(avatar: unknown): boolean {
-  return ghostTraitsFrom(avatar) !== null || imageAvatarFrom(avatar) !== null
+  return (
+    ghostTraitsFrom(avatar) !== null ||
+    imageAvatarFrom(avatar) !== null ||
+    packAvatarFrom(avatar) !== null
+  )
+}
+
+/**
+ * The stored `avatar` value when NO reader here claims it — a tier a newer
+ * client wrote, or a pack id this build cannot parse — and `null` otherwise
+ * (including for `{}`, which already means "no override").
+ *
+ * This is what lets a save PRESERVE a record it does not understand. The crew
+ * editor's payload is `draft ?? {}`, so an unrecognised record is erased by the
+ * first unrelated edit — and that wipe is a property of the enumeration, not of
+ * any one tier: adding a third reader would only leave the fourth tier to be
+ * broken the same way. Carrying the raw value through retires the whole class.
+ */
+export function unclaimedAvatarFrom(avatar: unknown): Record<string, unknown> | null {
+  if (!avatar || typeof avatar !== 'object' || Array.isArray(avatar)) return null
+  const raw = avatar as Record<string, unknown>
+  if (!Object.keys(raw).length) return null
+  // The KIND is the discriminator, not which keys happen to parse. A record
+  // that NAMES a tier no reader above claimed describes a face this build
+  // cannot reproduce, and that is true whether the tier is one a newer client
+  // invented (`hologram`) or one of ours carrying a payload we reject (a pack
+  // id past the id rule). It has to be decided here rather than left to the
+  // three readers, because `expressionsFrom`/`soundsFrom` are kind-AGNOSTIC:
+  // asked about `{kind:'hologram', sounds:{done:'chime'}}` they answer "mine"
+  // on the strength of the chime, the record reads as understood, and the
+  // hologram is dropped by the next unrelated save — the very wipe the
+  // passthrough exists to retire, surviving for every unknown tier that
+  // happens to carry a reaction.
+  //
+  // `ghost` is the one named kind that does not count as a tier claim: with no
+  // pinned traits it IS the name-derived default every reader agrees on, so
+  // `{kind:'ghost', sounds:{…}}` is a fully-understood reactions-on-default
+  // record and must keep falling through to the readers below.
+  const kind = typeof raw.kind === 'string' ? raw.kind.trim() : ''
+  if (kind && kind !== 'ghost' && !hasAvatarOverride(avatar)) return raw
+  if (hasAvatarOverride(avatar) || expressionsFrom(avatar) || soundsFrom(avatar)) return null
+  return raw
 }
 
 /**
@@ -211,13 +303,24 @@ export default function CrewAvatar({
 }: CrewAvatarProps) {
   const traits = useMemo(() => ghostTraitsFrom(avatar), [avatar])
   const image = useMemo(() => imageAvatarFrom(avatar), [avatar])
-  // A picture has no face to change, so expressions are read only for the
-  // ghost tier. Sounds are the other half of the reaction layer and are
-  // deliberately NOT this component's business: they belong to the state
-  // hook, which is why a picture can still have them.
-  const expressions = useMemo(() => (image ? null : expressionsFrom(avatar)), [avatar, image])
+  const pack = useMemo(() => packAvatarFrom(avatar), [avatar])
   // An explicit `state` wins; a bare `working` is the older spelling of it.
   const shownState: AvatarFaceState = state ?? (working ? 'working' : 'idle')
+  // The built-in pack IS the name-derived ghost, and its art ships in this
+  // bundle rather than being served — so it takes the ghost path below and
+  // fetches nothing. Every other pack is art this build cannot compose, drawn
+  // by the slot route; the server resolves the fallback chain, so a pack that
+  // draws only `idle` still answers every state.
+  const packSrc = pack && pack.id !== BUILTIN_PACK_ID ? packSlotUrl(pack.id, shownState) : null
+  // Neither a picture nor a pack's art has a face to change, so expressions are
+  // read only where this component composes the face itself. Sounds are the
+  // other half of the reaction layer and are deliberately NOT this component's
+  // business: they belong to the state hook, which is why a picture and a pack
+  // can still have them.
+  const expressions = useMemo(
+    () => (image || packSrc ? null : expressionsFrom(avatar)),
+    [avatar, image, packSrc],
+  )
   // Memo-stable: `expressions` is itself memoized, so indexing it yields the
   // same object across renders and cannot churn the src memo below.
   const overlay = useMemo(() => expressionFor(expressions, shownState), [expressions, shownState])
@@ -259,18 +362,23 @@ export default function CrewAvatar({
     ? (image.pendingData ??
       `/api/agents/${encodeURIComponent(seed)}/avatar${image.v ? `?v=${image.v}` : ''}`)
     : null
+  // A picture and a pack are one rendering: art this component did not compose,
+  // fetched from the authenticated API, falling back to the seeded ghost when it
+  // does not load. Only one can be set — the two tiers are exclusive — and a
+  // record carrying neither leaves this null and takes the ghost path.
+  const servedSrc = imageSrc ?? packSrc
 
-  if (imageSrc && failedSrc !== imageSrc) {
+  if (servedSrc && failedSrc !== servedSrc) {
     return (
       <img
-        src={imageSrc}
+        src={servedSrc}
         alt=""
         aria-hidden="true"
         width={size}
         height={size}
         style={{ width: size, height: size }}
         onError={() => {
-          setFailedSrc(imageSrc)
+          setFailedSrc(servedSrc)
           onImageError?.()
         }}
         // object-cover: the client crops square before upload, but an old or

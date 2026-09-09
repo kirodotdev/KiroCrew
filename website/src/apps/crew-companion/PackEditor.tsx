@@ -5,8 +5,8 @@
  */
 import { ArrowLeft, CornerDownRight, Film, FolderOpen, Loader2, Plus, X } from 'lucide-react'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import type { PackMeta } from './appearanceTypes'
-import { REQUIRED_STATES, ALL_MOODS, OPTIONAL_STATES, STATUS_STATES, BREATHING_STATES, RANDOM_STATES, } from './appearanceTypes'
+import type { PackMeta } from '../../lib/appearancePacks/types'
+import { REQUIRED_STATES, ALL_MOODS, OPTIONAL_STATES, STATUS_STATES, BREATHING_STATES, RANDOM_STATES, } from '../../lib/appearancePacks/types'
 import { toDataUri } from './animationResolver'
 import { PackInfoHeader } from './PackInfoHeader'
 import { SaveDialog } from './SaveDialog'

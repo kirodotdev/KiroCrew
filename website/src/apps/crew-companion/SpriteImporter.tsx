@@ -3,7 +3,7 @@
  */
 import { FolderOpen, Plus } from 'lucide-react'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { REQUIRED_STATES, OPTIONAL_STATES, STATUS_STATES, BREATHING_STATES, RANDOM_STATES, type PackMeta } from './appearanceTypes'
+import { REQUIRED_STATES, OPTIONAL_STATES, STATUS_STATES, BREATHING_STATES, RANDOM_STATES, type PackMeta } from '../../lib/appearancePacks/types'
 import { SpriteRenderer } from './SpriteRenderer'
 import { PackInfoHeader } from './PackInfoHeader'
 import { SaveDialog } from './SaveDialog'

@@ -14,7 +14,7 @@ import {
   parseManifest,
   serializeManifest,
   type PackManifest,
-} from '../apps/crew-companion/appearanceTypes'
+} from '../lib/appearancePacks/types'
 
 const META = {
   id: 'p1',

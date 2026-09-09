@@ -2631,6 +2631,34 @@ export const api = {
   /** Stage a crew's picture on the server (a `.pending` file only — the
    *  config PUT with `avatar: {kind:'image'}` is what promotes it live,
    *  keeping the editor's Apply→Save two-step a real commit point). */
+  /**
+   * The crew appearance library — the packs a crew can wear.
+   *
+   * Owner-gated, same-origin cookie auth. There is deliberately no `detail`
+   * wrapper: that route inlines every file in the pack, so drawing a grid of
+   * thumbnails through it would load N whole packs to show N frames. The picker
+   * reads the per-slot route through an `<img>` instead (`packSlotUrl`), and
+   * `detail` lands here with its first real caller.
+   */
+  appearances: {
+    list: () => fetch('/api/appearances').then(j) as Promise<{ packs?: unknown }>,
+    /** Install an exported pack. The JSON envelope, not multipart: the bundle is
+     *  already parsed client-side to reject an obviously wrong pick, so posting
+     *  it back as a file would only re-serialize what we hold. */
+    importBundle: (bundle: unknown) =>
+      post('/api/appearances/import', { bundle }).then(j) as Promise<{
+        ok?: boolean
+        id?: string
+        error?: string
+      }>,
+    /** Delete a custom pack. Rejects 409 while a crew wears it, and the rejection
+     *  body names those crews — `force` is deliberately NOT exposed. */
+    remove: (id: string) =>
+      del('/api/appearances/' + encodeURIComponent(id)).then(j) as Promise<{
+        ok?: boolean
+        id?: string
+      }>,
+  },
   uploadCrewAvatar: (name: string, file: Blob) => {
     const form = new FormData()
     form.append('file', file, 'avatar.png')
