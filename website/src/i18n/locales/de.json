@@ -12948,6 +12948,9 @@
         "terminal_shell_desc": "Shell, die das integrierte Terminal startet – ein absoluter Pfad oder ein Befehl im PATH. Leer lassen, um den Systemstandard ($SHELL) zu verwenden.",
         "terminal_shell_not_executable": "Keine ausführbare Shell – gib einen absoluten Pfad oder einen Befehl im PATH ein, oder lasse das Feld leer für den Systemstandard.",
         "terminal_shell_save_failed": "Shell-Einstellung konnte nicht gespeichert werden",
+        "terminal_completion": "Befehlsvervollständigung",
+        "terminal_completion_desc": "Vervollständigungs-Popup beim Tippen im Terminal anzeigen. Eingabe führt die getippte Zeile aus; um einen Vorschlag zu übernehmen, drücke ↑/↓ und dann Eingabe, oder Tab. Aus blendet das Popup aus; die Tab-Vervollständigung deiner Shell funktioniert weiterhin.",
+        "terminal_completion_save_failed": "Einstellung zur Befehlsvervollständigung konnte nicht gespeichert werden",
         "theme": "Theme",
         "theme_source": "Theme-Quelle",
         "theme_source_location": "Speicherort der Theme-Quelle",
@@ -12960,7 +12963,7 @@
         "zoom_font": "Zoom & Schrift",
         "zoom_level": "Zoomstufe",
         "font_family_option_opendyslexic": "OpenDyslexic",
-        "config_load_failed": "Die gespeicherten Anzeigeeinstellungen konnten nicht geladen werden. Die Felder für Shell und letzte Sitzungen sind nicht verfügbar, bis sie geladen sind.",
+        "config_load_failed": "Die gespeicherten Anzeigeeinstellungen konnten nicht geladen werden. Die Einstellungen für Shell, letzte Sitzungen und Befehlsvervollständigung sind nicht verfügbar, bis sie geladen sind.",
         "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden."
       },
       "importPanel": {

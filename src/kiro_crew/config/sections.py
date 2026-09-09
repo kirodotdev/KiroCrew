@@ -2802,6 +2802,31 @@ class DashboardConfig:
                         ),
                     },
                 },
+                # Only `enabled` is declared; `completion.commands` (the
+                # subcommand-probe allowlist) stays an undeclared key, so the
+                # object is left open the same way `terminal` itself is.
+                "completion": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "x-meta": {
+                        "label": "Command completion",
+                        "help": "The Terminal tab's inline completion popup.",
+                    },
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": True,
+                            "x-meta": {
+                                "label": "Command completion",
+                                "help": (
+                                    "Show the completion popup while typing in the "
+                                    "Terminal tab. Off = no popup; the shell's own Tab "
+                                    "completion still works."
+                                ),
+                            },
+                        },
+                    },
+                },
             },
         ),
     )

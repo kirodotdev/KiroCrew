@@ -6504,6 +6504,34 @@
       "defaultValue": ""
     },
     {
+      "path": "dashboard.terminal.completion",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Command completion",
+      "help": "The Terminal tab's inline completion popup.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "dashboard.terminal.completion.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Command completion",
+      "help": "Show the completion popup while typing in the Terminal tab. Off = no popup; the shell's own Tab completion still works.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "dashboard.default_project",
       "kind": "core",
       "type": "string",

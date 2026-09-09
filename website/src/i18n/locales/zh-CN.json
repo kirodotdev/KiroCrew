@@ -12773,6 +12773,9 @@
         "terminal_shell_desc": "内置终端启动的 Shell——绝对路径或 PATH 中的命令。留空则使用系统默认值（$SHELL）。",
         "terminal_shell_not_executable": "不是可执行的 Shell——请输入绝对路径或 PATH 中的命令，或留空以使用系统默认值。",
         "terminal_shell_save_failed": "无法保存 Shell 设置",
+        "terminal_completion": "命令补全",
+        "terminal_completion_desc": "在终端中输入时显示补全弹窗。回车执行你输入的那一行；要采用建议，按 ↑/↓ 再回车，或按 Tab。关闭后不显示弹窗；Shell 自带的 Tab 补全仍然可用。",
+        "terminal_completion_save_failed": "无法保存命令补全设置",
         "theme": "主题",
         "theme_source": "主题来源",
         "theme_source_location": "主题来源位置",
@@ -12785,7 +12788,7 @@
         "zoom_font": "缩放与字体",
         "zoom_level": "缩放级别",
         "font_family_option_opendyslexic": "OpenDyslexic",
-        "config_load_failed": "无法加载已保存的显示设置。加载完成前，Shell 和最近会话字段不可用。",
+        "config_load_failed": "无法加载已保存的显示设置。加载完成前，Shell、最近会话和命令补全设置不可用。",
         "recent_tint_save_failed": "无法保存最近会话的高亮数量。"
       },
       "importPanel": {

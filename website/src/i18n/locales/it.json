@@ -13123,6 +13123,9 @@
         "terminal_shell_desc": "Shell avviata dal terminale integrato: un percorso assoluto o un comando nel PATH. Lascia vuoto per usare il valore predefinito di sistema ($SHELL).",
         "terminal_shell_not_executable": "Non è una shell eseguibile: inserisci un percorso assoluto o un comando nel PATH, oppure lascia vuoto per il valore predefinito di sistema.",
         "terminal_shell_save_failed": "Impossibile salvare l'impostazione della shell",
+        "terminal_completion": "Completamento dei comandi",
+        "terminal_completion_desc": "Mostra il menu di completamento mentre scrivi nel Terminale. Invio esegue la riga che hai digitato; per accettare un suggerimento premi ↑/↓ e poi Invio, oppure Tab. Disattivato nasconde il menu; il completamento con Tab della tua shell continua a funzionare.",
+        "terminal_completion_save_failed": "Impossibile salvare l'impostazione del completamento dei comandi",
         "theme": "Tema",
         "theme_source": "Origine del tema",
         "theme_source_location": "Posizione dell'origine del tema",
@@ -13135,7 +13138,7 @@
         "zoom_font": "Zoom e carattere",
         "zoom_level": "Livello di zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
-        "config_load_failed": "Impossibile caricare le impostazioni di visualizzazione salvate. I campi della shell e delle sessioni recenti non sono disponibili finché non vengono caricate.",
+        "config_load_failed": "Impossibile caricare le impostazioni di visualizzazione salvate. Le impostazioni di shell, sessioni recenti e completamento dei comandi non sono disponibili finché non vengono caricate.",
         "recent_tint_save_failed": "Impossibile salvare il numero di sessioni recenti evidenziate."
       },
       "importPanel": {

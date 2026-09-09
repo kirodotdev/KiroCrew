@@ -12773,6 +12773,9 @@
         "terminal_shell_desc": "内蔵ターミナルが起動するシェル。絶対パスまたは PATH 上のコマンドを指定します。空欄の場合はシステムのデフォルト（$SHELL）を使用します。",
         "terminal_shell_not_executable": "実行可能なシェルではありません。絶対パスまたは PATH 上のコマンドを入力するか、空欄にしてシステムのデフォルトを使用してください。",
         "terminal_shell_save_failed": "シェル設定を保存できませんでした",
+        "terminal_completion": "コマンド補完",
+        "terminal_completion_desc": "ターミナルで入力中に補完ポップアップを表示します。Enter は入力した行を実行します。候補を採用するには ↑/↓ の後に Enter、または Tab を押します。オフにするとポップアップは表示されず、シェル自体の Tab 補完はそのまま使えます。",
+        "terminal_completion_save_failed": "コマンド補完の設定を保存できませんでした",
         "theme": "テーマ",
         "theme_source": "テーマソース",
         "theme_source_location": "テーマソースの場所",
@@ -12785,7 +12788,7 @@
         "zoom_font": "ズーム＆フォント",
         "zoom_level": "ズームレベル",
         "font_family_option_opendyslexic": "OpenDyslexic",
-        "config_load_failed": "保存された表示設定を読み込めませんでした。読み込まれるまで、シェルと最近のセッションの項目は使用できません。",
+        "config_load_failed": "保存された表示設定を読み込めませんでした。読み込まれるまで、シェル、最近のセッション、コマンド補完の設定は使用できません。",
         "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。"
       },
       "importPanel": {

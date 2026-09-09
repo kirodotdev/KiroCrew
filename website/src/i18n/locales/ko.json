@@ -12773,6 +12773,9 @@
         "terminal_shell_desc": "내장 터미널이 실행하는 셸입니다. 절대 경로 또는 PATH에 있는 명령을 입력하세요. 비워 두면 시스템 기본값($SHELL)을 사용합니다.",
         "terminal_shell_not_executable": "실행 가능한 셸이 아닙니다. 절대 경로 또는 PATH에 있는 명령을 입력하거나, 비워 두면 시스템 기본값을 사용합니다.",
         "terminal_shell_save_failed": "셸 설정을 저장하지 못했습니다",
+        "terminal_completion": "명령 자동 완성",
+        "terminal_completion_desc": "터미널에서 입력하는 동안 자동 완성 팝업을 표시합니다. Enter는 입력한 줄을 실행합니다. 제안을 선택하려면 ↑/↓ 후 Enter 또는 Tab을 누르세요. 끄면 팝업이 숨겨지며 셸 자체의 Tab 완성은 계속 작동합니다.",
+        "terminal_completion_save_failed": "명령 자동 완성 설정을 저장하지 못했습니다",
         "theme": "테마",
         "theme_source": "테마 소스",
         "theme_source_location": "테마 소스 위치",
@@ -12785,7 +12788,7 @@
         "zoom_font": "확대/축소 및 글꼴",
         "zoom_level": "확대/축소 수준",
         "font_family_option_opendyslexic": "OpenDyslexic",
-        "config_load_failed": "저장된 표시 설정을 불러올 수 없습니다. 불러올 때까지 셸과 최근 세션 필드는 사용할 수 없습니다.",
+        "config_load_failed": "저장된 표시 설정을 불러올 수 없습니다. 불러올 때까지 셸, 최근 세션, 명령 자동 완성 설정은 사용할 수 없습니다.",
         "recent_tint_save_failed": "최근 세션 강조 개수를 저장할 수 없습니다."
       },
       "importPanel": {

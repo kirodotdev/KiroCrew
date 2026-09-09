@@ -13124,6 +13124,9 @@
         "terminal_shell_desc": "Shell lancé par le terminal intégré — un chemin absolu ou une commande du PATH. Laissez vide pour utiliser la valeur par défaut du système ($SHELL).",
         "terminal_shell_not_executable": "Ce n'est pas un shell exécutable — saisissez un chemin absolu ou une commande du PATH, ou laissez vide pour la valeur par défaut du système.",
         "terminal_shell_save_failed": "Impossible d'enregistrer le paramètre du shell",
+        "terminal_completion": "Complétion des commandes",
+        "terminal_completion_desc": "Afficher le menu de complétion pendant la saisie dans le Terminal. Entrée exécute la ligne saisie ; pour accepter une suggestion, appuyez sur ↑/↓ puis Entrée, ou sur Tab. Désactivé masque le menu ; la complétion Tab de votre shell continue de fonctionner.",
+        "terminal_completion_save_failed": "Impossible d'enregistrer le paramètre de complétion des commandes",
         "theme": "Thème",
         "theme_source": "Source du thème",
         "theme_source_location": "Emplacement de la source du thème",
@@ -13136,7 +13139,7 @@
         "zoom_font": "Zoom et police",
         "zoom_level": "Niveau de zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
-        "config_load_failed": "Impossible de charger les réglages d’affichage enregistrés. Les champs du shell et des sessions récentes sont indisponibles jusqu’au chargement.",
+        "config_load_failed": "Impossible de charger les réglages d’affichage enregistrés. Les réglages du shell, des sessions récentes et de la complétion des commandes sont indisponibles jusqu’au chargement.",
         "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence."
       },
       "importPanel": {

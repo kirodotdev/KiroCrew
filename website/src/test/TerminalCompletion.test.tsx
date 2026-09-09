@@ -148,6 +148,18 @@ async function trigger(h: { moveCursor: () => void }) {
   for (let i = 0; i < 3; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(1) })
 }
 
+/**
+ * Accept the HIGHLIGHTED row with Enter. Enter only accepts once the user has
+ * arrowed onto a row (otherwise it reaches the shell and submits the typed line),
+ * so this arrows down and straight back up: the highlight lands where it
+ * started, and the menu now knows a pick was made.
+ */
+function pick(h: { key: (init: KeyboardEventInit) => { passedThrough: boolean; prevented: boolean } }) {
+  h.key({ key: 'ArrowDown' })
+  h.key({ key: 'ArrowUp' })
+  return h.key({ key: 'Enter' })
+}
+
 beforeEach(() => {
   sent = []
   vi.useFakeTimers()
@@ -246,7 +258,7 @@ describe('TerminalCompletion', () => {
     // Only the matched span is emphasised, not the whole name.
     expect(row.querySelector('span span')).toHaveTextContent('termi')
     // The name does not extend "termi", so the fragment is erased and retyped.
-    await act(async () => { h.key({ key: 'Enter' }) })
+    await act(async () => { pick(h) })
     expect(sent).toEqual(['\x7f'.repeat(5) + 'KiroCrew-terminal-completion/'])
   })
 
@@ -307,16 +319,72 @@ describe('TerminalCompletion', () => {
       for (const key of ['ArrowDown', 'ArrowUp', 'Tab', 'Enter', 'Escape']) {
         const h = await open()
         let prevented = false
-        await act(async () => { prevented = h.key({ key }).prevented })
+        // Enter is only claimed once a row has been arrowed onto.
+        await act(async () => { prevented = (key === 'Enter' ? pick(h) : h.key({ key })).prevented })
         expect(prevented, `${key} must be prevented`).toBe(true)
         cleanup()
         sent = []
       }
     })
 
+    // The reporter's complaint (Slack, 2026-09-09): the menu opens on almost
+    // every word, and Enter accepting its top row by default rewrote commands
+    // the user had finished typing (`git status` -> `git stash`), so every submit
+    // needed an Escape first. Enter now belongs to the shell until the user has
+    // arrowed onto a row — the convention of fish, zsh-autosuggestions and VS
+    // Code's terminal alike.
+    it('hands Enter to the shell when no row has been arrowed onto, and closes', async () => {
+      const h = await open()
+      let r = { passedThrough: false, prevented: true }
+      await act(async () => { r = h.key({ key: 'Enter' }) })
+      expect(r.passedThrough).toBe(true)
+      expect(r.prevented).toBe(false)
+      expect(sent).toEqual([])
+      expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
+    })
+
+    it('accepts the highlighted row on Enter once the user has arrowed onto it', async () => {
+      const h = await open()
+      await act(async () => { h.key({ key: 'ArrowDown' }) })
+      let r = { passedThrough: true, prevented: false }
+      await act(async () => { r = h.key({ key: 'Enter' }) })
+      expect(r.passedThrough).toBe(false)
+      expect(r.prevented).toBe(true)
+      expect(sent).toEqual(['tor/'])   // second row: "doc" + "tor" → doctor/
+      expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
+    })
+
+    // Arrowing, then typing on, fetches a fresh listing whose highlight is back
+    // on the first row. The earlier pick must not carry over to it: the user
+    // has moved on to typing, so Enter is the shell's again.
+    it('forgets the pick when a new listing replaces the menu', async () => {
+      const h = await open()
+      await act(async () => { h.key({ key: 'ArrowDown' }) })
+      const typed = `${PROMPT}cd docs`
+      h.setLine(typed)
+      h.setCursor(typed.length)
+      vi.stubGlobal('fetch', mockComplete([{ name: 'docs', dir: true }], 'docs'))
+      await trigger(h)
+      expect(screen.getByTestId('terminal-completion')).toBeInTheDocument()
+      let r = { passedThrough: false, prevented: true }
+      await act(async () => { r = h.key({ key: 'Enter' }) })
+      expect(r.passedThrough).toBe(true)
+      expect(sent).toEqual([])
+    })
+
+    it('keeps Tab as the no-arrow accept key', async () => {
+      // `docs`/`doctor` share no prefix beyond the typed `doc`, so Tab commits
+      // the highlighted row rather than extending — with no arrow pressed.
+      const h = await open()
+      let r = { passedThrough: true, prevented: false }
+      await act(async () => { r = h.key({ key: 'Tab' }) })
+      expect(r.passedThrough).toBe(false)
+      expect(sent).toEqual(['s/'])
+    })
+
     it('inserts the selected entry on Enter and closes', async () => {
       const h = await open()
-      await act(async () => { expect(h.key({ key: 'Enter' }).passedThrough).toBe(false) })
+      await act(async () => { expect(pick(h).passedThrough).toBe(false) })
       expect(sent).toEqual(['s/'])   // "doc" + "s" → docs/, trailing / keeps the path open
       expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
     })
@@ -326,7 +394,7 @@ describe('TerminalCompletion', () => {
     // token — the whole point of appending the separator.
     it('re-opens on the next token after a directory is accepted', async () => {
       const h = await open()
-      await act(async () => { h.key({ key: 'Enter' }) })
+      await act(async () => { pick(h) })
       expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
       // The shell echoes "s/" — cursor advances and the row now ends in a slash.
       h.setLine(`${PROMPT}cd docs/`)
@@ -392,7 +460,7 @@ describe('TerminalCompletion', () => {
       expect(options[0]).toHaveAttribute('aria-selected', 'true')
       expect(options[1]).toHaveAttribute('aria-label', 'inner')
       // Accepting it types nothing and does not descend.
-      await act(async () => { h.key({ key: 'Enter' }) })
+      await act(async () => { pick(h) })
       expect(sent).toEqual([])
       expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
       // Suppressed for this token: the shell's echo must not pop it back open.
@@ -441,7 +509,7 @@ describe('TerminalCompletion', () => {
       const h = makeTerm(line, line.length)
       renderCompletion(h.term)
       await trigger(h)
-      await act(async () => { h.key({ key: 'Enter' }) })
+      await act(async () => { pick(h) })
       expect(sent).toEqual(['.json '])
       // The shell echoes the name plus the space; the next word is empty.
       const next = `${PROMPT}ls app.json `
@@ -597,7 +665,7 @@ describe('TerminalCompletion', () => {
       expect(JSON.parse(fetchMock.mock.calls[0][1].body).token).toBe('my d')
       expect(screen.getByText('my dir/')).toBeInTheDocument()
       // `my\ d` is already on screen, so only the missing (escaped) tail is typed.
-      await act(async () => { h.key({ key: 'Enter' }) })
+      await act(async () => { pick(h) })
       expect(sent).toEqual(['ir/'])
     })
 
@@ -607,7 +675,7 @@ describe('TerminalCompletion', () => {
       const h = makeTerm(line, line.length)
       renderCompletion(h.term)
       await trigger(h)
-      await act(async () => { h.key({ key: 'Enter' }) })
+      await act(async () => { pick(h) })
       expect(sent).toEqual(['\\ dir/'])
 
       // The shell echoes the escaped name; the word on screen is now `my\ dir/`.
@@ -636,7 +704,7 @@ describe('TerminalCompletion', () => {
 
     it('types a leading-hyphen name as a path on Enter', async () => {
       const h = await openVim([{ name: '-c:!sh evil', dir: false }])
-      await act(async () => { h.key({ key: 'Enter' }) })
+      await act(async () => { pick(h) })
       expect(sent).toEqual(['./-c:\\!sh\\ evil '])
     })
 
@@ -672,7 +740,7 @@ describe('TerminalCompletion', () => {
         const h = await openWith([{ name: 'my\nrm -rf x', dir: false }])
         // Nothing offered means nothing to accept: the menu never opened.
         expect(screen.queryByTestId('terminal-completion')).not.toBeInTheDocument()
-        await act(async () => { h.key({ key }) })
+        await act(async () => { if (key === 'Enter') pick(h); else h.key({ key }) })
         expect(sent, `${key} must type nothing`).toEqual([])
         cleanup()
         sent = []
@@ -681,7 +749,7 @@ describe('TerminalCompletion', () => {
 
     it('escapes shell metacharacters when a name is accepted', async () => {
       const h = await openWith([{ name: 'my file;rm -rf $x.txt', dir: false }])
-      await act(async () => { h.key({ key: 'Enter' }) })
+      await act(async () => { pick(h) })
       // One shell word, escape by escape — no quoting, so the word stays
       // re-triggerable and the metacharacters are inert.
       expect(sent).toEqual(['\\ file\\;rm\\ -rf\\ \\$x.txt '])
@@ -698,7 +766,7 @@ describe('TerminalCompletion', () => {
 
     it('leaves ordinary and non-ASCII names unescaped', async () => {
       const h = await openWith([{ name: 'my-项目_v2', dir: true }])
-      await act(async () => { h.key({ key: 'Enter' }) })
+      await act(async () => { pick(h) })
       expect(sent).toEqual(['-项目_v2/'])
     })
   })
@@ -719,6 +787,8 @@ describe('TerminalCompletion', () => {
     it('aborts an acceptance whose word has since changed', async () => {
       for (const key of ['Enter', 'Tab']) {
         const h = await open()
+        // Arrow first so Enter is a genuine accept attempt, not a plain submit.
+        await act(async () => { h.key({ key: 'ArrowDown' }) })
         const moved = `${PROMPT}cd docz`
         h.setLine(moved)
         h.setCursor(moved.length)
@@ -761,6 +831,9 @@ describe('TerminalCompletion', () => {
     // a path and drop the text the user just composed.
     it('passes through the Enter that commits a candidate', async () => {
       const h = await open()
+      // Arrow onto a row first: without that Enter is the shell's anyway, and
+      // the pass-through below would prove nothing about the IME guard.
+      await act(async () => { h.key({ key: 'ArrowDown' }) })
       const composing = h.key({ key: 'Enter', isComposing: true })
       expect(composing.passedThrough).toBe(true)
       expect(composing.prevented).toBe(false)
@@ -771,6 +844,7 @@ describe('TerminalCompletion', () => {
 
     it('passes through the Enter that ends composition', async () => {
       const h = await open()
+      await act(async () => { h.key({ key: 'ArrowDown' }) })
       h.compositionEnd()
       const r = h.key({ key: 'Enter' })
       expect(r.passedThrough).toBe(true)
@@ -782,7 +856,7 @@ describe('TerminalCompletion', () => {
       h.compositionEnd()
       // Past the grace window: this Enter belongs to the menu again.
       vi.setSystemTime(Date.now() + 1000)
-      await act(async () => { expect(h.key({ key: 'Enter' }).passedThrough).toBe(false) })
+      await act(async () => { expect(pick(h).passedThrough).toBe(false) })
       expect(sent).toEqual(['s/'])
     })
 
@@ -796,6 +870,7 @@ describe('TerminalCompletion', () => {
       renderCompletion(h.term)
       h.openTerminal()
       await trigger(h)
+      await act(async () => { h.key({ key: 'ArrowDown' }) })
       h.compositionEnd()
       const r = h.key({ key: 'Enter' })
       expect(r.passedThrough).toBe(true)
@@ -898,7 +973,7 @@ describe('TerminalCompletion — command tier', () => {
     renderCompletion(h.term)
     await trigger(h)
 
-    await act(async () => { h.key({ key: 'Enter' }) })
+    await act(async () => { pick(h) })
     expect(sent).toEqual(['orce '])
   })
 
@@ -914,7 +989,7 @@ describe('TerminalCompletion — command tier', () => {
     renderCompletion(h.term)
     await trigger(h)
 
-    await act(async () => { h.key({ key: 'Enter' }) })
+    await act(async () => { pick(h) })
     expect(sent).toEqual(['essage='])
   })
 
@@ -928,7 +1003,7 @@ describe('TerminalCompletion — command tier', () => {
     renderCompletion(h.term)
     await trigger(h)
 
-    await act(async () => { h.key({ key: 'Enter' }) })
+    await act(async () => { pick(h) })
     expect(sent).toEqual(['r '])
 
     // The echo lands and the cursor moves on: the next word is empty and the menu
@@ -983,6 +1058,9 @@ describe('TerminalCompletion — command tier', () => {
     renderCompletion(h.term)
     await trigger(h)
     expect(screen.getByTestId('terminal-completion')).toBeInTheDocument()
+    // Arrow onto the row so the pass-through below is the staleness check's
+    // doing, not the plain no-arrow default.
+    await act(async () => { h.key({ key: 'ArrowDown' }) })
 
     // Same token, different command. Enter must go to the shell untouched.
     const changed = `${PROMPT}git c`

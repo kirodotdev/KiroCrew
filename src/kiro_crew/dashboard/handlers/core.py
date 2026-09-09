@@ -1961,6 +1961,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # terminal — the save-time check exists to surface a typo immediately in
     # the Settings field.
     "dashboard.terminal.shell": {"type": "str", "max_len": 512},
+    # The Terminal tab's completion popup (Settings → Display → Terminal).
+    # Default on; the completion route reads it per request (handlers/
+    # terminal.py `_completion_disabled`), so a toggle takes effect on the
+    # next keystroke with no restart. The whole-panel `terminal.enabled`
+    # stays config-file-only: it also kills the PTY, which is not a display
+    # preference.
+    "dashboard.terminal.completion.enabled": {"type": "bool"},
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.

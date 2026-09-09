@@ -1290,6 +1290,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.command-completion",
+    "label": "Command completion",
+    "labelKey": "pages.settings.displayPanel.terminal_completion",
+    "description": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "dashboard.terminal.completion.enabled"
+  },
+  {
     "id": "display.default-for-new-sessions",
     "labelKey": "pages.settings.displayPanel.default_for_new_sessions",
     "tab": "display",

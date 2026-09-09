@@ -5227,7 +5227,10 @@
         "terminal_shell_desc": "Shell the built-in terminal launches — an absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
         "terminal_shell_not_executable": "Not an executable shell — enter an absolute path or a command on PATH, or leave empty for the system default.",
         "terminal_shell_save_failed": "Could not save the shell setting",
-        "config_load_failed": "Could not load the saved display settings. The shell and recent-session fields are unavailable until it loads.",
+        "terminal_completion": "Command completion",
+        "terminal_completion_desc": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
+        "terminal_completion_save_failed": "Could not save the command completion setting",
+        "config_load_failed": "Could not load the saved display settings. The shell, recent-session and command completion settings are unavailable until it loads.",
         "recent_tint_save_failed": "Could not save the recent-session highlight count."
       },
       "instancesPanel": {
