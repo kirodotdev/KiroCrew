@@ -188,31 +188,13 @@ class ProviderRegistry:
         failures are caught and logged — a single provider timeout does not
         break the entire search.
         """
-        if provider:
-            p = self._providers.get(provider)
-            if p is None or not provider_available(p):
-                return []
-            try:
-                return _stamp_provenance(
-                    await asyncio.wait_for(
-                        p.search(query, limit=limit), timeout=_SEARCH_TIMEOUT_SECS
-                    ),
-                    provider,
-                )
-            except asyncio.TimeoutError:
-                logger.warning("Provider %s timed out for query %r", provider, query)
-                return []
-            except Exception:
-                logger.warning("Provider %s failed for query %r", provider, query, exc_info=True)
-                return []
 
-        # Iterate (key, provider) pairs so failure logs name the vetted
-        # registration key instead of re-reading a provider-controlled
-        # ``name`` property inside an exception handler.
-        available = [(n, p) for n, p in self._providers.items() if provider_available(p)]
-        if not available:
-            return []
-
+        # The timeout budget, the provenance re-stamp and the two failure
+        # handlers are one contract, so the single-provider request and every
+        # fan-out leg go through this one body: a divergence here would let a
+        # provider's own ``provider`` string survive on one path but not the
+        # other. *name* is the vetted registration key, never a re-read of the
+        # provider-controlled ``name`` property.
         async def _search_one(name: str, p: SkillProvider) -> list[SkillSearchResult]:
             try:
                 return _stamp_provenance(
@@ -227,6 +209,23 @@ class ProviderRegistry:
             except Exception:
                 logger.warning("Provider %s failed for query %r", name, query, exc_info=True)
                 return []
+
+        if provider:
+            p = self._providers.get(provider)
+            if p is None or not provider_available(p):
+                return []
+            # This path applies no ``[:limit]``: the provider was ASKED for at
+            # most *limit* rows and is trusted to honour it. The fan-out below
+            # re-caps because it merges several providers, not because any one
+            # of them is checked — a provider that ignores *limit* is capped
+            # nowhere on this path.
+            return await _search_one(provider, p)
+
+        # Iterate (key, provider) pairs so failure logs name the vetted
+        # registration key.
+        available = [(n, p) for n, p in self._providers.items() if provider_available(p)]
+        if not available:
+            return []
 
         results_per_provider = await asyncio.gather(*[_search_one(n, p) for n, p in available])
         merged: list[SkillSearchResult] = []

@@ -1,8 +1,8 @@
 """skills.sh provider — public skill registry search and fetch.
 
 skills.sh exposes a public REST API (no auth for reads) that returns
-skill metadata including GitHub repo URLs. Installation fetches the
-SKILL.md from the repo directly.
+skill metadata including GitHub repo URLs. Installation reads the skill's
+files out of the registry's own download bundle (``fetch_skill_bundle``).
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import asyncio
 import ipaddress
 import json
 import logging
-import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,14 +31,29 @@ _TIMEOUT = 5
 # User-Agent for our requests (good citizenship)
 _USER_AGENT = "KiroCrew/1.0 (skill-discovery)"
 
-# Maximum response body size (1 MiB) — prevents disk exhaustion from
-# oversized responses. SKILL.md files are typically <50 KB.
+# Maximum response body size (1 MiB) — ``_read_bounded`` accumulates the body
+# in memory, so this bounds the bytes one fetch RETAINS. It is not a peak-memory
+# figure: joining the chunks and decoding them each allocate another copy.
+# It is also what bounds DISK: a download response carries the install bundle,
+# and the discover handler writes those files out under a looser 5 MiB guard of
+# its own, so this ceiling is the one that binds first. Raise it only having
+# accounted for both. SKILL.md files are typically <50 KB.
 _MAX_RESPONSE_BYTES = 1 * 1024 * 1024
 
-# Internal/private IP ranges that must never be fetched (SSRF mitigation).
-# NOTE: _API_BASE is hardcoded — if it becomes user-configurable, it must
-# be validated against this same check. Do NOT make api_base configurable
-# without adding SSRF validation on the base URL itself.
+# Per-chunk read size while draining a response body (64 KiB).
+_HTTP_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _s(v: Any) -> str:
+    """Coerce one provider-supplied value to str — non-strings become ''.
+
+    skills.sh rows are external input, and a non-string that survives into a
+    ``SkillSearchResult`` crashes a consumer far from here: a numeric ``id``
+    reaches ``_slugify``'s ``raw.strip()`` in the discover handler and 500s the
+    request. Coercing to '' is what lets one falsiness test at the call site
+    drop the row; this helper never drops anything itself.
+    """
+    return v if isinstance(v, str) else ""
 
 
 @dataclass
@@ -47,6 +61,14 @@ class SkillsShConfig:
     """Configuration for the skills.sh provider."""
 
     enabled: bool = True
+
+    # This module's SSRF host allowlist does not reach the base: `_is_allowed_host`
+    # gates redirect targets only, so an initial URL built from this field is
+    # checked by `_is_internal_url` alone. That rejects internal, private and
+    # loopback addresses, but it does not require HTTPS and does not hold the host
+    # to `_ALLOWED_HOSTS`. Any caller that lets a user set this must validate the
+    # base URL itself before constructing the provider. The platform `discovery`
+    # policy allowlist that `api_base` below feeds is a separate, policy-level gate.
     api_base: str = _API_BASE
 
 
@@ -102,30 +124,19 @@ class SkillsShProvider:
             # skills.sh search response shape:
             # {"id": "owner/repo/skill-name", "skillId": "skill-name",
             #  "name": "skill-name", "installs": N, "source": "owner/repo"}
-            source = item.get("source", "") if isinstance(item.get("source"), str) else ""
+            source = _s(item.get("source"))
             repo_url = f"https://github.com/{source}" if source else ""
             try:
                 installs = int(item.get("installs", 0) or 0)
             except (TypeError, ValueError):
                 installs = 0
-            # Provider metadata is external input: a numeric id would reach
-            # _slugify().strip(), non-string tags reach the redactors — either
-            # 500s the discovery request. Coerce/drop instead of trusting.
-
-            def _s(v: Any) -> str:
-                return v if isinstance(v, str) else ""
-
-            skill_ident = (
-                _s(item.get("id")) or _s(item.get("skillId")) or _s(item.get("name"))
-            )
+            skill_ident = _s(item.get("id")) or _s(item.get("skillId")) or _s(item.get("name"))
             if not skill_ident:
                 continue  # entry without a usable string identifier — drop it
+            # A non-string tag reaches the discover handler's per-field
+            # redactor and 500s the whole response, so drop it here.
             raw_tags = item.get("tags", [])
-            tags = (
-                [t for t in raw_tags if isinstance(t, str)]
-                if isinstance(raw_tags, list)
-                else []
-            )
+            tags = [t for t in raw_tags if isinstance(t, str)] if isinstance(raw_tags, list) else []
             results.append(
                 SkillSearchResult(
                     id=skill_ident,
@@ -133,7 +144,10 @@ class SkillsShProvider:
                     description=_s(item.get("description")),
                     provider=self.name,
                     repo_url=repo_url,
-                    author=source.split("/")[0] if isinstance(source, str) and source else "",
+                    # `source` is the registry's "owner/repo" identifier, not a
+                    # filesystem path, so the separator is always "/". Take the
+                    # owner segment without building the whole list.
+                    author=source.partition("/")[0],
                     tags=tags,
                     installs=installs,
                 )
@@ -151,21 +165,15 @@ class SkillsShProvider:
         if bundle is None:
             return None
 
-        # Find SKILL.md first, fall back to AGENTS.md
-        skill_md = next((f for f in bundle if f[0] == "SKILL.md"), None)
-        if skill_md:
-            return skill_md[1]
-
-        agents_md = next((f for f in bundle if f[0] == "AGENTS.md"), None)
-        if agents_md:
-            return agents_md[1]
-
-        # Last resort: return the first .md file
+        # SKILL.md first, then AGENTS.md, then any .md. First match in bundle
+        # order wins at each tier, so a bundle carrying two SKILL.md entries
+        # resolves deterministically to the earlier one.
+        for wanted in ("SKILL.md", "AGENTS.md"):
+            named = next((f for f in bundle if f[0] == wanted), None)
+            if named:
+                return named[1]
         any_md = next((f for f in bundle if f[0].endswith(".md")), None)
-        if any_md:
-            return any_md[1]
-
-        return None
+        return any_md[1] if any_md else None
 
     async def fetch_skill_bundle(self, skill_id: str) -> list[tuple[str, str]] | None:
         """Fetch the full skill bundle (all files) from skills.sh.
@@ -225,31 +233,6 @@ class SkillsShProvider:
         return result if result else None
 
 
-def _github_raw_url(repo_url: str, file_path: str) -> str | None:
-    """Convert a GitHub repo URL to a raw content URL.
-
-    Handles:
-    - https://github.com/user/repo
-    - https://github.com/user/repo.git
-    - github.com/user/repo
-    """
-    # Defense-in-depth: file_path must not contain traversal sequences.
-    # Currently always called with literal "SKILL.md" but this guards
-    # against future misuse if the parameter becomes caller-controlled.
-    if ".." in file_path or file_path.startswith("/"):
-        return None
-    match = re.match(
-        r"(?:https?://)?github\.com/([^/]+)/([^/.\s]+?)(?:\.git)?/?$",
-        repo_url.strip(),
-    )
-    if not match:
-        return None
-    user, repo = match.group(1), match.group(2)
-    # Try the "main" default branch first (most common); caller can retry with
-    # the legacy default branch name if this 404s.
-    return f"https://raw.githubusercontent.com/{user}/{repo}/main/{file_path}"
-
-
 async def _fetch_json(url: str) -> Any | None:
     """Fetch JSON from a URL. Returns None on any failure."""
     try:
@@ -278,37 +261,6 @@ def _sync_fetch_json(url: str) -> Any | None:
             return None
         return json.loads(data.decode("utf-8"))
     except (urllib.error.URLError, json.JSONDecodeError, OSError):
-        return None
-
-
-async def _fetch_text(url: str) -> str | None:
-    """Fetch text content from a URL. Returns None on any failure."""
-    try:
-        return await asyncio.get_running_loop().run_in_executor(None, _sync_fetch_text, url)
-    except Exception:
-        logger.debug("Failed to fetch text from %s", url, exc_info=True)
-        return None
-
-
-def _sync_fetch_text(url: str) -> str | None:
-    """Synchronous text fetch (for run_in_executor)."""
-    # Pre-connect SSRF check on the initial URL
-    if _is_internal_url(url):
-        return None
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    try:
-        resp = _open_no_internal_redirect(req)
-        if resp is None:
-            return None
-        if resp.status != 200:
-            resp.close()
-            return None
-        data = _read_bounded(resp, _MAX_RESPONSE_BYTES)
-        resp.close()
-        if data is None:
-            return None
-        return data.decode("utf-8")
-    except (urllib.error.URLError, OSError):
         return None
 
 
@@ -404,9 +356,12 @@ def _is_internal_url(url: str) -> bool:
         return True  # parse failure = suspicious, block
 
 
-# Hosts a fetch may start at or be redirected to. Everything this module
-# requests lives on skills.sh or GitHub raw content; GitHub serves raw file
-# redirects via its media/objects CDN hosts. A redirect to ANY other host —
+# Hosts a fetch may be REDIRECTED to; the initial URL is checked by
+# `_is_internal_url` alone (see `SkillsShConfig.api_base`). Every request this
+# module makes starts at the configured skills.sh API base, so the GitHub hosts
+# are here only as redirect targets of the download endpoint, which serves
+# bundle payloads from GitHub's raw, media and objects CDNs. A redirect to ANY
+# other host —
 # including an internal DNS name that would resolve to a private address
 # (DNS-rebinding style SSRF) — is refused. Keep this list tight: add hosts
 # only for a concrete, observed redirect target.
@@ -465,13 +420,14 @@ def _open_no_internal_redirect(req: urllib.request.Request):
 def _read_bounded(resp, max_bytes: int) -> bytes | None:
     """Read response body up to max_bytes. Returns None if exceeded.
 
-    Prevents disk exhaustion from oversized responses. Reads in chunks
-    to avoid holding unbounded data in memory.
+    The check is against the RUNNING total, so an oversized body is abandoned
+    mid-stream rather than accumulated whole — *max_bytes* bounds the bytes
+    retained here, not just a verdict on the finished body.
     """
     chunks: list[bytes] = []
     total = 0
     while True:
-        chunk = resp.read(65536)
+        chunk = resp.read(_HTTP_READ_CHUNK_BYTES)
         if not chunk:
             break
         total += len(chunk)

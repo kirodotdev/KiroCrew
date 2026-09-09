@@ -11,40 +11,9 @@ from kiro_crew.skill_providers.base import ProviderRegistry, SkillSearchResult
 from kiro_crew.skill_providers.skillsh import (
     SkillsShConfig,
     SkillsShProvider,
-    _github_raw_url,
     _is_allowed_host,
     _is_internal_url,
 )
-
-
-class TestGithubRawUrl:
-    """Test GitHub URL resolution."""
-
-    def test_https_url(self):
-        assert _github_raw_url("https://github.com/user/repo", "SKILL.md") == \
-            "https://raw.githubusercontent.com/user/repo/main/SKILL.md"
-
-    def test_https_with_git_suffix(self):
-        assert _github_raw_url("https://github.com/user/repo.git", "SKILL.md") == \
-            "https://raw.githubusercontent.com/user/repo/main/SKILL.md"
-
-    def test_bare_github_url(self):
-        assert _github_raw_url("github.com/user/repo", "SKILL.md") == \
-            "https://raw.githubusercontent.com/user/repo/main/SKILL.md"
-
-    def test_trailing_slash(self):
-        assert _github_raw_url("https://github.com/user/repo/", "SKILL.md") == \
-            "https://raw.githubusercontent.com/user/repo/main/SKILL.md"
-
-    def test_non_github_url(self):
-        assert _github_raw_url("https://gitlab.com/user/repo", "SKILL.md") is None
-
-    def test_empty_string(self):
-        assert _github_raw_url("", "SKILL.md") is None
-
-    def test_nested_path(self):
-        assert _github_raw_url("https://github.com/org/repo", "src/SKILL.md") == \
-            "https://raw.githubusercontent.com/org/repo/main/src/SKILL.md"
 
 
 class TestSkillsShProvider:
@@ -230,13 +199,6 @@ class TestProviderRegistry:
              patch("kiro_crew.skill_providers.base._SEARCH_TIMEOUT_SECS", 0.05):
             results = await reg.search("test")
             assert results == []
-
-
-# Helpers not exported but worth testing
-def test_slugify_repo_name():
-    """Verify the skillsh module doesn't export _slugify_repo_name (it's in skill_sync.py)."""
-    # Our discover handler has its own _slugify — test the github URL helper instead
-    assert _github_raw_url("https://github.com/my-org/my-repo", "SKILL.md") is not None
 
 
 class TestRedirectHostAllowlist:
