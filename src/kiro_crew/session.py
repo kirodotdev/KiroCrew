@@ -898,12 +898,14 @@ class _Session:
     # Set when a provider switch, failed native resume, or Tool Search
     # compatibility fallback creates a fresh provider that still needs Kiro Crew
     # history. Non-destructive slash commands read without clearing; a confirmed
-    # native `/clear` consumes it so replay cannot undo the user's deletion. Every
-    # other replay-bearing turn consumes it only after the provider yields the
-    # first event. A cancelled terminal re-arms it before cancellation handling
-    # because kiro-cli discards that accepted turn. This preserves replay across
-    # empty streams, pre-output failures, and soft Stops while surviving loss of
-    # the separate ``first_turn`` observation.
+    # native `/clear` consumes it so replay cannot undo the user's deletion. The
+    # first provider event records acceptance only in the dashboard runner's
+    # turn-local state; the shared lease remains armed until a clean,
+    # non-synthetic, non-empty end_turn atomically promotes the fresh SID and
+    # consumes it. Cancellation, raised streams, empty verdicts, and synthetic
+    # terminals leave it armed because kiro-cli discards or cannot prove those
+    # turns. This preserves replay across empty streams, pre-output failures, and
+    # soft Stops while surviving loss of the separate ``first_turn`` observation.
     provider_switch_replay: bool = False
     # Set of msg_ts values cancelled (message deleted while processing)
     cancelled: set[str] = field(default_factory=set)
@@ -2094,8 +2096,38 @@ class SessionManager:
         session.provider_switch_replay = True
         return True
 
+    def commit_provider_switch_replay_sid(self, key: str) -> bool:
+        """Settle landed replay, promoting the live ACP SID when applicable.
+
+        Allocation deliberately leaves the prior resumable ACP SID in
+        ``SessionMap`` while replay is pending. ACP settlement writes the fresh SID
+        before synchronously consuming the shared lease, so shutdown can observe
+        only old-SID/pending or fresh-SID/settled. A legacy provider has no ACP SID
+        to promote; its landed replay consumes the same lease directly instead of
+        re-arming it forever.
+        """
+        folded = self._fold_key(key)
+        session = self._sessions.get(folded)
+        if session is None or not session.provider_switch_replay:
+            return False
+        if not _is_acp_provider(session.provider):
+            session.provider_switch_replay = False
+            return True
+        client = getattr(session.provider, "client", None)
+        sid = getattr(client, "_session_id", None)
+        if not isinstance(sid, str) or not sid:
+            return False
+        self._session_map.set(
+            folded,
+            sid,
+            provider=_provider_label(session.provider),
+            cwd=session.provider.cwd,
+        )
+        session.provider_switch_replay = False
+        return True
+
     def consume_provider_switch_replay(self, key: str) -> bool:
-        """Clear replay after the provider yields the prompt's first event."""
+        """Explicitly retire replay after confirmed native history deletion."""
         session = self._sessions.get(self._fold_key(key))
         if session is None or not session.provider_switch_replay:
             return False

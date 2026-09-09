@@ -8546,7 +8546,12 @@ class TestRuntimeWiring:
         )
 
         dispatched: list[str] = []
-        stream_behavior = {"cancel_after_accept": False}
+        stream_behavior = {
+            "cancel_after_accept": False,
+            "raise_after_accept": False,
+            "synthetic_end_turn": False,
+            "empty_end_turn": False,
+        }
 
         async def stream(stream_message):
             dispatched.append(stream_message)
@@ -8556,9 +8561,24 @@ class TestRuntimeWiring:
                 stream_behavior["cancel_after_accept"] = False
                 yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED)
                 return
+            if stream_behavior["synthetic_end_turn"]:
+                stream_behavior["synthetic_end_turn"] = False
+                yield LLMEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason="end_turn",
+                    synthetic_completion=True,
+                )
+                return
+            if stream_behavior["empty_end_turn"]:
+                stream_behavior["empty_end_turn"] = False
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+                return
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
             if stream_message != "/tools":
-                assert replay["pending"] is False
+                assert replay["pending"] is True
+            if stream_behavior["raise_after_accept"]:
+                stream_behavior["raise_after_accept"] = False
+                raise RuntimeError("stream failed after accepting replay")
             yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
 
         mock_client = MagicMock()
@@ -8571,12 +8591,18 @@ class TestRuntimeWiring:
                 (mock_client, False, False),
                 (mock_client, False, False),
                 (mock_client, False, False),
+                (mock_client, False, False),
+                (mock_client, False, False),
+                (mock_client, False, False),
+                (mock_client, False, False),
             ]
         )
         state.sessions.get_pid = MagicMock(return_value=None)
+        state.sessions.record_failure = AsyncMock()
         state.sessions.consume_replay_suppression = MagicMock(return_value=False)
 
         replay = {"pending": True}
+        durable = {"sid": "old-full-history-sid"}
 
         def replay_pending(_key):
             return replay["pending"]
@@ -8590,9 +8616,15 @@ class TestRuntimeWiring:
             replay["pending"] = True
             return True
 
+        def commit_replay(_key):
+            durable["sid"] = "fresh-replayed-sid"
+            replay["pending"] = False
+            return True
+
         state.sessions.provider_switch_replay_pending = MagicMock(side_effect=replay_pending)
         state.sessions.consume_provider_switch_replay = MagicMock(side_effect=consume_replay)
         state.sessions.mark_provider_switch_replay = MagicMock(side_effect=mark_replay)
+        state.sessions.commit_provider_switch_replay_sid = MagicMock(side_effect=commit_replay)
 
         from kiro_crew.dashboard.chat import _run_chat
 
@@ -8600,8 +8632,10 @@ class TestRuntimeWiring:
 
         assert build_message_calls == []
         assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
         assert dispatched == ["/tools"]
         state.sessions.consume_provider_switch_replay.assert_not_called()
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
 
         build_behavior["stop_during_build"] = True
         await _run_chat(state, slot, "stop during replay prep")
@@ -8614,8 +8648,10 @@ class TestRuntimeWiring:
         )
         assert persona_first_turn == [True]
         assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
         assert dispatched == ["/tools"]
         state.sessions.consume_provider_switch_replay.assert_not_called()
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
 
         stream_behavior["cancel_after_accept"] = True
         await _run_chat(state, slot, "cancel accepted replay")
@@ -8628,27 +8664,82 @@ class TestRuntimeWiring:
         assert persona_first_turn == [True, True]
         assert dispatched == ["/tools", "cancel accepted replay"]
         assert replay["pending"] is True
-        state.sessions.consume_provider_switch_replay.assert_called_once_with(
-            "dashboard:slash-replay"
-        )
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
         state.sessions.mark_provider_switch_replay.assert_called_once_with("dashboard:slash-replay")
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
 
-        await _run_chat(state, slot, "continue after cancelled replay")
+        stream_behavior["raise_after_accept"] = True
+        await _run_chat(state, slot, "raise after accepted replay")
 
         assert len(build_message_calls) == 3
-        call = build_message_calls[2]
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 2
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        stream_behavior["synthetic_end_turn"] = True
+        slot._empty_response_retries = 2
+        await _run_chat(state, slot, "synthetic replay completion")
+
+        assert len(build_message_calls) == 4
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 3
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        stream_behavior["empty_end_turn"] = True
+        slot._empty_response_retries = 2
+        await _run_chat(state, slot, "real empty replay with exhausted budget")
+
+        assert len(build_message_calls) == 5
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 4
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        stream_behavior["empty_end_turn"] = True
+        slot._empty_response_retries = 1
+        with patch(
+            "kiro_crew.dashboard.chat_runner._empty_auto_continue_enabled",
+            return_value=False,
+        ):
+            await _run_chat(state, slot, "real empty replay with continuation off")
+
+        assert len(build_message_calls) == 6
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 5
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        await _run_chat(state, slot, "continue after uncommitted replay turns")
+
+        assert len(build_message_calls) == 7
+        call = build_message_calls[6]
         assert call["context_is_new"] is True
         assert call["kwargs"]["folder_path"] == "Workspace / Demo"
         assert call["kwargs"]["compressed_history"] == "retained conversation replay"
-        assert persona_first_turn == [True, True, True]
+        assert persona_first_turn == [True, True, True, True, True, True, True]
         assert dispatched == [
             "/tools",
             "cancel accepted replay",
-            "continue after cancelled replay",
+            "raise after accepted replay",
+            "synthetic replay completion",
+            "real empty replay with exhausted budget",
+            "real empty replay with continuation off",
+            "continue after uncommitted replay turns",
         ]
         assert replay["pending"] is False
-        assert state.sessions.consume_provider_switch_replay.call_count == 2
-        state.sessions.mark_provider_switch_replay.assert_called_once_with("dashboard:slash-replay")
+        assert durable["sid"] == "fresh-replayed-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 5
+        state.sessions.commit_provider_switch_replay_sid.assert_called_once_with(
+            "dashboard:slash-replay"
+        )
         agent_spawn_calls = [
             call
             for call in hook_store.fire.await_args_list
@@ -16922,6 +17013,7 @@ class TestEmptyResponseRetry:
         state.sessions.provider_switch_replay_pending = MagicMock(return_value=True)
         state.sessions.consume_provider_switch_replay = MagicMock(return_value=True)
         state.sessions.mark_provider_switch_replay = MagicMock(return_value=True)
+        state.sessions.commit_provider_switch_replay_sid = MagicMock(return_value=True)
 
         async def _stream(msg):
             yield LLMEvent(kind=EVENT_CLEAR_STATUS)
@@ -16935,6 +17027,9 @@ class TestEmptyResponseRetry:
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert not any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
         state.sessions.consume_provider_switch_replay.assert_called_once_with(
+            f"dashboard:{slot.key}"
+        )
+        state.sessions.commit_provider_switch_replay_sid.assert_called_once_with(
             f"dashboard:{slot.key}"
         )
         state.sessions.mark_provider_switch_replay.assert_not_called()

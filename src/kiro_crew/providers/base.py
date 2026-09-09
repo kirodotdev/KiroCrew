@@ -125,6 +125,16 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def defer_replay_sid_promotion(self) -> bool:
+        """Whether replay must land before a fresh provider SID is durable.
+
+        The default is the safe provider-agnostic value: providers that do not
+        persist a resumable SID have nothing to defer. Providers that deliberately
+        keep an older SID durable during replay override this capability.
+        """
+        return False
+
+    @property
     def child_fidelity_aware(self) -> bool:
         """Consumer opt-in for the low-fidelity CHILD permission downgrade.
 

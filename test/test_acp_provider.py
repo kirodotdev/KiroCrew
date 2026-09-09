@@ -1122,7 +1122,7 @@ class TestToolSearchResumeCompatibility:
         return provider
 
     @staticmethod
-    async def _start(provider: AcpProvider) -> MagicMock:
+    async def _start(provider: AcpProvider, *, load_succeeds: bool = True) -> MagicMock:
         handle = MagicMock()
         handle.session_id = "live-sess-id"
         handle.available_models = []
@@ -1134,7 +1134,7 @@ class TestToolSearchResumeCompatibility:
         runtime.is_alive = MagicMock(return_value=True)
         runtime.saw_not_logged_in = MagicMock(return_value=False)
         runtime.kill = AsyncMock()
-        runtime.load_session = AsyncMock(return_value=handle)
+        runtime.load_session = AsyncMock(return_value=handle if load_succeeds else None)
         runtime.create_session = AsyncMock(return_value=handle)
 
         with (
@@ -1157,6 +1157,8 @@ class TestToolSearchResumeCompatibility:
         runtime.load_session.assert_not_awaited()
         runtime.create_session.assert_awaited_once()
         assert provider._history_replay_needed is True
+        assert provider._defer_replay_sid_promotion is True
+        assert provider.defer_replay_sid_promotion is True
 
     @pytest.mark.asyncio
     async def test_disabled_preserves_native_session_load(self):
@@ -1167,6 +1169,8 @@ class TestToolSearchResumeCompatibility:
         runtime.load_session.assert_awaited_once()
         runtime.create_session.assert_not_awaited()
         assert provider._history_replay_needed is False
+        assert provider._defer_replay_sid_promotion is False
+        assert provider.defer_replay_sid_promotion is False
 
     @pytest.mark.asyncio
     async def test_enabled_linked_slack_session_preserves_native_load(self):
@@ -1179,6 +1183,20 @@ class TestToolSearchResumeCompatibility:
         runtime.load_session.assert_awaited_once()
         runtime.create_session.assert_not_awaited()
         assert provider._history_replay_needed is False
+        assert provider._defer_replay_sid_promotion is False
+        assert provider.defer_replay_sid_promotion is False
+
+    @pytest.mark.asyncio
+    async def test_native_load_fallback_replays_without_deferring_sid(self):
+        provider = self._provider(tool_search=False)
+
+        runtime = await self._start(provider, load_succeeds=False)
+
+        runtime.load_session.assert_awaited_once()
+        runtime.create_session.assert_awaited_once()
+        assert provider._history_replay_needed is True
+        assert provider._defer_replay_sid_promotion is False
+        assert provider.defer_replay_sid_promotion is False
 
 
 class TestStartKiroRuntimeModelEntitlement:

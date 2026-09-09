@@ -352,6 +352,11 @@ class AcpProvider(LLMProvider):
         # conversation_log into the fresh session on the first prompt so the slot
         # is not context-free.
         self._history_replay_needed: bool = False
+        # Only the direct-dashboard Tool Search compatibility path owns the
+        # dashboard runner's durable replay settlement contract. Generic
+        # session/load recovery (including channel dispatchers) still requests
+        # history replay but must publish its fresh SID immediately.
+        self._defer_replay_sid_promotion: bool = False
         # Terminal compaction status captured by compact() while draining its
         # prompt turn; consumed by wait_for_compaction() (see compact()).
         self._compact_result: dict | None = None
@@ -392,6 +397,11 @@ class AcpProvider(LLMProvider):
     def client(self) -> AcpClient:
         """Expose underlying client for backward compat (e.g. is_ready check)."""
         return self._client
+
+    @property
+    def defer_replay_sid_promotion(self) -> bool:
+        """Whether dashboard replay must settle before publishing the fresh SID."""
+        return self._defer_replay_sid_promotion
 
     @property
     def child_fidelity_aware(self) -> bool:
@@ -837,6 +847,7 @@ class AcpProvider(LLMProvider):
                 resume_sid,
             )
             self._history_replay_needed = True
+            self._defer_replay_sid_promotion = True
             meta["resume_outcome"] = "tool_search_replay"
             resume_sid = ""
 

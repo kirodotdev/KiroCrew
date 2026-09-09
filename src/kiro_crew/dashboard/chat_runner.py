@@ -6421,6 +6421,9 @@ async def _run_chat(
     # `getattr(state, "sessions", None)` above).
     _stop_gen_turn_start = getattr(slot, "_stop_generation", 0)
     _retrying_empty = False
+    # Any empty-response verdict is unlanded for replay durability, including
+    # the terminal give-up rung (which intentionally queues no recovery).
+    _had_empty_response_verdict = False
     # Set when the turn ended on a promise-only final message and we injected one
     # continuation (see the promise-only guard near turn completion). Like
     # _retrying_empty it suppresses success-recording for this non-landing turn.
@@ -6448,6 +6451,10 @@ async def _run_chat(
     # re-queue), every `except` arm, and a hard CancelledError — not just the
     # graceful-cancel and empty-re-queue paths that reach the success check.
     _turn_landed = False
+    # Replay settlement also lives in ``finally``. Bind at turn scope because
+    # config, binding and session-start failures can reach teardown before the
+    # acquisition block determines whether replay is pending.
+    _replay_accepted_this_turn = False
     # True while a member DM thread's FIRST turn is in flight: the session
     # client is allocated before the context build, so a build failure (e.g.
     # MemberRulesUnreadable aborting on a malformed rules file) leaves a warm
@@ -6944,7 +6951,6 @@ async def _run_chat(
         # while the next ordinary prompt must behave as the context-bearing first
         # turn and acknowledge replay only after assembly succeeds.
         _replay_pending = state.sessions.provider_switch_replay_pending(session_key) is True
-        _replay_consumed_this_turn = False
         _context_is_new = is_new or _replay_pending
         # A member DM's first turn carries the four-layer member section as
         # session-start context. Record that it is at stake HERE — the moment
@@ -7799,11 +7805,12 @@ async def _run_chat(
             # Async-generator creation is not prompt acceptance. The first
             # provider event is the earliest evidence that the replay-bearing
             # prompt entered the turn; pre-output errors and empty streams never
-            # reach this branch and therefore preserve replay for the retry.
+            # reach this branch. Acceptance is runner-local: the shared lease
+            # stays armed until final settlement so a concurrent shutdown cannot
+            # publish the fresh SID before this turn proves durable.
             if _replay_pending and not is_slash:
-                state.sessions.consume_provider_switch_replay(session_key)
                 _replay_pending = False
-                _replay_consumed_this_turn = True
+                _replay_accepted_this_turn = True
             # Heartbeat every 5s during long operations
             if time.time() - last_heartbeat > 5:
                 state.broadcast_ws("heartbeat", {"slot": slot.key, "ts": time.time()})
@@ -9976,10 +9983,12 @@ async def _run_chat(
                 # replaying the persisted Kiro Crew history afterwards would undo
                 # the user's clear. Retire either an unconsumed slash lease or the
                 # consumed-turn marker before any terminal can re-arm it.
+                if _replay_pending or _replay_accepted_this_turn:
+                    state.sessions.commit_provider_switch_replay_sid(session_key)
                 if _replay_pending:
                     state.sessions.consume_provider_switch_replay(session_key)
                     _replay_pending = False
-                _replay_consumed_this_turn = False
+                _replay_accepted_this_turn = False
                 slot.messages.clear()
                 # The boundary was captured against the pre-clear message
                 # count; the list is now empty, so reset it to 0 or the
@@ -10477,14 +10486,6 @@ async def _run_chat(
                         slot.key,
                     )
                 break
-
-        # A soft Stop makes kiro-cli discard the accepted turn. If that turn
-        # carried the one-shot history replay, restore the lease before any
-        # cancellation branch returns so the next prompt receives the full older
-        # conversation as well as the cancelled-turn preamble.
-        if _stop_reason == STOP_REASON_CANCELLED and _replay_consumed_this_turn:
-            state.sessions.mark_provider_switch_replay(session_key)
-            _replay_pending = True
 
         # Turn stream ended: flush any withheld thinking tail (a thinking-final
         # turn never hit the loop-top flush for a following non-thinking event).
@@ -11026,6 +11027,7 @@ async def _run_chat(
             and not _terminal_question_posted
             and not _refusal_reasons
         ):
+            _had_empty_response_verdict = True
             # Model returned an empty response — retry once, then notify user.
             # Precedence: a turn that ended on a recoverable tool refusal also has
             # empty assistant_text when the model went straight to the blocked
@@ -12595,6 +12597,31 @@ async def _run_chat(
             _flush_file_changes(slot)
         except Exception:
             logger.debug("_flush_file_changes failed", exc_info=True)
+        # Replay settlement belongs on the one path every turn exit crosses.
+        # A clean, non-synthetic landed end_turn is the only ordinary terminal
+        # whose fresh native transcript is durable enough to replace the prior
+        # full-history SID. Exceptions, hard cancellation, synthetic completion,
+        # recovery returns and unlanded terminals re-arm the lease; close_all then
+        # sees provider_switch_replay and preserves the old SID on restart.
+        if _replay_accepted_this_turn:
+            try:
+                _replay_landed = (
+                    _turn_landed
+                    and _stop_reason == STOP_REASON_END_TURN
+                    and not _terminal_synthetic
+                    and not _had_empty_response_verdict
+                )
+                if _replay_landed:
+                    if not state.sessions.commit_provider_switch_replay_sid(session_key):
+                        state.sessions.mark_provider_switch_replay(session_key)
+                else:
+                    state.sessions.mark_provider_switch_replay(session_key)
+            except Exception:
+                logger.debug("settling replay SID failed", exc_info=True)
+                try:
+                    state.sessions.mark_provider_switch_replay(session_key)
+                except Exception:
+                    logger.debug("re-arming replay after settlement failure failed", exc_info=True)
         # This turn consumed the one-shot post-compaction re-injection flag but
         # never landed, so the prompt carrying the skills index was discarded —
         # an early return (stale-recover / tool-stall / error re-queue), an

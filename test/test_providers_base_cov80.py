@@ -71,6 +71,7 @@ def test_identity_defaults_are_empty_not_wildcards(provider: _MinimalProvider) -
     assert provider.cwd == ""
     assert provider.served_model == ""
     assert provider.exit_code is None
+    assert provider.defer_replay_sid_promotion is False
 
 
 def test_liveness_defaults_and_process_delegation(provider: _MinimalProvider) -> None:

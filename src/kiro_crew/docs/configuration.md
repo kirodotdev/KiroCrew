@@ -233,6 +233,8 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | `agent.completion_keep_chars` | Max characters retained in the completion event after applying `completion_keep`. `0` disables truncation. The full transcript stays on disk (see `subagent_result_ttl_secs`) | `3000` |
 | `agent.subagent_result_ttl_secs` | How long a delivered subagent's `result.txt` is retained before the reaper prunes it, so the parent can read the full transcript on demand instead of re-running the subagent. Measured from the moment the completion reaches the parent, not from when the run finished | `3600` (1h) |
 
+**Tool Search restart compatibility:** automatic fresh-session replay after a restart currently applies to direct dashboard conversations. Messaging-channel and dashboard-linked channel sessions continue using native session resume; if a deferred tool remains unavailable after one of those sessions resumes, set `agent.tool_search` to `false` until channel dispatchers support the same replay-settlement contract.
+
 ### Session
 
 | Key | Description | Default |
