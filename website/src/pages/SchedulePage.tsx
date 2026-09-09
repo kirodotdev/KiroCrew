@@ -1463,7 +1463,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
         ) : (
           <>
             {prefillWrites && (
-              <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-warn-subtle text-[12.5px] text-warn-fg" role="note">
+              <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-warn-subtle text-[12.5px] text-warn-fg" role="note" data-testid="schedule-writes-notice">
                 <GitPullRequestArrow size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
                 <span>{i18nT('pages.schedulePage.writes_notice')}</span>
               </div>

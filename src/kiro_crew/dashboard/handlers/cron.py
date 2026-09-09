@@ -355,6 +355,12 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
     strict_schedule = body.get("strict_schedule", False)
     hide_in_chat = body.get("hide_in_chat", False)
+    # A job created on a full context pays for memory, lessons, steering, skills
+    # and prior history on every wake, whether or not the wake had anything to
+    # do. The store has carried this flag since the tool path gained it; only
+    # this handler dropped it, so a job created from the dashboard could not opt
+    # out of that cost without a later edit from chat or the CLI.
+    minimal_context = body.get("minimal_context", False)
     # Same folder_id contract as PATCH /api/crons/{id}: string or null → "",
     # anything else is a 400 so the two entry points cannot diverge.
     folder_id = body.get("folder_id", "")
@@ -400,6 +406,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "timezone": (timezone_val or ""),
         "strict_schedule": bool(strict_schedule),
         "hide_in_chat": bool(hide_in_chat),
+        "minimal_context": bool(minimal_context),
         "folder_id": folder_id,
     }
     if approval_mode:
@@ -541,6 +548,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
         "silent",
         "strict_schedule",
         "hide_in_chat",
+        "minimal_context",
         "folder_id",
     ):
         if key in body:
@@ -2243,6 +2251,10 @@ async def api_crons(request: web.Request) -> web.Response:
             "silent": j.silent,
             "strict_schedule": j.strict_schedule,
             "hide_in_chat": j.hide_in_chat,
+            # Returned so the edit form can show the job's real setting instead
+            # of defaulting the control to off and silently clearing the flag on
+            # the next save.
+            "minimal_context": j.minimal_context,
             "folder_id": j.folder_id,
             "last_run_ts": j.last_run_ts,
             "has_result": bool(j.last_result),

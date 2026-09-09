@@ -404,6 +404,10 @@ export interface CronJob {
   /** When true, this cron's runs do not appear as a chat session in the active
    * session list (results still go to Slack/notifications + History). Default false. */
   hide_in_chat?: boolean
+  /** When true, this cron's runs skip memory, lessons, steering, skills and
+   * prior session history, so a routine job stops paying for context it never
+   * reads. Default false. */
+  minimal_context?: boolean
   last_run_ts?: number; next_run_ts?: number | null; has_result?: boolean; has_slot?: boolean
   /** IANA timezone the cron expression's hour/minute fields are stored in.
    * Absent / null for legacy jobs created without an explicit TZ — treat as UTC. */
