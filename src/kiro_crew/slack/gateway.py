@@ -32,7 +32,7 @@ import threading
 import time
 import uuid
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -69,7 +69,8 @@ from kiro_crew.autonudge import (
 from kiro_crew.beacon import distribution
 from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.channels import builtin_channel_descriptors
-from kiro_crew.config import KiroCrewConfig
+from kiro_crew.config import KiroCrewConfig, live
+from kiro_crew.config.live import ConfigChange, ConfigDeferred, Subscription
 from kiro_crew.config.loader import (
     CRED_DISCORD_BOT_TOKEN,
     CRED_FEISHU_APP_ID,
@@ -1597,6 +1598,23 @@ async def _pinned_kiro_cli(purpose: str) -> str | None:
     return pinned
 
 
+def _push_observe_limits(history: ChannelHistory, max_entries: int, ttl_secs: int) -> None:
+    """Push new observe-mode caps onto a live :class:`ChannelHistory`.
+
+    Prefers the history's own setter when it has one; otherwise sets the two
+    fields the constructor set, which every later trim and buffer allocation
+    reads. Existing observe buffers keep their current size until the next
+    ``set_observe`` upgrade -- trimming is the only consumer, so nothing is
+    lost by applying the cap lazily.
+    """
+    setter = getattr(history, "set_observe_limits", None)
+    if callable(setter):
+        setter(max_entries, ttl_secs)
+        return
+    history._observe_max_entries = max_entries
+    history._observe_ttl_secs = ttl_secs
+
+
 class GatewayOrchestrator:
     """Manages the lifecycle of all gateway services.
 
@@ -1665,116 +1683,32 @@ class GatewayOrchestrator:
         }
         self._open_channels: set[str] = set(cfg.slack.open_channels)
         self._slack_enabled = bool(self._app_token and self._bot_token)
-        self._wecom_bot_id = creds.get(CRED_WECOM_BOT_ID, "")
-        self._wecom_secret = creds.get(CRED_WECOM_SECRET, "")
-        self._wecom_enabled = bool(cfg.wecom.enabled and self._wecom_bot_id and self._wecom_secret)
-        # Telegram — the TELEGRAM_BOT_TOKEN credential (env/.env) overrides
-        # cfg.telegram.bot_token; all other settings come from the typed
-        # cfg.telegram dataclass (no ad-hoc config.json re-parse).
-        self._telegram_bot_token = creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
-        # telegram.accounts is deprecated and inert, and while it is set the channel
-        # stays OFF rather than falling back to the top-level token. A config that
-        # named accounts served ONLY those accounts — the top-level bot_token and
-        # allowed_user_ids were shadowed — so serving them now would reopen a bot
-        # the operator had stopped, under an allow-list they may have narrowed when
-        # they migrated. Staying off preserves what the accounts block already did
-        # and leaves re-enabling an explicit edit.
-        self._telegram_enabled = bool(
-            cfg.telegram.enabled and self._telegram_bot_token and not cfg.telegram.accounts
-        )
-        if cfg.telegram.accounts:
-            logger.warning(
-                "telegram.accounts is no longer served (%d account(s): %s) — multi-bot "
-                "operation is withdrawn until a bot is a governable unit, and the "
-                "Telegram channel stays OFF while telegram.accounts is set (these "
-                "entries already shadowed the top-level token, so falling back to it "
-                "would start a bot you had stopped). Remove the accounts block and put "
-                "the one token you want served in telegram.bot_token; the entries are "
-                "preserved in config until you do.",
-                len(cfg.telegram.accounts),
-                ", ".join(sorted(cfg.telegram.accounts)),
-            )
-        self._telegram_allowed_user_ids: list[int] = list(cfg.telegram.allowed_user_ids)
-        # Forum-topic gate (fail closed): serve supergroup forum Topics only when
-        # allow_forum is set AND the supergroup's chat_id is allow-listed.
-        self._telegram_allow_forum: bool = bool(cfg.telegram.allow_forum)
-        self._telegram_allowed_forum_chat_ids: list[int] = list(cfg.telegram.allowed_forum_chat_ids)
-        self._telegram_client: "TelegramClient | None" = None
-        # Weixin (iLink personal WeChat) — the WEIXIN_TOKEN credential (env/.env)
-        # overrides cfg.weixin.token. token + account_id come from the Settings
-        # QR flow; deny-by-default DM policy from the typed cfg.weixin dataclass.
-        self._weixin_token = creds.get(CRED_WEIXIN_TOKEN, "") or cfg.weixin.token
-        self._weixin_account_id: str = cfg.weixin.account_id
-        self._weixin_base_url: str = cfg.weixin.base_url
-        self._weixin_dm_policy: str = cfg.weixin.dm_policy
-        self._weixin_allowed_user_ids: list[str] = list(cfg.weixin.allowed_user_ids)
-        self._weixin_enabled = bool(
-            cfg.weixin.enabled and self._weixin_token and self._weixin_account_id
-        )
-        self._weixin_client: "WeixinClient | None" = None
-        # WhatsApp (QR-linked personal account) — no credential: pairing state
-        # lives in the channel's session DB, created by the Settings QR flow.
-        # Enablement is config-only; maybe_start_whatsapp reports the missing
-        # optional dependency or an unpaired session via the status badge.
-        self._whatsapp_enabled = bool(cfg.whatsapp.enabled)
-        self._whatsapp_client: "WhatsAppClient | None" = None
-        # Feishu (Lark/飞书) — FEISHU_APP_ID / FEISHU_APP_SECRET (env/.env),
-        # matching the Feishu developer console's own naming; everything else
-        # from the typed cfg.feishu dataclass. Both are registered credentials,
-        # so they are stripped from the agent subprocess environment by
-        # sandbox._AGENT_DENIED_ENV_KEYS — the gateway is their only consumer.
-        # Deny-by-default: an empty allowed_open_ids authorises nobody, and a
-        # group chat needs BOTH allow_group and an allow-listed chat_id. The
-        # client handle is owned by the channel registry (``kiro_crew.channels``),
-        # which also closes it on shutdown.
-        self._feishu_app_id = creds.get(CRED_FEISHU_APP_ID, "")
-        self._feishu_app_secret = creds.get(CRED_FEISHU_APP_SECRET, "")
-        self._feishu_enabled = bool(
-            cfg.feishu.enabled and self._feishu_app_id and self._feishu_app_secret
-        )
-        self._feishu_allowed_open_ids: list[str] = list(cfg.feishu.allowed_open_ids)
-        self._feishu_allow_group: bool = bool(cfg.feishu.allow_group)
-        self._feishu_allowed_group_ids: list[str] = list(cfg.feishu.allowed_group_ids)
-        # Discord — the DISCORD_BOT_TOKEN credential (env/.env) overrides
-        # cfg.discord.bot_token; all other settings come from the typed
-        # cfg.discord dataclass (mirrors the Telegram block above).
-        self._discord_bot_token = creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
-        self._discord_enabled = bool(cfg.discord.enabled and self._discord_bot_token)
-        self._discord_allowed_user_ids: list[str] = [str(u) for u in cfg.discord.allowed_user_ids]
-        self._discord_allowed_thread_ids: list[str] = [
-            str(t) for t in cfg.discord.allowed_thread_ids
-        ]
-        self._discord_allowed_channel_ids: list[str] = [
-            str(c) for c in cfg.discord.allowed_channel_ids
-        ]
-        self._discord_auto_thread = bool(cfg.discord.auto_thread)
-        self._discord_client: "DiscordClient | None" = None
-        # Webex — the WEBEX_BOT_TOKEN credential (env/.env) overrides
-        # cfg.webex.bot_token; all other settings come from the typed
-        # cfg.webex dataclass (no ad-hoc config.json re-parse).
-        self._webex_bot_token = creds.get(CRED_WEBEX_BOT_TOKEN, "") or cfg.webex.bot_token
-        self._webex_enabled = bool(cfg.webex.enabled and self._webex_bot_token)
-        self._webex_allowed_emails: list[str] = list(cfg.webex.allowed_emails)
-        self._webex_client: "WebexClient | None" = None
-        # iMessage — no credential exists to hoist: the transport is the user's
-        # own signed-in Messages.app, so enablement is the config flag alone.
-        # Everything else is read from the typed cfg.imessage dataclass at start.
-        self._imessage_enabled = bool(cfg.imessage.enabled)
-        self._imessage_client: "IMessageClient | None" = None
-        # Teams — the MICROSOFT_APP_ID / MICROSOFT_APP_PASSWORD / _TENANT_ID
-        # credentials (env/.env) override the typed cfg.teams fields; all other
-        # settings come from the typed cfg.teams dataclass.
-        self._teams_app_id = creds.get(CRED_MICROSOFT_APP_ID, "") or cfg.teams.app_id
-        self._teams_app_password = (
-            creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or cfg.teams.app_password
-        )
-        self._teams_tenant_id = creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or cfg.teams.tenant_id
-        self._teams_enabled = bool(
-            cfg.teams.enabled and self._teams_app_id and self._teams_app_password
-        )
-        self._teams_allowed_emails: list[str] = list(cfg.teams.allowed_emails)
-        self._teams_client: "TeamsClient | None" = None
+        # One hoist per channel, in roster order. Each reads the credential
+        # store + that channel's config section into the ``_<channel>_*``
+        # attributes its ``maybe_start_*`` factory consumes. Kept as methods so
+        # ``restart_channel`` can re-run exactly one of them against a fresh
+        # config when a connection parameter changes.
+        self._hoist_wecom(cfg, creds)
+        self._hoist_telegram(cfg, creds)
+        self._hoist_weixin(cfg, creds)
+        self._hoist_whatsapp(cfg, creds)
+        self._hoist_feishu(cfg, creds)
+        self._hoist_discord(cfg, creds)
+        self._hoist_webex(cfg, creds)
+        self._hoist_imessage(cfg, creds)
+        self._hoist_teams(cfg, creds)
         self.slack_command = cfg.slack.command
+        # Serializes restart_channel: two config writes landing within one
+        # poll interval must close-then-start the same channel in order.
+        self._channel_restart_lock = asyncio.Lock()
+        # Set once _start_channel_transports has run; the restart applier defers
+        # before that, because the boot loop is about to start every channel
+        # from the hoist above and a concurrent start would double it.
+        self._channel_transports_started = False
+        self._channel_restart_tasks: set[asyncio.Task[None]] = set()
+        self._channel_restart_gen: dict[str, int] = {}
+        self._config_subs: list[Subscription] = []
+        self._register_config_appliers()
 
         # Services (initialized in start())
         self.slack: RealSlackClient | None = None
@@ -2946,6 +2880,22 @@ class GatewayOrchestrator:
 
         self._memory_startup = MemoryStartup.begin()
 
+        # Any telemetry.* write rebuilds the metrics recorder, so a field other than
+        # `enabled` (retention, export interval, OTLP endpoint) is not frozen at
+        # first use.
+        try:
+            from kiro_crew.dashboard.chat_persistence import (
+                watch_config as _watch_entry_cache_config,
+            )
+            from kiro_crew.metrics.provider import watch_config as _watch_telemetry_config
+
+            _watch_telemetry_config()
+            # Entry-cache bounds are memoised on the chat save path; the watcher
+            # drops the memo so a new bound applies to the next flush.
+            _watch_entry_cache_config()
+        except Exception:
+            logger.debug("service config watchers not fully registered", exc_info=True)
+
         # Memory, skills, hooks, lessons
         memory = MemoryStore()
 
@@ -2956,6 +2906,7 @@ class GatewayOrchestrator:
             confidence_threshold=self._cfg.memory.semantic_confidence_threshold,
             extra_prefixes=self._cfg.memory.semantic_keys or None,
             episodic_limit=self._cfg.memory.episodic_max_results,
+            episodic_max=self._cfg.memory.episodic_max_count,
             embedding_dim=self._cfg.memory.embedding_dim,
             decay_rates=self._cfg.memory.decay_rates or None,
             dedup_threshold=self._cfg.memory.episodic_dedup_threshold,
@@ -2984,6 +2935,10 @@ class GatewayOrchestrator:
         # Opt-out state comes from the keystone denied_commands.json (agent-
         # unwritable), not config.json's hooks section.
         hooks = HookManager(hooks_config_from_config_dict(self._cfg.hooks))
+        # Follow config.json's hooks section live. The heartbeat-scoped manager is
+        # re-derived from this one per cycle, so it inherits the reload without
+        # subscribing (and must not, see HookManager.watch_config).
+        hooks.watch_config()
         lessons = LessonStore()
         self.ctx_builder = ContextBuilder(
             memory=memory,
@@ -9682,6 +9637,19 @@ class GatewayOrchestrator:
     #: turn the timer into a spin loop that reinstalls continuously.
     _MCP_RESOLVE_MIN_SLEEP_SECS = 300.0
 
+    def _mcp_resolve_refresh_secs(self) -> float:
+        """``mcp_gateway.resolve_once_refresh_hours`` as of the latest config, in seconds.
+
+        Read from the live snapshot rather than the boot ``self._cfg`` so the
+        prefetch loop's per-iteration re-read is a real re-read: a longer or
+        shorter window written to config.json is honoured on the next pass, as
+        the loop's docstring promises. Before the watcher has primed it falls
+        back to the boot copy -- never a ``load()`` here, which parses and
+        validates the file on the event loop.
+        """
+        cfg = live.snapshot() or self._cfg
+        return float(cfg.mcp_gateway.resolve_once_refresh_hours) * 3600.0
+
     async def _mcp_resolve_prefetch_loop(self, target_env: dict[str, str]) -> None:
         """Run the pre-resolve pass on the configured cadence until cancelled.
 
@@ -9703,7 +9671,7 @@ class GatewayOrchestrator:
         """
         while True:
             await self._prefetch_mcp_resolutions(target_env)
-            window = float(self._cfg.mcp_gateway.resolve_once_refresh_hours) * 3600.0
+            window = self._mcp_resolve_refresh_secs()
             await asyncio.sleep(max(window, self._MCP_RESOLVE_MIN_SLEEP_SECS))
 
     async def _prefetch_mcp_resolutions(
@@ -9718,7 +9686,7 @@ class GatewayOrchestrator:
         the server launching exactly the way it does today.
         """
 
-        refresh_secs = float(self._cfg.mcp_gateway.resolve_once_refresh_hours) * 3600.0
+        refresh_secs = self._mcp_resolve_refresh_secs()
         try:
             outcomes = await resolve_prefetch(
                 self._mcp_resolve_home, target_env, refresh_secs=refresh_secs, force=force
@@ -10008,6 +9976,10 @@ class GatewayOrchestrator:
             cleanup_tasks.append(self._dashboard_runner.cleanup())
         if self._socket_client:
             cleanup_tasks.append(asyncio.wait_for(self._socket_client.close(), timeout=1.0))
+        # A reconnect the config applier scheduled must not race the close below
+        # by starting a fresh transport into a gateway that is going away.
+        for restart in list(self._channel_restart_tasks):
+            restart.cancel()
         cleanup_tasks.extend(registry.shutdown_tasks(self._channel_handles, timeout=2.0))
         # Cancel background model download if still in flight
         if self._model_download_task is not None and not self._model_download_task.done():
@@ -12044,6 +12016,551 @@ class GatewayOrchestrator:
         await drain_log_queue_before_hard_exit()
         os._exit(exit_code)
 
+    # ── per-channel hoists ───────────────────────────────────────────────
+    # Each one is the ONLY place its channel's boot state is derived, so a
+    # restart re-derives exactly what boot derived. A hoist resets the legacy
+    # ``_<channel>_client`` mirror too: it runs only before a start (boot or
+    # restart), where the mirror is None by construction.
+
+    def _hoist_wecom(self, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+        self._wecom_bot_id = creds.get(CRED_WECOM_BOT_ID, "")
+        self._wecom_secret = creds.get(CRED_WECOM_SECRET, "")
+        self._wecom_enabled = bool(cfg.wecom.enabled and self._wecom_bot_id and self._wecom_secret)
+
+    def _hoist_telegram(self, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+        # Telegram — the TELEGRAM_BOT_TOKEN credential (env/.env) overrides
+        # cfg.telegram.bot_token; all other settings come from the typed
+        # cfg.telegram dataclass (no ad-hoc config.json re-parse).
+        self._telegram_bot_token = creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
+        # telegram.accounts is deprecated and inert, and while it is set the channel
+        # stays OFF rather than falling back to the top-level token. A config that
+        # named accounts served ONLY those accounts — the top-level bot_token and
+        # allowed_user_ids were shadowed — so serving them now would reopen a bot
+        # the operator had stopped, under an allow-list they may have narrowed when
+        # they migrated. Staying off preserves what the accounts block already did
+        # and leaves re-enabling an explicit edit.
+        self._telegram_enabled = bool(
+            cfg.telegram.enabled and self._telegram_bot_token and not cfg.telegram.accounts
+        )
+        if cfg.telegram.accounts:
+            logger.warning(
+                "telegram.accounts is no longer served (%d account(s): %s) — multi-bot "
+                "operation is withdrawn until a bot is a governable unit, and the "
+                "Telegram channel stays OFF while telegram.accounts is set (these "
+                "entries already shadowed the top-level token, so falling back to it "
+                "would start a bot you had stopped). Remove the accounts block and put "
+                "the one token you want served in telegram.bot_token; the entries are "
+                "preserved in config until you do.",
+                len(cfg.telegram.accounts),
+                ", ".join(sorted(cfg.telegram.accounts)),
+            )
+        self._telegram_allowed_user_ids: list[int] = list(cfg.telegram.allowed_user_ids)
+        # Forum-topic gate (fail closed): serve supergroup forum Topics only when
+        # allow_forum is set AND the supergroup's chat_id is allow-listed.
+        self._telegram_allow_forum: bool = bool(cfg.telegram.allow_forum)
+        self._telegram_allowed_forum_chat_ids: list[int] = list(cfg.telegram.allowed_forum_chat_ids)
+        self._telegram_client: "TelegramClient | None" = None
+
+    def _hoist_weixin(self, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+        # Weixin (iLink personal WeChat) — the WEIXIN_TOKEN credential (env/.env)
+        # overrides cfg.weixin.token. token + account_id come from the Settings
+        # QR flow; deny-by-default DM policy from the typed cfg.weixin dataclass.
+        self._weixin_token = creds.get(CRED_WEIXIN_TOKEN, "") or cfg.weixin.token
+        self._weixin_account_id: str = cfg.weixin.account_id
+        self._weixin_base_url: str = cfg.weixin.base_url
+        self._weixin_dm_policy: str = cfg.weixin.dm_policy
+        self._weixin_allowed_user_ids: list[str] = list(cfg.weixin.allowed_user_ids)
+        self._weixin_enabled = bool(
+            cfg.weixin.enabled and self._weixin_token and self._weixin_account_id
+        )
+        self._weixin_client: "WeixinClient | None" = None
+
+    def _hoist_whatsapp(self, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+        # WhatsApp (QR-linked personal account) — no credential: pairing state
+        # lives in the channel's session DB, created by the Settings QR flow.
+        # Enablement is config-only; maybe_start_whatsapp reports the missing
+        # optional dependency or an unpaired session via the status badge.
+        self._whatsapp_enabled = bool(cfg.whatsapp.enabled)
+        self._whatsapp_client: "WhatsAppClient | None" = None
+
+    def _hoist_feishu(self, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+        # Feishu (Lark/飞书) — FEISHU_APP_ID / FEISHU_APP_SECRET (env/.env),
+        # matching the Feishu developer console's own naming; everything else
+        # from the typed cfg.feishu dataclass. Both are registered credentials,
+        # so they are stripped from the agent subprocess environment by
+        # sandbox._AGENT_DENIED_ENV_KEYS — the gateway is their only consumer.
+        # Deny-by-default: an empty allowed_open_ids authorises nobody, and a
+        # group chat needs BOTH allow_group and an allow-listed chat_id. The
+        # client handle is owned by the channel registry (``kiro_crew.channels``),
+        # which also closes it on shutdown.
+        self._feishu_app_id = creds.get(CRED_FEISHU_APP_ID, "")
+        self._feishu_app_secret = creds.get(CRED_FEISHU_APP_SECRET, "")
+        self._feishu_enabled = bool(
+            cfg.feishu.enabled and self._feishu_app_id and self._feishu_app_secret
+        )
+        self._feishu_allowed_open_ids: list[str] = list(cfg.feishu.allowed_open_ids)
+        self._feishu_allow_group: bool = bool(cfg.feishu.allow_group)
+        self._feishu_allowed_group_ids: list[str] = list(cfg.feishu.allowed_group_ids)
+
+    def _hoist_discord(self, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+        # Discord — the DISCORD_BOT_TOKEN credential (env/.env) overrides
+        # cfg.discord.bot_token; all other settings come from the typed
+        # cfg.discord dataclass (mirrors the Telegram block above).
+        self._discord_bot_token = creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
+        self._discord_enabled = bool(cfg.discord.enabled and self._discord_bot_token)
+        self._discord_allowed_user_ids: list[str] = [str(u) for u in cfg.discord.allowed_user_ids]
+        self._discord_allowed_thread_ids: list[str] = [
+            str(t) for t in cfg.discord.allowed_thread_ids
+        ]
+        self._discord_allowed_channel_ids: list[str] = [
+            str(c) for c in cfg.discord.allowed_channel_ids
+        ]
+        self._discord_auto_thread = bool(cfg.discord.auto_thread)
+        self._discord_client: "DiscordClient | None" = None
+
+    def _hoist_webex(self, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+        # Webex — the WEBEX_BOT_TOKEN credential (env/.env) overrides
+        # cfg.webex.bot_token; all other settings come from the typed
+        # cfg.webex dataclass (no ad-hoc config.json re-parse).
+        self._webex_bot_token = creds.get(CRED_WEBEX_BOT_TOKEN, "") or cfg.webex.bot_token
+        self._webex_enabled = bool(cfg.webex.enabled and self._webex_bot_token)
+        self._webex_allowed_emails: list[str] = list(cfg.webex.allowed_emails)
+        self._webex_client: "WebexClient | None" = None
+
+    def _hoist_imessage(self, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+        # iMessage — no credential exists to hoist: the transport is the user's
+        # own signed-in Messages.app, so enablement is the config flag alone.
+        # Everything else is read from the typed cfg.imessage dataclass at start.
+        self._imessage_enabled = bool(cfg.imessage.enabled)
+        self._imessage_client: "IMessageClient | None" = None
+
+    def _hoist_teams(self, cfg: KiroCrewConfig, creds: Mapping[str, str]) -> None:
+        # Teams — the MICROSOFT_APP_ID / MICROSOFT_APP_PASSWORD / _TENANT_ID
+        # credentials (env/.env) override the typed cfg.teams fields; all other
+        # settings come from the typed cfg.teams dataclass.
+        self._teams_app_id = creds.get(CRED_MICROSOFT_APP_ID, "") or cfg.teams.app_id
+        self._teams_app_password = (
+            creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or cfg.teams.app_password
+        )
+        self._teams_tenant_id = creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or cfg.teams.tenant_id
+        self._teams_enabled = bool(
+            cfg.teams.enabled and self._teams_app_id and self._teams_app_password
+        )
+        self._teams_allowed_emails: list[str] = list(cfg.teams.allowed_emails)
+        self._teams_client: "TeamsClient | None" = None
+
+    # ── live config: per-channel restart + Slack hot fields ─────────────
+
+    #: Slack-owned top-level and section prefixes whose changes the Slack applier
+    #: reconciles. Everything Slack reads lives under ``slack.*`` in the
+    #: serialized document (``slack.channels``, ``slack.dm_activation`` and the
+    #: ``observe_*`` caps are emitted inside the ``slack`` section) plus the
+    #: transport switch under ``messaging``.
+    _SLACK_APPLIER_PREFIXES: tuple[str, ...] = ("slack", "messaging")
+
+    def _register_config_appliers(self) -> None:
+        """Subscribe this orchestrator's config appliers on the process watcher.
+
+        Bound methods are held weakly by the watcher, so an orchestrator built
+        and discarded by a test does not pin itself into the registry. The
+        Subscription objects are kept on ``self`` so they live as long as the
+        orchestrator does.
+        """
+        channel_prefixes = tuple(
+            d.channel_type for d in registry.bootable(builtin_channel_descriptors())
+        )
+        self._config_subs = [
+            live.subscribe(
+                *channel_prefixes,
+                callback=self._on_channel_config_change,
+                name="GatewayOrchestrator.channel_restart",
+            ),
+            live.subscribe(
+                *self._SLACK_APPLIER_PREFIXES,
+                callback=self._on_slack_config_change,
+                name="GatewayOrchestrator.slack",
+            ),
+        ]
+
+    async def _on_channel_config_change(self, change: ConfigChange) -> None:
+        """Restart every channel whose CONNECTION parameters changed -- and only those.
+
+        A channel restarts when a path under its section names one of its
+        descriptor's ``boot_keys`` (``registry.changed_boot_keys``). Live fields
+        of the same section -- allow-lists, thresholds, render toggles -- are
+        applied by that channel's own applier without a reconnect, so a change
+        touching only them leaves the transport alone. Slack is not in this loop:
+        its lifecycle is host-managed (``_connect_slack``), and its hot fields go
+        through :meth:`_on_slack_config_change`.
+        """
+        if not self._channel_transports_started:
+            # The boot loop has not started the channels yet: they start from the
+            # hoist in __init__, so a restart here would race it. The change is
+            # NOT dropped -- the watcher is armed at dashboard init, several
+            # awaited steps before the transports start, so a CLI write in that
+            # window is a real path. Deferring hands the paths to the watcher's
+            # stale table: it re-runs this applier every tick against the CURRENT
+            # snapshot, so the retry that lands once the transports are up sees
+            # the document as it is then -- including the degraded check below,
+            # which a replay outside ``_apply_one`` would have skipped -- and
+            # consecutive writes accumulate into one union of paths.
+            logger.debug("channel restart applier: transports not started yet; deferring")
+            raise ConfigDeferred(())
+        # A section the loader discarded diffs that channel's boot keys against
+        # DEFAULTS; restarting from it would disable the channel. Those paths stay
+        # pending and the watcher retries them once the document validates. (A
+        # document torn as a whole never reaches this applier: the watcher keeps
+        # the previous snapshot while the file does not parse.)
+        degraded = change.new.degraded_sections
+        bootable = registry.bootable(builtin_channel_descriptors())
+        to_restart: list[tuple[str, frozenset[str]]] = []
+        deferred: set[str] = set()
+        for desc in bootable:
+            if desc.channel_type in degraded:
+                deferred.update(change.under(desc.channel_type))
+                continue
+            keys = registry.changed_boot_keys(desc, change.changed)
+            if keys:
+                to_restart.append((desc.channel_type, keys))
+        if not to_restart:
+            if deferred:
+                raise ConfigDeferred(deferred)
+            return
+        # CLOSE inline, before the dispatch returns. A save handler that awaited
+        # ``refresh_now`` must see inbound access closed when it answers: after
+        # this loop the old client is shut (bounded, 2s per channel), its mirror
+        # registration is gone, and no queued inbound traffic reaches a
+        # transport whose config was just revoked.
+        async with self._channel_restart_lock:
+            for channel_type, _keys in to_restart:
+                await self._close_channel_locked(channel_type)
+        # Only the RECONNECT runs off the watcher's cycle: the applier is awaited
+        # under ``ConfigWatch._cycle``'s lock, which every dashboard save also
+        # waits on through ``refresh_now``, so a transport whose connect hangs
+        # for its full timeout must not hold up an unrelated save or another
+        # applier. The task is tracked so it is neither collected mid-flight nor
+        # lost to shutdown; ``restart_channel`` finds nothing left to close and
+        # brings the channel up from the current snapshot.
+        task = asyncio.create_task(
+            self._restart_changed_channels(to_restart), name="channel-restart-applier"
+        )
+        self._channel_restart_tasks.add(task)
+        task.add_done_callback(self._channel_restart_tasks.discard)
+        if deferred:
+            # Only the degraded channels' paths are retried; the restarts above
+            # are already scheduled and must not run again on the retry.
+            raise ConfigDeferred(deferred)
+
+    async def _restart_changed_channels(self, to_restart: list[tuple[str, frozenset[str]]]) -> None:
+        # Each channel is rebuilt from the watcher's CURRENT snapshot, never from
+        # the change that scheduled this task: a later write (an allow-list
+        # revocation, say) can land and be applied live while this task waits
+        # on the restart lock, and a restart from the older document would put
+        # the revoked principal back.
+        for channel_type, keys in to_restart:
+            logger.info(
+                "config: %s connection parameter(s) changed (%s); restarting the channel",
+                channel_type,
+                ", ".join(sorted(keys)),
+            )
+            try:
+                await self.restart_channel(channel_type)
+            except Exception:
+                logger.exception("config: restarting %s failed", channel_type)
+
+    async def channel_restarts_settled(self) -> None:
+        """Wait for every in-flight channel restart the applier scheduled."""
+        while self._channel_restart_tasks:
+            await asyncio.gather(*list(self._channel_restart_tasks), return_exceptions=True)
+
+    async def restart_channel(
+        self, channel_type: str, *, cfg: KiroCrewConfig | None = None
+    ) -> object | None:
+        """Close *channel_type*'s live transport and start it again from *cfg*.
+
+        The in-process equivalent of a gateway restart for ONE channel, in the
+        order boot uses: bounded close of the old handle (``registry.shutdown_tasks``),
+        drop the handle and its legacy ``_<channel>_client`` mirror, re-run that
+        channel's hoist against *cfg* plus a fresh credential read (off-loop:
+        ``load_credentials`` reads the store), re-evaluate the ``channels``
+        governance gate and the readiness badge, then ``desc.start(orch)`` and
+        store the new handle. A channel whose new config disables it, leaves it
+        uncredentialed, or is denied by policy ends closed with its badge
+        explaining why, exactly as it would after a real restart.
+
+        The channel's section on ``self._cfg`` is replaced with *cfg*'s, because
+        the ``maybe_start_*`` factories and the dispatchers they build read
+        their allow-lists and options from ``orch._cfg.<channel>``; without this
+        the restarted transport would authorize against the boot-time list.
+
+        The close, the hoist and the publish of the new handle run under
+        ``_channel_restart_lock``; the connect between them does not, so a
+        newer close is never held behind a slow connect and the per-channel
+        restart generation decides whether the connected client is published
+        or discarded. *cfg* defaults to the
+        watcher's snapshot, then a load off the loop. Returns the new client
+        handle, or ``None`` when the channel is (now) off.
+        """
+        desc = next(
+            (
+                d
+                for d in registry.bootable(builtin_channel_descriptors())
+                if d.channel_type == channel_type
+            ),
+            None,
+        )
+        if desc is None:
+            raise ValueError(f"{channel_type!r} is not a restartable channel")
+        async with self._channel_restart_lock:
+            await self._close_channel_locked(channel_type)
+            generation = self._channel_restart_gen.get(channel_type, 0)
+            if cfg is None:
+                cfg = live.snapshot() or await asyncio.to_thread(KiroCrewConfig.load)
+            assert cfg is not None
+            creds = await asyncio.to_thread(cfg.load_credentials)
+            if cfg is not self._cfg:
+                setattr(self._cfg, channel_type, getattr(cfg, channel_type))
+            getattr(self, f"_hoist_{channel_type}")(cfg, creds)
+            enabled = bool(getattr(self, f"_{channel_type}_enabled", False))
+            loop = asyncio.get_running_loop()
+            permitted = await loop.run_in_executor(
+                maintenance_executor(),
+                lambda: _channel_transport_permitted(channel_type) if enabled else False,
+            )
+            await loop.run_in_executor(
+                maintenance_executor(), self._badge_unready_channels, (desc,)
+            )
+            if not permitted:
+                logger.info("restart %s: channel is off after reload", channel_type)
+                return None
+        # The CONNECT runs outside the lock. A disable landing while a slow
+        # connect is in flight closes inline under the lock at once instead of
+        # queuing behind the connect, and its close bumps the generation, so the
+        # client this start produces is discarded below rather than stored.
+        handles = await registry.start_channels(self, (desc,), {channel_type: True})
+        client = handles.get(channel_type)
+        if client is None:
+            return None
+        async with self._channel_restart_lock:
+            if self._channel_restart_gen.get(channel_type, 0) != generation:
+                # A newer close landed while this start was connecting: this
+                # client was built from a superseded document, so it is torn
+                # down rather than stored, and the newer restart brings up the
+                # current one.
+                for closing in registry.shutdown_tasks({channel_type: client}, timeout=2.0):
+                    try:
+                        await closing
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("restart %s: closing a superseded client failed", channel_type)
+                self._forget_superseded_start(channel_type, client)
+                return None
+            self._channel_handles[channel_type] = client
+            return client
+
+    def _forget_superseded_start(self, channel_type: str, client: object) -> None:
+        """Take back what a start torn down as superseded had already published.
+
+        A factory registers its transport for cross-surface delivery before it
+        connects, and the registry mirrors the client onto ``_<channel>_client``
+        when the start returns -- both ahead of the generation check. Left in
+        place, a closed transport keeps answering ``get_channel_transport`` and
+        proactive replies route into it and are lost. Only this start's own
+        publications are removed, by identity: a newer start may have published
+        since, and its transport and mirror must stay.
+        """
+        transports = getattr(self.dashboard_state, "channel_transports", None)
+        if isinstance(transports, dict):
+            current = transports.get(channel_type)
+            dispatcher = getattr(current, "dispatcher", None)
+            if current is not None and getattr(dispatcher, "client", None) is client:
+                transports.pop(channel_type, None)
+        if getattr(self, f"_{channel_type}_client", None) is client:
+            setattr(self, f"_{channel_type}_client", None)
+
+    async def _close_channel_locked(self, channel_type: str) -> None:
+        """Close *channel_type*'s live client, bounded, and forget it everywhere.
+
+        Caller holds ``_channel_restart_lock``. Pops the handle, drops the
+        dashboard's mirror registration (a closed transport must not stay
+        registered for cross-surface sends), closes the client under
+        ``registry.shutdown_tasks``' 2s bound, clears the legacy
+        ``_<channel>_client`` mirror, and bumps the channel's restart
+        generation so a start already connecting from an older document
+        discards its result.
+        """
+        old = self._channel_handles.pop(channel_type, None)
+        transports = getattr(self.dashboard_state, "channel_transports", None)
+        if isinstance(transports, dict):
+            transports.pop(channel_type, None)
+        if old is not None:
+            for closing in registry.shutdown_tasks({channel_type: old}, timeout=2.0):
+                try:
+                    await closing
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "restart %s: closing the previous client failed",
+                        channel_type,
+                        exc_info=True,
+                    )
+        setattr(self, f"_{channel_type}_client", None)
+        self._channel_restart_gen[channel_type] = self._channel_restart_gen.get(channel_type, 0) + 1
+
+    async def _on_slack_config_change(self, change: ConfigChange) -> None:
+        """Apply Slack's hot fields from a config reload without touching the socket.
+
+        Slack stays host-managed and never restarts here: its socket client is
+        owned by ``_connect_slack`` under the ``channels`` governance gate (a
+        deny must DROP the client), and its tokens live in the credential store,
+        not in ``config.json``, so no ``slack.*`` write can change the
+        connection. Everything else Slack reads is reconciled in place:
+
+        * ``slack.tracking_channels`` / ``slack.open_channels`` -> the
+          orchestrator sets AND the ``handler`` module globals, mutated in place
+          so the Slack-native modal (which edits the same set objects) and a CLI
+          write converge on one set.
+        * ``slack.channels`` / ``slack.dm_activation`` / ``messaging.*`` /
+          ``trusted_bot_*`` / ``home_tab_sessions_per_kind`` /
+          ``forward_to_agent_callback`` -> the shared config object every Slack
+          read goes through (``handler.slack_cfg()``), updated section-by-section
+          in place so ``orch._cfg`` and ``handler._orch_cfg`` cannot diverge.
+        * ``slack.reactions`` -> the phase-emoji table.
+        * ``slack.observe_*`` -> the live ``ChannelHistory`` caps; observe-mode
+          registration follows the new channel activations.
+        * ``slack.allowed_enterprise_ids`` -> ``enterprise.reload_allowed_team_ids``
+          (off-loop), which keeps the validated read as the sole source and fails
+          closed on a degraded file.
+
+        Authorization fail-closed: when the ``slack`` section was DISCARDED by the
+        loader (``degraded_sections``) nothing under it is applied and the previous
+        sets stay in force; the paths are raised as :class:`ConfigDeferred` so the
+        watcher retries them once the document validates.
+        """
+        from kiro_crew.slack import handler as slack_handler
+
+        new = change.new
+        slack_paths = change.under("slack")
+        if slack_paths and "slack" in new.degraded_sections:
+            # Deferred, not dropped: the watcher retries these paths once the
+            # file validates, so a revocation written alongside a malformed
+            # field lands with the repair instead of waiting for the next diff.
+            raise ConfigDeferred(slack_paths)
+        if "slack.tracking_channels" in slack_paths:
+            tracking = {
+                c["channel_id"]
+                for c in new.slack.tracking_channels
+                if isinstance(c, dict) and c.get("channel_id")
+            }
+            self._tracking_channels.clear()
+            self._tracking_channels.update(tracking)
+            slack_handler.set_tracking_channels(self._tracking_channels)
+        if "slack.open_channels" in slack_paths:
+            self._open_channels.clear()
+            self._open_channels.update(new.slack.open_channels)
+            slack_handler.set_open_channels(self._open_channels)
+        authz_paths = sorted(
+            p
+            for p in slack_paths
+            if p in ("slack.trusted_bot_ids", "slack.open_channels", "slack.tracking_channels")
+        )
+        if authz_paths:
+            # Widening sets: the change itself is the auditable event, and the
+            # per-message admission decision is audited where it is made.
+            sel().log_api_access(
+                caller="config",
+                operation="slack.authorization_config_change",
+                outcome="allowed",
+                source="config",
+                resources=",".join(authz_paths),
+            )
+        slack_handler.adopt_slack_config(new)
+        if self._cfg is not slack_handler.get_orch_cfg():
+            # Two config objects in play (the handler global was never installed,
+            # or was installed with another object): keep both current.
+            slack_handler.copy_slack_fields(new, self._cfg)
+        if change.touched("slack.reactions"):
+            unknown = slack_handler.refresh_phase_emojis(new.slack.reactions)
+            if unknown:
+                logger.warning(
+                    "Ignoring unknown slack.reactions keys: %s",
+                    ", ".join(repr(k) for k in unknown),
+                )
+        history = self.channel_history
+        if history is not None:
+            if change.touched("slack.observe_max_messages", "slack.observe_ttl_hours"):
+                _push_observe_limits(
+                    history, new.observe_max_messages, int(new.observe_ttl_hours * 3600)
+                )
+            if change.touched("slack.channels"):
+                from kiro_crew.config.loader import ACTIVATION_OBSERVE
+
+                observing = {
+                    ch_id
+                    for ch_id, ch_cfg in new.slack_channels.items()
+                    if ch_cfg.activation == ACTIVATION_OBSERVE
+                }
+                for ch_id in observing - set(history._observe_channels):
+                    history.set_observe(ch_id)
+                for ch_id in set(history._observe_channels) - observing:
+                    history.unset_observe(ch_id)
+        if "slack.allowed_enterprise_ids" in slack_paths and self._slack_enabled:
+            from kiro_crew.slack import enterprise as slack_enterprise
+
+            await asyncio.to_thread(slack_enterprise.reload_allowed_team_ids)
+        if "slack.command" in slack_paths:
+            logger.warning(
+                "slack.command changed in config; the slash command is registered in "
+                "the Slack app manifest, so this takes effect on the next gateway start"
+            )
+
+    async def _adopt_channel_sections_from_watcher(
+        self, boot: "tuple[ChannelDescriptor, ...]"
+    ) -> dict[str, str]:
+        """Re-hoist every bootable channel once, before the enabled census.
+
+        ``_<channel>_enabled`` comes from the hoist, so a channel switched on in
+        the boot window must be re-hoisted BEFORE the permitted map is computed
+        or it is never started. Returns the credentials it loaded (one off-loop
+        ``.env`` read; the watcher does not read that file) for the per-channel
+        pass :meth:`_adopt_channel_section_from_watcher` runs ahead of each
+        start.
+        """
+        creds = await asyncio.to_thread(self._cfg.load_credentials)
+        for desc in boot:
+            self._adopt_channel_section_from_watcher(desc, creds)
+        return creds
+
+    def _adopt_channel_section_from_watcher(
+        self, desc: "ChannelDescriptor", creds: dict[str, str]
+    ) -> None:
+        """Re-hoist ONE bootable channel from the watcher's CURRENT snapshot.
+
+        The transports build from ``self._cfg`` -- the document loaded at
+        construction -- while the config watcher is armed at dashboard init,
+        several awaited steps earlier. A write landing before a channel's
+        dispatcher exists reaches no applier for it, and the deferred
+        channel-restart applier only re-runs boot-key restarts, so a live field
+        -- an allow-list revocation -- would otherwise be missing from that
+        transport's first authorization state until the next edit.
+
+        Called by the start loop immediately before ``desc.start``, and
+        synchronous on purpose: every ``maybe_start_<channel>`` constructs its
+        dispatcher (which subscribes to the watcher) before its first await, so
+        from this read onward the channel's own applier receives every later
+        change. Channels start sequentially, so a per-channel read is what keeps
+        a revocation that lands while an EARLIER channel is still connecting from
+        being missed by a later one. Degraded sections are left on the boot copy:
+        fail-closed, like every applier.
+        """
+        snap = live.snapshot()
+        if snap is None or snap is self._cfg or desc.channel_type in snap.degraded_sections:
+            return
+        setattr(self._cfg, desc.channel_type, getattr(snap, desc.channel_type))
+        getattr(self, f"_hoist_{desc.channel_type}")(snap, creds)
+
     async def _start_channel_transports(
         self, descriptors: "tuple[ChannelDescriptor, ...] | None" = None
     ) -> None:
@@ -12089,6 +12606,7 @@ class GatewayOrchestrator:
         if descriptors is None:
             descriptors = builtin_channel_descriptors()
         boot = registry.bootable(descriptors)
+        creds = await self._adopt_channel_sections_from_watcher(boot)
         enabled = {
             d.channel_type: bool(getattr(self, f"_{d.channel_type}_enabled", False)) for d in boot
         }
@@ -12175,7 +12693,22 @@ class GatewayOrchestrator:
         # first lets a success overwrite this and leaves it only where the factory
         # bailed out early.
         await loop.run_in_executor(maintenance_executor(), self._badge_unready_channels, boot)
-        self._channel_handles = await registry.start_channels(self, descriptors, permitted)
+        # Second adoption, per channel, right before its factory: the first pass
+        # above fed the enabled census; this one feeds each transport's first
+        # authorization state with whatever landed while the channels ahead of it
+        # were connecting. Synchronous by contract (see the hook's docstring).
+        self._channel_handles = await registry.start_channels(
+            self,
+            descriptors,
+            permitted,
+            before_start=lambda desc: self._adopt_channel_section_from_watcher(desc, creds),
+        )
+        # A connection-parameter edit that landed while the channels were still
+        # starting was deferred by the applier and sits in the watcher's stale
+        # table; its next tick re-runs the applier against the current snapshot,
+        # with the same per-channel restart the edit would have triggered a
+        # moment later.
+        self._channel_transports_started = True
         # Tell the sender of whatever the SHUTDOWN GATE refused on the way down
         # that it was never processed. Ordered AFTER the transports
         # because the notice is sent through the channel that received the

@@ -73,29 +73,36 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
         ChannelDescriptor(
             channel_type="wecom",
             start=maybe_start_wecom,
+            boot_keys=frozenset({"enabled", "ws_url"}),
             credentials=(CRED_WECOM_BOT_ID, CRED_WECOM_SECRET),
         ),
         ChannelDescriptor(
             channel_type="telegram",
             start=maybe_start_telegram,
+            # `accounts` is inert but is a STOP condition for the channel, so a change
+            # to it changes whether the bot runs at all.
+            boot_keys=frozenset({"enabled", "bot_token", "accounts"}),
             credentials=(CRED_TELEGRAM_BOT_TOKEN,),
             credential_fallbacks=((CRED_TELEGRAM_BOT_TOKEN, "bot_token"),),
         ),
         ChannelDescriptor(
             channel_type="discord",
             start=maybe_start_discord,
+            boot_keys=frozenset({"enabled", "bot_token"}),
             credentials=(CRED_DISCORD_BOT_TOKEN,),
             credential_fallbacks=((CRED_DISCORD_BOT_TOKEN, "bot_token"),),
         ),
         ChannelDescriptor(
             channel_type="webex",
             start=maybe_start_webex,
+            boot_keys=frozenset({"enabled", "bot_token", "wdm_base"}),
             credentials=(CRED_WEBEX_BOT_TOKEN,),
             credential_fallbacks=((CRED_WEBEX_BOT_TOKEN, "bot_token"),),
         ),
         ChannelDescriptor(
             channel_type="teams",
             start=maybe_start_teams,
+            boot_keys=frozenset({"enabled", "app_id", "app_password", "tenant_id"}),
             credentials=(CRED_MICROSOFT_APP_ID, CRED_MICROSOFT_APP_PASSWORD),
             # app_password is env-only by design: the loader hardcodes "" so the
             # Azure Bot secret stays out of a file the agent can read. Only the id
@@ -105,6 +112,7 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
         ChannelDescriptor(
             channel_type="weixin",
             start=maybe_start_weixin,
+            boot_keys=frozenset({"enabled", "token", "account_id", "base_url"}),
             credentials=(CRED_WEIXIN_TOKEN,),
             credential_fallbacks=((CRED_WEIXIN_TOKEN, "token"),),
             # weixin/gateway.py refuses to start on either half missing, so a
@@ -115,13 +123,27 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
         # iMessage needs no credential: the transport IS the operator's own
         # Messages.app, so there is nothing to store, and an empty tuple reads as
         # "nothing missing".
-        ChannelDescriptor(channel_type="imessage", start=maybe_start_imessage),
+        ChannelDescriptor(
+            channel_type="imessage",
+            start=maybe_start_imessage,
+            # db_path and service are handed to the Messages.app bridge when it
+            # opens, so a new value needs the bridge reopened.
+            boot_keys=frozenset({"enabled", "db_path", "service"}),
+        ),
         # WhatsApp needs no credential either: it pairs by QR and keeps its own
         # session store, so `whatsapp.enabled` is the whole gate.
-        ChannelDescriptor(channel_type="whatsapp", start=maybe_start_whatsapp),
+        ChannelDescriptor(
+            channel_type="whatsapp",
+            start=maybe_start_whatsapp,
+            # db_path is documented read-only (the pairing store must stay where the
+            # sensitive-path guard expects it), so `enabled` is the only key that
+            # changes the connection.
+            boot_keys=frozenset({"enabled"}),
+        ),
         ChannelDescriptor(
             channel_type="feishu",
             start=maybe_start_feishu,
+            boot_keys=frozenset({"enabled"}),
             # BOTH, because `_feishu_enabled` requires both: the gateway skips the
             # channel when either is missing, so declaring one would let readiness
             # report "credentials present" for a channel that then silently does not

@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 DispatchFn = Callable[[TeamsInbound], Awaitable[None]]
 
+
 # Teams capabilities. Per the HONESTY CONTRACT on TransportCapabilities these
 # describe what the CODE does today, not the platform ceiling:
 #
@@ -84,6 +85,24 @@ DispatchFn = Callable[[TeamsInbound], Awaitable[None]]
 #   This channel's ingress fast-acks a message activity and dispatches a turn; it
 #   handles no ``invoke``, so that flow is out of scope here and a non-inlinable
 #   reference is refused visibly instead (see ``teams/attachments.py``).
+def allowed_emails_from_config(entries: object) -> list[str] | None:
+    """Normalize ``teams.allowed_emails`` to the lowercased identities to admit.
+
+    The ONE reading of that field's shape, shared by the boot factory and the
+    live reconfigure path so the two can never disagree about who is on the
+    roster. Entries that are not a non-empty string are skipped. Returns
+    ``None`` when the whole value is not a list -- the caller decides what a
+    malformed roster means (boot: nobody; reload: keep the old set).
+
+    Lowercasing here is what makes the comparison in ``authorize`` and in
+    ``TeamsSessionResume.is_owner`` correct: Azure AD hands the UPN back in
+    whatever case the directory holds.
+    """
+    if not isinstance(entries, list):
+        return None
+    return [e.lower() for e in entries if isinstance(e, str) and e]
+
+
 TEAMS_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=True,
@@ -132,6 +151,45 @@ class TeamsTransport(MessagingTransport):
     def client(self) -> TeamsClient:
         """The underlying Teams client (held + exposed, not hidden)."""
         return self._client
+
+    # -- Live config ---------------------------------------------------------
+    def reconfigure(self, section: Any) -> None:
+        """Adopt a reloaded ``teams`` config section's allow-list.
+
+        Called by the dispatcher's config applier when ``config.json`` changes
+        under ``teams``, so an allow-list edit from the dashboard, the CLI or
+        ``$EDITOR`` takes effect on the next activity instead of the next
+        restart. The roster is rebuilt with the same lowercasing the boot
+        factory uses, and the frozenset is REPLACED wholesale (never mutated) so
+        an in-flight ``authorize`` keeps reading one consistent set.
+
+        Fails closed on shape: a roster that is not a list keeps the PREVIOUS
+        value and logs at WARNING -- never silently empties the list (which
+        would lock the operator out) and never widens it. Each roster change is
+        SEL-audited by count, not by identity.
+        """
+        emails = allowed_emails_from_config(getattr(section, "allowed_emails", None))
+        if emails is None:
+            logger.warning(
+                "teams: allowed_emails is not a list in the reloaded config; keeping the "
+                "previous allow-list (%d identity/identities)",
+                len(self._allowed),
+            )
+            return
+        new_allowed = frozenset(emails)
+        if new_allowed == self._allowed:
+            return
+        added = len(new_allowed - self._allowed)
+        removed = len(self._allowed - new_allowed)
+        self._allowed = new_allowed
+        logger.info("teams: allow-list reloaded (+%d/-%d identity/identities)", added, removed)
+        sel().log_api_access(
+            caller="config",
+            operation="teams_transport.reconfigure",
+            outcome="allow_list_changed",
+            source="teams",
+            resources=f"added={added} removed={removed} size={len(new_allowed)}",
+        )
 
     def service_url_for(self, conversation_id: str) -> str:
         """Return the last-seen serviceUrl for a conversation (or empty)."""

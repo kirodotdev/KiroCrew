@@ -17,6 +17,7 @@ new thread; turns never run directly in a normal guild channel.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -36,6 +37,23 @@ from kiro_crew.messaging.transport import (
     TransportCapabilities,
 )
 from kiro_crew.sel import sel
+
+logger = logging.getLogger(__name__)
+
+
+def _coerce_snowflakes(value: object) -> frozenset[str] | None:
+    """Rebuild one Discord id allow-list from a reloaded config value.
+
+    The ONE reading of these fields' shape for the live path, so a reload can
+    never coerce differently from the constructor: every entry becomes a
+    snowflake STRING (matching ``InboundMessage.user_id`` and the raw channel
+    ids), blanks are dropped and duplicates collapse. Returns ``None`` when the
+    value is not a list, so the caller keeps the previous set rather than
+    silently changing who is authorized.
+    """
+    if not isinstance(value, list):
+        return None
+    return frozenset(str(v).strip() for v in value if v is not None and str(v).strip())
 
 
 @dataclass
@@ -120,6 +138,10 @@ class DiscordTransport(MessagingTransport):
         # dispatcher's own allow-set). A frozenset here would silently strand
         # every reply the user sends into the thread the bot just created.
         self._allowed_threads: set[str] = {str(t) for t in allowed_thread_ids}
+        # The subset of ``_allowed_threads`` that came from config.json, so a
+        # reload can replace those without dropping the threads this process
+        # promoted at runtime (see ``reconfigure``).
+        self._configured_threads: frozenset[str] = frozenset(self._allowed_threads)
         self._allowed_channels: frozenset[str] = frozenset(str(c) for c in allowed_channel_ids)
         self._auto_thread = auto_thread
         self._on_thread_created = on_thread_created
@@ -130,6 +152,95 @@ class DiscordTransport(MessagingTransport):
     def client(self) -> DiscordClient:
         """The underlying Gateway/REST client (held + exposed, not hidden)."""
         return self._client
+
+    # -- Live config ---------------------------------------------------------
+    def reconfigure(self, section: Any) -> None:
+        """Adopt a reloaded ``discord`` section's authorization fields.
+
+        Called by the dispatcher's config applier when ``config.json`` changes
+        under ``discord``, so an allow-list edit from the dashboard, the CLI or
+        ``$EDITOR`` takes effect on the next message instead of the next restart.
+        Each id set is rebuilt with the SAME snowflake-string coercion the
+        constructor applies and replaced wholesale so an in-flight ``authorize``
+        keeps reading one consistent set.
+
+        ``_allowed_threads`` is UNIONED with the configured list rather than
+        replaced, because a thread the bot created at runtime is not in
+        ``config.json`` and dropping it would strand every follow-up reply the
+        user sends into it. A thread an operator REMOVES from the config is
+        still dropped, so the reload narrows as intended; only ids this process
+        promoted itself survive.
+
+        Fails closed on shape: a field that is not a list keeps the PREVIOUS
+        value and logs at WARNING, and ``auto_thread`` must be a bool. Allow-list
+        changes are SEL-audited by COUNT (the receive path audits its own
+        outcomes on the same channel); ids are never logged.
+        """
+        users = _coerce_snowflakes(getattr(section, "allowed_user_ids", None))
+        if users is None:
+            logger.warning(
+                "discord: allowed_user_ids is not a list in the reloaded config; keeping the "
+                "previous allow-list (%d id(s))",
+                len(self._allowed),
+            )
+        elif users != self._allowed:
+            added, removed = len(users - self._allowed), len(self._allowed - users)
+            self._allowed = users
+            logger.info("discord: allow-list reloaded (+%d/-%d id(s))", added, removed)
+            sel().log_api_access(
+                caller="config",
+                operation="discord_transport.reconfigure",
+                outcome="allow_list_changed",
+                source="discord",
+                resources=f"added={added} removed={removed} size={len(users)}",
+            )
+        channels = _coerce_snowflakes(getattr(section, "allowed_channel_ids", None))
+        if channels is None:
+            logger.warning(
+                "discord: allowed_channel_ids is not a list in the reloaded config; keeping the "
+                "previous %d entry(ies)",
+                len(self._allowed_channels),
+            )
+        elif channels != self._allowed_channels:
+            self._allowed_channels = channels
+            logger.info("discord: channel allow-list reloaded (%d channel(s))", len(channels))
+            sel().log_api_access(
+                caller="config",
+                operation="discord_transport.reconfigure",
+                outcome="channel_allow_list_changed",
+                source="discord",
+                resources=f"size={len(channels)}",
+            )
+        threads = _coerce_snowflakes(getattr(section, "allowed_thread_ids", None))
+        if threads is None:
+            logger.warning(
+                "discord: allowed_thread_ids is not a list in the reloaded config; keeping the "
+                "previous %d entry(ies)",
+                len(self._allowed_threads),
+            )
+        else:
+            promoted = self._allowed_threads - self._configured_threads
+            merged = set(threads) | promoted
+            if merged != self._allowed_threads:
+                self._allowed_threads = merged
+                logger.info("discord: thread allow-list reloaded (%d thread(s))", len(merged))
+                sel().log_api_access(
+                    caller="config",
+                    operation="discord_transport.reconfigure",
+                    outcome="thread_allow_list_changed",
+                    source="discord",
+                    resources=f"size={len(merged)} runtime={len(promoted)}",
+                )
+            self._configured_threads = frozenset(threads)
+        auto_thread = getattr(section, "auto_thread", None)
+        if not isinstance(auto_thread, bool):
+            logger.warning(
+                "discord: auto_thread is not a bool in the reloaded config; keeping %r",
+                self._auto_thread,
+            )
+        elif auto_thread != self._auto_thread:
+            self._auto_thread = auto_thread
+            logger.info("discord: auto_thread flipped to %r via config reload", auto_thread)
 
     @property
     def dispatcher(self) -> Any:

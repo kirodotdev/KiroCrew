@@ -88,6 +88,9 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
         # set_message_handler avoids the client<->transport construction cycle.
         client.set_message_handler(transport.receive)
         dispatcher.client = client
+        # The dispatcher's config applier pushes reloaded authorization fields at
+        # the transport; wired after construction, like ``client``.
+        dispatcher.transport = transport
 
         # Keep the settings badge truthful: connect() only SPAWNS the receiver
         # thread, so "started" proves nothing about the credentials. The client

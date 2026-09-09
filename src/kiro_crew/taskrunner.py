@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 from kiro_crew import git_coord, shutdown_event
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.llm_helpers import stream_and_collect_json
@@ -281,6 +282,10 @@ class TaskRunner:
             self._work_dir = Path(self._workspace_dir)
         else:
             self._work_dir = work_dir or Path.cwd()
+        # What the constructor was handed, so a config write that later reverts
+        # ``taskrunner.workspace_dir`` restores exactly this (see _refresh_from_config).
+        self._ctor_workspace_dir = self._workspace_dir
+        self._ctor_work_dir = self._work_dir
         self._test_cmd: list[str] | None = None
         self._conversation_log = conversation_log
         self._consolidator = consolidator
@@ -297,14 +302,22 @@ class TaskRunner:
         # ``0`` (or unset) means "use the computed ceiling". An explicit value can
         # never raise concurrency above the host-safe maximum.
         try:
-            auto_cap = compute_max_subagents(KiroCrewConfig.load())
+            cfg: KiroCrewConfig | None = KiroCrewConfig.load()
         except Exception:
-            auto_cap = _MAX_PARALLEL_TASKS
-        auto_cap = max(1, auto_cap)
-        if max_parallel_steps and max_parallel_steps >= 1:
-            self._max_parallel_steps = min(max_parallel_steps, auto_cap)
-        else:
-            self._max_parallel_steps = auto_cap
+            cfg = None
+        self._max_parallel_steps = self._clamp_parallel_steps(max_parallel_steps, cfg)
+        # The ``taskrunner.*`` values the gateway constructed this runner from.
+        # Each run entry re-reads config and adopts a field whose config value has
+        # MOVED since this baseline (a hot write from any writer), while a field
+        # the config never changed keeps the constructor's argument -- so a test
+        # or embedder passing explicit values is not overridden by a config.json
+        # that never mentioned them. See ``_refresh_from_config``.
+        self._config_baseline: tuple[int, str] | None = (
+            (int(cfg.taskrunner.max_parallel_steps), str(cfg.taskrunner.workspace_dir))
+            if cfg is not None
+            else None
+        )
+        self._ctor_max_parallel_steps = max_parallel_steps
         self._runs: dict[str, Project] = {}
         # Serialize registry writes and enforce monotonic ordering. Snapshots
         # are always built on the event-loop thread (see _serialize_runs), so
@@ -333,6 +346,69 @@ class TaskRunner:
         self._workflow_service = workflow_service
         self._agent: str = ""
         self._load_runs()
+
+    @staticmethod
+    def _clamp_parallel_steps(requested: int | None, cfg: KiroCrewConfig | None) -> int:
+        """Bound *requested* by the host-safe ceiling; ``0``/``None`` means the ceiling."""
+        try:
+            auto_cap = compute_max_subagents(cfg) if cfg is not None else _MAX_PARALLEL_TASKS
+        except Exception:
+            auto_cap = _MAX_PARALLEL_TASKS
+        auto_cap = max(1, auto_cap)
+        if requested and requested >= 1:
+            return min(int(requested), auto_cap)
+        return auto_cap
+
+    def _refresh_from_config(self) -> None:
+        """Adopt ``taskrunner.max_parallel_steps`` / ``workspace_dir`` for the NEXT run.
+
+        Called at each run entry so a write to ``config.json`` from any writer
+        takes effect on the next run without a gateway restart, while a run that
+        is already executing keeps the values it started with (its parallel cap
+        and work dir are bound per run, not read from ``self`` mid-flight).
+
+        Reads the watcher's last applied snapshot (a plain attribute read) and
+        falls back to the fingerprint-cached loader before the watcher is armed.
+        A field is adopted only when its config value MOVED since the baseline
+        this runner was constructed against; an unchanged field keeps the
+        constructor's argument. ``workspace_dir`` goes through the same
+        sensitive-path validation the constructor applies.
+        """
+        if self._config_baseline is None:
+            return
+        # The snapshot is a plain attribute read. Before the watcher has primed
+        # there is nothing to refresh from without a ``load()`` -- which parses
+        # and validates the file on the event loop these entry points run on --
+        # so the constructor's values stand until the first primed run.
+        cfg = live.snapshot()
+        if cfg is None:
+            return
+        base_steps, base_ws = self._config_baseline
+        try:
+            new_steps = int(cfg.taskrunner.max_parallel_steps)
+            new_ws = str(cfg.taskrunner.workspace_dir)
+        except (AttributeError, TypeError, ValueError):
+            return
+        if new_steps != base_steps:
+            requested: int | None = new_steps
+        else:
+            requested = self._ctor_max_parallel_steps
+        self._max_parallel_steps = self._clamp_parallel_steps(requested, cfg)
+        if new_ws != base_ws:
+            try:
+                resolved = _resolve_workspace_dir(new_ws)
+            except ValueError:
+                # A rejected (sensitive) path keeps the current target; the
+                # rejection is already SEL-audited by the validator.
+                logger.warning(
+                    "taskrunner.workspace_dir rejected on reload; keeping current target"
+                )
+                return
+        else:
+            resolved = self._ctor_workspace_dir
+        if resolved != self._workspace_dir:
+            self._workspace_dir = resolved
+            self._work_dir = Path(resolved) if resolved else self._ctor_work_dir
 
     @property
     def current_run(self) -> Project | None:
@@ -548,6 +624,7 @@ class TaskRunner:
             decompose_input = original_input = input_text
             spec_content = ""
 
+        self._refresh_from_config()
         _override = _resolve_workspace_dir(workspace_dir)
         async with self._start_lock:
             id_suffix = time.time_ns()
@@ -799,6 +876,7 @@ class TaskRunner:
         # its original work_dir, so re-targeting the folder can't orphan work already
         # produced there (files/commits, git worktree state). The path is still
         # resolved+validated below regardless of status (audit/sensitive-path guard).
+        self._refresh_from_config()
         _override = _resolve_workspace_dir(workspace_dir)
         if _override and run.status == "planned":
             run.work_dir = _override
@@ -916,6 +994,7 @@ class TaskRunner:
             raise ValueError("Spec file is empty")
         if not task_id:
             task_id = f"{spec_path.stem}_{int(time.time())}"
+        self._refresh_from_config()
         _override = _resolve_workspace_dir(workspace_dir)
         _effective_ws = _override or self._workspace_dir
         task_dir = Path(_effective_ws) if _effective_ws else self._work_dir / spec_path.stem
@@ -1033,6 +1112,9 @@ class TaskRunner:
         return run
 
     async def _execute_tasks(self, run: Project, history_key: str) -> None:
+        # Bound once per execution: a config reload adopted at a LATER run's
+        # entry (``_refresh_from_config``) must not resize this run's groups.
+        max_parallel_steps = self._max_parallel_steps
         pending = [t for t in run.tasks if t.status == TaskStatus.PENDING]
         already_done = {
             t.index for t in run.tasks if t.status in (TaskStatus.PASSED, TaskStatus.SKIPPED)
@@ -1087,13 +1169,13 @@ class TaskRunner:
                     "\u26a1 Parallel group", f"Running {len(resolved)} tasks: {titles}", run=run
                 )
                 # Bound concurrency with a semaphore sized by the configurable
-                # `taskrunner.max_parallel_steps` knob (self._max_parallel_steps),
+                # `taskrunner.max_parallel_steps` knob (bound per run above),
                 # not a hardcoded batch size. All ready tasks are dispatched at once
                 # and the semaphore caps how many run simultaneously, so a slow task
                 # no longer stalls a whole fixed-size batch. The knob is the single
                 # place to lift concurrency (capped by compute_max_subagents ceiling).
                 results: list[bool | BaseException] = []
-                sem = asyncio.Semaphore(self._max_parallel_steps)
+                sem = asyncio.Semaphore(max_parallel_steps)
 
                 async def _run_bounded(t: Task) -> bool:
                     async with sem:
@@ -2161,7 +2243,7 @@ class TaskRunner:
                     # when the worktree location is actually known; otherwise
                     # fall back to the documented "task continues without git
                     # coordination" behaviour instead of committing into a path
-                    # no longer identified.
+                    # that is not identified.
                     git_enabled=bool(item.get("git_enabled", bool(_worktree_path))),
                     commit_hashes=list(item.get("commit_hashes", [])),
                     lessons_learned=list(item.get("lessons_learned", [])),

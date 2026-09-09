@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.slack.handler import set_allowed_users, set_owner_id
 from kiro_crew.slack.interactions import (
     VIEW_REGISTRY,
@@ -49,7 +50,13 @@ class FakeSlackClient:
 
 class FakeOrch:
     def __init__(self, callback="send_to_kirocrew"):
-        self._cfg = FakeConfig(slack=FakeSlackConfig(forward_to_agent_callback=callback))
+        # A REAL config object: every Slack read resolves through
+        # handler.slack_cfg(), which skips a duck-typed stand-in rather than
+        # returning it -- an incompletely built orchestrator must still yield a
+        # usable config instead of a namespace missing most of the schema.
+        cfg = KiroCrewConfig()
+        cfg.slack.forward_to_agent_callback = callback
+        self._cfg = cfg
         self.slack = FakeSlackClient()
         self._handler_tasks: set = set()
         self.sessions = MagicMock()

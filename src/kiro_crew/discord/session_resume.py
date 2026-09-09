@@ -262,6 +262,17 @@ class DiscordSessionResume:
     def _push_slots(self) -> None:
         self._controller.push_slots()
 
+    def reconfigure(self, allowed_user_ids: set[str]) -> None:
+        """Re-derive ``owner_id`` from a reloaded ``discord.allowed_user_ids``.
+
+        The copy of the allow-list that decides who may list dashboard sessions,
+        so it moves with the dispatcher's roster on the same reload: an operator
+        who adds a second identity loses ``!sessions`` immediately, not at the
+        next restart. Same one-identity rule as construction -- none or several
+        leaves ``owner_id`` empty and ``is_owner`` refuses everyone.
+        """
+        self.owner_id = next(iter(allowed_user_ids)) if len(allowed_user_ids) == 1 else ""
+
     def is_owner(self, user_id: str) -> bool:
         return bool(self.owner_id) and user_id == self.owner_id
 

@@ -31,6 +31,7 @@ import`` note there.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
@@ -1227,3 +1228,41 @@ def reset_for_testing() -> None:
     _wait_for_in_flight_consent_worker()
     with _lock:
         _ever_built = False
+
+
+#: The registered telemetry applier, kept so ``watch_config`` stays idempotent.
+_config_sub: object = None
+
+
+async def _on_config_change(change: object) -> None:
+    """Rebuild the recorder whenever anything under ``telemetry`` moves.
+
+    The consent worker re-resolves only ``enabled``, on a 30-second window, so
+    every other field in the section (``local_dir``, ``retention_days``,
+    ``max_total_mb``, ``export_interval_seconds``, ``otlp_endpoint``) was frozen
+    into the recorder at first use and stayed there for the process lifetime.
+    :func:`shutdown` drops the recorder and its provider, so the next metric call
+    rebuilds from the new values -- which is also the fast path for ``enabled``,
+    replacing the 30-second wait with an immediate apply.
+
+    Deliberately blunt: the section is small, a rebuild is bounded, and a config
+    write is rare, so comparing which field moved would buy nothing over
+    rebuilding once. ``shutdown`` flushes on the calling thread, so it runs in a
+    worker rather than on the event loop.
+    """
+    del change  # any telemetry.* change rebuilds; nothing to inspect
+    await asyncio.to_thread(shutdown)
+
+
+def watch_config() -> None:
+    """Register the telemetry applier on the process config watcher.
+
+    Idempotent per process: a second call is a no-op, so a re-entered boot path
+    cannot stack appliers that each rebuild the recorder.
+    """
+    global _config_sub
+    if _config_sub is not None:
+        return
+    from kiro_crew.config import live
+
+    _config_sub = live.subscribe("telemetry", callback=_on_config_change, name="telemetry")

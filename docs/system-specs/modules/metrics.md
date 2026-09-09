@@ -180,6 +180,20 @@ lifecycle & threading"). The gateway process is where the session/turn/HTTP
 metrics are recorded; other kirocrew processes pick the value up on their own
 recheck or at their next start.
 
+**Any `telemetry.*` change rebuilds the recorder, not just `enabled`.**
+`provider.watch_config()` registers one applier on the `telemetry` section, and its
+callback calls `shutdown()` — the next `get_recorder()` then builds a fresh
+recorder from the new config. That covers the settings the 30s consent recheck
+cannot see, because it only re-reads `enabled`: the OTLP endpoint, the export
+cadence, and every other value `_build_recorder` reads once. Registration is
+idempotent per process, so a re-entered boot path cannot stack appliers that each
+rebuild. The rebuild is lazy by design — `shutdown()` only drops the memo, so the
+~57ms of SDK import is paid on the next metric call rather than on the config
+watcher's own thread.
+
+Beacon fields are the exception: they are read once for the boot heartbeat, so a
+change to them applies at the next start.
+
 **External OTLP egress (opt-in, off by default):** egress destinations are
 **pluggable**. `_build_recorder` asks the active `TelemetryProvider` for them via
 `otlp_destinations(cfg)` and attaches one `PeriodicExportingMetricReader` per

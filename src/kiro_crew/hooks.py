@@ -23,6 +23,7 @@ import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from dataclasses import replace as dataclasses_replace
 from pathlib import Path
 
 from kiro_crew import platform_compat, security, webhooks
@@ -531,10 +532,79 @@ class HookManager:
 
     def __init__(self, config: HooksConfig | None = None):
         self._config = config or HooksConfig()
+        self._config_sub: object | None = None
 
     def reload(self, config: HooksConfig) -> None:
         """Hot-reload hooks config."""
         self._config = config
+
+    def watch_config(self) -> object:
+        """Re-read the ``hooks`` section from config.json on every config write.
+
+        Opt-in rather than automatic, because a DERIVED manager must not follow
+        config: the heartbeat-scoped manager (``_build_heartbeat_hooks``)
+        deliberately drops the user's ``auto_approve_tools`` so
+        ``HEARTBEAT_SAFE_TOOLS`` is the sole approval authority, and re-reading the
+        section would hand that widening straight back. Only the primary
+        interactive manager -- the one the gateway builds from config in the first
+        place -- calls this; the heartbeat manager is re-derived from it each cycle,
+        so it inherits the reload without subscribing.
+
+        The keystone opt-out state is spliced in by
+        :func:`hooks_config_from_config_dict`, so a ``config.json`` write never
+        reverts a Settings>Security change (and vice versa).
+
+        Idempotent: a repeated call on the same manager is a no-op returning the
+        existing subscription, so a caller that cannot easily tell whether a
+        given manager already watches config cannot stack a duplicate applier.
+        """
+        if self._config_sub is not None:
+            return self._config_sub
+        from kiro_crew.config import live
+
+        self._config_sub = live.subscribe(
+            "hooks", callback=self._on_config_change, name="HookManager"
+        )
+        return self._config_sub
+
+    def _on_config_change(self, change: object) -> None:
+        before = self._config
+        after = hooks_config_from_config_dict(getattr(change, "new").hooks)
+        self.reload(after)
+        # A hooks reload can WIDEN what runs without a prompt, and config.json is
+        # writable by an auto-approved agent shell, so an approval-set change is
+        # SEL-audited the way the channel transports audit an allow-list reload:
+        # by COUNT and flag, never by tool name (governance still caps the set).
+        added = len(set(after.auto_approve_tools) - set(before.auto_approve_tools))
+        removed = len(set(before.auto_approve_tools) - set(after.auto_approve_tools))
+        flags = {
+            "sources": (before.auto_approve_sources != after.auto_approve_sources),
+            "subagent_spawn": (
+                before.auto_approve_subagent_spawn != after.auto_approve_subagent_spawn
+            ),
+            "subagent_tools": (
+                before.auto_approve_subagent_tools != after.auto_approve_subagent_tools
+            ),
+        }
+        flipped = sorted(k for k, v in flags.items() if v)
+        if added or removed or flipped:
+            logger.warning(
+                "hooks: auto-approval set changed via config reload (+%d/-%d tool(s), "
+                "flags: %s)",
+                added,
+                removed,
+                ",".join(flipped) or "none",
+            )
+            sel().log_api_access(
+                caller="config",
+                operation="hook_manager.reconfigure",
+                outcome="auto_approve_changed",
+                source="hooks",
+                resources=(
+                    f"added={added} removed={removed} size={len(after.auto_approve_tools)}"
+                    + (f" flags={','.join(flipped)}" if flipped else "")
+                ),
+            )
 
     @property
     def auto_approve_subagent_spawn(self) -> bool:
@@ -1509,6 +1579,29 @@ def hooks_config_from_config_dict(hooks_section: dict) -> HooksConfig:
     merged = dict(hooks_section) if isinstance(hooks_section, dict) else {}
     merged["denied_commands"] = load_denied_commands_state()
     return HooksConfig.from_dict(merged)
+
+
+def splice_denied_commands(base: HooksConfig, denied_state: dict | None = None) -> HooksConfig:
+    """Return *base* with only its denied-command opt-out fields taken from the keystone.
+
+    The deny ceiling and the flat hook keys come from different files -- the
+    agent-unwritable ``denied_commands.json`` and operator-editable
+    ``config.json`` -- so whichever one changed, the other's contribution must
+    survive. Both live-reload paths route through here: a Settings>Security write
+    splices fresh keystone state onto the running config, and a ``config.json``
+    hooks reload splices the CURRENT keystone state onto the freshly parsed flat
+    keys. Without it, one write silently reverts the other half.
+
+    *denied_state* defaults to reading the keystone.
+    """
+    state = load_denied_commands_state() if denied_state is None else denied_state
+    parsed = HooksConfig.from_dict({"denied_commands": state})
+    return dataclasses_replace(
+        base,
+        denied_commands_disabled_ids=parsed.denied_commands_disabled_ids,
+        denied_commands_disable_all=parsed.denied_commands_disable_all,
+        denied_commands_user_added=parsed.denied_commands_user_added,
+    )
 
 
 def resolve_effective_denied_regexes(

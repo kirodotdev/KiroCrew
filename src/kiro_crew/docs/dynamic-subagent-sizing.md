@@ -25,8 +25,12 @@ rejected by the dashboard API. `resolve_max_subagents` also floors any explicit
 value at 3 as a runtime backstop. `0` is the only way to request the host-safe
 auto cap.
 
-The cap is computed once per gateway start. Restart to recompute (e.g. after the
-host's resources change).
+The cap is re-resolved whenever `agent.max_subagents` changes in `config.json`:
+the running gateway picks the new value up within a couple of seconds, so a
+change from the dashboard, the CLI or an editor never needs a restart. The
+host-safe auto cap (`0`) is measured when the value is resolved -- at boot and
+again on each such change -- not on a timer, so after the host's resources
+change it is re-measured by the next subagent-setting edit or a restart.
 
 ## How the Cap Is Computed
 

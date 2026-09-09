@@ -62,6 +62,7 @@ import time
 
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, memory_v2, platform_compat
+from kiro_crew.config import live
 from kiro_crew.config.loader import config_dir
 from kiro_crew.memory_stores import MEMORY_DB_FILE
 from kiro_crew.metrics.db_metrics import timed
@@ -1149,6 +1150,43 @@ class VectorMemoryStore:
         # episodic row. Backs the debounce in _touch_last_accessed; swept when it
         # grows past _LAST_ACCESSED_CACHE_MAX.
         self._last_accessed_touch: dict[str, float] = {}
+        # Retrieval tunables above are copies of the memory.* config, so a write to
+        # config.json reaches them only through reconfigure(). Registered here (the
+        # store is long-lived and read on the retrieval hot path, so point-of-use
+        # loading is the wrong trade) and held on self because the watcher holds the
+        # owner weakly.
+        self._config_sub = live.watch_object(self, "memory", name="VectorMemoryStore")
+
+    def reconfigure(self, cfg: object) -> None:
+        """Push new ``memory.*`` retrieval settings onto this live store.
+
+        Covers the five thresholds plus the decay table and the semantic-key
+        prefixes -- everything this class copies out of config at construction and
+        would otherwise hold until a gateway restart. Re-runs the loader's own
+        sanitizer (:func:`_sanitize_decay_rates`) rather than copying raw values, so
+        a hand-edited rate is clamped and a garbage entry dropped exactly as it is
+        at boot.
+
+        Embedding width is deliberately NOT touched: changing it invalidates every
+        stored vector, which is a re-embed, not a value swap (see the dashboard's
+        embedding-model apply route).
+        """
+        memory_cfg = getattr(cfg, "memory")
+        self._confidence_threshold = float(getattr(memory_cfg, "semantic_confidence_threshold"))
+        self._dedup_threshold = float(getattr(memory_cfg, "episodic_dedup_threshold"))
+        self._episodic_limit = int(getattr(memory_cfg, "episodic_max_results"))
+        self._episodic_max = int(getattr(memory_cfg, "episodic_max_count"))
+        rates = _sanitize_decay_rates(getattr(memory_cfg, "decay_rates", None))
+        self._decay_default = rates.pop(_DECAY_DEFAULT_KEY, _DEFAULT_DECAY_RATE)
+        self._decay_by_tag = rates
+        prefixes = list(_BUILTIN_PREFIXES)
+        extra = getattr(memory_cfg, "semantic_keys", None)
+        if extra:
+            prefixes.extend(extra)
+        self._prefixes = prefixes
+        # The resident episodic scoring set carries the decay rates it was built
+        # with, so a rate change makes it stale even though no row moved.
+        self._invalidate_episodic_scoring()
 
     def _secret_bearing_files(self) -> tuple[Path, ...]:
         """Every file beside the DB that carries the user's memories.

@@ -10,6 +10,7 @@ turn + interaction routing (transport_dispatch.py). Mirrors test_telegram.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import threading
 import time
@@ -570,6 +571,82 @@ def _cfg(soft: int = 80, default_agent: str = "", dm_scope: str = "per-channel-p
     )
 
 
+def _prime_live(cfg: Any) -> None:
+    """Publish *cfg*'s ``discord`` and ``messaging`` fields as the live snapshot.
+
+    The dispatcher reads those two sections at POINT OF USE from the config
+    watcher rather than from the ``cfg=`` copy it was constructed with, so a
+    test that varies one of them has to put the value where the turn actually
+    looks for it. Every field the test's SimpleNamespace carries is copied onto
+    a real ``KiroCrewConfig``, so the production readers see real sections and
+    the loader's own defaults fill the rest.
+
+    Call it again after mutating ``d.cfg`` mid-test -- the snapshot is a copy,
+    not a view.
+    """
+    import dataclasses
+
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    base = KiroCrewConfig()
+    sections = {}
+    for name in ("discord", "messaging"):
+        section = getattr(cfg, name, None)
+        if section is None:
+            continue
+        overrides = {
+            f.name: getattr(section, f.name)
+            for f in dataclasses.fields(getattr(base, name))
+            if hasattr(section, f.name)
+        }
+        sections[name] = dataclasses.replace(getattr(base, name), **overrides)
+    live.reset_for_tests()
+    live.watch().prime(dataclasses.replace(base, **sections))
+
+
+@pytest.fixture(autouse=True)
+def _drop_live_config_snapshot():
+    """Leave no primed config snapshot behind for the next test.
+
+    ``_prime_live`` (and ``_dispatcher``, which calls it) publishes into the
+    process-global config watcher, so without this the last test to prime would
+    set the live config for every test after it in the same worker.
+    """
+    yield
+    from kiro_crew.config import live
+
+    live.reset_for_tests()
+
+
+@contextlib.contextmanager
+def _live_discord(**discord_kw: Any):
+    """Put ``discord.*`` overrides in force for the body, then restore.
+
+    For a field the dispatcher reads per TURN off the live snapshot rather than
+    off its boot copy: the override has to be visible where the turn looks, and
+    it has to be a real section so every other live read in the same turn still
+    resolves.
+    """
+    import dataclasses
+
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    previous = live.snapshot()
+    base = previous if previous is not None else KiroCrewConfig()
+    live.reset_for_tests()
+    try:
+        live.watch().prime(
+            dataclasses.replace(base, discord=dataclasses.replace(base.discord, **discord_kw))
+        )
+        yield
+    finally:
+        live.reset_for_tests()
+        if previous is not None:
+            live.watch().prime(previous)
+
+
 def _inbound_with_id(text: str, *, message_id: str, **kw: Any) -> InboundMessage:
     """An inbound message carrying Discord's raw message id, which is what the
     steer-ack reaction and the phase ladder both key on."""
@@ -609,10 +686,12 @@ def _dispatcher(
     dm_scope: str = "per-channel-peer",
 ) -> tuple[DiscordDispatcher, FakeClient, FakeSessions]:
     sess = FakeSessions(raise_on_get=raise_on_get)
+    cfg = _cfg(default_agent=default_agent, dm_scope=dm_scope)
+    _prime_live(cfg)
     d = DiscordDispatcher(
         sessions=sess,  # type: ignore[arg-type]
         ctx_builder=FakeCtx(),  # type: ignore[arg-type]
-        cfg=_cfg(default_agent=default_agent, dm_scope=dm_scope),
+        cfg=cfg,
         allowed_user_ids=allowed,
         allowed_thread_ids=allowed_threads,
         agent=None,
@@ -2949,6 +3028,7 @@ class TestDispatcher:
     ) -> None:
         d, cli, sess = _dispatcher({"u1"})
         d.cfg.messaging.queue_mode = "queue"
+        _prime_live(d.cfg)
         download_started = asyncio.Event()
         finish_download = asyncio.Event()
         url = "https://cdn.discordapp.com/attachments/c/m/slow.png"
@@ -4091,11 +4171,8 @@ class TestRenderTogglesAreWiredPerTurn:
 
         with (
             mock.patch.object(td_mod, "DiscordRenderer", _spy),
-            mock.patch("kiro_crew.config.loader.KiroCrewConfig.load") as load,
+            _live_discord(reactions_enabled=False, show_thinking=True),
         ):
-            load.return_value = SimpleNamespace(
-                discord=SimpleNamespace(reactions_enabled=False, show_thinking=True)
-            )
             await d.handle_message(_inbound("hi"))
         # Read per TURN, not off the boot config, so the dashboard toggle takes
         # effect on the next message instead of the next restart.

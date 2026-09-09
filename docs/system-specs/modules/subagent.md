@@ -28,7 +28,7 @@ continuation preserve the store even when the parent uses different memory.
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `_MAX_CONCURRENT` | 3 | Legacy fallback / auto-size floor. `agent.max_subagents` now defaults to `0` = auto-size the cap at startup (floor 3, ceiling `agent.subagent_auto_max`, default 32); a positive value pins a fixed cap. Session-shared subagents are cost-sampled as the runtime's measured RSS/CPU divided by the live shared-session count on that PID (`_live_shared_count`), so the memory term no longer binds and the cap rises to the provider-concurrency ceiling. |
+| `_MAX_CONCURRENT` | 3 | Legacy fallback / auto-size floor. `agent.max_subagents` defaults to `0` = auto-size the cap (floor 3, ceiling `agent.subagent_auto_max`, default 32); a positive value pins a fixed cap. The cap is re-derived on every config reload, not only at boot — see [`reconfigure`](#reconfigurecfg--max_concurrentnone--live-config). Session-shared subagents are cost-sampled as the runtime's measured RSS/CPU divided by the live shared-session count on that PID (`_live_shared_count`), so the memory term no longer binds and the cap rises to the provider-concurrency ceiling. |
 | `_TIMEOUT_SECS` | 10800 | Hard timeout per subagent (3 hours), from `constants.SUBAGENT_TIMEOUT_SECS` |
 | `_ON_DONE_TIMEOUT` | 1200 | Outer cap: max total seconds for semaphore wait + injection (20 minutes) |
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
@@ -57,7 +57,8 @@ per operating system (see `dynamic-subagent-sizing.md`):
   (`_macos_vm_reclaimable_pages`), combined with the `os.sysconf` page size.
   This is **in-process, non-blocking, no subprocess** — required because the
   probe runs on the gateway event loop at startup and the spawn-audit guard
-  rejects unrouted subprocess spawns.
+  rejects unrouted subprocess spawns. A reload re-runs it off the loop
+  (`asyncio.to_thread`), since by then the loop is serving turns.
 - **Other (e.g. Windows)** — no probe yet; returns `-1.0` and the cap fails
   open to the legacy floor of 3.
 
@@ -79,6 +80,64 @@ independent guards; unifying them is out of scope for the sizing probe.
 - `ctx_builder: ContextBuilder` — builds context with memory/skills/hooks
 - `on_done: AnnounceCallback | None` — called with `SubagentInfo` when done
 - `max_concurrent: int` — capacity limit (default 3)
+
+The constructor also registers the manager on the process config watcher
+(`live.watch_object(self, *self.LIVE_CONFIG_PATHS, name="SubagentManager")`, kept
+on `self._config_sub`; the watcher holds the owner weakly, so a discarded manager
+drops out on its own). The prefixes ARE the watched-path list, so the dispatcher
+filters an unrelated `agent.*` write rather than the applier re-deriving on it.
+
+### `reconfigure(cfg)` / `apply_limits(cfg, *, max_concurrent=None)` — live config
+
+`reconfigure` is the watcher's entry point and is `async`: the concurrent cap can
+auto-size from host memory, which is filesystem I/O, so it is resolved off the
+loop and handed to the synchronous `apply_limits`, which does the whole apply.
+
+Every limit the constructor copies out of `config.json` is a LIVE value: a
+reload that touches any path in `SubagentManager.LIVE_CONFIG_PATHS` re-derives
+ALL of them from the new config, whichever writer produced it (dashboard,
+`kirocrew config set`, `$EDITOR`). No gateway restart is needed for:
+
+| Config path | Manager field | Normalization (same as the constructor) |
+|---|---|---|
+| `agent.max_subagents`, `agent.subagent_auto_max`, `agent.subagent_mem_buffer_pct`, `agent.subagent_cost_gb`, `agent.subagent_cpu_cost_cores`, `session.pool_size` | `_max_concurrent` | `resolve_max_subagents(cfg)` — explicit pin (floored at 3) or the host-sized auto value |
+| `agent.subagent_max_turns` | `_default_turn_limit` | `int` |
+| `agent.subagent_timeout_secs` | `_default_timeout` | `0` keeps `_TIMEOUT_SECS` |
+| `agent.subagent_stall_idle_secs` | `_stall_idle_secs` | `0` keeps `_STALL_IDLE_SECS` |
+| `agent.subagent_spawn_stagger_secs` | `_spawn_stagger_secs` | floored at `0.0` |
+| `agent.subagent_result_ttl_secs` | `_result_ttl_secs` | `int` |
+| `agent.completion_keep`, `agent.completion_keep_chars` | `_completion_keep`, `_completion_keep_chars` | via `update_completion_keep` |
+
+`agent.approval_mode` is NOT in this table on purpose: it is boot-only (schema
+`restart=True`), because every channel dispatcher resolves it once at start
+together with the CLI `--approval` override, and one consumer taking it live
+while the others keep the boot value would make the UI's "restart required"
+true for some tool calls and false for others. `_global_approval_mode` stays the
+value cached at construction.
+
+The applier (`reconfigure`) resolves the cap with `asyncio.to_thread` because
+auto-sizing reads `/proc/meminfo` / cgroup files, then calls
+`apply_limits(cfg, max_concurrent=cap)`; a direct `apply_limits(cfg)` resolves
+the cap inline. A resolution failure keeps the current cap and logs at WARNING.
+
+Every consumer reads the manager attribute at the point of use — the admission
+gate (`_should_stagger_queue_impl`, `_drain_queue_impl`), the run timeout
+(`asyncio.wait_for(..., timeout=_default_timeout)`), the reaper's TTL prune
+(`_result_ttl_secs`) and stall detector (`_stall_idle_secs`), the parentless
+approval policy — so the assignment is the whole apply. Two cap-change
+invariants:
+
+- **Raising the cap admits queued spawns.** `reconfigure` calls `_drain_queue()`
+  when the new cap exceeds the old one and the queue is non-empty; the pump
+  re-checks the gate and honours the stagger interval, so freed capacity fills
+  one start per `subagent_spawn_stagger_secs`, never in a burst.
+- **Lowering the cap cancels nothing.** In-flight runs keep going; the gate
+  simply admits no new spawn until `_running_count` drains below the new cap on
+  its own.
+
+The advisory cap the `spawn_run` tool description advertises (`mcp_tools/spawn.py`)
+re-resolves through the same `resolve_max_subagents(KiroCrewConfig.load())` on each
+tool listing, so the advertised and enforced numbers agree after a write.
 
 ### `spawn(task, parent_session_key="") -> SubagentInfo | None`
 Spawns a background agent. Returns `SubagentInfo` or `None` if at capacity. Uses atomic `_running_count` to prevent race conditions. `parent_session_key` tracks the originating session for completion injection.
@@ -775,7 +834,8 @@ dashboard PATCH endpoint enforces the same enum via
 
 The values are threaded into `SubagentManager.__init__` from
 `gateway.py` (`completion_keep=`, `completion_keep_chars=` constructor
-kwargs sourced from `cfg.agent.*`). User-facing docs:
+kwargs sourced from `cfg.agent.*`), and a later write to either field is
+adopted live by `reconfigure` through `update_completion_keep`. User-facing docs:
 [`src/kiro_crew/docs/configuration.md`](../../../src/kiro_crew/docs/configuration.md),
 [`src/kiro_crew/docs/subagents.md`](../../../src/kiro_crew/docs/subagents.md),
 [`src/kiro_crew/docs/troubleshooting.md`](../../../src/kiro_crew/docs/troubleshooting.md).

@@ -754,7 +754,14 @@ DEFAULT_CWD_ALLOWED_ROOTS = [
 class AgentConfig:
     approval_mode: str = field(
         default="auto",
-        metadata=_meta("Approval Mode", "Tool approval mode.", enum=["auto", "interactive"]),
+        metadata=_meta(
+            "Approval Mode",
+            "Tool approval mode. Every channel dispatcher resolves it once at start "
+            "(with the CLI --approval override), so a change takes effect at the "
+            "next restart.",
+            enum=["auto", "interactive"],
+            restart=True,
+        ),
     )
     streaming: bool = field(
         default=True,
@@ -1005,6 +1012,7 @@ class AgentConfig:
             "edition has none, so 'auto' and 'on' are no-ops there); 'off' disables "
             "it. Disable per-invocation with --no-jail or KIROCREW_NO_JAIL=1.",
             enum=list(_VALID_JAIL_MODES),
+            restart=True,
         ),
     )
     dangerously_skip_permissions: bool = field(
@@ -1017,6 +1025,7 @@ class AgentConfig:
             "config-file-only escape hatch — there is deliberately no dashboard "
             "toggle for it. An enterprise policy can forbid it, which falls back "
             "to the ad-hoc duration below.",
+            restart=True,
         ),
     )
     yolo_duration: str = field(
@@ -1570,7 +1579,11 @@ class MessagingConfig:
             "How direct-message conversations map to sessions. 'per-channel-peer' "
             "(default) keeps one session per (channel, user), so the same person on "
             "Telegram vs WeCom stays isolated. 'unified' collapses all DMs into one "
-            "shared session per agent for cross-surface continuity.",
+            "shared session per agent for cross-surface continuity. Takes effect at "
+            "the next restart: each conversation's generation counter is seeded from "
+            "the namespace in force at boot, so switching namespaces live could "
+            "resume a stale session persisted under the other one.",
+            restart=True,
         ),
     )
     idle_reset_minutes: int = field(
@@ -1645,7 +1658,13 @@ class MemoryConfig:
     )
     embedding_dim: int = field(
         default=1024,
-        metadata=_meta("Embedding Dimension", "Dimensionality of embedding vectors."),
+        metadata=_meta(
+            "Embedding Dimension",
+            "Dimensionality of embedding vectors. Changing it changes the vector "
+            "space, so every stored embedding must be regenerated -- applied by the "
+            "Settings embedding-model action, not by a plain config write.",
+            restart=True,
+        ),
     )
     embedding_threads: int = field(
         default=4,
@@ -1707,6 +1726,7 @@ class MemoryConfig:
             "embedding_dim to the model's output width. Changing the model changes the "
             "vector space, so stored embeddings are regenerated automatically. The "
             "KIROCREW_EMBED_MODEL_PATH env var wins over this.",
+            restart=True,
         ),
     )
     embed_model_id: str = field(
@@ -1717,6 +1737,7 @@ class MemoryConfig:
             "'custom:<filename>:<size>', which changes when a different model file is "
             "used. Set this explicitly if you swap between models of identical byte size, "
             "which the default derivation cannot distinguish.",
+            restart=True,
         ),
     )
     semantic_confidence_threshold: float = field(
@@ -2013,7 +2034,9 @@ class KnowledgeConfig:
             "Extraction Pool Size",
             "Number of concurrent LLM workers for document extraction. More "
             "workers = faster ingestion but higher peak cost. Each worker holds "
-            "a long-lived session. Requires restart to take effect.",
+            "a long-lived session. A change applies at the next idle boundary: "
+            "the pool keeps its current width until it scales to zero, so an "
+            "ingest already running is never resized under it.",
         ),
     )
 
@@ -2060,7 +2083,15 @@ class SlackConfig:
     )
     command: str = field(
         default="kirocrew",
-        metadata=_meta("Command", "Slack slash command trigger word."),
+        metadata=_meta(
+            "Command",
+            "Slack slash command trigger word.",
+            # Boot-read: the trigger is registered in the Slack app MANIFEST, so
+            # a local reload cannot make Slack route a new word. Applying it
+            # in-process would only change the help text and report success for a
+            # command that still does not exist on Slack's side.
+            restart=True,
+        ),
     )
     forward_to_agent_callback: str = field(
         default="",
@@ -2224,6 +2255,7 @@ class TailscaleConfig:
             "Tailscale is absent, stopped, or MagicDNS is off. Does NOT widen the "
             "network bind and does NOT change authentication — every request "
             "still needs a dashboard session.",
+            restart=True,
         ),
     )
     trust_identity: bool = field(
@@ -2238,6 +2270,7 @@ class TailscaleConfig:
             "load. Every failure to verify a peer falls back to the ordinary "
             "token path. Takes effect on the next gateway start (the trust "
             "settings are read once at startup).",
+            restart=True,
         ),
     )
     allowed_logins: list[str] = field(
@@ -2248,6 +2281,7 @@ class TailscaleConfig:
             "a shared tailnet can have hundreds of members, so identity trust "
             "without an allowlist would hand each of them the dashboard. A "
             "verified peer whose login is not listed is denied.",
+            restart=True,
         ),
     )
     pin_scope: str = field(
@@ -2260,6 +2294,7 @@ class TailscaleConfig:
             "unrecognised value falls back to 'node'. An ACL-tagged node is "
             "always pinned at node scope regardless of this setting. Takes "
             "effect on the next gateway start.",
+            restart=True,
         ),
     )
     bind_refresh_chains: bool = field(
@@ -2275,6 +2310,7 @@ class TailscaleConfig:
             "refresh cookie renews from any allowed node. Existing chains keep "
             "the binding they were opened with; the change applies to sessions "
             "started after the next gateway start.",
+            restart=True,
         ),
     )
     keep_awake: bool = field(
@@ -2522,6 +2558,7 @@ class DashboardConfig:
         metadata=_meta(
             "Dashboard URL",
             "Public URL for the dashboard (used in Slack links).",
+            restart=True,
         ),
     )
     tailscale: TailscaleConfig = field(
@@ -2536,6 +2573,7 @@ class DashboardConfig:
         metadata=_meta(
             "Restore Sessions",
             "Re-open recently active sessions on startup.",
+            restart=True,
         ),
     )
     qr_session_until_restart: bool = field(
@@ -2584,6 +2622,7 @@ class DashboardConfig:
             "Restore Window Minutes",
             "Time window (minutes) for session restoration, and for surfacing "
             "channel conversations in the chat list (0-1440). 0 = no limit.",
+            restart=True,
         ),
     )
     surface_channel_sessions: bool = field(
@@ -2593,6 +2632,7 @@ class DashboardConfig:
             "Show recently active Slack/Discord/Teams (etc.) conversations in the "
             "dashboard's chat list instead of only under History. Uses the same "
             "recency window as session restoration.",
+            restart=True,
         ),
     )
     bot_name: str = field(
@@ -2649,8 +2689,8 @@ class DashboardConfig:
             "host-dependent: a gateway with many concurrent slots overflows "
             "this bound while the byte ceiling still has headroom, and the "
             "cache hit rate collapses to zero (every save re-pays redaction). "
-            "Raise it on a many-slot host. Clamped to 256..262144. Read once "
-            "at first use; a change takes effect on the next gateway restart.",
+            "Raise it on a many-slot host. Clamped to 256..262144. Applies to "
+            "the next chat save; no restart needed.",
         ),
     )
     chat_entry_cache_max_bytes: int = field(
@@ -2660,8 +2700,8 @@ class DashboardConfig:
             "Memory ceiling in bytes for the chat save path's persisted-message "
             "entry memo. Evicted alongside the entry-count bound; raise it "
             "together with the entry bound when a many-slot host needs a "
-            "larger cache. Clamped to 4 MiB..512 MiB. Read once at first use; "
-            "a change takes effect on the next gateway restart.",
+            "larger cache. Clamped to 4 MiB..512 MiB. Applies to the next chat "
+            "save; no restart needed.",
         ),
     )
     cautious_boot: bool = field(
@@ -2674,6 +2714,7 @@ class DashboardConfig:
             "session restores — with short pauses instead of launching "
             "everything at once, so a host still under memory pressure is "
             "not pushed straight back into the same collapse.",
+            restart=True,
         ),
     )
     default_memory_mode: str = field(
@@ -2778,6 +2819,7 @@ class DashboardConfig:
         metadata=_meta(
             "Auto Open Browser",
             "Open the dashboard URL in the default browser on gateway startup.",
+            restart=True,
         ),
     )
     prevent_sleep: bool = field(
@@ -4578,6 +4620,7 @@ class McpGatewayConfig:
             "mismatch, so every forwarded key is one all co-tenants of that "
             "backend declared identically. Turn it OFF to make an env-declaring "
             "server run unwrapped (no stub, no pooling) instead.",
+            restart=True,
         ),
     )
     socket_path: str = field(
@@ -4588,6 +4631,7 @@ class McpGatewayConfig:
             "$KIROCREW_HOME/mcp-gateway/gateway.sock. A unix socket at this path "
             "on POSIX; on Windows the path is not created, it only derives the "
             "named-pipe name and locates the lock file beside it.",
+            restart=True,
         ),
     )
     overlay_dir: str = field(
@@ -4597,11 +4641,18 @@ class McpGatewayConfig:
             "Directory of rewritten agent JSON. Broker stubs from these specs are "
             "injected into each kiro-cli session via ACP session/new. "
             "Empty -> $KIROCREW_HOME/mcp-gateway/agents.",
+            restart=True,
         ),
     )
     idle_timeout_secs: int = field(
         default=300,
-        metadata=_meta("Idle Timeout", "Seconds a refcount=0 MCP backend is kept before drain."),
+        metadata=_meta(
+            "Idle Timeout",
+            "Seconds a refcount=0 MCP backend is kept before drain. Sizes the "
+            "daemon's idle sweeper at startup, so it rides the broker's command "
+            "line and a change needs a broker restart.",
+            restart=True,
+        ),
     )
     resolve_once_refresh_hours: int = field(
         default=24,
@@ -4628,6 +4679,7 @@ class McpGatewayConfig:
             "agents with ~S servers each need N*S slots. Bounded by design: idle "
             "backends drain after idle_timeout_secs, so steady-state RAM tracks real "
             "concurrency, not this ceiling.",
+            restart=True,
         ),
     )
     stub_servers: list[str] = field(
@@ -4642,6 +4694,7 @@ class McpGatewayConfig:
             "broker, and an empty list means no broker runs at all. Whether "
             "stubbed servers SHARE one backend is the separate global switch "
             "(mcp_gateway.enabled). Managed from MCP Management.",
+            restart=True,
         ),
     )
     poolable_servers: list[str] = field(
@@ -4654,6 +4707,7 @@ class McpGatewayConfig:
             "so migrating it to the stub set preserves its behaviour. There is no "
             "per-server sharing switch any more — sharing is global over the "
             "stub set.",
+            restart=True,
         ),
     )
     stub_overrides: dict[str, bool] = field(
@@ -4669,6 +4723,7 @@ class McpGatewayConfig:
             "without pinning yourself to today's roster. Written by MCP "
             "Management when a toggle disagrees with the roster, and dropped "
             "again when you toggle it back to agree. Empty by default.",
+            restart=True,
         ),
     )
     #: The roster EXACTLY as the file states it, carried so a full-file rewrite
@@ -4719,6 +4774,7 @@ class McpGatewayConfig:
             "AWS_SECRET*, AWS_SESSION*, SSH_AUTH_SOCK*, GNUPGHOME*, "
             "GIT_ASKPASS*) are ignored here — that scrub is a separate, broader "
             "guard this setting does not lift. Empty by default.",
+            restart=True,
         ),
     )
     prewarm_count: int = field(
@@ -4734,6 +4790,7 @@ class McpGatewayConfig:
             "socket; channel_id is a stable id, so a prewarmed backend is "
             "reused by every later new-chat in that channel. 0 (default) "
             "disables prewarming — no hot-key file is read or written.",
+            restart=True,
         ),
     )
     read_buffer_limit_bytes: int = field(
@@ -4743,6 +4800,7 @@ class McpGatewayConfig:
             "Maximum bytes for a single MCP response line before asyncio drops it. "
             "Default 64 MiB. Responses exceeding this are fast-failed with -32000. "
             "Env override: KIROCREW_MCP_READ_LIMIT.",
+            restart=True,
         ),
     )
     response_spill_threshold_bytes: int = field(
@@ -4752,7 +4810,9 @@ class McpGatewayConfig:
             "Tool-call responses larger than this (bytes) have their text content "
             "written to ~/.kiro/crew/mcp_spill/ and truncated inline to 16 KiB + "
             "a file path marker. Default 256 KiB. Set 0 to disable spilling. "
-            "Env override: KIROCREW_MCP_SPILL_THRESHOLD.",
+            "Env override: KIROCREW_MCP_SPILL_THRESHOLD. Read by the MCP broker "
+            "when it starts, like every other field of this section.",
+            restart=True,
         ),
     )
 
@@ -4817,6 +4877,7 @@ class InstancesConfig:
             "Enable multi-instance management — lets this gateway open SSH tunnels "
             "to remote Kiro Crews and embed their dashboards. Default off (opt-in). "
             "Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
+            restart=True,
         ),
     )
     warm_set_cap: int = field(
@@ -4841,6 +4902,7 @@ class InstancesConfig:
             "Tunnel Base Port",
             "First local loopback port used for an SSH -L forward. The allocator "
             "increments from here, skipping ports already in use.",
+            restart=True,
         ),
     )
     ssh_compression: bool = field(
@@ -5349,7 +5411,9 @@ class ResourceLimitsConfig:
 class TunnelConfig:
     enabled: bool = field(
         default=False,
-        metadata=_meta("Enabled", "Enable a tunnel to expose the dashboard for remote access."),
+        metadata=_meta(
+            "Enabled", "Enable a tunnel to expose the dashboard for remote access.", restart=True
+        ),
     )
     name_mode: str = field(
         default="username",
@@ -5358,6 +5422,7 @@ class TunnelConfig:
             "Tunnel naming: 'username' uses 'kirocrew', "
             "'hash' uses 'kirocrew-<hostHash>' for multi-host disambiguation.",
             enum=["username", "hash"],
+            restart=True,
         ),
     )
     name_override: str = field(
@@ -5366,6 +5431,7 @@ class TunnelConfig:
             "Name Override",
             "Explicit tunnel name (overrides name_mode). "
             "Note: some tunnel providers prefix your username (e.g. 'foo' becomes '<user>-foo').",
+            restart=True,
         ),
     )
 
@@ -6153,6 +6219,7 @@ class WhatsAppConfig:
             "and moving it elsewhere would take the credential out from behind "
             "the one control that stops an agent reading it.",
             tags=["whatsapp"],
+            restart=True,
         ),
     )
     soft_threshold_pct: int = field(

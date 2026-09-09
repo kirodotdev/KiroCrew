@@ -8439,6 +8439,11 @@
       "guardrails_hint": "Comandos que nunca se pueden ejecutar.",
       "save_failed": "Ese cambio no se guardó — inténtalo de nuevo.",
       "origin_diff_failed": "No se pudo cargar la plantilla original para comparar los cambios."
+    },
+    "restartRequiredBadge": {
+      "label": "los cambios requieren reinicio",
+      "tooltip": "Este ajuste no puede cambiar mientras {{productName}} se está ejecutando. El valor guardado se conserva y se aplica la próxima vez que {{productName}} se reinicie (Ajustes → Acerca de, o la terminal desde la que lo iniciaste).",
+      "schema_unavailable": "No se pudo comprobar si este ajuste requiere reiniciar."
     }
   },
   "hooks": {
@@ -11224,7 +11229,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -11537,7 +11541,6 @@
         "err_env_override_with_ref": "<settingRef/> está configurada y anula esta configuración. Desactívala para cambiar el modelo aquí."
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "Agente para los procesos del pool. Si está vacío, se usa el agente predeterminado. Requiere reinicio.",
         "approval_mode": "Modo de aprobación",
         "auto": "auto",
         "auto_size_max": "Máx. de tamaño automático",
@@ -11552,7 +11555,6 @@
         "disabled": "Desactivado",
         "embedding": "Embedding",
         "embedding_provider": "Proveedor de embeddings",
-        "enable_conductor_skill_for_multi_agent_orchestra": "Activa la habilidad conductor para la orquestación multiagente. Requiere reiniciar.",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Activa el descubrimiento dinámico de herramientas MCP mediante kiro-cli. Se aplica en la próxima sesión.",
         "enabled": "Activado",
         "enforce_denied_commands": "Aplicar comandos denegados",
@@ -11561,7 +11563,6 @@
         "immediate_auto_enables_sandbox_for_untrusted_too": "Inmediato. 'auto' activa el sandbox para las herramientas no confiables.",
         "inherited_provider": "heredado ({{provider}})",
         "kirocrew_agents": "Agentes de {{productName}}",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "Antigüedad máxima de los procesos del pool. 0 desactiva la expiración. Requiere reinicio.",
         "max_channel_agents": "Máx. de agentes por canal",
         "max_channels": "Máx. de canales",
         "max_concurrent_subagents": "Máx. de subagentes simultáneos",
@@ -11577,13 +11578,11 @@
         "next_update_check_cycle": "En el próximo ciclo de comprobación de actualizaciones.",
         "no_agents_defined": "No hay agentes definidos",
         "no_memory_stores": "No hay almacenes de memoria",
-        "number_of_pre_spawned_processes_0_disables_resta": "Número de procesos preiniciados. 0 lo desactiva. Requiere reinicio.",
         "orchestrator_mode": "Modo orquestador",
         "pool_agent": "Agente del pool",
         "pool_size": "Tamaño del pool",
         "pool_ttl": "TTL del pool",
         "provider": "Proveedor",
-        "restart_required_to_apply_changes": "{{description}} Debes reiniciar para aplicar los cambios.",
         "sandbox": "Sandbox",
         "save": "Guardar",
         "saved": "Guardado",
@@ -11597,7 +11596,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Usando el modo antiguo — agent.default_agent como plantilla de agente",
         "warm_pool": "Pool en caliente",
         "workspace": "Espacio de trabajo",
-        "workspaces": "Espacios de trabajo"
+        "workspaces": "Espacios de trabajo",
+        "number_of_pre_spawned_processes_0_disables": "Número de procesos preiniciados. 0 lo desactiva.",
+        "agent_for_pool_processes_empty_uses_default_agent": "Agente para los procesos del pool. Si está vacío, se usa el agente predeterminado.",
+        "warm_pool_description": "Inicia previamente procesos de ACP CLI para que las sesiones arranquen al instante.",
+        "max_age_for_pooled_processes_0_disables_expiry": "Antigüedad máxima de los procesos del pool. 0 desactiva la expiración.",
+        "enable_conductor_skill_for_multi_agent_orchestration": "Activa la habilidad conductor para la orquestación multiagente."
       },
       "mcpTab": {
         "actions": "Acciones",
@@ -12874,7 +12878,8 @@
         "sdk_missing": "Instalar el SDK de {{channel}}",
         "sdk_missing_body": "El canal de {{channel}} necesita el paquete {{package}}, que no se instala de forma predeterminada. Ejecuta el comando de abajo en una terminal para añadirlo.",
         "sdk_restart_after_install": "Después reinicia la puerta de enlace para iniciar el canal de {{channel}}.",
-        "sdk_install_unsupported": "El Python de esta puerta de enlace no puede instalar paquetes adicionales, así que {{package}} no se puede añadir aquí. Ejecuta la puerta de enlace desde un entorno de Python donde pip pueda instalarlo."
+        "sdk_install_unsupported": "El Python de esta puerta de enlace no puede instalar paquetes adicionales, así que {{package}} no se puede añadir aquí. Ejecuta la puerta de enlace desde un entorno de Python donde pip pueda instalarlo.",
+        "verified_and_saved": "Verificado con {{channel}} y guardado."
       },
       "browserPanel": {
         "use_builtin_label": "Usar el navegador integrado",
@@ -13810,7 +13815,8 @@
         "where_to_find_the_app_token": "Dónde encontrar el token de la aplicación",
         "where_to_find_the_bot_token": "Dónde encontrar el token de bot",
         "manifest_unavailable": "No se pudo cargar el manifiesto de la app de Slack. Crea la app a mano siguiendo la guía de configuración.",
-        "copy_manifest_failed": "No se pudo copiar el manifiesto al portapapeles."
+        "copy_manifest_failed": "No se pudo copiar el manifiesto al portapapeles.",
+        "verified_and_saved": "Verificado con Slack y guardado."
       },
       "sttSettings": {
         "language_auto": "Detectar el idioma automáticamente",
@@ -14144,7 +14150,8 @@
         "empty_allowlist_hint": "No hay correos permitidos: el bot rechaza todos los mensajes. Añade el correo de tu cuenta de Webex más abajo.",
         "soft_threshold_must_be_1_to_100": "El umbral de contexto suave debe ser un número entero entre 1 y 100.",
         "hard_threshold_must_be_1_to_100": "El umbral de contexto duro debe ser un número entero entre 1 y 100.",
-        "soft_threshold_must_not_exceed_hard": "El umbral de contexto suave no puede ser mayor que el duro: el duro se comprueba primero, así que un valor suave mayor nunca se alcanzaría."
+        "soft_threshold_must_not_exceed_hard": "El umbral de contexto suave no puede ser mayor que el duro: el duro se comprueba primero, así que un valor suave mayor nunca se alcanzaría.",
+        "verified_and_saved": "Verificado con Webex y guardado."
       },
       "weixinPanel": {
         "allowed_user_ids": "IDs de usuario permitidos",

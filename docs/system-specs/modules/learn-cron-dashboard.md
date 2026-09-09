@@ -670,6 +670,16 @@ are deliberately indistinguishable over the API today, and the `logger.warning`
 above is the operator's signal. Surfacing the state belongs in the change that
 renders it.
 
+**Caps are live (`CronHistoryStore.reconfigure`).** The store subscribes to the
+`cron_history` section, and a config write pushes `cron_summary_cap`,
+`cron_trace_cap_kb`, `cron_max_records_per_job` and `cron_max_index_records` onto
+the running store. Nothing is migrated: the caps only bound what the NEXT record
+write stores and what the next trim keeps, so records already on disk keep the
+shape they were written with and the next trim applies the new retention.
+`cron_trace_cap_kb` is re-multiplied on the way in rather than copied, because the
+attribute the store compares against is in bytes. The directory decision above is
+NOT re-run — usability is a property of the filesystem, not of these caps.
+
 Only an unconditional security block counts. A governance `TOOL_DENY` and an
 unattended-approval timeout also arrive unapproved, but they describe the policy
 state or an absent approver rather than a defect in the job — the same reason the

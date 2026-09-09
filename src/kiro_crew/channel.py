@@ -24,6 +24,7 @@ from typing import Any
 
 from kiro_crew import name_grant
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
 from kiro_crew.llm_helpers import is_prompt_busy
 from kiro_crew.trust_patterns import extract_bash_command
@@ -600,12 +601,29 @@ class ChannelManager:
         self._broadcast_fn = broadcast_fn
         self._max_channels = max_channels
         self._max_agents = max_agents
+        # The two caps follow config live; the binder holds this object weakly.
+        self._config_subs = (
+            live.bind("agent.max_channels", self.set_max_channels),
+            live.bind("agent.max_channel_agents", self.set_max_agents),
+        )
         # Resolve the channels dir lazily in __init__ (not as a class attr) so
         # merely importing this module never triggers config_dir() and its
         # one-time data-home migration as an import side effect — that must fire
         # only at the single chosen point (ensure_data_home() in the CLI prologue).
         self._CHANNELS_DIR = channels_dir or str(config_dir() / "channels")
         self._load_all()
+
+    def set_max_channels(self, value: int) -> None:
+        """Adopt a new ``agent.max_channels`` cap for channels created from now on.
+
+        Existing channels above a lowered cap stay open; the cap gates creation
+        only, exactly as the constructor value did.
+        """
+        self._max_channels = max(1, int(value))
+
+    def set_max_agents(self, value: int) -> None:
+        """Adopt a new ``agent.max_channel_agents`` cap for members added from now on."""
+        self._max_agents = max(1, int(value))
 
     def _save_channel(self, channel: Channel) -> None:
         """Persist channel state to disk.

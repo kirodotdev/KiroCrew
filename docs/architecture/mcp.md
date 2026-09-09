@@ -568,6 +568,33 @@ Python server configured through `env.PYTHONPATH` fails the probe while working
 in a session, and unexplained that reads as a probe bug rather than the
 launcher boundary it is.
 
+### Which `mcp_gateway.*` knobs a config write reaches
+
+One knob is resolved per use rather than captured at boot, so a `config.json`
+write applies with no broker restart:
+
+- **`resolve_once_refresh_hours`** — `_mcp_resolve_refresh_secs()` reads the live
+  snapshot (falling back to a fingerprint-cached load before the watcher has
+  primed), so the pre-resolve loop's per-iteration re-read is a real re-read: a
+  longer or shorter window takes effect on the next pass. That is what makes the
+  loop's own documented promise true; it previously re-read the gateway's boot
+  copy, which never moved. It is read in the GATEWAY process, which is where the
+  config watcher runs.
+
+`response_spill_threshold_bytes` is read in the BROKER process
+(`gatewayd`), which runs no config watcher — `config.live.snapshot()` is always
+`None` there — so a per-use read of the live snapshot would be inert and the
+field stays boot-only (`RESPONSE_SPILL_THRESHOLD_BYTES`, resolved once at import:
+env pin `KIROCREW_MCP_SPILL_THRESHOLD` → config key → built-in 256 KiB), marked
+`restart=True` like the rest of the section. `read_buffer_limit_bytes` is boot-only
+for a second reason as well: it is handed to asyncio readers as `limit=` when they
+are CONSTRUCTED and cannot be changed afterwards. `socket_path`, `overlay_dir`,
+`idle_timeout_secs`, `max_backends`, `prewarm_count`, `stub_servers`,
+`poolable_servers`, `stub_overrides`, `pool_identity_env` and
+`forward_declared_env` ride the daemon's command line or size structures built
+once at spawn, so they too are marked `restart=True` in the config schema and
+apply to a broker started after the change.
+
 ## How app agents reach MCP servers
 
 An app declares MCP servers in its manifest, and

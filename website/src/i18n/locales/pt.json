@@ -8439,6 +8439,11 @@
       "guardrails_hint": "Comandos que nunca podem ser executados.",
       "save_failed": "Essa alteração não foi salva — tente novamente.",
       "origin_diff_failed": "Não foi possível carregar o modelo original para comparar as alterações."
+    },
+    "restartRequiredBadge": {
+      "label": "alterações exigem reinício",
+      "tooltip": "Esta configuração não pode mudar enquanto o {{productName}} está em execução. O valor salvo é mantido e aplicado na próxima vez que o {{productName}} reiniciar (Configurações → Sobre, ou o terminal de onde você o iniciou).",
+      "schema_unavailable": "Não foi possível verificar se esta configuração exige reinicialização."
     }
   },
   "hooks": {
@@ -11224,7 +11229,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -11537,7 +11541,6 @@
         "err_env_override_with_ref": "<settingRef/> está definida e substitui esta configuração. Remova-a para alterar o modelo aqui."
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "Agente para os processos do pool. Vazio usa o agente padrão. Requer reinício.",
         "approval_mode": "Modo de aprovação",
         "auto": "auto",
         "auto_size_max": "Máx. de auto-dimensionamento",
@@ -11552,7 +11555,6 @@
         "disabled": "Desativado",
         "embedding": "Embedding",
         "embedding_provider": "Provedor de embedding",
-        "enable_conductor_skill_for_multi_agent_orchestra": "Ativa a skill conductor para orquestração multiagente. Requer reinício.",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Ativa a descoberta dinâmica de ferramentas MCP via kiro-cli. Aplica-se na próxima sessão.",
         "enabled": "Ativado",
         "enforce_denied_commands": "Aplicar comandos negados",
@@ -11561,7 +11563,6 @@
         "immediate_auto_enables_sandbox_for_untrusted_too": "Imediato. 'auto' ativa o sandbox para ferramentas não confiáveis.",
         "inherited_provider": "herdado ({{provider}})",
         "kirocrew_agents": "Agentes do {{productName}}",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "Idade máxima dos processos do pool. 0 desativa a expiração. Requer reinício.",
         "max_channel_agents": "Máx. de agentes por canal",
         "max_channels": "Máx. de canais",
         "max_concurrent_subagents": "Máx. de subagentes simultâneos",
@@ -11577,13 +11578,11 @@
         "next_update_check_cycle": "No próximo ciclo de verificação de atualizações.",
         "no_agents_defined": "Nenhum agente definido",
         "no_memory_stores": "Nenhum armazenamento de memória",
-        "number_of_pre_spawned_processes_0_disables_resta": "Número de processos pré-iniciados. 0 desativa. Requer reinício.",
         "orchestrator_mode": "Modo orquestrador",
         "pool_agent": "Agente do pool",
         "pool_size": "Tamanho do pool",
         "pool_ttl": "TTL do pool",
         "provider": "Provedor",
-        "restart_required_to_apply_changes": "{{description}} É necessário reiniciar para aplicar as alterações.",
         "sandbox": "Sandbox",
         "save": "Salvar",
         "saved": "Salvo",
@@ -11597,7 +11596,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Usando o modo legado — agent.default_agent como modelo de agente",
         "warm_pool": "Pool aquecido",
         "workspace": "Workspace",
-        "workspaces": "Workspaces"
+        "workspaces": "Workspaces",
+        "number_of_pre_spawned_processes_0_disables": "Número de processos pré-iniciados. 0 desativa.",
+        "agent_for_pool_processes_empty_uses_default_agent": "Agente para os processos do pool. Vazio usa o agente padrão.",
+        "warm_pool_description": "Pré-inicia processos da ACP CLI para um arranque de sessão instantâneo.",
+        "max_age_for_pooled_processes_0_disables_expiry": "Idade máxima dos processos do pool. 0 desativa a expiração.",
+        "enable_conductor_skill_for_multi_agent_orchestration": "Ativa a skill conductor para orquestração multiagente."
       },
       "mcpTab": {
         "actions": "Ações",
@@ -12873,7 +12877,8 @@
         "sdk_missing": "Instalar o SDK do {{channel}}",
         "sdk_missing_body": "O canal do {{channel}} precisa do pacote {{package}}, que não é instalado por padrão. Execute o comando abaixo em um terminal para adicioná-lo.",
         "sdk_restart_after_install": "Depois reinicie o gateway para iniciar o canal do {{channel}}.",
-        "sdk_install_unsupported": "O Python deste gateway não consegue instalar pacotes adicionais, portanto {{package}} não pode ser adicionado aqui. Execute o gateway a partir de um ambiente Python onde o pip consiga instalá-lo."
+        "sdk_install_unsupported": "O Python deste gateway não consegue instalar pacotes adicionais, portanto {{package}} não pode ser adicionado aqui. Execute o gateway a partir de um ambiente Python onde o pip consiga instalá-lo.",
+        "verified_and_saved": "Verificado com {{channel}} e salvo."
       },
       "browserPanel": {
         "use_builtin_label": "Usar o navegador integrado",
@@ -13809,7 +13814,8 @@
         "where_to_find_the_app_token": "Onde encontrar o token de app",
         "where_to_find_the_bot_token": "Onde encontrar o token de bot",
         "manifest_unavailable": "Não foi possível carregar o manifesto do app do Slack. Crie o app manualmente a partir do guia de configuração.",
-        "copy_manifest_failed": "Não foi possível copiar o manifesto para a área de transferência."
+        "copy_manifest_failed": "Não foi possível copiar o manifesto para a área de transferência.",
+        "verified_and_saved": "Verificado com o Slack e salvo."
       },
       "sttSettings": {
         "language_auto": "Detectar o idioma automaticamente",
@@ -14143,7 +14149,8 @@
         "empty_allowlist_hint": "Nenhum e-mail permitido: o bot rejeita todas as mensagens. Adicione o e-mail da sua conta Webex abaixo.",
         "soft_threshold_must_be_1_to_100": "O limite flexível de contexto deve ser um número inteiro entre 1 e 100.",
         "hard_threshold_must_be_1_to_100": "O limite rígido de contexto deve ser um número inteiro entre 1 e 100.",
-        "soft_threshold_must_not_exceed_hard": "O limite flexível não pode ser maior que o rígido: o rígido é verificado primeiro, então um valor flexível maior nunca seria alcançado."
+        "soft_threshold_must_not_exceed_hard": "O limite flexível não pode ser maior que o rígido: o rígido é verificado primeiro, então um valor flexível maior nunca seria alcançado.",
+        "verified_and_saved": "Verificado com o Webex e salvo."
       },
       "weixinPanel": {
         "allowed_user_ids": "IDs de usuário permitidos",

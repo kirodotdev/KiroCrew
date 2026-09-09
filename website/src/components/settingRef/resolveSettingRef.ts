@@ -17,6 +17,12 @@ export interface SchemaEntry {
   tags?: string[]
   enum?: string[]
   default?: unknown
+  /**
+   * The backend declares this field boot-only: it cannot take effect in a
+   * running gateway. Omitted (not `false`) for every field that hot-reloads, so
+   * a missing flag means "applies live" and the UI must show no restart hint.
+   */
+  requiresRestart?: boolean
 }
 
 export type SettingRefResolution =

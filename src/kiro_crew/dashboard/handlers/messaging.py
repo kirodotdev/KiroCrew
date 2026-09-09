@@ -27,6 +27,7 @@ from kiro_crew.browser.command_bus import (
 from kiro_crew.browser_cli import install as browser_cli_install
 from kiro_crew.browser_cli import token as browser_cli_token
 from kiro_crew.browser_cli import view as browser_cli_view
+from kiro_crew.config import live
 from kiro_crew.config import loader as _loader
 from kiro_crew.config.loader import (
     IMESSAGE_SERVICES,
@@ -37,7 +38,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.constants import CHANNEL_SEND_NAMESPACES
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.channel_folders import (
-    LIVE_RELOAD_FIELDS,
+    channel_restart_required,
     clean_session_folder,
     ensure_channel_folder,
     stored_folder_name,
@@ -59,6 +60,7 @@ from kiro_crew.dashboard.handlers._shared import (
     pip_extra_install_command,
     read_bounded_json,
 )
+from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
 from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
@@ -4149,14 +4151,21 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
-    # command and enterprise IDs are read once at gateway startup; reactions
-    # and show_thinking are re-read per message, so only the former (plus any
-    # secret/owner change) need a restart to take effect.
-    boot_read = {"command", "allowed_enterprise_ids"}
+    # Only ``slack.command`` still needs a restart: it is registered in the Slack
+    # app manifest, so no local reload can make Slack route a new trigger. Every
+    # other slack.* field -- including the enterprise allow-list, which the
+    # gateway re-reads through its validated reader on a config change -- is
+    # applied live. A credential/owner write still needs one: those live in .env,
+    # which the config watcher does not watch.
+    # Answer only once the watcher has applied the write: a narrowed allow-list
+    # is in force before the caller sees "saved", not one poll interval later.
+    await _hot_apply_after_write()
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(boot_read & staged.keys()),
+            "restart_required": channel_restart_required(
+                "slack", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": verify_warning,
         }
     )
@@ -4193,10 +4202,6 @@ def _threshold_pct_rejection(body: dict[str, Any], key: str) -> tuple[str, str] 
 # in config.json under
 # the "discord" key. GET returns a masked preview + presence boolean; raw
 # token values are write-only (reset at the Developer Portal if ever needed).
-
-#: Discord fields the dispatcher re-reads per turn, so changing one takes
-#: effect on the next message rather than at the next restart.
-_DISCORD_LIVE_FIELDS = frozenset({"reactions_enabled", "show_thinking"})
 
 #: Loose shape check for Discord bot tokens: three dot-separated base64url
 #: segments (e.g. "MTA5...aBc.GhIjKl.MnOpQrStUvWxYz0123456789_-").
@@ -4449,7 +4454,7 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             applied.append("soft_threshold_pct")
 
     # Both render toggles are read per turn by the dispatcher, not at boot, so a
-    # change takes effect on the next message. `_DISCORD_LIVE_FIELDS` below keeps
+    # change takes effect on the next message. `channel_restart_required` keeps
     # `restart_required` honest about that; promising a restart the user does not
     # need is how a settings page trains people to restart for everything.
     for toggle in ("reactions_enabled", "show_thinking"):
@@ -4546,14 +4551,18 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
-    # Token, enabled and the allow-lists are boot-read: they are consumed in the
-    # orchestrator's constructor and the dispatcher is built at boot. The two
-    # render toggles are not, because the dispatcher re-reads them per turn.
+    # The restart hint is answered from the schema: the token is hoisted from the
+    # environment at connect time, so a credential write still needs a restart;
+    # the config fields are applied by the watcher above.
+    # Answer only once the watcher has applied the write: a narrowed allow-list
+    # is in force before the caller sees "saved", not one poll interval later.
+    await _hot_apply_after_write()
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates)
-            or bool(staged.keys() - LIVE_RELOAD_FIELDS - _DISCORD_LIVE_FIELDS),
+            "restart_required": channel_restart_required(
+                "discord", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": verify_warning,
         }
     )
@@ -4931,10 +4940,15 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     )
     # All Telegram fields are boot-read: token/enabled/allowlist are consumed
     # in the orchestrator's constructor and the dispatcher is built at boot.
+    # Answer only once the watcher has applied the write: a narrowed allow-list
+    # is in force before the caller sees "saved", not one poll interval later.
+    await _hot_apply_after_write()
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required(
+                "telegram", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": verify_warning,
         }
     )
@@ -5527,51 +5541,72 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             applied.append("app_password_purged")
 
         _cfg_snapshot: str | None = None
-        if changes:
-            teams_cfg.update(changes)
-            # Snapshot the on-disk config BEFORE writing the new metadata, so
-            # that if the subsequent .env credential write fails we can roll
-            # the metadata back.  Restoring config on .env failure keeps the
-            # pair consistent (old credential + old meta).
-            _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
-            _atomic_json_write(path, data)
+        # Hold the live-config watcher for the whole config+credential transaction:
+        # the two files commit separately and a failed .env write rolls the config
+        # back, so nothing between here and the end of the block may be applied to
+        # the running gateway. The release wakes the watcher on the committed state.
+        with live.hold():
+            if changes:
+                teams_cfg.update(changes)
+                # Snapshot the on-disk config BEFORE writing the new metadata, so
+                # that if the subsequent .env credential write fails we can roll
+                # the metadata back.  Restoring config on .env failure keeps the
+                # pair consistent (old credential + old meta).
+                _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
+                _atomic_json_write(path, data)
 
-        # Create the configured session folder now, on this user-initiated save,
-        # so the reconcile path never has to write the folder store. Best-effort:
-        # a failure leaves conversations unfiled until the next save.
-        _folder_name = stored_folder_name(teams_cfg.get("session_folder"))
-        if _folder_name:
-            _state = request.app.get("state")
-            if _state is not None:
-                await ensure_channel_folder(
-                    _state,
-                    "teams",
-                    _folder_name,
-                    relabel="session_folder" in changes,
+            # Create the configured session folder now, on this user-initiated save,
+            # so the reconcile path never has to write the folder store. Best-effort:
+            # a failure leaves conversations unfiled until the next save.
+            _folder_name = stored_folder_name(teams_cfg.get("session_folder"))
+            if _folder_name:
+                _state = request.app.get("state")
+                if _state is not None:
+                    await ensure_channel_folder(
+                        _state,
+                        "teams",
+                        _folder_name,
+                        relabel="session_folder" in changes,
+                    )
+            if env_updates:
+                # Off-loop: the .env write is blocking file IO (lock, temp write,
+                # owner-only lockdown, replace) that would stall the gateway loop
+                # if run inline.
+                #
+                # Cancellation guard: _write_env_off_loop shields + drains its
+                # worker, so a CancelledError from it means the .env write has
+                # already finished (either succeeded or failed). Roll config back
+                # ONLY when the write actually failed; if it succeeded, the pair
+                # is consistent and rolling back would create a mismatch.
+                _env_write_task: asyncio.Task[None] = asyncio.ensure_future(
+                    _write_env_off_loop(env_updates)
                 )
-        if env_updates:
-            # Off-loop: the .env write is blocking file IO (lock, temp write,
-            # owner-only lockdown, replace) that would stall the gateway loop
-            # if run inline.
-            #
-            # Cancellation guard: _write_env_off_loop shields + drains its
-            # worker, so a CancelledError from it means the .env write has
-            # already finished (either succeeded or failed). Roll config back
-            # ONLY when the write actually failed; if it succeeded, the pair
-            # is consistent and rolling back would create a mismatch.
-            _env_write_task: asyncio.Task[None] = asyncio.ensure_future(
-                _write_env_off_loop(env_updates)
-            )
-            try:
-                await asyncio.shield(_env_write_task)
-            except asyncio.CancelledError:
-                # Drain to completion WITHOUT propagating, so we can inspect the
-                # outcome and roll back before re-raising (a second shield() would
-                # re-raise CancelledError before the rollback ran).
-                await asyncio.gather(_env_write_task, return_exceptions=True)
-                _env_exc = _env_write_task.exception() if not _env_write_task.cancelled() else None
-                if _env_exc is not None:
-                    # .env write failed — roll config back for consistency.
+                try:
+                    await asyncio.shield(_env_write_task)
+                except asyncio.CancelledError:
+                    # Drain to completion WITHOUT propagating, so we can inspect the
+                    # outcome and roll back before re-raising (a second shield() would
+                    # re-raise CancelledError before the rollback ran).
+                    await asyncio.gather(_env_write_task, return_exceptions=True)
+                    _env_exc = (
+                        _env_write_task.exception() if not _env_write_task.cancelled() else None
+                    )
+                    if _env_exc is not None:
+                        # .env write failed — roll config back for consistency.
+                        if changes:
+                            if _cfg_snapshot is None:
+                                await asyncio.to_thread(path.unlink, missing_ok=True)
+                            else:
+                                await asyncio.to_thread(
+                                    _atomic_json_write,
+                                    path,
+                                    json.loads(_cfg_snapshot),
+                                )
+                    raise
+                except BaseException:
+                    # Genuine .env write failure — roll the config metadata back so
+                    # a failed write cannot leave the NEW metadata paired with the
+                    # OLD credential on disk.
                     if changes:
                         if _cfg_snapshot is None:
                             await asyncio.to_thread(path.unlink, missing_ok=True)
@@ -5581,26 +5616,12 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
                                 path,
                                 json.loads(_cfg_snapshot),
                             )
-                raise
-            except BaseException:
-                # Genuine .env write failure — roll the config metadata back so
-                # a failed write cannot leave the NEW metadata paired with the
-                # OLD credential on disk.
-                if changes:
-                    if _cfg_snapshot is None:
-                        await asyncio.to_thread(path.unlink, missing_ok=True)
+                    raise
+                for key, new_val in env_updates.items():
+                    if new_val is None:
+                        os.environ.pop(key, None)
                     else:
-                        await asyncio.to_thread(
-                            _atomic_json_write,
-                            path,
-                            json.loads(_cfg_snapshot),
-                        )
-                raise
-            for key, new_val in env_updates.items():
-                if new_val is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = new_val
+                        os.environ[key] = new_val
 
     _sel().log_api_access(
         caller=caller,
@@ -5609,10 +5630,13 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
+    # Answer only once the watcher has applied the write: a narrowed allow-list
+    # is in force before the caller sees "saved", not one poll interval later.
+    await _hot_apply_after_write()
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(set(applied) - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required("teams", applied, env_updates=env_updates),
             "verify_warning": verify_warning,
         }
     )
@@ -5865,46 +5889,64 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
             applied.append("bot_token_purged")
 
         _cfg_snapshot: str | None = None
-        if changes:
-            webex_cfg.update(changes)
-            # Snapshot the on-disk config BEFORE writing the new metadata, so
-            # that if the subsequent .env credential write fails we can roll
-            # the metadata back.  Restoring config on .env failure keeps the
-            # pair consistent (old token + old meta).
-            _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
-            _atomic_json_write(path, data)
+        # Hold the live-config watcher for the whole config+credential transaction:
+        # the two files commit separately and a failed .env write rolls the config
+        # back, so nothing between here and the end of the block may be applied to
+        # the running gateway. The release wakes the watcher on the committed state.
+        with live.hold():
+            if changes:
+                webex_cfg.update(changes)
+                # Snapshot the on-disk config BEFORE writing the new metadata, so
+                # that if the subsequent .env credential write fails we can roll
+                # the metadata back.  Restoring config on .env failure keeps the
+                # pair consistent (old token + old meta).
+                _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
+                _atomic_json_write(path, data)
 
-        # Create the configured session folder now, on this user-initiated save,
-        # so the reconcile path never has to write the folder store. Best-effort:
-        # a failure leaves conversations unfiled until the next save.
-        _folder_name = stored_folder_name(webex_cfg.get("session_folder"))
-        if _folder_name:
-            _state = request.app.get("state")
-            if _state is not None:
-                await ensure_channel_folder(
-                    _state,
-                    "webex",
-                    _folder_name,
-                    relabel="session_folder" in changes,
+            # Create the configured session folder now, on this user-initiated save,
+            # so the reconcile path never has to write the folder store. Best-effort:
+            # a failure leaves conversations unfiled until the next save.
+            _folder_name = stored_folder_name(webex_cfg.get("session_folder"))
+            if _folder_name:
+                _state = request.app.get("state")
+                if _state is not None:
+                    await ensure_channel_folder(
+                        _state,
+                        "webex",
+                        _folder_name,
+                        relabel="session_folder" in changes,
+                    )
+            if env_updates:
+                # Off-loop: the .env write is blocking file IO (lock, temp write,
+                # owner-only lockdown, replace) and must not block the event loop.
+                #
+                # Cancellation guard: see Teams save for the full rationale. Only
+                # roll config back when the .env write actually failed, not when
+                # cancellation arrived after the write already committed.
+                _env_write_task_wx: asyncio.Task[None] = asyncio.ensure_future(
+                    _write_env_off_loop(env_updates)
                 )
-        if env_updates:
-            # Off-loop: the .env write is blocking file IO (lock, temp write,
-            # owner-only lockdown, replace) and must not block the event loop.
-            #
-            # Cancellation guard: see Teams save for the full rationale. Only
-            # roll config back when the .env write actually failed, not when
-            # cancellation arrived after the write already committed.
-            _env_write_task_wx: asyncio.Task[None] = asyncio.ensure_future(
-                _write_env_off_loop(env_updates)
-            )
-            try:
-                await asyncio.shield(_env_write_task_wx)
-            except asyncio.CancelledError:
-                await asyncio.gather(_env_write_task_wx, return_exceptions=True)
-                _env_exc_wx = (
-                    _env_write_task_wx.exception() if not _env_write_task_wx.cancelled() else None
-                )
-                if _env_exc_wx is not None:
+                try:
+                    await asyncio.shield(_env_write_task_wx)
+                except asyncio.CancelledError:
+                    await asyncio.gather(_env_write_task_wx, return_exceptions=True)
+                    _env_exc_wx = (
+                        _env_write_task_wx.exception()
+                        if not _env_write_task_wx.cancelled()
+                        else None
+                    )
+                    if _env_exc_wx is not None:
+                        if changes:
+                            if _cfg_snapshot is None:
+                                await asyncio.to_thread(path.unlink, missing_ok=True)
+                            else:
+                                await asyncio.to_thread(
+                                    _atomic_json_write, path, json.loads(_cfg_snapshot)
+                                )
+                    raise
+                except BaseException:
+                    # Roll config back so a failed .env write cannot leave the
+                    # NEW metadata paired with the OLD token on disk.
                     if changes:
                         if _cfg_snapshot is None:
                             await asyncio.to_thread(path.unlink, missing_ok=True)
@@ -5912,22 +5954,13 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
                             await asyncio.to_thread(
                                 _atomic_json_write, path, json.loads(_cfg_snapshot)
                             )
-                raise
-            except BaseException:
-                # Roll config back so a failed .env write cannot leave the
-                # NEW metadata paired with the OLD token on disk.
-                if changes:
-                    if _cfg_snapshot is None:
-                        await asyncio.to_thread(path.unlink, missing_ok=True)
+                    raise
+                # Keep the live process environment in sync (see the Slack save path).
+                for key, new_val in env_updates.items():
+                    if new_val is None:
+                        os.environ.pop(key, None)
                     else:
-                        await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
-                raise
-            # Keep the live process environment in sync (see the Slack save path).
-            for key, new_val in env_updates.items():
-                if new_val is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = new_val
+                        os.environ[key] = new_val
 
     _sel().log_api_access(
         caller=caller,
@@ -5937,10 +5970,13 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
         resources=",".join(applied + list(env_updates.keys())),
     )
     # The entire Webex channel config is read once at gateway startup.
+    # Answer only once the watcher has applied the write: a narrowed allow-list
+    # is in force before the caller sees "saved", not one poll interval later.
+    await _hot_apply_after_write()
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(set(applied) - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required("webex", applied, env_updates=env_updates),
             "verify_warning": verify_warning,
         }
     )
@@ -6187,10 +6223,13 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
         resources=",".join(applied),
     )
     # The entire iMessage channel config is read once at gateway startup.
+    # Answer only once the watcher has applied the write: a narrowed allow-list
+    # is in force before the caller sees "saved", not one poll interval later.
+    await _hot_apply_after_write()
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(set(applied) - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required("imessage", applied),
             "verify_warning": "",
         }
     )
@@ -6454,71 +6493,79 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
 
     # ── Phase 2: commit. All validation passed, so writes are safe. ──
     _cfg_snapshot: str | None = None
-    if staged:
-        wc_cfg.update(staged)
-        # Snapshot the on-disk config BEFORE writing the new metadata, so
-        # that if the subsequent .env credential write fails we can roll
-        # the metadata back.  Restoring config on .env failure keeps the
-        # pair consistent (old credentials + old meta).
-        _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
-        # Off-loop: the atomic write (temp file + fsync + replace) must not
-        # block the gateway event loop.
-        await asyncio.to_thread(_atomic_json_write, path, data)
+    # Hold the live-config watcher for the whole config+credential transaction:
+    # the two files commit separately and a failed .env write rolls the config
+    # back, so nothing between here and the end of the block may be applied to
+    # the running transport (a widened allow-list must never go live on a save
+    # that then fails). The release wakes the watcher on the committed state.
+    with live.hold():
+        if staged:
+            wc_cfg.update(staged)
+            # Snapshot the on-disk config BEFORE writing the new metadata, so
+            # that if the subsequent .env credential write fails we can roll
+            # the metadata back.  Restoring config on .env failure keeps the
+            # pair consistent (old credentials + old meta).
+            _cfg_snapshot = await asyncio.to_thread(_read_text_or_none, path)
+            # Off-loop: the atomic write (temp file + fsync + replace) must not
+            # block the gateway event loop.
+            await asyncio.to_thread(_atomic_json_write, path, data)
 
-    # Create the configured session folder now, on this user-initiated save,
-    # so the reconcile path never has to write the folder store. Best-effort:
-    # a failure leaves conversations unfiled until the next save.
-    _folder_name = stored_folder_name(wc_cfg.get("session_folder"))
-    if _folder_name:
-        _state = request.app.get("state")
-        if _state is not None:
-            await ensure_channel_folder(
-                _state,
-                "wecom",
-                _folder_name,
-                relabel="session_folder" in staged,
+        # Create the configured session folder now, on this user-initiated save,
+        # so the reconcile path never has to write the folder store. Best-effort:
+        # a failure leaves conversations unfiled until the next save.
+        _folder_name = stored_folder_name(wc_cfg.get("session_folder"))
+        if _folder_name:
+            _state = request.app.get("state")
+            if _state is not None:
+                await ensure_channel_folder(
+                    _state,
+                    "wecom",
+                    _folder_name,
+                    relabel="session_folder" in staged,
+                )
+        if env_updates:
+            # Off-loop: the .env write is blocking file IO (lock, temp write,
+            # owner-only lockdown, replace) and must not block the event loop.
+            #
+            # Cancellation guard: see Teams save for the full rationale. Only
+            # roll config back when the .env write actually failed, not when
+            # cancellation arrived after the write already committed.
+            _env_write_task_wc: asyncio.Task[None] = asyncio.ensure_future(
+                _write_env_off_loop(env_updates)
             )
-    if env_updates:
-        # Off-loop: the .env write is blocking file IO (lock, temp write,
-        # owner-only lockdown, replace) and must not block the event loop.
-        #
-        # Cancellation guard: see Teams save for the full rationale. Only
-        # roll config back when the .env write actually failed, not when
-        # cancellation arrived after the write already committed.
-        _env_write_task_wc: asyncio.Task[None] = asyncio.ensure_future(
-            _write_env_off_loop(env_updates)
-        )
-        try:
-            await asyncio.shield(_env_write_task_wc)
-        except asyncio.CancelledError:
-            await asyncio.gather(_env_write_task_wc, return_exceptions=True)
-            _env_exc_wc = (
-                _env_write_task_wc.exception() if not _env_write_task_wc.cancelled() else None
-            )
-            if _env_exc_wc is not None:
+            try:
+                await asyncio.shield(_env_write_task_wc)
+            except asyncio.CancelledError:
+                await asyncio.gather(_env_write_task_wc, return_exceptions=True)
+                _env_exc_wc = (
+                    _env_write_task_wc.exception() if not _env_write_task_wc.cancelled() else None
+                )
+                if _env_exc_wc is not None:
+                    if staged:
+                        if _cfg_snapshot is None:
+                            await asyncio.to_thread(path.unlink, missing_ok=True)
+                        else:
+                            await asyncio.to_thread(
+                                _atomic_json_write, path, json.loads(_cfg_snapshot)
+                            )
+                raise
+            except BaseException:
+                # Roll config back so a failed .env write cannot leave the NEW
+                # metadata paired with the OLD credentials on disk.
                 if staged:
                     if _cfg_snapshot is None:
                         await asyncio.to_thread(path.unlink, missing_ok=True)
                     else:
                         await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
-            raise
-        except BaseException:
-            # Roll config back so a failed .env write cannot leave the NEW
-            # metadata paired with the OLD credentials on disk.
-            if staged:
-                if _cfg_snapshot is None:
-                    await asyncio.to_thread(path.unlink, missing_ok=True)
+                raise
+            # Keep the live process environment in sync with the new .env state
+            # (load_credentials() lets os.environ win over .env — see the Slack
+            # save handler for the full rationale).
+            for key, new_val in env_updates.items():
+                if new_val is None:
+                    os.environ.pop(key, None)
                 else:
-                    await asyncio.to_thread(_atomic_json_write, path, json.loads(_cfg_snapshot))
-            raise
-        # Keep the live process environment in sync with the new .env state
-        # (load_credentials() lets os.environ win over .env — see the Slack
-        # save handler for the full rationale).
-        for key, new_val in env_updates.items():
-            if new_val is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = new_val
+                    os.environ[key] = new_val
 
     _sel().log_api_access(
         caller=caller,
@@ -6528,10 +6575,15 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
         resources=",".join(applied + list(env_updates.keys())),
     )
     # The entire WeCom channel config is read once at gateway startup.
+    # Answer only once the watcher has applied the write: a narrowed allow-list
+    # is in force before the caller sees "saved", not one poll interval later.
+    await _hot_apply_after_write()
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required(
+                "wecom", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": "",
         }
     )
@@ -6962,50 +7014,55 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
             # caller is already raising; the mismatch is logged instead.
             logger.exception("Feishu config rollback failed; config may lead .env")
 
-    if staged:
-        # Off-loop: the locked read-modify-write does file IO and may block on a
-        # concurrent holder of the lock, neither of which belongs on the loop.
-        try:
-            await asyncio.to_thread(
-                functools.partial(update_config_locked, path, mutate=_apply_staged)
-            )
-        except ConfigReadError:
-            return _corrupt_config()
+    # Hold the live-config watcher for the whole config+credential transaction:
+    # the two files commit separately and a failed .env write rolls the config
+    # back, so nothing between here and the end of the block may be applied to
+    # the running gateway. The release wakes the watcher on the committed state.
+    with live.hold():
+        if staged:
+            # Off-loop: the locked read-modify-write does file IO and may block on a
+            # concurrent holder of the lock, neither of which belongs on the loop.
+            try:
+                await asyncio.to_thread(
+                    functools.partial(update_config_locked, path, mutate=_apply_staged)
+                )
+            except ConfigReadError:
+                return _corrupt_config()
 
-    if env_updates:
-        # Off-loop: the .env write is blocking file IO (lock, temp write,
-        # owner-only lockdown, replace) and must not block the event loop.
-        #
-        # Cancellation guard: see the WeCom save for the full rationale. Only
-        # roll config back when the .env write actually failed, not when
-        # cancellation arrived after the write already committed.
-        _env_write_task_fs: asyncio.Task[None] = asyncio.ensure_future(
-            _write_env_off_loop(env_updates)
-        )
-        try:
-            await asyncio.shield(_env_write_task_fs)
-        except asyncio.CancelledError:
-            await asyncio.gather(_env_write_task_fs, return_exceptions=True)
-            _env_exc_fs = (
-                _env_write_task_fs.exception() if not _env_write_task_fs.cancelled() else None
+        if env_updates:
+            # Off-loop: the .env write is blocking file IO (lock, temp write,
+            # owner-only lockdown, replace) and must not block the event loop.
+            #
+            # Cancellation guard: see the WeCom save for the full rationale. Only
+            # roll config back when the .env write actually failed, not when
+            # cancellation arrived after the write already committed.
+            _env_write_task_fs: asyncio.Task[None] = asyncio.ensure_future(
+                _write_env_off_loop(env_updates)
             )
-            if _env_exc_fs is not None and staged:
-                await _rollback_config()
-            raise
-        except BaseException:
-            # Roll config back so a failed .env write cannot leave the NEW
-            # metadata paired with the OLD credentials on disk.
-            if staged:
-                await _rollback_config()
-            raise
-        # Keep the live process environment in sync with the new .env state
-        # (load_credentials() lets os.environ win over .env — see the Slack save
-        # handler for the full rationale).
-        for key, new_val in env_updates.items():
-            if new_val is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = new_val
+            try:
+                await asyncio.shield(_env_write_task_fs)
+            except asyncio.CancelledError:
+                await asyncio.gather(_env_write_task_fs, return_exceptions=True)
+                _env_exc_fs = (
+                    _env_write_task_fs.exception() if not _env_write_task_fs.cancelled() else None
+                )
+                if _env_exc_fs is not None and staged:
+                    await _rollback_config()
+                raise
+            except BaseException:
+                # Roll config back so a failed .env write cannot leave the NEW
+                # metadata paired with the OLD credentials on disk.
+                if staged:
+                    await _rollback_config()
+                raise
+            # Keep the live process environment in sync with the new .env state
+            # (load_credentials() lets os.environ win over .env — see the Slack save
+            # handler for the full rationale).
+            for key, new_val in env_updates.items():
+                if new_val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = new_val
 
     # Create the configured session folder now, on this user-initiated save, so
     # the reconcile path never has to write the folder store. Best-effort: a
@@ -7039,10 +7096,15 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
         resources=",".join(applied + list(env_updates.keys())),
     )
     # The entire Feishu channel config is read once at gateway startup.
+    # Answer only once the watcher has applied the write: a narrowed allow-list
+    # is in force before the caller sees "saved", not one poll interval later.
+    await _hot_apply_after_write()
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required(
+                "feishu", staged.keys(), env_updates=env_updates
+            ),
             "verify_warning": "",
         }
     )

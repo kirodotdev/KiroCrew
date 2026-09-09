@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional
 from kiro_crew import autonudge
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.runtime import AcpRequestTimeout, AcpRuntimeDead
+from kiro_crew.config import live
 from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
     acp_error_is_transient,
@@ -214,6 +215,9 @@ class WorkflowService:
         # LENGTHEN it for genuinely long investigations but never remove it —
         # clamp_run_timeout keeps every value inside [MIN, MAX].
         self._timeout_secs = clamp_run_timeout(timeout_secs)
+        # The ceiling follows config live; runs already in flight keep the ceiling
+        # they started with. The binder holds this service weakly.
+        self._config_sub = live.bind("agent.workflow_run_timeout_secs", self.set_timeout_secs)
         # When True, each run's ``ctx.agent()`` calls reuse a small WARM session
         # pool instead of cold-starting a fresh session per call (kills the
         # per-call cold-start that dominates workflow wall-clock — see
@@ -235,6 +239,14 @@ class WorkflowService:
     def timeout_secs(self) -> int:
         """Effective (clamped) default wall-clock ceiling for runs of this service."""
         return self._timeout_secs
+
+    def set_timeout_secs(self, value: Optional[int]) -> None:
+        """Adopt a new default run ceiling for runs started from now on.
+
+        Clamped exactly like the constructor argument; a run already in flight
+        keeps the ceiling it started with.
+        """
+        self._timeout_secs = clamp_run_timeout(value)
 
     def _max_persisted_seq(self) -> int:
         """Highest wf_NNNNNN sequence among loaded runs (so new ids don't collide)."""

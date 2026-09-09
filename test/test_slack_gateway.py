@@ -8621,6 +8621,15 @@ _UNCREDENTIALED_PROBE_EXEMPTIONS = {
 }
 
 
+def _gateway_class() -> ast.ClassDef:
+    tree = ast.parse(Path(gw.__file__).read_text(encoding="utf-8"))
+    return next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "GatewayOrchestrator"
+    )
+
+
 def _gateway_method(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     tree = ast.parse(Path(gw.__file__).read_text(encoding="utf-8"))
     gateway_class = next(
@@ -8636,28 +8645,43 @@ def _gateway_method(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
 
 
 def _collapsed_enabled_operands() -> dict[str, set[str]]:
-    """Return self-attribute operands read by each collapsed enabled flag."""
+    """Return self-attribute operands read by each collapsed enabled flag.
+
+    Scans ``__init__`` AND every ``_hoist_<channel>`` method: the per-channel
+    hoists are where each ``_<channel>_enabled`` predicate is now written, so a
+    scan of the constructor alone would find no predicate at all and the ratchet
+    would pass vacuously.
+    """
     found: dict[str, set[str]] = {}
-    for node in ast.walk(_gateway_method("__init__")):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not (
-            isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
-            and target.attr.startswith("_")
-            and target.attr.endswith("_enabled")
-        ):
-            continue
-        channel = target.attr.removeprefix("_").removesuffix("_enabled")
-        found[channel] = {
-            child.attr
-            for child in ast.walk(node.value)
-            if isinstance(child, ast.Attribute)
-            and isinstance(child.value, ast.Name)
-            and child.value.id == "self"
-        }
+    gateway_class = _gateway_class()
+    methods = [
+        node
+        for node in gateway_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and (node.name == "__init__" or node.name.startswith("_hoist_"))
+    ]
+    assert methods, "no __init__ / _hoist_* methods found on the orchestrator"
+    for method in methods:
+        for node in ast.walk(method):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+                and target.attr.startswith("_")
+                and target.attr.endswith("_enabled")
+            ):
+                continue
+            channel = target.attr.removeprefix("_").removesuffix("_enabled")
+            found[channel] = {
+                child.attr
+                for child in ast.walk(node.value)
+                if isinstance(child, ast.Attribute)
+                and isinstance(child.value, ast.Name)
+                and child.value.id == "self"
+            }
     return found
 
 

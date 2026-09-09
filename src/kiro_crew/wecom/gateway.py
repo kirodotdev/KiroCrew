@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.wecom.client import WeComClient
-from kiro_crew.wecom.transport import WeComTransport
+from kiro_crew.wecom.transport import WeComTransport, allowed_userids_from_config
 from kiro_crew.wecom.transport_dispatch import WeComDispatcher
 
 if TYPE_CHECKING:
@@ -53,13 +54,23 @@ def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
 
 
 def _allowed_userids(orch: "GatewayOrchestrator") -> list[str]:
-    """Extract the configured WeCom allow-list userids (filtered)."""
-    out: list[str] = []
-    for u in orch._cfg.wecom.allowed_users:
-        uid = u.get("userid") if isinstance(u, dict) else None
-        if uid:
-            out.append(uid)
-    return out
+    """Extract the configured WeCom allow-list userids (filtered).
+
+    Same flattening the live reconfigure path uses; a roster that is not a list
+    authorizes nobody at boot (deny-by-default).
+    """
+    return allowed_userids_from_config(_wecom_section(orch).allowed_users) or []
+
+
+def _wecom_section(orch: "GatewayOrchestrator") -> Any:
+    """The ``wecom`` section in force NOW: the watcher's snapshot, else boot's.
+
+    The factory also runs on an in-process channel restart, by which time the
+    orchestrator's boot copy may be stale; the snapshot is what every other
+    live reader adopted.
+    """
+    cfg = live.snapshot() or orch._cfg
+    return cfg.wecom
 
 
 def warn_if_channel_uncredentialed(
@@ -156,16 +167,17 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
         )
+        wecom_cfg = _wecom_section(orch)
         client = WeComClient(
             bot_id=orch._wecom_bot_id,
             secret=orch._wecom_secret,
-            ws_url=orch._cfg.wecom.ws_url,
+            ws_url=wecom_cfg.ws_url,
             proxy=proxy,
         )
         transport = WeComTransport(
             client,
             allowed_users=_allowed_userids(orch),
-            allow_all=bool(orch._cfg.wecom.allow_all_users),
+            allow_all=bool(wecom_cfg.allow_all_users),
             owner_id=orch._owner_id,
             dispatch=dispatcher.handle_message,
         )
@@ -174,6 +186,9 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
         # set_message_handler avoids the client<->transport construction cycle.
         client.set_message_handler(transport.receive)
         dispatcher.client = client
+        # The dispatcher's config applier pushes reloaded allow-list fields at
+        # the transport; wired here for the same construction-cycle reason.
+        dispatcher.transport = transport
 
         # Keep the settings badge truthful: connect() only SCHEDULES the WS
         # loop, so "started" proves nothing about the credentials. The client

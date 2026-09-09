@@ -42,6 +42,7 @@ from kiro_crew import name_grant, platform_compat
 from kiro_crew.agent_discovery import cached_project_agent_names, list_agents
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
+from kiro_crew.config import live
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.constants import SUBAGENT_COMPLETION_PREFIX, SUBAGENT_TIMEOUT_SECS
 from kiro_crew.context import (
@@ -1741,6 +1742,25 @@ class SubagentManager:
         except Exception:
             self._spawn_stagger_secs = 2.0
 
+        # Every limit captured above is a copy of config.json. The live watcher
+        # pushes a rewrite at this object through ``reconfigure`` so a write from
+        # the dashboard, ``kirocrew config set`` or ``$EDITOR`` lands without a
+        # gateway restart. The subscription holds ``self`` weakly, so a discarded
+        # manager (tests, provider reloads) falls out of the registry by itself.
+        # The prefixes ARE the watched-path list, so the dispatcher filters an
+        # unrelated ``agent.*`` write rather than the applier re-deriving on it.
+        # ``None`` until the first ``reconfigure`` runs, so that first reload
+        # always resolves the cap rather than comparing against a snapshot that
+        # was never taken.
+        self._last_sizing_fields: tuple[object, ...] | None = None
+        self._config_sub: live.Subscription | None = None
+        try:
+            self._config_sub = live.watch_object(
+                self, *self.LIVE_CONFIG_PATHS, name="SubagentManager"
+            )
+        except Exception:
+            logger.warning("SubagentManager could not subscribe to live config", exc_info=True)
+
         # The facade is the single owner of mutable registries and slot tokens.
         # Coordinators own transition logic and route every cross-boundary call
         # back through this object, preserving overrides and monkeypatch seams.
@@ -1757,6 +1777,158 @@ class SubagentManager:
 
     def update_completion_keep(self, mode: str, max_chars: int) -> None:
         return self._run_events.update_completion_keep_impl(mode, max_chars)
+
+    #: Dotted config paths whose value this manager copies at construction. They
+    #: are the subscription's prefixes, so a reload that touches none of them
+    #: never reaches this object; one that touches any of them re-derives EVERY
+    #: copy from the new config (cheaper and safer than a per-field diff, and the
+    #: derivations are all O(1)).
+    LIVE_CONFIG_PATHS: tuple[str, ...] = (
+        "agent.max_subagents",
+        "agent.subagent_auto_max",
+        "agent.subagent_mem_buffer_pct",
+        "agent.subagent_cost_gb",
+        "agent.subagent_cpu_cost_cores",
+        "session.pool_size",
+        "agent.subagent_max_turns",
+        "agent.subagent_timeout_secs",
+        "agent.subagent_stall_idle_secs",
+        "agent.subagent_spawn_stagger_secs",
+        "agent.subagent_result_ttl_secs",
+        "agent.completion_keep",
+        "agent.completion_keep_chars",
+    )
+
+    #: The subset of ``LIVE_CONFIG_PATHS`` that actually feeds
+    #: :func:`resolve_max_subagents` / :func:`compute_max_subagents` (the
+    #: explicit pin, the auto-sizing inputs, and the pool-size term). Every
+    #: other watched path only affects a plain field copy in
+    #: :meth:`apply_limits`, so a reload that touches none of these has no way
+    #: to change the resolved cap and must not pay for
+    #: :func:`resolve_max_subagents`'s host memory / cgroup probe.
+    SIZING_CONFIG_PATHS: tuple[str, ...] = (
+        "agent.max_subagents",
+        "agent.subagent_auto_max",
+        "agent.subagent_mem_buffer_pct",
+        "agent.subagent_cost_gb",
+        "agent.subagent_cpu_cost_cores",
+        "session.pool_size",
+    )
+
+    @staticmethod
+    def _sizing_fields(cfg: KiroCrewConfig) -> tuple[object, ...]:
+        """The values ``resolve_max_subagents`` reads from *cfg*, as a tuple.
+
+        Comparing this tuple across reloads is how :meth:`reconfigure` tells
+        whether a change could possibly move the resolved cap -- ``reconfigure``
+        receives only the reloaded ``cfg``, not the ``ConfigChange`` that
+        produced it (:func:`kiro_crew.config.live.watch_object` calls
+        ``owner.reconfigure(cfg)``), so this diffs values rather than paths.
+        """
+        agent = cfg.agent
+        return (
+            agent.max_subagents,
+            agent.subagent_auto_max,
+            agent.subagent_mem_buffer_pct,
+            agent.subagent_cost_gb,
+            agent.subagent_cpu_cost_cores,
+            cfg.session.pool_size,
+        )
+
+    async def reconfigure(self, cfg: KiroCrewConfig) -> None:
+        """Live-config applier: re-derive the captured limits from *cfg*.
+
+        The concurrent cap may auto-size from host memory (``/proc/meminfo``,
+        cgroup files), which is filesystem I/O -- resolved off the loop and
+        handed to :meth:`apply_limits` ready-made, but ONLY when a sizing input
+        actually moved. ``reconfigure`` is invoked on every reload that touches
+        any of ``LIVE_CONFIG_PATHS`` (e.g. ``agent.completion_keep``), most of
+        which cannot change the resolved cap at all; re-probing host memory on
+        every one of those is a needless thread hop. When nothing in
+        :attr:`SIZING_CONFIG_PATHS` moved since the last reconfigure, the
+        current cap is kept and only the other limits are re-applied.
+        """
+        sizing_now = self._sizing_fields(cfg)
+        if self._last_sizing_fields is not None and sizing_now == self._last_sizing_fields:
+            cap = self._max_concurrent
+        else:
+            try:
+                cap = await asyncio.to_thread(resolve_max_subagents, cfg)
+            except Exception:
+                logger.warning("resolve_max_subagents failed on reload; keeping the current cap")
+                cap = self._max_concurrent
+        self._last_sizing_fields = sizing_now
+        self.apply_limits(cfg, max_concurrent=cap)
+
+    def apply_limits(self, cfg: KiroCrewConfig, *, max_concurrent: int | None = None) -> None:
+        """Adopt every constructor-captured limit from *cfg*.
+
+        Applies the same normalization the constructor does: ``0`` for a
+        timeout / stall interval keeps the built-in default (the sentinel the
+        gateway passes when the field is unset), the stagger interval is floored
+        at ``0.0``, and the cap goes through :func:`resolve_max_subagents` (the
+        explicit ``max_subagents`` pin, or the host-sized auto value) unless the
+        caller already resolved it and passes *max_concurrent*.
+
+        Raising the cap admits queued spawns through the staggered pump;
+        lowering it only stops new admissions -- an in-flight run is never
+        cancelled to fit a smaller cap, the count simply drains below it as runs
+        finish. Every read site (admission gate, reaper, stall detector, run
+        timeout, parentless approval policy, completion-keep) reads the attribute
+        at use, so the assignment is the whole apply.
+        """
+        agent = cfg.agent
+        old_cap = self._max_concurrent
+        if max_concurrent is None:
+            try:
+                max_concurrent = resolve_max_subagents(cfg)
+            except Exception:
+                logger.warning("resolve_max_subagents failed; keeping max_concurrent=%d", old_cap)
+                max_concurrent = old_cap
+        self._max_concurrent = max(1, int(max_concurrent))
+        try:
+            self._default_turn_limit = int(agent.subagent_max_turns)
+        except (TypeError, ValueError):
+            pass
+        try:
+            timeout = int(agent.subagent_timeout_secs)
+            self._default_timeout = timeout if timeout > 0 else _TIMEOUT_SECS
+        except (TypeError, ValueError):
+            pass
+        try:
+            stall = int(agent.subagent_stall_idle_secs)
+            self._stall_idle_secs = stall if stall > 0 else _STALL_IDLE_SECS
+        except (TypeError, ValueError):
+            pass
+        try:
+            self._spawn_stagger_secs = max(0.0, float(agent.subagent_spawn_stagger_secs))
+        except (TypeError, ValueError):
+            pass
+        try:
+            self._result_ttl_secs = int(agent.subagent_result_ttl_secs)
+        except (TypeError, ValueError):
+            pass
+        # ``agent.approval_mode`` is deliberately NOT adopted here: it is
+        # boot-only (schema ``restart=True``) because every channel dispatcher
+        # resolves it once at start, and one consumer taking it live while the
+        # others keep the boot value would make the UI's "restart required"
+        # honest for some tool calls and false for others.
+        self.update_completion_keep(agent.completion_keep, int(agent.completion_keep_chars))
+        logger.info(
+            "SubagentManager reconfigured: max_concurrent=%d (was %d), turn_limit=%d, "
+            "timeout=%ds, stall_idle=%ds, stagger=%.1fs, result_ttl=%ds",
+            self._max_concurrent,
+            old_cap,
+            self._default_turn_limit,
+            self._default_timeout,
+            self._stall_idle_secs,
+            self._spawn_stagger_secs,
+            self._result_ttl_secs,
+        )
+        if self._max_concurrent > old_cap and self._queue:
+            # Freed capacity: the pump re-checks the gate itself and honours the
+            # stagger interval, so this never bursts.
+            self._drain_queue()
 
     @staticmethod
     async def _approve_and_log(

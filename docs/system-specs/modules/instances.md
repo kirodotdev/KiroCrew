@@ -318,6 +318,32 @@ kirocrew config set instances.mint_timeout_secs 60
 Constants that are **not** user-configurable: the probe interval (30s), the token
 refresh fraction (0.8), and the stored-token probe timeout (2s).
 
+**Which of these a config write reaches (`SshTunnelManager.apply_config`).** The
+manager registers `live.watch_section(self, "instances", method="apply_config",
+fail_closed=False)` in its own `__init__` — `method` because the `reconfigure`
+name is already taken here, and `fail_closed=False` because the section carries
+no authorization, so a degraded document's defaults are the right answer. A config
+write pushes `connect_timeout_secs`, `mint_timeout_secs`, `ssh_compression`,
+`max_recovery_attempts`, `recover_backoff_max_secs` and `probe_failure_threshold`
+onto the running manager. Every one of those is consulted per operation — per
+connect, per mint, per recovery attempt — so pushing it is a genuine hot apply
+rather than a value that only mattered at construction. The probe threshold is
+additionally propagated into the tunnels ALREADY running: each one copied it when
+it was built, and would otherwise keep tearing itself down on the old count. The
+push is an attribute set on the live tunnel, not a restart, because the threshold
+is compared against a running counter — so the new value takes effect on the next
+probe without dropping a healthy forward.
+
+`tunnel_base_port` is deliberately left alone. The allocator has already handed out
+ports from the old base and live tunnels hold them, so moving the base mid-flight
+would only fragment the range; it applies to a manager built after the change.
+`instances.enabled` stays a startup read (§1), and `warm_set_cap` is applied by the
+warm table rather than here.
+
+`apply_config` is not `reconfigure`: the latter is the per-instance edit barrier
+described under `PATCH /api/instances/{id}`, which tears one tunnel down and
+rewrites its coordinates under the manager lock. They share no code.
+
 ### 5.2 `instances.ssh_compression`
 
 Adds `-C` (zlib transport compression) to the supervised `ssh -N -L` argv. It is
@@ -331,11 +357,12 @@ reached over a higher-latency link, where spending remote CPU to save bandwidth
 is the right trade. On a fast or local link the CPU cost can outweigh the
 bandwidth win, which is why it stays tunable.
 
-The flag is read once, at startup, into the `SshTunnelManager`, and each
-`_SshTunnel` inherits it; changing it takes effect on the next gateway restart.
-Only the *tunnel* argv is affected. The token-mint and diagnostics `ssh`
-invocations do not compress (they are single short commands, so there is nothing
-to gain).
+The flag is held on the `SshTunnelManager` and re-read from config on every write
+(§5.1), but each `_SshTunnel` copies it into its argv when the child is spawned, so
+a change applies to tunnels built AFTER it — a live forward keeps the setting it
+started with until it reconnects. Only the *tunnel* argv is affected. The
+token-mint and diagnostics `ssh` invocations do not compress (they are single short
+commands, so there is nothing to gain).
 
 ### 5.3 Registry file
 

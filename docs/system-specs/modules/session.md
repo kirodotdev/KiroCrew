@@ -202,9 +202,10 @@ other trigger runs. `close_all()` detaches both holders atomically under
 `_bg_runtime_lock` and kills the detached snapshot; its counterpart `_closing`
 gate in `get_bg_session()` refuses to spawn or park once shutdown has started.
 Note there is currently no dashboard edit surface for
-`agent.acp_backend` (a file/CLI edit lands at the next gateway start, where
-`_cfg` is fresh); `refresh_defaults()` re-reads config, so any invocation of it
-picks up a backend change, and a future edit surface gets retirement for free
+`agent.acp_backend`, but a file or CLI edit does not wait for the next gateway
+start: the config watcher dispatches it as a `_FACTORY_CONFIG_PATHS` change, so
+`refresh_defaults()` rebuilds the factory and retires stale-backend background
+runtimes on the write. A future edit surface gets retirement for free
 by routing through it like the other `agent.*` defaults. The provider-path
 retirement trigger is dormant in the public edition for the same reason the
 `ACP_BACKEND_CLAUDE` branch is: every selectable backend is runtime-capable.
@@ -452,7 +453,22 @@ send time.
   the resolution falls through to `"auto"` exactly as an absent spec does.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
   60min). Never expires `BACKGROUND_KEY`. Dashboard per-tab sessions
-  (`dashboard:{slot_key}`) idle-expire like any other session.
+  (`dashboard:{slot_key}`) idle-expire like any other session. The policy is
+  **re-read every tick**, not frozen at loop start: `_adopt_idle_policy()` runs
+  at the top of the loop and again before each sleep, taking
+  `session.timeout_secs` and `session.watchdog_rss_max_mb` off the manager's
+  current `_cfg` (which the config watcher keeps current) and re-applying the
+  same bounds the loader does — the 60s floor, the `0` = sweep-disabled
+  sentinel, and the non-negative-int coercion of the RSS ceiling. The sleep
+  between sweeps is chopped into waits of at most `POLICY_REFRESH_SECS` (60s);
+  each wake re-adopts the policy and, when the interval moved, re-anchors the
+  next sweep to the last sweep plus the new interval, so a shortened timeout
+  pulls the sweep forward within one refresh cadence rather than waiting out
+  the old interval. Elapsed time is accounted from the waits the loop issued,
+  not the wall clock, so the cadence is a property of the loop alone. A
+  transition is logged ONCE, not per tick:
+  `CleanupState.idle_policy_source` holds the `(timeout, rss_max)` pair the
+  policy was last derived from and the log fires only when that pair moves.
 - **Session Watchdog** (`watchdog.py`): `SessionCleanup` owns the cleanup-loop
   state and delegates named periodic behaviours to a `SessionWatchdog` — a
   stateless sequential dispatcher over `CleanupHook(name, run)` entries
@@ -528,6 +544,81 @@ send time.
 | `close_all(drain_timeout=None)` | Pre-shutdown **drain** of in-flight turns (via `drain_active_turns`), then save all active session mappings, shut down every session, and drain the warm pool. `drain_timeout` bounds that drain (`None` = full default budget); a caller wrapping `close_all()` in its own hard deadline (Slack's restart wraps it in `wait_for(..., 5s)`) passes a smaller budget (e.g. `2.0`) so the kill path still fits inside the deadline. A cancel that fires mid-drain (outer deadline) **propagates** (CancelledError is deliberately not caught) so the caller's hard deadline stays honest; recovery of a still-held native-session lock is the next-startup orphan reaper's job. |
 | `drain_active_turns(timeout=None)` | Best-effort co-operative drain that brings in-flight prompts to a safe turn boundary **before** teardown, so kiro-cli closes its native turn and releases its session lock (`~/.kiro/sessions/cli/<uuid>.json`) on the subsequent SIGTERM — otherwise the next gateway's `session/load` hits "active in another process" and the slot returns empty completions (the Make-Live empty-response incident, #200). For each registered session with an **unfinished** turn (native turn-done not yet acked — independent of cancel state, so an already-cancelled-but-not-acked turn is still drained), it issues a graceful `session/cancel` and waits (bounded) for the ack; a turn already cancelled (`cancel()` → `"no_turn"`) is waited on directly via `wait_turn_done`. The whole operation is bounded by `timeout` (`None` → `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS`, default 5.0s; internal cap is `timeout+1.0`); on timeout it logs and returns so the caller falls through to the SIGTERM-first kill path — never hangs teardown, never raises. `timeout <= 0` disables the drain. Returns the count of unfinished turns (observability/tests). Only registered user sessions are drained; the warm pool holds never-prompted processes. |
 | `begin_turn(key)` | **Synchronous** pre-dispatch gate against the lease-dispatch race (#200 / Codex HIGH). A caller holds the per-session semaphore *lease* from `get_or_create` through the whole turn, but the native turn only opens on the first `provider.stream(...)` iteration; the `get_or_create` `_closing` gate cannot revoke a lease already issued before `close_all` set `_closing`. Callers (dashboard `chat_runner`, Slack handler, and structured Slack/Discord monitor adapters through `TurnDriver.closing_gate`) MUST call `begin_turn` synchronously — **no `await` between it and the `async for` stream drive** — so the `_closing` read and the stream's turn registration (`AcpClient.stream_events` clears `_turn_done` before its first `await`) form one yield-free span, strictly ordered w.r.t. `close_all`'s `_closing` set: the turn is either registered before the drain snapshot (and drained) or the caller aborts. Raises `SessionClosingError` (a `RuntimeError`) when closing; the caller's `finally` releases the lease. Deliberately NOT `async`/lock-guarded (an `await` would reopen the race). |
+
+## Live config: the watcher drives `refresh_defaults`
+
+The manager copies `session.*` and `agent.*` values out of `config.json` at
+construction, so a write reaches those copies only if something pushes the new
+value at them. The constructor registers that push on the process config watcher
+(`live.subscribe("session", "agent", "watchdog", "agents", "workspaces",
+"default_workspace", callback=self._on_config_change, name="SessionManager")`,
+kept on
+`self._config_sub`; the watcher holds the bound method weakly, so a manager a
+test or a provider reload discards drops out of the registry on its own). Every
+writer — the dashboard, `kirocrew config set`, `$EDITOR` — lands in the same
+applier, so none of the behaviour below depends on which one wrote. No gateway
+restart is needed for any of it.
+
+`_on_config_change` first fails closed like the owned appliers: while any of its
+six sections is degraded (a section the loader discarded holds DEFAULTS for it;
+the whole-config marker alone does not gate it — see the config spec) it raises
+`ConfigDeferred` for the changed paths and keeps what is in force, because
+adopting defaults would rebuild the provider factory on the default model and
+backend and drain the warm pool; the watcher retries each tick until the
+document validates. Otherwise it does three things, in order:
+
+- **Adopt the new config as `_cfg`, always.** Most fields under these prefixes
+  are read off `_cfg` (or fresh from the loader) at their point of use, so the
+  adoption IS the whole apply — `agent.soft_stop_budget_secs` per stop, and the
+  cleanup loop's idle policy below. The adoption happens under `_lock`.
+- **Route a factory-bound default through `refresh_defaults(cfg=change.new)`.**
+  `_FACTORY_CONFIG_PATHS` lists the paths a rebuilt provider factory or a
+  re-derived warm pool is the only way to honour: `agent.model`,
+  `agent.reasoning_effort`, `agent.acp_backend`, `agent.role_efforts`,
+  `agent.tool_search{,_min_pct,_min_tokens}`, `agent.sandbox`,
+  `agent.sandbox_allow_no_isolation`, `agent.sandbox_allow_unsandboxed_exec`,
+  `agent.member_acp_backend`, and `session.pool_size` / `pool_agent` /
+  `pool_ttl_secs`. `refresh_defaults` is the **live-session-preserving** path —
+  it rebuilds the factory, re-derives the pool and drains the warm pool, but
+  never touches a registered session, so in-flight turns keep running and only
+  NEW sessions see the new defaults. `reload_provider_factory` (which retires
+  sessions built by the old factory) is not on this path.
+  `session.eager_spawn` is deliberately absent: it is read live per spawn in
+  `chat_runner`, so draining the pool for it would be pure churn.
+- **Re-clamp the watchdog windows on every live handle** when the change touches
+  `watchdog.*`, `agent.chat_turn_timeout_secs`, or any
+  `agents.<name>.watchdog_*` key — see
+  [acp-client.md](acp-client.md) for the fan-out and why it re-runs the loader
+  per handle instead of copying seconds across.
+
+`refresh_defaults(cfg=None)` takes an **already-loaded** config: the watcher
+hands in the one it just loaded so the apply needs no second read, and `None`
+(the request-handler callers) loads off-loop inside the fill lock, as before. It
+re-derives the whole warm-pool shape, not just the factory — `_pool_size`
+(clamped to `_MAX_POOL`, floored at 0), `_pool_agent` (falling back to
+`agent.default_agent` when `session.pool_agent` is blank), `_pool_ttl_secs`
+(floored at 0) and `_pool_cwd` — using the same clamps
+`WarmSessionPool._state_from_owner` applies at construction, so a hot value can
+never be a raw copy that bypasses them. `pool_ttl_secs` in particular was
+re-adopted by no path before. `_pool_cwd` is `default_project_dir()`, which is
+resolved from `default_workspace` and `workspaces`, so both are factory paths
+and both prefixes are subscribed: a workspace edit re-derives the pool instead of
+leaving a cwd-less subagent in the previous directory. The resolution reads the
+config file and stats the workspace directory, so it runs in a worker thread
+before `_lock` is taken, like the load itself.
+
+Two more reads on this area follow config without a restart:
+
+- `AcpRuntime._session_start_budget` prefers `live.snapshot()` over its
+  per-runtime memo, keeping the same builtin floor, and falls back to the memo
+  in a process with no watcher armed.
+- `ContextBuilder`'s `{bot_name}` substitution reads
+  `live.snapshot().agent.bot_name`, falling back to the value captured at
+  construction when there is no snapshot or the live one is blank.
+
+`acp/client.py`'s `resolve_prompt_timeout` already loads config per prompt
+(`_effective_prompt_timeout_async`), so `agent.chat_turn_timeout_secs` needed no
+applier — a raised turn budget is in force on the next prompt.
 
 ## Stop Orchestration
 

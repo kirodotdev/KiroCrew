@@ -13,7 +13,7 @@ import platform
 import re
 import shlex
 import shutil
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -1498,37 +1498,41 @@ async def api_security_posture(_request: web.Request) -> web.Response:
 # caller raising it arbitrarily (e.g. {"subagent_auto_max": 9999}) to bypass
 # the concurrency limit.
 
-# Agent settings whose ENFORCED effect is fixed at gateway startup.
-# ``SubagentManager`` is constructed with ``max_subagents`` and
-# ``subagent_max_turns`` and never re-reads the config afterwards;
-# ``max_concurrent`` is stored once with no setter, and ``subagent_auto_max``
-# only reaches that enforced value as the ``hard_cap`` inside
-# ``compute_max_subagents``, which the same construction calls.
-#
-# Precisely: persisting one of these does NOT change what the running gateway
-# ENFORCES. It is not inert, though — the advisory cap advertised to the model
-# re-resolves from config on each read, so after a write the reported cap can
-# move while the enforced one stays put. That divergence is pre-existing and
-# deliberate (overflow queues, so the advertised number is guidance rather than
-# a limit); this constant describes only the enforced side, which is what the
-# restart is for.
-#
-# ``dynamic-subagent-sizing.md`` states the contract this mirrors: "The cap is
-# computed once per gateway start. Restart to recompute." The ``restart_required``
-# response field is the existing convention for exactly this case — the channel
-# config handlers already return it for settings read at boot, and the frontend
-# API client already types it.
-#
-# ``conductor_skill`` is deliberately absent: it is applied inline by this
-# handler (the skill file is regenerated/removed in-request), so it takes effect
-# immediately and must not raise the restart hint.
-_STARTUP_READ_AGENT_KEYS = frozenset(
-    {
-        "max_subagents",
-        "subagent_max_turns",
-        "subagent_auto_max",
-    }
-)
+
+def _changed_paths_need_restart(changed: Iterable[str]) -> bool:
+    """Whether any of the dotted *changed* paths is declared ``restart=True``.
+
+    The schema metadata is the ONE statement of which fields a running gateway
+    cannot adopt; every other field is hot-applied by the config watcher, so a
+    handler never keeps its own list of boot-only keys. ``changed`` must hold
+    only paths whose value actually moved -- the dashboard sends every setting on
+    each save, so "was applied" is not "was changed".
+    """
+    from kiro_crew.config.schema import requires_restart
+
+    return any(requires_restart(p) for p in changed)
+
+
+async def _hot_apply_after_write() -> None:
+    """Run one watcher cycle so the handler answers after the cycle has dispatched.
+
+    With the watcher started this is the same path a CLI or ``$EDITOR`` write
+    takes, only synchronous. Every applier the cycle awaits has run when this
+    returns; the two that deliberately run off the cycle -- a channel reconnect
+    and a provider switch -- are scheduled by it and may still be in flight when
+    the handler answers. Before boot arms the watcher (or in a test that never
+    did) the loader's cache drop already makes the next ``load()`` see the
+    write, so there is nothing further to do.
+    """
+    from kiro_crew.config import live
+
+    w = live.watch()
+    if not w.started:
+        return
+    try:
+        await w.refresh_now()
+    except Exception:
+        logger.exception("config hot-apply after write failed; next poll retries")
 
 
 async def api_kirocrew_config(request: web.Request) -> web.Response:
@@ -1660,9 +1664,8 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
                 _validation_error.append(("no recognized settings provided", 400))
                 return None
 
-            restart_required = any(
-                key in _STARTUP_READ_AGENT_KEYS and agent.get(key) != before.get(key)
-                for key in applied
+            restart_required = _changed_paths_need_restart(
+                f"agent.{key}" for key in applied if agent.get(key) != before.get(key)
             )
             _result["applied"] = applied
             _result["restart_required"] = restart_required
@@ -1736,6 +1739,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
             )
 
         restart_required: bool = _result["restart_required"]  # type: ignore[assignment]
+        await _hot_apply_after_write()
         return web.json_response({"ok": True, "restart_required": restart_required})
 
     cfg = KiroCrewConfig.load()
@@ -2433,109 +2437,20 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
     _log_sel("success", f"{path_key}={value}")
 
-    cfg = KiroCrewConfig.load()
+    # Everything a running gateway does in response to this write lives behind
+    # ``config.live.subscribe`` (the provider switch and role-model rebuild are
+    # registered in ``server.py``; session defaults, subagent budgets and the
+    # metrics recorder by their owners), so a dashboard PATCH, ``kirocrew config
+    # set`` and an ``$EDITOR`` save all apply identically. Waiting for the cycle
+    # here means the masked config returned below is the one already in force.
+    await _hot_apply_after_write()
 
-    # If provider changed, reload the factory so new sessions use the new provider
-    if path_key == "agent.provider":
-        state: DashboardState = request.app["state"]
-        # Refresh agent artifacts so the target provider is immediately usable.
-        # For claude_code this (re)writes ~/.claude/agents/kirocrew.mcp.json —
-        # the MCP registry the claude-agent-acp backend reads at session/new —
-        # picking up any servers installed while on kiro. Best-effort: a failure
-        # here must not block the provider switch (gateway boot also rebuilds).
-        try:
-            from kiro_crew.agent import rebuild_agent_config  # noqa: F811  circular import
+    from kiro_crew.config import live
 
-            await asyncio.to_thread(rebuild_agent_config)
-        except Exception:
-            logger.warning("Agent config rebuild after provider switch failed", exc_info=True)
-        await state.sessions.reload_provider_factory()
-        # Clear model on all slots — aliases are provider-specific
-        for slot in state._slots.values():
-            if slot.model:
-                slot.model = ""
-                # Deliberate model change: bump the pick generation so the
-                # fallback restore probe drops any sticky state instead of
-                # restoring a model id from the previous provider.
-                slot._model_pick_gen += 1
-        state.push_slots_update()
-        logger.info(
-            "Provider switched to %s — config rebuilt, factory reloaded, slot models cleared", value
-        )
-
-    # The default model and default reasoning effort are captured when the
-    # provider factory is built (at gateway startup), so a config write alone
-    # would not reach new sessions until a restart. refresh_defaults() rebuilds
-    # the factory and drains the warm pool WITHOUT touching live sessions —
-    # reload_provider_factory() must NOT be used here: it clears _sessions and
-    # shuts every provider down, which is correct for a provider switch but
-    # would kill in-flight turns just because a default changed.
-    if path_key in (
-        "agent.model",
-        "agent.reasoning_effort",
-        # The ACP backend is captured when the provider factory is built, and a
-        # pre-warmed kiro-cli process must not serve a session that asked for
-        # KAS — refresh_defaults() rebuilds the factory and drains the pool.
-        # NOT reload_provider_factory(): switching the default backend must not
-        # kill in-flight turns on live sessions, which keep the backend they
-        # were started on.
-        "agent.acp_backend",
-    ) or path_key.startswith("agent.role_efforts."):
-        state = request.app["state"]
-        await state.sessions.refresh_defaults()
-        logger.info("%s set to %r — session defaults refreshed", path_key, value)
-
-    # The background role model is baked into the lite / heartbeat kiro specs at
-    # agent-build time, so a change must rewrite them to take effect without a
-    # restart. The subagent role is read live at spawn (_subagent_default_model),
-    # so it needs no rebuild. Chat-default inheritance for both roles is picked
-    # up by the refresh_defaults above when agent.model changes.
-    if path_key == "agent.role_models.background":
-        try:
-            from kiro_crew.agent import rebuild_agent_config
-
-            await asyncio.to_thread(rebuild_agent_config)
-            logger.info(
-                "agent.role_models.background set to %r — background agent specs rebuilt", value
-            )
-        except Exception:
-            logger.warning("background-model rebuild failed", exc_info=True)
-
-    # If completion-keep mode or budget changed, propagate to the live
-    # SubagentManager so the next subagent to complete uses the new value.
-    # Without this the manager keeps the values it cached at gateway
-    # startup and the Settings UI change would only take effect after a
-    # gateway restart.
-    if path_key in ("agent.completion_keep", "agent.completion_keep_chars"):
-        state = request.app["state"]
-        if state.subagents is not None:
-            state.subagents.update_completion_keep(
-                cfg.agent.completion_keep,
-                cfg.agent.completion_keep_chars,
-            )
-            logger.info(
-                "completion_keep hot-reloaded: mode=%s chars=%d",
-                cfg.agent.completion_keep,
-                cfg.agent.completion_keep_chars,
-            )
-
-    # The metrics recorder is built once per process and memoized, so a config
-    # write alone would leave the Telemetry panel reporting "on" while every
-    # metric call site stayed a no-op. Dropping the cached recorder makes the next
-    # get_recorder() rebuild from the value just written — collection starts (or
-    # stops, flushing what it had) without a restart. This reaches the gateway
-    # process, which is where the session/turn/HTTP metrics are recorded; other
-    # kirocrew processes pick the value up when they next start.
-    if path_key == "telemetry.enabled":
-        try:
-            # to_thread: shutdown() flushes the exporter and joins the reader
-            # thread, both of which block.
-            await asyncio.to_thread(_metrics_provider.shutdown)
-            logger.info("telemetry.enabled set to %r — metrics recorder rebuilt", value)
-        except Exception:
-            logger.warning("metrics recorder reset after telemetry toggle failed", exc_info=True)
-
-    return web.json_response(_masked_config_dict(cfg))
+    applied = live.snapshot()
+    if applied is None:
+        applied = await asyncio.to_thread(KiroCrewConfig.load)
+    return web.json_response(_masked_config_dict(applied))
 
 
 # ── Local token bootstrap (Electron / local apps) ─────────────────────

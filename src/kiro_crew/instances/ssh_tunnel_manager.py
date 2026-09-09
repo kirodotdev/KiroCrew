@@ -65,6 +65,7 @@ from kiro_crew.cloud import ssm as cloud_ssm
 # remote token as the CSP frame-ancestor parent origin so the embedded pane can
 # be framed by this desktop app on whatever KIROCREW_PORT it runs on (no
 # hardcoded port, no wildcard). See server._extra_frame_ancestors.
+from kiro_crew.config import live
 from kiro_crew.config.loader import DASHBOARD_PORT as _LOCAL_DASHBOARD_PORT
 from kiro_crew.deploy.engine import aws_spawn_env
 from kiro_crew.instances.constants import CAPABILITY_REPLY_MAX_BYTES as _CAPABILITY_REPLY_MAX_BYTES
@@ -1181,6 +1182,44 @@ class SshTunnelManager:
         self._refresh_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._token_minted_at: dict[str, float] = {}
         self._token_ttl_secs: dict[str, int] = {}
+        # The transport tunables above are copies of instances.*, so a config write
+        # reaches them only through apply_config(). Held on self because the watcher
+        # holds the owner weakly. ``fail_closed=False``: the section carries no
+        # authorization, so a degraded document's defaults are the right answer.
+        self._config_sub = live.watch_section(
+            self,
+            "instances",
+            method="apply_config",
+            fail_closed=False,
+            name="SshTunnelManager",
+        )
+
+    def apply_config(self, instances_cfg: object) -> None:
+        """Adopt new ``instances.*`` transport tunables.
+
+        Every value here is consulted per operation -- per connect, per mint, per
+        recovery attempt -- so pushing it onto the manager is a genuine hot apply
+        rather than a value that only matters at construction. The probe threshold
+        is additionally propagated into the tunnels ALREADY running, since each one
+        copied it when it was built and would otherwise keep tearing itself down on
+        the old count.
+
+        ``tunnel_base_port`` is deliberately left alone: the allocator has already
+        handed out ports from the old base and live tunnels hold them, so moving the
+        base mid-flight would only fragment the range. It applies to a manager built
+        after the change.
+        """
+        self._connect_timeout = getattr(instances_cfg, "connect_timeout_secs")
+        self._mint_timeout = getattr(instances_cfg, "mint_timeout_secs")
+        self._ssh_compression = bool(getattr(instances_cfg, "ssh_compression"))
+        self._max_recovery = int(getattr(instances_cfg, "max_recovery_attempts"))
+        self._recover_backoff_max = float(getattr(instances_cfg, "recover_backoff_max_secs"))
+        self._probe_fails = int(getattr(instances_cfg, "probe_failure_threshold"))
+        for tunnel in self._tunnels.values():
+            # Attribute-set on the live tunnel rather than a restart: the threshold
+            # is compared against a running counter, so the new value takes effect on
+            # the next probe without dropping a healthy forward.
+            tunnel._probe_fails = self._probe_fails
 
     async def _persist_hint(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
         """Run a registry hint write in a worker thread; return only when it is DONE.

@@ -22,6 +22,7 @@ from kiro_crew import model_registry
 from kiro_crew.agent import _prompt_path
 from kiro_crew.agent_discovery import agent_skill_globs
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import get_local_tz
@@ -2708,8 +2709,21 @@ class ContextBuilder:
         _memory_stores[_DEFAULT_KEY] = self.memory
 
     def _substitute_bot_name(self, prompt: str) -> str:
-        """Replace {bot_name} placeholder in prompt text."""
-        return prompt.replace("{bot_name}", self._bot_name)
+        """Replace {bot_name} placeholder in prompt text.
+
+        The name is read from the config watcher's snapshot at every
+        substitution -- a plain attribute read, safe on the worker threads
+        ``build_message`` runs on -- so an ``agent.bot_name`` write from any
+        writer names the bot on the next turn. The loader has already
+        sanitized the snapshot's value. The constructor's name is the fallback:
+        it is the operator's boot-time value or the provider default, and is
+        what an embedder with no watcher (the CLI, tests) gets.
+        """
+        snap = live.snapshot()
+        live_name = (
+            getattr(getattr(snap, "agent", None), "bot_name", "") if snap is not None else ""
+        )
+        return prompt.replace("{bot_name}", live_name or self._bot_name)
 
     @staticmethod
     def _resolve_prompt_templates(prompt: str, session_key: str) -> str:

@@ -107,6 +107,7 @@ from kiro_crew.agent import (
     require_fork_governance,
 )
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
+from kiro_crew.config import live
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
@@ -3141,15 +3142,26 @@ class AcpRuntime:
         return None
 
     async def _session_start_budget(self) -> float:
-        """The session/new + session/load budget, resolved lazily off-loop.
+        """The session/new + session/load budget, resolved per session start.
 
-        ``_resolve_session_start_timeout`` calls ``KiroCrewConfig.load()``,
-        which on a cache miss is a synchronous disk read + schema validation
-        — never run it on the event loop. Resolved once per runtime and
-        cached: the request paths must not re-read config per call, and a
-        changed config value applies to newly spawned runtimes (same
-        snapshot semantics as ``watchdog.*`` in session_handle.py).
+        The config watcher's snapshot is a plain attribute read, so when it is
+        armed every session start on this runtime reads the CURRENT
+        ``agent.session_start_timeout_secs`` with no I/O -- a config write from
+        any writer governs the next session/new on an already-running runtime.
+        Before the watcher is armed (early boot, CLI, tests) the value is
+        resolved once off-loop and cached: ``_resolve_session_start_timeout``
+        calls ``KiroCrewConfig.load()``, which on a cache miss is a synchronous
+        disk read + schema validation, and the request paths must not pay that
+        per call. The same floor applies on both paths.
         """
+        snap = live.snapshot()
+        if snap is not None:
+            try:
+                return max(_SESSION_NEW_TIMEOUT, float(snap.agent.session_start_timeout_secs))
+            except Exception:
+                logger.debug(
+                    "session-start timeout snapshot unreadable — using cache", exc_info=True
+                )
         if self._session_start_timeout is None:
             self._session_start_timeout = await asyncio.to_thread(_resolve_session_start_timeout)
         return self._session_start_timeout

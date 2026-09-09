@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
 import SimpleSelect from '../../components/SimpleSelect'
+import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 
@@ -192,9 +193,7 @@ export function SettingsTab() {
             step={1}
             disabled={disabled}
           />
-          <span className="text-[10px] text-warn bg-warn-subtle px-1.5 py-0.5 rounded">
-            {i18nT('pages.knowledge.settings.requires_restart')}
-          </span>
+          <SchemaRestartBadge configKey="knowledge.extraction_pool_size" />
         </div>
       </SettingRow>
     </div>

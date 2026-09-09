@@ -20,6 +20,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from kiro_crew import __version__ as _local_version
 from kiro_crew import dep_sync, shutdown_event
 from kiro_crew.changelog import Release, base_version, build_release_list, release_of_build
+from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -1766,6 +1767,37 @@ _LOG_LEVELS = {
 }
 
 
+def apply_log_level(level_name: str, *, source: str) -> bool:
+    """Set the ``kiro_crew`` logger to *level_name*; False when the name is unknown.
+
+    The one place the runtime level changes, shared by the dashboard endpoint
+    and the ``agent.log_level`` config applier so a ``kirocrew config set`` or
+    an ``$EDITOR`` edit takes effect exactly like the Logs page toggle.
+    """
+    name = str(level_name or "").upper()
+    if name not in _LOG_LEVELS:
+        return False
+    root = logging.getLogger("kiro_crew")
+    if root.level == _LOG_LEVELS[name]:
+        return True
+    root.setLevel(_LOG_LEVELS[name])
+    logger.info("Log level changed to %s via %s", name, source)
+    return True
+
+
+def apply_log_level_from_config(change: ConfigChange) -> None:
+    """Config applier for ``agent.log_level``: push the written level to the logger.
+
+    Registered by ``server.py`` at boot next to the other appliers that outlive
+    a request, so a write from any writer reaches the logger.
+    """
+    if not change.touched("agent.log_level"):
+        return
+    level = change.new.agent.log_level
+    if not apply_log_level(level, source="config"):
+        logger.warning("agent.log_level %r is not a level name; runtime level unchanged", level)
+
+
 async def api_log_level(request: web.Request) -> web.Response:
     """POST /api/logs/level — change the kiro_crew logger level at runtime.
 
@@ -1776,11 +1808,8 @@ async def api_log_level(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     level_name = body.get("level", "").upper()
-    if level_name not in _LOG_LEVELS:
+    if not apply_log_level(level_name, source="dashboard"):
         return web.json_response({"error": f"invalid level: {level_name}"}, status=400)
-    root = logging.getLogger("kiro_crew")
-    root.setLevel(_LOG_LEVELS[level_name])
-    logger.info("Log level changed to %s via dashboard", level_name)
 
     # Persist to config so the level survives restarts: a DELTA read-modify-
     # write of the one key this endpoint owns, inside a single sidecar-flock

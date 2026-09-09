@@ -8554,6 +8554,11 @@
       "guardrails_hint": "Команды, которые запрещено выполнять.",
       "save_failed": "Это изменение не сохранилось — попробуйте ещё раз.",
       "origin_diff_failed": "Не удалось загрузить исходный шаблон для сравнения изменений."
+    },
+    "restartRequiredBadge": {
+      "label": "изменения требуют перезапуска",
+      "tooltip": "Этот параметр нельзя изменить, пока {{productName}} работает. Сохранённое значение остаётся и применится при следующем перезапуске {{productName}} (Настройки → О программе или терминал, из которого вы его запустили).",
+      "schema_unavailable": "Не удалось проверить, требует ли этот параметр перезапуска."
     }
   },
   "hooks": {
@@ -11386,7 +11391,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -11701,7 +11705,6 @@
         "err_env_override_with_ref": "<settingRef/> установлена и переопределяет этот параметр. Удалите её, чтобы изменить модель здесь."
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "Агент для процессов пула. Пусто — используется агент по умолчанию. Требуется перезапуск.",
         "approval_mode": "Режим подтверждения",
         "auto": "auto",
         "auto_size_max": "Макс. авторазмер",
@@ -11716,7 +11719,6 @@
         "disabled": "Отключено",
         "embedding": "Эмбеддинги",
         "embedding_provider": "Провайдер эмбеддингов",
-        "enable_conductor_skill_for_multi_agent_orchestra": "Включает навык conductor для оркестрации нескольких агентов. Требуется перезапуск.",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Включить динамическое обнаружение инструментов MCP через kiro-cli. Применится в следующей сессии.",
         "enabled": "Включено",
         "enforce_denied_commands": "Применять запрещённые команды",
@@ -11725,7 +11727,6 @@
         "immediate_auto_enables_sandbox_for_untrusted_too": "Применяется сразу. 'auto' — включает песочницу для недоверенных инструментов.",
         "inherited_provider": "наследуется ({{provider}})",
         "kirocrew_agents": "Агенты {{productName}}",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "Максимальный срок жизни процессов в пуле. 0 отключает истечение. Требуется перезапуск.",
         "max_channel_agents": "Макс. агентов канала",
         "max_channels": "Макс. каналов",
         "max_concurrent_subagents": "Макс. одновременных субагентов",
@@ -11741,13 +11742,11 @@
         "next_update_check_cycle": "В следующем цикле проверки обновлений.",
         "no_agents_defined": "Агенты не заданы",
         "no_memory_stores": "Нет хранилищ памяти",
-        "number_of_pre_spawned_processes_0_disables_resta": "Количество заранее запущенных процессов. 0 отключает. Требуется перезапуск.",
         "orchestrator_mode": "Режим оркестратора",
         "pool_agent": "Агент пула",
         "pool_size": "Размер пула",
         "pool_ttl": "TTL пула",
         "provider": "Провайдер",
-        "restart_required_to_apply_changes": "{{description}} Для применения изменений нужен перезапуск.",
         "sandbox": "Песочница",
         "save": "Сохранить",
         "saved": "Сохранено",
@@ -11761,7 +11760,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Используется устаревший режим — agent.default_agent как шаблон агента",
         "warm_pool": "Тёплый пул",
         "workspace": "Рабочая область",
-        "workspaces": "Рабочие области"
+        "workspaces": "Рабочие области",
+        "number_of_pre_spawned_processes_0_disables": "Количество заранее запущенных процессов. 0 отключает.",
+        "agent_for_pool_processes_empty_uses_default_agent": "Агент для процессов пула. Пусто — используется агент по умолчанию.",
+        "warm_pool_description": "Заранее запускает процессы ACP CLI для мгновенного старта сессии.",
+        "max_age_for_pooled_processes_0_disables_expiry": "Максимальный срок жизни процессов в пуле. 0 отключает истечение.",
+        "enable_conductor_skill_for_multi_agent_orchestration": "Включает навык conductor для оркестрации нескольких агентов."
       },
       "mcpTab": {
         "actions": "Действия",
@@ -13051,7 +13055,8 @@
         "sdk_missing": "Установить SDK для {{channel}}",
         "sdk_missing_body": "Каналу {{channel}} требуется пакет {{package}}, который не устанавливается по умолчанию. Выполните команду ниже в терминале, чтобы добавить его.",
         "sdk_restart_after_install": "Затем перезапустите шлюз, чтобы запустить канал {{channel}}.",
-        "sdk_install_unsupported": "Python этого шлюза не может устанавливать дополнительные пакеты, поэтому {{package}} здесь не добавить. Запустите шлюз из окружения Python, в котором pip может выполнить установку."
+        "sdk_install_unsupported": "Python этого шлюза не может устанавливать дополнительные пакеты, поэтому {{package}} здесь не добавить. Запустите шлюз из окружения Python, в котором pip может выполнить установку.",
+        "verified_and_saved": "Проверено в {{channel}} и сохранено."
       },
       "browserPanel": {
         "use_builtin_label": "Использовать встроенный браузер",
@@ -13987,7 +13992,8 @@
         "where_to_find_the_app_token": "Где найти токен приложения",
         "where_to_find_the_bot_token": "Где найти токен бота",
         "manifest_unavailable": "Не удалось загрузить манифест приложения Slack. Создайте приложение вручную по руководству по настройке.",
-        "copy_manifest_failed": "Не удалось скопировать манифест в буфер обмена."
+        "copy_manifest_failed": "Не удалось скопировать манифест в буфер обмена.",
+        "verified_and_saved": "Проверено в Slack и сохранено."
       },
       "sttSettings": {
         "language_auto": "Определять язык автоматически",
@@ -14321,7 +14327,8 @@
         "empty_allowlist_hint": "Разрешённых адресов нет: бот отклоняет любое сообщение. Добавь e-mail своей учётной записи Webex ниже.",
         "soft_threshold_must_be_1_to_100": "Мягкий порог контекста должен быть целым числом от 1 до 100.",
         "hard_threshold_must_be_1_to_100": "Жёсткий порог контекста должен быть целым числом от 1 до 100.",
-        "soft_threshold_must_not_exceed_hard": "Мягкий порог не должен превышать жёсткий: жёсткий проверяется первым, поэтому более высокое мягкое значение никогда не будет достигнуто."
+        "soft_threshold_must_not_exceed_hard": "Мягкий порог не должен превышать жёсткий: жёсткий проверяется первым, поэтому более высокое мягкое значение никогда не будет достигнуто.",
+        "verified_and_saved": "Проверено в Webex и сохранено."
       },
       "weixinPanel": {
         "allowed_user_ids": "Разрешённые ID пользователей",

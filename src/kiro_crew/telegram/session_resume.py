@@ -237,6 +237,17 @@ class TelegramSessionResume:
             thread_id=str(thread_id) if thread_id is not None else None,
         )
 
+    def reconfigure(self, allowed_user_ids: set[int]) -> None:
+        """Re-derive ``owner_id`` from a reloaded ``telegram.allowed_user_ids``.
+
+        The third copy of the allow-list (transport, dispatcher, here) and the one
+        that decides who may list dashboard sessions, so it has to move with the
+        other two: an operator who adds a second identity must lose ``/sessions``
+        immediately. Same one-identity rule as construction -- none or several
+        leaves ``owner_id`` empty and ``is_owner`` refuses everyone.
+        """
+        self.owner_id = next(iter(allowed_user_ids)) if len(allowed_user_ids) == 1 else 0
+
     def is_owner(self, user_id: int, chat_id: int, chat_type: str) -> bool:
         return bool(self.owner_id) and (
             chat_type == "private" and user_id == self.owner_id and chat_id == user_id

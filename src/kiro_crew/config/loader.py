@@ -1007,6 +1007,7 @@ def _persist_config_migration(
         # Same reason save() did: drop the validated-data cache so the next load
         # re-reads this write even where the filesystem mtime resolution is coarse.
         _invalidate_config_cache()
+        _notify_live_watch()
     return wrote
 
 
@@ -1191,7 +1192,12 @@ def read_local_secret(port: int) -> str:
 
 
 def _raw_config() -> dict:
-    """Load raw config.json as dict (cached per process)."""
+    """Load raw config.json as a dict, re-reading the file on every call.
+
+    Uncached on purpose: callers want the bytes on disk right now, and the
+    validated-config cache is keyed for :meth:`KiroCrewConfig.load`, not for
+    this raw view. An absent or unreadable file reads as ``{}``.
+    """
     p = config_path()
     if not p.exists():
         return {}
@@ -1592,9 +1598,25 @@ def update_config_locked(
         write_config_atomically(p, result, fsync=fsync)
         # A same-size replacement can retain an indistinguishable fingerprint
         # on a coarse-timestamp filesystem. Clear eagerly before reporting the
-        # write complete so the next load cannot serve the pre-write snapshot.
+        # write complete so the next load cannot serve the pre-write snapshot,
+        # and wake the process watcher so the hot-apply path runs now rather
+        # than on its next poll.
         _invalidate_config_cache()
+        _notify_live_watch()
         return result
+
+
+def _notify_live_watch() -> None:
+    """Wake the process config watcher after a write landed on ``config.json``.
+
+    Every writer in this module ends here so the dashboard, ``kirocrew config
+    set`` and a boot-time migration all reach the hot-apply path the same way.
+    The import is lazy because ``config.live`` imports this module for its
+    loads; a no-op in a process that never started a watcher (the CLI).
+    """
+    from kiro_crew.config import live
+
+    live.notify_config_written()
 
 
 # Keys already warned about in this process. The gateway loads config repeatedly
@@ -1750,6 +1772,7 @@ def refresh_config_meta_stamp() -> bool:
         return False
     if wrote:
         _invalidate_config_cache()
+        _notify_live_watch()
     return wrote
 
 
@@ -4657,6 +4680,7 @@ class KiroCrewConfig:
         # mtime-keying already detects the change; this makes it immediate even
         # if the filesystem mtime resolution is coarse.
         _invalidate_config_cache()
+        _notify_live_watch()
 
     @staticmethod
     def _resolve_agent_model() -> str:

@@ -3022,6 +3022,11 @@
     },
     "questionCard": {
       "dismiss_hint": "Dismissing the question stops the agent waiting for an answer."
+    },
+    "restartRequiredBadge": {
+      "label": "changes need a restart",
+      "tooltip": "This setting cannot change while {{productName}} is running. The saved value is kept and applies the next time {{productName}} restarts (Settings → About, or the terminal where you launched it).",
+      "schema_unavailable": "Couldn't check whether this setting needs a restart."
     }
   },
   "hooks": {
@@ -4447,7 +4452,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -4625,16 +4629,19 @@
         "controls_how_many_subagents_can_run_concurrently": "Controls how many subagents can run concurrently and how many tool calls each subagent is allowed. Changes take effect on the next subagent spawn.",
         "default_agent": "default agent",
         "disabled": "Disabled",
-        "enable_conductor_skill_for_multi_agent_orchestra": "Enable conductor skill for multi-agent orchestration. Restart required.",
         "enabled": "Enabled",
         "maximum_subagents_running_at_once": "Maximum subagents running at once. 0 = auto-size from host memory/CPU (capped at {{cap}}). Default: 3.",
         "named_agent_definitions": "Named agent definitions that bind a {{label}}, workspace, and memory store together. Edit config.json to add or modify agents.",
         "named_memory_stores_with_optional_per_store_embe": "Named memory stores with optional per-store embedding overrides. Unset fields inherit from the top-level memory section.",
         "named_workspace_directories_each_agent_binds_to": "Named workspace directories. Each agent binds to one workspace.",
-        "restart_required_to_apply_changes": "{{description}} Restart required to apply changes.",
         "save": "Save",
         "saving": "Saving…",
-        "tool_call_budget_per_subagent_1_1000_default_100": "Tool-call budget per subagent (1–1000). Default: 100."
+        "tool_call_budget_per_subagent_1_1000_default_100": "Tool-call budget per subagent (1–1000). Default: 100.",
+        "max_age_for_pooled_processes_0_disables_expiry": "Max age for pooled processes. 0 disables expiry.",
+        "number_of_pre_spawned_processes_0_disables": "Number of pre-spawned processes. 0 disables.",
+        "agent_for_pool_processes_empty_uses_default_agent": "Agent for pool processes. Empty uses default agent.",
+        "warm_pool_description": "Pre-spawn ACP CLI processes for instant session start.",
+        "enable_conductor_skill_for_multi_agent_orchestration": "Enable conductor skill for multi-agent orchestration."
       },
       "mcpTab": {
         "applied_change_one": "Applied {{count}} change",
@@ -5188,7 +5195,8 @@
         "where_to_find_the_app_token": "Where to find the app token",
         "where_to_find_the_bot_token": "Where to find the bot token",
         "manifest_unavailable": "Could not load the Slack app manifest. Create the app by hand from the setup guide.",
-        "copy_manifest_failed": "Could not copy the manifest to the clipboard."
+        "copy_manifest_failed": "Could not copy the manifest to the clipboard.",
+        "verified_and_saved": "Verified with Slack and saved."
       },
       "botChannelPanel": {
         "bot_token": "{{channel}} bot token",
@@ -5211,7 +5219,8 @@
         "sdk_missing": "Install the {{channel}} SDK",
         "sdk_missing_body": "The {{channel}} channel needs the {{package}} package, which is not installed by default. Run the command below in a terminal to add it.",
         "sdk_restart_after_install": "Then restart the gateway to start the {{channel}} channel.",
-        "sdk_install_unsupported": "This gateway's Python cannot install extra packages, so {{package}} cannot be added here. Run the gateway from a Python environment where pip can install it."
+        "sdk_install_unsupported": "This gateway's Python cannot install extra packages, so {{package}} cannot be added here. Run the gateway from a Python environment where pip can install it.",
+        "verified_and_saved": "Verified with {{channel}} and saved."
       },
       "channelsPanel": {
         "checking": "Checking…",
@@ -5759,7 +5768,8 @@
         "soft_context_threshold": "Soft context threshold %",
         "soft_context_threshold_desc": "When a conversation's context passes this, suggest /compact or /new instead of compacting automatically.",
         "hard_context_threshold": "Hard context threshold %",
-        "hard_context_threshold_desc": "Compact automatically at this point, even without a decision, so the context window never overflows."
+        "hard_context_threshold_desc": "Compact automatically at this point, even without a decision, so the context window never overflows.",
+        "verified_and_saved": "Verified with Webex and saved."
       },
       "weixinPanel": {
         "connect_via_qr": "Connect via QR",

@@ -40,6 +40,33 @@ from kiro_crew.webex.client import WEBEX_MAX_TEXT, WebexClient, WebexInbound
 
 logger = logging.getLogger(__name__)
 
+
+def _coerce_lowered(value: object) -> frozenset[str] | None:
+    """Rebuild the email allow-list from a reloaded config value.
+
+    The ONE reading of that field's shape for the live path, so a reload can
+    never coerce differently from the constructor: addresses are LOWERCASED
+    (Webex compares them case-insensitively) and blanks dropped. Returns ``None``
+    when the value is not a list, so the caller keeps the previous set rather
+    than silently changing who is authorized.
+    """
+    if not isinstance(value, list):
+        return None
+    return frozenset(str(e).strip().lower() for e in value if e and str(e).strip())
+
+
+def _coerce_room_ids(value: object) -> frozenset[str] | None:
+    """Rebuild the space allow-list from a reloaded config value.
+
+    Room ids are opaque and matched CASE-SENSITIVELY, so they are kept verbatim
+    (only blanks are dropped) -- lowercasing one would silently deny the space.
+    Returns ``None`` for a non-list, keeping the previous set.
+    """
+    if not isinstance(value, list):
+        return None
+    return frozenset(str(r).strip() for r in value if r and str(r).strip())
+
+
 DispatchFn = Callable[[WebexInbound], Awaitable[None]]
 
 # Webex room types, named rather than inlined so the gate reads as membership.
@@ -121,6 +148,87 @@ class WebexTransport(MessagingTransport):
     def client(self) -> WebexClient:
         """The underlying Webex client (held + exposed, not hidden)."""
         return self._client
+
+    # -- Live config ---------------------------------------------------------
+    def reconfigure(self, section: Any) -> None:
+        """Adopt a reloaded ``webex`` section's authorization fields.
+
+        Called by the dispatcher's config applier when ``config.json`` changes
+        under ``webex``, so an allow-list edit from the dashboard, the CLI or
+        ``$EDITOR`` takes effect on the next message instead of the next restart.
+        Emails are lowercased and room ids kept case-sensitive -- the SAME
+        coercion the constructor applies -- and each frozenset is replaced
+        wholesale so an in-flight ``authorize`` or ``room_permitted`` keeps
+        reading one consistent set.
+
+        Fail-closed on both axes. A field that is not a list keeps the PREVIOUS
+        value and logs at WARNING, ``allow_group_rooms`` must be a bool, and an
+        EMPTY set is adopted as-is: an empty email roster authorizes nobody and
+        an empty room list rejects every space, which is this channel's existing
+        deny-all-on-empty contract (:meth:`room_permitted`) rather than a
+        malformed read. Changes are SEL-audited by COUNT; addresses and room ids
+        are never logged.
+
+        Webex keeps TWO copies of the email roster: this frozen set and the
+        dispatcher's own re-derivation for card presses, which do not flow
+        through ``receive``. That copy is read at point of use, so pushing this
+        one is the whole apply and both follow the same reload.
+        """
+        emails = _coerce_lowered(getattr(section, "allowed_emails", None))
+        if emails is None:
+            logger.warning(
+                "webex: allowed_emails is not a list in the reloaded config; keeping the "
+                "previous allow-list (%d address(es))",
+                len(self._allowed),
+            )
+        elif emails != self._allowed:
+            added, removed = len(emails - self._allowed), len(self._allowed - emails)
+            self._allowed = emails
+            logger.info("webex: allow-list reloaded (+%d/-%d address(es))", added, removed)
+            sel().log_api_access(
+                caller="config",
+                operation="webex_transport.reconfigure",
+                outcome="allow_list_changed",
+                source="webex",
+                resources=f"added={added} removed={removed} size={len(emails)}",
+            )
+        rooms = _coerce_room_ids(getattr(section, "allowed_room_ids", None))
+        if rooms is None:
+            logger.warning(
+                "webex: allowed_room_ids is not a list in the reloaded config; keeping the "
+                "previous %d entry(ies)",
+                len(self._allowed_rooms),
+            )
+        elif rooms != self._allowed_rooms:
+            self._allowed_rooms = rooms
+            logger.info("webex: room allow-list reloaded (%d room(s))", len(rooms))
+            sel().log_api_access(
+                caller="config",
+                operation="webex_transport.reconfigure",
+                outcome="room_allow_list_changed",
+                source="webex",
+                resources=f"size={len(rooms)}",
+            )
+        allow_group = getattr(section, "allow_group_rooms", None)
+        if not isinstance(allow_group, bool):
+            logger.warning(
+                "webex: allow_group_rooms is not a bool in the reloaded config; keeping %r",
+                self._allow_group_rooms,
+            )
+        elif allow_group != self._allow_group_rooms:
+            self._allow_group_rooms = allow_group
+            logger.warning("webex: allow_group_rooms flipped to %r via config reload", allow_group)
+            sel().log_api_access(
+                caller="config",
+                operation="webex_transport.reconfigure",
+                outcome="allow_group_enabled" if allow_group else "allow_group_disabled",
+                source="webex",
+            )
+        if self._allow_group_rooms and not self._allowed_rooms:
+            logger.warning(
+                "webex: group spaces are enabled but allowed_room_ids is empty after the "
+                "reload — every space message is REJECTED (fail closed)."
+            )
 
     @property
     def dispatcher(self) -> Any:

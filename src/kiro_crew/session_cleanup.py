@@ -115,6 +115,9 @@ class CleanupState:
     rss_max_mb: int = 0
     idle_sweep_enabled: bool = False
     idle_timeout: int = 0
+    # The (timeout_secs, watchdog_rss_max_mb) pair the policy was last derived
+    # from, as configured; transitions are logged only when it moves.
+    idle_policy_source: tuple[int, int] | None = None
     stuck_reported: dict[str, float] = field(default_factory=dict)
     last_pycache_gc: float | None = None
     active_dashboard_slots: set[str] | None = None
@@ -157,6 +160,10 @@ class CleanupDeps:
 
 class SessionCleanup:
     """Coordinate cleanup hooks, sweeps, and idle-expiry policy."""
+
+    # Upper bound on one sleep of the cleanup loop, so a lowered idle timeout
+    # is adopted within this many seconds regardless of the previous interval.
+    POLICY_REFRESH_SECS = 60.0
 
     def __init__(
         self,
@@ -408,16 +415,37 @@ class SessionCleanup:
         except Exception:
             self._deps.logger.exception("Cleanup loop: _stuck_turn_check crashed; continuing")
 
-    async def _cleanup_loop(self) -> None:
-        timeout = self._owner._cfg.session.timeout_secs
+    def _adopt_idle_policy(self) -> float:
+        """Re-derive the idle-sweep policy from the owner's CURRENT config.
+
+        Returns the tick interval. Called at loop start and again before every
+        sleep, so a ``session.timeout_secs`` or ``session.watchdog_rss_max_mb``
+        write reaches the loop on its next tick from any writer -- the values
+        are never frozen into the state for the loop's lifetime. The clamps are
+        the loader's: a timeout in (0, 60) becomes 60, a negative or non-int RSS
+        ceiling disables the check. Transitions are logged once, on change,
+        so a steady config costs the loop nothing but two attribute reads.
+        """
+        cfg = self._owner._cfg
+        timeout = cfg.session.timeout_secs
+        if not isinstance(timeout, int) or isinstance(timeout, bool):
+            timeout = 0
+        rss_cfg = getattr(cfg.session, "watchdog_rss_max_mb", 0)
+        rss_max = (
+            max(0, rss_cfg) if isinstance(rss_cfg, int) and not isinstance(rss_cfg, bool) else 0
+        )
+        changed = (timeout, rss_max) != self.state.idle_policy_source
+        self.state.idle_policy_source = (timeout, rss_max)
+
         if 0 < timeout < 60:
-            self._deps.logger.warning(
-                "session.timeout_secs=%d is below minimum 60; clamping to 60",
-                timeout,
-            )
+            if changed:
+                self._deps.logger.warning(
+                    "session.timeout_secs=%d is below minimum 60; clamping to 60",
+                    timeout,
+                )
             timeout = 60
         idle_sweep_enabled = timeout > 0
-        if not idle_sweep_enabled:
+        if not idle_sweep_enabled and changed:
             self._deps.logger.info(
                 "Idle session sweep disabled (session.timeout_secs=%d); "
                 "MCP/PID sweeps still run at default cadence",
@@ -425,7 +453,17 @@ class SessionCleanup:
             )
         self.state.idle_sweep_enabled = idle_sweep_enabled
         self.state.idle_timeout = timeout
-        interval = max(timeout // 6, 60) if idle_sweep_enabled else 300
+
+        if rss_max != self.state.rss_max_mb:
+            self._deps.logger.info(
+                "session.watchdog_rss_max_mb now %d (was %d)", rss_max, self.state.rss_max_mb
+            )
+            self.state.rss_max_mb = rss_max
+
+        return float(max(timeout // 6, 60) if idle_sweep_enabled else 300)
+
+    async def _cleanup_loop(self) -> None:
+        interval = self._adopt_idle_policy()
 
         # One reclaim pass at START, and deliberately NOT awaited here. Every
         # other sweep in this loop is housekeeping that can wait an interval, but
@@ -446,15 +484,31 @@ class SessionCleanup:
             boot_reclaim.cancel()
 
     async def _run_cleanup_ticks(self, interval: float) -> None:
+        # The sleep is chopped into short waits so a config write that shortens
+        # ``session.timeout_secs`` is felt within one refresh cadence, not after
+        # the old (possibly much longer) interval has run out. Each wake re-reads
+        # the policy; when the interval moves, the next sweep is re-anchored to
+        # the LAST sweep plus the new interval, so a lowered timeout can pull the
+        # sweep forward and a raised one pushes it out.
+        # Time is accounted from the waits this loop issued (a wait that timed
+        # out slept for its timeout), not from the wall clock, so the cadence
+        # is a property of the loop alone and a test can collapse the waits.
+        remaining = interval
         while not self._deps.get_shutdown_signal().is_set():
+            wait = min(max(remaining, 0.0), self.POLICY_REFRESH_SECS)
             try:
-                await asyncio.wait_for(
-                    self._deps.get_shutdown_signal().wait(),
-                    timeout=interval,
-                )
+                await asyncio.wait_for(self._deps.get_shutdown_signal().wait(), timeout=wait)
                 return
             except asyncio.TimeoutError:
                 pass
+            remaining -= wait
+
+            fresh = self._adopt_idle_policy()
+            if fresh != interval:
+                remaining, interval = remaining - interval + fresh, fresh
+            if remaining > 0:
+                continue
+            remaining = interval
 
             # Resolve through the facade so replacing the manager watchdog after
             # construction continues to affect the live cleanup task.

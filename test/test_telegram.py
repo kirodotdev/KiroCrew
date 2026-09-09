@@ -10,12 +10,15 @@ turn + callback routing (transport_dispatch.py).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import threading
 import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
@@ -87,6 +90,53 @@ from kiro_crew.telegram.transport_dispatch import (
     TelegramDispatcher,
     _user_safe_failure_reason,
 )
+
+
+@pytest.fixture(autouse=True)
+def _drop_live_config_snapshot():
+    """Leave no primed config snapshot behind for the next test.
+
+    ``_prime_live`` publishes into the process-global watcher, so without this
+    the last test to prime would silently set the live config for every test
+    after it in the same worker.
+    """
+    yield
+    from kiro_crew.config import live
+
+    live.reset_for_tests()
+
+
+def _prime_live(cfg: Any) -> None:
+    """Publish *cfg*'s ``telegram`` and ``messaging`` fields as the live snapshot.
+
+    The dispatcher reads those two sections at POINT OF USE from the config
+    watcher rather than from the ``cfg=`` copy it was constructed with, so a
+    test that varies one of them has to put the value where the turn actually
+    looks for it. Every field the test's SimpleNamespace carries is copied onto
+    a real ``KiroCrewConfig``, so the production readers see real sections and
+    the loader's own defaults fill the rest.
+
+    Call it again after mutating ``d.cfg`` mid-test -- the snapshot is a copy,
+    not a view.
+    """
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    base = KiroCrewConfig()
+    sections = {}
+    for name in ("telegram", "messaging"):
+        section = getattr(cfg, name, None)
+        if section is None:
+            continue
+        overrides = {
+            f.name: getattr(section, f.name)
+            for f in dataclasses.fields(getattr(base, name))
+            if hasattr(section, f.name)
+        }
+        sections[name] = dataclasses.replace(getattr(base, name), **overrides)
+    live.reset_for_tests()
+    live.watch().prime(dataclasses.replace(base, **sections))
+
 
 # ── Fakes ──────────────────────────────────────────────────────────────────
 
@@ -535,16 +585,18 @@ def _dispatcher(
     forum_activation: str = "always",
 ) -> tuple[TelegramDispatcher, FakeClient, FakeSessions]:
     sess = FakeSessions(raise_on_get=raise_on_get)
+    cfg = _cfg(
+        default_agent=default_agent,
+        allow_forum=allow_forum,
+        allowed_forum_chat_ids=allowed_forum_chat_ids,
+        dm_scope=dm_scope,
+        forum_activation=forum_activation,
+    )
+    _prime_live(cfg)
     d = TelegramDispatcher(
         sessions=sess,  # type: ignore[arg-type]
         ctx_builder=FakeCtx(),  # type: ignore[arg-type]
-        cfg=_cfg(
-            default_agent=default_agent,
-            allow_forum=allow_forum,
-            allowed_forum_chat_ids=allowed_forum_chat_ids,
-            dm_scope=dm_scope,
-            forum_activation=forum_activation,
-        ),
+        cfg=cfg,
         allowed_user_ids=allowed,
         agent=None,
         conv_log=None,
@@ -3496,6 +3548,7 @@ class TestTelegramMidTurn:
         sess._busy = True
         # Default (non-queue) mode: without the guard this would steer.
         d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
         photos = [
             {"file_id": "p1", "file_name": "a.jpg", "mime_type": "image/jpeg"},
             {"file_id": "p2", "file_name": "b.jpg", "mime_type": "image/jpeg"},
@@ -3617,6 +3670,7 @@ class TestTelegramMidTurn:
         d, cli, sess = _dispatcher({7})
         sess._busy = True
         d.cfg.messaging.queue_mode = "queue"
+        _prime_live(d.cfg)
 
         async def _go() -> None:
             await d.handle_message(
@@ -3638,6 +3692,7 @@ class TestTelegramMidTurn:
         d, cli, sess = _dispatcher({7})
         sess._busy = True
         d.cfg.messaging.queue_mode = "queue"
+        _prime_live(d.cfg)
 
         async def _go() -> None:
             await d.handle_message(
@@ -3682,6 +3737,7 @@ class TestTelegramMidTurn:
         d, cli, sess = _dispatcher({7})
         sess._busy = True
         d.cfg.messaging.queue_mode = "queue"
+        _prime_live(d.cfg)
 
         async def _go() -> None:
             for t in ("what time is it", "and the weather?"):
@@ -3724,6 +3780,7 @@ class TestTelegramMidTurn:
         d, cli, sess = _dispatcher({7})
         sess._busy = True
         d.cfg.messaging.queue_mode = "queue"
+        _prime_live(d.cfg)
         # This test starts four first-use inbound checks concurrently. Keep the
         # receipt race isolated from governance's deliberately fail-closed lazy
         # profile load: otherwise whichever checks arrive while the first load is
@@ -3792,6 +3849,7 @@ class TestTelegramMidTurn:
         key = "telegram:kirocrew:direct:7"
         sess._busy = True
         d.cfg.messaging.queue_mode = "queue"
+        _prime_live(d.cfg)
 
         async def _go() -> None:
             # Build the receipt + queue via the real enqueue path (52 > cap 50).

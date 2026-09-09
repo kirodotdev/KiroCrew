@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+from _hot_reload_helpers import prime_live_sections
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
 from kiro_crew.messaging.link import ChannelLink
@@ -298,11 +299,25 @@ def _cfg(default_agent: str = "", approval_mode: str = "interactive"):
     )
 
 
+def _prime_live(cfg) -> None:
+    """Publish *cfg*'s ``webex`` and ``messaging`` fields as the live snapshot.
+
+    The dispatcher reads those two sections at POINT OF USE from the config
+    watcher rather than from the ``cfg=`` copy it was constructed with, so a
+    test that varies one of them has to put the value where the turn actually
+    looks for it. Call it again after mutating ``d.cfg`` mid-test -- the snapshot
+    is a copy, not a view.
+    """
+    prime_live_sections(cfg, "webex", "messaging")
+
+
 def _dispatcher(sessions, ctx, client, *, conv_log=None, agent=None, cfg=None):
+    cfg = cfg or _cfg()
+    _prime_live(cfg)
     d = WebexDispatcher(
         sessions=sessions,
         ctx_builder=ctx,
-        cfg=cfg or _cfg(),
+        cfg=cfg,
         agent=agent,
         conv_log=conv_log,
         approval_mode="interactive",

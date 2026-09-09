@@ -187,9 +187,22 @@ class TeamsSessionResume:
     def dashboard_state(self) -> object | None:
         return self._controller.dashboard_state
 
+    # ── live config ───────────────────────────────────────────────────────
     @dashboard_state.setter
     def dashboard_state(self, state: object | None) -> None:
         self._controller.dashboard_state = state
+
+    def reconfigure(self, allowed_emails: set[str]) -> None:
+        """Re-derive ``owner_id`` from a reloaded ``teams.allowed_emails``.
+
+        The third copy of the allow-list (transport, dispatcher, here) and the
+        one that decides who may list dashboard sessions, so it has to move with
+        the other two: an operator who adds a second identity must lose
+        ``/sessions`` immediately, not at the next restart. Same one-identity
+        rule as construction -- none or several leaves ``owner_id`` empty and
+        ``is_owner`` refuses everyone.
+        """
+        self.owner_id = next(iter(allowed_emails)) if len(allowed_emails) == 1 else ""
 
     # ── identity + addressing ─────────────────────────────────────────────
     def is_owner(self, identity: str) -> bool:

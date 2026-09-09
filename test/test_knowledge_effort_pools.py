@@ -20,10 +20,15 @@ class _FakePool:
         pool_size: int,
         effort: str | None = None,
         use_config_pool_size: bool = True,
+        track_config_pool_size: bool | None = None,
     ) -> None:
         self.pool_size = pool_size
         self.effort = effort
         self.use_config_pool_size = use_config_pool_size
+        # Mirrors LLMPool: an explicit value wins, else it follows the seed flag.
+        self.track_config_pool_size = (
+            use_config_pool_size if track_config_pool_size is None else track_config_pool_size
+        )
         self.shutdown = AsyncMock()
 
 
@@ -80,9 +85,13 @@ class TestKnowledgePoolSetup:
         assert extraction.pool_size == 3
         assert extraction.effort == "high"
         assert extraction.use_config_pool_size is False
+        # Seeded from config, so it must follow a later write to that key; the
+        # fetch pool is a fixed single worker and must not.
+        assert extraction.track_config_pool_size is True
         assert fetch.pool_size == 1
         assert fetch.effort is None
         assert fetch.use_config_pool_size is False
+        assert fetch.track_config_pool_size is False
         assert extractor_calls[0]["pool"] is extraction
         assert app["knowledge_extraction_pool"] is extraction
         assert app["knowledge_fetch_pool"] is fetch

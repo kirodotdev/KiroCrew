@@ -100,8 +100,9 @@ class TestBaselineGenerator:
             "defaultValue",
         }
         # ``nullable`` is only emitted when True (Optional[X] dict/list values);
-        # it's a valid extra key but never required.
-        optional_keys = {"nullable"}
+        # ``requiresRestart`` only for a field marked ``restart=True``. Both are
+        # valid extra keys but never required.
+        optional_keys = {"nullable", "requiresRestart"}
 
         for entry_dict in data["entries"]:
             keys = set(entry_dict.keys())

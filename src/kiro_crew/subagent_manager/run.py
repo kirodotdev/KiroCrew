@@ -268,9 +268,10 @@ class RunEventCoordinator(ManagerComponent):
     def update_completion_keep_impl(self, mode: str, max_chars: int) -> None:
         """Update the live completion-keep mode and char budget.
 
-        Called from ``api_kirocrew_config_patch`` after the user changes
-        ``agent.completion_keep`` or ``agent.completion_keep_chars`` from
-        the Settings UI. The values are read once per subagent at
+        Called from ``SubagentManager.reconfigure`` whenever a reload of
+        ``config.json`` touches ``agent.completion_keep`` or
+        ``agent.completion_keep_chars``, whichever writer produced it (the
+        Settings UI, ``kirocrew config set``, a hand edit). The values are read once per subagent at
         completion time (``apply_completion_keep`` call site), so swapping
         them here takes effect for the next subagent to finish — including
         ones already running. No torn-read possible under asyncio: both

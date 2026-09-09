@@ -211,7 +211,6 @@ export class AcpAdapter implements ProviderAdapter {
     sessionProcess: 'ACP subprocess',
     agentTemplateField: 'Agent Template',
     processCountLabel: 'acp_cli',
-    warmPoolDescription: 'Pre-spawn ACP CLI processes for instant session start.',
     configFile: 'kirocrew.json',
     pluginRegistryName: 'Packages',
     hooksSection: 'ACP Agent Hooks',

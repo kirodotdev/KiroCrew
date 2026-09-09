@@ -20,6 +20,7 @@ from aiohttp import web
 
 from kiro_crew._sqlite_compat import fts5_segment_for_index, sqlite3
 from kiro_crew.artifacts import get_default_store
+from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.dashboard import part_stream
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
@@ -233,7 +234,7 @@ async def _start_watcher_async(app: web.Application) -> None:
     app["_knowledge_watcher_task"] = task
 
 
-async def _start_artifact_ingest_async(app: web.Application) -> None:
+async def _start_artifact_ingest_async(app: web.Application, cfg: KiroCrewConfig | None = None) -> None:
     """Wire artifact -> Knowledge Library sync when auto-ingest is enabled.
 
     Registers an in-process change-listener on the artifact store: every
@@ -246,8 +247,13 @@ async def _start_artifact_ingest_async(app: web.Application) -> None:
     window in which this was switched off is repaired rather than left permanent.
     Gated on ``knowledge.auto_ingest_artifacts`` (off by default). See
     ``kiro_crew.knowledge.artifact_ingest`` for the full design.
+
+    ``cfg`` is the already-loaded config when the live applier calls this with
+    the document the watcher just adopted; boot passes nothing and the load runs
+    off the loop, because ``KiroCrewConfig.load()`` is filesystem work.
     """
-    cfg = KiroCrewConfig.load()
+    if cfg is None:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if not cfg.knowledge.auto_ingest_artifacts:
         return
     pipeline = app["knowledge_pipeline"]
@@ -263,6 +269,84 @@ async def _start_artifact_ingest_async(app: web.Application) -> None:
     # Hold a reference so the listener binding isn't garbage-collected.
     app["artifact_knowledge_sync"] = sync
     await sync.start()
+
+
+async def _stop_artifact_ingest(app: web.Application) -> None:
+    """Unregister the artifact->Library listener and drop the sync object.
+
+    Detaching the listener is what actually stops the ingest: with it gone, an
+    artifact write does not reach the pipeline. Existing Library items are
+    LEFT in place -- turning auto-ingest off asks for no new ingests, not for a
+    retroactive delete of documents already searchable -- and a later re-enable
+    repairs the gap through the reconcile pass in
+    :func:`_start_artifact_ingest_async`.
+    """
+    sync = app.pop("artifact_knowledge_sync", None)
+    if sync is None:
+        return
+    try:
+        get_default_store().set_change_listener(None)
+    except Exception:
+        logger.warning("artifact auto-ingest: listener detach failed", exc_info=True)
+
+
+async def _apply_knowledge_config(app: web.Application, change: object) -> None:
+    """Apply a live ``knowledge.*`` change to the running ingest stack.
+
+    Three independent effects, each guarded so one failure cannot block the
+    others:
+
+    * ``embed_timeout_secs`` / ``embed_content_budget`` -- rebuild the embedder
+      and swap it into both the app key and the pipeline. The embedder holds no
+      connection, so a swap is a plain object replacement; an embed already in
+      flight finishes against the old one.
+    * ``auto_ingest_artifacts`` -- register or unregister the artifact listener,
+      so the toggle takes effect on the next artifact write.
+    * ``auto_ingest_artifact_kinds`` -- replace the kinds set on the live sync
+      object, which is the only thing the change gates.
+    """
+    new = getattr(change, "new")
+    touched = getattr(change, "touched")
+    if touched("knowledge.embed_timeout_secs", "knowledge.embed_content_budget"):
+        try:
+            embedder = await asyncio.to_thread(_create_embedder, app)
+            app["knowledge_embedder"] = embedder
+            pipeline = app.get("knowledge_pipeline")
+            if pipeline is not None:
+                pipeline.embedder = embedder
+        except Exception:
+            logger.warning("knowledge embedder rebuild failed; keeping the old one", exc_info=True)
+    if touched("knowledge.auto_ingest_artifacts"):
+        try:
+            if new.knowledge.auto_ingest_artifacts:
+                if app.get("artifact_knowledge_sync") is None:
+                    await _start_artifact_ingest_async(app, new)
+            else:
+                await _stop_artifact_ingest(app)
+        except Exception:
+            logger.warning("knowledge artifact auto-ingest rewire failed", exc_info=True)
+    if touched("knowledge.auto_ingest_artifact_kinds"):
+        sync = app.get("artifact_knowledge_sync")
+        if sync is not None:
+            sync.kinds = set(new.knowledge.auto_ingest_artifact_kinds)
+
+
+async def _watch_knowledge_config(app: web.Application) -> None:
+    """Register the knowledge appliers once the loop is running.
+
+    An ``on_startup`` hook rather than a call from ``setup_knowledge_routes``,
+    because the applier needs a running loop to re-register the artifact listener
+    and the subscription must outlive the setup call. The Subscription is held on
+    ``app`` so the watcher's weak reference to the bound closure stays alive for
+    the app's lifetime.
+    """
+
+    async def _applier(change: object) -> None:
+        await _apply_knowledge_config(app, change)
+
+    app["_knowledge_config_sub"] = live.subscribe(
+        "knowledge", callback=_applier, name="knowledge-routes"
+    )
 
 
 # ---------- Items ----------
@@ -2504,6 +2588,9 @@ def setup_knowledge_routes(app: web.Application) -> None:
             pool_size=cfg.knowledge.extraction_pool_size,
             effort=DEFAULT_EXTRACTION_EFFORT,
             use_config_pool_size=False,
+            # Seeded from knowledge.extraction_pool_size above, so it follows a
+            # later write to that key (applied at the next idle boundary).
+            track_config_pool_size=True,
         )
         fetch_pool = LLMPool(
             pool_size=1,
@@ -2558,6 +2645,9 @@ def setup_knowledge_routes(app: web.Application) -> None:
         app.on_startup.append(_start_watcher_async)
         # Start artifact ingest watcher (no-op unless auto-ingest is enabled)
         app.on_startup.append(_start_artifact_ingest_async)
+        # Follow knowledge.* live: embedder tuning, artifact auto-ingest on/off,
+        # and the eligible artifact kinds.
+        app.on_startup.append(_watch_knowledge_config)
 
     app.router.add_get("/api/knowledge/config", get_config)
     app.router.add_get("/api/knowledge/items", list_items)

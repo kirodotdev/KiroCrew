@@ -8209,6 +8209,11 @@
       "guardrails_hint": "실행이 허용되지 않는 명령입니다.",
       "save_failed": "변경 사항이 저장되지 않았습니다 — 다시 시도하세요.",
       "origin_diff_failed": "변경 사항을 비교할 원본 템플릿을 불러오지 못했습니다."
+    },
+    "restartRequiredBadge": {
+      "label": "변경 시 다시 시작 필요",
+      "tooltip": "이 설정은 {{productName}}이(가) 실행 중인 동안에는 변경할 수 없습니다. 저장된 값은 유지되며 {{productName}}을(를) 다음에 다시 시작할 때 적용됩니다(설정 → 정보, 또는 실행한 터미널에서).",
+      "schema_unavailable": "이 설정에 다시 시작이 필요한지 확인할 수 없습니다."
     }
   },
   "hooks": {
@@ -10900,7 +10905,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -11209,7 +11213,6 @@
         "err_env_override_with_ref": "<settingRef/>이(가) 설정되어 있어 이 설정을 재정의합니다. 여기에서 모델을 변경하려면 해제하세요."
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "풀 프로세스용 에이전트. 비워 두면 기본 에이전트를 사용합니다. 재시작이 필요합니다.",
         "approval_mode": "승인 모드",
         "auto": "자동",
         "auto_size_max": "자동 크기 조정 최대값",
@@ -11224,7 +11227,6 @@
         "disabled": "비활성화됨",
         "embedding": "임베딩",
         "embedding_provider": "임베딩 제공자",
-        "enable_conductor_skill_for_multi_agent_orchestra": "멀티 에이전트 오케스트레이션을 위한 컨덕터 스킬을 활성화합니다. 재시작이 필요합니다.",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli를 통한 동적 MCP 도구 검색을 활성화합니다. 다음 세션부터 적용됩니다.",
         "enabled": "활성화됨",
         "enforce_denied_commands": "거부된 명령 적용",
@@ -11233,7 +11235,6 @@
         "immediate_auto_enables_sandbox_for_untrusted_too": "즉시 적용됩니다. ‘auto’는 신뢰할 수 없는 도구에 샌드박스를 활성화합니다.",
         "inherited_provider": "상속됨 ({{provider}})",
         "kirocrew_agents": "{{productName}} 에이전트",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "풀링된 프로세스의 최대 수명. 0이면 만료를 비활성화합니다. 재시작이 필요합니다.",
         "max_channel_agents": "최대 채널 에이전트 수",
         "max_channels": "최대 채널 수",
         "max_concurrent_subagents": "최대 동시 서브에이전트 수",
@@ -11249,13 +11250,11 @@
         "next_update_check_cycle": "다음 업데이트 확인 주기.",
         "no_agents_defined": "정의된 에이전트 없음",
         "no_memory_stores": "메모리 저장소 없음",
-        "number_of_pre_spawned_processes_0_disables_resta": "미리 생성할 프로세스 수. 0이면 비활성화됩니다. 재시작이 필요합니다.",
         "orchestrator_mode": "오케스트레이터 모드",
         "pool_agent": "풀 에이전트",
         "pool_size": "풀 크기",
         "pool_ttl": "풀 TTL",
         "provider": "제공자",
-        "restart_required_to_apply_changes": "{{description}} 변경 사항을 적용하려면 재시작해야 합니다.",
         "sandbox": "샌드박스",
         "save": "저장",
         "saved": "저장됨",
@@ -11269,7 +11268,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "레거시 모드 사용 중 — agent.default_agent를 에이전트 템플릿으로 사용",
         "warm_pool": "웜 풀",
         "workspace": "워크스페이스",
-        "workspaces": "워크스페이스"
+        "workspaces": "워크스페이스",
+        "number_of_pre_spawned_processes_0_disables": "미리 생성할 프로세스 수. 0이면 비활성화됩니다.",
+        "agent_for_pool_processes_empty_uses_default_agent": "풀 프로세스용 에이전트. 비워 두면 기본 에이전트를 사용합니다.",
+        "warm_pool_description": "세션을 즉시 시작할 수 있도록 ACP CLI 프로세스를 미리 실행합니다.",
+        "max_age_for_pooled_processes_0_disables_expiry": "풀링된 프로세스의 최대 수명. 0이면 만료를 비활성화합니다.",
+        "enable_conductor_skill_for_multi_agent_orchestration": "멀티 에이전트 오케스트레이션을 위한 컨덕터 스킬을 활성화합니다."
       },
       "mcpTab": {
         "actions": "동작",
@@ -12519,7 +12523,8 @@
         "sdk_missing": "{{channel}} SDK 설치",
         "sdk_missing_body": "{{channel}} 채널에는 {{package}} 패키지가 필요하지만 기본적으로 설치되지 않습니다. 아래 명령을 터미널에서 실행해 추가하세요.",
         "sdk_restart_after_install": "그런 다음 게이트웨이를 재시작하여 {{channel}} 채널을 시작하세요.",
-        "sdk_install_unsupported": "이 게이트웨이의 Python은 추가 패키지를 설치할 수 없으므로 여기에서 {{package}}을(를) 추가할 수 없습니다. pip로 설치할 수 있는 Python 환경에서 게이트웨이를 실행하세요."
+        "sdk_install_unsupported": "이 게이트웨이의 Python은 추가 패키지를 설치할 수 없으므로 여기에서 {{package}}을(를) 추가할 수 없습니다. pip로 설치할 수 있는 Python 환경에서 게이트웨이를 실행하세요.",
+        "verified_and_saved": "{{channel}}에서 확인되어 저장되었습니다."
       },
       "browserPanel": {
         "use_builtin_label": "내장 브라우저 사용",
@@ -13455,7 +13460,8 @@
         "where_to_find_the_app_token": "앱 토큰을 찾는 위치",
         "where_to_find_the_bot_token": "봇 토큰을 찾는 위치",
         "manifest_unavailable": "Slack 앱 매니페스트를 불러올 수 없습니다. 설정 가이드를 따라 앱을 직접 만드세요.",
-        "copy_manifest_failed": "매니페스트를 클립보드에 복사하지 못했습니다."
+        "copy_manifest_failed": "매니페스트를 클립보드에 복사하지 못했습니다.",
+        "verified_and_saved": "Slack에서 확인하고 저장했습니다."
       },
       "sttSettings": {
         "language_auto": "언어 자동 감지",
@@ -13789,7 +13795,8 @@
         "empty_allowlist_hint": "허용된 이메일이 없습니다: 봇이 모든 메시지를 거부합니다. 아래에 Webex 계정 이메일을 추가하세요.",
         "soft_threshold_must_be_1_to_100": "소프트 컨텍스트 임계값은 1에서 100 사이의 정수여야 합니다.",
         "hard_threshold_must_be_1_to_100": "하드 컨텍스트 임계값은 1에서 100 사이의 정수여야 합니다.",
-        "soft_threshold_must_not_exceed_hard": "소프트 임계값은 하드보다 클 수 없습니다. 하드를 먼저 검사하므로 더 큰 소프트 값에는 도달하지 않습니다."
+        "soft_threshold_must_not_exceed_hard": "소프트 임계값은 하드보다 클 수 없습니다. 하드를 먼저 검사하므로 더 큰 소프트 값에는 도달하지 않습니다.",
+        "verified_and_saved": "Webex에서 확인하고 저장했습니다."
       },
       "weixinPanel": {
         "allowed_user_ids": "허용된 사용자 ID",

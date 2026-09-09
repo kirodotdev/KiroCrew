@@ -18,6 +18,7 @@ from typing import Optional
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.sandbox import (
@@ -601,10 +602,21 @@ class LLMPool:
         *,
         effort: Optional[str] = None,
         use_config_pool_size: bool = True,
+        track_config_pool_size: Optional[bool] = None,
     ):
         self._pool_size = pool_size
         self._effort = _normalize_effort(effort)
         self._use_config_pool_size = use_config_pool_size
+        # Whether a LATER write to knowledge.extraction_pool_size retargets this
+        # pool. Separate from use_config_pool_size, which only governs the read
+        # inside start(): a caller that seeds pool_size from that key itself (the
+        # extraction pool) disables the start() read yet still wants to follow the
+        # key, while a caller with a fixed width (the URL-fetch pool, size 1) must
+        # not be resized by an unrelated setting. Defaults to following whenever
+        # start() would have read the key.
+        self._track_config_pool_size = (
+            use_config_pool_size if track_config_pool_size is None else track_config_pool_size
+        )
         self._semaphore = asyncio.Semaphore(pool_size)
         self._workers: list[Worker] = []
         self._available: asyncio.Queue[int] = asyncio.Queue()
@@ -620,10 +632,86 @@ class LLMPool:
         self._in_use: int = 0
         self._idle_since: Optional[float] = None
         self._reaper_task: Optional["asyncio.Task[None]"] = None
+        # A width change waiting for a zero-TTL pool to go fully idle.
+        self._resize_when_idle = False
+        # The width the running workers were spawned at; ``_pool_size`` is the
+        # configured width and the two differ while a resize is pending.
+        self._running_width = pool_size
         # Workers a reaper is mid-way through shutting down (outside the lock).
         # Kept visible so a concurrent shutdown() that cancels the reaper can
         # still drain any workers it abandoned.
         self._reaping_workers: Optional[list[Worker]] = None
+        # `_idle_ttl` / `_pool_size` are read from config in start(), so a config
+        # write reaches them only through reconfigure(). Held on self because the
+        # watcher keeps a bound method weakly.
+        self._config_sub = live.subscribe(
+            "knowledge.pool_idle_ttl_secs",
+            "knowledge.extraction_pool_size",
+            callback=self._on_config_change,
+            name="LLMPool",
+        )
+
+    async def _on_config_change(self, change: object) -> None:
+        # The watcher already loaded this document, so adopt it rather than
+        # reading the file a second time. The pool's getters read the raw
+        # mapping, which is what ``to_dict()`` hands back.
+        await self.reconfigure(getattr(change, "new").to_dict())
+
+    async def reconfigure(self, config: Optional[dict] = None) -> None:
+        """Adopt a new idle TTL and, at the next idle boundary, a new pool size.
+
+        *config* is the already-loaded document to adopt; without one the config
+        is read off the loop, which is what a caller outside the watcher wants.
+
+        The TTL is applied immediately: it is compared against a timestamp on each
+        reaper tick, so replacing it changes when the pool next scales to zero. The
+        reaper is (re-)armed or left to exit accordingly -- switching the TTL from 0
+        to a positive value on a started pool starts a reaper that was never
+        created, and switching it to 0 lets the running one stop reaping.
+
+        The pool SIZE is not resized in place. Each worker holds a long-lived
+        billed session and a resize mid-ingest would either kill a worker with a
+        chunk in flight or spawn one nobody waits for, so the new size is picked up
+        at the next idle boundary: the semaphore that ``_maybe_scale_to_zero``
+        installs is built from ``_pool_size``, and the respawn on the next
+        ``acquire`` uses it. An ingest already running keeps the width it started
+        with. Only a pool that TRACKS the config key follows it -- a pool given a
+        fixed width by its caller (the URL-fetch pool) keeps that width.
+
+        A pool with NO idle TTL never reaches that boundary on its own, so a size
+        change on such a pool is applied by recycling the workers the moment the
+        pool is next fully idle (immediately, if it already is): the same
+        teardown the reaper performs, minus the age check, so the very next
+        ``acquire`` respawns at the new width.
+
+        A reaper already running keeps its original poll interval; only the
+        comparison it makes is live, so a shortened TTL takes effect within one
+        tick of the old interval rather than instantly.
+        """
+        config = config if config is not None else await asyncio.to_thread(_read_config)
+        async with self._start_lock:
+            self._config = config
+            self._idle_ttl = _get_idle_ttl(config)
+            if self._track_config_pool_size:
+                self._pool_size = _get_pool_size(config)
+            if not self._started:
+                # The semaphore was sized at construction. A pool that has not
+                # started yet holds no worker, so it can be resized in place --
+                # and it MUST be, or the permits stay at the constructor's width
+                # while start() spawns the new, smaller worker count and admits
+                # more acquires than there are workers (a QueueEmpty on the
+                # extraction path). The TTL needs no arming: start() reads it.
+                self._semaphore = asyncio.Semaphore(self._pool_size)
+                return
+            if self._idle_ttl > 0 and self._reaper_task is None:
+                self._reaper_task = asyncio.create_task(self._idle_reaper())
+            # Compared against the RUNNING width, not this call's delta: a width
+            # change that arrived while the TTL was positive (left to the reaper)
+            # must still be applied when a later write drops the TTL to zero.
+            if self._idle_ttl <= 0 and self._running_width != self._pool_size:
+                self._resize_when_idle = True
+        if self._resize_when_idle and self._in_use == 0:
+            await self._maybe_scale_to_zero(force=True)
 
     @property
     def provider_type(self) -> str:
@@ -651,7 +739,11 @@ class LLMPool:
                 and configured_size != self._pool_size
             ):
                 self._pool_size = configured_size
-                self._semaphore = asyncio.Semaphore(configured_size)
+            # The permit count is derived from the width the workers are spawned
+            # at below, whichever path set it (constructor, config override, or a
+            # tracked reload before this start), so the two cannot disagree.
+            self._semaphore = asyncio.Semaphore(self._pool_size)
+            self._running_width = self._pool_size
             self._idle_ttl = _get_idle_ttl(config)
             self._config = config
             try:
@@ -756,6 +848,10 @@ class LLMPool:
             self._in_use -= 1
         if self._in_use == 0:
             self._idle_since = time.monotonic()
+            if self._resize_when_idle:
+                # A width change waiting on a zero-TTL pool: recycle now that
+                # nothing is in flight, so the next acquire spawns the new width.
+                asyncio.get_running_loop().create_task(self._maybe_scale_to_zero(force=True))
         self._semaphore.release()
 
     async def _idle_reaper(self) -> None:
@@ -772,8 +868,12 @@ class LLMPool:
             if await self._maybe_scale_to_zero():
                 return
 
-    async def _maybe_scale_to_zero(self) -> bool:
+    async def _maybe_scale_to_zero(self, *, force: bool = False) -> bool:
         """Shut down all workers iff the pool is fully idle past the TTL.
+
+        With *force* the TTL and idle-age checks are skipped: the pool is recycled
+        as soon as nothing is in flight, which is how a pending width change
+        reaches a pool that has no idle TTL to bring it to this boundary.
 
         Returns True if the pool was reaped (or is already gone) — the caller
         (the reaper) should then exit. Returns False to keep polling. The
@@ -783,13 +883,16 @@ class LLMPool:
         """
         async with self._start_lock:
             if not self._started:
+                self._resize_when_idle = False
                 return True
-            if self._idle_ttl <= 0:
+            if self._in_use != 0:
                 return False
-            if self._in_use != 0 or self._idle_since is None:
-                return False
-            if (time.monotonic() - self._idle_since) < self._idle_ttl:
-                return False
+            if not force:
+                if self._idle_ttl <= 0 or self._idle_since is None:
+                    return False
+                if (time.monotonic() - self._idle_since) < self._idle_ttl:
+                    return False
+            self._resize_when_idle = False
             workers = self._workers
             self._workers = []
             self._available = asyncio.Queue()

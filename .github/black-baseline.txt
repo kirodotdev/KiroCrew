@@ -630,7 +630,6 @@ test/test_dev_fleet_server_coverage.py
 test/test_dev_fleet_server_more_coverage.py
 test/test_diagnostics.py
 test/test_discord_client_coverage.py
-test/test_discord_config_handlers.py
 test/test_display_time_redaction.py
 test/test_doc_parser.py
 test/test_docker_entrypoint.py
@@ -1055,7 +1054,6 @@ test/test_teams_config.py
 test/test_teams_gateway.py
 test/test_telegram_album.py
 test/test_telegram_attachments.py
-test/test_telegram_config_handlers.py
 test/test_terminal_commands.py
 test/test_terminal_handler.py
 test/test_theme_authoring_skill.py

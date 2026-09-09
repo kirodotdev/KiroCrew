@@ -1227,6 +1227,306 @@ purely to keep the kiro spec schema-clean; nothing in the fork resolves it.
 all times — after install, refresh, and any dashboard edit — or kiro-cli drops
 the agent and silently falls back to default.
 
+## Live config: one watcher, one applier registry
+
+`config/live.py` is the single mechanism by which a write to `config.json`
+reaches the objects that already copied a value out of it. Before it, a
+long-lived object built at boot (a session manager's idle timeout, a channel
+transport's allow-list, a workflow ceiling) kept its boot copy forever unless the
+particular writer happened to know that copy existed — so `kirocrew config set`,
+a dashboard save and an `$EDITOR` edit each hot-applied a *different* subset of
+fields, and every other field was silently inert until the next restart.
+
+Three parts, each deliberately singular:
+
+**One poll.** `ConfigWatch` runs one background task that compares
+`loader._config_fingerprint()` (mtime_ns + size + mode of `config.json` and
+`config.local.json`) every `DEFAULT_POLL_INTERVAL_SECS` (2s, floored at 0.05).
+The two `stat` calls run in `asyncio.to_thread`, never on the loop. Nothing else
+in the gateway polls `config.json`.
+
+**One kick.** An in-process writer does not wait for the tick: it calls
+`live.notify_config_written()`, which sets a force flag and wakes the poll
+through `call_soon_threadsafe`. The force flag matters independently of the
+wake — the fingerprint is mtime-based, and a coarse filesystem clock can make a
+write invisible to it, so a kicked cycle reloads whether or not the fingerprint
+moved. Safe from any thread and a no-op in a process with no watcher (the CLI).
+
+**One reload, one diff, one dispatch.** A cycle performs exactly one
+`KiroCrewConfig.load()` off the loop, so the `publish_*` snapshots the loader
+maintains ride along rather than needing a second reader. Old and new documents
+are flattened to dotted leaf paths (`flatten_config`; lists and empty dicts are
+leaves, because every list-typed field is a whole value whose consumers rebuild
+from the full list) and diffed (`diff_config_docs`). The new config is adopted
+*before* dispatch so an applier reading `live.snapshot()` sees it, and the
+PRE-load fingerprint is recorded so a write landing mid-read leaves it unequal to
+the file and the next tick reloads. Cycles are serialized by a lock, so the diff
+is always old-vs-newer and an applier never sees an out-of-order pair.
+
+### The applier registry
+
+`live.subscribe(*prefixes, callback=..., name=...)` is the only sanctioned place
+for work a gateway does in response to a config write. Rules the registry keeps:
+
+- **Prefix-scoped.** An applier fires only when a changed path is one of its
+  prefixes or lies under one (whole dotted segments: `agents` is not under
+  `agent`). No prefixes means every reload — a catch-all, and a review smell.
+- **Registration order is dispatch order**, so an applier may depend on one
+  registered before it (a rebuild before the consumer that reads it).
+- **Sync or async**, awaited if awaitable.
+- **A raising applier cannot starve the rest, and is not left stale.** Each call
+  is guarded; the failure is logged at ERROR with the applier's NAME and dispatch
+  continues. The watcher remembers the changed paths that applier missed and
+  re-dispatches exactly those to it on the next tick (a synthesized change whose
+  `old` and `new` are the current snapshot), quietly at DEBUG until it succeeds;
+  a real change arriving first carries the missed paths in the same dispatch. So
+  a transient failure delays adoption by one poll interval instead of until the
+  same fields happen to change again.
+- **An awaitable applier that hangs cannot stall the rest indefinitely either.**
+  Appliers dispatch sequentially under one cycle lock, so a call that never
+  returns would otherwise block every applier after it and any concurrent
+  `refresh_now()` caller. `_apply_one` wraps an awaited result in
+  `asyncio.wait_for(..., timeout=APPLIER_TIMEOUT_SECS)` (10s); a timeout is
+  logged and staled exactly like a raised exception. This bounds an async
+  applier that hangs on an internal `await` — it cannot bound a synchronous
+  applier that blocks the loop outright, since nothing suspends until the
+  result is awaitable in the first place. Write appliers non-blocking.
+- **A bound method is held weakly** (`weakref.WeakMethod`), so a manager
+  discarded by a test or a provider reload falls out of the registry on its own.
+  A free function or lambda is held strongly — it has no owner to outlive.
+- **Values are never logged, only changed paths**: `to_dict()` carries channel
+  tokens and the diff sees them.
+- **`cancel()` is the removal verb** (there is no `close()`), and is idempotent.
+
+### The three one-line registrations
+
+`subscribe` is the primitive; almost no applier should be written against it
+directly. Three shapes on top of it cover every value-adoption site and are what
+a new setting registers with, in the owning object's constructor:
+
+| Shape | When | What it does |
+|---|---|---|
+| `live.watch_section(owner, "wecom", "messaging", target="transport")` | a subsystem owns one top-level section and exposes `reconfigure(section_cfg)` | fires under `wecom` (or `messaging`); resolves `owner.transport` at dispatch time and calls its `reconfigure(change.new.wecom)`; a `None` target (transport not connected yet) is a no-op; **fails closed** on a section the loader marked degraded (`fail_closed=True` by default and mandatory for anything carrying authorization), so an allow-list is never rebuilt from an unparseable document |
+| `live.watch_object(owner, "memory", "skills.max_skills")` | an object's settings span sections or are normalized together, and it exposes `reconfigure(cfg)` | fires under any prefix and hands the whole `KiroCrewConfig` over |
+| `live.bind("agent.max_channels", mgr.set_max_channels)` | one scalar with an existing setter | calls `setter(value at that path)` when that leaf changes |
+
+All three hold the owner weakly (through the setter's `__self__` for `bind`),
+so a discarded object drops out of the registry like a weakly held bound
+method. What they remove is the per-site ceremony that used to be copied by
+hand — the prefix gate, the `None`-transport guard and, above all, the
+degraded-section refusal, which is an authorization safety check and must not
+exist as nine hand-written copies. What stays on `subscribe` is orchestration
+rather than value adoption: the in-process channel restart, the provider
+switch, the SEL-audited approval widening, the Slack section's fan-out.
+
+### The point-of-use read
+
+`live.current(fallback, log_prefix=...)` is for a call site that reads a value
+mid-turn rather than reacting to a change — every channel dispatcher's per-turn
+threshold and DM-scope reads. It returns the watcher's `snapshot()` when armed,
+else a disk `KiroCrewConfig.load()`, else *fallback* (with a warning naming
+*log_prefix*) when even that raises. `snapshot()` alone is not enough for these
+callers: a dispatcher can run before the watcher is primed (see boot ordering
+below) or in a process with none at all, and `current` is the one place that
+disk-load-then-fallback chain is written, rather than nine copies of it.
+
+A load that raises keeps the previous snapshot, records `last_error`, dispatches
+nothing, and retries on the next tick. A file that does not PARSE as a JSON
+object right now (`_document_is_torn`, checked on the file itself because the
+loader's degradation flag is sticky for the process) also keeps the previous
+snapshot's VALUES — only the flag is taken from the new load, so the gates
+that fail closed on `degraded_sections` still see it — and diffs empty, so no
+applier and no `current()` reader ever sees the all-defaults document the
+loader answers for an unparseable file (a forum activation of `always`, an
+empty allow-list, for the length of the tear). Once the file parses again the
+load is adopted as it is, still flagged, and a repair to new values diffs and
+dispatches them. A load that *succeeds degraded* with the file parseable (a
+section the loader itself discarded, named in `degraded_sections`) does
+dispatch: the watcher does not refuse on the applier's behalf, because whether
+a default is safe is a property of the consumer. A fail-closed applier — every
+channel allow-list — reads `change.new.degraded_sections` and keeps its previous
+authorization state; a plain one (a timeout, a log level) adopts the default,
+which is the correct answer for it.
+
+A fail-closed refusal is **deferred, never dropped**: the applier raises
+`ConfigDeferred(paths)` and the watcher records those paths in the same stale
+table an applier exception lands in (logged once at WARNING, then at DEBUG while
+the applier keeps deferring). The same exception carries a second meaning for one
+applier: the channel-restart applier raises it before the transports have
+started, so a boot-window edit waits in the stale table and is applied by the
+first tick after they are up — through `_apply_one`, with the degraded check,
+rather than by a replay of the boot loop's own. The distinction matters because the watcher adopts the
+degraded document as its snapshot — the refused section at DEFAULTS — so a
+repair that writes back exactly those defaults diffs EMPTY. Before this a skip
+was a silent success and nothing would ever re-run the applier: a revocation
+written alongside a malformed field stayed unapplied for good. Now every clean
+load re-runs the stale appliers against the current document even when it has
+nothing to diff (`_retry_stale` on the empty-diff and unchanged-fingerprint
+paths), so the roster catches up with the repair. `_section_applier`,
+`_object_applier`, the `bind()` leaf applier (a discarded section holds a leaf's
+DEFAULT, and a bound setter handed that default would reset a cap or a ceiling),
+`_on_slack_config_change`, `_on_channel_config_change` and the session manager's
+applier all raise it; the channel applier raises only the DEGRADED channels'
+paths after scheduling the healthy channels' restarts, so the retry never
+restarts a channel twice.
+
+The refusal keys on the applier's OWN section being in `degraded_sections`, never
+on the whole-config marker `*` alone. The loader keeps every degradation it has
+observed for the life of the process (`resolution._OBSERVED_DEGRADED_SECTIONS`:
+its gates must stay closed after a save has normalized the evidence away), so a
+document loaded after a since-repaired tear still carries `*`; an applier that
+refused on it would defer every tick until a restart while each save reported
+applied — a revocation written after one transient typo would never land. It
+does not need to: a document that is torn NOW never reaches an applier, because
+the watcher keeps the previous snapshot while the file does not parse (above),
+and the one way the two could disagree — a write landing between the loader's
+read and the torn-file probe — is closed in `_cycle`: when the probe finds the
+file whole but the load carries `*`, the fingerprint is re-read, and a read the
+file moved under is treated as torn (previous snapshot kept, next tick reloads).
+So on a dispatched change `*` is only the loader's memory of a repaired tear,
+and the section flags — which the loader assigns only to the fail-closed
+sections `dashboard`, `memory` and `publish` (validation removes a malformed
+non-object anywhere else before the loader could flag it) — are the ones a tear
+never produces and a save destroys the evidence of, hence the ones that stay
+sticky and keep their appliers deferred until the restart main documents for a
+malformed fail-closed section.
+
+Where appliers live: an applier owned by a long-lived object registers in that
+object's constructor (session manager, subagent manager, each channel
+dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
+`set_timeout_secs` and `ChannelManager` binds `agent.max_channels` /
+`agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
+ones whose holder is `DashboardState`, or that must rebuild agent artifacts,
+live in `server.py::_register_config_watch` — `agent.provider`,
+`agent.role_models.background`, and `agent.log_level`
+(→ `handlers/updates.py::apply_log_level_from_config`).
+The provider applier only schedules the switch: `reload_provider_factory` clears
+the session registry and then shuts the retired providers down one at a time,
+which can outlast the applier bound, and a timed-out applier is retried on the
+next tick — a retried switch would clear the sessions created with the new
+provider in between. So the switch runs off the cycle as a task tracked in
+`state._background_tasks` (the same shape as a channel reconnect), the applier
+returns at once, and the switch runs exactly once per change. Because it runs
+later, it installs the watcher's snapshot current at install time rather than
+the document it was scheduled with -- a change that landed in between (a
+`refresh_defaults` install) must not be reverted -- and falls back to the
+scheduled document only when that snapshot is torn, since a torn `agent`
+section holds defaults.
+That function must be called before `runner.setup()` freezes the signal lists;
+the watcher itself starts in `on_startup`, because it needs the running loop, and
+stops in `on_cleanup`.
+
+### `restart=True` is the single source of restart truth
+
+`ConfigEntry.requires_restart` in `config/schema.py` is the ONE statement of
+which fields a running gateway cannot adopt. It is emitted into the schema API as
+`requiresRestart` only when true (absent means hot), and `requires_restart(path)`
+resolves it through ancestors, so a marked container covers keys the schema never
+enumerates (`mcp_gateway.stub_servers.<name>`, `agent.jail.<key>`).
+
+Consequences, and they are the point:
+
+- A request handler keeps **no list of boot-only keys**. The dashboard's PUT
+  computes `restart_required` as
+  `_changed_paths_need_restart(changed)` over the schema, and the old
+  `_STARTUP_READ_AGENT_KEYS` ladder is gone.
+- The hint is computed over paths whose value actually **moved**. The dashboard
+  sends every setting on each save, so "was applied" is not "was changed" — an
+  untouched `restart=True` field must not make a live edit claim a restart.
+- Adding a hot-appliable field is a schema change plus an applier, never a
+  handler edit. Marking a field `restart=True` is the admission that no applier
+  exists for it.
+- That admission is enforced, not conventional: `ConfigWatch.subscribe`,
+  `watch_section`, `watch_object` and `bind` refuse (`ValueError`) a prefix at
+  or under a `restart=True` path at registration time, so an applier for a
+  boot-only field cannot be added without first dropping the mark — and the
+  owner's own constructor tests trip it. A section-wide registration
+  (`"whatsapp"`) stays allowed: its applier adopts the section's live fields
+  and ignores the marked leaf. `agent.approval_mode` is marked for this reason:
+  every channel dispatcher resolves it once at start, so no single consumer may
+  take it live.
+- **Review checklist for a new field.** An unmarked field is a UI-visible
+  promise ("this applied live"), and nothing mechanical ties that promise to
+  code. So a PR that adds a config field must name, in its description, one of:
+  the applier that adopts it — normally one line, `live.watch_section` /
+  `live.watch_object` / `live.bind` in the owner's constructor, or a new field
+  read inside an existing `reconfigure` — the point-of-use read
+  (`live.snapshot()` at the call site) that makes construction-time capture
+  irrelevant, or the `restart=True` mark. A field with none of the three is the
+  silently-inert bug this design exists to kill, now with the settings UI
+  affirming that the value took effect.
+- **A reload that can widen approvals is audited.** `HookManager` follows
+  `hooks.*` live, and `config.json` is writable by an auto-approved agent shell,
+  so its applier SEL-logs an `auto_approve_tools` / `auto_approve_sources` /
+  `auto_approve_subagent_*` change (`hook_manager.reconfigure`,
+  `auto_approve_changed`, counts and flag names only) the way the channel
+  transports audit an allow-list reload. Governance still caps the resulting
+  set; the audit closes the gap between "widened at a restart" and "widened in
+  two seconds, mid-session, with no trace".
+
+Currently marked: `agent.jail`, `agent.dangerously_skip_permissions`,
+`agent.approval_mode`, `dashboard.url`, `dashboard.tailscale.*`,
+`dashboard.restore_sessions`, `dashboard.restore_window_minutes`,
+`dashboard.surface_channel_sessions`, `dashboard.cautious_boot`,
+`dashboard.auto_open_browser`, `tunnel.*`, `instances.*`, `mcp_gateway.*`
+(every field of the section), `memory.embed_model_id`, `memory.embed_model_path`,
+`memory.embedding_dim`, `slack.command`, `whatsapp.db_path`, and
+`messaging.dm_scope` — the last because it names the session-key namespace whose
+per-conversation generation counters are seeded at boot, so a live flip could
+resume a stale session persisted under the other namespace. The schema is the
+source of truth for this list: `requires_restart()` over `SCHEMA_REGISTRY`
+answers it, and this prose is a reader's convenience.
+
+### Which write paths kick the watcher
+
+Every door onto `config.json` ends at `notify_config_written()`, so the dashboard,
+the CLI and an `$EDITOR` save all reach the hot-apply path identically. A writer
+that forgets the kick is one setting that stays silently inert until the poll
+happens to notice — which is the bug class this closes.
+
+| Write path | Where |
+|---|---|
+| `update_config_locked` | `config/loader.py` — the required path for new mutations; skips the kick when the mutate returns `None` (no write) |
+| `KiroCrewConfig.save()` | `config/loader.py` |
+| `_persist_config_migration` | `config/loader.py` — a boot migration is a config write like any other |
+| `refresh_config_meta_stamp` | `config/loader.py` — kicks only when the stamp actually moved (no rewrite, no mtime churn) |
+| `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`; the per-channel savers and the STT PUT reach the file through here, bypassing the loader's writers |
+
+A handler that must answer only after the new value is in force calls
+`ConfigWatch.refresh_now()` (`handlers/core.py::_hot_apply_after_write`), which
+forces one cycle and is a no-op before the watcher is started. The config PUT
+and every per-channel saver (`handlers/messaging.py`, the WhatsApp saver in
+`handlers/whatsapp_setup.py`) do, because their writes carry authorization: a
+narrowed allow-list is applied to the running transport before the caller sees
+"saved", never one poll interval after it. For a connection field the same
+dispatch also drops the old client's mirror registration synchronously and
+schedules its reconnect, so a request that follows the response (a WhatsApp QR
+start, a mirror send) is never handed the client about to be closed.
+
+**A two-file save runs under `live.hold()`.** A saver that writes `config.json`
+and then `.env`, and rolls the config back when the credential write fails
+(Teams, Webex, WeCom, Feishu), wraps the whole transaction — snapshot through
+rollback and the `os.environ` sync — in `with live.hold():`. Without it the
+config write's own kick (`_atomic_json_write` → `notify_config_written`) wakes
+the watcher while the handler is still awaiting the `.env` write, and a widened
+allow-list the committed state never granted is applied to the running transport
+for the length of the failing write. Under a hold the cycle records that a
+reload is owed and returns without loading; the release wakes it on the
+committed (or restored) file. Savers that write `.env` first and `config.json`
+second (Slack, Discord, Telegram) have no rollback window and need no hold.
+Pinned per channel by the `*_config_handlers` tests
+(`test_the_config_and_env_writes_run_under_the_live_config_hold`) and for the
+watcher itself by `test_config_live.py`.
+
+Tests: `test/test_config_live.py` (diff, registry, lifecycle, fingerprint,
+dispatch order and scope, every write path, the schema/handler agreement, the
+`server.py` appliers, and the owned-applier shapes `watch_section` /
+`watch_object` / `bind`) and `test/test_channels_a_hot_reload.py` (every
+channel's applier, its fail-closed degrade refusal and its point-of-use reads,
+parametrized over the case table in `test/_hot_reload_helpers.py`;
+`test_channels_b_hot_reload.py` and `test_channels_c_hot_reload.py` carry the
+per-channel claims that are not shared).
+
 ## Schema
 
 ```python

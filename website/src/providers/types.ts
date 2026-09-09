@@ -105,7 +105,6 @@ export interface ProviderLabels {
   sessionProcess: string
   agentTemplateField: string
   processCountLabel: string
-  warmPoolDescription: string
   configFile: string
   pluginRegistryName: string
   hooksSection: string

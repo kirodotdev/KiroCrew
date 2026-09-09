@@ -593,12 +593,12 @@ async def api_memory_settings(request: web.Request) -> web.Response:
                 {"error": "failed to read config file", "code": "config_unreadable"},
                 status=500,
             )
-        # Apply to running consolidator
+        # Apply to running consolidator. The config watcher does this for every
+        # writer, but this route answers only after the value is in force, so it
+        # pushes directly rather than making the caller wait out a poll tick.
         state: DashboardState = request.app["state"]
         if state.consolidator:
-            new_cfg = KiroCrewConfig.load()
-            state.consolidator._history_idle_secs = new_cfg.memory.history_idle_hours * 3600
-            state.consolidator._migrated = new_cfg.memory.migrated
+            state.consolidator.reconfigure(await asyncio.to_thread(KiroCrewConfig.load))
         return web.json_response({"ok": True})
     return web.json_response(
         {

@@ -89,13 +89,14 @@
       "sensitive": false,
       "tags": [],
       "label": "Approval Mode",
-      "help": "Tool approval mode.",
+      "help": "Tool approval mode. Every channel dispatcher resolves it once at start (with the CLI --approval override), so a change takes effect at the next restart.",
       "hasChildren": false,
       "enumValues": [
         "auto",
         "interactive"
       ],
-      "defaultValue": "auto"
+      "defaultValue": "auto",
+      "requiresRestart": true
     },
     {
       "path": "agent.streaming",
@@ -475,7 +476,8 @@
         "on",
         "off"
       ],
-      "defaultValue": "auto"
+      "defaultValue": "auto",
+      "requiresRestart": true
     },
     {
       "path": "agent.dangerously_skip_permissions",
@@ -489,7 +491,8 @@
       "help": "Skip EVERY tool approval confirmation, permanently. Declaring it here is a standing instruction: the grant does not expire and is re-established on every startup. This is the advanced, config-file-only escape hatch — there is deliberately no dashboard toggle for it. An enterprise policy can forbid it, which falls back to the ad-hoc duration below.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": false,
+      "requiresRestart": true
     },
     {
       "path": "agent.yolo_duration",
@@ -1329,10 +1332,11 @@
       "sensitive": false,
       "tags": [],
       "label": "DM Session Scope",
-      "help": "How direct-message conversations map to sessions. 'per-channel-peer' (default) keeps one session per (channel, user), so the same person on Telegram vs WeCom stays isolated. 'unified' collapses all DMs into one shared session per agent for cross-surface continuity.",
+      "help": "How direct-message conversations map to sessions. 'per-channel-peer' (default) keeps one session per (channel, user), so the same person on Telegram vs WeCom stays isolated. 'unified' collapses all DMs into one shared session per agent for cross-surface continuity. Takes effect at the next restart: each conversation's generation counter is seeded from the namespace in force at boot, so switching namespaces live could resume a stale session persisted under the other one.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "per-channel-peer"
+      "defaultValue": "per-channel-peer",
+      "requiresRestart": true
     },
     {
       "path": "messaging.idle_reset_minutes",
@@ -1511,10 +1515,11 @@
       "sensitive": false,
       "tags": [],
       "label": "Embedding Dimension",
-      "help": "Dimensionality of embedding vectors.",
+      "help": "Dimensionality of embedding vectors. Changing it changes the vector space, so every stored embedding must be regenerated -- applied by the Settings embedding-model action, not by a plain config write.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 1024
+      "defaultValue": 1024,
+      "requiresRestart": true
     },
     {
       "path": "memory.embedding_threads",
@@ -1584,7 +1589,8 @@
       "help": "Absolute path to a local GGUF embedding model to use INSTEAD of the bundled Qwen3-Embedding-0.6B. When set, the default model is never downloaded or installed, so a custom model survives a default-model version change. Set embedding_dim to the model's output width. Changing the model changes the vector space, so stored embeddings are regenerated automatically. The KIROCREW_EMBED_MODEL_PATH env var wins over this.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": ""
+      "defaultValue": "",
+      "requiresRestart": true
     },
     {
       "path": "memory.embed_model_id",
@@ -1598,7 +1604,8 @@
       "help": "Optional stable identifier for a custom model's vector space. Defaults to 'custom:<filename>:<size>', which changes when a different model file is used. Set this explicitly if you swap between models of identical byte size, which the default derivation cannot distinguish.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": ""
+      "defaultValue": "",
+      "requiresRestart": true
     },
     {
       "path": "memory.semantic_confidence_threshold",
@@ -2069,7 +2076,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Extraction Pool Size",
-      "help": "Number of concurrent LLM workers for document extraction. More workers = faster ingestion but higher peak cost. Each worker holds a long-lived session. Requires restart to take effect.",
+      "help": "Number of concurrent LLM workers for document extraction. More workers = faster ingestion but higher peak cost. Each worker holds a long-lived session. A change applies at the next idle boundary: the pool keeps its current width until it scales to zero, so an ingest already running is never resized under it.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3
@@ -2977,7 +2984,8 @@
       "help": "Apply a pooled server's declared env (mcpServers.<name>.env) to the shared backend. Only non-secret keys are forwarded — rotating-secret and credential-prefixed keys are never applied to a shared backend, and gatewayd re-hashes the sidecar at spawn and forwards nothing on mismatch, so every forwarded key is one all co-tenants of that backend declared identically. Turn it OFF to make an env-declaring server run unwrapped (no stub, no pooling) instead.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": true,
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.socket_path",
@@ -2991,7 +2999,8 @@
       "help": "Local endpoint for the broker. Empty -> $KIROCREW_HOME/mcp-gateway/gateway.sock. A unix socket at this path on POSIX; on Windows the path is not created, it only derives the named-pipe name and locates the lock file beside it.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": ""
+      "defaultValue": "",
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.overlay_dir",
@@ -3005,7 +3014,8 @@
       "help": "Directory of rewritten agent JSON. Broker stubs from these specs are injected into each kiro-cli session via ACP session/new. Empty -> $KIROCREW_HOME/mcp-gateway/agents.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": ""
+      "defaultValue": "",
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.idle_timeout_secs",
@@ -3016,10 +3026,11 @@
       "sensitive": false,
       "tags": [],
       "label": "Idle Timeout",
-      "help": "Seconds a refcount=0 MCP backend is kept before drain.",
+      "help": "Seconds a refcount=0 MCP backend is kept before drain. Sizes the daemon's idle sweeper at startup, so it rides the broker's command line and a change needs a broker restart.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 300
+      "defaultValue": 300,
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.resolve_once_refresh_hours",
@@ -3047,7 +3058,8 @@
       "help": "Max concurrent pooled MCP backends before the pool refuses a new one. Must be >= the number of distinct (agent x server) backends that can be live at once: each agent keeps its own backend per server, so N concurrent agents with ~S servers each need N*S slots. Bounded by design: idle backends drain after idle_timeout_secs, so steady-state RAM tracks real concurrency, not this ceiling.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 64
+      "defaultValue": 64,
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.stub_servers",
@@ -3061,7 +3073,8 @@
       "help": "MCP server names given a stub. The stub interposes a stub, which is what makes server-authored UI (MCP Apps) and backend sharing possible for that server — so it is the one per-server decision. Empty by default: an unstubbed server is launched by the session itself, the same process topology as running without the broker, and an empty list means no broker runs at all. Whether stubbed servers SHARE one backend is the separate global switch (mcp_gateway.enabled). Managed from MCP Management.",
       "hasChildren": true,
       "enumValues": null,
-      "defaultValue": []
+      "defaultValue": [],
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.stub_servers.*",
@@ -3089,7 +3102,8 @@
       "help": "DEPRECATED alias for stub_servers. Read only when stub_servers is absent, so a config written before the stub became the per-server decision keeps working: a server that was pooled already had a stub, so migrating it to the stub set preserves its behaviour. There is no per-server sharing switch any more — sharing is global over the stub set.",
       "hasChildren": true,
       "enumValues": null,
-      "defaultValue": []
+      "defaultValue": [],
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.poolable_servers.*",
@@ -3117,7 +3131,8 @@
       "help": "Per-server deviations from stub_servers: a name mapped to true is stubbed even when the roster omits it, false leaves it direct even when the roster carries it. Holds what you CHANGED, not the result, so a name you never touched keeps following the roster — which is what lets an edition that ships its own stub_servers grow that list without overwriting your choices, and lets you turn one server off without pinning yourself to today's roster. Written by MCP Management when a toggle disagrees with the roster, and dropped again when you toggle it back to agree. Empty by default.",
       "hasChildren": true,
       "enumValues": null,
-      "defaultValue": {}
+      "defaultValue": {},
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.stub_overrides.*",
@@ -3145,7 +3160,8 @@
       "help": "Env variable NAMES whose value is part of a shared backend's identity. Names listed here are folded into the backend's env hash even when they look like a rotating secret (AWS_SECRET*, AWS_SESSION*, OAUTH*), which is what makes them safe to apply to a shared backend: two sessions declaring different values get different backends instead of colliding onto one. Use it to let a server that authenticates from such a variable be shared at all — by default it declares one, so nothing is forwarded and the server runs unwrapped. The cost is the reason the exclusion exists: rotating a named value re-partitions that server's pool, so the next session cold-starts a backend. Exact names, not prefixes. Names the daemon's own credential scrub removes (AWS_ACCESS*, AWS_SECRET*, AWS_SESSION*, SSH_AUTH_SOCK*, GNUPGHOME*, GIT_ASKPASS*) are ignored here — that scrub is a separate, broader guard this setting does not lift. Empty by default.",
       "hasChildren": true,
       "enumValues": null,
-      "defaultValue": []
+      "defaultValue": [],
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.pool_identity_env.*",
@@ -3173,7 +3189,8 @@
       "help": "Number of hottest observed (agent x server x channel) MCP backends to spawn at gateway startup, before the first session connects. Removes the cold-start latency on the first new-chat after a gateway restart or after all backends have idled out — the steady state already reuses warm backends within the idle timeout. The hot set is learned from prior registers and persisted beside the socket; channel_id is a stable id, so a prewarmed backend is reused by every later new-chat in that channel. 0 (default) disables prewarming — no hot-key file is read or written.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 0
+      "defaultValue": 0,
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.read_buffer_limit_bytes",
@@ -3187,7 +3204,8 @@
       "help": "Maximum bytes for a single MCP response line before asyncio drops it. Default 64 MiB. Responses exceeding this are fast-failed with -32000. Env override: KIROCREW_MCP_READ_LIMIT.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 67108864
+      "defaultValue": 67108864,
+      "requiresRestart": true
     },
     {
       "path": "mcp_gateway.response_spill_threshold_bytes",
@@ -3198,10 +3216,11 @@
       "sensitive": false,
       "tags": [],
       "label": "Response Spill Threshold",
-      "help": "Tool-call responses larger than this (bytes) have their text content written to ~/.kiro/crew/mcp_spill/ and truncated inline to 16 KiB + a file path marker. Default 256 KiB. Set 0 to disable spilling. Env override: KIROCREW_MCP_SPILL_THRESHOLD.",
+      "help": "Tool-call responses larger than this (bytes) have their text content written to ~/.kiro/crew/mcp_spill/ and truncated inline to 16 KiB + a file path marker. Default 256 KiB. Set 0 to disable spilling. Env override: KIROCREW_MCP_SPILL_THRESHOLD. Read by the MCP broker when it starts, like every other field of this section.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 262144
+      "defaultValue": 262144,
+      "requiresRestart": true
     },
     {
       "path": "mcp",
@@ -3283,7 +3302,8 @@
       "help": "Enable multi-instance management — lets this gateway open SSH tunnels to remote Kiro Crews and embed their dashboards. Default off (opt-in). Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": false,
+      "requiresRestart": true
     },
     {
       "path": "instances.warm_set_cap",
@@ -3311,7 +3331,8 @@
       "help": "First local loopback port used for an SSH -L forward. The allocator increments from here, skipping ports already in use.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 7778
+      "defaultValue": 7778,
+      "requiresRestart": true
     },
     {
       "path": "instances.ssh_compression",
@@ -3820,7 +3841,8 @@
       "help": "Slack slash command trigger word.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "kirocrew"
+      "defaultValue": "kirocrew",
+      "requiresRestart": true
     },
     {
       "path": "slack.forward_to_agent_callback",
@@ -4909,7 +4931,8 @@
       "help": "Read-only. The pairing session database always lives at <data home>/whatsapp/session.db, because that path is what the sensitive-path protection matches: it holds the linked-device keys, and moving it elsewhere would take the credential out from behind the one control that stops an agent reading it.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": ""
+      "defaultValue": "",
+      "requiresRestart": true
     },
     {
       "path": "whatsapp.soft_threshold_pct",
@@ -6026,7 +6049,8 @@
       "help": "Public URL for the dashboard (used in Slack links).",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": ""
+      "defaultValue": "",
+      "requiresRestart": true
     },
     {
       "path": "dashboard.tailscale",
@@ -6061,7 +6085,8 @@
       "help": "Accept this machine's own MagicDNS name as a dashboard origin, so `tailscale serve` works without hand-writing dashboard.url. Reads the local Tailscale daemon once at startup; contributes nothing if Tailscale is absent, stopped, or MagicDNS is off. Does NOT widen the network bind and does NOT change authentication — every request still needs a dashboard session.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": false,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.tailscale.trust_identity",
@@ -6075,7 +6100,8 @@
       "help": "Pin dashboard sessions arriving via `tailscale serve` to the daemon-verified tailnet peer instead of the tunnel's shared loopback address, and record that identity in the audit trail. Explicit opt-in, never inferred, and requires a non-empty allowed_logins — enabling it with an empty allowlist is refused at load. Every failure to verify a peer falls back to the ordinary token path. Takes effect on the next gateway start (the trust settings are read once at startup).",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": false,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.tailscale.allowed_logins",
@@ -6089,7 +6115,8 @@
       "help": "Tailscale logins permitted when trust_identity is on. Mandatory: a shared tailnet can have hundreds of members, so identity trust without an allowlist would hand each of them the dashboard. A verified peer whose login is not listed is denied.",
       "hasChildren": true,
       "enumValues": null,
-      "defaultValue": []
+      "defaultValue": [],
+      "requiresRestart": true
     },
     {
       "path": "dashboard.tailscale.allowed_logins.*",
@@ -6117,7 +6144,8 @@
       "help": "What an identity-pinned session binds to: 'node' (default — a leaked cookie is usable only from the original device) or 'login' (usable from any device carrying that Tailscale identity). An unrecognised value falls back to 'node'. An ACL-tagged node is always pinned at node scope regardless of this setting. Takes effect on the next gateway start.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "node"
+      "defaultValue": "node",
+      "requiresRestart": true
     },
     {
       "path": "dashboard.tailscale.bind_refresh_chains",
@@ -6131,7 +6159,8 @@
       "help": "Bind a session's 30-day refresh chain to the tailnet peer that opened it, so a stolen refresh cookie cannot be replayed from a different allowed device. On by default. Only turn it off if you need one session to roam between your DEVICES while pin_scope is 'node' — with pin_scope 'login' the pin is your identity, not the device, so roaming already works. Turning it off means a stolen refresh cookie renews from any allowed node. Existing chains keep the binding they were opened with; the change applies to sessions started after the next gateway start.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": true,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.tailscale.keep_awake",
@@ -6159,7 +6188,8 @@
       "help": "Re-open recently active sessions on startup.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": false,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.qr_session_until_restart",
@@ -6201,7 +6231,8 @@
       "help": "Time window (minutes) for session restoration, and for surfacing channel conversations in the chat list (0-1440). 0 = no limit.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 30
+      "defaultValue": 30,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.surface_channel_sessions",
@@ -6215,7 +6246,8 @@
       "help": "Show recently active Slack/Discord/Teams (etc.) conversations in the dashboard's chat list instead of only under History. Uses the same recency window as session restoration.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": true,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.bot_name",
@@ -6297,7 +6329,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Chat Entry Cache Max Entries",
-      "help": "Maximum number of persisted-message entries the chat save path memoises. The cache's working set is roughly the number of active chat slots times their window size, so the right bound is host-dependent: a gateway with many concurrent slots overflows this bound while the byte ceiling still has headroom, and the cache hit rate collapses to zero (every save re-pays redaction). Raise it on a many-slot host. Clamped to 256..262144. Read once at first use; a change takes effect on the next gateway restart.",
+      "help": "Maximum number of persisted-message entries the chat save path memoises. The cache's working set is roughly the number of active chat slots times their window size, so the right bound is host-dependent: a gateway with many concurrent slots overflows this bound while the byte ceiling still has headroom, and the cache hit rate collapses to zero (every save re-pays redaction). Raise it on a many-slot host. Clamped to 256..262144. Applies to the next chat save; no restart needed.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4096
@@ -6311,7 +6343,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Chat Entry Cache Max Bytes",
-      "help": "Memory ceiling in bytes for the chat save path's persisted-message entry memo. Evicted alongside the entry-count bound; raise it together with the entry bound when a many-slot host needs a larger cache. Clamped to 4 MiB..512 MiB. Read once at first use; a change takes effect on the next gateway restart.",
+      "help": "Memory ceiling in bytes for the chat save path's persisted-message entry memo. Evicted alongside the entry-count bound; raise it together with the entry bound when a many-slot host needs a larger cache. Clamped to 4 MiB..512 MiB. Applies to the next chat save; no restart needed.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 33554432
@@ -6328,7 +6360,8 @@
       "help": "When the gateway starts and finds a recent loop-stall crash dump (under 30 minutes old) from the previous instance, stagger the startup burst — MCP servers, cron scheduler, app backends, session restores — with short pauses instead of launching everything at once, so a host still under memory pressure is not pushed straight back into the same collapse.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": true,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.default_memory_mode",
@@ -6466,7 +6499,8 @@
       "help": "Open the dashboard URL in the default browser on gateway startup.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": true,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.prevent_sleep",
@@ -7051,7 +7085,8 @@
       "help": "Enable a tunnel to expose the dashboard for remote access.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": false,
+      "requiresRestart": true
     },
     {
       "path": "tunnel.name_mode",
@@ -7068,7 +7103,8 @@
         "username",
         "hash"
       ],
-      "defaultValue": "username"
+      "defaultValue": "username",
+      "requiresRestart": true
     },
     {
       "path": "tunnel.name_override",
@@ -7082,7 +7118,8 @@
       "help": "Explicit tunnel name (overrides name_mode). Note: some tunnel providers prefix your username (e.g. 'foo' becomes '<user>-foo').",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": ""
+      "defaultValue": "",
+      "requiresRestart": true
     },
     {
       "path": "hooks",

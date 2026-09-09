@@ -408,7 +408,10 @@ def test_config_save_persists_policy_and_preserves_other_sections(
         },
     )
     assert status == 200
-    assert body == {"ok": True, "restart_required": True}
+    # dm_policy, allowed_wa_ids and groups are pushed at the live transport by
+    # the dispatcher's config applier, and `enabled` restarts the channel in
+    # process -- none of them needs the gateway restarted.
+    assert body == {"ok": True, "restart_required": False}
     stored = json.loads(cfg_file.read_text(encoding="utf-8"))
     assert stored["slack"] == {"command": "kirocrew"}
     assert stored["agent"] == {"model": "auto"}
@@ -419,6 +422,24 @@ def test_config_save_persists_policy_and_preserves_other_sections(
         "groups": [{"jid": "g1@g.us"}],
     }
     assert folder_calls == []  # no session_folder configured, so nothing to create
+
+
+def test_config_save_answers_only_after_the_watcher_applied_it(
+    cfg_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connection edit (`enabled`) is applied by the watcher's dispatch, which
+    unregisters the old client and schedules the reconnect. The save must await
+    that dispatch, so a QR request sent right after the response cannot land on
+    the client about to be closed."""
+    from unittest.mock import AsyncMock
+
+    applied = AsyncMock()
+    monkeypatch.setattr(mod, "_hot_apply_after_write", applied)
+    status, body = _call(
+        _serve(_FakeState()), "PUT", "/api/whatsapp/config", json={"enabled": False}
+    )
+    assert status == 200 and body["ok"] is True
+    applied.assert_awaited_once()
 
 
 def test_config_save_replaces_a_non_object_whatsapp_section(cfg_file: Path) -> None:

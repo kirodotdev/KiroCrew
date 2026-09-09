@@ -411,6 +411,10 @@ class TestConcurrentRefreshesInstallInOrder:
             patch.object(mgr, "_retire_stale_backend_bg_runtime", AsyncMock()),
             patch("kiro_crew.session.build_provider_factory", return_value=MagicMock()),
             patch("kiro_crew.session.KiroCrewConfig.load", side_effect=_staggered_load),
+            # The refresh also re-adopts the warm pool's cwd, which resolves through
+            # the workspace table and reads config on its own; pinning it keeps the
+            # count at the two refresh reads the inversion is staged on.
+            patch("kiro_crew.session.default_project_dir", return_value="/ws"),
         ):
             await asyncio.gather(mgr.refresh_defaults(), mgr.refresh_defaults())
 

@@ -221,7 +221,7 @@ def _warn_if_above_chat_ceiling(key: str, value: float, chat_ceiling: float) -> 
         )
 
 
-def _load_watchdog_settings(crew_agent: str = "") -> WatchdogSettings:
+def _load_watchdog_settings(crew_agent: str = "", cfg: Any = None) -> WatchdogSettings:
     """Snapshot ``watchdog.*`` from config. Function-level import (mirrors
     ``_sync_effort_levels``) avoids the config -> dashboard -> acp import
     cycle; any failure falls back to defaults rather than breaking a handle.
@@ -235,12 +235,18 @@ def _load_watchdog_settings(crew_agent: str = "") -> WatchdogSettings:
     ``watchdog_tool_stall_*`` overrides overlay the globals (> 0 means
     override; 0 inherits — the same empty-inherits convention as the agent's
     ``model``).
+
+    ``cfg`` is an already-loaded ``KiroCrewConfig``. The config watcher's
+    hot-apply hands in the config it just loaded so the re-clamp runs on the
+    event loop without a filesystem read; ``None`` loads (a fingerprint-cache
+    hit in practice) for the per-session paths that resolve off-loop.
     """
     try:
         # circular import: config.loader -> dashboard -> session -> acp
         from kiro_crew.config.loader import KiroCrewConfig
 
-        cfg = KiroCrewConfig.load()
+        if cfg is None:
+            cfg = KiroCrewConfig.load()
         w = cfg.watchdog
         raw = {key: float(getattr(w, key)) for key in _TURN_BOUNDED_WINDOWS}
         overridden = False

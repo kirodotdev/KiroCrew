@@ -729,28 +729,28 @@ class TestApiKirocrewConfig:
             {"subagent_auto_max": 32},
         ],
     )
-    async def test_put_flags_restart_required_for_startup_read_keys(
+    async def test_put_does_not_flag_restart_for_live_subagent_caps(
         self, settings, tmp_path, monkeypatch
     ):
-        # These are read once when SubagentManager is constructed at gateway
-        # start, so changing them does nothing to what the running gateway
-        # enforces. The response must say so instead of a bare success the user
-        # cannot tell apart from a change that took effect. Each parametrized
-        # value differs from the persisted one below, so each is a real change.
+        # SubagentManager re-derives these caps from every config reload, so a
+        # save that changes one is applied to the running gateway and must NOT
+        # ask the user to restart. Each parametrized value differs from the
+        # persisted one below, so each is a real change and the answer is still
+        # False -- restart is decided by the schema's restart=True marks alone.
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {"subagent_auto_max": 16}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
             resp = await c.put("/api/config/kirocrew", json={"agent": settings})
             assert resp.status == 200
-            assert (await resp.json())["restart_required"] is True
+            assert (await resp.json())["restart_required"] is False
 
     @pytest.mark.asyncio
     async def test_put_no_restart_when_startup_key_resent_unchanged(self, tmp_path, monkeypatch):
         # The dashboard sends all four settings on every save and enables Save
         # whenever ANY one is dirty, so a conductor-only save re-sends the three
-        # startup-read keys at their existing values. That changed nothing the
-        # gateway enforces, so it must NOT ask the user to restart.
+        # subagent caps at their existing values. Nothing changed and nothing
+        # is boot-only here, so it must NOT ask the user to restart.
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         monkeypatch.setattr(
@@ -776,11 +776,12 @@ class TestApiKirocrewConfig:
             assert (await resp.json())["restart_required"] is False
 
     @pytest.mark.asyncio
-    async def test_put_restart_required_when_one_startup_key_actually_changes(
+    async def test_put_no_restart_when_one_subagent_cap_actually_changes(
         self, tmp_path, monkeypatch
     ):
-        # Same all-four payload, but max_subagents genuinely differs -> the hint
-        # must fire even though the other two are unchanged re-sends.
+        # Same all-three payload with max_subagents genuinely different: a real
+        # change to a live cap is applied by SubagentManager.reconfigure on the
+        # next reload, so even a real change must not raise the hint.
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text(
@@ -799,20 +800,20 @@ class TestApiKirocrewConfig:
                 },
             )
             assert resp.status == 200
-            assert (await resp.json())["restart_required"] is True
+            assert (await resp.json())["restart_required"] is False
 
     @pytest.mark.asyncio
-    async def test_put_flags_restart_when_startup_key_set_for_the_first_time(
+    async def test_put_no_restart_when_subagent_cap_set_for_the_first_time(
         self, tmp_path, monkeypatch
     ):
-        # Absent-then-set must count as a change, not as an unchanged re-send.
+        # Absent-then-set is a real change; it is still a live cap, so no hint.
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         (tmp_path / "config.json").write_text('{"agent": {}}')
         async with TestClient(TestServer(self._make_app(tmp_path))) as c:
             resp = await c.put("/api/config/kirocrew", json={"agent": {"subagent_max_turns": 40}})
             assert resp.status == 200
-            assert (await resp.json())["restart_required"] is True
+            assert (await resp.json())["restart_required"] is False
 
     @pytest.mark.asyncio
     async def test_put_does_not_flag_restart_for_live_keys(self, tmp_path, monkeypatch):
@@ -832,9 +833,11 @@ class TestApiKirocrewConfig:
             assert (await resp.json())["restart_required"] is False
 
     @pytest.mark.asyncio
-    async def test_put_restart_required_tracks_only_applied_keys(self, tmp_path, monkeypatch):
-        # A mixed request reports restart_required once any startup-read key is
-        # applied — the flag describes the request, not each field.
+    async def test_put_mixed_live_keys_never_ask_for_a_restart(self, tmp_path, monkeypatch):
+        # Every key this endpoint accepts is live (conductor_skill is applied
+        # in-request, the caps by the config watcher), so a mixed request is
+        # still False. The restart answer comes from the schema's restart=True
+        # marks alone; test_config_live.py pins that path against a real one.
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: tmp_path / "config.json")
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
         monkeypatch.setattr(
@@ -847,7 +850,7 @@ class TestApiKirocrewConfig:
                 json={"agent": {"conductor_skill": True, "subagent_max_turns": 40}},
             )
             assert resp.status == 200
-            assert (await resp.json())["restart_required"] is True
+            assert (await resp.json())["restart_required"] is False
 
     @pytest.mark.asyncio
     async def test_put_rejects_subagent_auto_max_above_ceiling(self, tmp_path, monkeypatch):

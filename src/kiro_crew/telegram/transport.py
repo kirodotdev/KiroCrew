@@ -15,6 +15,7 @@ authorize nobody (fail closed), never everybody.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -33,6 +34,8 @@ from kiro_crew.telegram.client import (
     TelegramClient,
     TelegramInbound,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -159,6 +162,32 @@ def prompt_safe_handle(raw: str) -> str:
     return f"@{handle}"
 
 
+def _coerce_id_set(value: object, cast: Callable[[Any], Any]) -> frozenset | None:
+    """Rebuild one id allow-list from a reloaded config value, or report it unusable.
+
+    The ONE reading of these fields' shape for the live path, so a reload can
+    never coerce differently from the constructor: ``allowed_user_ids`` becomes
+    strings (matching ``InboundMessage.user_id``) and ``allowed_forum_chat_ids``
+    becomes ints (matching the raw ``TelegramInbound``). Blank entries are
+    dropped and duplicates collapse, exactly as the frozensets built at boot.
+
+    Returns ``None`` when the value is not a list or ANY entry fails to coerce --
+    a partial set is a silent authorization change, so the caller keeps the
+    previous one instead.
+    """
+    if not isinstance(value, list):
+        return None
+    out = set()
+    for entry in value:
+        if entry is None or (isinstance(entry, str) and not entry.strip()):
+            continue
+        try:
+            out.add(cast(entry))
+        except (TypeError, ValueError):
+            return None
+    return frozenset(out)
+
+
 def forum_gate_outcome(
     chat_type: str,
     chat_id: int,
@@ -184,9 +213,11 @@ def forum_gate_outcome(
 
     One predicate, two call sites (``TelegramTransport.receive`` +
     ``TelegramDispatcher.on_callback``) so the security decision can never drift
-    between the inbound and callback paths. Each site passes its OWN allow-list
-    source -- the transport freezes it at construction, the dispatcher reads live
-    cfg -- and that difference is deliberate (see the call sites).
+    between the inbound and callback paths. Both sides follow the same reloaded
+    config: the callback site reads it at point of use, and the transport's
+    frozen copy is replaced wholesale by :meth:`TelegramTransport.reconfigure`
+    when the config applier pushes a reload. The transport freezes rather than
+    reading live so one inbound decision cannot see the set change under it.
     """
     if chat_type == "private":
         return None
@@ -229,6 +260,77 @@ class TelegramTransport(MessagingTransport):
     def client(self) -> TelegramClient:
         """The underlying Bot API client (held + exposed, not hidden)."""
         return self._client
+
+    # -- Live config ---------------------------------------------------------
+    def reconfigure(self, section: Any) -> None:
+        """Adopt a reloaded ``telegram`` section's authorization fields.
+
+        Called by the dispatcher's config applier when ``config.json`` changes
+        under ``telegram``, so an allow-list edit from the dashboard, the CLI or
+        ``$EDITOR`` takes effect on the next update instead of the next restart.
+        Each set is rebuilt with the SAME coercion the constructor applies (user
+        ids to strings so they match ``InboundMessage.user_id``, forum chat ids
+        to ints so they match the raw ``TelegramInbound``) and REPLACED wholesale
+        so an in-flight ``authorize`` or ``forum_gate_outcome`` keeps reading one
+        consistent set.
+
+        Fails closed on shape: a field that is not a list, or whose entries do
+        not coerce, keeps the PREVIOUS value and logs at WARNING -- rebuilding
+        an authorization set from a value the loader could not parse would lock
+        out every intended sender or, for ``allow_forum``, serve a supergroup
+        nobody approved. Changes are SEL-audited by COUNT (the receive path
+        audits its own gate outcomes on the same channel); ids are never logged.
+        """
+        allowed = _coerce_id_set(getattr(section, "allowed_user_ids", None), str)
+        if allowed is None:
+            logger.warning(
+                "telegram: allowed_user_ids is unusable in the reloaded config; keeping the "
+                "previous allow-list (%d id(s))",
+                len(self._allowed),
+            )
+        elif allowed != self._allowed:
+            added, removed = len(allowed - self._allowed), len(self._allowed - allowed)
+            self._allowed = allowed
+            logger.info("telegram: allow-list reloaded (+%d/-%d id(s))", added, removed)
+            sel().log_api_access(
+                caller="config",
+                operation="telegram_transport.reconfigure",
+                outcome="allow_list_changed",
+                source="telegram",
+                resources=f"added={added} removed={removed} size={len(allowed)}",
+            )
+        rooms = _coerce_id_set(getattr(section, "allowed_forum_chat_ids", None), int)
+        if rooms is None:
+            logger.warning(
+                "telegram: allowed_forum_chat_ids is unusable in the reloaded config; keeping "
+                "the previous %d entry(ies)",
+                len(self._allowed_forum_chat_ids),
+            )
+        elif rooms != self._allowed_forum_chat_ids:
+            self._allowed_forum_chat_ids = rooms
+            logger.info("telegram: forum allow-list reloaded (%d chat(s))", len(rooms))
+            sel().log_api_access(
+                caller="config",
+                operation="telegram_transport.reconfigure",
+                outcome="forum_allow_list_changed",
+                source="telegram",
+                resources=f"size={len(rooms)}",
+            )
+        allow_forum = getattr(section, "allow_forum", None)
+        if not isinstance(allow_forum, bool):
+            logger.warning(
+                "telegram: allow_forum is not a bool in the reloaded config; keeping %r",
+                self._allow_forum,
+            )
+        elif allow_forum != self._allow_forum:
+            self._allow_forum = allow_forum
+            logger.warning("telegram: allow_forum flipped to %r via config reload", allow_forum)
+            sel().log_api_access(
+                caller="config",
+                operation="telegram_transport.reconfigure",
+                outcome="allow_forum_enabled" if allow_forum else "allow_forum_disabled",
+                source="telegram",
+            )
 
     # -- Tier-1 core --------------------------------------------------------
     async def send_message(

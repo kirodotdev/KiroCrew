@@ -101,6 +101,10 @@ async def maybe_start_imessage(orch: "GatewayOrchestrator") -> "IMessageClient |
         transport = IMessageTransport(
             client, allowed_handles=allowed_handles, dispatch=dispatcher.handle_message
         )
+        # The dispatcher's config applier pushes a reloaded allow-list at the
+        # transport, so it needs the handle the construction cycle above stopped
+        # it from receiving as a constructor argument.
+        dispatcher.transport = transport
         # Inbound: bridge watch notifications -> transport.receive (suppress own
         # messages, fail closed on groups, authorize + normalize) ->
         # dispatcher.handle_message (drive the turn on the shared TurnDriver).

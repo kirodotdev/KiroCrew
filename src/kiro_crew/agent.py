@@ -211,6 +211,29 @@ def _atomic_json_write(path: Path, data: dict) -> None:
         except OSError:
             pass
         raise
+    _notify_if_config_write(path)
+
+
+def _notify_if_config_write(path: Path) -> None:
+    """Drop the loader cache and wake the config watcher when *path* is ``config.json``.
+
+    This writer bypasses the loader's own writers (the per-channel savers and
+    the STT PUT reach ``config_path()`` through here), so without this hook a
+    write from them would be the one path a running gateway never hot-applies.
+    Any other target (an agent spec) is untouched. Best-effort: a resolution
+    error must not fail the write that already landed.
+    """
+    try:
+        target = _mc_config_path()
+        same = path == target or path.resolve() == target.resolve()
+    except OSError:
+        return
+    if not same:
+        return
+    from kiro_crew.config import live, loader
+
+    loader._invalidate_config_cache()
+    live.notify_config_written()
 
 
 @contextlib.contextmanager

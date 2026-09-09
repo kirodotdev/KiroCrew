@@ -606,17 +606,19 @@ class TestMemorySettings:
 
     @pytest.mark.asyncio
     async def test_put_applies_to_running_consolidator(self, tmp_path: Path) -> None:
+        # The route pushes the reloaded config through the same ``reconfigure``
+        # seam the config watcher uses, so the answer is in force when it returns.
         cfg_path = tmp_path / "config.json"
         consolidator = MagicMock()
         state = _make_state(consolidator=consolidator)
         req = _make_request(state, method="PUT", json_body={"history_idle_hours": 3})
+        reloaded = _cfg(idle=3.0, migrated=True)
         with (
-            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg(idle=3.0, migrated=True)),
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=reloaded),
             patch(f"{_MOD}.config_path", return_value=cfg_path),
         ):
             assert (await mem_mod.api_memory_settings(req)).status == 200
-        assert consolidator._history_idle_secs == 3.0 * 3600
-        assert consolidator._migrated is True
+        consolidator.reconfigure.assert_called_once_with(reloaded)
 
 
 # ---------------------------------------------------------------------------

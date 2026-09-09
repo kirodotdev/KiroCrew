@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,25 @@ class CronHistoryStore:
         self._enabled = False
         if not _defer_prepare:
             self.prepare()
+        # The caps above are copies of cron_history.*, so a config write reaches
+        # them only through reconfigure(). Held on self because the watcher holds
+        # the owner weakly.
+        self._config_sub = live.watch_object(self, "cron_history", name="CronHistoryStore")
+
+    def reconfigure(self, cfg: object) -> None:
+        """Adopt new ``cron_history.*`` caps.
+
+        The caps only bound what the NEXT record write stores and what the next
+        trim keeps, so there is nothing to migrate: records already on disk keep
+        the shape they were written with, and the next trim applies the new
+        retention. ``cron_trace_cap_kb`` is re-multiplied here rather than copied,
+        because the attribute is in bytes.
+        """
+        cron_history_cfg = getattr(cfg, "cron_history")
+        self._summary_cap = int(getattr(cron_history_cfg, "cron_summary_cap"))
+        self._trace_cap = int(getattr(cron_history_cfg, "cron_trace_cap_kb")) * 1024
+        self._max_records_per_job = int(getattr(cron_history_cfg, "cron_max_records_per_job"))
+        self._max_index_records = int(getattr(cron_history_cfg, "cron_max_index_records"))
 
     @property
     def enabled(self) -> bool:

@@ -87,6 +87,7 @@ class SessionLifecycleOwner(Protocol):
     _warm_pool: asyncio.Queue[tuple[Any, float]]
     _pool_size: int
     _pool_agent: str
+    _pool_ttl_secs: int
     _pool_cwd: str
     _pool_started: bool
     _pool_health_task: asyncio.Task[Any] | None
@@ -259,10 +260,16 @@ class SessionLifecycleService:
     def _on_recycled(self, callback: _RecycleCallback | None) -> None:
         self.state.on_recycled = callback
 
-    async def refresh_defaults(self) -> None:
-        """Adopt config changes that only affect new sessions."""
+    async def refresh_defaults(self, cfg: Any = None) -> None:
+        """Adopt config changes that only affect new sessions.
+
+        ``cfg`` is an already-loaded config -- the config watcher hands in the
+        one it just loaded so the apply needs no second read. ``None`` loads
+        here, off-loop, for the request-handler callers.
+        """
         owner = self._owner
         logger = self._deps.logger
+        constants = self._deps.constants()
         async with owner._pool_fill_lock:
             # Loaded OFF the event loop, and INSIDE the fill lock. Both halves
             # are load-bearing:
@@ -282,10 +289,35 @@ class SessionLifecycleService:
             # method exists to prevent. Holding the lock across both makes
             # read-then-install atomic per refresh, and costs only that
             # serialization: the load still never touches the loop.
-            cfg = await asyncio.to_thread(self._deps.load_config)
+            if cfg is None:
+                cfg = await asyncio.to_thread(self._deps.load_config)
+            # Same reason as the load: default_project_dir() reads the config
+            # file and stats the workspace directory, so it stays off the loop
+            # and outside owner._lock, which every session turn contends for.
+            pool_cwd = await asyncio.to_thread(self._deps.default_project_dir)
+            # Built before the lock is taken and before either owner attribute
+            # is touched: if this raises, ``owner._cfg`` and
+            # ``owner._provider_factory`` must still be the previous,
+            # consistent pair -- not cfg swapped in with the old factory still
+            # live, which is what a watcher retry would otherwise re-enter
+            # against.
+            provider_factory = self._deps.build_provider_factory(cfg)
             async with owner._lock:
                 owner._cfg = cfg
-                owner._provider_factory = self._deps.build_provider_factory(cfg)
+                owner._provider_factory = provider_factory
+                # The warm pool's shape is config too: size, agent, cwd and TTL
+                # are captured into WarmPoolState at construction, so a refresh
+                # that rebuilt the factory but left them alone kept spawning the
+                # OLD pool size and agent, and the TTL was never re-adopted by
+                # any path. Same clamp as WarmSessionPool._state_from_owner.
+                owner._pool_size = min(constants.max_pool, max(0, cfg.session.pool_size))
+                owner._pool_agent = cfg.session.pool_agent or getattr(
+                    cfg.agent,
+                    "default_agent",
+                    "",
+                )
+                owner._pool_ttl_secs = max(0, cfg.session.pool_ttl_secs)
+                owner._pool_cwd = pool_cwd
                 while not owner._warm_pool.empty():
                     try:
                         provider, _ = owner._warm_pool.get_nowait()
@@ -308,24 +340,34 @@ class SessionLifecycleService:
             cfg.agent.reasoning_effort,
         )
 
-    async def reload_provider_factory(self) -> None:
-        """Reload the provider factory and tear down providers from the old one."""
+    async def reload_provider_factory(self, cfg: Any = None) -> None:
+        """Reload the provider factory and tear down providers from the old one.
+
+        ``cfg`` is the already-loaded config the live applier hands in so the
+        switch does no filesystem work on the loop; ``None`` loads it here.
+        """
         owner = self._owner
         logger = self._deps.logger
         constants = self._deps.constants()
-        cfg = self._deps.load_config()
+        if cfg is None:
+            cfg = self._deps.load_config()
         stale: list[tuple[str, Any]] = []
         async with owner._pool_fill_lock:
+            pool_cwd = await asyncio.to_thread(self._deps.default_project_dir)
             async with owner._lock:
                 owner._cfg = cfg
                 owner._provider_factory = self._deps.build_provider_factory(cfg)
+                # The same four pool fields refresh_defaults adopts: a reset
+                # handler that loads a disk-edited pool_ttl_secs must not evict
+                # the warm pool at the stale TTL until the watcher's next cycle.
                 owner._pool_size = min(constants.max_pool, max(0, cfg.session.pool_size))
                 owner._pool_agent = cfg.session.pool_agent or getattr(
                     cfg.agent,
                     "default_agent",
                     "",
                 )
-                owner._pool_cwd = self._deps.default_project_dir()
+                owner._pool_ttl_secs = max(0, cfg.session.pool_ttl_secs)
+                owner._pool_cwd = pool_cwd
                 while not owner._warm_pool.empty():
                     try:
                         provider, _ = owner._warm_pool.get_nowait()

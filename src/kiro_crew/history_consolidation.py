@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.llm_helpers import (
@@ -461,6 +462,39 @@ class HistoryConsolidator:
         # consolidation — while a rotation (which bumps the generation and
         # swaps the window's content) still forces a fresh pass.
         self._last_skillgen_marker: dict[str, tuple[int, int]] = {}
+        # Every tunable above is a copy of skills.* / memory.* config, so a write to
+        # config.json reaches them only through reconfigure(). Held on self because
+        # the watcher holds the owner weakly.
+        self._config_sub = live.watch_object(
+            self,
+            "skills",
+            "memory.history_idle_hours",
+            "memory.migrated",
+            name="HistoryConsolidator",
+        )
+
+    def reconfigure(self, cfg: object) -> None:
+        """Push the live ``skills.*`` and consolidation settings onto this instance.
+
+        These only ever gate the NEXT consolidation pass or the next auto-skill
+        judgement, so swapping them mid-flight cannot corrupt work already running:
+        a pass that has already read a threshold finishes on the old value and the
+        next one uses the new one.
+        """
+        skills = getattr(cfg, "skills")
+        memory = getattr(cfg, "memory")
+        self._history_idle_secs = float(getattr(memory, "history_idle_hours")) * 3600
+        self._migrated = bool(getattr(memory, "migrated"))
+        self._auto_skills_enabled = bool(getattr(skills, "auto_create_from_sessions"))
+        self._auto_refine_enabled = bool(getattr(skills, "auto_refine_on_deviation"))
+        self._auto_min_tool_calls = int(getattr(skills, "auto_min_tool_calls"))
+        self._auto_similarity_threshold = float(getattr(skills, "auto_similarity_threshold"))
+        self._approval_required = bool(getattr(skills, "approval_required"))
+        self._max_auto_skills = int(getattr(skills, "max_auto_skills"))
+        self._stale_after_days = int(getattr(skills, "stale_after_days"))
+        self._archive_after_days = int(getattr(skills, "archive_after_days"))
+        self._generate_scripts = bool(getattr(skills, "generate_scripts"))
+        self._judge_model = str(getattr(skills, "judge_model"))
 
     @property
     def _logger(self) -> logging.Logger:

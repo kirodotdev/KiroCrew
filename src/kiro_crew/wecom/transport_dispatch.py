@@ -30,6 +30,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
+from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
@@ -72,6 +74,7 @@ if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
     from kiro_crew.wecom.client import WeComClient, WeComInbound
+    from kiro_crew.wecom.transport import WeComTransport
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +113,44 @@ class WeComDispatcher:
         self.conv_log = conv_log
         self.approval_mode = approval_mode
         self.client: "WeComClient | None" = None
+        # Set by maybe_start_wecom after construction (same construction-cycle
+        # reason as ``client``); the config applier pushes reloaded
+        # authorization fields at it.
+        self.transport: "WeComTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # Held on self: the watcher holds the owner WEAKLY, so a subscription
+        # dropped here would be collected and the applier would silently stop
+        # firing.
+        self._config_sub = live.watch_section(
+            self, "wecom", "messaging", target="transport", name="WeComDispatcher"
+        )
+
+    # ── Live config ────────────────────────────────────────────────────────
+
+    def _live_cfg(self) -> "KiroCrewConfig":
+        """The config in force NOW, for a per-turn read.
+
+        The watcher's snapshot when it is armed, else a fingerprint-cached
+        ``load()`` (two stats on a hit), else the boot copy. Falling back to
+        ``self.cfg`` rather than raising keeps a turn running when the config
+        file is momentarily unreadable -- a threshold or a rotation window is
+        not an authorization decision, and the boot value is the one the
+        operator last had in force.
+        """
+        return live.current(self.cfg, log_prefix="wecom")
+
+    def _thresholds(self) -> tuple[int, int]:
+        """``(soft, hard)`` context thresholds from the live config.
+
+        Re-runs the loader's own pair normalization, because reading the two
+        fields live without it can leave ``soft > hard`` and make the soft nudge
+        unreachable -- ``_maybe_notice`` tests ``pct >= hard`` first.
+        """
+        section = self._live_cfg().wecom
+        return _normalize_threshold_pair(
+            int(getattr(section, "soft_threshold_pct", 80)),
+            int(getattr(section, "hard_threshold_pct", 95)),
+        )
 
     # ── Turn dispatch (transport's dispatch callback) ──────────────────────
 
@@ -207,11 +247,12 @@ class WeComDispatcher:
             return
         text = prompt_text
 
+        messaging = self._live_cfg().messaging
         self._conv.maybe_rotate(
             userid,
             time.time(),
-            idle_minutes=self.cfg.messaging.idle_reset_minutes,
-            daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+            idle_minutes=messaging.idle_reset_minutes,
+            daily_reset_hour=messaging.daily_reset_hour,
         )
         session_key = self._session_key(userid)
         conversation_id = f"wecom:{userid}"
@@ -364,7 +405,7 @@ class WeComDispatcher:
             self._resolve_agent(),
             userid,
             gen=gen,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self.cfg.messaging.dm_scope),
         )
 
     def _seed_gen(self, userid: str) -> int:
@@ -373,7 +414,7 @@ class WeComDispatcher:
             channel="wecom",
             agent=self._resolve_agent(),
             user_id=userid,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self.cfg.messaging.dm_scope),
         )
 
     def _persist_turn(
@@ -431,7 +472,8 @@ class WeComDispatcher:
         """
         userid = inbound.userid
         pct = self.sessions.check_context_usage(session_key, provider)
-        if pct >= self.cfg.wecom.soft_threshold_pct:
+        soft, hard = self._thresholds()
+        if pct >= soft:
             # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
@@ -439,7 +481,7 @@ class WeComDispatcher:
             if unsupported:
                 logger.debug("WeCom: context notice skipped — %s compacts itself", unsupported)
                 return
-        if pct >= self.cfg.wecom.hard_threshold_pct:
+        if pct >= hard:
             self._conv.clear_awaiting(userid)
             try:
                 await provider.compact()
@@ -447,7 +489,7 @@ class WeComDispatcher:
                 await self._notice_bubble(inbound, "🗜️ 上下文接近上限，已自动压缩。")
             except Exception:
                 logger.debug("WeCom hard-threshold compaction failed", exc_info=True)
-        elif pct >= self.cfg.wecom.soft_threshold_pct and not self._conv.is_awaiting(userid):
+        elif pct >= soft and not self._conv.is_awaiting(userid):
             self._conv.set_awaiting(userid)
             await self._notice_bubble(
                 inbound,

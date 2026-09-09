@@ -509,6 +509,15 @@ The history consolidation prompt includes a `"lessons"` key that extracts only i
 
 Exposed on dashboard: Overview → Memory tab → Memory Settings card. Changes apply immediately to running consolidator via `PUT /api/memory/settings`.
 
+A plain `config.json` write reaches the same instance. `HistoryConsolidator`
+subscribes to `skills`, `memory.history_idle_hours` and `memory.migrated`, and
+`reconfigure(cfg)` re-copies the idle window, the migrated flag and the ten
+`skills.*` auto-skill settings onto the live object — the dashboard route and the
+config watcher call the SAME method, so neither path reverts the other. These
+values only gate the NEXT consolidation pass or the next auto-skill judgement, so
+a pass already running finishes on the values it read and the next one uses the
+new ones.
+
 ## Vector Memory (`vector_memory.py`)
 
 The semantic and episodic list endpoints accept optional `q` text search, capped
@@ -520,6 +529,12 @@ characters, not SQL wildcards. Query filtering does not change retrieval ranking
 store provenance, or the existing V1 list behavior when `q` is absent.
 
 Structured memory system backed by SQLite + FAISS + in-process embeddings (vendored llama-cpp-python). Embeddings are ALWAYS-ON: `_coerce_embedding_provider` (config/loader.py) coerces EVERY `embedding_provider` value — including legacy `"ollama"` and `"none"` — to `"llama_cpp"`, so there is no config knob to disable them. While the model is still downloading or absent, memory degrades gracefully to keyword/FTS search and the lazy-rebind machinery in `vector_memory._try_embed` picks embeddings up when the model lands — no restart. Per-store overrides (`MemoryStoreConfig.embedding_provider`, enum `["", "llama_cpp"]`) can only inherit or restate the default — per-store disable is not supported, and the value reaches nothing: `context._build_store_vectors` configures a named store's `VectorMemoryStore` from top-level `cfg.memory`, and the embedder beneath it is the process-wide `get_shared_embedder()` singleton, so two stores cannot run two backends without two resident models and two incomparable vector spaces.
+
+### Live reconfiguration (`VectorMemoryStore.reconfigure`)
+
+The store subscribes to the `memory` section in `__init__`, and `reconfigure(memory_cfg)` pushes the retrieval settings onto the running instance: `semantic_confidence_threshold`, `episodic_dedup_threshold`, `episodic_max_results`, `episodic_max_count`, the `decay_rates` table (re-sanitized, not copied) and the `semantic_keys` prefix list (rebuilt from the built-ins plus the configured extras). Everything the class copies out of config at construction is covered, so none of it waits for a gateway restart. Changing a decay rate also invalidates the resident episodic scoring set, which carries the rates it was built with and would otherwise keep ranking on the old curve with no row having moved.
+
+Embedding width is deliberately NOT touched. Changing `memory.embedding_dim` invalidates every stored vector, which is a re-embed rather than a value swap, so it stays boot-only and its apply path is the dashboard's embedding-model route.
 
 ### Thread safety (`_db_lock`, `threading.RLock`)
 
@@ -924,13 +939,13 @@ The keyword half's ROW side — the regex scan, set build, and Snowball expansio
 SQLite table `episodic_memories` — conversation fragments with optional embeddings:
 - **Write**: text validation (10-2000 chars), **prompt-injection screening** (`_contains_injection`, same pattern set as the semantic-KV path), tag sanitization, importance clamping (0-1), FAISS dedup (cosine > `_DEFAULT_DEDUP_THRESHOLD` = 0.88, configurable via `memory.episodic_dedup_threshold` — the production stores (`slack/gateway.py`, `cli_server.py`, the dashboard's standalone fallback in `dashboard/handlers/memory.py`) pass it as `dedup_threshold`; deferred writers skip this check entirely so they have no threshold to honour, and `eval/bench/ingest.py` sweeps its own value). The dedup scan **skips tombstoned ("ghost") matches**: tombstone paths (merge, dashboard delete, cap eviction, stale retirement) set `is_deleted=1` but leave the vector in `_faiss_index`/`_faiss_id_map`, so a high-similarity hit may map to a deleted row. `_get_episodic()` filters `is_deleted=0` and returns `None` for those; the write loop `continue`s past a `None` match (mirroring `search_episodic`'s `if not mem or mem["is_deleted"]: continue`) instead of treating it as a conflict — otherwise a new memory matching a deleted one was silently rejected (data loss).
 - **Injection screening (XPIA defense-in-depth)**: episodic text is derived from conversation transcripts, so a poisoned turn could persist steering instructions that get re-injected into future contexts. `write_episodic()` runs `_contains_injection()` (before the embed call) and, on match, drops the entry and emits an auditable `injection_blocked` event with `memory_type='episodic'`. The stored audit snippet is scrubbed with `redact_exfiltration_urls()` + `redact_credentials()` first as defense in depth; `/api/memory/events` also redacts all returned events. This mirrors the semantic-KV screen at `validate_semantic()`. **Residual (accepted risk)**: this is a best-effort regex screen: a determined owner can still steer their own long-term memory with phrasing that evades the patterns; long-term memory poisoning is an accepted residual. The screen raises the bar against accidental/opportunistic XPIA persistence, not against a motivated self-owner.
-- **Search**: FAISS vector similarity with decay scoring: `cosine_sim × (0.7 + 0.3×importance) × exp(-rate×days_old)`, then MMR diversity reranking (Jaccard-based, `_MMR_LAMBDA` = 0.6). The decay rate is `_DEFAULT_DECAY_RATE` = 0.03/day, configurable per tag via `memory.decay_rates` (`_decay_rate_for`): keys are tags (case-insensitive, matching `_matches_tags`), the reserved `default` key replaces the built-in fallback, a multi-tag row uses the SLOWEST matching rate (smallest = maximum retention, so a broad tag can never age out a long-retention one), values are clamped to [0, 10] and non-numeric entries are dropped with a warning at store construction (`_sanitize_decay_rates`). Both vector rungs (FAISS and the stdlib fallback) resolve the rate through the same helper; the keyword rung does no decay scoring at all.
+- **Search**: FAISS vector similarity with decay scoring: `cosine_sim × (0.7 + 0.3×importance) × exp(-rate×days_old)`, then MMR diversity reranking (Jaccard-based, `_MMR_LAMBDA` = 0.6). The decay rate is `_DEFAULT_DECAY_RATE` = 0.03/day, configurable per tag via `memory.decay_rates` (`_decay_rate_for`): keys are tags (case-insensitive, matching `_matches_tags`), the reserved `default` key replaces the built-in fallback, a multi-tag row uses the SLOWEST matching rate (smallest = maximum retention, so a broad tag can never age out a long-retention one), values are clamped to [0, 10] and non-numeric entries are dropped with a warning by `_sanitize_decay_rates`, which runs on every config apply as well as at construction, so a hand-edited rate is clamped and a garbage entry dropped identically either way. Both vector rungs (FAISS and the stdlib fallback) resolve the rate through the same helper; the keyword rung does no decay scoring at all.
 - **MMR reranking**: Maximal Marginal Relevance balances relevance with diversity. Greedy iterative selection penalizes candidates similar to already-selected results. Prevents redundant episodic fragments from consuming the context budget. Configurable via `mmr=False` parameter to disable. The candidate pool is deliberately NOT truncated toward `limit` (that tail pick is the point of MMR); the only bound is the recall-safe `_MMR_MAX_POOL` = 1000 ceiling for pathological inputs.
 - **Relevance threshold**: `_EPISODIC_RELEVANCE_THRESHOLD` = 0.55 cosine required for context injection, relaxed to `_EPISODIC_LONG_TEXT_THRESHOLD` = 0.42 for entries longer than `_EPISODIC_LONG_TEXT_CHARS` = 300 chars, on the reasoning that long texts dilute cosine scores. **Neither value is tuned, and the two classes it separates overlap** — measured, both are looser than the best achievable cut and the long-text relaxation is about twice the dilution it compensates for. Do not read 0.55 as a discovered boundary: [The admission gate is a loose cut, not a tuned one](#the-admission-gate-is-a-loose-cut-not-a-tuned-one) carries the measurement and the harness that produced it. The threshold reads the RAW `cosine_sim`, not the decay-adjusted score, so age and importance affect ordering but never admission. Admission runs BEFORE the decay ranking, MMR, and the `limit` cut: `get_episodic_context()` calls `search_episodic(relevance_filter=True)`, which drops sub-threshold candidates first, so a highly relevant but old memory cannot be ordered past `limit` by a cluster of recent-but-irrelevant rows that the gate would then remove — a case that otherwise returned empty context while an exact match sat in the store. `search_episodic()` defaults to `relevance_filter=False` and returns the full ranked set for dashboard/API/CLI use. The keyword fallback is unaffected because those rows carry no `cosine_sim` key at all.
 - **Fallback ladder**: FAISS (needs faiss + numpy) → `_sqlite_vector_search`, cosine over the stored blobs → FTS5/LIKE keyword search (OR logic on text + tags) when there is no query embedding at all. The middle rung matters: faiss is an optional accelerator, not a declared dependency, so a stock install still gets vector recall from the stored vectors. Inside that rung the per-row dot product itself has two rungs, guarded by `_HAS_NUMPY` exactly as `_stored_similarity_scorer` is: the query vector is converted once outside the row loop, then numpy does the products where it is installed and `struct.unpack` + `sum` does them where it is not. The numpy resident and per-call rungs dot in float32, matching the stored dtype. The FAISS path verifies each candidate against its current SQLite vector and recomputes cosine with Python arithmetic and norm division; these paths share the admission policy but do not promise bit-identical floating-point results.
 - **Resident scoring set (the middle rung, with numpy)**: scoring reads only the embedding, `tags`, `importance`, `created_at` and the text LENGTH, and none of that changes between two searches with no write in between — so `_EpisodicScoringSet` holds those columns as numpy arrays and the search resolves row BODIES (`text`, `conversation_id`, `last_accessed_at`) for the ranked pool only, through the same `_get_episodic_batch` the FAISS path uses. Decay is a vectorized expression over the cached arrays, not a per-row Python dict build. Filtering still runs across the FULL population before `limit` — `tag_filter` and the relevance gate are masks over the cached arrays, never a top-k window, because a tag matching few rows would otherwise miss the pool entirely and return nothing where it returns hits today. The pool handed to MMR stays `_MMR_MAX_POOL`-bounded rather than `limit`, since the rerank reads each candidate's text.
 - **Scoring-set invalidation**: the validity token is `(in-process generation, PRAGMA data_version)`. `_invalidate_episodic_scoring()` bumps the generation and is called by **every** writer that changes which rows are scored or what they score as — `write_episodic`, `delete_episodic`, `_delete_episodic_row`, `_enforce_episodic_cap`, `_retire_stale_episodic`, `reconcile_embedding_space`, and `backfill_missing_embeddings`. Two of those are traps a naive append-only cache falls into: the backfill rebuilds the FAISS index only `if _HAS_FAISS`, which is False on exactly the install this rung serves, and a body lookup can never repair it (it drops ids that vanished but cannot surface ids that appeared, so recall degrades with no error); and `PRAGMA data_version` is the only in-band signal that a SECOND PROCESS committed to the same file, and both the scoring cache and FAISS search check it. Persisted FAISS loading additionally verifies database and index-file digests. `_touch_last_accessed` is deliberately NOT a writer here — `last_accessed_at` is never scored and is re-read per search with the bodies. A ratchet test (`test_every_episodic_writer_invalidates_the_scoring_set`) fails on a new `episodic_memories` writer that skips the hook. The set is bounded by `_EPISODIC_SCORING_MAX_BYTES` (64 MiB, ~10 MiB for 2,600 rows at dim 1024) and is disabled outright on an sqlite with no `data_version` pragma; either way the rung falls back to reading the population per call.
-- **V1 cap**: `_DEFAULT_EPISODIC_MAX` = 10,000 active entries. For V1, `_enforce_episodic_cap()` tombstones `ORDER BY importance ASC, created_at ASC` (lowest-importance oldest first) on write once the count reaches the cap. V2 bypasses capacity eviction and retains the stored episodes.
+- **V1 cap**: `_DEFAULT_EPISODIC_MAX` = 10,000 active entries, overridden by `memory.episodic_max_count`. For V1, `_enforce_episodic_cap()` tombstones `ORDER BY importance ASC, created_at ASC` (lowest-importance oldest first) on write once the count reaches the cap. The gateway passes the configured value as `episodic_max` when it builds the store, and `reconfigure` re-pushes it, so raising the cap stops evicting on the next write and lowering it trims on the next one — the key was parsed and dropped before, which silently pinned every install to the built-in 10,000. V2 bypasses capacity eviction and retains the stored episodes.
 
 Episodic context retains `_DEFAULT_EPISODIC_LIMIT` = 8 results. Fresh V1 sessions query episodic memory with the current message and inject at most `min(_EPISODIC_INJECT_CAP, caps.episodic)`, where `_EPISODIC_INJECT_CAP` = 3,000; warm follow-ups do not repeat that injection. V2 session construction never automatically queries or injects episodic fragments. Its `memory_recall` response includes only rows fitting the tool's total cap, including wrappers.
 
@@ -3076,9 +3091,22 @@ the message against each skill's `triggers` (negative `!`-prefixed triggers
 exclude). To keep it off the per-message filesystem/config hot path:
 - the discovered skill-file list is TTL-cached (`_iter`, `_ITER_CACHE_TTL_SECS`),
   invalidated by `create_auto_skill`;
-- the `max_triggered` cap is snapshotted on the loader in `__init__`
-  (`self._max_triggered`) — no `KiroCrewConfig.load()` per message — refreshed
-  when the loader is rebuilt (per gateway), matching `extra_paths` semantics;
+- the `max_triggered` cap is read from the config watcher's snapshot
+  (`_max_triggered_now`) — a plain attribute read, so still no
+  `KiroCrewConfig.load()` per message, and `kirocrew config set
+  skills.max_triggered` applies to the very next message from any writer. With no
+  snapshot yet the construction-time value stands, so a loader built from an
+  explicitly injected config honours that config rather than resolving a cap the
+  injected document never carried (the absent-key default is 0, which would
+  suppress every skill);
+- `extra_paths` is re-resolved by `reconfigure(cfg)` on a config write, running
+  the SAME screening as construction — expanduser, resolve, `is_sensitive_path`
+  reject, existence check — and failing closed per entry, so a root added by hand
+  to `config.json` can no more reach a credential directory than one present at
+  boot. Edition-contributed roots are preserved and stay LAST (lowest
+  precedence): they come from the platform context, not config, so a config write
+  must not drop them. The discovery cache is cleared, so the next listing walks
+  the new roots instead of serving the old set for the rest of the TTL;
 - exactly **one** SEL audit event is emitted for the matched set (skipped
   entirely when nothing matched, the common case), not one per skill scanned.
 
@@ -3727,6 +3755,25 @@ Config-driven from `config.json` → `hooks` section:
 - **context_rules** — trigger keywords → context injected into message
 
 Hook evaluation order: deny overrides approve; auto-reply → transform → context rules.
+
+**Live reload (`HookManager.watch_config`).** The gateway's primary interactive
+manager subscribes to the `hooks` section, so a `config.json` write re-parses the
+flat hook keys onto the running manager. Subscription is opt-in rather than
+automatic because a DERIVED manager must not follow config: the heartbeat-scoped
+manager (`_build_heartbeat_hooks`) deliberately drops the user's
+`auto_approve_tools` so `HEARTBEAT_SAFE_TOOLS` is the sole approval authority, and
+re-reading the section would hand that widening straight back. It is re-derived
+from the primary each cycle, so it inherits the reload without subscribing.
+
+The deny ceiling and the flat hook keys live in different files — the
+agent-unwritable `denied_commands.json` and the operator-editable `config.json` —
+so whichever one changed, the other's contribution has to survive. Both reload
+paths route through one function, `splice_denied_commands(base, denied_state)`,
+which takes only `denied_commands_disabled_ids`, `denied_commands_disable_all` and
+`denied_commands_user_added` from the keystone: a Settings → Security write splices
+fresh keystone state onto the running config, and a `config.json` hooks reload
+splices the CURRENT keystone state onto the freshly parsed flat keys. Without it,
+one write silently reverts the other half.
 
 Foreign-agent hooks are never imported. Hook scripts, hook commands, matchers,
 and hook runtime state are unsupported items: scan/apply may report their

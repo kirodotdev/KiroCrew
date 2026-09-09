@@ -415,7 +415,7 @@ export function WebexPanel() {
         </Btn>
         {saved && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-ok">
-            <Check size={14} /> {tokenVerified ? i18nT('pages.settings.webexPanel.verified_with_webex_and_saved_restart_the_gatewa') : restartHint ? i18nT('pages.settings.webexPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.webexPanel.saved')}
+            <Check size={14} /> {tokenVerified ? (restartHint ? i18nT('pages.settings.webexPanel.verified_with_webex_and_saved_restart_the_gatewa') : i18nT('pages.settings.webexPanel.verified_and_saved')) : restartHint ? i18nT('pages.settings.webexPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.webexPanel.saved')}
           </span>
         )}
         {saved && verifyWarning && (

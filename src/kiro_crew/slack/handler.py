@@ -326,6 +326,32 @@ if _unknown_phases:
 del _unknown_phases
 
 
+def phase_emojis() -> dict[str, str | None]:
+    """The phase -> emoji table currently in force (follows ``slack.reactions``).
+
+    The one read path for every reaction site. Returns the live table object,
+    which :func:`refresh_phase_emojis` rebuilds in place when the config changes
+    -- so a caller that resolves a phase now sees the operator's latest
+    overrides, not the ones captured when this module was imported.
+    """
+    return _PHASE_EMOJIS
+
+
+def refresh_phase_emojis(overrides: dict[str, str | None] | None) -> list[str]:
+    """Rebuild the live phase-emoji table from *overrides*, in place.
+
+    Called by the gateway's Slack config applier with the reloaded
+    ``slack.reactions``. In place, because ``StatusReactionController``
+    instances and the reaction sites hold the table object, not a copy. Returns
+    the unknown keys so the caller can warn about them, as the import-time build
+    does.
+    """
+    built, unknown = _build_phase_emojis(overrides or {})
+    _PHASE_EMOJIS.clear()
+    _PHASE_EMOJIS.update(built)
+    return unknown
+
+
 async def _add_phase_reaction(slack: SlackClientOps, channel: str, ts: str, phase: str) -> None:
     """Add the reaction for *phase* if the user hasn't suppressed it.
 
@@ -333,7 +359,7 @@ async def _add_phase_reaction(slack: SlackClientOps, channel: str, ts: str, phas
     (e.g. ``!command`` handlers).  Honours ``slack.reactions`` ``null``
     suppression sentinels.
     """
-    emoji = _PHASE_EMOJIS.get(phase)
+    emoji = phase_emojis().get(phase)
     if emoji is None:
         return
     await slack.add_reaction(channel, ts, emoji)
@@ -415,7 +441,7 @@ class StatusReactionController:
 
         if phase in _IMMEDIATE_PHASES:
             self._cancel_debounce()
-            emoji = _PHASE_EMOJIS.get(phase, phase)
+            emoji = phase_emojis().get(phase, phase)
             asyncio.ensure_future(self._swap_emoji(emoji))
             self._reset_stall_watchdog()
             return
@@ -460,7 +486,7 @@ class StatusReactionController:
             except Exception:
                 pass
             self._stall_emoji = None
-        terminal = _PHASE_EMOJIS["error" if error else "done"]
+        terminal = phase_emojis()["error" if error else "done"]
         await self._swap_emoji(terminal)
 
     def _fire_debounce(self) -> None:
@@ -470,7 +496,7 @@ class StatusReactionController:
     async def _apply_pending(self) -> None:
         if self._finalized or self._pending_phase is None:
             return
-        emoji = _PHASE_EMOJIS.get(self._pending_phase, self._pending_phase)
+        emoji = phase_emojis().get(self._pending_phase, self._pending_phase)
         self._pending_phase = None
         await self._swap_emoji(emoji)
         self._reset_stall_watchdog()
@@ -1346,10 +1372,80 @@ def get_orch_cfg() -> "KiroCrewConfig | None":
     return _orch_cfg
 
 
-def _reload_orch_cfg() -> None:
-    """Reload in-memory config after !channel writes so changes take effect immediately."""
+def slack_cfg(orch: object | None = None) -> KiroCrewConfig:
+    """The config every Slack read consults -- one object, whichever door you enter by.
+
+    ``orch._cfg``, this module's ``_orch_cfg`` and every dispatcher's captured
+    ``cfg`` are the SAME object in a running gateway: :func:`set_orch_cfg`
+    installs the orchestrator's own config, and nothing rebinds it any more --
+    the ``!channel`` path and the config applier both mutate it IN PLACE
+    (:func:`_reload_orch_cfg`, :func:`adopt_slack_config`). That is what closes
+    the divergence a rebind would otherwise open, and it is why reading through the
+    caller's *orch* is safe rather than a second view.
+
+    Resolution order: the caller's orchestrator, then the installed global, then
+    the config watcher's snapshot, then a load. So a Slack read reaches the same
+    object whether it holds the orchestrator or not, and a process with no
+    orchestrator at all (a dashboard-only gateway) still reads live config.
+    """
+    cfg = getattr(orch, "_cfg", None)
+    if cfg is not None:
+        return cfg  # type: ignore[return-value]
     if _orch_cfg is not None:
-        fresh = KiroCrewConfig.load()
+        return _orch_cfg
+    from kiro_crew.config import live
+
+    return live.snapshot() or KiroCrewConfig.load()
+
+
+#: The Slack-owned attributes of :class:`KiroCrewConfig` that a reload copies
+#: onto the shared config object. Sections are replaced whole (the dataclass
+#: instance from the new load), so a read of ``slack_cfg().slack.<field>`` sees
+#: the loader's own coercion of the new value, never a raw copy.
+#: ``slack_enterprise_ids`` is absent because it is a derived property over
+#: ``slack.allowed_enterprise_ids`` and follows the section automatically.
+_SLACK_OWNED_FIELDS: tuple[str, ...] = (
+    "slack",
+    "messaging",
+    "slack_channels",
+    "slack_dm_activation",
+    "observe_max_messages",
+    "observe_ttl_hours",
+)
+
+
+def copy_slack_fields(source: KiroCrewConfig, target: KiroCrewConfig) -> None:
+    """Copy the Slack-owned fields of *source* onto *target* in place."""
+    for name in _SLACK_OWNED_FIELDS:
+        if hasattr(source, name):
+            setattr(target, name, getattr(source, name))
+
+
+def adopt_slack_config(fresh: KiroCrewConfig) -> None:
+    """Bring the shared config object up to date with *fresh*, in place.
+
+    In place and never rebound: the object installed by :func:`set_orch_cfg` is
+    the same one the orchestrator and every dispatcher hold, so replacing the
+    binding here would leave those holders on the old object. Called by the
+    gateway's config applier with the reloaded config; a no-op before the
+    orchestrator has installed one.
+    """
+    if _orch_cfg is not None and _orch_cfg is not fresh:
+        copy_slack_fields(fresh, _orch_cfg)
+
+
+def _reload_orch_cfg(fresh: "KiroCrewConfig | None" = None) -> None:
+    """Refresh channel activations on the shared config object after a ``!channel`` write.
+
+    Synchronous on purpose: the write just landed and the next inbound message
+    may arrive before the config watcher's poll, so the caller must not wait for
+    it. The watcher applies the same two fields again when it sees the write,
+    which is idempotent. *fresh* lets a caller that already holds the reloaded
+    config skip the load.
+    """
+    if _orch_cfg is not None:
+        if fresh is None:
+            fresh = KiroCrewConfig.load()
         _orch_cfg.slack_channels = fresh.slack_channels
         _orch_cfg.slack_dm_activation = fresh.slack_dm_activation
 

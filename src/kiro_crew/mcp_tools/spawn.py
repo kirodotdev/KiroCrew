@@ -145,8 +145,10 @@ def schemas() -> list[dict[str, Any]]:
     # Advertise the live concurrent sub-agent cap so the model fans out with
     # confidence instead of self-limiting. resolve_max_subagents is the single
     # source of truth (auto-sizes from host mem/CPU + learned cost, or the
-    # explicit agent.max_subagents). A snapshot at tool-list time is fine: this
-    # is advisory guidance, not an enforced limit, and SubagentManager
+    # explicit agent.max_subagents) and the gateway's SubagentManager re-derives
+    # its ENFORCED cap through the same function on every config reload, so the
+    # two agree after a write from any writer. A snapshot at tool-list time is
+    # fine: this is advisory guidance, not an enforced limit, and SubagentManager
     # auto-queues any overflow regardless.
     try:
         _max_sub = resolve_max_subagents(KiroCrewConfig.load())

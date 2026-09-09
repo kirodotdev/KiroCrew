@@ -349,6 +349,31 @@ def _release_source_corpus_after_module():
 
 
 @pytest.fixture(autouse=True)
+def _drop_live_config_snapshot():
+    """Give every test an unstarted process watcher, and leave none behind.
+
+    ``kiro_crew.config.live`` keeps ONE process-global watcher, and every
+    point-of-use reader (``SkillsLoader._max_triggered_now``, the channel
+    dispatchers' ``_live_cfg``) prefers its snapshot over the config it was
+    constructed with. A test that primes it and does not reset therefore sets the
+    live config for every later test on the same xdist worker -- measured as a
+    ``max_triggered`` of 0 leaking into ``test_explain_for_skill`` from an
+    unrelated module. The reset is a lock and a ``None`` store, so it costs the
+    ~57k tests that never prime nothing measurable.
+
+    Reset on BOTH sides, so a test asserting on the subscription registry starts
+    from an empty one whatever ran before it on this worker -- the registry is
+    process-global too, and an entry another test left in it is indistinguishable
+    from one the test under way registered.
+    """
+    from kiro_crew.config import live
+
+    live.reset_for_tests()
+    yield
+    live.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_aim_skills_dir(_floor_monkeypatch):
     """Prevent SkillsLoader from discovering edition-contributed skill roots.
 

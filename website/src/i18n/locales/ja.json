@@ -8209,6 +8209,11 @@
       "guardrails_hint": "実行が許可されていないコマンド。",
       "save_failed": "変更を保存できませんでした — もう一度お試しください。",
       "origin_diff_failed": "変更を比較するための元のテンプレートを読み込めませんでした。"
+    },
+    "restartRequiredBadge": {
+      "label": "変更には再起動が必要",
+      "tooltip": "この設定は {{productName}} の実行中には変更できません。保存した値は保持され、次に {{productName}} を再起動したときに適用されます（設定 → バージョン情報、または起動したターミナルから）。",
+      "schema_unavailable": "この設定に再起動が必要かどうかを確認できませんでした。"
     }
   },
   "hooks": {
@@ -10900,7 +10905,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -11209,7 +11213,6 @@
         "err_env_override_with_ref": "<settingRef/> が設定されており、この設定を上書きしています。ここでモデルを変更するには、設定を解除してください。"
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "プール処理用のエージェント。空の場合はデフォルトエージェントを使用します。再起動が必要です。",
         "approval_mode": "承認モード",
         "auto": "自動",
         "auto_size_max": "自動サイズ最大値",
@@ -11224,7 +11227,6 @@
         "disabled": "無効",
         "embedding": "埋め込み",
         "embedding_provider": "埋め込みプロバイダー",
-        "enable_conductor_skill_for_multi_agent_orchestra": "マルチエージェントオーケストレーション用のコンダクタースキルを有効にします。再起動が必要です。",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli 経由の動的 MCP ツール検出を有効にします。次のセッションで有効になります。",
         "enabled": "有効",
         "enforce_denied_commands": "禁止コマンドの実行",
@@ -11233,7 +11235,6 @@
         "immediate_auto_enables_sandbox_for_untrusted_too": "即座に実行。「auto」は信頼できないツールのサンドボックスを有効化。",
         "inherited_provider": "継承（{{provider}}）",
         "kirocrew_agents": "{{productName}} エージェント",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "プール済みプロセスの最大有効期間。0 は有効期限を無効化します。再起動が必要です。",
         "max_channel_agents": "最大チャネルエージェント",
         "max_channels": "最大チャネル数",
         "max_concurrent_subagents": "最大並行サブエージェント数",
@@ -11249,13 +11250,11 @@
         "next_update_check_cycle": "次の更新確認サイクル。",
         "no_agents_defined": "定義されたエージェントがありません",
         "no_memory_stores": "メモリストアなし",
-        "number_of_pre_spawned_processes_0_disables_resta": "事前スポーンされたプロセス数。0 で無効化します。再起動が必要です。",
         "orchestrator_mode": "オーケストレーターモード",
         "pool_agent": "プールエージェント",
         "pool_size": "プールサイズ",
         "pool_ttl": "プール TTL",
         "provider": "プロバイダー",
-        "restart_required_to_apply_changes": "{{description}} 変更を適用するには再起動が必要です。",
         "sandbox": "サンドボックス",
         "save": "保存",
         "saved": "保存済み",
@@ -11269,7 +11268,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "レガシーモード使用中 — エージェントテンプレートとして agent.default_agent を使用",
         "warm_pool": "ウォームプール",
         "workspace": "ワークスペース",
-        "workspaces": "ワークスペース"
+        "workspaces": "ワークスペース",
+        "number_of_pre_spawned_processes_0_disables": "事前スポーンされたプロセス数。0 で無効化します。",
+        "agent_for_pool_processes_empty_uses_default_agent": "プール処理用のエージェント。空の場合はデフォルトエージェントを使用します。",
+        "warm_pool_description": "ACP CLI プロセスを事前起動し、セッションを即時に開始します。",
+        "max_age_for_pooled_processes_0_disables_expiry": "プール済みプロセスの最大有効期間。0 は有効期限を無効化します。",
+        "enable_conductor_skill_for_multi_agent_orchestration": "マルチエージェントオーケストレーション用のコンダクタースキルを有効にします。"
       },
       "mcpTab": {
         "actions": "アクション",
@@ -12519,7 +12523,8 @@
         "sdk_missing": "{{channel}} SDK をインストール",
         "sdk_missing_body": "{{channel}} チャンネルには {{package}} パッケージが必要ですが、既定ではインストールされません。下のコマンドをターミナルで実行して追加してください。",
         "sdk_restart_after_install": "その後ゲートウェイを再起動して {{channel}} チャンネルを開始してください。",
-        "sdk_install_unsupported": "このゲートウェイの Python は追加パッケージをインストールできないため、ここでは {{package}} を追加できません。pip でインストールできる Python 環境からゲートウェイを実行してください。"
+        "sdk_install_unsupported": "このゲートウェイの Python は追加パッケージをインストールできないため、ここでは {{package}} を追加できません。pip でインストールできる Python 環境からゲートウェイを実行してください。",
+        "verified_and_saved": "{{channel}} で検証され保存されました。"
       },
       "browserPanel": {
         "use_builtin_label": "内蔵ブラウザーを使用する",
@@ -13455,7 +13460,8 @@
         "where_to_find_the_app_token": "アプリトークンの場所",
         "where_to_find_the_bot_token": "ボットトークンの場所",
         "manifest_unavailable": "Slack アプリのマニフェストを読み込めませんでした。セットアップガイドを参考にアプリを手動で作成してください。",
-        "copy_manifest_failed": "マニフェストをクリップボードにコピーできませんでした。"
+        "copy_manifest_failed": "マニフェストをクリップボードにコピーできませんでした。",
+        "verified_and_saved": "Slack で確認され、保存されました。"
       },
       "sttSettings": {
         "language_auto": "言語を自動検出",
@@ -13789,7 +13795,8 @@
         "empty_allowlist_hint": "許可されたメールアドレスなし: ボットはすべてのメッセージを拒否。下記に Webex アカウントのメールアドレスを追加。",
         "soft_threshold_must_be_1_to_100": "ソフトのコンテキストしきい値は 1〜100 の整数で指定してください。",
         "hard_threshold_must_be_1_to_100": "ハードのコンテキストしきい値は 1〜100 の整数で指定してください。",
-        "soft_threshold_must_not_exceed_hard": "ソフトのしきい値はハードより大きくできません。ハードが先に判定されるため、より大きいソフト値には決して到達しません。"
+        "soft_threshold_must_not_exceed_hard": "ソフトのしきい値はハードより大きくできません。ハードが先に判定されるため、より大きいソフト値には決して到達しません。",
+        "verified_and_saved": "Webexで検証され保存されました。"
       },
       "weixinPanel": {
         "allowed_user_ids": "許可されたユーザーID",

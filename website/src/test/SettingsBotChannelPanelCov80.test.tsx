@@ -238,6 +238,22 @@ describe('BotChannelPanel save', () => {
     expect(saveConfig.mock.calls[0][0].bot_token).toBe('zz-token')
   })
 
+  it('omits the restart hint when a verified save applied live', async () => {
+    // restart_required=false is the hot-reload path: the token verified AND the
+    // channel is already running it, so a restart claim would be a lie.
+    const saveConfig = vi.fn().mockResolvedValue({ ok: true, restart_required: false, verify_warning: '' })
+    renderPanel(makeSpec({ saveConfig, getConfig: () => Promise.resolve(config({ bot_token_set: false })) }))
+    fireEvent.change(await screen.findByLabelText('Zzchat bot token'), { target: { value: 'zz-token' } })
+    const btn = await saveBtn()
+    await act(async () => { fireEvent.click(btn) })
+    await waitFor(() => expect(screen.getByText('Verified with Zzchat and saved.')).toBeInTheDocument())
+    // the restart-flavoured verified text must not also render (a separate
+    // channel-not-running banner may legitimately mention a restart)
+    expect(
+      screen.queryByText('Verified with Zzchat and saved. Restart the gateway to connect.'),
+    ).not.toBeInTheDocument()
+  })
+
   it('shows the verification warning alongside the save confirmation', async () => {
     const saveConfig = vi.fn().mockResolvedValue({ ok: true, restart_required: true, verify_warning: 'zz-verify-warning' })
     renderPanel(makeSpec({ saveConfig, getConfig: () => Promise.resolve(config({ bot_token_set: false })) }))

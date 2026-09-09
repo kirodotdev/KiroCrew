@@ -80,6 +80,22 @@ IMESSAGE_CAPABILITIES = TransportCapabilities(
 )
 
 
+def allowed_handles_from_config(entries: object) -> list[str] | None:
+    """Normalize ``imessage.allowed_handles`` to the handles to admit.
+
+    The ONE reading of that field's shape, shared by the boot factory and the
+    live reconfigure path so the two can never disagree about who is on the
+    roster. Every entry runs through :func:`normalize_handle` (the same
+    normalization inbound handles get, so a differently-formatted phone number
+    still matches) and anything that normalizes to nothing is dropped. Returns
+    ``None`` when the whole value is not a list -- the caller decides what a
+    malformed roster means (boot: nobody; reload: keep the old set).
+    """
+    if not isinstance(entries, list):
+        return None
+    return [n for h in entries if isinstance(h, str) and (n := normalize_handle(h))]
+
+
 class IMessageTransport(MessagingTransport):
     """Concrete iMessage transport over the local ``imsg`` bridge."""
 
@@ -105,6 +121,57 @@ class IMessageTransport(MessagingTransport):
     def client(self) -> IMessageClient:
         """The underlying bridge client (held + exposed, not hidden)."""
         return self._client
+
+    # -- Live config ---------------------------------------------------------
+    def reconfigure(self, section: Any) -> None:
+        """Adopt a reloaded ``imessage`` config section's allow-list.
+
+        Called by the dispatcher's config applier when ``config.json`` changes
+        under ``imessage``, so an allow-list edit from the dashboard, the CLI or
+        ``$EDITOR`` takes effect on the next message instead of the next
+        restart. The roster is rebuilt with the same :func:`normalize_handle`
+        pass the boot factory uses, and the frozenset is REPLACED wholesale
+        (never mutated) so an in-flight ``authorize`` keeps reading one
+        consistent set.
+
+        An EMPTY list is adopted, because an empty roster denies everyone here
+        and adopting it is the fail-closed direction -- it is how an operator
+        shuts the channel's inbound off without stopping it. A roster that is
+        not a list keeps the PREVIOUS value and logs at WARNING. Each roster
+        change is SEL-audited by count, not by handle: a handle is a phone
+        number.
+
+        Only the allow-list is pushed. ``imessage.service`` and
+        ``imessage.db_path`` are boot-only: the bridge client binds both at
+        construction, so the channel registry restarts the channel in process
+        for those instead.
+        """
+        handles = allowed_handles_from_config(getattr(section, "allowed_handles", None))
+        if handles is None:
+            logger.warning(
+                "imessage: allowed_handles is not a list in the reloaded config; keeping the "
+                "previous allow-list (%d handle(s))",
+                len(self._allowed),
+            )
+            return
+        new_allowed = frozenset(handles)
+        if new_allowed == self._allowed:
+            return
+        added = len(new_allowed - self._allowed)
+        removed = len(self._allowed - new_allowed)
+        self._allowed = new_allowed
+        logger.info("imessage: allow-list reloaded (+%d/-%d handle(s))", added, removed)
+        if not new_allowed:
+            logger.warning(
+                "imessage: allowed_handles is now empty — every inbound message is refused"
+            )
+        sel().log_api_access(
+            caller="config",
+            operation="imessage_transport.reconfigure",
+            outcome="allow_list_changed",
+            source="imessage",
+            resources=f"added={added} removed={removed} size={len(new_allowed)}",
+        )
 
     # -- Tier-1 core --------------------------------------------------------
     async def send_message(

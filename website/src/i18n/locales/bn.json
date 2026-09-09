@@ -8324,6 +8324,11 @@
       "guardrails_hint": "এমন কমান্ড যা কখনও চালানোর অনুমতি নেই।",
       "save_failed": "পরিবর্তনটি সংরক্ষণ করা যায়নি — আবার চেষ্টা করুন।",
       "origin_diff_failed": "পরিবর্তনগুলি তুলনা করতে মূল টেমপ্লেট লোড করা যায়নি।"
+    },
+    "restartRequiredBadge": {
+      "label": "পরিবর্তনে পুনরায় চালু করা লাগে",
+      "tooltip": "{{productName}} চলার সময় এই সেটিং পরিবর্তন করা যায় না। সংরক্ষিত মানটি রাখা হয় এবং {{productName}} পরের বার পুনরায় চালু হলে প্রয়োগ হবে (সেটিংস → সম্পর্কে, বা যে টার্মিনাল থেকে আপনি এটি চালু করেছেন)।",
+      "schema_unavailable": "এই সেটিংয়ের জন্য পুনরায় চালু করা দরকার কি না তা পরীক্ষা করা যায়নি।"
     }
   },
   "hooks": {
@@ -11062,7 +11067,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -11373,7 +11377,6 @@
         "err_env_override_with_ref": "<settingRef/> সেট করা আছে এবং এই সেটিং ওভাররাইড করে। এখানে মডেল পরিবর্তন করতে এটি আনসেট করুন।"
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "পুল প্রসেসের জন্য এজেন্ট। খালি রাখলে ডিফল্ট এজেন্ট ব্যবহার হয়। রিস্টার্ট প্রয়োজন।",
         "approval_mode": "অনুমোদন মোড",
         "auto": "auto",
         "auto_size_max": "অটো-সাইজ সর্বোচ্চ",
@@ -11388,7 +11391,6 @@
         "disabled": "নিষ্ক্রিয়",
         "embedding": "এমবেডিং",
         "embedding_provider": "এমবেডিং প্রোভাইডার",
-        "enable_conductor_skill_for_multi_agent_orchestra": "মাল্টি-এজেন্ট অর্কেস্ট্রেশনের জন্য কনডাক্টর স্কিল সক্রিয় করো। রিস্টার্ট দরকার।",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli-এর মাধ্যমে ডাইনামিক MCP টুল ডিসকভারি সক্রিয় করুন। পরের সেশনে কার্যকর হবে।",
         "enabled": "সক্রিয়",
         "enforce_denied_commands": "নিষিদ্ধ কমান্ড বলবৎ করা",
@@ -11397,7 +11399,6 @@
         "immediate_auto_enables_sandbox_for_untrusted_too": "তাৎক্ষণিক। 'auto' অবিশ্বস্ত টুলের জন্য স্যান্ডবক্স সক্রিয় করে।",
         "inherited_provider": "উত্তরাধিকৃত ({{provider}})",
         "kirocrew_agents": "{{productName}} এজেন্ট",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "পুল করা প্রসেসের সর্বোচ্চ বয়স। 0 দিলে মেয়াদ শেষ হওয়া বন্ধ থাকে। রিস্টার্ট প্রয়োজন।",
         "max_channel_agents": "সর্বোচ্চ চ্যানেল এজেন্ট",
         "max_channels": "সর্বোচ্চ চ্যানেল",
         "max_concurrent_subagents": "একসাথে সর্বোচ্চ সাবএজেন্ট",
@@ -11413,13 +11414,11 @@
         "next_update_check_cycle": "পরবর্তী আপডেট চেক চক্রে কার্যকর।",
         "no_agents_defined": "কোনো এজেন্ট নির্ধারিত নেই",
         "no_memory_stores": "কোনো মেমরি স্টোর নেই",
-        "number_of_pre_spawned_processes_0_disables_resta": "আগে থেকে চালু করা প্রসেসের সংখ্যা। 0 দিলে নিষ্ক্রিয় থাকে। রিস্টার্ট প্রয়োজন।",
         "orchestrator_mode": "অর্কেস্ট্রেটর মোড",
         "pool_agent": "পুল এজেন্ট",
         "pool_size": "পুল সাইজ",
         "pool_ttl": "পুল TTL",
         "provider": "প্রোভাইডার",
-        "restart_required_to_apply_changes": "{{description}} পরিবর্তন প্রয়োগ করতে রিস্টার্ট প্রয়োজন।",
         "sandbox": "স্যান্ডবক্স",
         "save": "সেভ করো",
         "saved": "সংরক্ষিত",
@@ -11433,7 +11432,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "লিগ্যাসি মোড ব্যবহার হচ্ছে — এজেন্ট টেম্পলেট হিসেবে agent.default_agent",
         "warm_pool": "ওয়ার্ম পুল",
         "workspace": "ওয়ার্কস্পেস",
-        "workspaces": "ওয়ার্কস্পেস"
+        "workspaces": "ওয়ার্কস্পেস",
+        "number_of_pre_spawned_processes_0_disables": "আগে থেকে চালু করা প্রসেসের সংখ্যা। 0 দিলে নিষ্ক্রিয় থাকে।",
+        "agent_for_pool_processes_empty_uses_default_agent": "পুল প্রসেসের জন্য এজেন্ট। খালি রাখলে ডিফল্ট এজেন্ট ব্যবহার হয়।",
+        "warm_pool_description": "সেশন তাৎক্ষণিক শুরু করতে ACP CLI প্রসেস আগে থেকে চালু রাখুন।",
+        "max_age_for_pooled_processes_0_disables_expiry": "পুল করা প্রসেসের সর্বোচ্চ বয়স। 0 দিলে মেয়াদ শেষ হওয়া বন্ধ থাকে।",
+        "enable_conductor_skill_for_multi_agent_orchestration": "মাল্টি-এজেন্ট অর্কেস্ট্রেশনের জন্য কনডাক্টর স্কিল সক্রিয় করো।"
       },
       "mcpTab": {
         "actions": "অ্যাকশন",
@@ -12697,7 +12701,8 @@
         "sdk_missing": "{{channel}} SDK ইনস্টল করুন",
         "sdk_missing_body": "{{channel}} চ্যানেলের জন্য {{package}} প্যাকেজ প্রয়োজন, যা ডিফল্টভাবে ইনস্টল করা হয় না। এটি যোগ করতে নিচের কমান্ডটি টার্মিনালে চালান।",
         "sdk_restart_after_install": "এরপর {{channel}} চ্যানেল চালু করতে গেটওয়ে পুনরায় শুরু করুন।",
-        "sdk_install_unsupported": "এই গেটওয়ের Python অতিরিক্ত প্যাকেজ ইনস্টল করতে পারে না, তাই এখানে {{package}} যোগ করা যাবে না। pip ইনস্টল করতে পারে এমন একটি Python পরিবেশ থেকে গেটওয়ে চালান।"
+        "sdk_install_unsupported": "এই গেটওয়ের Python অতিরিক্ত প্যাকেজ ইনস্টল করতে পারে না, তাই এখানে {{package}} যোগ করা যাবে না। pip ইনস্টল করতে পারে এমন একটি Python পরিবেশ থেকে গেটওয়ে চালান।",
+        "verified_and_saved": "{{channel}} দিয়ে যাচাই হয়েছে ও সেভ হয়েছে।"
       },
       "browserPanel": {
         "use_builtin_label": "বিল্ট-ইন ব্রাউজার ব্যবহার করুন",
@@ -13633,7 +13638,8 @@
         "where_to_find_the_app_token": "অ্যাপ টোকেন কোথায় পাবে",
         "where_to_find_the_bot_token": "বট টোকেন কোথায় পাবে",
         "manifest_unavailable": "Slack অ্যাপ ম্যানিফেস্ট লোড করা যায়নি। সেটআপ গাইড থেকে অ্যাপটি নিজে তৈরি করো।",
-        "copy_manifest_failed": "ম্যানিফেস্ট ক্লিপবোর্ডে কপি করা যায়নি।"
+        "copy_manifest_failed": "ম্যানিফেস্ট ক্লিপবোর্ডে কপি করা যায়নি।",
+        "verified_and_saved": "Slack-এর সাথে যাচাই হয়ে সেভ হয়েছে।"
       },
       "sttSettings": {
         "language_auto": "স্বয়ংক্রিয়ভাবে ভাষা শনাক্ত করুন",
@@ -13967,7 +13973,8 @@
         "empty_allowlist_hint": "কোনো অনুমোদিত ইমেল নেই: বট প্রতিটি মেসেজ ফিরিয়ে দেয়। নিচে তোমার Webex অ্যাকাউন্টের ইমেল যোগ করো।",
         "soft_threshold_must_be_1_to_100": "সফট কনটেক্সট থ্রেশহোল্ড ১ থেকে ১০০-এর মধ্যে একটি পূর্ণসংখ্যা হতে হবে।",
         "hard_threshold_must_be_1_to_100": "হার্ড কনটেক্সট থ্রেশহোল্ড ১ থেকে ১০০-এর মধ্যে একটি পূর্ণসংখ্যা হতে হবে।",
-        "soft_threshold_must_not_exceed_hard": "সফট থ্রেশহোল্ড হার্ডের চেয়ে বেশি হতে পারে না — হার্ডটি আগে যাচাই হয়, তাই বড় সফট মান কখনও পৌঁছাবে না।"
+        "soft_threshold_must_not_exceed_hard": "সফট থ্রেশহোল্ড হার্ডের চেয়ে বেশি হতে পারে না — হার্ডটি আগে যাচাই হয়, তাই বড় সফট মান কখনও পৌঁছাবে না।",
+        "verified_and_saved": "Webex-এর সাথে যাচাই হয়ে সেভ হয়েছে।"
       },
       "weixinPanel": {
         "allowed_user_ids": "অনুমোদিত ইউজার ID",

@@ -8209,6 +8209,11 @@
       "guardrails_hint": "永远不允许运行的命令。",
       "save_failed": "该更改未能保存 — 请重试。",
       "origin_diff_failed": "无法加载原始模板以比较更改。"
+    },
+    "restartRequiredBadge": {
+      "label": "修改后需重启",
+      "tooltip": "{{productName}} 运行期间无法更改此设置。已保存的值会保留，并在 {{productName}} 下次重启后应用（设置 → 关于，或启动它的终端）。",
+      "schema_unavailable": "无法检查此设置是否需要重启。"
     }
   },
   "hooks": {
@@ -10900,7 +10905,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -11209,7 +11213,6 @@
         "err_env_override_with_ref": "<settingRef/> 已设置并覆盖此设置。取消设置以在此处更改模型。"
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "用于池化进程的代理。留空则使用默认代理。需要重启。",
         "approval_mode": "审批模式",
         "auto": "自动",
         "auto_size_max": "自动调整上限",
@@ -11224,7 +11227,6 @@
         "disabled": "已禁用",
         "embedding": "嵌入",
         "embedding_provider": "嵌入提供方",
-        "enable_conductor_skill_for_multi_agent_orchestra": "为多代理编排启用 conductor 技能。需要重启。",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "通过 kiro-cli 启用动态 MCP 工具发现。下次会话生效。",
         "enabled": "已启用",
         "enforce_denied_commands": "强制执行禁用命令",
@@ -11233,7 +11235,6 @@
         "immediate_auto_enables_sandbox_for_untrusted_too": "立即生效。“auto”为不受信任的工具启用沙箱。",
         "inherited_provider": "继承 ({{provider}})",
         "kirocrew_agents": "{{productName}} 代理",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "池化进程的最大存活时间。0 表示不过期。需要重启。",
         "max_channel_agents": "最大频道代理数",
         "max_channels": "最大频道数",
         "max_concurrent_subagents": "最大并发子代理数",
@@ -11249,13 +11250,11 @@
         "next_update_check_cycle": "下一个更新检查周期生效。",
         "no_agents_defined": "未定义代理",
         "no_memory_stores": "无记忆存储",
-        "number_of_pre_spawned_processes_0_disables_resta": "预启动进程数量。0 表示禁用。需要重启。",
         "orchestrator_mode": "编排模式",
         "pool_agent": "池代理",
         "pool_size": "池大小",
         "pool_ttl": "池 TTL",
         "provider": "提供方",
-        "restart_required_to_apply_changes": "{{description}} 需要重启才能生效。",
         "sandbox": "沙箱",
         "save": "保存",
         "saved": "已保存",
@@ -11269,7 +11268,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "使用旧版模式 — 以 agent.default_agent 作为代理模板",
         "warm_pool": "预热池",
         "workspace": "工作区",
-        "workspaces": "工作区"
+        "workspaces": "工作区",
+        "number_of_pre_spawned_processes_0_disables": "预启动进程数量。0 表示禁用。",
+        "agent_for_pool_processes_empty_uses_default_agent": "用于池化进程的代理。留空则使用默认代理。",
+        "warm_pool_description": "预先启动 ACP CLI 进程，让会话即时开始。",
+        "max_age_for_pooled_processes_0_disables_expiry": "池化进程的最大存活时间。0 表示不过期。",
+        "enable_conductor_skill_for_multi_agent_orchestration": "为多代理编排启用 conductor 技能。"
       },
       "mcpTab": {
         "actions": "操作",
@@ -12519,7 +12523,8 @@
         "sdk_missing": "安装 {{channel}} SDK",
         "sdk_missing_body": "{{channel}} 渠道需要 {{package}} 包，默认不会安装。请在终端运行下面的命令来安装它。",
         "sdk_restart_after_install": "然后重启网关以启动 {{channel}} 渠道。",
-        "sdk_install_unsupported": "此网关的 Python 无法安装额外的包，因此无法在此添加 {{package}}。请从 pip 能够安装的 Python 环境中启动网关。"
+        "sdk_install_unsupported": "此网关的 Python 无法安装额外的包，因此无法在此添加 {{package}}。请从 pip 能够安装的 Python 环境中启动网关。",
+        "verified_and_saved": "已通过 {{channel}} 验证并保存。"
       },
       "browserPanel": {
         "use_builtin_label": "使用内置浏览器",
@@ -13455,7 +13460,8 @@
         "where_to_find_the_app_token": "在哪里查找应用令牌",
         "where_to_find_the_bot_token": "在哪里查找机器人令牌",
         "manifest_unavailable": "无法加载 Slack 应用清单。请按设置指南手动创建应用。",
-        "copy_manifest_failed": "无法将清单复制到剪贴板。"
+        "copy_manifest_failed": "无法将清单复制到剪贴板。",
+        "verified_and_saved": "已通过 Slack 验证并保存。"
       },
       "sttSettings": {
         "language_auto": "自动检测语言",
@@ -13789,7 +13795,8 @@
         "empty_allowlist_hint": "没有允许的邮箱：机器人会拒绝所有消息。在下方添加你的 Webex 账号邮箱。",
         "soft_threshold_must_be_1_to_100": "软上下文阈值必须是 1 到 100 之间的整数。",
         "hard_threshold_must_be_1_to_100": "硬上下文阈值必须是 1 到 100 之间的整数。",
-        "soft_threshold_must_not_exceed_hard": "软阈值不能高于硬阈值：硬阈值会先被检查，因此更高的软值永远不会被触发。"
+        "soft_threshold_must_not_exceed_hard": "软阈值不能高于硬阈值：硬阈值会先被检查，因此更高的软值永远不会被触发。",
+        "verified_and_saved": "已通过 Webex 验证并保存。"
       },
       "weixinPanel": {
         "allowed_user_ids": "允许的用户 ID",

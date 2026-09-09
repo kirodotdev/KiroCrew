@@ -1781,7 +1781,9 @@ class TestAgentSettingsPut:
         async with TestClient(TestServer(_agent_cfg_app())) as client:
             resp = await _put_agent(client, {"max_subagents": 0})
             assert resp.status == 200
-            assert (await resp.json())["restart_required"] is True
+            # The cap follows config live (SubagentManager.reconfigure), so the
+            # auto sentinel is applied at the next reload rather than at restart.
+            assert (await resp.json())["restart_required"] is False
         assert json.loads(seeded_config.read_text(encoding="utf-8"))["agent"]["max_subagents"] == 0
 
     @pytest.mark.asyncio

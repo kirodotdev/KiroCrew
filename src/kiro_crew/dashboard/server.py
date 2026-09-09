@@ -306,11 +306,17 @@ async def _should_prevent_sleep(state: DashboardState, port: int) -> bool:
     config or daemon hiccup can never wedge the machine awake.
     """
     try:
-        # KiroCrewConfig.load() does a stat and, on a cache miss, a JSON read +
-        # schema validation. On a slow home filesystem that is a blocking call,
-        # and this runs on the gateway event loop every poll — offload it so a
-        # slow read can never stall chat/heartbeat (no-blocking-call-on-event-loop).
-        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        # The live-config watcher is the ONE poller of config.json; this loop
+        # reads the config it has already adopted (a plain attribute read) rather
+        # than statting the file itself every tick. The load runs only when the
+        # watcher has no snapshot yet (the first ticks after boot), and off the
+        # loop, because on a slow home filesystem it is a blocking call
+        # (no-blocking-call-on-event-loop).
+        from kiro_crew.config import live
+
+        cfg = live.snapshot()
+        if cfg is None:
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
         # Both reads sit INSIDE the guard, and that placement is the actual
         # defence: a config object predating the tailscale section raises on the
         # attribute, and outside the guard that would propagate — a partially
@@ -3066,6 +3072,163 @@ def _register_stt_hooks(app: web.Application) -> None:
     app.on_cleanup.append(_stt_shutdown)
 
 
+def _register_config_watch(
+    app: web.Application, state: DashboardState, initial: KiroCrewConfig | None
+) -> None:
+    """Arm the live config watcher for both server modes and register the appliers
+    that need ``DashboardState``.
+
+    MUST be called BEFORE ``runner.setup()`` freezes the signal lists, because it
+    registers the cleanup hook; the watcher itself is started later by
+    ``_kick_config_watch``, strictly after the listener binds. *initial* is the
+    config this boot loaded, primed so the first tick reports only what
+    changed since boot rather than replaying every leaf. Appliers owned by a
+    long-lived object (sessions, subagents, channels transports) register in that
+    object's constructor; only the ones whose holder is the dashboard state, or
+    that must rebuild agent artifacts, live here.
+    """
+    from kiro_crew.config import live
+    from kiro_crew.config.live import ConfigChange
+    from kiro_crew.dashboard.handlers.updates import apply_log_level_from_config
+
+    async def _switch_provider(cfg: KiroCrewConfig) -> None:
+        # Refresh agent artifacts so the target provider is immediately usable.
+        # For claude_code this (re)writes ~/.claude/agents/kirocrew.mcp.json --
+        # the MCP registry the claude-agent-acp backend reads at session/new --
+        # picking up any servers installed while on kiro. Best-effort: a failure
+        # here must not block the provider switch (gateway boot also rebuilds).
+        try:
+            from kiro_crew.agent import rebuild_agent_config
+
+            await asyncio.to_thread(rebuild_agent_config)
+        except Exception:
+            logger.warning("Agent config rebuild after provider switch failed", exc_info=True)
+        # reload_provider_factory() is ONLY for a provider switch: it clears every
+        # session and shuts the providers down, which is correct here and wrong
+        # for any default change (those go through refresh_defaults()).
+        # Installed from the watcher's CURRENT snapshot, not the change this task
+        # was scheduled with: the task runs off the cycle, so a later change can
+        # already be in force (refresh_defaults installs owner._cfg), and
+        # installing the scheduling-time document would silently revert it. A
+        # torn snapshot holds defaults, so that case keeps the scheduled config.
+        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+
+        snap = live.snapshot()
+        if snap is not None:
+            degraded = snap.degraded_sections
+            if DEGRADED_WHOLE_CONFIG not in degraded and "agent" not in degraded:
+                cfg = snap
+        await state.sessions.reload_provider_factory(cfg=cfg)
+        # Clear model on all slots -- aliases are provider-specific.
+        for slot in state._slots.values():
+            if slot.model:
+                slot.model = ""
+                # Deliberate model change: bump the pick generation so the
+                # fallback restore probe drops any sticky state instead of
+                # restoring a model id from the previous provider.
+                slot._model_pick_gen += 1
+        state.push_slots_update()
+        logger.info(
+            "Provider switched to %s -- config rebuilt, factory reloaded, slot models cleared",
+            cfg.agent.provider,
+        )
+
+    async def _apply_provider(change: ConfigChange) -> None:
+        if not change.touched("agent.provider"):
+            return
+        # The switch runs OFF the watcher's cycle, like a channel reconnect. It
+        # clears the session registry and then shuts every retired provider down
+        # one at a time, which can outlast the applier bound; a timed-out applier
+        # is retried on the next tick, and a retried switch would clear the
+        # sessions created with the new provider in between. Scheduled as a
+        # tracked task, the applier returns at once and the switch runs exactly
+        # once per change.
+        task = asyncio.create_task(_switch_provider(change.new), name="provider-switch-applier")
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+
+    async def _apply_background_model(change: ConfigChange) -> None:
+        # The background role model is baked into the lite / heartbeat kiro specs
+        # at agent-build time, so a change must rewrite them to take effect. The
+        # subagent role is read live at spawn and needs no rebuild.
+        if not change.touched("agent.role_models.background"):
+            return
+        try:
+            from kiro_crew.agent import rebuild_agent_config
+
+            await asyncio.to_thread(rebuild_agent_config)
+            logger.info("agent.role_models.background changed -- background agent specs rebuilt")
+        except Exception:
+            logger.warning("background-model rebuild failed", exc_info=True)
+
+    # The workflow-run ceiling and the channel caps are not registered here:
+    # WorkflowService and ChannelManager bind their own setters in their
+    # constructors (``live.bind``), the rule for an applier a long-lived object owns.
+    subs = [
+        live.subscribe("agent.provider", callback=_apply_provider, name="agent.provider"),
+        live.subscribe(
+            "agent.role_models.background",
+            callback=_apply_background_model,
+            name="agent.role_models.background",
+        ),
+        live.subscribe(
+            "agent.log_level", callback=apply_log_level_from_config, name="agent.log_level"
+        ),
+    ]
+    # Closures are held strongly by the registry; keep the handles on the app so
+    # the registrations are visible (and cancellable) from tests.
+    app["config_watch_subscriptions"] = subs
+
+    # The watcher is NOT started from ``on_startup``: aiohttp runs those hooks
+    # inside ``runner.setup()``, before the listener binds, and ``start()`` awaits
+    # an off-loop fingerprint. ``no-new-work-on-gateway-boot-path`` forbids a new
+    # awaited step there, so both entrypoints call ``_kick_config_watch`` strictly
+    # after ``_start_site`` returns, like the connections scavenge. Only the
+    # cleanup hook is registered here, before ``runner.setup()`` freezes the lists.
+    app["config_watch_initial"] = initial
+
+    async def _config_watch_shutdown(app_: web.Application) -> None:
+        await live.watch().stop()
+
+    app.on_cleanup.append(_config_watch_shutdown)
+
+
+def _kick_config_watch(app: web.Application, state: DashboardState) -> None:
+    """Start the live-config watcher as a tracked background task, post-bind.
+
+    Called by both gateway entrypoints only after ``_start_site`` has returned.
+    The watcher primes from the config the gateway booted with, then reloads and
+    diffs the file on its first cycle, so an edit made between the boot-time
+    load and this point is applied rather than lost.
+
+    The prime is done HERE, synchronously, before the task is scheduled:
+    ``create_task`` runs nothing until the caller yields, and
+    ``GatewayOrchestrator.run`` reaches ``_start_channel_transports`` a few
+    awaits after this returns, so a prime left to ``start()`` leaves
+    ``live.snapshot()`` at ``None`` for the first transports -- whose per-turn
+    reads then fall back to a disk ``KiroCrewConfig.load()``. ``prime`` is a
+    plain attribute store, so nothing here awaits on the boot path;
+    ``start(initial=...)`` re-primes the same object with the fingerprint unset,
+    so the first cycle still reloads and diffs the file.
+    """
+    from kiro_crew.config import live
+
+    initial = app.get("config_watch_initial")
+    watcher = live.watch()
+    if initial is not None and not watcher.started:
+        watcher.prime(initial)
+
+    async def _start() -> None:
+        try:
+            await live.watch().start(initial=initial)
+        except Exception:  # noqa: BLE001 — a dead watcher must not take the gateway down
+            logger.warning("Live config watcher failed to start", exc_info=True)
+
+    task = asyncio.create_task(_start())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _arm_prevent_sleep_poll(state: DashboardState, port: int) -> None:
     """Create the sleep inhibitor and start its poll task on the running loop.
 
@@ -4111,6 +4274,9 @@ async def start_dashboard(
     # Releases the resident speech model (148MB default, 1.6GB largest) when idle
     # and at shutdown. Registered here, before runner.setup freezes the signal lists.
     _register_stt_hooks(app)
+    # Live config: one poller for every writer (dashboard, CLI, $EDITOR), started
+    # on_startup because it needs the running loop; primed with this boot's config.
+    _register_config_watch(app, state, _cfg)
 
     # ── Instances (multi-instance management) ────────────────────────────────
     # Register the opt-in instances startup/cleanup hooks HERE, before
@@ -4167,6 +4333,7 @@ async def start_dashboard(
     # (no-new-work-on-gateway-boot-path).
     _kick_connections_warm_scavenge(state)
     _kick_session_search_index(state)
+    _kick_config_watch(app, state)
 
     # Event-loop heartbeat: proves the asyncio loop is live (the off-loop /proc
     # sampler can't — it runs in a subprocess). Sleeps 10s, then logs actual
@@ -4898,6 +5065,9 @@ async def start_api_server(
     # Releases the resident speech model (148MB default, 1.6GB largest) when idle
     # and at shutdown. Registered here, before runner.setup freezes the signal lists.
     _register_stt_hooks(app)
+    # Same live-config watcher as start_dashboard: a headless gateway must pick
+    # up a CLI or $EDITOR write identically.
+    _register_config_watch(app, state, _cfg)
 
     # Prevent-sleep shutdown hook — registered before runner.setup freezes the
     # signal lists; the poll itself is armed after the port binds (below). This
@@ -4955,6 +5125,7 @@ async def start_api_server(
     # import before the bind).
     _kick_connections_warm_scavenge(state)
     _kick_session_search_index(state)
+    _kick_config_watch(app, state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 

@@ -7141,7 +7141,6 @@
         "err_env_override_with_ref": "<settingRef/> is set and overrides this setting. Unset it to change the model here."
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "Agent for pool processes. Empty uses default agent. Restart required.",
         "approval_mode": "Approval Mode",
         "auto": "auto",
         "auto_size_max": "Auto-Size Max",
@@ -7158,7 +7157,6 @@
         "immediate_auto_approves_all_tools_interactive_as": "Immediate. 'auto' approves all tools; 'interactive' asks before each.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Immediate. 'auto' enables sandbox for untrusted tools.",
         "kirocrew_agents": "{{productName}} Agents",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "Max age for pooled processes. 0 disables expiry. Restart required.",
         "max_channel_agents": "Max Channel Agents",
         "max_channels": "Max Channels",
         "max_concurrent_subagents": "Max Concurrent Subagents",
@@ -7170,7 +7168,6 @@
         "next_update_check_cycle": "Next update check cycle.",
         "no_agents_defined": "No agents defined",
         "no_memory_stores": "No memory stores",
-        "number_of_pre_spawned_processes_0_disables_resta": "Number of pre-spawned processes. 0 disables. Restart required.",
         "orchestrator_mode": "Orchestrator Mode",
         "pool_agent": "Pool Agent",
         "pool_size": "Pool Size",

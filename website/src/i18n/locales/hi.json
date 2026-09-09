@@ -8324,6 +8324,11 @@
       "guardrails_hint": "ऐसे कमांड जिन्हें कभी चलाने की अनुमति नहीं है।",
       "save_failed": "वह बदलाव सहेजा नहीं गया — फिर से प्रयास करें।",
       "origin_diff_failed": "परिवर्तनों की तुलना करने के लिए मूल टेम्पलेट लोड नहीं हो सका।"
+    },
+    "restartRequiredBadge": {
+      "label": "बदलाव के लिए पुनः आरंभ ज़रूरी",
+      "tooltip": "{{productName}} चलते समय यह सेटिंग बदली नहीं जा सकती। सहेजा गया मान बना रहता है और {{productName}} के अगले पुनः आरंभ पर लागू होगा (सेटिंग्स → परिचय, या वह टर्मिनल जहाँ से तुमने इसे चलाया)।",
+      "schema_unavailable": "यह जाँच नहीं हो सकी कि इस सेटिंग के लिए पुनः आरंभ आवश्यक है या नहीं।"
     }
   },
   "hooks": {
@@ -11062,7 +11067,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -11373,7 +11377,6 @@
         "err_env_override_with_ref": "<settingRef/> सेट है और इस सेटिंग को ओवरराइड करता है। यहां मॉडल बदलने के लिए इसे हटाएं।"
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "पूल प्रोसेस के लिए एजेंट। खाली छोड़ने पर डिफ़ॉल्ट एजेंट उपयोग होता है। पुनः आरंभ आवश्यक।",
         "approval_mode": "अनुमोदन मोड",
         "auto": "auto",
         "auto_size_max": "ऑटो-साइज़ अधिकतम",
@@ -11388,7 +11391,6 @@
         "disabled": "बंद",
         "embedding": "एम्बेडिंग",
         "embedding_provider": "एम्बेडिंग प्रोवाइडर",
-        "enable_conductor_skill_for_multi_agent_orchestra": "मल्टी-एजेंट ऑर्केस्ट्रेशन के लिए conductor स्किल चालू करें। रीस्टार्ट ज़रूरी है।",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli के ज़रिए डायनामिक MCP टूल डिस्कवरी चालू करें। अगले सत्र से लागू होगा।",
         "enabled": "चालू",
         "enforce_denied_commands": "अस्वीकृत कमांड लागू करें",
@@ -11397,7 +11399,6 @@
         "immediate_auto_enables_sandbox_for_untrusted_too": "तुरंत लागू। 'auto' अविश्वसनीय टूल के लिए सैंडबॉक्स चालू करता है।",
         "inherited_provider": "इनहेरिटेड ({{provider}})",
         "kirocrew_agents": "{{productName}} एजेंट",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है। पुनः आरंभ आवश्यक।",
         "max_channel_agents": "अधिकतम चैनल एजेंट",
         "max_channels": "अधिकतम चैनल",
         "max_concurrent_subagents": "अधिकतम समवर्ती सबएजेंट",
@@ -11413,13 +11414,11 @@
         "next_update_check_cycle": "अगले अपडेट जाँच चक्र में।",
         "no_agents_defined": "कोई एजेंट परिभाषित नहीं",
         "no_memory_stores": "कोई मेमोरी स्टोर नहीं",
-        "number_of_pre_spawned_processes_0_disables_resta": "पहले से स्पॉन किए गए प्रोसेस की संख्या। 0 से बंद। पुनः आरंभ आवश्यक।",
         "orchestrator_mode": "ऑर्केस्ट्रेटर मोड",
         "pool_agent": "पूल एजेंट",
         "pool_size": "पूल आकार",
         "pool_ttl": "पूल TTL",
         "provider": "प्रोवाइडर",
-        "restart_required_to_apply_changes": "{{description}} बदलाव लागू करने के लिए रीस्टार्ट ज़रूरी है।",
         "sandbox": "सैंडबॉक्स",
         "save": "सहेजें",
         "saved": "सहेजा गया",
@@ -11433,7 +11432,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "लेगेसी मोड उपयोग में — एजेंट टेम्पलेट के रूप में agent.default_agent",
         "warm_pool": "वॉर्म पूल",
         "workspace": "वर्कस्पेस",
-        "workspaces": "वर्कस्पेस"
+        "workspaces": "वर्कस्पेस",
+        "number_of_pre_spawned_processes_0_disables": "पहले से स्पॉन किए गए प्रोसेस की संख्या। 0 से बंद।",
+        "agent_for_pool_processes_empty_uses_default_agent": "पूल प्रोसेस के लिए एजेंट। खाली छोड़ने पर डिफ़ॉल्ट एजेंट उपयोग होता है।",
+        "warm_pool_description": "सत्र तुरंत शुरू करने के लिए ACP CLI प्रक्रियाएँ पहले से चालू करें।",
+        "max_age_for_pooled_processes_0_disables_expiry": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है।",
+        "enable_conductor_skill_for_multi_agent_orchestration": "मल्टी-एजेंट ऑर्केस्ट्रेशन के लिए conductor स्किल चालू करें।"
       },
       "mcpTab": {
         "actions": "कार्रवाइयाँ",
@@ -12697,7 +12701,8 @@
         "sdk_missing": "{{channel}} SDK इंस्टॉल करें",
         "sdk_missing_body": "{{channel}} चैनल को {{package}} पैकेज की आवश्यकता है, जो डिफ़ॉल्ट रूप से इंस्टॉल नहीं होता। इसे जोड़ने के लिए नीचे दी गई कमांड टर्मिनल में चलाएँ।",
         "sdk_restart_after_install": "इसके बाद {{channel}} चैनल शुरू करने के लिए गेटवे को पुनः आरंभ करें।",
-        "sdk_install_unsupported": "इस गेटवे का Python अतिरिक्त पैकेज इंस्टॉल नहीं कर सकता, इसलिए {{package}} यहाँ नहीं जोड़ा जा सकता। गेटवे को ऐसे Python परिवेश से चलाएँ जहाँ pip इंस्टॉल कर सके।"
+        "sdk_install_unsupported": "इस गेटवे का Python अतिरिक्त पैकेज इंस्टॉल नहीं कर सकता, इसलिए {{package}} यहाँ नहीं जोड़ा जा सकता। गेटवे को ऐसे Python परिवेश से चलाएँ जहाँ pip इंस्टॉल कर सके।",
+        "verified_and_saved": "{{channel}} से सत्यापित और सहेजा गया।"
       },
       "browserPanel": {
         "use_builtin_label": "बिल्ट-इन ब्राउज़र का उपयोग करें",
@@ -13633,7 +13638,8 @@
         "where_to_find_the_app_token": "ऐप टोकन कहाँ मिलेगा",
         "where_to_find_the_bot_token": "बॉट टोकन कहाँ मिलेगा",
         "manifest_unavailable": "Slack ऐप मैनिफ़ेस्ट लोड नहीं हो सका। सेटअप गाइड से ऐप को खुद बनाओ।",
-        "copy_manifest_failed": "मैनिफ़ेस्ट क्लिपबोर्ड पर कॉपी नहीं हो सका।"
+        "copy_manifest_failed": "मैनिफ़ेस्ट क्लिपबोर्ड पर कॉपी नहीं हो सका।",
+        "verified_and_saved": "Slack से सत्यापित और सहेजा गया।"
       },
       "sttSettings": {
         "language_auto": "भाषा अपने आप पहचानें",
@@ -13967,7 +13973,8 @@
         "empty_allowlist_hint": "कोई अनुमत ईमेल नहीं: बॉट हर मैसेज ठुकरा देता है। नीचे अपने Webex खाते का ईमेल जोड़ें।",
         "soft_threshold_must_be_1_to_100": "सॉफ़्ट कॉन्टेक्स्ट थ्रेशोल्ड 1 से 100 के बीच पूर्णांक होना चाहिए।",
         "hard_threshold_must_be_1_to_100": "हार्ड कॉन्टेक्स्ट थ्रेशोल्ड 1 से 100 के बीच पूर्णांक होना चाहिए।",
-        "soft_threshold_must_not_exceed_hard": "सॉफ़्ट थ्रेशोल्ड हार्ड से अधिक नहीं हो सकता — हार्ड पहले जाँचा जाता है, इसलिए बड़ा सॉफ़्ट मान कभी नहीं पहुँचेगा।"
+        "soft_threshold_must_not_exceed_hard": "सॉफ़्ट थ्रेशोल्ड हार्ड से अधिक नहीं हो सकता — हार्ड पहले जाँचा जाता है, इसलिए बड़ा सॉफ़्ट मान कभी नहीं पहुँचेगा।",
+        "verified_and_saved": "Webex से सत्यापित और सहेजा गया।"
       },
       "weixinPanel": {
         "allowed_user_ids": "अनुमत यूज़र ID",

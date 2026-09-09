@@ -8324,6 +8324,11 @@
       "guardrails_hint": "Befehle, die niemals ausgeführt werden dürfen.",
       "save_failed": "Diese Änderung wurde nicht gespeichert — bitte erneut versuchen.",
       "origin_diff_failed": "Die Originalvorlage konnte zum Vergleich nicht geladen werden."
+    },
+    "restartRequiredBadge": {
+      "label": "Änderungen erfordern Neustart",
+      "tooltip": "Diese Einstellung kann sich nicht ändern, während {{productName}} läuft. Der gespeicherte Wert bleibt erhalten und gilt beim nächsten Neustart von {{productName}} (Einstellungen → Über, oder das Terminal, aus dem du es gestartet hast).",
+      "schema_unavailable": "Es konnte nicht geprüft werden, ob diese Einstellung einen Neustart braucht."
     }
   },
   "hooks": {
@@ -11062,7 +11067,6 @@
         "model_auto": "auto (use chat model)",
         "pool_size_label": "Extraction pool size",
         "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
-        "requires_restart": "restart required",
         "auto_add_label": "Auto-add documents",
         "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
         "auto_artifacts_label": "Auto-add saved artifacts",
@@ -11373,7 +11377,6 @@
         "err_env_override_with_ref": "<settingRef/> ist gesetzt und überschreibt diese Einstellung. Entfernen Sie es, um das Modell hier zu ändern."
       },
       "kiroCrewCfgTab": {
-        "agent_for_pool_processes_empty_uses_default_agen": "Agent für Pool-Prozesse. Leer verwendet den Standardagenten. Neustart erforderlich.",
         "approval_mode": "Genehmigungsmodus",
         "auto": "automatisch",
         "auto_size_max": "Maximale automatische Größe",
@@ -11388,7 +11391,6 @@
         "disabled": "Deaktiviert",
         "embedding": "Embedding",
         "embedding_provider": "Embedding-Anbieter",
-        "enable_conductor_skill_for_multi_agent_orchestra": "Aktiviert den Conductor-Skill für die Orchestrierung mehrerer Agenten. Neustart erforderlich.",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Dynamische MCP-Werkzeugerkennung über kiro-cli aktivieren. Wird in der nächsten Sitzung wirksam.",
         "enabled": "Aktiviert",
         "enforce_denied_commands": "Verbotene Befehle erzwingen",
@@ -11397,7 +11399,6 @@
         "immediate_auto_enables_sandbox_for_untrusted_too": "Sofort. „auto“ aktiviert die Sandbox für nicht vertrauenswürdige Werkzeuge.",
         "inherited_provider": "übernommen ({{provider}})",
         "kirocrew_agents": "{{productName}}-Agenten",
-        "max_age_for_pooled_processes_0_disables_expiry_r": "Maximales Alter für Pool-Prozesse. 0 deaktiviert den Ablauf. Neustart erforderlich.",
         "max_channel_agents": "Max. Kanal-Agenten",
         "max_channels": "Max. Kanäle",
         "max_concurrent_subagents": "Max. gleichzeitige Subagenten",
@@ -11413,13 +11414,11 @@
         "next_update_check_cycle": "Nächster Aktualisierungsprüfzyklus.",
         "no_agents_defined": "Keine Agenten definiert",
         "no_memory_stores": "Keine Erinnerungsspeicher",
-        "number_of_pre_spawned_processes_0_disables_resta": "Anzahl vorab gestarteter Prozesse. 0 deaktiviert dies. Neustart erforderlich.",
         "orchestrator_mode": "Orchestrator-Modus",
         "pool_agent": "Pool-Agent",
         "pool_size": "Poolgröße",
         "pool_ttl": "Pool-TTL",
         "provider": "Anbieter",
-        "restart_required_to_apply_changes": "{{description}} Neustart erforderlich, damit die Änderungen wirksam werden.",
         "sandbox": "Sandbox",
         "save": "Speichern",
         "saved": "Gespeichert",
@@ -11433,7 +11432,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Legacy-Modus wird verwendet — agent.default_agent als Agenten-Vorlage",
         "warm_pool": "Warm-Pool",
         "workspace": "Workspace",
-        "workspaces": "Workspaces"
+        "workspaces": "Workspaces",
+        "number_of_pre_spawned_processes_0_disables": "Anzahl vorab gestarteter Prozesse. 0 deaktiviert dies.",
+        "agent_for_pool_processes_empty_uses_default_agent": "Agent für Pool-Prozesse. Leer verwendet den Standardagenten.",
+        "warm_pool_description": "Startet ACP-CLI-Prozesse vorab, damit Sitzungen sofort beginnen.",
+        "max_age_for_pooled_processes_0_disables_expiry": "Maximales Alter für Pool-Prozesse. 0 deaktiviert den Ablauf.",
+        "enable_conductor_skill_for_multi_agent_orchestration": "Aktiviert den Conductor-Skill für die Orchestrierung mehrerer Agenten."
       },
       "mcpTab": {
         "actions": "Aktionen",
@@ -12696,7 +12700,8 @@
         "sdk_missing": "{{channel}}-SDK installieren",
         "sdk_missing_body": "Der {{channel}}-Kanal benötigt das Paket {{package}}, das nicht standardmäßig installiert wird. Führen Sie den Befehl unten in einem Terminal aus, um es hinzuzufügen.",
         "sdk_restart_after_install": "Starten Sie anschließend das Gateway neu, um den {{channel}}-Kanal zu starten.",
-        "sdk_install_unsupported": "Das Python dieses Gateways kann keine zusätzlichen Pakete installieren, daher lässt sich {{package}} hier nicht hinzufügen. Führen Sie das Gateway in einer Python-Umgebung aus, in der pip installieren kann."
+        "sdk_install_unsupported": "Das Python dieses Gateways kann keine zusätzlichen Pakete installieren, daher lässt sich {{package}} hier nicht hinzufügen. Führen Sie das Gateway in einer Python-Umgebung aus, in der pip installieren kann.",
+        "verified_and_saved": "Mit {{channel}} verifiziert und gespeichert."
       },
       "browserPanel": {
         "use_builtin_label": "Integrierten Browser verwenden",
@@ -13632,7 +13637,8 @@
         "where_to_find_the_app_token": "Wo du das App-Token findest",
         "where_to_find_the_bot_token": "Wo du das Bot-Token findest",
         "manifest_unavailable": "Das Slack-App-Manifest konnte nicht geladen werden. Erstellen Sie die App manuell anhand der Einrichtungsanleitung.",
-        "copy_manifest_failed": "Das Manifest konnte nicht in die Zwischenablage kopiert werden."
+        "copy_manifest_failed": "Das Manifest konnte nicht in die Zwischenablage kopiert werden.",
+        "verified_and_saved": "Mit Slack verifiziert und gespeichert."
       },
       "sttSettings": {
         "language_auto": "Sprache automatisch erkennen",
@@ -13966,7 +13972,8 @@
         "empty_allowlist_hint": "Keine erlaubten E-Mail-Adressen: Der Bot weist jede Nachricht ab. Füge unten deine Webex-Konto-E-Mail hinzu.",
         "soft_threshold_must_be_1_to_100": "Der weiche Kontext-Schwellenwert muss eine ganze Zahl zwischen 1 und 100 sein.",
         "hard_threshold_must_be_1_to_100": "Der harte Kontext-Schwellenwert muss eine ganze Zahl zwischen 1 und 100 sein.",
-        "soft_threshold_must_not_exceed_hard": "Der weiche Kontext-Schwellenwert darf nicht höher als der harte sein — der harte wird zuerst geprüft, ein höherer weicher Wert würde also nie erreicht."
+        "soft_threshold_must_not_exceed_hard": "Der weiche Kontext-Schwellenwert darf nicht höher als der harte sein — der harte wird zuerst geprüft, ein höherer weicher Wert würde also nie erreicht.",
+        "verified_and_saved": "Mit Webex verifiziert und gespeichert."
       },
       "weixinPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",

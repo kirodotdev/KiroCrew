@@ -344,9 +344,11 @@ class TestSaveWritesEveryValidatedField:
         assert webex["hard_threshold_pct"] == 90
 
     def test_every_new_field_is_reported_as_applied(self, monkeypatch, tmp_path: Path) -> None:
-        # ``applied`` is what the UI reads to decide whether to show the restart
-        # hint, so a field missing from it is invisible to the operator.
-        resp, _env, _cfg = _save(
+        # ``applied`` is what feeds the restart hint, so a field missing from it
+        # is invisible to the operator. Every field here is reloaded by the
+        # config watcher, so a truthful hint is False -- which makes the
+        # persisted document, not the hint, the proof that all five were seen.
+        resp, _env, cfg = _save(
             monkeypatch,
             tmp_path,
             {
@@ -358,7 +360,13 @@ class TestSaveWritesEveryValidatedField:
             },
         )
         payload = json.loads(resp.body)
-        assert payload["restart_required"] is True
+        assert payload["restart_required"] is False
+        webex = json.loads(cfg.read_text(encoding="utf-8"))["webex"]
+        assert webex["allow_group_rooms"] is True
+        assert webex["allowed_room_ids"] == ["R1"]
+        assert webex["reply_in_thread"] is False
+        assert webex["soft_threshold_pct"] == 70
+        assert webex["hard_threshold_pct"] == 85
 
     def test_a_repeat_save_of_the_same_values_is_a_no_op(self, monkeypatch, tmp_path: Path) -> None:
         """Otherwise ``restart_required`` is permanently true.
