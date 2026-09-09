@@ -126,8 +126,15 @@ def test_the_newline_rule_is_scanning_real_calls() -> None:
     The failure mode that matters is the rule going quiet without anyone editing it,
     which is what happens if the writes move somewhere this walk does not look.
     """
+    # THREE, because two of the builder's reads take bytes and decode them afterwards: the
+    # prompt ceiling is named in BYTES, and ``read(n)`` on a text stream bounds CHARACTERS,
+    # so a 1048576-character three-byte-per-character persona measured 3145728 bytes while
+    # reporting itself within the limit. A binary ``os.fdopen`` takes no ``newline`` at all,
+    # which this module's own contract above calls out as demanding a TypeError -- so those
+    # two are outside this rule by construction rather than by having escaped it. The floor
+    # exists to catch the rule going quiet, and three calls still hold it to something.
     found = len(_text_write_calls())
-    assert found >= 4, (
+    assert found >= 3, (
         f"expected the builder's text read/write calls to be in scope, found {found} -- "
         "if the writes moved, re-point this walk"
     )
@@ -174,8 +181,13 @@ def test_MUTATION_translating_reader_aborts_the_build(tmp_path: pathlib.Path) ->
     """
     mod = load_build(
         mutate=(
-            'with os.fdopen(file_fd, "r", encoding="utf-8", newline="") as fh:\n            return fh.read()',  # noqa: E501
-            'return os.fdopen(file_fd, "r", encoding="utf-8").read()',
+            # The skill copy reads RAW BYTES through the shared file-read guard and decodes
+            # them separately, so newline translation has nowhere to happen; the only way to
+            # reintroduce it is at that decode. ``raw.decode`` is unique to the skill path --
+            # the other readers bind their bytes to ``data`` -- so the bare decode line is a
+            # safe anchor and mutating it refuses on the skill the content pin protects.
+            '            text = raw.decode("utf-8")',
+            '            text = raw.decode("utf-8").replace("\\r\\n", "\\n")',
         )
     )
     home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "placeholder"}})
@@ -202,12 +214,14 @@ def test_MUTATION_translating_writer_aborts_the_build(tmp_path: pathlib.Path) ->
     present and unique before mutating, because an anchor that silently stops matching is how
     this test once passed while proving nothing.
     """
-    anchor = "            fh.write(data)"
+    anchor = "                fh.write(bytes(data))"
     assert BUILD_PY.read_text(encoding="utf-8").count(anchor) == 1, (
         "the mutation anchor is not unique, so replace(..., 1) may target the wrong call "
         "and this test would pass without exercising the guarded write"
     )
-    mod = load_build(mutate=(anchor, '            fh.write(data.replace(b"\\n", b"\\r\\n"))'))
+    mod = load_build(
+        mutate=(anchor, '                fh.write(bytes(data).replace(b"\\n", b"\\r\\n"))')
+    )
     home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ"}})
     (home / "skills" / "faq" / "SKILL.md").write_bytes(b"# FAQ\nline one\nline two\n")
 

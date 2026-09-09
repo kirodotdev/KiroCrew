@@ -19,13 +19,16 @@ contract points at: ``_bundle_digest``). This module ports THAT, because a port
 of the named files would ship no curation at all -- and "a port that loosens
 this is worse than no port".
 
-The port is self-contained on purpose. ``crew_export`` imports
-``kiro_crew.config.paths``, ``kiro_crew.knowledge.store``,
-``kiro_crew.deploy.scan`` and ``kiro_crew.security``; NONE of those are importable
-in this app's venv (it carries boto3 / fastapi / pydantic / pytest only, and no
-PyYAML), so the curation plan is JSON rather than YAML and the credential
-scanner is a self-contained subset of ``kiro_crew.deploy.scan`` -- see
-``_HARD_PATTERNS`` and the report note about it.
+The port is NOT self-contained: it requires ``kiro_crew`` for its security
+verdicts. ``crew_export`` imports ``kiro_crew.config.paths``,
+``kiro_crew.knowledge.store``, ``kiro_crew.deploy.scan`` and
+``kiro_crew.security``; when the app venv lacks PyYAML the curation plan is JSON
+rather than YAML, and some credential helpers keep an import-free subset
+fallback (see ``_HARD_PATTERNS`` and the report note about it). But the
+security-verdict authorities are mandatory: ``kiro_crew.hooks`` (UNC-shape) and
+``kiro_crew.security.is_sensitive_path`` own the sensitive-path and credential
+verdict, and the build FAILS CLOSED -- it refuses rather than running -- when
+either is unimportable, so it must run where ``kiro_crew`` is installed.
 
 THE DENY-BY-DEFAULT SEAM, PRESERVED
 -----------------------------------
@@ -74,7 +77,6 @@ import json
 import math
 import os
 import re
-import shutil
 import stat
 import sys
 import uuid
@@ -110,6 +112,10 @@ _STAGING_OWNED_TOP_LEVEL: frozenset[str] = frozenset(
 #: because both describe what this build writes at the top level; what differs is that only one
 #: of them can have nothing inside it.
 _BUILD_WRITES_EMPTY: frozenset[str] = frozenset({"skills"})
+
+
+_MAX_PROMPT_BYTES = 1024 * 1024
+_MAX_REDIRECT_HOPS = 8
 
 
 def _is_shape_this_build_never_writes(p: "Path") -> bool:
@@ -186,6 +192,30 @@ try:  # pragma: no cover - exercised by whichever branch the environment allows
 except Exception:  # pragma: no cover
     _AWS_KEY_PREFIXES = "AKIA|ASIA"
 
+# The vendor and forge token spellings are imported from the shared module so this
+# subset cannot drift from the scrubber: a format added there reaches here with no
+# edit, and no one-sided omission can hide. The fallback restates the same shapes
+# for the standalone case where ``kiro_crew`` is not importable at all -- with the
+# hyphen INSIDE the ``sk-proj-`` / ``sk-ant-`` classes and a length-flexible
+# ``github_pat_``, the two spellings whose drifted forms had leaked.
+try:  # pragma: no cover - exercised by whichever branch the environment allows
+    from kiro_crew.credential_patterns import VENDOR_TOKEN_PATTERNS as _VENDOR_TOKEN_PATTERNS
+except Exception:  # pragma: no cover
+    _VENDOR_TOKEN_PATTERNS = (
+        ("openai-project-key", r"sk-proj-[A-Za-z0-9_-]{16,}"),
+        ("anthropic-key", r"sk-ant-[A-Za-z0-9_-]{16,}"),
+        ("vendor-key", r"sk-[A-Za-z0-9]{20,}"),
+        ("github-fine-grained-pat", r"github_pat_[A-Za-z0-9_]{40,}"),
+        ("gitlab-pat", r"glpat-[A-Za-z0-9_-]{16,}"),
+        ("npm-token", r"npm_[A-Za-z0-9]{24,}"),
+        ("pypi-token", r"pypi-[A-Za-z0-9_-]{16,}"),
+    )
+
+#: The vendor/token fragments compiled with word boundaries for the standalone scan.
+_VENDOR_TOKEN_COMPILED: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (label, re.compile(rf"\b{fragment}\b")) for label, fragment in _VENDOR_TOKEN_PATTERNS
+)
+
 _HARD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("aws-access-key", re.compile(rf"\b(?:{_AWS_KEY_PREFIXES})[0-9A-Z]{{16}}\b")),
     # A LABELLED secret. The pattern above matches an AWS key ID, which has a
@@ -221,13 +251,13 @@ _HARD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # rather than eyeballed.
     ("ssh-public-key", re.compile(r"\b(?:ssh-rsa|ssh-ed25519)[\s+%]")),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b")),
-    # The fine-grained PAT form, which the classic ``gh[pousr]_`` pattern above does not
-    # match: ``github_pat_`` then a 22-char base62 id, an underscore, and a 59-char base62
-    # secret. Standalone is the REAL scan path in the deployment venv, so a format the local
-    # set misses ships unscanned there -- measured against the fine-grained token shape.
-    ("github-fine-grained-pat", re.compile(r"\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b")),
     ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
-    ("vendor-key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    # Vendor and forge API tokens (OpenAI project/vendor, Anthropic, fine-grained
+    # GitHub PAT, GitLab PAT, npm, PyPI) sourced from the shared module above so the
+    # standalone subset stays in lockstep with the scrubber. The fine-grained PAT and
+    # the ``sk-proj-`` / ``sk-ant-`` forms are the shapes whose hand-restated spellings
+    # here had drifted and shipped credentials unscanned in the deployment venv.
+    *_VENDOR_TOKEN_COMPILED,
     # A JWT (three base64url segments split by dots, header starting ``eyJ``). Bearer tokens,
     # session tokens and signed credentials arrive in this shape pasted into a persona, and
     # the local set had no way to see one. The header segment is anchored on ``eyJ`` (``{"``
@@ -694,16 +724,20 @@ def _staged_tree_hash(staged_dir: Path, source_dir: Path, written: "set[str]") -
     """``_tree_hash`` of the staged copy, restated in the SOURCE's terms.
 
     The pin was taken by ``_tree_hash`` over every file in the source. The copy does
-    not ship every file: ``_copy_skill`` drops binary assets, because a file it cannot
-    decode is a file it cannot scan. So hashing the staged directory alone can never
-    equal the pin for a skill carrying an image, and comparing them directly would
-    refuse a legitimate skill -- which is what the first version of this check did.
+    not ship every source file. Two dispositions are distinct and only one produces a
+    gap this hash must reconcile. A file ``_copy_skill`` cannot decode as UTF-8 (a file
+    it cannot scan cannot be certified clean) is REFUSED outright -- the build stops, so
+    it never reaches this hash. What the copy legitimately omits is different: a source
+    file the selection did not pick up (a subtree with no selected ``SKILL.md`` of its
+    own) is skipped, so it is in the source ``_tree_hash`` but not in staging. Hashing
+    the staged directory alone therefore can never be assumed equal to the pin, and
+    comparing them directly would refuse a legitimate skill that carries such an omission.
 
     So the rows are built from the staged bytes where a file shipped, and from the
-    SOURCE bytes only for the files the copy deliberately dropped. The security
+    SOURCE bytes only for the source files the copy legitimately omitted. The security
     property is preserved where it matters: every file whose bytes reach the bundle is
     hashed from the copy that reaches it, so a mid-copy rewrite of a shipped file
-    changes this value. A rewrite of a DROPPED file is not covered, and cannot matter,
+    changes this value. A rewrite of an OMITTED file is not covered, and cannot matter,
     because those bytes are not in the artifact.
 
     A path that exists in STAGING but not in the source ships bytes no reviewer approved.
@@ -712,9 +746,9 @@ def _staged_tree_hash(staged_dir: Path, source_dir: Path, written: "set[str]") -
     row, so a staged-only injection changes this value and the caller's pin comparison
     refuses it. This does not break the equality the pin needs, because a legitimate copy
     is a SUBSET of the source (``_copy_skill`` only ever writes source-derived files and
-    drops some) -- so a clean build produces zero staged-only rows and still equals
+    omits some) -- so a clean build produces zero staged-only rows and still equals
     ``_tree_hash(source)``. The intentional omissions run the other way (source files the
-    copy dropped), and those are covered by the source-keyed rows above, not here.
+    copy did not select), and those are covered by the source-keyed rows above, not here.
     """
 
     rows: list[list[str]] = []
@@ -738,7 +772,20 @@ def _staged_tree_hash(staged_dir: Path, source_dir: Path, written: "set[str]") -
                 f"whatever it now points at. Re-run the build."
             )
         if shipped.is_file():
-            rows.append([rel, _sha(shipped.read_bytes())])
+            # Read the staged leaf through the whole-window no-follow reader, not
+            # ``read_bytes`` (which follows a link). A staged file swapped to a link after it
+            # was written would otherwise be hashed THROUGH the link, pinning the target's
+            # bytes as the shipped content. ``None`` means the leaf is a link/junction or torn
+            # at read time -- a staged tree that changed after this build wrote it, refused
+            # rather than counted.
+            data = _read_bytes_openat(staged_dir, Path(rel))
+            if data is None:
+                raise ExportRefused(
+                    f"the staged file {rel} is a link or junction, or changed, at hashing "
+                    f"time; it was redirected after this build wrote it. Refusing rather than "
+                    f"pin the bytes of whatever it now points at. Re-run the build."
+                )
+            rows.append([rel, _sha(data)])
         elif rel in written:
             # ``_copy_skill`` WROTE this file, and it is gone from staging now -- removed or
             # replaced between the write and this read-back. That is a torn staged tree, not a
@@ -756,20 +803,54 @@ def _staged_tree_hash(staged_dir: Path, source_dir: Path, written: "set[str]") -
             # nested skill. The pin (``_tree_hash`` over the whole source) still covers it, so
             # its source bytes keep the equality; its bytes are not in the artifact, so a source
             # change to it cannot matter. This is the ONLY legitimate not-staged case now that
-            # ``_copy_skill`` refuses (never silently drops) an unscannable file.
-            rows.append([rel, _sha(p.read_bytes())])
+            # ``_copy_skill`` refuses (never silently drops) an unscannable file. Read no-follow
+            # through the whole-window reader like every other read here: a source leaf swapped
+            # to a link between the walk and the read is refused, not hashed through.
+            data = _read_bytes_openat(source_dir, Path(rel))
+            if data is None:
+                raise ExportRefused(
+                    f"the source file {rel} is a link or junction, or changed, at hashing "
+                    f"time. Refusing rather than fold in the bytes of whatever it now points "
+                    f"at. Re-run the build."
+                )
+            rows.append([rel, _sha(data)])
     # Staged-only files: present in what ships, absent from the reviewed source. A clean
     # copy has none (staging is a subset of source), so this adds nothing to a legitimate
     # build's hash and the pin equality holds; an added-then-removed mid-copy file leaves a
     # staged path with no source row, which lands here and breaks the equality so the build
-    # refuses. Judged by ``lstat`` shape like the source walk (a link or junction is not a
-    # shipped regular file and its target is out of the artifact).
+    # refuses. This walks the SHIPPING tree, so an entry that cannot be hashed is REFUSED, not
+    # skipped: passing over a redirect or a special file leaves shipping content out of the
+    # hash meant to cover it -- the same subset-of-what-ships hole the bundle digest closes.
+    # Only a genuine directory is skipped (its children are walked; it has no bytes).
     for p in _walk_no_reparse(staged_dir):
-        if not p.is_file() or p.is_symlink():
-            continue
         rel = p.relative_to(staged_dir).as_posix()
+        if _is_redirecting_entry(p):
+            raise ExportRefused(
+                f"the staged file {rel} is a link or junction at hashing time; it was "
+                f"redirected after this build wrote it. Refusing rather than leave a redirect "
+                f"out of the tree hash. Re-run the build."
+            )
+        if p.is_dir():
+            continue
+        if not p.is_file():
+            raise ExportRefused(
+                f"the staged entry {rel} is not a regular file (a special file), so it cannot "
+                f"be hashed; refusing rather than leave shipping content out of the tree hash. "
+                f"Re-run the build."
+            )
         if rel not in source_rels:
-            rows.append(["staged-only:" + rel, _sha(p.read_bytes())])
+            # Staged-only content SHIPS, so it is read no-follow through the whole-window
+            # reader, and a leaf that cannot be read as a regular in-tree file is REFUSED, not
+            # skipped -- a skipped shipping file is exactly the subset-of-what-ships hole this
+            # loop exists to close.
+            data = _read_bytes_openat(staged_dir, Path(rel))
+            if data is None:
+                raise ExportRefused(
+                    f"the staged file {rel} is a link or junction, or changed, at hashing "
+                    f"time. Refusing rather than leave a redirect out of the tree hash. "
+                    f"Re-run the build."
+                )
+            rows.append(["staged-only:" + rel, _sha(data)])
     return _sha(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
@@ -780,14 +861,58 @@ def _tree_hash(root: Path) -> str:
     content pin needs. Modelled on ``crew_export/candidates.py``'s skill
     ``tree_hash``, widened to hash every file rather than only ``SKILL.md`` so an
     edit to any file in the skill invalidates approval.
+
+    The pin is taken over the bytes that SHIP, so each file is read through the same
+    authority the copy reads it through: ``hooks.safe_read_file_bytes_nolink`` opens the leaf
+    ``O_NOFOLLOW`` and fstats the descriptor it opened, refusing a hard link (``st_nlink >
+    1``), a sensitive path, or a non-regular file -- the identity a name check and
+    ``_redirect_between`` cannot see. Hashing ``read_bytes()`` instead would pin the bytes of
+    a link target or a hard-linked credential swapped in after the enumeration scan cleared
+    the file, so the pin would certify content the copy then refuses. A file the guard
+    rejects, an oversized file, or one reached through a redirecting component is REFUSED
+    here, not skipped: a skipped file is content the pin does not cover. A leaf symlink is
+    passed over exactly as the copy and the scan pass it over, so the pin stays equal to what
+    ships.
     """
+    try:
+        from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+    except ImportError as exc:
+        raise ExportRefused(
+            f"cannot hash {root} safely, because kiro_crew.hooks is not importable here "
+            f"({exc}). That module holds the sensitive-path and hard-link rules this pin has "
+            f"to be taken under, and a local approximation of them is not the same check."
+        ) from exc
     rows: list[list[str]] = []
     for p in _walk_no_reparse(root):
-        # ``is_symlink()`` misses a junction, which ``rglob`` descends into: hashing a file
-        # under a junction would fold bytes from outside ``root`` into the tree hash. Skip any
-        # file reached through a redirecting component so the hash covers only in-tree content.
-        if p.is_file() and not p.is_symlink() and _redirect_between(root, p) is None:
-            rows.append([p.relative_to(root).as_posix(), _sha(p.read_bytes())])
+        if not p.is_file() or p.is_symlink():
+            continue
+        # ``is_symlink()`` misses a junction, which ``rglob`` descends into: a file reached
+        # through a redirecting component lives outside ``root``, so folding its bytes into
+        # the pin folds in content that is not the skill's. Refuse it rather than skip it --
+        # the copy refuses the same file, and a skipped file leaves the pin covering less
+        # than what ships.
+        redirect = _redirect_between(root, p)
+        if redirect is not None:
+            raise ExportRefused(
+                f"{p.relative_to(root).as_posix()} is reached through a link or junction at "
+                f"{redirect.relative_to(root).as_posix()}; its bytes live outside {root}. "
+                f"Refusing to fold content reached through a redirect into the content pin."
+            )
+        try:
+            data = safe_read_file_bytes_nolink(str(p), str(root), max_bytes=_MAX_PROMPT_BYTES)
+        except FileTooLargeError:
+            raise ExportRefused(
+                f"{p.relative_to(root).as_posix()} is above the {_MAX_PROMPT_BYTES} byte "
+                f"ceiling, so it cannot be certified clean and cannot be pinned. Trim it, or "
+                f"ship it outside the bundle."
+            ) from None
+        if data is None:
+            raise ExportRefused(
+                f"the file-read guard refuses {p.relative_to(root).as_posix()} (it is "
+                f"sensitive, a link, hard-linked to another name, not a regular file, or "
+                f"unreadable), so it cannot be certified clean and must not be pinned."
+            )
+        rows.append([p.relative_to(root).as_posix(), _sha(data)])
     return _sha(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
@@ -825,41 +950,357 @@ def _read_text(path: Path) -> str | None:
         return None
 
 
-def _read_text_nofollow(path: Path) -> str | None:
-    """Read *path* as UTF-8, refusing a symlink at the OPEN, not before it.
+def _within(path: Path, root: Path) -> bool:
+    """Is *path* inside *root*, judged without resolving either side's links."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
-    ``_read_text`` opens through ``pathlib``, which follows a final-component link,
-    so a caller that first checks ``is_file()`` and then reads has a check/read
-    window: a concurrent writer with access to the source tree can loop-swap the
-    file for a symlink between the two and be read through. Opening with
-    ``O_NOFOLLOW`` collapses the check and the read into one syscall -- there is no
-    moment between them to win -- so the link is refused by the kernel at open time
-    rather than by a separate stat that the read then races. Returns ``None`` on a
-    link, a FIFO (``O_NONBLOCK`` keeps the open from hanging), a non-UTF-8 body, or
-    any other open error, exactly like ``_read_text``.
+
+def _resolve_prompt_path(raw: str, agents_dir: Path, *, resolved_root: Path | None = None) -> Path:
+    target = raw[len("file://") :]
+    # A NUL first, ahead of the UNC gate and every path construction below. The target comes
+    # from the crew's agent spec, so its bytes are someone else's choice, and Python raises a
+    # bare ValueError from the C boundary the moment a NUL-bearing string reaches a syscall:
+    # measured, a spec carrying "file://per\x00sona.md" left ValueError uncaught on all three
+    # branches -- relative, absolute, and a NUL alone -- and it reached the CLI as a traceback
+    # rather than a refusal naming the spec.
+    #
+    # Checked on the STRING because that is the only place it can be checked. ``Path`` itself
+    # accepts the NUL and defers the error to the first syscall, so there is no later point
+    # that is both reachable and still able to name the reference.
+    if "\x00" in target:
+        raise ExportRefused(
+            f"the prompt reference {raw!r} contains a NUL byte, which cannot name a file on "
+            f"any platform. Fix the reference in the agent spec."
+        )
+    # Resolved ONCE, here, and reused by every containment question below. Each extra
+    # ``.resolve()`` is another chance to follow a link planted since the last one.
+    # Guarded like the resolution further down. A cycle in the AGENTS directory itself is
+    # reached before either branch below runs: measured, a two-link cycle at ``agents/``
+    # raised RuntimeError out of the CLI for a relative target and an absolute one alike.
+    # ``resolve()`` reports a loop as OSError(ELOOP) on some libcs and RuntimeError on
+    # others, so both are caught.
+    # ONE reading of the tree, and the caller may own it. Resolving here as well as in the
+    # caller gave the two of them separate answers, and a writable agents directory replaced
+    # between the two made both answers self-consistent about DIFFERENT trees: the
+    # replacement's anchor and the replacement's persona each passed their own check, and the
+    # attacker's bytes were signed into ``agent.json``. A caller that has already resolved the
+    # root hands it in, so there is one answer for both of them to be judged against.
+    if resolved_root is not None:
+        agents_root = resolved_root
+    else:
+        try:
+            agents_root = agents_dir.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise ExportRefused(
+                f"the agents directory {agents_dir} cannot be resolved ({exc}), so a prompt "
+                f"reference cannot be judged against it. Check the crew directory for a link "
+                f"loop."
+            ) from None
+    # BEFORE `Path(target)` and before any resolution, because on Windows resolving a
+    # UNC path IS the outbound SMB probe -- `hooks.validate_file_path` says exactly that
+    # in its own docstring: "the Windows UNC trusted-root gate (BEFORE any resolution --
+    # realpath on a UNC path is itself the outbound SMB probe)". An agent spec carrying
+    # `file:////attacker/share/persona.md` therefore reached the attacker's host through
+    # `path.resolve()` below, ahead of every fence in this function, and a Windows SMB
+    # touch hands over an NTLM exchange.
+    #
+    # The gate is IMPORTED rather than restated. This repo already owns the rule, and a
+    # second spelling of it is the mistake this branch has now paid for seven times. The
+    # trusted-root allowance comes along with it, so a persona that legitimately lives on
+    # a share the operator configured still resolves.
+    #
+    # nt-scoped to match hooks: on POSIX a leading `//` names no network location, and
+    # refusing it here would reject a legitimate absolute path written with a doubled
+    # slash while protecting nothing.
+    if os.name == "nt":
+        # Fail CLOSED when the import is unavailable, which is the standalone venv on
+        # Windows. The opposite of the agent-spec fence, and for the opposite reason: there
+        # the read is the tool's whole purpose and a coarse local list can answer the
+        # question, while here the question is whether resolving this path reaches a host
+        # over SMB -- and an unanswerable version of that question is not a reason to
+        # resolve it anyway. Refusing costs the operator one copy of the persona; a bare
+        # ModuleNotFoundError costs them an uncaught crash mid-build.
+        try:
+            from kiro_crew.hooks import is_unc_shape, unc_probe_allowed
+        except ImportError as exc:
+            raise ExportRefused(
+                f"cannot judge whether the prompt URI {raw!r} names a UNC path, because "
+                f"kiro_crew.hooks is not importable here ({exc}). Resolving it could reach "
+                f"a host over SMB before any check runs, so it is refused rather than "
+                f"resolved unchecked. Copy the persona next to the agent spec and reference "
+                f"it by name, or run this build where kiro_crew is installed."
+            ) from exc
+
+        if is_unc_shape(target) and not unc_probe_allowed(target):
+            raise ExportRefused(
+                f"prompt URI {raw!r} is a UNC path outside the trusted roots. Resolving "
+                f"it would reach that host over SMB before this build could check "
+                f"anything about it, and a Windows SMB touch carries an NTLM exchange. "
+                f"Copy the persona next to the agent spec and reference it by name."
+            )
+    path = Path(target)
+    if not path.is_absolute():
+        # The UNRESOLVED chain is checked BEFORE ``resolve()``, because resolve is itself the
+        # traversal. Two things were wrong with checking afterwards.
+        #
+        # First, resolve() on Windows follows a reparse point, and following one that points
+        # at a share IS the outbound SMB probe with its NTLM exchange. The UNC gate above
+        # only sees a UNC path written literally in the target string, so a junction reaching
+        # the same host was not covered by it and the probe happened before any fence ran.
+        #
+        # Second, resolve() COLLAPSES the links, so a check placed after it inspects the
+        # targets and cannot see that a link was ever there. An implementation of
+        # this branch walked the components of the resolved path looking for reparse points
+        # and could never have found one; it passed its own tests only because those called
+        # it directly with an unresolved path, which is not what this call site hands it.
+        _refuse_redirects_in_chain(agents_dir, target)
+        try:
+            path = (agents_dir / target).resolve()
+        except (OSError, RuntimeError) as exc:
+            raise ExportRefused(
+                f"prompt reference {raw!r} cannot be resolved ({exc}). Point it at the "
+                f"persona file itself rather than through a link loop."
+            ) from None
+        try:
+            path.relative_to(agents_root)
+        except ValueError:
+            raise ExportRefused(f"prompt URI {raw!r} escapes the agents directory") from None
+    elif os.name == "nt":
+        # On the absolute branch the fence is NOT a ban on links.
+        #
+        # A symlink at the prompt path is a SUPPORTED case: the design permits a persona
+        # outside the agents directory and protects it by checking the RESOLVED target against
+        # this repository's sensitive-path fence, which
+        # ``test_a_symlink_to_a_legitimate_persona_still_works`` pins. Walking the absolute
+        # path and refusing every redirect was tried and it reddened that test plus four more
+        # -- it protected the supported case out of existence.
+        #
+        # What the relative branch's walk buys that the target check cannot is narrower than it
+        # looks: on Windows, ``resolve()`` following a reparse point that names a SHARE is
+        # itself the outbound SMB probe, carrying an NTLM exchange before any fence has read
+        # anything. The UNC gate above only sees a share written literally in the target
+        # string, so a reparse point reaching one is the gap -- and it is the only gap, because
+        # everything else a redirect can do is caught by the target check after resolution.
+        #
+        # So the components are read with ``readlink``, which does NOT traverse, and only a
+        # redirect whose target has UNC shape is refused. nt-scoped because there is no such
+        # probe elsewhere: on POSIX a leading ``//`` names no network location, which is the
+        # same reason the UNC gate above is nt-scoped.
+        # Imported bare, and that is deliberate. The nt branch at the top of this function
+        # imports the same module unconditionally and refuses when it is unavailable, so any
+        # call that reaches HERE has already proven the import succeeds. A second try/except
+        # would be a guard no input can trigger: an ImportError case that cannot happen reads
+        # as protection while testing nothing, and one was written here and removed after a
+        # mutation showed every test still passed with it gone.
+        from kiro_crew.hooks import is_unc_shape as _unc
+
+        probe = Path(path.anchor)
+        for part in path.relative_to(path.anchor).parts:
+            probe = probe / part
+            if not _is_redirecting_entry(probe):
+                continue
+            # The whole CHAIN, not just the first hop. Checking only the immediate target
+            # left link -> link -> share open: the first readlink returns a local path, the
+            # UNC test says no, and ``resolve()`` then follows the rest of the chain to the
+            # share anyway. One hop is not a fence when hops compose.
+            #
+            # ``readlink`` is used rather than ``resolve()`` on purpose: it reads the link's
+            # own contents and traverses nothing, so walking the chain by hand never performs
+            # the probe this exists to prevent. Bounded at _MAX_REDIRECT_HOPS because a link
+            # cycle would otherwise spin here; a chain that long is refused rather than
+            # followed further, since anything needing that many hops is not a persona path.
+            hop = probe
+            for _ in range(_MAX_REDIRECT_HOPS):
+                try:
+                    dest = os.readlink(hop)
+                except OSError as exc:
+                    if exc.errno in (errno.EINVAL, errno.ENOENT):
+                        # Not a link, or nothing there: the ordinary end of the walk.
+                        break
+                    # Anything else means this hop EXISTS and could not be inspected, which
+                    # is not the same fact. Breaking on it would end the redirect walk early
+                    # and let the resolution below follow a hop nothing had judged.
+                    raise ExportRefused(
+                        f"{hop} on the path to the prompt file could not be inspected "
+                        f"({exc}), so whether it redirects is unknown. Fix its permissions "
+                        f"or copy the persona next to the agent spec."
+                    ) from None
+                if _unc(str(dest)):
+                    raise ExportRefused(
+                        f"{probe} on the path to the prompt file redirects to {dest!r}, which "
+                        f"names a network share. Resolving this path would reach that host "
+                        f"over SMB before anything could be checked, and a Windows SMB touch "
+                        f"carries an NTLM exchange. Copy the persona next to the agent spec."
+                    )
+                nxt = Path(dest)
+                hop = nxt if nxt.is_absolute() else hop.parent / nxt
+                # This hop came out of a link's CONTENTS, so nothing has walked the path
+                # that reaches it. ``lstat`` on it crosses whatever its ancestors are, and
+                # a junction among them naming a share is the outbound SMB touch with its
+                # NTLM exchange -- the thing this whole walk exists to avoid, reached by a
+                # path the walk never judged. Screen the ancestors first, from the hop's own
+                # anchor down, where each ``lstat`` only crosses components already cleared.
+                _refuse_share_reached_through_ancestors(hop)
+                if not _is_redirecting_entry(hop):
+                    break
+            else:
+                raise ExportRefused(
+                    f"{probe} on the path to the prompt file starts a chain of more than "
+                    f"{_MAX_REDIRECT_HOPS} redirects. Where it ends cannot be established "
+                    f"without following it, which is the thing this check exists to avoid. "
+                    f"Copy the persona next to the agent spec."
+                )
+    # ONE resolution, and every check below runs on its result. An earlier version
+    # resolved the target for the credential fences but left this pseudo-filesystem
+    # loop testing the path as written, so a symlink to /proc/self/environ passed
+    # all three: the link is not under /proc, and /proc is not a credential
+    # location. The read then followed the link and inlined the deploy process's
+    # environment into the shipped prompt, where scan_text catches only
+    # credential-SHAPED text and a secret in another format survives.
+    #
+    # Containment under agents_dir is deliberately NOT required: an absolute
+    # persona path outside that directory is a supported case with its own test.
+    #
+    # ``resolved`` is a DISTINCT name rather than a reassignment of ``target``.
+    # The two are different things -- the URI as written versus what it points at
+    # -- and collapsing them into one name is how the symlink bug above was
+    # written in the first place: every check read ``target`` and it was not
+    # obvious which of the two any given line meant. mypy rejects the reassignment
+    # outright (``target`` is the ``str`` sliced off ``raw``), which is the type
+    # checker naming the same problem.
+    # A symlink cycle DOES reach this line, and only on one of the two paths in. The chain
+    # walk that catches a -> b -> a runs in the RELATIVE branch above; an absolute
+    # ``file://`` target skips it and arrives here with the cycle intact, where ``resolve()``
+    # raises ``RuntimeError`` (glibc ELOOP) straight out of the CLI as a traceback. Measured
+    # -- an absolute two-link cycle produced ``RuntimeError: Symlink loop from ...``.
+    #
+    # An earlier guard here WAS removed as unreachable, and that judgement was right about
+    # the case it was tested on and wrong about this one: the cycle test it came with used a
+    # relative target, so the chain walk answered first and the guard looked dead.
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        raise ExportRefused(
+            f"prompt URI {raw!r} cannot be resolved: its path leads through a symlink "
+            f"loop. Point the prompt at the persona file itself."
+        ) from None
+    posix = resolved.as_posix()
+    for root in ("/proc", "/sys", "/dev"):
+        if posix == root or posix.startswith(root + "/"):
+            raise ExportRefused(
+                f"prompt URI {raw!r} resolves to {resolved}, inside a "
+                f"pseudo-filesystem. Those files are process and kernel state, not "
+                f"a persona, and one of them is this deploy process's own "
+                f"environment."
+            )
+    # The repo's own fence, when this module can reach it. The local predicates
+    # below are a deliberate self-contained subset, and three review passes in a
+    # row found one more thing that subset does not name (a kubeconfig, then a
+    # symlink, then a git credential store). A denylist needing a new entry per
+    # review pass is the wrong shape here, so prefer the shared implementation
+    # and keep the local pair as the fallback that preserves this module's ability
+    # to run without kiro_crew importable.
+    try:
+        from kiro_crew.security import is_sensitive_path
+
+        _shared_fence: Callable[[str], bool] | None = is_sensitive_path
+    except Exception:
+        _shared_fence = None
+    # FAIL CLOSED when the shared fence is unreachable, rather than continuing on the local
+    # subset. The fallback was written to preserve this module's ability to run without
+    # ``kiro_crew`` importable, and that intent is fine -- but the thing it falls back to is
+    # a denylist that three consecutive review passes each found one more hole in (a
+    # kubeconfig, a symlink, a git credential store). Continuing on it means an environment
+    # where the import fails is an environment where ``file://~/.git-credentials`` is read
+    # and bundled, and nothing in the output says the weaker check was the one that ran.
+    #
+    # An EXTERNAL prompt reference is the only thing this gates, so the refusal costs a
+    # feature that reaches outside the crew directory, not the ordinary case. A crew whose
+    # prompt is inline, or a file beside the spec, is unaffected.
+    if _shared_fence is None:
+        raise ExportRefused(
+            f"cannot check whether prompt URI {raw!r} points at sensitive material: this "
+            f"repository's own path fence (kiro_crew.security.is_sensitive_path) is not "
+            f"importable here. The local checks below are a deliberate subset and have "
+            f"been found short three times, so an external prompt reference is refused "
+            f"rather than judged by them. Inline the prompt, or run where kiro_crew "
+            f"is importable."
+        )
+    if _shared_fence(posix):
+        raise ExportRefused(
+            f"prompt URI {raw!r} resolves to {resolved}, which this repository "
+            f"treats as a sensitive path. A prompt may reference an agent persona, "
+            f"not credential or key material."
+        )
+    if refused_by_name(resolved) or refused_by_name(path):
+        raise ExportRefused(f"prompt URI {raw!r} points at a credential location")
+    if refused_by_location(resolved) or refused_by_location(path):
+        raise ExportRefused(
+            f"prompt URI {raw!r} resolves to {resolved}, inside a credential "
+            f"directory; the file is not read. Its contents cannot be trusted to "
+            f"be scannable (a kubeconfig's certificate is base64 and may match no "
+            f"credential pattern), so it is refused before any read rather than "
+            f"read and then scanned."
+        )
+    return path
+
+
+def _read_text_nofollow(path: Path) -> str | None:
+    """Read text through one descriptor, refusing a final-component redirect at the open.
+
+    Returns ``None`` for everything it cannot read -- a link, a special file, a missing file,
+    a non-UTF-8 body. Size is not among them: the read here is unbounded, and the one caller
+    that needs a ceiling applies it itself. That is the contract its five callers are written
+    against: each words its own refusal, which is why the agent-spec path says "agent spec"
+    where the plan path says "curation plan".
+
+    There is no anchored-walk variant here. The prompt read, the only caller that wanted one,
+    goes through ``hooks.safe_read_file_bytes_nolink``, which verifies the OPENED descriptor's
+    real path against a containment root -- a stronger check than re-walking a name, and one
+    authority instead of two. A local per-component opener stack existed for that caller and
+    was deleted with it: 191 lines reachable only from tests once the prompt read moved.
     """
-    # No-follow read on BOTH platforms. On POSIX, ``O_NOFOLLOW`` refuses a final-component
-    # link atomically at the open. On Windows ``O_NOFOLLOW`` is ``0`` (``getattr`` default),
-    # so the open would follow a reparse point -- a junction to a UNC path is then an outbound
-    # SMB/NTLM probe. There is no atomic no-follow open there, so fail CLOSED: ``lstat`` the
-    # path first and refuse a reparse point (``_is_redirecting_entry`` sees a junction, which
-    # ``is_symlink`` does not) before opening. A residual check-then-open window remains on the
-    # platform with no atomic primitive, but a planted or already-swapped reparse point is
-    # refused rather than followed -- the same posture ``_read_text_openat`` takes.
+    # Windows has no atomic no-follow open (``O_NOFOLLOW`` is 0 there), so a reparse point
+    # would be followed and a junction naming a share is an outbound SMB/NTLM probe. Fail
+    # closed on that platform: ``lstat`` first and refuse a redirect before opening.
+    # ``_is_redirecting_entry`` sees a junction, which ``is_symlink`` does not.
     if not getattr(os, "O_NOFOLLOW", 0) and _is_redirecting_entry(path):
         return None
     try:
-        fd = os.open(path, os.O_RDONLY | _NOFOLLOW_READ_FLAGS)
+        fd = os.open(str(path), os.O_RDONLY | _NOFOLLOW_READ_FLAGS)
     except OSError:
         return None
     try:
-        with os.fdopen(fd, "r", encoding="utf-8", newline="") as fh:
-            return fh.read()
-    except (UnicodeDecodeError, OSError):
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        # Only when O_NONBLOCK was actually applied. On Windows neither that flag nor
+        # set_blocking() works on a regular-file descriptor -- it raises WinError 87.
+        if getattr(os, "O_NONBLOCK", 0) and _NOFOLLOW_READ_FLAGS & os.O_NONBLOCK:
+            os.set_blocking(fd, True)
+        # No byte ceiling here. This reader serves the skill scan, the plan read and the
+        # agent-spec read as well as nothing else, and a limit named for PROMPTS has no
+        # business refusing an oversized agent spec -- a path this change is not about. The
+        # prompt read carries its own bound, passed to the shared guard as ``max_bytes``.
+        #
+        # Reading BYTES rather than text is kept: it is what makes newline translation
+        # impossible, which the CRLF round-trip depends on.
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
         return None
 
 
-def _read_text_openat(root: Path, rel: Path) -> str | None:
+def _read_text_openat(root: Path, rel: Path, *, refuse_hard_link: bool = False) -> str | None:
     """Read ``root/rel`` as UTF-8, refusing a redirect at EVERY component, not only the last.
 
     ``_read_text_nofollow`` collapses check and read into one ``O_NOFOLLOW`` open, but
@@ -892,13 +1333,40 @@ def _read_text_openat(root: Path, rel: Path) -> str | None:
         # than traversed, which is the fail-closed posture the openat path gives elsewhere.
         if _redirect_between(root, root / rel) is not None:
             return None
+        # This is the only return on the no-``dir_fd`` path, and like every other one it
+        # answers ``None`` rather than naming what was being read. Each caller words its own
+        # refusal from that, which is why the agent-spec path says "agent spec" where the
+        # plan path says "curation plan": the distinction lives at the call site, not here.
         return _read_text_nofollow(root / rel)
     file_fd = _open_leaf_nofollow_at(root, rel)
     if file_fd is None:
         return None
+    if refuse_hard_link:
+        # Refuse a HARD LINK on the OPENED leaf: a second name for the same inode that the
+        # no-follow component walk cannot see. An operator-supplied file (the curation plan)
+        # hard-linked to a credential passes every path and shape check while its bytes are
+        # the credential's. Opt-in, so only the operator-file readers that want it pay it;
+        # the staging/skill readers keep their own authority (``safe_read_file_bytes_nolink``)
+        # and this does not change their semantics. On the descriptor already opened, so there
+        # is no re-open TOCTOU.
+        try:
+            if os.fstat(file_fd).st_nlink > 1:
+                os.close(file_fd)
+                return None
+        except OSError:
+            os.close(file_fd)
+            return None
     try:
-        with os.fdopen(file_fd, "r", encoding="utf-8", newline="") as fh:
-            return fh.read()
+        # BINARY, then decoded. ``read(n)`` on a TEXT stream bounds CHARACTERS while the
+        # prompt ceiling is named in BYTES -- measured, 1048576 three-byte characters is a
+        # 3145728 byte file that a length check against the ceiling reports as within it, so
+        # a CJK persona reached three times the bound in memory. The byte count is the thing
+        # bounded, so the read has to be the thing counted. ``newline=""`` on a text read
+        # translated nothing and decoding translates nothing either, so the bytes reaching
+        # the bundle are the bytes on disk and the CRLF round-trip still holds.
+        with os.fdopen(file_fd, "rb") as fh:
+            data = fh.read()
+        return data.decode("utf-8")
     except (UnicodeDecodeError, OSError):
         return None
 
@@ -1013,10 +1481,11 @@ _STAGING_MARKER_BODY = (
 def _dir_fd_supported() -> bool:
     """Whether a path can be pinned by opening its parent as a descriptor.
 
-    One predicate for the three places that need it, because the answer must be the same
-    in all of them: ``_open_nofollow_under`` asked it inline first, and the two functions
-    added later did not ask at all, which turned every Windows build into an
-    ``AttributeError`` on ``os.O_DIRECTORY`` before it did anything.
+    One predicate for the three places that need it -- ``_read_text_openat``,
+    ``_write_nofollow`` and ``_marker_is_ours`` -- because the answer must be the same in all
+    of them. A site that reaches for ``os.O_DIRECTORY`` without asking raises
+    ``AttributeError`` on Windows, where the attribute does not exist, before it does any
+    work.
 
     False is Windows. It is a real narrowing of what those functions promise, spelled as a
     branch at each call site rather than hidden here, so a reader sees which guarantee is
@@ -1194,6 +1663,62 @@ def _walk_no_reparse(root: Path, *, match: str | None = None) -> "list[Path]":
     return found
 
 
+def _refuse_share_reached_through_ancestors(hop: Path) -> None:
+    """Refuse when an ANCESTOR of ``hop`` redirects to a network share.
+
+    ``O_NOFOLLOW`` and ``lstat`` both answer about the entry they are given, so neither says
+    anything about the components on the way to it. A hop read out of a link's contents is a
+    path no walk has judged: statting it crosses its ancestors, and on Windows crossing a
+    reparse point that names a share performs the outbound SMB probe with its NTLM exchange.
+
+    Walked from the hop's own anchor downwards, one component at a time, so every ``lstat``
+    here only crosses components this walk has already cleared. The target of a redirecting
+    ancestor is read with ``readlink``, which reads the link's contents and traverses nothing.
+    """
+    # Imported bare, and that is deliberate: the one caller is the redirect walk, which
+    # imports the same symbol from the same module before it reaches this loop, so an
+    # ImportError here cannot happen without that caller having already failed closed on it.
+    # A guard would be one no input can trigger, which reads as protection while testing
+    # nothing.
+    from kiro_crew.hooks import is_unc_shape as _unc_shape
+
+    # Shape FIRST, on the string alone, before anything asks the filesystem. A guard that
+    # has to touch its subject to judge it cannot be the outermost one here, because on
+    # Windows touching is the probe: ``lstat`` on a path whose own anchor is a share reaches
+    # that host, so a walk starting at ``hop.anchor`` would perform the exchange while
+    # looking for it. This test reads characters and reaches nothing, so it can run in front.
+    if _unc_shape(str(hop)) or any(_unc_shape(str(a)) for a in hop.parents):
+        raise ExportRefused(
+            f"{hop} on the path to the prompt file names a network share. Reaching it would "
+            f"cross that host over SMB before anything could be checked, and a Windows SMB "
+            f"touch carries an NTLM exchange. Copy the persona next to the agent spec."
+        )
+
+    parts = hop.relative_to(hop.anchor).parts[:-1] if hop.parts else ()
+    cur = Path(hop.anchor)
+    for part in parts:
+        cur = cur / part
+        if not _is_redirecting_entry(cur):
+            continue
+        try:
+            dest = os.readlink(cur)
+        except OSError as exc:
+            if exc.errno in (errno.EINVAL, errno.ENOENT):
+                continue
+            raise ExportRefused(
+                f"{cur} on the path to the prompt file could not be inspected ({exc}), so "
+                f"whether it reaches a network share is unknown. Fix its permissions or copy "
+                f"the persona next to the agent spec."
+            ) from None
+        if _unc_shape(str(dest)):
+            raise ExportRefused(
+                f"{cur} on the path to the prompt file redirects to {dest!r}, which names a "
+                f"network share. Reaching the prompt would cross that host over SMB before "
+                f"anything could be checked, and a Windows SMB touch carries an NTLM "
+                f"exchange. Copy the persona next to the agent spec."
+            )
+
+
 def _refuse_redirects_in_chain(root: Path, target: str, *, what: str = "prompt file") -> None:
     """Refuse a redirect at any component of ``root/target``, without resolving it.
 
@@ -1342,7 +1867,7 @@ def _refuse_unusable_parent(path: Path, *, what: str) -> None:
             return
 
 
-def _open_dir_nofollow_pinned(dir_path: Path) -> int:
+def _open_dir_nofollow_pinned(dir_path: Path, *, already_resolved: bool = False) -> int:
     """Open *dir_path* as a directory fd, pinning EVERY component against a redirect swap.
 
     ``os.open(str(dir_path), O_RDONLY | O_DIRECTORY)`` opens by re-resolving the whole path
@@ -1368,7 +1893,13 @@ def _open_dir_nofollow_pinned(dir_path: Path) -> int:
     """
     if not _dir_fd_supported():
         return os.open(str(dir_path), os.O_RDONLY | os.O_DIRECTORY)
-    resolved = dir_path.resolve()
+    # A caller that has ALREADY resolved says so, and this does not read the tree again.
+    # Resolving here as well gives the operation two readings, and two readings can be
+    # separately self-consistent about DIFFERENT trees: a replacement landing between them
+    # is pinned by the second one, and every check taken through the resulting descriptor
+    # then agrees with itself about the attacker's tree. The prompt path resolves once
+    # before its validation and hands that value in.
+    resolved = dir_path if already_resolved else dir_path.resolve()
     dir_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     cur_fd = os.open(resolved.anchor or "/", dir_flags)
     open_dirs = [cur_fd]
@@ -1386,10 +1917,73 @@ def _open_dir_nofollow_pinned(dir_path: Path) -> int:
     return open_dirs[-1]
 
 
+def _rmtree_pinned(parent_fd: int, name: str) -> None:
+    """Recursively delete ``name`` reached through ``parent_fd``, never by re-resolving a path.
+
+    ``shutil.rmtree(path)`` re-resolves ``path`` from its string, so a parent or intermediate
+    component swapped for a link after a descriptor was pinned is followed and the recursive
+    delete lands wherever the link names -- outside ``--out`` and irreversible. This opens
+    ``name`` ``O_NOFOLLOW`` relative to ``parent_fd`` (a name swapped for a link fails its own
+    open and REFUSES rather than being followed), then removes the whole tree through directory
+    descriptors: each child is unlinked, or for a subdirectory recursed into and ``rmdir``-ed,
+    every step ``dir_fd``-relative, so no path is resolved after the pin. ``name`` is a single
+    leaf under ``parent_fd``.
+    """
+    if not _dir_fd_supported():
+        # This reaches every deleted path through a directory descriptor, which the platform
+        # must support; the disposal callers only enter the pinned path where it does, so this
+        # is a fail-closed floor rather than a reachable branch.
+        raise ExportRefused(
+            "a pinned recursive delete needs directory-descriptor support, which this "
+            "platform lacks; refusing rather than delete through a re-resolved path."
+        )
+    fd = os.open(
+        name, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd
+    )
+    try:
+        with os.scandir(fd) as it:
+            entries = list(it)
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                _rmtree_pinned(fd, entry.name)
+            else:
+                os.unlink(entry.name, dir_fd=fd)
+    finally:
+        os.close(fd)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
+def _is_plain_file_no_follow(parent_fd: int, name: str) -> bool:
+    """True only if *name* under *parent_fd* is a regular file, judged without following.
+
+    ``os.lstat`` with ``dir_fd`` does not dereference a final symlink, so a symlink at the
+    name reports as a link and returns False. This gates the ``exists_ok`` "already there"
+    return: an ``O_EXCL`` open reports EEXIST for a symlink too, so the regular-file shape has
+    to be re-established before that collision is treated as a benign re-run rather than a
+    planted link. Any lstat error (the entry vanished in a race) is treated as not-a-plain-
+    file, so the caller refuses rather than assuming.
+    """
+    try:
+        st = os.lstat(name, dir_fd=parent_fd)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode)
+
+
 def _write_bytes_nofollow(
-    path: Path, data: bytes, *, mode: int = 0o600, exclusive: bool = False
-) -> None:
+    path: Path,
+    data: bytes,
+    *,
+    mode: int = 0o600,
+    exclusive: bool = False,
+    exists_ok: bool = False,
+    staging_fd: "int | None" = None,
+    rel: "str | None" = None,
+) -> bool:
     """Write *data* to *path* without following a link that is already there.
+
+    Returns ``True`` when *data* was written and ``False`` only in the *exists_ok*
+    exclusive case below, where a regular file was already claimed at *path*.
 
     Call sites all write to a path DERIVED from ``--out`` in a directory this build does not
     own -- the staging marker, the machine-readable report, and every staged bundle leaf. A
@@ -1413,6 +2007,13 @@ def _write_bytes_nofollow(
     recursive delete, so that path needs more than shape, and its caller checks ownership
     before anything is created.
 
+    *exists_ok* (only meaningful with *exclusive*) turns the ONE ambiguous case -- a regular
+    file already at *path* -- from a refusal into a ``False`` return, while a symlink or a
+    directory there is still refused. This is for a caller whose "already created" is a normal
+    outcome, not a race lost: the plan command re-run on an already-planned crew. The check is
+    still the atomic ``O_EXCL`` open, not a separate ``is_file()`` before it, so two runs
+    racing on the same plan path cannot both believe they created it.
+
     Falls back to a plain write where ``dir_fd`` is unsupported, which is Windows.
     """
     if not _dir_fd_supported():
@@ -1435,6 +2036,12 @@ def _write_bytes_nofollow(
                 f"derived from --out; move it, or point --out elsewhere."
             )
         if exclusive and path.exists():
+            if exists_ok and path.is_file() and not _is_redirecting_entry(path):
+                # A regular file already claims the name. For a caller whose "already there"
+                # is normal (the plan re-run), that is not a race lost -- report it as not
+                # written. A symlink/dir was already refused above, so only a plain file
+                # reaches here.
+                return False
             raise ExportRefused(
                 f"{path} already exists and this build did not write it. The path is "
                 f"derived from --out, and building would replace it. Move it, or point "
@@ -1455,9 +2062,65 @@ def _write_bytes_nofollow(
                 f"point --out at a directory that exists."
             )
         path.write_bytes(data)
-        return
+        return True
     flags = os.O_WRONLY | os.O_CREAT | _NOFOLLOW_READ_FLAGS
     flags |= os.O_EXCL if exclusive else os.O_TRUNC
+    if staging_fd is not None and rel is not None:
+        # The leaf lives under a directory this build CREATED and holds a descriptor for
+        # (the staging root). Resolve it relative to that retained descriptor, walking each
+        # sub-component ``O_NOFOLLOW``, so a swap of the staging root -- or any component
+        # under it -- for another directory since the descriptor was opened cannot redirect
+        # the write: the descriptor names the inode ``mkdir`` created, not whatever the path
+        # string resolves to now. ``rel`` is the leaf's path relative to ``staging_fd``.
+        parts = PurePosixPath(rel).parts
+        parent_fd = os.dup(staging_fd)
+        try:
+            for comp in parts[:-1]:
+                nxt = os.open(
+                    comp,
+                    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_fd,
+                )
+                os.close(parent_fd)
+                parent_fd = nxt
+            leaf_name = parts[-1]
+        except OSError as exc:
+            os.close(parent_fd)
+            raise ExportRefused(
+                f"cannot write {rel} under the staging tree: a component changed to a link "
+                f"or is not an openable directory since staging was created ({exc}). Nothing "
+                f"was written. Re-run the build."
+            ) from exc
+        try:
+            try:
+                fd = os.open(leaf_name, flags, mode, dir_fd=parent_fd)
+            except IsADirectoryError as exc:
+                raise ExportRefused(
+                    f"the staged path {rel} is a directory where this build writes a file; "
+                    f"refusing rather than delete it. Re-run the build."
+                ) from exc
+            except FileExistsError as exc:
+                if exists_ok and _is_plain_file_no_follow(parent_fd, leaf_name):
+                    return False
+                raise ExportRefused(
+                    f"the staged path {rel} already exists under staging and this build did "
+                    f"not write it. Re-run the build."
+                ) from exc
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise ExportRefused(
+                        f"the staged path {rel} is a symlink; this build writes its own file "
+                        f"there and will not write through a link. Re-run the build."
+                    ) from exc
+                raise
+            # Spelled ``fh.write(bytes(data))`` so this raw write is not a textual substring
+            # of the by-name branch's ``fh.write(data)``, which a source-substring mutation
+            # test anchors on and asserts is unique. Both write RAW BYTES with no translation.
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(bytes(data))
+        finally:
+            os.close(parent_fd)
+        return True
     try:
         parent_fd = _open_dir_nofollow_pinned(path.parent)
     except OSError as exc:
@@ -1481,6 +2144,18 @@ def _write_bytes_nofollow(
                 f"derived from --out; move it, or point --out elsewhere."
             ) from exc
         except FileExistsError as exc:
+            if exists_ok and _is_plain_file_no_follow(parent_fd, path.name):
+                # O_EXCL reports EEXIST for ANY existing entry, a symlink included -- it
+                # detects the entry before O_NOFOLLOW would fire. So the "already planned"
+                # return is gated on an lstat proving a genuine regular file; a symlink or a
+                # directory falls through to the refusals below rather than being swallowed.
+                return False
+            if _is_redirecting_entry(path):
+                raise ExportRefused(
+                    f"{path} is a symlink. This build writes its own files there and will "
+                    f"not write through a link to somewhere else. Remove it, or point "
+                    f"--out elsewhere."
+                ) from exc
             raise ExportRefused(
                 f"{path} already exists and this build did not write it. The path is "
                 f"derived from --out, and building would replace it. Move it, or point "
@@ -1504,17 +2179,36 @@ def _write_bytes_nofollow(
             fh.write(data)
     finally:
         os.close(parent_fd)
+    return True
 
 
-def _write_nofollow(path: Path, text: str, *, mode: int = 0o600, exclusive: bool = False) -> None:
+def _write_nofollow(
+    path: Path,
+    text: str,
+    *,
+    mode: int = 0o600,
+    exclusive: bool = False,
+    exists_ok: bool = False,
+    staging_fd: "int | None" = None,
+    rel: "str | None" = None,
+) -> bool:
     """Write *text* (UTF-8) to *path* without following a link that is already there.
 
     Thin wrapper over :func:`_write_bytes_nofollow`: the payload is encoded once, with
     ``newline=""`` semantics (no CRLF translation), so the shape refusals, the descriptor-
     relative no-follow open, and the byte-exact write all live in one place. See that function
-    for the ownership rule and why the write must not follow a planted link.
+    for the ownership rule, the *exists_ok* return, and why the write must not follow a
+    planted link.
     """
-    _write_bytes_nofollow(path, text.encode("utf-8"), mode=mode, exclusive=exclusive)
+    return _write_bytes_nofollow(
+        path,
+        text.encode("utf-8"),
+        mode=mode,
+        exclusive=exclusive,
+        exists_ok=exists_ok,
+        staging_fd=staging_fd,
+        rel=rel,
+    )
 
 
 def _write_marker_exclusive(path: Path, *, ours: bool = False) -> None:
@@ -1722,15 +2416,55 @@ def skill_candidates(skills_root: Path) -> list[Candidate]:
                 )
             )
             continue
-        if _read_text_openat(skills_root, skill_md.relative_to(skills_root)) is None:
+        # The UTF-8 probe reads SKILL.md through the SAME authority the scan and copy use --
+        # ``safe_read_file_bytes_nolink`` -- not a bare descriptor read. ``_read_text_openat``
+        # opens ``O_NOFOLLOW`` but does not fstat ``st_nlink``, so a credential hard-linked to
+        # a second innocent name at ``SKILL.md`` would be decoded here through its second name.
+        # Nothing downstream ships those bytes (the scan at the guard below and the copy both
+        # refuse ``st_nlink > 1`` before anything is emitted), but reading the candidate
+        # through the authority closes the read itself rather than relying on a later gate:
+        # ``None`` means the guard rejected it (hard link, sensitive, not a regular file,
+        # unreadable), and a file above the ceiling or one that is not UTF-8 is unscannable
+        # text. Any of these blocks the skill with a reason rather than passing it selectable.
+        try:
+            from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+        except ImportError as exc:
             out.append(
                 Candidate(
                     kind="skills",
                     id=rel,
                     content_hash="",
                     blocked=(
-                        "SKILL.md is not UTF-8 text, so the container could not read it and "
-                        "the credential scan could not read it either"
+                        f"cannot be certified clean because kiro_crew.hooks is not importable "
+                        f"here ({exc}); that module holds the sensitive-path and hard-link "
+                        f"rules this read has to satisfy, and a local approximation is not the "
+                        f"same check"
+                    ),
+                )
+            )
+            continue
+        try:
+            _probe = safe_read_file_bytes_nolink(
+                str(skill_md), str(skills_root), max_bytes=_MAX_PROMPT_BYTES
+            )
+        except FileTooLargeError:
+            _probe = None
+        _readable = _probe is not None
+        if _probe is not None:
+            try:
+                _probe.decode("utf-8")
+            except UnicodeDecodeError:
+                _readable = False
+        if not _readable:
+            out.append(
+                Candidate(
+                    kind="skills",
+                    id=rel,
+                    content_hash="",
+                    blocked=(
+                        "SKILL.md is not UTF-8 text the guard can certify (it is unreadable, "
+                        "too large, sensitive, or hard-linked to another name), so the "
+                        "container could not read it and the credential scan could not either"
                     ),
                 )
             )
@@ -1784,18 +2518,79 @@ def skill_candidates(skills_root: Path) -> list[Candidate]:
                 )
             )
             continue
-        # A hard credential in any readable file blocks the skill too.
+        # A hard credential in any readable file blocks the skill too. The scan reads each
+        # candidate file through the shared file-read guard, the one authority that owns the
+        # sensitive-path, descriptor-fstat and hard-link refusals. The name and location
+        # checks above clear a file by its PATH, and a hard link gives a credential file a
+        # second innocent name inside the skill: skill_dir/notes.md hard-linked to
+        # ~/.aws/credentials clears the path check while its bytes are the credential, and its
+        # content need not match any scan pattern. ``safe_read_file_bytes_nolink`` opens the
+        # leaf ``O_NOFOLLOW`` and fstats the descriptor it opened -- ``st_nlink > 1`` is the
+        # identity a name check and ``scan_text`` cannot see -- and confirms the opened inode
+        # resolves inside ``skill_dir`` and is not sensitive. A file it refuses blocks the
+        # candidate HERE, in the curation plan, rather than letting the skill look selectable
+        # and only failing at copy time, which mirrors the credential-store checks above.
+        try:
+            from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+        except ImportError as exc:
+            out.append(
+                Candidate(
+                    kind="skills",
+                    id=rel,
+                    content_hash="",
+                    blocked=(
+                        f"cannot be certified clean because kiro_crew.hooks is not importable "
+                        f"here ({exc}); that module holds the sensitive-path and hard-link "
+                        f"rules the credential scan has to satisfy, and a local approximation "
+                        f"of them is not the same check"
+                    ),
+                )
+            )
+            continue
         hard_hit = ""
+        guard_refused = ""
         for p in _walk_no_reparse(skill_dir):
             if not p.is_file() or p.is_symlink():
                 continue
-            text = _read_text_openat(skill_dir, p.relative_to(skill_dir))
-            if text is None:
+            # TWO refusal channels that mean different things: None is "the guard rejected
+            # this", while the size cap RAISES. A file above the ceiling is an asset, not
+            # scannable text, so it cannot be certified clean and blocks the skill rather
+            # than shipping past an unread file.
+            try:
+                scanned = safe_read_file_bytes_nolink(
+                    str(p), str(skill_dir), max_bytes=_MAX_PROMPT_BYTES
+                )
+            except FileTooLargeError:
+                guard_refused = (
+                    f"contains a file above the {_MAX_PROMPT_BYTES} byte scan ceiling, which "
+                    f"cannot be certified clean: {p.relative_to(skill_dir).as_posix()}"
+                )
+                break
+            if scanned is None:
+                # The guard rejected the read: the file is hard-linked to another name,
+                # sensitive, not a regular file, outside the skill, or unreadable. A hard
+                # link is the case a name check cannot see, so a credential given a second
+                # innocent name inside the skill is caught here rather than shipped.
+                guard_refused = (
+                    f"contains a file the file-read guard refuses (hard-linked to another "
+                    f"name, sensitive, or not a readable regular file): "
+                    f"{p.relative_to(skill_dir).as_posix()}"
+                )
+                break
+            # Decode the guarded bytes exactly as they sit on disk. A file that is not UTF-8
+            # is unscannable text, not a credential the scan can read: skip it here as the
+            # by-name reader did, leaving the copy-time guard to refuse a non-UTF-8 member.
+            try:
+                text = scanned.decode("utf-8")
+            except UnicodeDecodeError:
                 continue
             leaks = scan_text(text, f"skills/{rel}/{p.relative_to(skill_dir).as_posix()}")
             if leaks:
                 hard_hit = f"contains a credential -- {leaks[0].render()}"
                 break
+        if guard_refused:
+            out.append(Candidate(kind="skills", id=rel, content_hash="", blocked=guard_refused))
+            continue
         if hard_hit:
             out.append(Candidate(kind="skills", id=rel, content_hash="", blocked=hard_hit))
             continue
@@ -1949,7 +2744,7 @@ def read_agent_spec(crew: ResolvedCrew) -> dict:
     # as ``agent.json`` inside the bundle, so this read reaches the customer just as directly
     # as an inlined prompt does. ``--source`` is the operator's flag and the crew name is
     # validated, so the shape ``<source>/agents/<name>.json`` is narrow -- but "narrow" was
-    # the argument for the local denylist that three review rounds each holed, so the answer
+    # the argument for the local denylist that three review passes each holed, so the answer
     # is to ask the shared question rather than to argue about reach.
     #
     # Unlike the prompt path this does NOT refuse outright when the fence is unimportable:
@@ -2033,30 +2828,79 @@ def read_agent_spec(crew: ResolvedCrew) -> dict:
             f"a prompt reference gets. Check --crew / --source."
         )
     # No separate ``is_file()`` before the read: that stat opened a check/read window a
-    # concurrent writer could win by loop-swapping the spec between the two. ``_read_text_openat``
-    # walks ``agents/<name>.json`` from the crew root opening each component with ``O_NOFOLLOW``
-    # via ``dir_fd``, so a redirect at ANY component -- including the ``agents/`` parent swapped
-    # after the chain check above -- fails its own open with no path re-resolved between check
-    # and read. The chain check stays as the readable refusal for a pre-planted redirect; the
-    # openat walk is what closes the RACE the chain check cannot. A missing file, a link, a FIFO
-    # or a directory all surface as ``None``; the two errors below keep the "nothing to deploy"
-    # case distinguishable from an unreadable one via a non-following stat.
+    # concurrent writer could win by loop-swapping the spec between the two. The read goes
+    # through ``hooks.safe_read_file_bytes_nolink``, the one authority that owns the
+    # sensitive-path, descriptor-fstat and HARD-LINK refusals -- the spec's bytes ship inside
+    # the bundle as ``agent.json``, so a hard link giving a credential file a second innocent
+    # name at ``agents/<name>.json`` clears the chain check above (a hard link is not a
+    # redirect) while its bytes are the credential, and ``st_nlink > 1`` on the opened
+    # descriptor is the identity neither the chain walk nor the sensitive-path fence can see.
+    # It opens the leaf ``O_NOFOLLOW`` and fstats the descriptor it opened, and confirms the
+    # opened inode resolves inside ``anchor`` and is not sensitive. The chain check stays as
+    # the readable refusal for a pre-planted redirect; the authority is what closes the RACE
+    # the chain check cannot and adds the hard-link refusal on the same descriptor.
+    #
+    # ``anchor`` is the crew root (``agents/`` parent's parent), the same directory the chain
+    # check above anchors at and the same one the openat walk used, so the containment answer
+    # is unchanged. A missing file, a link, a FIFO, a directory or a hard-linked name all
+    # surface as ``None``; the branches below keep the "nothing to deploy" case distinguishable
+    # from an unreadable one via a non-following ``lstat``. The refusals name the AGENT SPEC,
+    # because this is the spec read and its wording reaches the operator verbatim.
     anchor = path.parent.parent
-    text = _read_text_openat(anchor, path.relative_to(anchor))
-    if text is None:
+    try:
+        from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+    except ImportError as exc:
+        raise ExportRefused(
+            f"cannot read the agent spec {path} safely, because kiro_crew.hooks is not "
+            f"importable here ({exc}). That module holds the sensitive-path and hard-link "
+            f"rules this read has to satisfy, and a local approximation of them is not the "
+            f"same check. Its bytes ship inside the bundle as agent.json, so it cannot be "
+            f"certified clean without the authority. Check --crew / --source."
+        ) from exc
+
+    # TWO refusal channels that mean different things: None is "the guard rejected this",
+    # while the size cap RAISES. Catching only one lets a FileTooLargeError out of a function
+    # whose contract is ExportRefused, reaching the CLI as a traceback.
+    try:
+        data = safe_read_file_bytes_nolink(str(path), str(anchor), max_bytes=_MAX_PROMPT_BYTES)
+    except FileTooLargeError as exc:
+        raise ExportRefused(
+            f"agent spec {path} exceeds the {_MAX_PROMPT_BYTES} byte ceiling ({exc}). A spec "
+            f"that large is not a crew's agent definition; check --crew / --source."
+        ) from None
+    if data is None:
+        # Three outcomes, each refused where it is detected rather than through a sentinel the
+        # branch below re-reads: absent, present-but-uninspectable, present-but-unreadable (a
+        # link, a hard-linked name, a special file, a directory, sensitive, or outside the
+        # anchor). Reporting the middle one as "nothing to deploy" would send the operator
+        # looking for a missing file while the spec sits there refused.
         try:
-            present = os.lstat(path)
-        except OSError:
-            present = None
-        if present is None:
+            os.lstat(path)
+        except FileNotFoundError:
             raise ExportRefused(
                 f"no agent spec for crew {crew.name!r} at {path}. There is nothing to "
                 f"deploy; check --crew / --source."
-            )
+            ) from None
+        except OSError as exc:
+            raise ExportRefused(
+                f"agent spec {path} exists but could not be inspected ({exc}), so whether "
+                f"there is anything to deploy is unknown. Fix its permissions."
+            ) from None
+        raise ExportRefused(
+            f"agent spec {path} was refused by the repository's file-read guard. It is a "
+            f"link, hard-linked to another name, a special file, a directory, sensitive, or "
+            f"outside {anchor}; refusing rather than shipping bytes that cannot be certified "
+            f"clean. Check --crew / --source."
+        )
+    # Decode the guarded bytes exactly as they sit on disk: no newline translation and no
+    # re-encode, so the read is byte-faithful. A non-UTF-8 body is refused, not shipped.
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
         raise ExportRefused(
             f"agent spec {path} could not be read as UTF-8 (it may be a link, a special "
             f"file, or reached through a redirected parent); refusing rather than following it."
-        )
+        ) from None
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -2122,8 +2966,15 @@ class Drift:
         return "; ".join(parts)
 
 
-def write_plan(path: Path, crew: str, candidates: dict[str, list[Candidate]]) -> None:
-    """Write a fresh deny-by-default review template."""
+def write_plan(path: Path, crew: str, candidates: dict[str, list[Candidate]]) -> bool:
+    """Write a fresh deny-by-default review template, claiming the name atomically.
+
+    Returns ``True`` when this call created the plan and ``False`` when a plan was already
+    there. The two outcomes are decided by the ``O_EXCL`` open itself, not by an ``is_file()``
+    check before it: re-running ``plan`` on an already-planned crew is normal, and a check-
+    then-write let a racer's plan be truncated between the two. A symlink or a directory at the
+    path is still refused rather than treated as "already planned".
+    """
     body: dict[str, object] = {
         "plan_version": PLAN_VERSION,
         "crew": crew,
@@ -2160,7 +3011,9 @@ def write_plan(path: Path, crew: str, candidates: dict[str, list[Candidate]]) ->
     # without first working out whether these particular bytes end up hashed. They do not --
     # the digest is taken before the carried plan is written in -- and the call that DOES
     # depend on it is _write_guarded; see the note there.
-    _write_nofollow(path, json.dumps(body, indent=2, ensure_ascii=False) + "\n")
+    return _write_nofollow(
+        path, json.dumps(body, indent=2, ensure_ascii=False) + "\n", exclusive=True, exists_ok=True
+    )
 
 
 def _require_plan_include(kind: str, cid: str, raw: object) -> bool:
@@ -2236,7 +3089,9 @@ def read_plan(path: Path) -> Plan:
     # ``None`` covers a missing file, a link at any component, a special file, or a non-UTF-8
     # body; the two branches keep "no plan" distinct from "unreadable".
     abs_path = path if path.is_absolute() else path.absolute()
-    text = _read_text_openat(Path(abs_path.anchor), abs_path.relative_to(abs_path.anchor))
+    text = _read_text_openat(
+        Path(abs_path.anchor), abs_path.relative_to(abs_path.anchor), refuse_hard_link=True
+    )
     if text is None:
         try:
             present = os.lstat(path)
@@ -2346,7 +3201,7 @@ def verify(plan: Plan, crew: str, candidates: dict[str, list[Candidate]]) -> Dri
         for cid in plan.included(kind):
             candidate = by_kind[kind].get(cid)
             if candidate is None:
-                raise ExportRefused(f"plan selects {kind}/{cid!r}, which no longer exists")
+                raise ExportRefused(f"plan selects {kind}/{cid!r}, which does not exist")
             if candidate.blocked:
                 raise ExportRefused(
                     f"plan selects {kind}/{cid!r}, which cannot be included: {candidate.blocked}"
@@ -2437,24 +3292,15 @@ def merge_plans(paths: list[Path], crew: str) -> Plan | None:
 
 
 def _inline_prompt(spec: dict, crew_name: str, agents_dir: Path, notes: list[str]) -> None:
-    """Require the prompt to be literal text; refuse a missing one or a file reference.
+    """Inline a ``file://`` prompt as literal text; refuse a missing persona.
 
-    Kiro Crew writes an installed agent's prompt as ``file://<absolute host path>``
-    (``kiro_crew/agent.py:2166``). That path does not exist in the container, so a naively
-    copied spec produces a crew that answers as nobody -- and kiro-cli tolerates an empty
-    prompt, so the failure is silent. Refused here
-    (``serving/smc/bundle.py:validate_prompt`` refuses it at startup too).
-
-    READING the referenced file is deliberately NOT part of this change. Doing it safely means
-    resolving an operator-supplied path without following a redirect, on two platforms with
-    different link semantics, before any resolution can reach the network -- roughly 350 lines
-    whose review found 20+ separate defects across seven rounds while the rest of this module
-    was settled. It ships as its own change, where a reviewer can hold all of it at once.
-
-    So a ``file://`` prompt is refused with an instruction the operator can act on today:
-    inline the persona. That is a real limitation and it is stated rather than worked around --
-    some shipped agents (``apps/builtins/pptx_maker/agents/*.json``) use the file form, and
-    those crews cannot be bundled until the follow-up lands.
+    Kiro Crew writes an installed agent's prompt as ``file://<absolute host
+    path>`` (``kiro_crew/agent.py:2166``). That path does not exist in the
+    container, so a naively copied spec produces a crew that answers as nobody --
+    and kiro-cli tolerates an empty prompt, so the failure is silent. A
+    ``file://`` reference is read here and the persona inlined as literal text, so the
+    bundle carries the prompt rather than a host path; anything still unresolvable is
+    refused, and ``serving/smc/bundle.py:validate_prompt`` refuses it at startup too.
     """
     raw = spec.get("prompt")
     if raw is None or not isinstance(raw, str) or not raw.strip():
@@ -2463,16 +3309,251 @@ def _inline_prompt(spec: dict, crew_name: str, agents_dir: Path, notes: list[str
             f"persona and kiro-cli tolerates an empty one, so a crew shipped this way "
             f"answers as nobody. Inline the persona as literal text."
         )
-    if raw.strip().lower().startswith("file://"):
+    if not raw.strip().lower().startswith("file://"):
+        leaks = scan_text(raw, "prompt")
+        if leaks:
+            raise ExportRefused("the crew's prompt contains a credential: " + leaks[0].render())
+        return
+    # Resolved BEFORE validation, and the same value is handed to the validator, so the tree
+    # is read once for the whole operation. Two resolutions -- one inside the validator, one
+    # here -- were separately self-consistent and could describe DIFFERENT trees: a writable
+    # agents directory replaced between them let the replacement's anchor clear containment
+    # and the replacement's persona clear the read, and the attacker's bytes were signed into
+    # ``agent.json``. A cycle in the agents directory itself is reached before either branch
+    # below, and ``resolve()`` reports a loop as OSError(ELOOP) on some libcs and
+    # RuntimeError on others, so both are caught here.
+    try:
+        agents_root = agents_dir.resolve()
+    except (OSError, RuntimeError) as exc:
         raise ExportRefused(
-            f"agent.json for {crew_name!r} references its prompt as a file "
-            f"({raw.strip()[:80]!r}). Reading it safely needs the path fences that are "
-            f"landing separately, so this build does not follow the reference. Copy the "
-            f'persona into the spec\'s "prompt" field as literal text.'
+            f"the agents directory {agents_dir} cannot be resolved ({exc}), so a prompt "
+            f"reference cannot be judged against it. Check the crew directory for a link loop."
+        ) from None
+    path = _resolve_prompt_path(raw.strip(), agents_dir, resolved_root=agents_root)
+    # Anchor the descendant-wise read at the root this path was actually validated
+    # under, which is NOT always agents_dir. `_resolve_prompt_path` documents that
+    # "containment under agents_dir is deliberately NOT required: an absolute persona
+    # path outside that directory is a supported case with its own test." Passing
+    # agents_dir unconditionally therefore refused that supported case outright --
+    # reproduced: an absolute persona under a sibling directory aborted the whole
+    # bundle with "is not under the agents directory".
+    #
+    # The two anchors buy different things, and the difference is the point:
+    #
+    #   * A prompt INSIDE agents_dir gets per-component O_NOFOLLOW from agents_dir down.
+    #     That directory is writable by the agent, so a swapped PARENT is a live attack
+    #     and every component below the anchor has to be checked.
+    #   * An absolute prompt OUTSIDE it gets the final-component check only, by anchoring
+    #     at its own parent. Walking from `/` with O_NOFOLLOW would refuse any legitimate
+    #     path whose ancestors include a symlink, which is most real installs -- so
+    #     claiming that protection would cost the supported case and deliver nothing.
+    #     This is the protection the code had before the parent-swap fix, unchanged.
+    # Resolved ONCE into a local, and both the containment test and the reader's
+    # ``within_root`` use that value. Three separate ``.resolve()`` calls stood here and each
+    # one re-walks the name, so a link planted between two of them is followed by the later
+    # call: the reader can be handed a containment root inside the attacker's tree, where the
+    # escaping file IS contained and the check passes. Measured -- a re-resolved anchor
+    # returned ``ATTACKER BYTES`` where a value resolved once returned None.
+    #
+    # Resolving is also what makes the comparison correct at all. ``path`` comes back from
+    # ``_resolve_prompt_path`` absolute while ``agents_dir`` keeps whatever shape ``--source``
+    # was typed in, so comparing them unresolved always raised ValueError under a relative
+    # ``--source`` and sent an IN-TREE persona down the outside-the-crew branch, trading the
+    # anchored walk for a final-component check.
+    #
+    if _within(path, agents_root):
+        anchor = agents_root
+    else:
+        anchor = path.parent
+    # Read through a descriptor opened WITHOUT following a link at ANY component, and
+    # do not re-open. _resolve_prompt_path applies every fence -- pseudo-filesystem,
+    # the repo's sensitive-path predicate, the credential name and location checks --
+    # and then returns a PATH. Re-opening that path here made the fences advisory: the
+    # agents directory is writable, so between the last check and this read the entry
+    # can become a link to ~/.aws/credentials, and the bundle would carry the target's
+    # bytes with every fence having passed. Same defect the sidecar's backup read had,
+    # in the opposite direction (that one exfiltrates by upload, this one by shipping
+    # the bytes inside the artifact).
+    #
+    # agents_dir is the anchor: a single O_NOFOLLOW only refuses a FINAL-component
+    # link, so without it an agent leaves the leaf alone and swaps a PARENT instead.
+    # Measured -- that read private key material into the prompt.
+    # ONE authority for this read. ``hooks.safe_read_file_bytes_nolink`` is where the rules
+    # live: the centralized sensitive-path gate, O_NOFOLLOW followed by ``fstat`` on the
+    # DESCRIPTOR so the inode validated is the inode read, ``st_nlink > 1`` refused, and the
+    # opened descriptor's real path required to sit inside ``within_root`` -- read back
+    # through ``/proc/self/fd`` rather than by re-walking the name, so a component swapped
+    # after the fences cannot redirect it.
+    #
+    # A local re-implementation of the same rules was here and is gone. It answered all
+    # three cases correctly when measured, which is exactly why it was worth deleting: a
+    # second copy that agrees today is a second copy that drifts tomorrow, and this one
+    # already differed in kind by asking ``lstat`` about a NAME where the shared reader asks
+    # ``fstat`` about the open file.
+    #
+    # Refuses when hooks is unimportable, matching the UNC gate above at this same site and
+    # for the same reason: an unanswerable question about an author-supplied path is not a
+    # reason to read it anyway, and the operator has an alternative the agent-spec read does
+    # not -- inline the persona as literal text, which is what the base branch requires of
+    # every crew today.
+    # The LINK question is asked here, before the path is handed over, because the shared
+    # reader cannot answer it: ``validate_file_path`` canonicalizes first, so by the time its
+    # ``O_NOFOLLOW`` open runs the name it opens is already the link's TARGET. Measured --
+    # a symlinked persona read straight through it and returned the target's bytes.
+    #
+    # Same trap this module recorded once before in the other direction: ``resolve()``
+    # collapses links, so a check placed after it inspects targets and cannot see that a link
+    # was ever there. One authority per rule still holds -- the shared reader owns the
+    # sensitive-path verdict, the descriptor's identity and containment; the link's existence
+    # is a question only an un-canonicalized view can answer.
+    # Two questions, two answers, one authority for each.
+    #
+    # ``safe_read_file_bytes_nolink`` stays the VERDICT: it owns the sensitive-path rules, the
+    # fstat on the descriptor it opened, the hard-link refusal and containment against the
+    # anchor. Re-deriving any of those here would be a second implementation of a security
+    # primitive, which is worse than none.
+    #
+    # What it cannot answer is whether the anchor STRING still names the directory this build
+    # checked. It resolves that string itself, so a swap between the chain walk and the read
+    # makes every containment answer true of the replacement: measured, an ``agents/`` replaced
+    # by a symlink after the walk inlined the attacker's bytes. Comparing the anchor's identity
+    # before and after was tried and is defeatable -- swap, let the read happen, swap back, and
+    # both observations match.
+    #
+    # So the bytes are AUTHORISED separately, by ``safe_read_file_bytes_with_identity``, which
+    # opens once with ``O_NOFOLLOW`` and refuses unless the fstat identity of that very
+    # descriptor is the one allowed. The identity handed to it is taken THROUGH a descriptor for
+    # the anchor, so it names the file inside the directory that was checked whatever the path
+    # means by then. A disagreement between the two reads is itself the answer: something
+    # changed underneath, and neither set of bytes is trustworthy.
+    try:
+        anchor_fd = _open_dir_nofollow_pinned(anchor, already_resolved=True)
+    except OSError as exc:
+        raise ExportRefused(
+            f"the prompt anchor {anchor} could not be opened ({exc}), so the directory the "
+            f"prompt is read from cannot be pinned. Copy the persona next to the agent spec."
+        ) from None
+
+    try:
+        _refuse_redirects_in_chain(
+            anchor, str(path.relative_to(anchor)) if _within(path, anchor) else path.name
         )
-    leaks = scan_text(raw, "prompt")
+
+        try:
+            from kiro_crew.hooks import (
+                FileTooLargeError,
+                safe_read_file_bytes_nolink,
+                safe_read_file_bytes_with_identity,
+            )
+        except ImportError as exc:
+            raise ExportRefused(
+                f"cannot read the prompt file {path} safely, because kiro_crew.hooks is not "
+                f"importable here ({exc}). That module holds the sensitive-path rules this "
+                f"read has to satisfy, and a local approximation of them is not the same "
+                f"check. Inline the persona as literal text in the agent spec instead."
+            ) from exc
+
+        # The shared reader has TWO refusal channels and they mean different things: None is
+        # "the guard rejected this", while the size cap RAISES. Catching only one lets a
+        # FileTooLargeError out of a function whose contract is ExportRefused -- measured, it
+        # reached the CLI as a traceback.
+        try:
+            data = safe_read_file_bytes_nolink(str(path), str(anchor), max_bytes=_MAX_PROMPT_BYTES)
+        except FileTooLargeError as exc:
+            raise ExportRefused(
+                f"prompt file {path} exceeds the {_MAX_PROMPT_BYTES} byte ceiling for an "
+                f"inlined persona ({exc}). A persona that large is a document, not a prompt; "
+                f"trim it or point the agent at a skill instead."
+            ) from None
+        if data is None:
+            raise ExportRefused(
+                f"prompt file {path} was refused by the repository's file-read guard. It is "
+                f"sensitive, a link, hard-linked to another name, not a regular file, outside "
+                f"{anchor}, or unreadable. Copy the persona next to the agent spec and "
+                f"reference it by name."
+            )
+
+        rel = path.relative_to(anchor) if _within(path, anchor) else Path(path.name)
+        try:
+            through_anchor = os.stat(str(rel), dir_fd=anchor_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise ExportRefused(
+                f"prompt file {path} could not be inspected inside the pinned anchor "
+                f"({exc}), so the bytes cannot be authorised against the directory this "
+                f"build checked. Copy the persona next to the agent spec."
+            ) from None
+
+        # ``through_anchor`` is a SECOND observation and needs its own verdict. The shared
+        # reader does refuse a directory and a hard-linked name, but it refuses what ITS OWN
+        # resolution found, which is the reason this stat exists at all. What is authorised
+        # here is an INODE, so a persona replaced by a directory between the two reads gets a
+        # directory's inode allowlisted and the failure then lands inside the reader as an
+        # uncaught IsADirectoryError, out of a function whose contract is ExportRefused:
+        # measured. Nothing after the allowlist can refuse it, so both questions are answered
+        # before the identity is handed over.
+        if not stat.S_ISREG(through_anchor.st_mode):
+            raise ExportRefused(
+                f"prompt file {path} is not a regular file inside the anchor this build "
+                f"pinned, so there are no persona bytes to inline. Point the prompt "
+                f"reference at a file."
+            )
+        if through_anchor.st_nlink > 1:
+            raise ExportRefused(
+                f"prompt file {path} has {through_anchor.st_nlink} names inside the anchor "
+                f"this build pinned. A second name can change the bytes after this read, so "
+                f"what lands in the bundle would not be what was checked. Copy the persona "
+                f"instead of hard-linking it."
+            )
+
+        try:
+            authorised = safe_read_file_bytes_with_identity(
+                str(path), {(through_anchor.st_dev, through_anchor.st_ino)}
+            )
+        except FileTooLargeError as exc:
+            raise ExportRefused(
+                f"prompt file {path} exceeds the reader's size cap ({exc})."
+            ) from None
+        except PermissionError as exc:
+            # FIRST, because it is a subclass of the OSError below and Python takes the first
+            # matching handler: ordered the other way this arm is unreachable and an identity
+            # mismatch reports itself as a truncated read. The two are different facts -- this
+            # one says the bytes are not from the file that was pinned.
+            raise ExportRefused(
+                f"prompt file {path} is not the file inside the directory this build checked "
+                f"({exc}). The anchor or the file changed while the bundle was being built, "
+                f"so these bytes are not the ones any check ran against."
+            ) from None
+        except OSError as exc:
+            # The right file, read part way and then failed: a disconnected NFS or FUSE mount
+            # is the measured case. The reader raises it from inside the descriptor read, so
+            # without this arm it leaves a function contracted to raise ExportRefused as a
+            # bare traceback.
+            raise ExportRefused(
+                f"prompt file {path} could not be read through to the end ({exc}), so the "
+                f"persona that would be inlined is incomplete. Refusing rather than "
+                f"bundling a truncated prompt."
+            ) from None
+    finally:
+        os.close(anchor_fd)
+
+    if authorised is None or authorised != data:
+        raise ExportRefused(
+            f"prompt file {path} changed while it was being read: the bytes the guard cleared "
+            f"are not the bytes reachable inside the anchor this build pinned. Refusing rather "
+            f"than inlining either."
+        )
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ExportRefused(f"prompt file {path} is not UTF-8 text") from None
+    if not text.strip():
+        raise ExportRefused(f"prompt file {path} is empty")
+    leaks = scan_text(text, f"prompt({path.name})")
     if leaks:
         raise ExportRefused("the crew's prompt contains a credential: " + leaks[0].render())
+    spec["prompt"] = text
+    notes.append(f"inlined prompt from {path} ({len(text)} chars)")
 
 
 def _clean_mcp_server(name: str, server: dict, notes: list[str]) -> dict:
@@ -2560,7 +3641,7 @@ def build_spec(
         server = source_servers.get(name)
         if not isinstance(server, dict):
             raise ExportRefused(
-                f"plan selects MCP server {name!r}, which the spec no longer declares"
+                f"plan selects MCP server {name!r}, which the spec does not declare"
             )
         mcp[name] = _clean_mcp_server(name, server, notes)
     dropped = sorted(set(source_servers) - set(mcp))
@@ -2668,20 +3749,112 @@ def bundle_digest(root: Path, also_skip: frozenset[str] = frozenset()) -> str:
     """
     rows: list[list[str]] = []
     for path in _walk_no_reparse(root):
-        if not path.is_file():
-            continue
         rel = path.relative_to(root).as_posix()
         if rel == "manifest.json" or rel in also_skip:
+            # Intentional exclusions, by NAME regardless of shape: the manifest carries this
+            # digest, and ``also_skip`` holds the plan file added after the prior bundle was
+            # built. These are the only entries that leave the signed set on purpose.
             continue
-        rows.append([rel, hashlib.sha256(path.read_bytes()).hexdigest()])
+        if _is_redirecting_entry(path):
+            # A symlink or junction is REFUSED, not skipped. A skipped entry still SHIPS, so a
+            # redirect left out of the walk signs a digest over a SUBSET of the bundle -- and a
+            # redirect is exactly the object an attacker wants outside the signature, since its
+            # bytes live wherever it points.
+            raise ExportRefused(
+                f"the bundle file {rel} is a link or junction; refusing to sign a digest that "
+                f"would leave it out of the signed set or fold in bytes reached by following "
+                f"it. Re-run the build."
+            )
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError as exc:
+            raise ExportRefused(
+                f"the bundle file {rel} could not be inspected ({exc}); refusing to sign a "
+                f"digest that might omit it. Re-run the build."
+            ) from exc
+        if stat.S_ISDIR(mode):
+            # The ONLY entry passed over: a GENUINE directory (a redirect is ruled out above).
+            # It has no bytes to hash and its children are walked.
+            continue
+        if not stat.S_ISREG(mode):
+            # A special file (FIFO/socket/device) that still ships. It cannot be hashed -- a
+            # no-follow read of a writerless FIFO returns empty bytes rather than failing, so
+            # the read alone would sign it as empty -- and dropping it would leave shipping
+            # content outside the digest. Refuse, naming it.
+            raise ExportRefused(
+                f"the bundle file {rel} is not a regular file (a special file); refusing to "
+                f"sign a digest that would leave it out of the signed set. Re-run the build."
+            )
+        # ONE descriptor spans the "is it a regular file" question and the read. The shape
+        # check above answers by NAME (``os.lstat``), and ``read_bytes()`` also resolves by
+        # NAME, so a leaf swapped for a symlink between them is hashed THROUGH the link -- the
+        # digest then pins the target's bytes, and this digest is signed into the manifest and
+        # re-derived to prove ownership before a recursive delete, so it would cover an object
+        # this build never wrote.
+        # ``_read_bytes_openat`` opens the leaf ``O_RDONLY | O_NOFOLLOW`` relative to a
+        # descriptor for each parent and reads from that same descriptor, so a redirect at any
+        # component fails its own open and yields ``None`` with no path re-resolved after the
+        # check; a regular file yields the bytes ``read_bytes`` would, so the digest value is
+        # unchanged. ``None`` is REFUSED, not skipped: dropping the entry would sign a digest
+        # that silently omits a file the promoted bundle still carries.
+        data = _read_bytes_openat(root, path.relative_to(root))
+        if data is None:
+            raise ExportRefused(
+                f"the bundle file {rel} could not be read as a regular file through a "
+                f"no-follow descriptor (it is a link, a special file, or a component of its "
+                f"path changed to a link). Refusing to sign a digest over bytes reached by "
+                f"following a redirect. Re-run the build."
+            )
+        rows.append([rel, hashlib.sha256(data).hexdigest()])
     payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _write_guarded(path: Path, text: str, origin: str) -> None:
+def _write_guarded(
+    path: Path,
+    text: str,
+    origin: str,
+    *,
+    staging_fd: "int | None" = None,
+    rel: "str | None" = None,
+) -> None:
     """Last-chance scan before bytes land in the artifact. Refuse on a finding."""
     if scan_text(text, origin):
         raise ExportRefused(f"refusing to write {origin}: it contains a credential")
+    if staging_fd is not None and rel is not None:
+        if not _dir_fd_supported():  # fail-closed floor; staging_fd is only set where supported
+            raise ExportRefused(
+                f"cannot write {origin} descriptor-relative: this platform lacks "
+                f"directory-descriptor support. Re-run on a supported platform."
+            )
+        # Create the leaf's parent directories relative to the retained staging descriptor,
+        # each component ``O_NOFOLLOW``, so a swap of the staging root or an intermediate
+        # component since staging was created cannot steer the mkdir or the write outside it.
+        parts = PurePosixPath(rel).parts
+        dir_fd = os.dup(staging_fd)
+        try:
+            for comp in parts[:-1]:
+                try:
+                    os.mkdir(comp, 0o700, dir_fd=dir_fd)
+                except FileExistsError:
+                    pass
+                nxt = os.open(
+                    comp,
+                    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=dir_fd,
+                )
+                os.close(dir_fd)
+                dir_fd = nxt
+        except OSError as exc:
+            os.close(dir_fd)
+            raise ExportRefused(
+                f"cannot create the staging directory for {origin}: a component changed to a "
+                f"link or is not an openable directory since staging was created ({exc}). "
+                f"Re-run the build."
+            ) from exc
+        os.close(dir_fd)
+        _write_nofollow(path, text, staging_fd=staging_fd, rel=rel)
+        return
     _refuse_unusable_parent(path, what=f"{origin}")
     path.parent.mkdir(parents=True, exist_ok=True)
     # Write through the no-follow primitive, not a plain ``write_text``. The staging tree lives
@@ -2695,7 +3868,12 @@ def _write_guarded(path: Path, text: str, origin: str) -> None:
 
 
 def _copy_skill(
-    skill_dir: Path, rel: str, dest_root: Path, selected: set[str] | None = None
+    skill_dir: Path,
+    rel: str,
+    dest_root: Path,
+    selected: set[str] | None = None,
+    *,
+    staging_fd: "int | None" = None,
 ) -> "set[str]":
     """Copy one selected skill, stopping at any nested skill the plan did not select.
 
@@ -2727,8 +3905,23 @@ def _copy_skill(
         and f"{rel}/{p.parent.relative_to(skill_dir).as_posix()}" not in selected
     ]
     for p in _walk_no_reparse(skill_dir):
-        if not p.is_file() or p.is_symlink():
+        # A genuine directory ships nothing itself -- its files are walked and copied
+        # individually -- so it is the one shape skipped here. Every OTHER non-regular entry
+        # (a symlink, FIFO, socket, or device node) is REFUSED and named, not silently
+        # skipped: an entry that cannot be read as text cannot be scanned for credentials or
+        # certified clean, and dropping it makes "unshippable" indistinguishable from "not
+        # there" -- the same cannot-be-judged-means-not-present substitution the enumeration
+        # scan and the digest already refuse rather than omit.
+        if p.is_dir() and not p.is_symlink():
             continue
+        if not p.is_file() or p.is_symlink():
+            raise ExportRefused(
+                f"skill {rel} contains {p.relative_to(skill_dir).as_posix()}, which is a "
+                f"symlink or a special file (FIFO, socket, or device), not a regular file. "
+                f"It cannot be read as text, scanned for credentials, or certified clean, so "
+                f"it is refused rather than silently omitted from the bundle. Remove it from "
+                f"the skill, or ship it outside the bundle."
+            )
         # ``is_symlink()`` does not see a junction, and ``rglob`` descends into one, so a file
         # under a junction would copy into the bundle with its bytes sourced OUTSIDE the crew
         # -- the nested-reparse-point escape the per-SKILL.md check never covered. Refuse it:
@@ -2762,26 +3955,69 @@ def _copy_skill(
                 f"contents cannot be trusted to be scannable) rather than copied "
                 f"into a bundle handed to an untrusted agent."
             )
-        text = _read_text_openat(skill_dir, p.relative_to(skill_dir))
-        if text is None:
-            # Explicit inclusion policy: a file SELECTED for a bundle that cannot be read as
-            # scannable UTF-8 is not silently skipped. Silently dropping it shipped the skill
-            # incomplete with no notice, and it made "unreadable" read as "not selected" -- the
-            # same absent/unreadable/unscannable == not-selected substitution that has surfaced
-            # across this file. The safe direction, matching the module's deny-by-default
-            # posture, is to REFUSE: an unscannable payload cannot be certified clean, so it
-            # must not ship, and the build says which file and why rather than quietly omitting
-            # it. An operator who wants a binary asset in a bundle removes it from the skill or
-            # ships it another way; the packager does not hand unscanned bytes to an untrusted
-            # agent, nor a skill missing files it was told to carry.
+        # Read through the shared file-read guard, the one authority that owns the
+        # sensitive-path, descriptor-fstat and hard-link refusals for this build. The name and
+        # location checks above clear a file by its PATH, and a hard link gives a credential
+        # file a second innocent name inside the skill: skill_dir/notes.md hard-linked to
+        # ~/.aws/credentials clears the path check while its bytes are the credential.
+        # ``safe_read_file_bytes_nolink`` opens the leaf ``O_NOFOLLOW`` and fstats the
+        # descriptor it opened -- ``st_nlink > 1`` is the identity a name check cannot see --
+        # and confirms the opened inode resolves inside ``skill_dir`` and is not sensitive.
+        try:
+            from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+        except ImportError as exc:
+            raise ExportRefused(
+                f"skill {rel} cannot be read safely, because kiro_crew.hooks is not importable "
+                f"here ({exc}). That module holds the sensitive-path and hard-link rules this "
+                f"read has to satisfy, and a local approximation of them is not the same check."
+            ) from exc
+        # The guard has TWO refusal channels that mean different things: None is "the guard
+        # rejected this", while the size cap RAISES. Catching only one lets a FileTooLargeError
+        # out of a function contracted to raise ExportRefused, reaching the CLI as a traceback.
+        try:
+            raw = safe_read_file_bytes_nolink(str(p), str(skill_dir), max_bytes=_MAX_PROMPT_BYTES)
+        except FileTooLargeError as exc:
+            raise ExportRefused(
+                f"skill {rel} contains a file above the {_MAX_PROMPT_BYTES} byte ceiling: "
+                f"{p.relative_to(skill_dir).as_posix()} ({exc}). A skill file that large is an "
+                f"asset, not scannable text; trim it or ship it outside the bundle."
+            ) from None
+        if raw is None:
+            # A file SELECTED for a bundle that the guard refuses is not silently skipped.
+            # None here means the guard rejected the read: the file is sensitive, a link, a
+            # hard link to another name, not a regular file, outside skill_dir, or unreadable
+            # (the guard swallows a mid-read OSError to None). Silently dropping it ships the
+            # skill incomplete with no notice and makes "unreadable" read as "not selected" --
+            # the safe direction, matching the module's deny-by-default posture, is to REFUSE
+            # and say which file and why rather than quietly omitting it.
+            raise ExportRefused(
+                f"skill {rel} contains a file the shared file-read guard refuses: "
+                f"{p.relative_to(skill_dir).as_posix()}. It is sensitive, a link, hard-linked "
+                f"to another name, not a regular file, outside the skill, or unreadable, so it "
+                f"cannot be certified clean and must not ship. Remove it from the skill, or "
+                f"ship it outside the bundle."
+            )
+        # Decode the guarded bytes exactly as they sit on disk: no newline translation and no
+        # re-encode, so a CRLF-authored skill still hashes byte-for-byte against its source and
+        # the content pin holds. A non-UTF-8 body is unscannable and is refused, not shipped.
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
             raise ExportRefused(
                 f"skill {rel} contains a file that is not scannable UTF-8 text: "
                 f"{p.relative_to(skill_dir).as_posix()}. A selected skill's files must be "
                 f"readable so the credential scan can clear them; a binary or non-UTF-8 asset "
                 f"can be neither scanned nor safely shipped, and is refused rather than "
                 f"silently omitted. Remove it from the skill, or ship it outside the bundle."
-            )
-        _write_guarded(dest / p.relative_to(skill_dir).as_posix(), text, f"skills/{rel}/{p.name}")
+            ) from None
+        member_rel = p.relative_to(skill_dir).as_posix()
+        _write_guarded(
+            dest / member_rel,
+            text,
+            f"skills/{rel}/{p.name}",
+            staging_fd=staging_fd,
+            rel=(f"skills/{rel}/{member_rel}" if staging_fd is not None else None),
+        )
         written.add(p.relative_to(skill_dir).as_posix())
     return written
 
@@ -2814,7 +4050,7 @@ def _denied_list(candidates: dict[str, list[Candidate]], plan: Plan | None) -> l
     return out
 
 
-def _refuse_unless_this_build_wrote_it(d: Path, flag: str) -> None:
+def _refuse_unless_this_build_wrote_it(d: Path, flag: str, crew_name: str) -> None:
     """Refuse ``d`` unless every rule says this build produced it. Raises ``ExportRefused``.
 
     Three rules, and the reason they live in ONE function is that they did not. ``--out``
@@ -2929,21 +4165,28 @@ def _refuse_unless_this_build_wrote_it(d: Path, flag: str) -> None:
     if not non_plan and entries:
         # A directory holding ONLY the plan file is the normal state between the `plan`
         # verb and the `build` verb, so it must be accepted -- refusing it would break the
-        # documented two-step workflow. What is checked instead is that the plan is one
-        # THIS tool wrote: the previous code accepted the directory on the FILENAME alone,
-        # so a directory whose single file happened to be called curation-plan.json was
-        # deleted recursively without anything looking inside it.
+        # documented two-step workflow. Ownership is proven by the plan's own IDENTITY, not
+        # its filename or a version number: ``plan_version`` is generic (any JSON carrying it
+        # passes), so a foreign ``curation-plan.json`` that merely says ``plan_version`` would
+        # be treated as this build's staging tree and the directory deleted recursively. The
+        # plan records which crew it is for, so the crew it names must also match the crew
+        # being built; only then is it a plan this tool wrote for this build.
         try:
             body = json.loads((d / PLAN_FILENAME).read_text(encoding="utf-8"))
-            recognised = isinstance(body, dict) and body.get("plan_version") == PLAN_VERSION
+            recognised = (
+                isinstance(body, dict)
+                and body.get("plan_version") == PLAN_VERSION
+                and body.get("crew") == crew_name
+            )
         except (OSError, ValueError):
             recognised = False
         if not recognised:
             raise ExportRefused(
-                f"{flag} {d} holds a single {PLAN_FILENAME} that this tool did not write "
-                f"(no plan_version {PLAN_VERSION}). The name alone is not proof of origin, "
-                f"and building replaces the directory recursively. Point --out at a fresh "
-                f"directory or at a complete previous bundle."
+                f"{flag} {d} holds a single {PLAN_FILENAME} that this tool did not write for "
+                f"crew {crew_name!r} (it must carry plan_version {PLAN_VERSION} and name this "
+                f"crew). A version number is not an ownership claim and the name alone is not "
+                f"proof of origin, and building replaces the directory recursively. Point "
+                f"--out at a fresh directory or at a complete previous bundle."
             )
     if non_plan and not manifest_path.is_file():
         raise ExportRefused(
@@ -2983,130 +4226,643 @@ def _refuse_unless_this_build_wrote_it(d: Path, flag: str) -> None:
             )
 
 
-def _dispose_via_private_aside(
-    target: Path, verify: Callable[[Path], None], settle: Callable[[Path], None]
-) -> None:
-    """Recursively delete ``target`` through a run-private aside, not by re-resolving its path.
+class _CapturedTree:
+    """What one dir-fd-relative walk of a captured tree found.
 
-    ``shutil.rmtree(target)`` re-resolves ``target`` from its path string, so verifying the
-    ownership of ``target`` at its path only NARROWS the window -- a swap between the check
-    and rmtree's own resolution still lands the recursive delete on whatever the path names
-    then, and that delete is irreversible. Verifying ``target`` at its path BEFORE the rename
-    has the same window in the other order: what the rename then captures need not be what was
-    verified. This removes the window by binding the two to one entry:
-
-    1. Create a private directory beside ``target`` with ``mkdir`` (``O_EXCL`` semantics via
-       ``exist_ok`` False) and mode ``0o700`` -- this build is the only writer of a name no
-       other process chose, so nothing can pre-plant or swap it.
-    2. ``os.rename`` ``target`` into that private directory. ``rename`` acts on the entry, not
-       a re-resolved path: it moves whatever ``target`` IS at that instant into a directory
-       only this build can reach. A concurrent swap either loses the rename race (``target``
-       already gone) or moves the swapped tree into the private directory, where nothing
-       outside can be reached.
-    3. ``verify`` the MOVED tree -- the exact entry the rename captured, now at a path no other
-       writer holds and so unswappable. If it is not one this build wrote, rename it BACK to
-       where it came from (a swapped-in tree the operator owns is returned untouched) and
-       refuse; only a verified tree is deleted.
-    4. ``rmtree`` the private directory. Every path deleted is under a root no other writer
-       holds, so the recursive delete cannot be redirected outside it, and it is the same
-       inode step 3 verified.
-
-    Best-effort by design at the edges: if ``target`` is already gone (step 2 raises
-    ``FileNotFoundError``) there is nothing to delete and the private dir is removed; a
-    partially-created private dir is cleaned on any failure.
+    Every field is read THROUGH the held descriptor -- ``os.scandir(fd)``, ``entry.stat`` and
+    ``os.open(..., dir_fd=fd)`` -- never by re-resolving the tree's name, so a parent component
+    swapped after the capture cannot steer any read to a decoy. Regular-file bytes are hashed
+    inline so the digest needs no second by-name pass, and the top-level ``manifest.json`` and
+    plan are stashed whole for the ownership rules.
     """
-    parent = target.parent
-    private = parent / f".smc-purge-{uuid.uuid4().hex}"
-    private.mkdir(mode=0o700)  # exist_ok False: we alone create this exact name
-    cleanup_private = True
+
+    __slots__ = ("top_names", "files", "dirs", "specials", "digest_rows", "manifest", "plan")
+
+    def __init__(self) -> None:
+        self.top_names: list[str] = []
+        self.files: list[str] = []
+        self.dirs: list[str] = []
+        self.specials: list[str] = []
+        self.digest_rows: list[list[str]] = []
+        self.manifest: "bytes | None" = None
+        self.plan: "bytes | None" = None
+
+
+def _read_regular_leaf_fd(dir_fd: int, name: str) -> "bytes | None":
+    """Raw bytes of a single leaf opened ``O_NOFOLLOW`` relative to ``dir_fd``.
+
+    ``name`` is one component under the held descriptor, so a leaf swapped for a link fails its
+    own open and yields ``None`` with no path re-resolved. Returns ``None`` on a redirect, a
+    special file, or a read error -- the same shape ``_read_bytes_openat`` gives, but reached
+    through a descriptor the caller already holds rather than by walking a path from a root.
+    """
     try:
-        moved = private / target.name
+        fd = os.open(name, os.O_RDONLY | _NOFOLLOW_READ_FLAGS, dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _inspect_captured_tree_fd(
+    dir_fd: int, also_skip: frozenset[str], *, read_files: bool
+) -> "_CapturedTree":
+    """Walk the captured tree through ``dir_fd`` and collect the facts the ownership rules need.
+
+    Mirrors ``_walk_no_reparse`` + ``bundle_digest``, but every ``scandir``, ``stat`` and read
+    is descriptor-relative: none names an absolute path, so the swap the ownership check is
+    exposed to -- a parent replaced after the tree was captured -- cannot reach any of them.
+    Fails closed on a directory that exists but cannot be listed, or an entry that cannot be
+    stat'd, the same refusal ``_walk_no_reparse`` gives, so a tree it silently omits part of is
+    refused rather than verified. ``read_files`` hashes regular files for the digest and stashes
+    the top-level ``manifest.json`` / plan; a caller that only needs names and shapes (the
+    staging check) passes ``False`` and reads nothing.
+    """
+    if not _dir_fd_supported():
+        # Every read here is directory-descriptor-relative, which the platform must support;
+        # the disposal callers only reach this where it does, so this is a fail-closed floor.
+        raise ExportRefused(
+            "inspecting a captured tree needs directory-descriptor support, which this "
+            "platform lacks; refusing rather than re-resolve the tree by name."
+        )
+    found = _CapturedTree()
+
+    def _descend(fd: int, prefix: str) -> None:
+        if not _dir_fd_supported():  # fail-closed floor; the enclosing guard already refused
+            raise ExportRefused("directory-descriptor support is required to walk a captured tree")
         try:
-            os.rename(target, moved)
-        except FileNotFoundError:
-            # target vanished (a concurrent process removed or moved it first); nothing to
-            # delete, and the empty private dir is cleaned in the finally below.
-            return
-        try:
-            verify(moved)
-        except ExportRefused:
-            # The entry the rename captured is not one this build wrote -- a tree swapped in
-            # before the rename won the race. Try to return it to where it came from, then
-            # refuse WITHOUT deleting it. A failed restore is not a licence to delete a tree
-            # this build did not put there: if the rename-back fails, RETAIN the private aside
-            # (do not let the finally rmtree it) and name where the tree now sits, so nothing
-            # recursively deletes an operator-owned tree. There is no correct recursive delete
-            # of a tree we did not create.
+            with os.scandir(fd) as it:
+                entries = list(it)
+        except OSError as exc:
+            raise ExportRefused(
+                f"a directory inside the captured tree could not be listed ({exc}); refusing "
+                f"rather than verify a tree it silently omits part of."
+            ) from exc
+        for entry in entries:
+            rel = f"{prefix}{entry.name}"
+            if prefix == "":
+                found.top_names.append(entry.name)
             try:
-                os.rename(moved, target)
-            except OSError as restore_exc:
-                cleanup_private = False
+                mode = entry.stat(follow_symlinks=False).st_mode
+            except OSError as exc:
                 raise ExportRefused(
-                    f"the aside path was replaced by a tree this build did not write, and "
-                    f"restoring it to {target} failed ({restore_exc}). It has NOT been deleted "
-                    f"-- it is at {moved}. Nothing was removed; move it back or remove it by "
-                    f"hand."
-                ) from restore_exc
-            raise
-        # Disposal is the caller's, because only the caller knows what a verified tree is FOR:
-        # the previous bundle is deleted, the operator's current one is kept as the rollback
-        # copy. What must not vary is which entry the disposal acts on -- the one the rename
-        # captured and ``verify`` just cleared, never a path resolved again.
-        try:
-            settle(moved)
-        except BaseException:
-            # Disposal raised, and the MOVED tree is still in the private aside -- for the
-            # ``os.rename(moved, previous)`` settle this is the operator's current bundle,
-            # verified moments ago. The finally below would recursively delete it. Same
-            # discipline as the verify-failure path above: put it back where it came from, and
-            # if that cannot be done, RETAIN the aside and name where the tree sits rather than
-            # deleting a tree this build did not create. ``BaseException`` because the obligation
-            # not to delete the operator's tree holds regardless of why disposal failed -- a
-            # cancelled build included -- and it re-raises, so nothing is swallowed.
-            try:
-                os.rename(moved, target)
-            except OSError as restore_exc:
-                cleanup_private = False
+                    f"an entry inside the captured tree could not be inspected ({exc}); "
+                    f"refusing rather than verify a tree of unknown shape."
+                ) from exc
+            if stat.S_ISDIR(mode):
+                found.dirs.append(rel)
+                sub = os.open(
+                    entry.name,
+                    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=fd,
+                )
+                try:
+                    _descend(sub, f"{rel}/")
+                finally:
+                    os.close(sub)
+                continue
+            if not stat.S_ISREG(mode):
+                # A symlink, FIFO, socket or device: a shape this build never writes. Collected,
+                # not read -- the ownership check refuses on it before any digest read runs.
+                found.specials.append(rel)
+                continue
+            found.files.append(rel)
+            if not read_files:
+                continue
+            data = _read_regular_leaf_fd(fd, entry.name)
+            if prefix == "" and entry.name == "manifest.json":
+                found.manifest = data
+            if prefix == "" and entry.name == PLAN_FILENAME:
+                found.plan = data
+            if rel == "manifest.json" or rel in also_skip:
+                # The manifest carries the digest and ``also_skip`` holds the plan added after a
+                # prior bundle was built: the two entries that leave the signed set on purpose,
+                # the same exclusions ``bundle_digest`` makes.
+                continue
+            if data is None:
                 raise ExportRefused(
-                    f"the tree at {target} was moved aside, disposing of it failed, and "
-                    f"restoring it failed too ({restore_exc}). It has NOT been deleted -- it "
-                    f"is at {moved}. Move it back or remove it by hand."
-                ) from restore_exc
-            raise
+                    f"the captured file {rel} could not be read as a regular file through a "
+                    f"no-follow descriptor; refusing to verify a digest over bytes reached by "
+                    f"following a redirect."
+                )
+            found.digest_rows.append([rel, hashlib.sha256(data).hexdigest()])
+
+    _descend(dir_fd, "")
+    # ``bundle_digest`` appends rows in ``_walk_no_reparse`` order, which is a sort of the
+    # tree's paths; the recursion above visits in ``scandir`` order, so sort by the same key to
+    # reproduce that value byte-for-byte.
+    found.digest_rows.sort(key=lambda row: row[0])
+    return found
+
+
+def _open_captured_dir_fd(parent_fd: int, moved_rel: str, label: Path, flag: str) -> int:
+    """Open the captured tree as an ``O_NOFOLLOW`` directory descriptor through the pinned parent.
+
+    ``moved_rel`` is ``<private>/<name>`` under ``parent_fd``: the private directory is this
+    build's own exclusive creation and ``<name>`` was renamed in relative to ``parent_fd``, so
+    the tree is reached through the held descriptor rather than by re-resolving ``label``'s
+    absolute path. A captured entry that is a link or is not a directory fails this open
+    and is refused -- the shape refusal the ownership check opens with, kept here because this
+    is where the descriptor is obtained.
+    """
+    if not _dir_fd_supported():
+        raise ExportRefused(
+            f"{flag} {label} cannot be opened as a pinned directory descriptor because this "
+            f"platform lacks directory-descriptor support; refusing rather than re-resolve it."
+        )
+    try:
+        return os.open(
+            moved_rel,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        raise ExportRefused(
+            f"{flag} {label} is a symlink, is not a directory, or changed shape after it was "
+            f"captured ({exc}). Its ownership cannot be verified through the held descriptor, "
+            f"so a recursive delete keyed to that verdict is refused. Point {flag} at a real "
+            f"directory."
+        ) from exc
+
+
+def _verify_build_wrote_captured_fd(
+    parent_fd: int, moved_rel: str, flag: str, crew_name: str, *, label: Path
+) -> None:
+    """Ownership check of ``_refuse_unless_this_build_wrote_it``, read through the pinned parent.
+
+    Same three rules -- owned top-level names, no shape this build never writes, and the
+    manifest's own digest -- run on the entry the rename captured, reached only through a
+    descriptor opened ``O_NOFOLLOW`` under ``parent_fd``. A parent swapped after the capture
+    cannot make this inspect a decoy while the sweep deletes the captured inode, because nothing
+    here re-resolves ``label``'s path; ``label`` supplies the operator-facing path for messages
+    only. Raises ``ExportRefused`` on any rule.
+    """
+    dir_fd = _open_captured_dir_fd(parent_fd, moved_rel, label, flag)
+    try:
+        tree = _inspect_captured_tree_fd(dir_fd, frozenset({PLAN_FILENAME}), read_files=True)
     finally:
-        if cleanup_private:
-            shutil.rmtree(private, ignore_errors=True)
+        os.close(dir_fd)
+
+    strangers = sorted(n for n in tree.top_names if n not in _STAGING_OWNED_TOP_LEVEL)
+    if strangers:
+        raise ExportRefused(
+            f"{flag} {label} holds files this build does not own "
+            f"({', '.join(strangers[:5])}"
+            + (f", and {len(strangers) - 5} more" if len(strangers) > 5 else "")
+            + "). Building replaces the whole directory, so it would delete them. "
+            "Point --out at a fresh or previous bundle directory."
+        )
+    wrong_shape = sorted(tree.specials)
+    if wrong_shape:
+        raise ExportRefused(
+            f"{flag} {label} holds entries of a shape this build never writes "
+            f"({', '.join(wrong_shape[:5])}"
+            + (f", and {len(wrong_shape) - 5} more" if len(wrong_shape) > 5 else "")
+            + "). Building replaces the whole directory, so it would delete them, and a "
+            "link, a FIFO or a device node is not something a previous bundle left "
+            "behind. Point --out at a fresh or previous bundle directory."
+        )
+    owned_dir_paths: set[str] = set()
+    for rel in tree.files:
+        # ``rel`` is a POSIX-separated name the descriptor walk produced (``.as_posix()``
+        # form), so its ancestor directories are parsed with ``PurePosixPath`` rather than a
+        # raw ``"/"`` split -- the same reason the source-component parse above uses it, and it
+        # keeps these names canonical against ``tree.dirs`` on every platform.
+        for ancestor in PurePosixPath(rel).parents:
+            if ancestor.name:  # skip the ``.`` root PurePosixPath yields last
+                owned_dir_paths.add(ancestor.as_posix())
+    empty_dirs = sorted(
+        d for d in tree.dirs if d not in owned_dir_paths and d not in _BUILD_WRITES_EMPTY
+    )
+    if empty_dirs:
+        raise ExportRefused(
+            f"{flag} {label} holds directories with no file this build would have written "
+            f"({', '.join(empty_dirs[:5])}"
+            + (f", and {len(empty_dirs) - 5} more" if len(empty_dirs) > 5 else "")
+            + "). Building replaces the whole directory, so it would delete them, and an "
+            "empty directory is not something a previous bundle left behind. Point --out at "
+            "a fresh or previous bundle directory."
+        )
+    non_plan = [rel for rel in tree.files if rel != PLAN_FILENAME]
+    if not non_plan and tree.files:
+        # A directory holding ONLY the plan file is the normal state between the plan verb and
+        # the build verb. Ownership is proven by the plan's own identity: it must carry this
+        # tool's plan_version and name the crew being built, because a version number alone is
+        # generic and a filename alone is not proof of origin.
+        recognised = False
+        if tree.plan is not None:
+            try:
+                body = json.loads(tree.plan.decode("utf-8"))
+                recognised = (
+                    isinstance(body, dict)
+                    and body.get("plan_version") == PLAN_VERSION
+                    and body.get("crew") == crew_name
+                )
+            except (ValueError, UnicodeDecodeError):
+                recognised = False
+        if not recognised:
+            raise ExportRefused(
+                f"{flag} {label} holds a single {PLAN_FILENAME} that this tool did not write "
+                f"for crew {crew_name!r} (it must carry plan_version {PLAN_VERSION} and name "
+                f"this crew). A version number is not an ownership claim and the name alone is "
+                f"not proof of origin, and building replaces the directory recursively. Point "
+                f"--out at a fresh directory or at a complete previous bundle."
+            )
+    if non_plan and "manifest.json" not in tree.files:
+        raise ExportRefused(
+            f"{flag} {label} has bundle-shaped contents but no manifest.json, so it is not a "
+            "directory this build produced and replacing it would delete files of "
+            "unknown origin. Point --out at a fresh directory or at a complete previous "
+            "bundle."
+        )
+    if non_plan:
+        if tree.manifest is None:
+            raise ExportRefused(
+                f"{flag} {label} has a manifest.json that cannot be read, so the bundle it "
+                "claims to describe cannot be verified before a recursive replace."
+            )
+        try:
+            decoded = json.loads(tree.manifest.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise ExportRefused(
+                f"{flag} {label} has a manifest.json that cannot be read, so the bundle it "
+                "claims to describe cannot be verified before a recursive replace."
+            ) from None
+        if not isinstance(decoded, dict):
+            raise ExportRefused(
+                f"{flag} {label} has a manifest.json that decodes to "
+                f"{type(decoded).__name__}, not an object, so the bundle it claims to "
+                f"describe cannot be verified before a recursive replace."
+            )
+        payload = json.dumps(tree.digest_rows, ensure_ascii=False, separators=(",", ":"))
+        computed = "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        if decoded.get("digest") != computed:
+            raise ExportRefused(
+                f"{flag} {label} does not match the bundle its manifest describes, so it "
+                "holds at least one file this build did not write (a nested stray such "
+                "as skills/notes.txt, or an edited file). Building replaces the "
+                "directory recursively and would delete it. Point --out at a fresh "
+                "directory."
+            )
 
 
-def _purge_via_private_aside(target: Path, verify: Callable[[Path], None]) -> None:
-    """Delete ``target`` through the private aside: capture, verify, then remove."""
+def _verify_captured_is_staging_fd(parent_fd: int, moved_rel: str, *, label: Path) -> None:
+    """Confirm a captured tree is THIS build's own staging, read through the pinned parent.
+
+    The moved-entry counterpart of the staging leftover check: only owned top-level names and
+    only shapes this build writes, run on the entry the rename captured. A tree swapped in
+    before the capture is moved (not deleted), fails here, and is left where it came from.
+    Raises ``ExportRefused`` on any leftover.
+    """
+    dir_fd = _open_captured_dir_fd(parent_fd, moved_rel, label, "the staging path")
+    try:
+        tree = _inspect_captured_tree_fd(dir_fd, frozenset(), read_files=False)
+    finally:
+        os.close(dir_fd)
+    leftover = sorted(
+        rel
+        for rel, is_special in (
+            *((f, False) for f in tree.files),
+            *((d, False) for d in tree.dirs),
+            *((s, True) for s in tree.specials),
+        )
+        if PurePosixPath(rel).parts[0] not in _STAGING_OWNED_TOP_LEVEL or is_special
+    )
+    if leftover:
+        raise ExportRefused(
+            f"the staging path {label} changed between the ownership check and its cleanup and "
+            f"now holds files this build did not write ({', '.join(leftover[:5])}). It has NOT "
+            f"been deleted. Move it, or point --out elsewhere."
+        )
+
+
+def _dispose_via_private_aside(
+    target: Path,
+    verify: Callable[[int, str], None],
+    settle: Callable[[str, int], None],
+    *,
+    resolved_parent: "Path | None" = None,
+) -> None:
+    """Recursively delete ``target`` through a run-private aside, all relative to a pinned parent.
+
+    ``shutil.rmtree(target)`` re-resolves ``target`` from its path string, so a swap of
+    ``target`` OR of a PARENT component between the ownership check and the delete lands the
+    recursive delete on whatever the path names then, and that delete is irreversible.
+    ``resolved_parent`` is the parent resolved once at validation; this opens it by descriptor,
+    walking every component ``O_NOFOLLOW`` and HOLDING the descriptor across the whole
+    operation, and reaches ``target``, the private aside, and the caller's disposal destination
+    as single leaves under it. A component swapped for a link since validation fails its own
+    no-follow open and REFUSES here rather than being followed; a component swapped after this
+    open is defeated, because every mutation goes through the held descriptor rather than
+    re-resolving the name between two mutation points. Binding the ownership check and the
+    delete to one held descriptor removes both windows:
+
+    1. Create a private directory UNDER the pinned parent with ``os.mkdir(dir_fd=...)`` and mode
+       ``0o700`` -- this build is the only writer of a name no other process chose, so nothing
+       can pre-plant or swap it, and it cannot be relocated by a parent-name swap because it is
+       created relative to the held descriptor.
+    2. ``os.rename`` ``target`` into that private directory with ``src_dir_fd``/``dst_dir_fd``
+       set to the pinned parent. ``rename`` acts on the entry under that descriptor, not a
+       re-resolved path: a concurrent swap either loses the race (``target`` already gone) or
+       moves the swapped tree into the private directory, where nothing outside can reach it.
+    3. ``verify`` the MOVED tree -- the exact entry the rename captured -- reached through
+       ``parent_fd`` as ``(parent_fd, moved_rel)``, never by re-resolving a path, so a parent
+       swapped after the capture cannot make it inspect a decoy while the sweep deletes the
+       captured inode. If it is not one this build wrote, rename it BACK ``dir_fd``-relative (a
+       swapped-in tree the operator owns is returned untouched) and refuse; only a verified tree
+       is disposed of.
+    4. ``settle`` acts on the moved entry ``dir_fd``-relative to the pinned parent (the caller
+       renames it to its destination; a purge leaves it for the sweep below). The private
+       directory is then removed through the pinned parent by ``_rmtree_pinned``, which reaches
+       every deleted path through a directory descriptor and refuses a redirect -- so the
+       recursive delete cannot be steered outside the pinned parent, and it is the same inode
+       step 3 verified.
+
+    Best-effort at the edges: if ``target`` is already gone (step 2 raises
+    ``FileNotFoundError``) there is nothing to dispose of and the private dir is removed; a
+    partially-created private dir is cleaned on any failure.
+
+    ``resolved_parent`` defaults to ``target.parent.resolve()`` for a direct caller with no
+    earlier reading to pin; the transaction passes the value it resolved at validation so the
+    pin reflects that moment rather than a fresh resolve at disposal time.
+    """
+    if resolved_parent is None:
+        resolved_parent = target.parent.resolve()
+    try:
+        parent_fd = _open_dir_nofollow_pinned(resolved_parent, already_resolved=True)
+    except OSError as exc:
+        # A component of the parent changed to a link or stopped being an openable directory
+        # since --out was validated. Refuse rather than let a re-resolved path steer the
+        # recursive delete onto whatever the swapped component now names.
+        raise ExportRefused(
+            f"cannot dispose of {target}: a component of its parent changed to a link or is no "
+            f"longer an openable directory since --out was validated ({exc}). Nothing was "
+            f"deleted. Point --out elsewhere."
+        ) from exc
+    try:
+        private_name = f".smc-purge-{uuid.uuid4().hex}"
+        private = target.parent / private_name
+        target_name = target.name
+        moved_rel = f"{private_name}/{target_name}"
+        # exist_ok False (our exclusive name), created relative to the held parent descriptor.
+        os.mkdir(private_name, mode=0o700, dir_fd=parent_fd)
+        cleanup_private = True
+        try:
+            moved = private / target_name
+            try:
+                os.rename(target_name, moved_rel, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            except FileNotFoundError:
+                # target vanished (a concurrent process removed or moved it first); nothing to
+                # dispose of, and the empty private dir is cleaned in the finally below.
+                return
+            try:
+                verify(parent_fd, moved_rel)
+            except BaseException:
+                # ANY exception out of ``verify`` -- not only ``ExportRefused`` -- must restore
+                # the captured tree before it propagates, or the ``finally`` below sweeps the
+                # private aside and takes the operator's verified bundle with it. ``verify``
+                # now inspects the tree through the pinned descriptor, so it can raise an
+                # ``OSError`` from the walk as well as ``ExportRefused``; and a
+                # ``KeyboardInterrupt`` or ``SystemExit`` during verification destroys the
+                # bundle just as thoroughly as a ``ValueError``. So the handler is
+                # ``BaseException``: restore the moved tree to where it came from, and if that
+                # restore fails, RETAIN the private aside (do not let the finally sweep it) and
+                # name where the tree now sits. A failed restore is not a licence to delete a
+                # tree this build did not certify. There is no correct recursive delete of a
+                # tree left unverified.
+                try:
+                    os.rename(moved_rel, target_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                except OSError as restore_exc:
+                    cleanup_private = False
+                    raise ExportRefused(
+                        f"verification of the tree moved aside from {target} did not complete "
+                        f"and restoring it failed ({restore_exc}). It has NOT been deleted -- "
+                        f"it is at {moved}. Nothing was removed; move it back or remove it by "
+                        f"hand."
+                    ) from restore_exc
+                raise
+            # Disposal is the caller's, because only the caller knows what a verified tree is
+            # FOR: the previous bundle is deleted, the operator's current one is kept as the
+            # rollback copy. What must not vary is which entry the disposal acts on -- the one
+            # the rename captured and ``verify`` just cleared, reached through the pinned parent,
+            # never a path resolved again.
+            try:
+                settle(moved_rel, parent_fd)
+            except BaseException:
+                # Disposal raised, and the MOVED tree is still in the private aside -- for the
+                # rename-to-destination settle this is the operator's current bundle, verified
+                # moments ago. The sweep below would recursively delete it. Same discipline as
+                # the verify-failure path above: put it back where it came from,
+                # ``dir_fd``-relative, and if that cannot be done, RETAIN the aside and name
+                # where the tree sits rather than deleting a tree this build did not create.
+                # ``BaseException`` because the obligation not to delete the operator's tree
+                # holds regardless of why disposal failed -- a cancelled build included -- and
+                # it re-raises, so nothing is swallowed.
+                try:
+                    os.rename(moved_rel, target_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                except OSError as restore_exc:
+                    cleanup_private = False
+                    raise ExportRefused(
+                        f"the tree at {target} was moved aside, disposing of it failed, and "
+                        f"restoring it failed too ({restore_exc}). It has NOT been deleted -- it "
+                        f"is at {moved}. Move it back or remove it by hand."
+                    ) from restore_exc
+                raise
+        finally:
+            if cleanup_private:
+                # Reach the delete through the pinned parent, never by re-resolving
+                # ``private``'s path: a bare ``shutil.rmtree(private)`` would follow a parent
+                # component swapped after the pin. Best-effort, like the rmtree it replaces -- a
+                # private dir that cannot be swept is left for the next run, never chased outside
+                # the parent.
+                try:
+                    _rmtree_pinned(parent_fd, private_name)
+                except OSError:
+                    pass
+    finally:
+        os.close(parent_fd)
+
+
+def _purge_via_private_aside(
+    target: Path, verify: Callable[[int, str], None], *, resolved_parent: "Path | None" = None
+) -> None:
+    """Delete ``target`` through the private aside: capture, verify, then sweep via the pin.
+
+    The verified tree is removed by the ``_rmtree_pinned`` sweep of the private directory in
+    ``_dispose_via_private_aside``, so the settle step has nothing to do.
+    """
     _dispose_via_private_aside(
-        target, verify, lambda moved: shutil.rmtree(moved, ignore_errors=True)
+        target, verify, lambda moved_rel, pfd: None, resolved_parent=resolved_parent
     )
 
 
-def _publish_report(report_tmp: Path, report_path: Path, report_before: "bytes | None") -> None:
-    """Atomically move ``report_tmp`` onto ``report_path``, bound to one parent descriptor.
+def _unlink_out_leaf_best_effort(leaf: Path, resolved_parent: Path) -> None:
+    """Best-effort unlink of a single ``--out``-derived leaf, reached through a pinned parent.
 
-    ``os.replace(report_tmp, report_path)`` re-resolves ``report_path`` by NAME, so a concurrent
-    process that drops a foreign file there between the caller's shape checks and this replace
-    would have that file clobbered -- "I chose this path" is not "I own what is at it now". This
-    opens the parent once with ``O_NOFOLLOW | O_DIRECTORY`` and re-checks the leaf by ``lstat``
-    against that descriptor immediately before the replace, so the entry verified and the entry
-    replaced are reached through one descriptor no concurrent rename of the parent can redirect.
+    The staging marker and the report live BESIDE ``--out`` in a directory this build does not
+    own. A bare ``leaf.unlink()`` re-resolves the leaf's path string, so a parent component
+    swapped for a link since ``--out`` was validated steers the unlink outside the validated
+    parent. This opens ``resolved_parent`` ``O_NOFOLLOW`` and unlinks the leaf ``dir_fd``
+    relative to it, never by re-resolving the name.
+
+    Leave-residue is the deny-by-default failure: if the parent cannot be pinned (a component
+    changed to a link, or is not an openable directory), the leaf is LEFT rather than
+    deleted on a guess of where it now is -- deleting on that guess is the escape this closes.
+    Best-effort like the cleanup it sits among: it runs inside failure handlers and on the
+    ordinary exit, so a missing leaf or an unpinnable parent is swallowed rather than raised.
+    A later reader sees a leftover marker as the residue a swapped parent forced, not a bug.
+    """
+    try:
+        parent_fd = _open_dir_nofollow_pinned(resolved_parent, already_resolved=True)
+    except OSError:
+        return  # parent unpinnable -> leave residue, do not guess where the leaf is
+    try:
+        os.unlink(leaf.name, dir_fd=parent_fd)
+    except OSError:
+        pass  # missing, a directory, or otherwise not removable through the pin: leave it
+    finally:
+        os.close(parent_fd)
+
+
+def _purge_staging_best_effort(staging: Path, resolved_parent: Path) -> None:
+    """Best-effort teardown of THIS build's own staging tree, reached through a pinned parent.
+
+    A bare ``shutil.rmtree`` of ``staging`` with ``ignore_errors=True`` re-resolves ``staging``'s
+    path string, so a parent swapped between a failure and its cleanup steers the recursive
+    delete outside ``--out`` -- the failure path then deletes as irreversibly as the success
+    path. This captures
+    ``staging`` into a run-private aside under a parent pinned ``O_NOFOLLOW``, confirms the
+    captured tree holds only names and shapes this build writes, and deletes only then; a tree
+    swapped in before the capture fails that check and is LEFT, never deleted.
+
+    Best-effort, like the ``ignore_errors=True`` it replaces: it runs inside a failure handler,
+    so it must not raise a NEW error over the exception already in flight. A refusal (a
+    swapped-in tree), a pin-open failure, or a sweep that cannot complete is swallowed and the
+    scratch tree is left for the next run rather than masking the real failure.
+    """
+    try:
+        _purge_via_private_aside(
+            staging,
+            lambda parent_fd, moved_rel: _verify_captured_is_staging_fd(
+                parent_fd, moved_rel, label=staging
+            ),
+            resolved_parent=resolved_parent,
+        )
+    except Exception:
+        # Swallow everything an OSError-scoped ``ignore_errors=True`` would, plus the ownership
+        # ``ExportRefused``: this is teardown of the build's own scratch, and leaving it is safe
+        # (the next run's ownership check handles a residue). A ``BaseException`` -- a cancel --
+        # is left to propagate, as it is not the cleanup's to swallow.
+        pass
+
+
+#: The errnos a filesystem raises when hard links are simply not supported there -- FAT/exFAT,
+#: many network mounts, some overlay configurations. ``os.link`` reports one of these rather
+#: than ``FileExistsError``, and every publish link in ``_publish_report`` treats a failure as
+#: a race lost, so an unsupported-capability errno must be answered BEFORE promotion, not there.
+_HARD_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    e for e in (getattr(errno, n, None) for n in ("EPERM", "EOPNOTSUPP", "ENOSYS", "EMLINK")) if e
+)
+
+
+def _refuse_report_dir_without_hard_link_support(report_path: Path) -> None:
+    """Refuse, before promotion, when the report directory cannot do hard links.
+
+    ``_publish_report`` installs the report by EXCLUSIVE HARD LINK (``os.link``) so a
+    concurrent writer at the report path is ANSWERED by ``FileExistsError`` rather than
+    clobbered. But ``os.link`` is a filesystem CAPABILITY: on FAT/exFAT, many network mounts
+    and some overlays it raises ``OSError`` with ``EPERM``/``EOPNOTSUPP``/``ENOSYS`` instead.
+    ``_publish_report`` runs AFTER ``promoted = True``, so such a failure there unwinds a
+    SUCCESSFUL promotion -- a safety mechanism that assumes a capability becoming a new failure
+    mode where the capability is absent, firing after the point of no return.
+
+    So the capability is probed here, before the irreversible rename: create a private scratch
+    file in the report's own parent and try to link it. A refusal before promotion is
+    recoverable (the prior bundle is untouched); the same refusal after it is not. The probe
+    runs in the exact directory the publish targets because hard-link support is per-filesystem,
+    not per-host, and --out may sit on a different mount than anything else.
+    """
+    if not _dir_fd_supported():
+        return
+    parent = report_path.parent
+    probe_src = parent / f".{_RUN_ID}.linkprobe.src"
+    probe_dst = parent / f".{_RUN_ID}.linkprobe.dst"
+    try:
+        parent_fd = _open_dir_nofollow_pinned(parent)
+    except OSError:
+        # The parent cannot be pinned here; ``_publish_report`` will refuse cleanly on the same
+        # open before promotion is involved, so leave that path to report it.
+        return
+    try:
+        try:
+            fd = os.open(
+                probe_src.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW_READ_FLAGS,
+                0o600,
+                dir_fd=parent_fd,
+            )
+        except OSError:
+            # Could not even create the scratch file (name taken, permissions). Not a hard-link
+            # verdict -- let the publish path handle whatever is really wrong.
+            return
+        os.close(fd)
+        try:
+            os.link(probe_src.name, probe_dst.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except OSError as exc:
+            if exc.errno in _HARD_LINK_UNSUPPORTED_ERRNOS:
+                raise ExportRefused(
+                    f"the directory holding {report_path} does not support hard links "
+                    f"({exc}). This build publishes its report by an exclusive hard link so a "
+                    f"concurrent writer is refused rather than overwritten, and it will not "
+                    f"promote a bundle it cannot then publish a report for. Point --out at a "
+                    f"filesystem that supports hard links (a local ext4/xfs/apfs directory), "
+                    f"not FAT/exFAT or this network mount."
+                ) from exc
+            # Any other link failure (a race on the probe name, ENOSPC) is not a capability
+            # verdict; let the real publish surface it.
+            return
+        finally:
+            try:
+                os.unlink(probe_dst.name, dir_fd=parent_fd)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.unlink(probe_src.name, dir_fd=parent_fd)
+        except OSError:
+            pass
+        os.close(parent_fd)
+
+
+def _publish_report(report_tmp: Path, report_path: Path, report_before: "bytes | None") -> None:
+    """Publish ``report_tmp`` at ``report_path`` with NO-REPLACE semantics, bound to one fd.
+
+    ``os.replace(report_tmp, report_path)`` re-resolves ``report_path`` by NAME and OVERWRITES
+    whatever is there, so a concurrent process that drops a foreign file at that path between
+    the caller's checks and the install would have it clobbered -- "I chose this path" is not
+    "I own what is at it now". This opens the parent once with ``O_NOFOLLOW | O_DIRECTORY``,
+    re-checks the leaf by ``lstat`` against that descriptor, and then installs by EXCLUSIVE
+    HARD LINK (``os.link``, which fails ``FileExistsError``) rather than a replace: a file that
+    arrives in the window is ANSWERED by the link failing, not assumed away, and the collision
+    is REFUSED. When the path already holds this build's own verified prior report, that report
+    is moved aside first and restored (or preserved beside a racer's file) so no refusal path
+    is ever destructive.
 
     Shape is not the whole of ownership. A value read back has four independent properties, and
     each can have changed since we last saw it: whether it EXISTS, whether it is the SAME OBJECT,
     whether its CONTENT is unchanged, and whether it is READABLE. The shape ``lstat`` covers the
     first two; a concurrent process that edits the report IN PLACE leaves the same object, still
     readable, with different bytes -- missing none of the first two, so a shape check alone says
-    fine and ``os.replace`` destroys that edit silently. The build owns the report exclusively
-    for the duration of one build (it only ever writes it through ``report_tmp`` + this replace,
+    fine while a plain overwrite would destroy that edit. The build owns the report exclusively
+    for the duration of one build (it only ever writes it through ``report_tmp`` + this publish,
     never in place), so the bytes at ``report_path`` must still equal what the caller read before
     the build (``report_before``), or the file must be absent. Anything else is a foreign edit,
     and the only definitely-wrong answer is to overwrite it -- a report is not mergeable, so drift
-    is REFUSED. The content is read through the SAME descriptor the replace targets, so the bytes
-    compared are the bytes that would be clobbered.
+    is REFUSED. The content is read through the SAME descriptor the publish targets, so the bytes
+    compared are the bytes that would be superseded.
 
     Consults ``_dir_fd_supported`` for the same reason every ``O_DIRECTORY`` user does: on a
     platform without descriptor-relative opens there is no atomic form, and the whole builder
@@ -3115,7 +4871,7 @@ def _publish_report(report_tmp: Path, report_path: Path, report_before: "bytes |
     """
     if not _dir_fd_supported():
         # Unreachable in practice (the builder refuses at its entry on such a platform), but a
-        # by-name replace here would be the very window this helper closes, so refuse rather
+        # by-name publish here would be the very window this helper closes, so refuse rather
         # than silently take it.
         raise ExportRefused(
             "cannot publish the report atomically without descriptor-relative opens on this "
@@ -3126,7 +4882,7 @@ def _publish_report(report_tmp: Path, report_path: Path, report_before: "bytes |
     except OSError as exc:
         # Pin every component of the report's parent, not just the leaf: opening the parent by
         # bare path string re-resolved it and followed a grandparent/intermediate swapped into
-        # the window, after which the lstat, the content re-read, and the os.replace below all
+        # the window, after which the lstat, the content re-read, and the publish below all
         # run relative to a descriptor pointing outside --out. A component swapped after
         # resolution fails its own no-follow open and arrives here as a refusal.
         raise ExportRefused(
@@ -3147,10 +4903,10 @@ def _publish_report(report_tmp: Path, report_path: Path, report_before: "bytes |
             )
         if st is not None:
             # Same object, still readable -- but is it the same CONTENT the caller read before
-            # the build? Read it back through the SAME descriptor the replace will target
+            # the build? Read it back through the SAME descriptor the publish will target
             # (no-follow, so a leaf swapped to a link is refused by the open, not chased), and
-            # refuse if the bytes drifted: that is a concurrent in-place editor whose write
-            # ``os.replace`` would otherwise destroy without a trace.
+            # refuse if the bytes drifted: that is a concurrent in-place editor whose write the
+            # publish would otherwise supersede without a trace.
             leaf_fd = os.open(
                 report_path.name, os.O_RDONLY | _NOFOLLOW_READ_FLAGS, dir_fd=parent_fd
             )
@@ -3172,7 +4928,104 @@ def _publish_report(report_tmp: Path, report_path: Path, report_before: "bytes |
                     f"edit; refusing to overwrite it rather than destroy that write. "
                     f"Re-run the build once nothing else is writing there."
                 )
-        os.replace(report_tmp, report_path.name, dst_dir_fd=parent_fd)
+        # Install with NO-REPLACE semantics. ``os.replace`` re-resolves the name and
+        # OVERWRITES whatever is there, so a file a concurrent process drops at the report
+        # path in the window between the checks above and here is destroyed silently -- "I
+        # checked it a moment ago" is not "nothing got here since". A hard link ANSWERS the
+        # question instead of assuming it: it fails ``FileExistsError`` rather than clobbering,
+        # and a collision is REFUSED. Every refusal below leaves both the destination and the
+        # staged ``report_tmp`` recoverable, so a raise here is never destructive.
+        tmp_name = report_tmp.name
+        leaf_name = report_path.name
+        if st is None:
+            # Nothing was here at the check above; publish by exclusive hard link. A file
+            # created in the window lands as ``FileExistsError`` -> refuse, clobbering nothing.
+            try:
+                os.link(tmp_name, leaf_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            except FileExistsError:
+                raise ExportRefused(
+                    f"{report_path} was created by another process while this build ran, "
+                    f"after the checks above found nothing there. Refusing to overwrite it. "
+                    f"The staged report is kept. Re-run once nothing else is writing there."
+                ) from None
+        else:
+            # The path held this build's own prior report, verified byte-identical to
+            # ``report_before`` above. Move that verified report ASIDE within the directory,
+            # then publish the new one by exclusive hard link. If a concurrent writer slips a
+            # file in during the swap the link lands as ``FileExistsError``: the prior report
+            # is preserved at the aside name and BOTH are left in place -- restoring the aside
+            # over the name would destroy that concurrent write, so nothing is clobbered
+            # either way.
+            aside_name = leaf_name + f".{_RUN_ID}.prev"
+            # Claim the aside name with an EXCLUSIVE link, not ``os.rename``: a rename REPLACES
+            # whatever is already at ``aside_name``, so a foreign file a concurrent process
+            # left at this run-id scratch name would be overwritten. ``os.link`` fails
+            # ``FileExistsError`` on an occupant, so the scratch name is a checked claim -- if
+            # something else holds it, refuse and name it rather than overwrite. Once the link
+            # lands, both names point at the prior report's inode; the original name is then
+            # unlinked so the leaf is free for the publish. A failure between the link and the
+            # unlink leaves both names (two links to one inode), which the recovery below and
+            # the operator can both resolve -- nothing is destroyed.
+            try:
+                os.link(leaf_name, aside_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            except FileExistsError:
+                raise ExportRefused(
+                    f"the scratch name {report_path}.{_RUN_ID}.prev is already held by "
+                    f"another process; refusing to overwrite it. This build's report is not "
+                    f"published and the existing report is untouched. Re-run once nothing "
+                    f"else is writing there."
+                ) from None
+            os.unlink(leaf_name, dir_fd=parent_fd)
+            try:
+                os.link(tmp_name, leaf_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            except FileExistsError:
+                raise ExportRefused(
+                    f"{report_path} was replaced by another process while this build "
+                    f"published its report. Refusing to overwrite it; this build's previous "
+                    f"report is preserved at {leaf_name}.{_RUN_ID}.prev and the staged report "
+                    f"is kept. Re-run once nothing else is writing there."
+                ) from None
+            except BaseException:
+                # A different failure. The link did NOT publish, but that does not prove the
+                # name is free: a concurrent writer may have created a file at ``leaf_name`` in
+                # the window between the aside-move and here. Restore by EXCLUSIVE LINK
+                # (``os.link``, which fails ``FileExistsError`` on an occupant), NOT
+                # ``os.rename`` -- a rename replaces atomically and would destroy that
+                # concurrent write. If the name is now occupied, PRESERVE the aside at its
+                # ``.prev`` name and leave the occupant in place: residue an operator can
+                # recover is the safe failure, overwriting an unknown occupant is the guess
+                # (the transaction's contract -- when it cannot complete it leaves things
+                # behind rather than overwriting or deleting anything it did not create).
+                try:
+                    os.link(aside_name, leaf_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                except FileExistsError:
+                    # The destination reappeared. Do not clobber it; the prior report stays at
+                    # the aside name for the operator to recover, and the original exception
+                    # propagates unmasked.
+                    pass
+                except OSError:
+                    # Restore itself failed for another reason: leave the aside in place rather
+                    # than mask the original failure. Best effort.
+                    pass
+                else:
+                    # The restore landed by link; drop the now-redundant aside copy.
+                    try:
+                        os.unlink(aside_name, dir_fd=parent_fd)
+                    except OSError:
+                        pass
+                raise
+            # Published: drop the aside copy of our own now-superseded prior report.
+            try:
+                os.unlink(aside_name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        # The publish left ``report_tmp`` as a second link to the published inode; drop it so
+        # the run-id temp does not linger. Its absence (a reverted ``os.replace`` consumes it)
+        # is not an error here.
+        try:
+            os.unlink(tmp_name, dir_fd=parent_fd)
+        except OSError:
+            pass
     finally:
         os.close(parent_fd)
 
@@ -3211,6 +5064,12 @@ def build_bundle(
     # already pointing somewhere else. Guarding one derived path at a time cannot catch a
     # redirect in the component they share.
     _refuse_unusable_parent(out_dir, what="the bundle")
+    # Resolve the shared parent ONCE, here, where it has just been validated as having no
+    # redirecting ancestor. The promotion below pins THIS value by descriptor and renames
+    # staging onto out_dir relative to it, so a component swapped between now and the rename
+    # fails its own no-follow open rather than being re-resolved and followed. Resolving again
+    # at promotion time would be a second reading of the tree that a swap could win.
+    resolved_out_parent = out_dir.parent.resolve()
     staging = out_dir.parent / (out_dir.name + ".staging")
     # Beside staging, not inside: see the marker note below. Cleaned on every exit path,
     # because a marker left behind is a licence for the NEXT run to delete whatever sits at
@@ -3297,7 +5156,25 @@ def build_bundle(
                 + "). It is derived from --out by appending '.staging', and building "
                 "would delete it recursively. Move it, or point --out elsewhere."
             )
-        shutil.rmtree(staging)
+
+        # The two checks above cleared this tree BY NAME (its marker is ours, its contents
+        # are ours). A bare ``shutil.rmtree(staging)`` then re-resolves ``staging`` from its
+        # string, so a swap of the path -- or of a parent component -- between the checks and
+        # the delete lands the recursive delete on whatever the name points at then, outside
+        # --out and irreversible. This is the same name-then-delete window the previous-bundle
+        # and private-aside disposals close, so it closes the same way: move the cleared tree
+        # into a run-private aside under a pinned parent descriptor, re-confirm ON THE MOVED
+        # ENTRY that it is still one this build owns, and only then sweep it. A tree swapped in
+        # since the checks is moved (not deleted), fails the re-confirmation, is renamed back
+        # untouched, and refuses. The re-confirmation reads the moved entry through the pinned
+        # parent (``_verify_captured_is_staging_fd``), never by re-resolving the staging name.
+        _purge_via_private_aside(
+            staging,
+            lambda parent_fd, moved_rel: _verify_captured_is_staging_fd(
+                parent_fd, moved_rel, label=staging
+            ),
+            resolved_parent=out_dir.parent.resolve(),
+        )
     # The marker path's SHAPE is judged before staging is created, for the reason stated
     # above about a plain file at either path: a refusal that arrives after ``mkdir`` leaves
     # a staging tree nothing cleans up, so the operator gets a traceback and a directory to
@@ -3326,6 +5203,23 @@ def build_bundle(
             f"the staging path {staging} was claimed by another build in progress. "
             f"One build owns a given --out at a time; re-run once the other finishes."
         )
+    # Retain a no-follow descriptor on the staging tree THIS build just created. Every write
+    # into staging below resolves its leaf relative to this descriptor rather than by
+    # re-walking ``staging`` from its path string, so a swap of ``staging`` for another
+    # directory between this ``mkdir`` and a later write cannot redirect the write outside
+    # ``--out``. ``staging_fd`` is -1 on a platform without directory-descriptor support
+    # (Windows), where the writes fall back to the by-name no-follow open and the whole
+    # builder is POSIX-gated anyway. Closed in the transaction's ``finally`` below.
+    try:
+        staging_fd = _open_dir_nofollow_pinned(staging) if _dir_fd_supported() else -1
+    except OSError as exc:
+        _purge_staging_best_effort(staging, resolved_out_parent)
+        _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
+        raise ExportRefused(
+            f"cannot open the staging tree {staging} as a pinned descriptor after creating "
+            f"it ({exc}); a component changed since --out was validated. Nothing was written. "
+            f"Re-run the build."
+        ) from exc
     try:
         _write_marker_exclusive(staging_marker, ours=marker_is_ours)
     except BaseException:
@@ -3334,7 +5228,7 @@ def build_bundle(
         # behind, and the pre-mkdir checks then read it as another build's claim -- so the
         # first refusal makes every later run refuse too, for a different reason, until
         # someone deletes the directory by hand. Only the tree THIS call created is removed.
-        shutil.rmtree(staging, ignore_errors=True)
+        _purge_staging_best_effort(staging, resolved_out_parent)
         raise
 
     # The swap below replaces out_dir wholesale, which is what makes a failed build
@@ -3387,8 +5281,8 @@ def build_bundle(
             # the next run reads as another build's claim and refuses on, turning one refusal
             # into a standing one until someone deletes the directory by hand. A refusal must
             # release what this build acquired, not only report the reason.
-            shutil.rmtree(staging, ignore_errors=True)
-            staging_marker.unlink(missing_ok=True)
+            _purge_staging_best_effort(staging, resolved_out_parent)
+            _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
             raise ExportRefused(
                 f"the existing report at {report_path} cannot be read or a component of its "
                 f"path changed to a link, so this build cannot restore it if the swap fails "
@@ -3408,10 +5302,10 @@ def build_bundle(
         # first two -- reported as a defect for precisely the case the third one catches.
         # Both are about to run a recursive delete, so they cannot be allowed to drift.
         try:
-            _refuse_unless_this_build_wrote_it(out_dir, "--out")
+            _refuse_unless_this_build_wrote_it(out_dir, "--out", crew.name)
         except ExportRefused:
-            shutil.rmtree(staging, ignore_errors=True)
-            staging_marker.unlink(missing_ok=True)
+            _purge_staging_best_effort(staging, resolved_out_parent)
+            _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
             raise
         plan_file = out_dir / PLAN_FILENAME
         if plan_file.is_file():
@@ -3422,8 +5316,8 @@ def build_bundle(
             # than the tree: it is what authorises the NEXT run's recursive delete.
             carried_plan = _read_bytes_openat(out_dir, Path(PLAN_FILENAME))
             if carried_plan is None:
-                shutil.rmtree(staging, ignore_errors=True)
-                staging_marker.unlink(missing_ok=True)
+                _purge_staging_best_effort(staging, resolved_out_parent)
+                _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
                 raise ExportRefused(
                     f"the existing plan at {plan_file} cannot be read or a component of its "
                     f"path changed to a link, so this build cannot carry it across the swap "
@@ -3431,18 +5325,31 @@ def build_bundle(
                 )
 
     try:
+        _sfd = staging_fd if staging_fd != -1 else None
         _write_guarded(
             staging / "agent.json",
             json.dumps(result.spec, indent=2, ensure_ascii=False) + "\n",
             "agent.json",
+            staging_fd=_sfd,
+            rel="agent.json",
         )
         _write_guarded(
             staging / "mcp.json",
             json.dumps({"mcpServers": result.mcp}, indent=2, ensure_ascii=False) + "\n",
             "mcp.json",
+            staging_fd=_sfd,
+            rel="mcp.json",
         )
         skills_dst = staging / "skills"
-        skills_dst.mkdir(exist_ok=True)  # MUST exist even when empty
+        if _sfd is not None:
+            # Create skills/ relative to the retained staging descriptor, not by re-resolving
+            # ``staging / "skills"``, so a swap of staging cannot place it elsewhere.
+            try:
+                os.mkdir("skills", 0o700, dir_fd=_sfd)
+            except FileExistsError:
+                pass
+        else:
+            skills_dst.mkdir(exist_ok=True)  # MUST exist even when empty
         for cid in sorted(included_skills):
             skill_dir = crew.skills_root / cid
             # ``is_dir()`` follows, so a selected skill replaced by a junction between the
@@ -3457,7 +5364,7 @@ def build_bundle(
                 )
             if not skill_dir.is_dir():
                 raise ExportRefused(f"selected skill has gone: {cid}")
-            written = _copy_skill(skill_dir, cid, skills_dst, included_skills)
+            written = _copy_skill(skill_dir, cid, skills_dst, included_skills, staging_fd=_sfd)
             # Re-hash the STAGED copy against the reviewed pin. ``verify()`` compared
             # the pin to a hash taken at ENUMERATION time, and this copy reads the
             # source directory again -- two moments, with the source writable in
@@ -3499,6 +5406,8 @@ def build_bundle(
             )
             + "\n",
             "manifest.json",
+            staging_fd=_sfd,
+            rel="manifest.json",
         )
         # The previous bundle is MOVED ASIDE, not deleted. `rmtree(out_dir)` followed by
         # `staging.rename(out_dir)` is two operations, and a failure between them left
@@ -3541,8 +5450,8 @@ def build_bundle(
                 # ``carried_plan`` -- the stale copy read at the start -- would be written over
                 # the operator's signed plan. An unreadable-or-redirected plan at write-back
                 # time is exactly when we must NOT write, so refuse and leave their file alone.
-                shutil.rmtree(staging, ignore_errors=True)
-                staging_marker.unlink(missing_ok=True)
+                _purge_staging_best_effort(staging, resolved_out_parent)
+                _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
                 raise ExportRefused(
                     f"{plan_file} could not be re-read before carrying it across the swap "
                     f"(unreadable, or a component of its path changed to a link), so this "
@@ -3551,8 +5460,8 @@ def build_bundle(
                     f"bundle is untouched. Re-run the build."
                 )
             if current_plan != carried_plan:
-                shutil.rmtree(staging, ignore_errors=True)
-                staging_marker.unlink(missing_ok=True)
+                _purge_staging_best_effort(staging, resolved_out_parent)
+                _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
                 raise ExportRefused(
                     f"{plan_file} changed while this build was running, so carrying the "
                     f"copy read at the start would discard that edit. Nothing was "
@@ -3565,7 +5474,9 @@ def build_bundle(
             # would truncate whatever the link named and ship a redirect as the plan. Written
             # through the bytes no-follow primitive so a link at the leaf is refused at open,
             # and the signed plan lands byte-for-byte.
-            _write_bytes_nofollow(staging / PLAN_FILENAME, carried_plan)
+            _write_bytes_nofollow(
+                staging / PLAN_FILENAME, carried_plan, staging_fd=_sfd, rel=PLAN_FILENAME
+            )
         # A rename within one directory is atomic, so at every instant either the old
         # bundle or the new one is at out_dir, and the aside copy is deleted only after
         # the new one is in place.
@@ -3603,7 +5514,10 @@ def build_bundle(
                 # verified inode and the deleted inode are one and the same.
                 _purge_via_private_aside(
                     previous,
-                    lambda moved: _refuse_unless_this_build_wrote_it(moved, "the aside path"),
+                    lambda parent_fd, moved_rel: _verify_build_wrote_captured_fd(
+                        parent_fd, moved_rel, "the aside path", crew.name, label=previous
+                    ),
+                    resolved_parent=resolved_out_parent,
                 )
             # The same binding the aside path gets, for the same reason. ``out_dir`` was
             # verified as a tree this build wrote far above, and a rename here acts on
@@ -3616,8 +5530,13 @@ def build_bundle(
             # from before anything is promoted.
             _dispose_via_private_aside(
                 out_dir,
-                lambda moved: _refuse_unless_this_build_wrote_it(moved, "--out"),
-                lambda moved: os.rename(moved, previous),
+                lambda parent_fd, moved_rel: _verify_build_wrote_captured_fd(
+                    parent_fd, moved_rel, "--out", crew.name, label=out_dir
+                ),
+                lambda moved_rel, pfd: os.rename(
+                    moved_rel, previous.name, src_dir_fd=pfd, dst_dir_fd=pfd
+                ),
+                resolved_parent=resolved_out_parent,
             )
         # The report is written BEFORE the swap, which is the point of no return.
         #
@@ -3631,12 +5550,12 @@ def build_bundle(
         # destination is out_dir, and the plan and candidates are arguments. So there is no
         # reason for it to happen later, and moving it up means a failure lands inside the
         # ``except BaseException`` below, which restores the previous bundle.
-        # Written to a sibling temp and RENAMED over the destination, not written in
+        # Written to a sibling temp and PUBLISHED by an exclusive hard link, not written in
         # place. ``_write_nofollow`` opens with ``O_TRUNC``, so a write that fails partway
         # has already emptied the old report while ``report_written`` is still False and the
-        # rollback below does not fire -- the one shape the rollback cannot see. A rename is
-        # atomic within the directory, so the destination holds either the previous bytes or
-        # the complete new ones and never a truncated mix.
+        # rollback below does not fire -- the one shape the rollback cannot see. The link
+        # publish is atomic within the directory, so the destination holds either the previous
+        # bytes or the complete new ones and never a truncated mix.
         _write_nofollow(
             report_tmp,
             json.dumps(
@@ -3653,19 +5572,24 @@ def build_bundle(
                 ensure_ascii=False,
             )
             + "\n",
+            # Claim the run-id scratch name with O_CREAT|O_EXCL, not O_TRUNC: this is a name
+            # this build creates fresh, so a file already there was NOT written by this build,
+            # and truncating it would overwrite something this transaction did not create. The
+            # exclusive open refuses instead, so the scratch name is a checked claim rather than
+            # an assumed one -- the same no-replace discipline the publish and the aside use.
+            exclusive=True,
         )
-        # The DESTINATION's shape is judged here, because ``os.replace`` overwrites a
-        # symlink rather than following it -- which is safe for the link's target but throws
-        # away the refusal an in-place ``O_NOFOLLOW`` open gave. A planted link at the report
-        # path must still be refused, and a rename alone cannot say so: it succeeds either
-        # way. So the two properties are kept separately -- shape checked before, atomicity
-        # by the rename after.
+        # The DESTINATION's shape is judged here so a planted link at the report path is
+        # refused with a clear message before the publish. The exclusive-link publish would
+        # itself refuse a link at the name (it is not a regular file this build wrote), but an
+        # in-place ``O_NOFOLLOW`` open is the primitive that states WHY, and a shape check
+        # gives the operator the reason at the earliest point. So the two properties are kept
+        # separately -- shape checked before, atomicity by the exclusive link after.
         if _is_redirecting_entry(report_path):
             raise ExportRefused(
                 f"{report_path} is a link or junction. The report is written at a path "
-                f"derived from --out, and os.replace would swap the link itself for a real "
-                f"file -- destroying the link and orphaning whatever it named. Move it, or "
-                f"point --out elsewhere."
+                f"derived from --out, and publishing over the link would orphan whatever it "
+                f"named. Move it, or point --out elsewhere."
             )
         if report_path.exists() and not report_path.is_file():
             raise ExportRefused(
@@ -3677,22 +5601,27 @@ def build_bundle(
         # readable" is not "same content": a concurrent process that edits it in place leaves a
         # readable regular file with different bytes, which the shape checks above pass. The
         # build owns the report exclusively for one build (it writes it only through the atomic
-        # replace, never in place), so its bytes must still equal what was read at the start
+        # publish, never in place), so its bytes must still equal what was read at the start
         # (``report_before``) or be absent. A mismatch is a foreign edit, and it is refused HERE
         # -- before ``staging.rename`` -- because refusing after promotion is too late: the
         # rollback's "promoted and not report_written" branch would then UNLINK the report,
         # destroying the very edit this guard exists to protect. Refusing before promotion
         # leaves the prior bundle restored and the foreign report untouched. ``_publish_report``
-        # repeats the check descriptor-relative to close the window between here and the replace.
+        # repeats the check descriptor-relative to close the window between here and the publish.
         if report_before is not None and report_path.is_file():
             if _read_text_nofollow(report_path) != report_before.decode("utf-8", errors="replace"):
                 raise ExportRefused(
                     f"{report_path} was edited by another process while this build ran "
                     f"(its bytes changed since the build started). The report is written "
-                    f"only through an atomic replace, so an in-place change is a foreign "
+                    f"only through an atomic publish, so an in-place change is a foreign "
                     f"edit; refusing to overwrite it rather than destroy that write. "
                     f"Re-run the build once nothing else is writing there."
                 )
+        # The report is published by an exclusive hard link, which is a filesystem CAPABILITY:
+        # answer whether this directory can do it BEFORE the irreversible promote, because
+        # ``_publish_report`` runs after ``promoted = True`` and an unsupported-link failure
+        # there would unwind a good promotion. A refusal here leaves the prior bundle untouched.
+        _refuse_report_dir_without_hard_link_support(report_path)
         # Promote FIRST, publish the report only once the outcome is known. The report is the
         # proof an operator reads INSTEAD of checking the bundle exists, so it must describe
         # what happened, never an assumed outcome: writing it before ``staging.rename`` meant a
@@ -3701,73 +5630,197 @@ def build_bundle(
         # the report write itself fails after a good promotion (recoverable: regenerate), which
         # is strictly better than a false one. The staging-shape checks above stay before,
         # because they are destination validation, not the outcome.
-        staging.rename(out_dir)
+        # Promote by renaming staging onto out_dir RELATIVE to the parent pinned by
+        # descriptor, not ``staging.rename(out_dir)``. A bare rename re-resolves both path
+        # strings, so a parent or intermediate component swapped for a link after --out was
+        # validated -- and before this rename -- would land the promotion wherever the link
+        # points. ``resolved_out_parent`` was resolved once at validation; opening it
+        # ``O_NOFOLLOW`` at every component refuses a component swapped since, and both names
+        # are single leaves under it. Same descriptor-relative shape the report publish and
+        # the aside purge use. A pinned-open failure refuses BEFORE ``promoted`` is set, so the
+        # rollback below restores the previous bundle and nothing is left half-promoted.
+        try:
+            promote_parent_fd = _open_dir_nofollow_pinned(
+                resolved_out_parent, already_resolved=True
+            )
+        except OSError as exc:
+            raise ExportRefused(
+                f"cannot promote the bundle into {out_dir}: a component of its directory "
+                f"changed to a link or is no longer an openable directory since --out was "
+                f"validated ({exc}). Nothing was installed and the existing bundle is "
+                f"untouched. Point --out elsewhere."
+            ) from exc
+        try:
+            # The parent is pinned, but ``staging.name`` under it is still a NAME resolved at
+            # rename time. If the staging leaf itself was swapped for another directory since
+            # ``staging_fd`` was opened -- the same-UID plant this whole path guards against --
+            # the pinned-parent rename would promote whatever now sits at that name, not the
+            # inode this build staged and verified. So confirm the name still resolves to the
+            # captured inode: open it no-follow under the pinned parent and compare (st_dev,
+            # st_ino) to the retained descriptor. This is the publish-side twin of the delete
+            # path's "the inode verified is the inode deleted" -- here, the inode created is the
+            # inode published. A mismatch or an open failure refuses BEFORE ``promoted`` is set,
+            # so the rollback restores the previous bundle and nothing is half-promoted.
+            if staging_fd != -1:
+                try:
+                    check_fd = os.open(
+                        staging.name,
+                        os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW_READ_FLAGS,
+                        dir_fd=promote_parent_fd,
+                    )
+                except OSError as exc:
+                    raise ExportRefused(
+                        f"cannot promote the bundle into {out_dir}: the staging entry "
+                        f"{staging.name} could not be reopened as the directory this build "
+                        f"created ({exc}). It may have been replaced since it was staged. "
+                        f"Nothing was installed and the existing bundle is untouched. Re-run "
+                        f"the build once nothing else is writing there."
+                    ) from exc
+                try:
+                    captured = os.fstat(staging_fd)
+                    present = os.fstat(check_fd)
+                finally:
+                    os.close(check_fd)
+                if (captured.st_dev, captured.st_ino) != (present.st_dev, present.st_ino):
+                    raise ExportRefused(
+                        f"cannot promote the bundle into {out_dir}: the staging entry "
+                        f"{staging.name} is no longer the directory this build staged (its "
+                        f"inode changed, so it was swapped for another entry since it was "
+                        f"created). Refusing to publish it. Nothing was installed and the "
+                        f"existing bundle is untouched. Re-run once nothing else is writing "
+                        f"there."
+                    )
+            os.rename(
+                staging.name,
+                out_dir.name,
+                src_dir_fd=promote_parent_fd,
+                dst_dir_fd=promote_parent_fd,
+            )
+        finally:
+            os.close(promote_parent_fd)
         promoted = True
         _publish_report(report_tmp, report_path, report_before)
         report_written = True
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        staging_marker.unlink(missing_ok=True)
+        if staging_fd != -1:
+            os.close(staging_fd)
+            staging_fd = -1
+        # Every cleanup unlink below targets a file DERIVED from --out (the staging marker, the
+        # report temp, the report) in a directory this build does not own, so each goes through
+        # ``_unlink_out_leaf_best_effort``: descriptor-relative to the validated parent, and
+        # LEAVING RESIDUE if that parent cannot be pinned rather than deleting on a guess of
+        # where a swapped path now points. A bare ``Path.unlink`` here re-resolves the name and
+        # a swapped parent component steers it outside the validated parent.
+        _purge_staging_best_effort(staging, resolved_out_parent)
+        _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
         # Roll the report back to exactly what was there, which for the ordinary first build
         # is nothing. Only when this run wrote it: an earlier failure leaves the operator's
         # own file untouched, and restoring bytes we never replaced would be a second bug.
         # The temp is removed whether or not the write reached the rename: a failure before
         # the rename leaves it behind, and it carries this run's id so it cannot be mistaken
         # for another build's.
-        report_tmp.unlink(missing_ok=True)
+        _unlink_out_leaf_best_effort(report_tmp, resolved_out_parent)
         if report_written and not promoted:
-            # The report was published but promotion did not complete -- restore exactly what
-            # was there so no report claims a bundle that is not present. ``report_written``
-            # without ``promoted`` cannot happen in the normal order (promote precedes the
-            # report), so this covers only an out-of-order failure; it stays for safety.
+            # The report was published but promotion did not complete -- restore exactly
+            # what was there so no report claims a bundle that is not present.
+            # ``report_written`` without ``promoted`` cannot happen in the normal order
+            # (promote precedes the report), so this covers only an out-of-order failure;
+            # it stays for safety.
             if report_before is None:
-                report_path.unlink(missing_ok=True)
+                _unlink_out_leaf_best_effort(report_path, resolved_out_parent)
             else:
                 _write_nofollow(report_path, report_before.decode("utf-8", errors="strict"))
         if promoted and not report_written:
-            # Promotion landed and the report did not. The comment above the ordering accepts a
-            # MISSING report as the cost of promoting first, because a missing one is
-            # recoverable by regenerating. On a REBUILD the actual outcome is worse than that
-            # and it is not what the ordering assumed: the PREVIOUS build's report is still
-            # sitting there, describing a bundle this promotion has already replaced. Measured:
+            # Promotion landed and the report did not. The comment above the ordering
+            # accepts a MISSING report as the cost of promoting first, because a missing one
+            # is recoverable by regenerating. On a REBUILD the actual outcome is worse and
+            # not what the ordering assumed: the PREVIOUS build's report is still sitting
+            # there, describing a bundle this promotion has already replaced. Measured:
             # after a failed publication the file on disk was byte-identical to the first
             # build's, digest included, while the new bundle was promoted.
             #
-            # Removed rather than rolled back -- but ONLY the stale previous-build report this
-            # ordering is responsible for. The publish step refuses to overwrite a foreign
-            # in-place edit (same-object-different-content) precisely so it is not destroyed;
-            # unlinking unconditionally here would destroy that same foreign write on the way
-            # out, undoing the refusal. So the delete is CONDITIONAL: remove the report only
-            # while its bytes still equal ``report_before`` (the stale description this branch
-            # owns). If they drifted -- a concurrent foreign edit -- or a foreign report was
-            # created where there was none (``report_before is None`` but a file is now there),
-            # the write belongs to someone else and is LEFT in place. A missing report is the
-            # cost the ordering already accepts; destroying a foreign write is not.
+            # Removed rather than rolled back -- but ONLY the stale previous-build report
+            # this ordering is responsible for. The publish step refuses to overwrite a
+            # foreign in-place edit (same-object-different-content) precisely so it is not
+            # destroyed; unlinking unconditionally here would destroy that same foreign
+            # write on the way out, undoing the refusal. So the delete is CONDITIONAL:
+            # remove the report only while its bytes still equal ``report_before`` (the
+            # stale description this branch owns). If they drifted -- a concurrent foreign
+            # edit -- or a foreign report was created where there was none
+            # (``report_before is None`` but a file is now there), the write belongs to
+            # someone else and is LEFT in place. A missing report is the cost the ordering
+            # already accepts; destroying a foreign write is not.
             current = _read_text_nofollow(report_path)
             before_text = (
                 None if report_before is None else report_before.decode("utf-8", errors="replace")
             )
             if current is not None and current == before_text:
-                report_path.unlink(missing_ok=True)
+                _unlink_out_leaf_best_effort(report_path, resolved_out_parent)
 
         # If promotion did not complete, put the previous bundle back: a failed replacement
         # must leave the prior bundle reachable, never delete or orphan what was already there.
         # Keyed on ``promoted`` (not a re-stat of out_dir) so the contract reads directly.
-        if not promoted and previous is not None and previous.exists() and not out_dir.exists():
-            previous.rename(out_dir)
+        # The restore is descriptor-relative, NOT ``previous.rename(out_dir)``: a bare rename
+        # re-resolves both path strings, so a parent component swapped since --out was validated
+        # would land the restore -- and any directory already at ``out_dir`` -- wherever the
+        # link points. ``previous`` and ``out_dir`` are single leaves under the same parent
+        # (``previous = out_dir.parent / (out_dir.name + ".previous")``), so both are reached
+        # through ``resolved_out_parent`` pinned ``O_NOFOLLOW``, the same shape the promotion
+        # used. Best-effort like the cleanup around it: a restore that cannot complete must not
+        # raise a second exception over the one unwinding, so a failed pin-open or rename is
+        # swallowed here, leaving the previous bundle at its ``.previous`` name to recover by
+        # hand rather than crashing the operator's build on the way out.
+        if previous is not None and not promoted:
+            try:
+                restore_parent_fd = _open_dir_nofollow_pinned(
+                    resolved_out_parent, already_resolved=True
+                )
+            except OSError:
+                restore_parent_fd = -1
+            if restore_parent_fd != -1:
+                try:
+                    # Refuse to clobber: only restore when nothing sits at out_dir's leaf.
+                    try:
+                        os.stat(out_dir.name, dir_fd=restore_parent_fd, follow_symlinks=False)
+                        out_dir_present = True
+                    except FileNotFoundError:
+                        out_dir_present = False
+                    except OSError:
+                        out_dir_present = True
+                    if not out_dir_present:
+                        try:
+                            os.rename(
+                                previous.name,
+                                out_dir.name,
+                                src_dir_fd=restore_parent_fd,
+                                dst_dir_fd=restore_parent_fd,
+                            )
+                        except OSError:
+                            # previous already gone, or a component changed: leave the aside in
+                            # place to recover by hand rather than raise over the unwind.
+                            pass
+                finally:
+                    os.close(restore_parent_fd)
         raise
-    staging_marker.unlink(missing_ok=True)
+    if staging_fd != -1:
+        os.close(staging_fd)
+        staging_fd = -1
+    _unlink_out_leaf_best_effort(staging_marker, resolved_out_parent)
     if previous is not None:
         # Delete the aside bundle through the same move-verify-delete as the leftover purge,
         # not a bare ``rmtree(previous)``. This runs after the earlier ``_is_redirecting_entry``
         # check on ``previous``, and ``rmtree`` re-resolves the path string, so a swap between
         # that check and this delete would land the recursive delete on whatever the path names
         # now -- "build-owned by construction" does not hold once the path is re-resolved. The
-        # aside was made by this build's own ``out_dir.rename(previous)``, so the verifier
-        # confirms exactly that and a swapped-in tree is restored, never deleted.
+        # aside was made by this build's own ``out_dir`` rename, so the verifier confirms
+        # exactly that and a swapped-in tree is restored, never deleted; the delete itself runs
+        # through a parent pinned by descriptor.
         _purge_via_private_aside(
             previous,
-            lambda moved: _refuse_unless_this_build_wrote_it(moved, "the aside path"),
+            lambda parent_fd, moved_rel: _verify_build_wrote_captured_fd(
+                parent_fd, moved_rel, "the aside path", crew.name, label=previous
+            ),
+            resolved_parent=resolved_out_parent,
         )
 
     # The number of skills SHIPPED, which is the number of selected ids -- not the number
@@ -3812,12 +5865,19 @@ def _cmd_plan(crew_name: str, out: Path, allow: list[Path], source: Path | None)
     candidates = enumerate_all(crew, agent_spec)
 
     plan_path = out / PLAN_FILENAME
-    if not plan_path.is_file():
-        write_plan(plan_path, crew.name, candidates)
+    # No ``is_file()`` check before the write: that check and the write were not atomic, so a
+    # plan created by a racer in between was truncated. ``write_plan`` now claims the name with
+    # ``O_EXCL`` and reports whether THIS call created it, which is the same no-replace-on-
+    # creation rule the promote transaction uses -- a name this command did not claim is not
+    # its own to overwrite.
+    if write_plan(plan_path, crew.name, candidates):
         print(f"wrote deny-by-default review template: {plan_path}")
         print("Everything is excluded. Nothing ships until you sign it and pass it with --allow.")
     else:
+        # Left exactly as it is. To proceed: edit this template to set include/reviewed_by,
+        # then re-run with --allow pointing at it. To start over, remove it first.
         print(f"review template already present: {plan_path} (left as-is)")
+        print("Edit it and re-run with --allow <path>, or remove it to regenerate.")
 
     plan = merge_plans(allow, crew.name)
     if plan is not None:

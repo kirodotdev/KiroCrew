@@ -12,6 +12,7 @@ paths that were gone.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -764,11 +765,17 @@ def test_no_new_hardcoded_global_agents_dir():
     ), "hard-coded global agents dir — use kiro_agents_dir() instead:\n" + "\n".join(offenders)
 
 
-def test_repo_has_no_python_syntax_regression():
-    """Cheap compile-all so a rewrite typo fails here rather than at import."""
+def test_repo_has_no_python_syntax_regression(tmp_path):
+    """Cheap compile-all so a rewrite typo fails here rather than at import.
+
+    Bytecode goes to a tmp cache prefix so the checkout stays clean.
+    """
+    env = {**os.environ, "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache")}
     proc = subprocess.run(
         [sys.executable, "-m", "compileall", "-q", str(SRC)],
         capture_output=True,
         text=True,
+        env=env,
+        cwd=str(tmp_path),
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

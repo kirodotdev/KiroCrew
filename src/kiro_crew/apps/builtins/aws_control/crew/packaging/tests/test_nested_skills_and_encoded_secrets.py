@@ -200,6 +200,10 @@ def test_the_builder_refuses_where_the_nofollow_primitive_is_unavailable(
     junction to a UNC share would leak an SMB/NTLM exchange during ordinary packaging. One
     entry-point guard refuses rather than ship that surface; the builder is POSIX-only until a
     real no-follow primitive is available.
+
+    A skills-only build is the vehicle because it is the narrowest one that still reaches an
+    entry point: no prompt, no plan, nothing but a skill file. The refusal names the platform
+    condition and the issue, and nothing is written.
     """
     mod = _no_dir_fd(load_build)
     home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})

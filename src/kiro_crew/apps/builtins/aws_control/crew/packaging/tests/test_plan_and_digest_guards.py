@@ -6,6 +6,12 @@ matters is origin. The reparse walk ran after ``resolve()``, so it answered abou
 resolved path when what matters is the one that was written down. And the encoded-credential
 detector answered "nothing found" when the truth was "nothing looked".
 
+R1 the chain check ran too late -- ``_resolve_prompt_path`` resolved before checking, and
+   resolve IS the traversal: on Windows following a reparse point that names a share is the
+   outbound SMB probe with its NTLM exchange, and resolve also COLLAPSES the links, so a walk
+   placed after it can never see one. The previous version passed its own tests only because
+   they called it directly with an unresolved path, which is not what the call site passes.
+
 R2 the redactor fallback -- encoded detection vanished silently when ``kiro_crew`` was not
    importable, which is the documented standalone mode.
 
@@ -52,6 +58,79 @@ def _build(mod, home: pathlib.Path, work: pathlib.Path, select):
     plan = mod.merge_plans([plan_path], "frontdesk")
     mod.verify(plan, "frontdesk", cands)
     return mod.build_bundle(crew, spec, cands, plan, work / "bundle")
+
+
+# ---------------------------------------------------------------------------
+# R1
+# ---------------------------------------------------------------------------
+@_posix_only
+def test_a_linked_parent_is_refused_through_the_real_build(tmp_path: pathlib.Path) -> None:
+    """Driven end to end, because the previous version passed a UNIT test and did nothing.
+
+    The refusal must name the LINK, which is what distinguishes the chain check from the
+    containment check that had been carrying this case. Containment compares resolved paths,
+    so it would refuse with 'escapes the agents directory' while the walk saw nothing.
+    """
+    mod = load_build()
+    secret = tmp_path / "secrets"
+    secret.mkdir()
+    (secret / "persona.md").write_bytes(b"PRIVATE KEY MATERIAL\n")
+    home = make_crew(tmp_path / "home", prompt="file://sub/persona.md")
+    (home / "agents" / "sub").symlink_to(secret, target_is_directory=True)
+
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod.build_spec(crew, spec, set(), crew.agent_spec_path.parent)
+    assert "link or junction" in str(caught.value), str(caught.value)
+
+
+@_posix_only
+def test_the_check_runs_before_any_resolution(tmp_path: pathlib.Path) -> None:
+    """The ordering IS the fix, so it is asserted rather than assumed.
+
+    A link whose target does not exist cannot be resolved at all in strict terms, and cannot
+    be probed. If the refusal still names the link, the check ran on the path as written --
+    which is the only place a redirect is visible.
+    """
+    mod = load_build()
+    home = make_crew(tmp_path / "home", prompt="file://sub/persona.md")
+    (home / "agents" / "sub").symlink_to(tmp_path / "nowhere", target_is_directory=True)
+
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod.build_spec(crew, spec, set(), crew.agent_spec_path.parent)
+    assert "link or junction" in str(caught.value), str(caught.value)
+
+
+@_posix_only
+def test_a_parent_reference_is_refused_rather_than_normalised(tmp_path: pathlib.Path) -> None:
+    """``a/../b`` is not ``b`` when ``a`` is a link, so it is not normalised here."""
+    mod = load_build()
+    home = make_crew(tmp_path / "home", prompt="file://sub/../persona.md")
+    (home / "agents" / "sub").mkdir()
+    (home / "agents" / "persona.md").write_bytes(b"content\n")
+
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod.build_spec(crew, spec, set(), crew.agent_spec_path.parent)
+    assert "parent directory" in str(caught.value)
+
+
+@_posix_only
+def test_an_ordinary_nested_prompt_still_inlines(tmp_path: pathlib.Path) -> None:
+    """Non-vacuity: the chain check must not refuse a plain subdirectory."""
+    mod = load_build()
+    home = make_crew(tmp_path / "home", prompt="file://sub/persona.md")
+    (home / "agents" / "sub").mkdir()
+    (home / "agents" / "sub" / "persona.md").write_bytes(b"a nested persona\n")
+
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+    result = mod.build_spec(crew, spec, set(), crew.agent_spec_path.parent)
+    assert result.spec["prompt"] == "a nested persona\n"
 
 
 # ---------------------------------------------------------------------------
@@ -309,3 +388,109 @@ def test_a_non_string_plan_provenance_field_is_refused_not_coerced(
     with pytest.raises(mod.ExportRefused) as caught:
         mod.read_plan(bad)
     assert field in str(caught.value) and "dict" in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# The ownership gate reads ``curation-plan.json`` and ``manifest.json`` to decide
+# whether ``--out`` is a prior bundle it may recursively replace. A symlink planted
+# at either name must not be FOLLOWED into a foreign file whose contents satisfy the
+# plan_version+crew or manifest-digest check and authorise the delete. The gate's
+# shape scan runs FIRST: ``_walk_no_reparse`` yields the leaf entry and
+# ``_is_shape_this_build_never_writes`` refuses any reparse point, so the reads are
+# unreachable through a redirect. These pin that a planted symlink is refused with the
+# foreign target intact, and the mutation pins the shape scan as what refuses it.
+# ---------------------------------------------------------------------------
+@_posix_only
+def test_a_symlinked_plan_only_ownership_read_is_refused(tmp_path: pathlib.Path) -> None:
+    """A symlink at ``curation-plan.json`` pointing at a satisfying plan is refused.
+
+    The plan-only branch reads ``curation-plan.json`` to prove ownership. A symlink there
+    aimed at a foreign JSON that carries this crew's plan_version would authorise a recursive
+    replace of ``--out`` if it were followed; the shape scan refuses the redirect first, so
+    the foreign target is never read and stays intact.
+    """
+    mod = load_build()
+    out = tmp_path / "bundle"
+    out.mkdir()
+    foreign = tmp_path / "foreign_plan.json"
+    foreign.write_text(
+        json.dumps({"plan_version": mod.PLAN_VERSION, "crew": "frontdesk"}), encoding="utf-8"
+    )
+    (out / mod.PLAN_FILENAME).symlink_to(foreign)
+
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod._refuse_unless_this_build_wrote_it(out, "--out", "frontdesk")
+    assert "a shape this build never writes" in str(caught.value)
+    assert foreign.is_file(), "the planted symlink was followed and its target read"
+
+
+@_posix_only
+def test_a_symlinked_manifest_ownership_read_is_refused(tmp_path: pathlib.Path) -> None:
+    """A symlink at ``manifest.json`` pointing at a satisfying manifest is refused.
+
+    The bundle branch reads ``manifest.json`` for the recorded digest. A symlink there aimed
+    at a foreign manifest is refused by the shape scan before the read, so the digest check
+    never runs against the link target and the foreign file is untouched.
+    """
+    mod = load_build()
+    out = tmp_path / "bundle"
+    out.mkdir()
+    (out / "agent.json").write_text("{}\n", encoding="utf-8")
+    foreign = tmp_path / "foreign_manifest.json"
+    foreign.write_text(json.dumps({"digest": "sha256:deadbeef"}), encoding="utf-8")
+    (out / "manifest.json").symlink_to(foreign)
+
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod._refuse_unless_this_build_wrote_it(out, "--out", "frontdesk")
+    assert "a shape this build never writes" in str(caught.value)
+    assert foreign.is_file(), "the planted symlink was followed and its target read"
+
+
+@_posix_only
+def test_a_genuine_prior_bundle_still_passes_the_ownership_gate(tmp_path: pathlib.Path) -> None:
+    """Non-vacuity: a real prior bundle this tool wrote clears the gate.
+
+    The refusal above must be the redirect, not a blanket refusal -- a bundle this build
+    produced, read at its own real files, is accepted so a rebuild over it can proceed.
+    """
+    mod = load_build()
+    home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
+    work = tmp_path / "work"
+    _build(mod, home, work, {"skills": {"faq"}})
+
+    mod._refuse_unless_this_build_wrote_it(work / "bundle", "--out", "frontdesk")
+
+
+@_posix_only
+def test_MUTATION_without_the_shape_scan_a_symlinked_plan_read_is_followed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Drop the reparse-point verdict and the symlinked plan read is followed into the target.
+
+    Reddens the guard: with ``_is_shape_this_build_never_writes`` mutated to NOT answer True
+    for a reparse point, the leaf symlink is not refused by the shape scan, the plan-only branch
+    reads ``curation-plan.json`` through the link, and the foreign plan's plan_version+crew
+    satisfy the ownership check -- so the gate returns without refusing. The real verdict is
+    what stops the read.
+    """
+    mod = load_build(
+        mutate=(
+            "    if _is_redirecting_entry(p):\n"
+            "        # ``is_symlink()`` was the test here and it is too narrow: a Windows JUNCTION is a\n"
+            "        # reparse point that is not reported as a symlink, and ``shutil.rmtree`` traverses one\n"
+            "        # on Windows rather than unlinking it as it does a symlink. So a junction planted\n"
+            "        # inside the output directory turned the recursive delete loose on its target.\n"
+            "        return True\n"
+            "    return not p.is_file() and not p.is_dir()",
+            "    return not p.is_file() and not p.is_dir()",
+        )
+    )
+    out = tmp_path / "bundle"
+    out.mkdir()
+    foreign = tmp_path / "foreign_plan.json"
+    foreign.write_text(
+        json.dumps({"plan_version": mod.PLAN_VERSION, "crew": "frontdesk"}), encoding="utf-8"
+    )
+    (out / mod.PLAN_FILENAME).symlink_to(foreign)
+
+    mod._refuse_unless_this_build_wrote_it(out, "--out", "frontdesk")

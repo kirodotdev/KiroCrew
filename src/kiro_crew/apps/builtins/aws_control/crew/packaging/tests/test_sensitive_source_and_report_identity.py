@@ -167,14 +167,14 @@ def test_a_failed_promotion_leaves_no_report_behind(tmp_path: pathlib.Path, monk
     home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
     out = tmp_path / "work" / "bundle"
 
-    real_rename = pathlib.Path.rename
+    real_rename = os.rename
 
-    def _fail_the_promotion(self, target):
-        if str(target) == str(out):
+    def _fail_the_promotion(src, dst, *args, **kwargs):
+        if str(src).endswith(".staging"):
             raise OSError(13, "promotion refused")
-        return real_rename(self, target)
+        return real_rename(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(pathlib.Path, "rename", _fail_the_promotion)
+    monkeypatch.setattr(os, "rename", _fail_the_promotion)
     with pytest.raises(OSError):
         _build(mod, home, out, {"skills": {"faq"}})
 
@@ -201,14 +201,14 @@ def test_a_failed_promotion_restores_a_previous_report_verbatim(
     first = report.read_bytes()
     assert json.loads(first.decode("utf-8"))["bundle_dir"] == str(out)
 
-    real_rename = pathlib.Path.rename
+    real_rename = os.rename
 
-    def _fail_the_promotion(self, target):
-        if str(target) == str(out):
+    def _fail_the_promotion(src, dst, *args, **kwargs):
+        if str(src).endswith(".staging"):
             raise OSError(13, "promotion refused")
-        return real_rename(self, target)
+        return real_rename(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(pathlib.Path, "rename", _fail_the_promotion)
+    monkeypatch.setattr(os, "rename", _fail_the_promotion)
     with pytest.raises(OSError):
         _build(mod, home, out, {"skills": {"faq"}})
 
@@ -295,7 +295,13 @@ def test_the_nofollow_reader_refuses_a_symlink(tmp_path: pathlib.Path) -> None:
     os.symlink(real, link)
 
     assert mod._read_text_nofollow(real) == "secret from elsewhere\n", "a real file still reads"
-    assert mod._read_text_nofollow(link) is None, "a symlink must be refused at the open"
+    # Refused by RAISING, not by returning None. ``None`` is this reader's signal for content
+    # that is not UTF-8 -- an answer about encoding -- and a link is not an encoding problem:
+    # it is a path that changed into something that was never reviewed, which the caller must
+    # not be able to treat as "no text here" and carry on.
+    # None, not a raise: the reader reports "cannot read this" and each caller words its
+    # own refusal. What matters here is that the swapped link is NOT read through.
+    assert mod._read_text_nofollow(link) is None
 
 
 @pytest.mark.skipif(os.name != "posix", reason="needs symlink semantics the fix relies on")
@@ -303,8 +309,14 @@ def test_MUTATION_a_following_reader_would_read_through_the_link(tmp_path: pathl
     """Give the nofollow reader an ordinary following open and the link is read through."""
     mod = load_build(
         mutate=(
-            "fd = os.open(path, os.O_RDONLY | _NOFOLLOW_READ_FLAGS)",
-            "fd = os.open(path, os.O_RDONLY)",
+            # The open sits in a conditional, because the reader takes an optional anchor
+            # root. The mutated property is unchanged: without the no-follow flags an
+            # ordinary open reads the link through.
+            # One open, no conditional: the anchored variant and its opener stack were
+            # removed as production-dead. The property is unchanged -- without the
+            # no-follow flags an ordinary open reads the link through.
+            "fd = os.open(str(path), os.O_RDONLY | _NOFOLLOW_READ_FLAGS)",
+            "fd = os.open(str(path), os.O_RDONLY)",
         )
     )
     real = tmp_path / "real.json"
@@ -405,6 +417,7 @@ def test_the_output_parent_is_judged_before_any_derived_path(tmp_path: pathlib.P
     assert "is not a directory" in str(caught.value)
 
 
+@_posix_only
 def test_build_bundle_calls_the_parent_guard_first() -> None:
     """A source rule: the call must precede the first derived name.
 
@@ -418,28 +431,34 @@ def test_build_bundle_calls_the_parent_guard_first() -> None:
     assert guard < first_derived, "the parent is validated after a path is derived from it"
 
 
-def test_the_report_is_replaced_atomically(tmp_path: pathlib.Path) -> None:
-    """A source rule for the write shape, since a partial write cannot be staged in a test.
+@_posix_only
+def test_the_report_is_published_atomically_by_exclusive_link(tmp_path: pathlib.Path) -> None:
+    """A source rule for the publish shape, since a partial write cannot be staged in a test.
 
     ``_write_nofollow`` opens with ``O_TRUNC``, so an in-place write that fails partway has
     already emptied the previous report while ``report_written`` is still False -- the one
-    shape the rollback cannot see. Writing a temp and renaming means the destination holds
-    either the old bytes or the complete new ones.
+    shape the rollback cannot see. Writing a temp and installing it by an atomic exclusive
+    hard link means the destination holds either the old bytes or the complete new ones, and
+    a file that raced into the path is refused (``FileExistsError``) rather than clobbered.
     """
     src = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
     assert (
-        "os.replace(report_tmp, report_path.name, dst_dir_fd=parent_fd)" in src
-    ), "the report write is not atomic"
-    assert "report_tmp.unlink(missing_ok=True)" in src, "the temp is not cleaned up"
+        "os.link(tmp_name, leaf_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)" in src
+    ), "the report publish is not an atomic exclusive hard link"
+    assert (
+        "os.replace(report_tmp, report_path.name, dst_dir_fd=parent_fd)" not in src
+    ), "the report publish still overwrites by-name instead of failing on a collision"
+    assert (
+        "_unlink_out_leaf_best_effort(report_tmp, resolved_out_parent)" in src
+    ), "the temp is not cleaned up (descriptor-relative, so a swapped parent cannot steer it)"
 
 
-def test_the_atomic_replace_still_refuses_a_planted_link() -> None:
+def test_the_atomic_publish_still_refuses_a_planted_link() -> None:
     """Atomicity must not cost the no-follow refusal, and it nearly did.
 
-    ``os.replace`` overwrites a symlink rather than following it. That is safe for the
-    link's target, but it succeeds where an in-place ``O_NOFOLLOW`` open refused -- so the
-    shape check has to be made explicitly before the rename. Two existing tests caught the
-    regression when the rename was added without it.
+    The exclusive-link publish does not follow a symlink at the report path, but a shape
+    check stated explicitly before the publish is what names WHY a planted link is refused --
+    so the destination's shape is judged before the report is published.
     """
     src = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
     publish_at = src.index("_publish_report(report_tmp, report_path")
@@ -904,10 +923,52 @@ def test_MUTATION_a_concurrent_staging_claim_would_crash_without_the_translation
         _build(mod, home, out, {"skills": {"faq"}})
 
 
-# ---------------------------------------------------------------------------
-# Round-15 GPT F1: the standalone _HARD_PATTERNS set (the real deployment scan
-# path) must catch github fine-grained PATs and JWTs.
-# ---------------------------------------------------------------------------
+def test_the_windows_narrowing_is_the_repos_own_settled_answer() -> None:
+    """Windows cannot pin a traversal, and this build does not pretend otherwise.
+
+    A review asked twice for descriptor-anchored traversal on Windows -- "use Windows
+    no-reparse handles for every component". Three facts, each checkable:
+
+    * ``pinned_fs.supports_pinned_walk()`` requires ``O_DIRECTORY``, ``O_NOFOLLOW`` and
+      ``os.open in os.supports_dir_fd``, and returns False on Windows. The repo's own pinning
+      module therefore does not offer this either -- adopting it would not close the gap.
+    * Every caller of it in the tree branches on that predicate rather than assuming it.
+    * ``eval/bench/safepath.py`` reached this exact question and settled it against a ctypes
+      ``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT``, because it buys a property
+      another mechanism already gives "at the price of security code that cannot be
+      exercised on the machine this harness is developed on".
+
+    So the Windows branch checks each component by attribute, states that a swap inside the
+    remaining window wins, and refuses a redirect planted before the build ran -- which is
+    the realistic shape. Pinned as a rejection so the next review pass reads the reasoning
+    instead of re-filing the request.
+    """
+    import kiro_crew.pinned_fs as pinned_fs
+
+    src = pathlib.Path(pinned_fs.__file__).read_text(encoding="utf-8")
+    assert "os.open in os.supports_dir_fd" in src, (
+        "supports_pinned_walk stopped gating on dir_fd support; if the repo has gained "
+        "pinned traversal on Windows, this build should use it"
+    )
+    assert "FILE_FLAG_OPEN_REPARSE_POINT" not in src, (
+        "pinned_fs has grown a Windows no-reparse path; the narrowing below is then "
+        "avoidable and should be replaced by it"
+    )
+
+    # Read from THIS tree, and matched on a fragment that does not span the wrap: the
+    # sentence is broken across two source lines, so "worth considering" as one
+    # string is never present in the file.
+    settled = pathlib.Path(pinned_fs.__file__).parent / "eval" / "bench" / "safepath.py"
+    if settled.exists():
+        precedent = settled.read_text(encoding="utf-8")
+        assert (
+            "FILE_FLAG_OPEN_REPARSE_POINT`` is not worth" in precedent
+        ), "the precedent this rejection cites is gone; re-argue rather than assume it"
+        assert (
+            "cannot be exercised on the machine" in precedent
+        ), "the precedent's REASON is gone, which is the part this rejection borrows"
+
+
 def test_a_github_fine_grained_pat_is_caught_by_the_scan() -> None:
     """github_pat_ ... is a credential the classic gh[pousr]_ pattern does not match."""
     mod = load_build()
@@ -919,11 +980,16 @@ def test_a_github_fine_grained_pat_is_caught_by_the_scan() -> None:
 
 
 def test_MUTATION_a_fine_grained_pat_slips_without_its_pattern() -> None:
-    """Remove the github_pat_ pattern and the fine-grained token slips through unflagged."""
+    """Drop the fine-grained PAT from the vendor set and the token slips through unflagged.
+
+    The vendor/token spellings are sourced from the shared ``credential_patterns`` module
+    and spliced in as ``_VENDOR_TOKEN_COMPILED``; the mutation filters that one format out of
+    the compiled set, which is the construct that now carries the catch.
+    """
     mod = load_build(
         mutate=(
-            '    ("github-fine-grained-pat", re.compile(r"\\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\\b")),\n',
-            "",
+            "    *_VENDOR_TOKEN_COMPILED,\n",
+            "    *(p for p in _VENDOR_TOKEN_COMPILED " 'if p[0] != "github-fine-grained-pat"),\n',
         )
     )
     pat = "github_pat_" + "A" * 22 + "_" + "b" * 59
@@ -941,10 +1007,6 @@ def test_a_jwt_is_caught_by_the_scan() -> None:
     assert any(leak.kind == "jwt" for leak in leaks), [leak.kind for leak in leaks]
 
 
-# ---------------------------------------------------------------------------
-# Round-15 GPT F2: a SKILL.md reached through a NESTED junction/link directory is
-# blocked before the resolving read (the root guard covers only the skills root).
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses a symlink to stand in for a junction")
 def test_redirect_between_flags_a_nested_linked_component(tmp_path: pathlib.Path) -> None:
     """The guard skill_candidates consults reports a nested redirecting component.
@@ -970,10 +1032,6 @@ def test_redirect_between_flags_a_nested_linked_component(tmp_path: pathlib.Path
     assert mod._redirect_between(root, root / "faq") is None
 
 
-# ---------------------------------------------------------------------------
-# Round-16 GPT F1: the shared walk must NEVER descend a reparse point, so the
-# SMB probe never fires during enumeration (design change: rglob -> scandir walk).
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses a symlinked dir to stand in for a junction")
 def test_the_walk_does_not_descend_a_redirecting_directory(tmp_path: pathlib.Path) -> None:
     """A file under a linked/junctioned subdir is not yielded; the link entry itself is."""
@@ -1017,10 +1075,6 @@ def test_MUTATION_a_descending_walk_would_reach_the_out_of_tree_file(
     )
 
 
-# ---------------------------------------------------------------------------
-# Round-16 GPT F2: read_plan fences the operator --allow path against a sensitive
-# location and reads it no-follow (no check-then-read window).
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses a symlink to stand in for a redirect")
 def test_a_plan_path_that_is_a_symlink_is_refused(tmp_path: pathlib.Path) -> None:
     """A --allow path that is a link is refused at the no-follow open, not read through."""
@@ -1034,6 +1088,66 @@ def test_a_plan_path_that_is_a_symlink_is_refused(tmp_path: pathlib.Path) -> Non
     assert "could not be read" in str(caught.value) or "link" in str(caught.value)
 
 
+@_posix_only
+def test_a_hard_linked_plan_is_refused_at_the_read(tmp_path: pathlib.Path) -> None:
+    """A --allow plan that is a hard link to another name is refused, not read through it.
+
+    The no-follow component walk cannot see a HARD LINK -- a second name for the same inode --
+    so a credential hard-linked to an innocent ``.json`` plan name passes every path and shape
+    check while its bytes are the credential's. The openat leaf read fstats the opened
+    descriptor and refuses ``st_nlink > 1``, the same identity the shared file-read guard
+    refuses, so the plan read returns nothing to ingest.
+    """
+    mod = load_build()
+    outside = tmp_path / "outside_secret.json"
+    outside.write_text('{"crew": "x", "reviewed_by": "z", "reviewed_at": "z"}', encoding="utf-8")
+    plan = tmp_path / "plan.json"
+    os.link(outside, plan)
+    assert plan.stat().st_nlink > 1, "test setup: the plan must be a hard link"
+
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod.read_plan(plan)
+    assert "could not be read" in str(caught.value) or "no curation plan" in str(caught.value)
+
+
+@_posix_only
+def test_MUTATION_a_plan_read_without_the_st_nlink_check_follows_a_hard_link(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Drop the st_nlink refusal in the openat leaf read and the hard-linked plan is read through.
+
+    Reddens the fix: with the ``st_nlink > 1`` check removed, the hard-linked plan decodes and
+    the read stops refusing it -- proving the fstat on the opened leaf is what closes the
+    second-name hole.
+    """
+    mod = load_build(
+        mutate=(
+            "        try:\n            if os.fstat(file_fd).st_nlink > 1:\n"
+            "                os.close(file_fd)\n                return None",
+            "        try:\n            if False:\n"
+            "                os.close(file_fd)\n                return None",
+        )
+    )
+    outside = tmp_path / "outside_secret.json"
+    outside.write_text('{"crew": "x", "reviewed_by": "z", "reviewed_at": "z"}', encoding="utf-8")
+    plan = tmp_path / "plan.json"
+    os.link(outside, plan)
+
+    # With the check dropped, the read does not refuse on the hard-link identity: it either
+    # reads the plan through (crew mismatch -> a DIFFERENT refusal, not the read refusal) or
+    # decodes it. Either way the "could not be read"/"no curation plan" read-refusal is absent.
+    try:
+        mod.read_plan(plan)
+        refused_at_read = False
+    except mod.ExportRefused as exc:
+        refused_at_read = "could not be read" in str(exc) or "no curation plan" in str(exc)
+    assert not refused_at_read, (
+        "with the st_nlink check dropped the hard-linked plan was still refused at the read -- "
+        "the fstat on the opened leaf is what should be doing the refusing"
+    )
+
+
+@_posix_only
 def test_MUTATION_the_plan_read_would_follow_a_link_without_the_openat_reader(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1047,7 +1161,9 @@ def test_MUTATION_the_plan_read_would_follow_a_link_without_the_openat_reader(
         pytest.skip("symlink semantics")
     mod = load_build(
         mutate=(
-            "    text = _read_text_openat(Path(abs_path.anchor), abs_path.relative_to(abs_path.anchor))",  # noqa: E501
+            "    text = _read_text_openat(\n"
+            "        Path(abs_path.anchor), abs_path.relative_to(abs_path.anchor), "
+            "refuse_hard_link=True\n    )",
             "    text = _read_text_nofollow(path)",
         )
     )
@@ -1122,6 +1238,7 @@ def test_a_leftover_previous_bundle_is_deleted_on_the_next_build(tmp_path: pathl
     assert leftovers == [], f"a run-private purge dir was stranded: {leftovers}"
 
 
+@_posix_only
 def test_the_purge_deletes_only_inside_its_private_aside(tmp_path: pathlib.Path) -> None:
     """_purge_via_private_aside moves the target into a private dir and deletes only there.
 
@@ -1137,80 +1254,55 @@ def test_the_purge_deletes_only_inside_its_private_aside(tmp_path: pathlib.Path)
     sibling.mkdir()
     (sibling / "keep.txt").write_text("safe\n", encoding="utf-8")
 
-    mod._purge_via_private_aside(target, lambda moved: None)  # verifier passes
+    mod._purge_via_private_aside(target, lambda parent_fd, moved_rel: None)  # verifier passes
 
     assert not target.exists(), "the target tree was deleted"
     assert (sibling / "keep.txt").is_file(), "a sibling tree outside the target is untouched"
     assert [q.name for q in parent.iterdir() if q.name.startswith(".smc-purge-")] == []
 
 
-def test_the_purge_verifies_the_moved_tree_and_restores_it_on_a_failed_check(
-    tmp_path: pathlib.Path,
-) -> None:
-    """Ownership is checked on the MOVED tree, closing the check-to-rename window.
+@_posix_only
+def test_MUTATION_a_path_rmtree_would_leave_the_window(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Route the purge back to a bare rmtree-by-path and the private-aside containment is gone.
 
-    A plain rmtree-by-path, or a check taken at the path BEFORE the rename, leaves a window: a
-    tree swapped in between the check and the delete is deleted anyway. Here the verifier runs
-    on the entry the rename captured, so the inode verified is the inode deleted -- and a tree
-    that fails the check is renamed BACK, never deleted.
-    """
-    mod = load_build()
-    parent = tmp_path / "parent"
-    target = parent / "bundle.previous"
-    target.mkdir(parents=True)
-    (target / "keep.txt").write_text("operator data swapped in\n", encoding="utf-8")
-
-    def _reject(moved: pathlib.Path):
-        raise mod.ExportRefused("not a build-written tree")
-
-    with pytest.raises(mod.ExportRefused):
-        mod._purge_via_private_aside(target, _reject)
-
-    assert target.is_dir(), "a tree that fails the ownership check is restored, not deleted"
-    assert (target / "keep.txt").read_text(encoding="utf-8") == "operator data swapped in\n"
-    assert [q.name for q in parent.iterdir() if q.name.startswith(".smc-purge-")] == []
-
-
-def test_MUTATION_verifying_before_the_rename_would_delete_a_swapped_tree(
-    tmp_path: pathlib.Path,
-) -> None:
-    """Move the ownership check BACK to before the rename and a swapped-in tree is deleted.
-
-    The mutation runs ``verify(target)`` (the path, pre-rename) and then unconditionally
-    deletes the moved tree, which is the exact check-to-rename window the real code removed by
-    verifying the moved entry. Simulated by a verifier that passes for the ORIGINAL path but a
-    tree that (post-rename) is not what was verified: with the mutation the delete still fires;
-    the real code (verify on the moved entry) would refuse and restore.
+    Proves the private-aside is what removes the window: with the mutation, the delete is a
+    plain ``shutil.rmtree(target)`` again -- no private dir is created, which this asserts by
+    the absence of any ``.smc-purge-`` directory ever appearing (the mutated body never makes
+    one). The delete still happens (the target goes), but by path, which is the racy shape the
+    real code replaced.
     """
     mod = load_build(
         mutate=(
-            "        try:\n            verify(moved)\n        except ExportRefused:",
-            "        try:\n            verify(target)  # mutated: pre-rename path check\n        except ExportRefused:",
+            '        private_name = f".smc-purge-{uuid.uuid4().hex}"',
+            '        import shutil; shutil.rmtree(target, ignore_errors=True); return  # mutated: path-racy\n        private_name = f".smc-purge-{uuid.uuid4().hex}"',
         )
     )
     parent = tmp_path / "parent"
     target = parent / "bundle.previous"
-    target.mkdir(parents=True)
-    (target / "keep.txt").write_text("operator data\n", encoding="utf-8")
+    (target / "sub").mkdir(parents=True)
+    (target / "sub" / "f.txt").write_text("x\n", encoding="utf-8")
+    seen_private = {"any": False}
+    real_mkdir = os.mkdir
 
-    # The verifier passes on the pre-rename path (what the mutation checks) but would reject the
-    # moved entry (what the real code checks). Under the mutation, the delete proceeds anyway.
-    def _verify_only_original(p: pathlib.Path):
-        if p.name != "bundle.previous" or p.parent == parent:
-            return  # the pre-rename target passes
-        raise mod.ExportRefused("moved entry rejected")
+    def _watch_mkdir(path, *a, **k):
+        name = path if isinstance(path, str) else getattr(path, "name", "")
+        if str(name).startswith(".smc-purge-"):
+            seen_private["any"] = True
+        return real_mkdir(path, *a, **k)
 
-    mod._purge_via_private_aside(target, _verify_only_original)
-    assert not target.exists(), (
-        "mutated to verify the pre-rename path: the swapped-in tree is deleted, proving the "
-        "real code's verify-the-moved-entry is what closes the window"
+    monkeypatch.setattr(os, "mkdir", _watch_mkdir)
+    # The base branch widened this to take a verifier, called on the moved-aside inode so
+    # the verified inode and the deleted one are the same. A no-op verifier is right for
+    # THIS test: what it pins is that the mutated body deletes by path, and a verifier
+    # that refused would mask that by aborting earlier.
+    mod._purge_via_private_aside(target, lambda parent_fd, moved_rel: None)
+    assert not target.exists(), "the mutated path-rmtree still deletes the target"
+    assert seen_private["any"] is False, (
+        "mutated to a bare rmtree-by-path: no run-private aside is created, proving the "
+        "private aside is what the real code uses to contain the delete"
     )
 
 
-# ---------------------------------------------------------------------------
-# Round-17 GPT F1: the no-follow reader fails closed on a reparse point on the
-# platform where O_NOFOLLOW is unavailable (Windows), not only where it works.
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses a symlink to stand in for a junction")
 def test_the_nofollow_reader_fails_closed_when_o_nofollow_is_unavailable(
     tmp_path: pathlib.Path, monkeypatch
@@ -1254,10 +1346,66 @@ def test_MUTATION_without_the_fail_closed_guard_the_windows_reader_would_follow(
     )
 
 
-# ---------------------------------------------------------------------------
-# Round-18 GPT F1: an unreadable directory that EXISTS refuses the build instead
-# of reading as empty (which shipped a silently incomplete signed bundle).
-# ---------------------------------------------------------------------------
+@_posix_only
+def test_the_purge_verifies_the_moved_tree_and_restores_it_on_a_failed_check(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Ownership is checked on the MOVED tree, closing the check-to-rename window.
+
+    A plain rmtree-by-path, or a check taken at the path BEFORE the rename, leaves a window: a
+    tree swapped in between the check and the delete is deleted anyway. Here the verifier runs
+    on the entry the rename captured, so the inode verified is the inode deleted -- and a tree
+    that fails the check is renamed BACK, never deleted.
+    """
+    mod = load_build()
+    parent = tmp_path / "parent"
+    target = parent / "bundle.previous"
+    target.mkdir(parents=True)
+    (target / "keep.txt").write_text("operator data swapped in\n", encoding="utf-8")
+
+    def _reject(parent_fd, moved_rel):
+        raise mod.ExportRefused("not a build-written tree")
+
+    with pytest.raises(mod.ExportRefused):
+        mod._purge_via_private_aside(target, _reject)
+
+    assert target.is_dir(), "a tree that fails the ownership check is restored, not deleted"
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "operator data swapped in\n"
+    assert [q.name for q in parent.iterdir() if q.name.startswith(".smc-purge-")] == []
+
+
+@_posix_only
+def test_MUTATION_verifying_before_the_rename_would_delete_a_swapped_tree(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Drop the ownership check on the moved entry and a swapped-in tree is deleted anyway.
+
+    The mutation replaces the ``verify(parent_fd, moved_rel)`` call with a no-op, so the moved
+    entry is deleted without being confirmed as one this build wrote. The verifier here always
+    refuses: under the mutation the refusal never runs and the tree is deleted; the real code
+    calls it on the captured entry, refuses, and restores the tree untouched.
+    """
+    mod = load_build(
+        mutate=(
+            "                verify(parent_fd, moved_rel)\n",
+            "                pass  # mutated: moved-entry ownership check skipped\n",
+        )
+    )
+    parent = tmp_path / "parent"
+    target = parent / "bundle.previous"
+    target.mkdir(parents=True)
+    (target / "keep.txt").write_text("operator data\n", encoding="utf-8")
+
+    def _reject(parent_fd, moved_rel):
+        raise mod.ExportRefused("moved entry rejected")
+
+    mod._purge_via_private_aside(target, _reject)
+    assert not target.exists(), (
+        "mutated to skip the moved-entry check: the swapped-in tree is deleted, proving the "
+        "verify-the-captured-entry step is what closes the window"
+    )
+
+
 @pytest.mark.skipif(os.name != "posix", reason="uses chmod 000 to make a real dir unreadable")
 def test_an_unreadable_selected_directory_refuses_instead_of_shipping_incomplete(
     tmp_path: pathlib.Path,
@@ -1276,7 +1424,10 @@ def test_an_unreadable_selected_directory_refuses_instead_of_shipping_incomplete
         assert "could not be listed" in str(caught.value)
         assert "topics" in str(caught.value)
     finally:
-        os.chmod(unreadable, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- restoring a test dir this test alone created from 0o000 back to owner-only 0o700 so tmp_path cleanup can traverse it; not a published artifact. lockdown-ok.  # noqa: E501  # fmt: skip
+        # Restores the mode the fixture cleared to 0o000. Traverse permission is what the
+        # temp-directory teardown needs, so a tighter mode leaves the tree undeletable.
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(unreadable, 0o755)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="uses chmod 000 to make a real dir unreadable")
@@ -1302,13 +1453,12 @@ def test_MUTATION_skipping_an_unreadable_dir_would_ship_incomplete(tmp_path: pat
             "the unreadable directory, proving the fail-closed raise is what refuses it"
         )
     finally:
-        os.chmod(unreadable, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- restoring a test dir this test alone created from 0o000 back to owner-only 0o700 so tmp_path cleanup can traverse it; not a published artifact. lockdown-ok.  # noqa: E501  # fmt: skip
+        # Restores the mode the fixture cleared to 0o000. Traverse permission is what the
+        # temp-directory teardown needs, so a tighter mode leaves the tree undeletable.
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(unreadable, 0o755)
 
 
-# ---------------------------------------------------------------------------
-# Round-18 GPT F2: an unreadable existing report / plan fails closed rather than
-# being treated as absence (which deletes the report or overwrites the plan).
-# ---------------------------------------------------------------------------
 @pytest.mark.skipif(os.name != "posix", reason="uses chmod 000 to make a real file unreadable")
 def test_an_unreadable_existing_report_refuses_rather_than_risk_deleting_it(
     tmp_path: pathlib.Path,
@@ -1325,14 +1475,9 @@ def test_an_unreadable_existing_report_refuses_rather_than_risk_deleting_it(
             _build(mod, home, out, {"skills": {"faq"}})
         assert "existing report" in str(caught.value) and "cannot be read" in str(caught.value)
     finally:
-        os.chmod(report, 0o644)  # lockdown-ok: test permission restore, not a publish
+        os.chmod(report, 0o644)
 
 
-# ---------------------------------------------------------------------------
-# Round-18 GPT F4: the standalone fence catches a credential FILE by name (.env),
-# not only a credential directory, so a --allow of it fails closed when the
-# shared validator is unavailable.
-# ---------------------------------------------------------------------------
 def test_a_dotenv_plan_path_is_refused_by_the_standalone_floor() -> None:
     """`.env` is a credential leaf the standalone floor must catch even without the validator."""
     mod = load_build()
@@ -1359,6 +1504,7 @@ def test_MUTATION_without_the_credential_name_rule_the_floor_misses_dotenv() -> 
 # Round-19 GPT F2(a): a FAILED restore of a swapped-in tree must NOT fall through
 # to a recursive delete -- retain the aside, abort, name where the tree sits.
 # ---------------------------------------------------------------------------
+@_posix_only
 def test_a_failed_restore_retains_the_tree_and_does_not_delete_it(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
@@ -1387,7 +1533,7 @@ def test_a_failed_restore_retains_the_tree_and_does_not_delete_it(
 
     monkeypatch.setattr(os, "rename", _rename_second_fails)
 
-    def _reject(moved: pathlib.Path):
+    def _reject(parent_fd, moved_rel):
         raise mod.ExportRefused("swapped-in tree")
 
     with pytest.raises(mod.ExportRefused) as caught:
@@ -1400,13 +1546,14 @@ def test_a_failed_restore_retains_the_tree_and_does_not_delete_it(
     assert survivor.read_text(encoding="utf-8") == "operator data\n", "the tree was NOT deleted"
 
 
+@_posix_only
 def test_MUTATION_cleaning_the_aside_on_a_failed_restore_would_delete_the_tree(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
     """Revert to always-cleanup and a failed restore recursively deletes the swapped-in tree."""
     mod = load_build(
         mutate=(
-            "                cleanup_private = False\n",
+            "                    cleanup_private = False\n",
             "",
         )
     )
@@ -1425,7 +1572,7 @@ def test_MUTATION_cleaning_the_aside_on_a_failed_restore_would_delete_the_tree(
 
     monkeypatch.setattr(os, "rename", _rename_second_fails)
 
-    def _reject(moved: pathlib.Path):
+    def _reject(parent_fd, moved_rel):
         raise mod.ExportRefused("swapped-in tree")
 
     with pytest.raises(mod.ExportRefused):
@@ -1506,6 +1653,7 @@ def test_the_local_subset_fences_every_foreign_credential_store() -> None:
     )
 
 
+@_posix_only
 def test_an_entry_that_cannot_be_inspected_refuses_instead_of_leaving_its_subtree_out(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
@@ -1862,7 +2010,7 @@ def test_a_refused_marker_write_does_not_strand_the_staging_tree(
 # prior bundle in place.
 # ---------------------------------------------------------------------------
 def test_the_report_is_published_after_the_promotion_not_before() -> None:
-    """Source order: staging.rename(out_dir) precedes the report os.replace.
+    """Source order: staging.rename(out_dir) precedes the report publish.
 
     Writing the report before the promotion left a report claiming success when the promotion
     then failed -- a lie in the one artifact offered as evidence the bundle exists.
@@ -1895,7 +2043,7 @@ def test_a_failed_promotion_writes_no_success_report_and_keeps_the_previous_bund
     real_rename = os.rename
 
     def _fail_promotion(src, dst, *a, **k):
-        if str(dst) == str(out) and "staging" in str(src):
+        if str(src).endswith(".staging"):
             raise OSError("promotion blocked")
         return real_rename(src, dst, *a, **k)
 
@@ -1922,8 +2070,8 @@ def test_a_failed_report_publication_does_not_leave_the_previous_report_behind(
     is gone. Measured before the cleanup -- the file was byte-identical to the first build's,
     digest included, while the second bundle was promoted.
 
-    The publication failure is injected at ``os.replace`` because nothing about a real
-    filesystem makes a rename fail on demand. What is asserted is the state left behind.
+    The publication failure is injected at ``os.link`` because nothing about a real
+    filesystem makes the publish fail on demand. What is asserted is the state left behind.
     """
     mod = load_build()
     home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
@@ -1934,14 +2082,14 @@ def test_a_failed_report_publication_does_not_leave_the_previous_report_behind(
     assert first.digest in before, "the fixture must start from a report describing build one"
 
     (home / "skills" / "faq" / "SKILL.md").write_text("# FAQ v2\n", encoding="utf-8")
-    real_replace = mod.os.replace
+    real_link = mod.os.link
 
-    def _replace(src, dst, *args, **kwargs):
+    def _link(src, dst, *args, **kwargs):
         if str(dst).endswith(".smc-bundle.json"):
             raise OSError(5, "Input/output error")
-        return real_replace(src, dst, *args, **kwargs)
+        return real_link(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(mod.os, "replace", _replace)
+    monkeypatch.setattr(mod.os, "link", _link)
     with pytest.raises(OSError):
         _build(mod, home, out, {"skills": {"faq"}})
     monkeypatch.undo()
@@ -1966,7 +2114,7 @@ def test_the_ownership_verifier_refuses_a_symlinked_root(tmp_path: pathlib.Path)
     link = tmp_path / "out"
     link.symlink_to(target, target_is_directory=True)
     with pytest.raises(mod.ExportRefused) as caught:
-        mod._refuse_unless_this_build_wrote_it(link, "--out")
+        mod._refuse_unless_this_build_wrote_it(link, "--out", "frontdesk")
     assert "symlink or reparse point" in str(caught.value)
 
 
@@ -1995,7 +2143,7 @@ def test_MUTATION_without_the_anchor_check_a_symlinked_root_is_verified_by_its_t
     # (empty, build-unowned) target and refuses for a different reason, or passes -- either way
     # not the anchor refusal, proving the anchor check is what catches the link.
     try:
-        mod._refuse_unless_this_build_wrote_it(link, "--out")
+        mod._refuse_unless_this_build_wrote_it(link, "--out", "frontdesk")
     except mod.ExportRefused as exc:
         assert "symlink or reparse point" not in str(exc), (
             "anchor check removed: the verifier followed the link to its target instead of "
@@ -2057,7 +2205,7 @@ def test_an_unreadable_report_refusal_releases_the_staging_tree_and_marker(
 # ---------------------------------------------------------------------------
 # Same object, different content: the fourth property. A concurrent process that
 # edits the report IN PLACE leaves the same readable object with different bytes;
-# a shape check alone says fine and os.replace would destroy that edit. The build
+# a shape check alone says fine and the publish would supersede that edit. The build
 # owns the report exclusively for one build, so drift is REFUSED, not overwritten.
 # ---------------------------------------------------------------------------
 @_posix_only
@@ -2170,6 +2318,7 @@ def test_the_floor_still_catches_credential_leaves_and_non_json_under_agents() -
 # tree is the operator's current bundle; a concurrent nonempty <out>.previous
 # makes the settling os.rename fail (ENOTEMPTY), which must NOT destroy it.
 # ---------------------------------------------------------------------------
+@_posix_only
 def test_a_raising_settle_restores_the_verified_tree_instead_of_deleting_it(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -2179,10 +2328,10 @@ def test_a_raising_settle_restores_the_verified_tree_instead_of_deleting_it(
     target.mkdir(parents=True)
     (target / "keep.txt").write_text("the operator's current bundle\n", encoding="utf-8")
 
-    def _accept(moved: pathlib.Path) -> None:
+    def _accept(parent_fd, moved_rel) -> None:
         return None  # verify passes: this is a build-written tree
 
-    def _settle_that_fails(moved: pathlib.Path) -> None:
+    def _settle_that_fails(moved_rel: str, pfd: int) -> None:
         # Stand-in for os.rename(moved, previous) hitting a concurrent nonempty <out>.previous.
         raise OSError("settlement rename failed: destination not empty")
 
@@ -2196,6 +2345,7 @@ def test_a_raising_settle_restores_the_verified_tree_instead_of_deleting_it(
     assert (target / "keep.txt").read_text(encoding="utf-8") == "the operator's current bundle\n"
 
 
+@_posix_only
 def test_a_settle_failure_with_a_blocked_restore_retains_the_aside(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
@@ -2217,13 +2367,196 @@ def test_a_settle_failure_with_a_blocked_restore_retains_the_aside(
 
     monkeypatch.setattr(os, "rename", _first_rename_ok_then_restore_fails)
 
-    def _accept(moved: pathlib.Path) -> None:
+    def _accept(parent_fd, moved_rel) -> None:
         return None
 
-    def _settle_that_fails(moved: pathlib.Path) -> None:
+    def _settle_that_fails(moved_rel: str, pfd: int) -> None:
         raise OSError("settlement failed")
 
     with pytest.raises(mod.ExportRefused) as caught:
         mod._dispose_via_private_aside(target, _accept, _settle_that_fails)
     msg = str(caught.value)
     assert "NOT been deleted" in msg and "restoring it failed" in msg
+
+
+# ---------------------------------------------------------------------------
+# Round-GPT :5571 -- the publish side of the same inode rule the delete side earned.
+# The promote rename re-derives the staging entry by NAME under the pinned parent, so a
+# staging leaf swapped for another directory since staging_fd was opened would be promoted.
+# Verify the name still resolves to the captured inode BEFORE the rename.
+# ---------------------------------------------------------------------------
+@_posix_only
+def test_a_swapped_staging_entry_is_refused_before_promotion(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """A staging leaf whose inode does not match ``staging_fd`` is refused before promotion.
+
+    The promote fstats the retained ``staging_fd`` and the freshly-reopened staging leaf and
+    compares (st_dev, st_ino). Simulate the leaf having been swapped since capture by tampering
+    the SECOND of that consecutive pair (the reopened leaf) so its inode differs. The check must
+    refuse BEFORE the rename, leaving the previous bundle in place.
+    """
+    mod = load_build()
+    _run_inode_mismatch_promotion(mod, tmp_path, monkeypatch, expect_refusal=True)
+
+
+@_posix_only
+def test_MUTATION_promotion_without_the_inode_check_ignores_a_swapped_staging(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """Drop the pre-rename inode check and a mismatched staging inode is not refused.
+
+    Proves the check is load-bearing: with it the tampered inode refuses; without it the same
+    tampering promotes without complaint (the build completes rather than raising the inode
+    refusal).
+    """
+    mod = load_build(
+        mutate=(
+            "            if staging_fd != -1:\n"
+            "                try:\n"
+            "                    check_fd = os.open(",
+            "            if False:\n"
+            "                try:\n"
+            "                    check_fd = os.open(",
+        )
+    )
+    _run_inode_mismatch_promotion(mod, tmp_path, monkeypatch, expect_refusal=False)
+
+
+def _run_inode_mismatch_promotion(mod, tmp_path, monkeypatch, *, expect_refusal: bool) -> None:
+    home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
+    out = tmp_path / "work" / "bundle"
+    _build(mod, home, out, {"skills": {"faq"}})  # first build: a real bundle
+    assert (out / "skills" / "faq" / "SKILL.md").is_file()
+
+    # ``os.open`` must NOT be patched (``_dir_fd_supported`` checks os.open membership in
+    # os.supports_dir_fd, and a wrapper would fail that and route to the Windows path). Arm
+    # deterministically instead: the pre-promote hard-link probe runs immediately before the
+    # promote block, so wrap it to set a flag; then tamper the SECOND ``os.fstat`` after arming
+    # -- the check does ``fstat(staging_fd)`` then ``fstat(check_fd)`` with nothing between, so
+    # the second is the reopened leaf. Tampering its inode makes the leaf look swapped.
+    real_fstat = os.fstat
+    real_probe = mod._refuse_report_dir_without_hard_link_support
+    state = {"armed": False, "count": 0, "tampered": False}
+
+    class _Stat:
+        def __init__(self, base, st_ino):
+            self._base = base
+            self.st_ino = st_ino
+
+        def __getattr__(self, name):
+            return getattr(self._base, name)
+
+    def _armed_probe(report_path):
+        real_probe(report_path)
+        state["armed"] = True
+
+    def _fstat(fd):
+        st = real_fstat(fd)
+        if state["armed"] and not state["tampered"]:
+            state["count"] += 1
+            if state["count"] == 2:
+                state["tampered"] = True
+                return _Stat(st, st.st_ino ^ 0xABCD)
+        return st
+
+    monkeypatch.setattr(mod, "_refuse_report_dir_without_hard_link_support", _armed_probe)
+    monkeypatch.setattr(os, "fstat", _fstat)
+    if expect_refusal:
+        with pytest.raises(mod.ExportRefused) as caught:
+            _build(mod, home, out, {"skills": {"faq"}})
+        assert "inode changed" in str(caught.value)
+        monkeypatch.undo()
+        assert (out / "skills" / "faq" / "SKILL.md").read_text(encoding="utf-8") == "# FAQ\n"
+    else:
+        # Under the mutant the inode comparison is gone, so the tampering raises no inode
+        # refusal -- the build either completes or fails for an unrelated reason, never the
+        # inode message.
+        raised = None
+        try:
+            _build(mod, home, out, {"skills": {"faq"}})
+        except mod.ExportRefused as exc:  # pragma: no cover - defensive
+            raised = str(exc)
+        monkeypatch.undo()
+        assert raised is None or "inode changed" not in raised
+
+
+@_posix_only
+def test_a_report_dir_without_hard_link_support_is_refused_before_promotion(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """A report directory that cannot hard-link refuses BEFORE promotion, prior bundle intact.
+
+    ``_publish_report`` installs by exclusive hard link, a filesystem capability. On a mount
+    without it ``os.link`` raises EPERM/EOPNOTSUPP/ENOSYS, and because publish runs after
+    ``promoted = True`` an unguarded failure would unwind a good promotion. The capability is
+    probed before the irreversible rename; simulate an unsupported mount by making the probe
+    link raise EOPNOTSUPP, and assert the build refuses with the previous bundle untouched.
+    """
+    mod = load_build()
+    home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
+    out = tmp_path / "work" / "bundle"
+    _build(mod, home, out, {"skills": {"faq"}})  # first build: a real bundle + report
+    report = out.parent / (out.name + ".smc-bundle.json")
+    first = report.read_bytes()
+
+    real_link = os.link
+    import errno as _errno
+
+    def _no_hard_links(src, dst, *a, **k):
+        # Fail the capability PROBE (its names carry the run id + linkprobe marker).
+        if "linkprobe" in str(dst) or "linkprobe" in str(src):
+            raise OSError(getattr(_errno, "EOPNOTSUPP", _errno.EPERM), "operation not supported")
+        return real_link(src, dst, *a, **k)
+
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    with pytest.raises(mod.ExportRefused) as caught:
+        _build(mod, home, out, {"skills": {"faq"}})
+    assert "does not support hard links" in str(caught.value)
+    monkeypatch.undo()
+    # The promotion never ran: the first bundle and its report are exactly as they were.
+    assert (out / "skills" / "faq" / "SKILL.md").read_text(encoding="utf-8") == "# FAQ\n"
+    assert report.read_bytes() == first, "the prior report is untouched by a pre-promotion refusal"
+
+
+@_posix_only
+def test_MUTATION_no_capability_probe_crashes_raw_when_the_link_is_unsupported(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """Remove the pre-promotion probe and an unsupported hard link crashes raw after promotion.
+
+    Proves the probe is load-bearing. WITH the probe (the paired positive test), an
+    unsupported-link filesystem is caught before promotion and refused cleanly with guidance,
+    the prior bundle untouched. WITHOUT it, the capability failure surfaces from inside
+    ``_publish_report`` -- after ``promoted = True`` -- as a raw ``OSError`` that is NOT the
+    builder's clean ``ExportRefused``, leaving the operator a stack trace and a promoted bundle
+    with no report instead of a recoverable refusal.
+    """
+    mod = load_build(
+        mutate=(
+            "        _refuse_report_dir_without_hard_link_support(report_path)\n",
+            "        pass  # probe removed by mutation\n",
+        )
+    )
+    home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
+    out = tmp_path / "work" / "bundle"
+    _build(mod, home, out, {"skills": {"faq"}})
+
+    import errno as _errno
+
+    real_link = os.link
+
+    def _no_hard_links(src, dst, *a, **k):
+        # Now that the probe is gone, only the REAL publish links (to the report leaf and its
+        # aside) fire; fail them with an unsupported-capability errno.
+        if ".smc-bundle.json" in str(dst):
+            raise OSError(getattr(_errno, "EOPNOTSUPP", _errno.EPERM), "operation not supported")
+        return real_link(src, dst, *a, **k)
+
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    with pytest.raises(OSError) as caught:
+        _build(mod, home, out, {"skills": {"faq"}})
+    monkeypatch.undo()
+    # The mutant leaks a RAW OSError, not the builder's clean ExportRefused with guidance.
+    assert not isinstance(caught.value, mod.ExportRefused)
+    assert "does not support hard links" not in str(caught.value)

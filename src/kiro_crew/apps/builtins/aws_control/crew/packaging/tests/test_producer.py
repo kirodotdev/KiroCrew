@@ -73,19 +73,23 @@ FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"[4:] + "ABCD"
 _variant_counter = 0
 
 
-def load_build(mutate: tuple[str, str] | None = None) -> types.ModuleType:
+def load_build(
+    mutate: "tuple[str, str] | list[tuple[str, str]] | None" = None,
+) -> types.ModuleType:
     """Exec ``packaging/build.py`` into a throwaway module.
 
-    ``mutate`` is an ``(old, new)`` substring pair applied to the source before
-    exec, so a test can disable exactly one guard and observe the leak it prevents.
+    ``mutate`` is an ``(old, new)`` substring pair -- or a list of them applied in order --
+    swapped into the source before exec, so a test can disable one guard (or a set of guards
+    that must fall together) and observe the leak they prevent.
     """
     global _variant_counter
     _variant_counter += 1
     text = BUILD_PY.read_text(encoding="utf-8")
     if mutate is not None:
-        old, new = mutate
-        assert old in text, f"mutation anchor not found: {old!r}"
-        text = text.replace(old, new, 1)
+        pairs = [mutate] if isinstance(mutate, tuple) else list(mutate)
+        for old, new in pairs:
+            assert old in text, f"mutation anchor not found: {old!r}"
+            text = text.replace(old, new, 1)
     mod = types.ModuleType(f"smc_build_v{_variant_counter}")
     mod.__file__ = str(BUILD_PY)
     # Register before exec: @dataclass resolves annotations via
@@ -101,9 +105,19 @@ def load_build(mutate: tuple[str, str] | None = None) -> types.ModuleType:
     # to compile a variant of the source. The alternative is not a safer test, it is
     # no test: the guards this exercises are the ones that keep a private key out of
     # a published bundle.
-    exec(  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
-        compile(text, str(BUILD_PY), "exec"), mod.__dict__
-    )
+    try:
+        exec(  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
+            compile(text, str(BUILD_PY), "exec"), mod.__dict__
+        )
+    finally:
+        # The registration above is needed only DURING exec: @dataclass reads
+        # sys.modules[cls.__module__] to resolve annotations while the class body runs.
+        # Once exec completes, the returned module object -- and the generated methods
+        # that already captured its __dict__ -- keep it alive for the caller, so the
+        # sys.modules ENTRY has no reader left. Dropping it stops each variant (and its
+        # mutated guard) from outliving the test that built it, where a later import by
+        # name could otherwise resolve a stale, mutated copy.
+        sys.modules.pop(mod.__name__, None)
     return mod
 
 
@@ -156,6 +170,12 @@ def sign_plan(
     """Write a fresh plan, flip the chosen ids to include, sign it, return its path."""
     candidates = mod.enumerate_all(crew, agent_spec)
     plan_path = out / mod.PLAN_FILENAME
+    # ``write_plan`` now claims the name exclusively and will NOT regenerate over an existing
+    # plan (the no-replace-on-creation rule). This fixture rebuilds a fresh signed plan on
+    # every call -- often over the same ``out`` across two builds -- so it clears any prior
+    # plan first rather than relying on ``write_plan`` to overwrite.
+    if plan_path.exists() or plan_path.is_symlink():
+        plan_path.unlink()
     mod.write_plan(plan_path, crew.name, candidates)
     doc = json.loads(plan_path.read_text())
     doc["reviewed_by"] = reviewed_by
@@ -574,6 +594,15 @@ def test_MUTATION_credential_location_copy(tmp_path):
 # ---------------------------------------------------------------------------
 # spec normalisation
 # ---------------------------------------------------------------------------
+@_posix_only
+def test_file_prompt_without_target_is_refused(tmp_path):
+    mod = load_build()
+    src = make_crew(tmp_path / "home", prompt="file:///gone/persona.md")
+    out = tmp_path / "bundle"
+    crew = mod.resolve_crew("frontdesk", src)
+    spec = mod.read_agent_spec(crew)
+    with pytest.raises(mod.ExportRefused, match="persona"):
+        mod.build_bundle(crew, spec, mod.enumerate_all(crew, spec), None, out)
 
 
 @_posix_only
@@ -888,3 +917,45 @@ def test_a_skills_root_that_is_a_file_is_refused_not_shipped_empty(tmp_path):
         mod.skill_candidates(root_as_file)
     msg = str(caught.value)
     assert "not a directory" in msg and "malformed" in msg
+
+
+# ---------------------------------------------------------------------------
+# The loader itself: an exec-loaded variant must not outlive the test.
+#
+# ``load_build`` registers the throwaway module in ``sys.modules`` before exec so
+# ``@dataclass`` can resolve annotations, but that entry has no reader once exec
+# completes -- the returned object keeps itself alive. Left behind, the name stays
+# importable and a later ``import`` by that name resolves an earlier test's copy;
+# because most of this suite loads MUTATED variants, a leaked entry lets a mutation
+# outlive the test that installed it and reach the next one. The loader drops the
+# entry in a finally, so nothing named ``smc_build_*`` survives the call.
+# ---------------------------------------------------------------------------
+def test_load_build_leaves_no_synthetic_module_in_sys_modules() -> None:
+    """A ``load_build`` call adds no ``smc_build_*`` entry to ``sys.modules``.
+
+    A first warm-up call caches the real imports ``build.py`` pulls in, so the snapshot
+    below measures only the synthetic variant rather than those first-time imports. The
+    returned module is exercised after the call to show it still works with its
+    ``sys.modules`` entry gone -- the object outlives the registration, only the name does
+    not.
+    """
+    load_build()  # warm the import caches so the snapshot measures only the variant
+    before = set(sys.modules)
+
+    mod = load_build()
+    # Usable without a sys.modules entry: exec built the module object and the caller
+    # holds it, so attribute access and a build still work with the name unregistered.
+    assert callable(mod.resolve_crew)
+
+    after = set(sys.modules)
+    assert not [k for k in after if k.startswith("smc_build_")], (
+        "load_build leaked a synthetic module into sys.modules; a later import by that "
+        "name would resolve this variant"
+    )
+    assert after == before, "load_build changed the sys.modules key set"
+
+    # The mutated path must not leak either -- that is the copy whose stale guard would
+    # do the damage if it survived into the next test.
+    before_mut = set(sys.modules)
+    load_build(mutate=("def resolve_crew", "def resolve_crew"))
+    assert set(sys.modules) == before_mut, "a mutated load_build leaked into sys.modules"

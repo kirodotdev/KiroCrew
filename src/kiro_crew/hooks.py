@@ -2141,7 +2141,23 @@ def _tool_matches(pattern: str, tool_name: str) -> bool:
 
 
 def is_unc_shape(raw: str) -> bool:
-    """True for a UNC-shaped path: two leading separators, either style."""
+    """True for a UNC-shaped path: two leading separators, either style.
+
+    One exception, because Windows ``os.readlink`` returns an ordinary local target in
+    EXTENDED-LENGTH form -- ``\\\\?\\C:\\Users\\...`` -- which starts with two separators and
+    would otherwise be judged a network share, refusing every local symlink as if it reached a
+    host over SMB. A real UNC in that form is ``\\\\?\\UNC\\server\\share``; ``\\\\?\\C:`` is a
+    LOCAL drive path. So a ``\\\\?\\`` prefix whose remainder is drive-absolute (``C:\\...``) is
+    NOT a share. The distinction is exactly the one the readlink-chain walker already draws
+    (``\\\\?\\UNC\\`` -> share, ``\\\\?\\<drive>:`` -> local): ``\\\\?\\UNC\\...`` stays a share,
+    and other extended namespaces (``\\\\?\\GLOBALROOT\\...``, ``\\\\?\\Volume{guid}\\...``,
+    device paths) stay shaped-as-UNC so they are refused fail-closed rather than admitted as
+    local. The fold is case-insensitive because the OS honours the ``UNC`` component that way.
+    """
+    if len(raw) >= 4 and raw[:4] == "\\\\?\\":
+        # Extended-length prefix. A drive-absolute remainder is a plain local path, not a share;
+        # ``\\?\UNC\...`` and every other extended namespace remain UNC-shaped (refused).
+        return not _DRIVE_ABS_RE.match(raw[4:])
     return len(raw) >= 2 and raw[0] in "\\/" and raw[1] in "\\/"
 
 
@@ -2223,6 +2239,23 @@ _DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:")
 
 
+def _fold_extended_length_local(raw: str) -> str:
+    r"""Fold a ``\\?\<drive>:\...`` extended-length LOCAL path to plain ``<drive>:\...``.
+
+    Only a DRIVE-absolute remainder is folded. ``\\?\UNC\...`` and every other
+    extended namespace (``\\?\GLOBALROOT\...``, ``\\?\Volume{guid}\...``, device
+    paths) are returned unchanged, so ``is_unc_shape`` still reports them
+    UNC-shaped and the UNC trusted-root gate refuses them fail-closed --
+    stripping the prefix there would launder a share (or a kernel object) into a
+    local-looking string. The lexical twin of the readlink-target ``\\?\`` fold
+    in :func:`validate_file_path`; a cheap string test with no filesystem or
+    network I/O.
+    """
+    if len(raw) >= 4 and raw[:4] == "\\\\?\\" and _DRIVE_ABS_RE.match(raw[4:]):
+        return raw[4:]
+    return raw
+
+
 def unc_probe_allowed(raw: str) -> bool:
     """Whether a UNC-shaped path may touch the filesystem on Windows.
 
@@ -2270,6 +2303,25 @@ def validate_file_path(raw: str) -> str | None:
     """
     if not raw:
         return None
+    if os.name == "nt":
+        # Fold a ``\\?\<drive>:\...`` extended-length LOCAL path down to its
+        # plain ``<drive>:\...`` spelling BEFORE any gate below.
+        # ``is_unc_shape`` correctly reports ``\\?\C:\...`` as non-UNC (it names
+        # a local drive, not a share), so the UNC gate lets it through -- but
+        # the sensitive-path fence at the tail compares the resolved path
+        # against ``$HOME``-anchored credential leaves, and the ``\\?\``-prefixed
+        # spelling matches none of them, so a dashboard read of
+        # ``\\?\C:\Users\<user>\.aws\credentials`` would slip the fence.
+        # Normalising here makes every downstream form the fence can see -- the
+        # raw string, its ``normpath``, and ``realpath`` -- the ordinary
+        # ``C:\Users\...`` path, so ``is_sensitive_path`` recognises the
+        # credential leaf regardless of whether ``realpath`` happens to strip
+        # the prefix (it does not for a non-existent target on every CPython).
+        # Only a DRIVE-absolute remainder is folded: ``\\?\UNC\...`` and every
+        # other extended namespace stay untouched and UNC-shaped so the gate
+        # below refuses them fail-closed. Mirrors the readlink-target ``\\?\``
+        # fold later in this function.
+        raw = _fold_extended_length_local(raw)
     if os.name == "nt" and is_unc_shape(raw) and not unc_probe_allowed(raw):
         return None
     expanded = os.path.expanduser(raw)

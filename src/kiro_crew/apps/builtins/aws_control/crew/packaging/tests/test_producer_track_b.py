@@ -46,6 +46,97 @@ def _write_kubeconfig(home: Path) -> Path:
     return cfg
 
 
+def test_a_file_uri_into_a_credential_dir_is_refused_before_reading(tmp_path):
+    """A ``file://`` prompt pointing at ``~/.kube/config`` refuses without reading.
+
+    ``config`` is an innocent basename, so ``refused_by_name`` does not catch it;
+    the directory fence (``refused_by_location``) does.
+    """
+    mod = load_build()
+    home = tmp_path / "home"
+    cfg = _write_kubeconfig(home)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+
+    # Instrument the read so a fetch of the file is unmistakably visible.
+    reads: list[str] = []
+    real_read = mod._read_text
+
+    def _recording_read(p):
+        # A named function, not ``lambda p: (reads.append(...), real_read(p))[1]``:
+        # that spelling smuggles a None-returning call into an expression, which
+        # mypy rejects (func-returns-value) and a reader has to decode.
+        reads.append(str(p))
+        return real_read(p)
+
+    # ``setattr``, because ``load_build()`` hands back a throwaway ``ModuleType``
+    # exec'd from source: the attribute is genuinely dynamic, and spelling it as a
+    # plain assignment only makes mypy guess at a module it cannot see.
+    setattr(mod, "_read_text", _recording_read)
+
+    with pytest.raises(mod.ExportRefused, match="credential directory"):
+        mod._resolve_prompt_path(f"file://{cfg}", agents_dir)
+
+    assert reads == [], f"the sensitive file was read despite the fence: {reads}"
+
+
+def test_the_fence_also_covers_ssh_aws_gnupg_docker(tmp_path):
+    mod = load_build()
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    for part, leaf in (
+        (".ssh", "id_ed25519_extra"),  # a name refused_by_name would MISS
+        (".aws", "credentials.bak"),
+        (".gnupg", "trustdb"),
+        (".docker", "cfg"),
+    ):
+        d = tmp_path / "h" / part
+        d.mkdir(parents=True)
+        f = d / leaf
+        f.write_text("x", encoding="utf-8")
+        with pytest.raises(mod.ExportRefused, match="credential directory"):
+            mod._resolve_prompt_path(f"file://{f}", agents_dir)
+
+
+def test_a_normal_persona_path_is_not_refused(tmp_path):
+    """The fence must not refuse a legitimate persona file under the crew home."""
+    mod = load_build()
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    persona = tmp_path / "crew" / "persona.md"
+    persona.parent.mkdir(parents=True)
+    persona.write_text("You are the front desk.", encoding="utf-8")
+    resolved = mod._resolve_prompt_path(f"file://{persona}", agents_dir)
+    assert resolved == persona
+
+
+def test_MUTATION_sensitive_path_fence(tmp_path):
+    """Disable the location fence and the kubeconfig is now READ.
+
+    This is the reddening the fix exists to prevent: with the guard off,
+    ``_resolve_prompt_path`` returns the path and a caller reads it.
+    """
+    home = tmp_path / "home"
+    cfg = _write_kubeconfig(home)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+
+    bad = load_build(
+        # Anchored to the CURRENT guard line. It gained a resolved-target check
+        # after a symlink was found to walk past the link-only form, so the old
+        # anchor does not exist -- see test_prompt_symlink_fence.py.
+        mutate=(
+            "if refused_by_location(resolved) or refused_by_location(path):",
+            "if False:",
+        )
+    )
+    # With the fence disabled, the path is returned and its bytes are readable --
+    # exactly the "read the file at all is the wrong shape" the fix removes.
+    resolved = bad._resolve_prompt_path(f"file://{cfg}", agents_dir)
+    assert resolved == cfg
+    assert bad._read_text(resolved) is not None, "mutation must let the file be read"
+
+
 # ---------------------------------------------------------------------------
 # Finding 3A: a plan whose ``include`` is the STRING "false" must not select.
 # ---------------------------------------------------------------------------

@@ -252,6 +252,16 @@ def test_a_trusted_unc_root_is_not_refused_by_the_gate(
     # patching the submodule leaves the one the code reads untouched -- which is why an
     # earlier version of this test kept dying inside the fence it thought it had stubbed.
     monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda p: False, raising=False)
+    # The spec read goes through ``safe_read_file_bytes_nolink``, whose own path handling
+    # instantiates a ``WindowsPath`` under a faked ``os.name == "nt"`` and dies on this host --
+    # exactly like the fence above did. This test owns the UNC GATE's verdict, not the read, so
+    # the authority is stubbed to the spec bytes the same way the sensitive-path fence is.
+    spec_bytes = crew.agent_spec_path.read_bytes()
+    monkeypatch.setattr(
+        "kiro_crew.hooks.safe_read_file_bytes_nolink",
+        lambda raw, within_root=None, **kwargs: spec_bytes,
+        raising=False,
+    )
     monkeypatch.setattr(mod.os, "name", "nt")
 
     spec = mod.read_agent_spec(crew)

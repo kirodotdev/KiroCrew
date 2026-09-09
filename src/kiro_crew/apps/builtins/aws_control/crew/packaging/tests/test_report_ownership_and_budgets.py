@@ -84,7 +84,13 @@ def test_the_plan_write_refuses_a_dangling_symlink(tmp_path: pathlib.Path) -> No
 
 @_posix_only
 def test_writing_a_plan_normally_still_works(tmp_path: pathlib.Path) -> None:
-    """Non-vacuity: the ordinary plan write, and rewriting over our own plan."""
+    """Non-vacuity: the ordinary plan write, and a re-run claiming the same name.
+
+    ``write_plan`` claims the plan name exclusively, so a first call creates it and a second
+    call on the same path does NOT overwrite -- it reports ``False`` and leaves the plan the
+    operator may already have edited exactly as it is. This is the no-replace-on-creation
+    rule: a plan this run did not claim is not its own to rewrite.
+    """
     mod = load_build()
     home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
     work = tmp_path / "work"
@@ -92,9 +98,79 @@ def test_writing_a_plan_normally_still_works(tmp_path: pathlib.Path) -> None:
     crew = mod.resolve_crew("frontdesk", home)
     spec = mod.read_agent_spec(crew)
     target = work / mod.PLAN_FILENAME
-    for _ in range(2):
-        mod.write_plan(target, crew.name, mod.enumerate_all(crew, spec))
-        assert json.loads(target.read_text(encoding="utf-8"))["plan_version"] == mod.PLAN_VERSION
+
+    created = mod.write_plan(target, crew.name, mod.enumerate_all(crew, spec))
+    assert created is True
+    assert json.loads(target.read_text(encoding="utf-8"))["plan_version"] == mod.PLAN_VERSION
+
+    # An operator edits the template they were handed.
+    edited = json.loads(target.read_text(encoding="utf-8"))
+    edited["reviewed_by"] = "someone"
+    target.write_text(json.dumps(edited), encoding="utf-8")
+
+    # A second run of ``plan`` must not clobber that edit.
+    again = mod.write_plan(target, crew.name, mod.enumerate_all(crew, spec))
+    assert again is False
+    assert json.loads(target.read_text(encoding="utf-8"))["reviewed_by"] == "someone"
+
+
+@_posix_only
+def test_a_plan_symlink_is_refused_not_treated_as_already_planned(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A symlink at the plan path is refused, not swallowed as "already there".
+
+    ``exists_ok`` turns only a REGULAR-file collision into a not-written return. A symlink
+    (the dangling-link write-through this whole path guards) must still refuse, or the
+    exclusive claim would have quietly reopened the follow-the-link hole.
+    """
+    mod = load_build()
+    home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
+    work = tmp_path / "work"
+    work.mkdir()
+    elsewhere = tmp_path / "elsewhere" / "planted.json"
+    elsewhere.parent.mkdir()
+    (work / mod.PLAN_FILENAME).symlink_to(elsewhere)
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+    with pytest.raises(mod.ExportRefused):
+        mod.write_plan(work / mod.PLAN_FILENAME, crew.name, mod.enumerate_all(crew, spec))
+    assert not elsewhere.exists(), "the exclusive write followed the link and created its target"
+
+
+@_posix_only
+def test_MUTATION_a_non_exclusive_plan_write_clobbers_an_edited_plan(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Drop the ``O_EXCL`` claim and a re-run of ``plan`` truncates the operator's edited plan.
+
+    Proves the exclusive claim is load-bearing: with it, a second ``write_plan`` on the same
+    path leaves the existing plan alone; without it the write is an ``O_TRUNC`` that overwrites
+    whatever the operator had edited in.
+    """
+    mod = load_build(
+        mutate=(
+            'path, json.dumps(body, indent=2, ensure_ascii=False) + "\\n", '
+            "exclusive=True, exists_ok=True",
+            'path, json.dumps(body, indent=2, ensure_ascii=False) + "\\n", '
+            "exclusive=False, exists_ok=True",
+        )
+    )
+    home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
+    work = tmp_path / "work"
+    work.mkdir()
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+    target = work / mod.PLAN_FILENAME
+
+    mod.write_plan(target, crew.name, mod.enumerate_all(crew, spec))
+    edited = json.loads(target.read_text(encoding="utf-8"))
+    edited["reviewed_by"] = "someone"
+    target.write_text(json.dumps(edited), encoding="utf-8")
+
+    # Under the mutant the second write is a truncating replace, so the edit is lost.
+    mod.write_plan(target, crew.name, mod.enumerate_all(crew, spec))
+    assert json.loads(target.read_text(encoding="utf-8"))["reviewed_by"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -435,3 +511,308 @@ def test_a_source_file_the_copy_never_wrote_still_hashes_from_source(
     # nested.md not in the written set -> legitimately absent -> hashed from source, no refuse.
     h = mod._staged_tree_hash(staged, source, {"SKILL.md"})
     assert h  # returns a hash rather than raising
+
+
+# ---------------------------------------------------------------------------
+# The staged-only walk in ``_staged_tree_hash`` hashes the SHIPPING tree, so an
+# entry it cannot hash is REFUSED, not skipped -- the same subset-of-what-ships
+# hole the bundle digest closes. A clean tree of directories and regular files
+# still hashes (pin-equality preserved by the tests above).
+# ---------------------------------------------------------------------------
+@_posix_only
+def test_staged_tree_hash_refuses_a_staged_only_symlink(tmp_path: pathlib.Path) -> None:
+    """A symlink present in staging but absent from the source is refused, not passed over."""
+    mod = load_build()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("reviewed\n", encoding="utf-8")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "SKILL.md").write_text("reviewed\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("ATTACKER\n", encoding="utf-8")
+    (staged / "EXTRA.md").symlink_to(outside)
+
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod._staged_tree_hash(staged, source, {"SKILL.md"})
+    assert "EXTRA.md" in str(caught.value)
+
+
+@_posix_only
+def test_staged_tree_hash_refuses_a_staged_only_special_file(tmp_path: pathlib.Path) -> None:
+    """A special file in the staged tree cannot be hashed and is refused, not skipped."""
+    mod = load_build()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("reviewed\n", encoding="utf-8")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "SKILL.md").write_text("reviewed\n", encoding="utf-8")
+    os.mkfifo(staged / "pipe")
+
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod._staged_tree_hash(staged, source, {"SKILL.md"})
+    assert "pipe" in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# The report is PUBLISHED with no-replace semantics: an exclusive hard link that
+# fails on a collision rather than overwriting a file a concurrent process put at
+# the path. Every refusal leaves both the destination and the staged report
+# recoverable, so a raise here is never destructive.
+# ---------------------------------------------------------------------------
+def _report_paths(mod, d: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    report_path = d / "bundle.smc-bundle.json"
+    report_tmp = d / (report_path.name + f".{mod._RUN_ID}.tmp")
+    return report_path, report_tmp
+
+
+@_posix_only
+def test_publish_report_refuses_a_collision_and_leaves_both_recoverable(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A foreign file at the report path is refused; it survives and the staged report is kept."""
+    mod = load_build()
+    d = tmp_path / "out"
+    d.mkdir()
+    report_path, report_tmp = _report_paths(mod, d)
+    report_path.write_text("FOREIGN\n", encoding="utf-8")
+    report_tmp.write_text("NEW\n", encoding="utf-8")
+
+    with pytest.raises(mod.ExportRefused):
+        mod._publish_report(report_tmp, report_path, None)
+
+    assert report_path.read_text(encoding="utf-8") == "FOREIGN\n", "the existing file was clobbered"
+    assert report_tmp.read_text(encoding="utf-8") == "NEW\n", "the staged report was lost"
+
+
+@_posix_only
+def test_publish_report_publishes_onto_an_absent_path(tmp_path: pathlib.Path) -> None:
+    """Non-vacuity: a clean install writes the report and clears the temp."""
+    mod = load_build()
+    d = tmp_path / "out"
+    d.mkdir()
+    report_path, report_tmp = _report_paths(mod, d)
+    report_tmp.write_text("NEW\n", encoding="utf-8")
+
+    mod._publish_report(report_tmp, report_path, None)
+
+    assert report_path.read_text(encoding="utf-8") == "NEW\n"
+    assert not report_tmp.exists(), "the run-id temp was left behind"
+
+
+@_posix_only
+def test_publish_report_replaces_our_own_verified_prior_report(tmp_path: pathlib.Path) -> None:
+    """Non-vacuity: a rebuild over this build's own prior report publishes and leaves no aside."""
+    mod = load_build()
+    d = tmp_path / "out"
+    d.mkdir()
+    report_path, report_tmp = _report_paths(mod, d)
+    prior = b"PRIOR\n"
+    report_path.write_bytes(prior)
+    report_tmp.write_text("NEW\n", encoding="utf-8")
+
+    mod._publish_report(report_tmp, report_path, prior)
+
+    assert report_path.read_text(encoding="utf-8") == "NEW\n"
+    assert not report_tmp.exists()
+    assert not list(d.glob("*.prev")), "the aside copy of the prior report was left behind"
+
+
+@_posix_only
+def test_a_failed_publication_does_not_overwrite_a_concurrent_writer_at_the_destination(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """When publication fails after the aside-move, a file that reappeared at the name survives.
+
+    The path holds this build's own prior report, so it is moved aside and the new report is
+    published by exclusive link. Force the link to fail with a NON-FileExistsError, and have a
+    concurrent writer drop a file at the report name in that window. The recovery must NOT
+    rename the aside back over that concurrent file (a rename replaces atomically and destroys
+    it); it restores by exclusive link, which fails on the occupant, so the concurrent file
+    survives and this build's prior report is preserved at its ``.prev`` aside. Nothing this
+    build did not create is overwritten.
+    """
+    mod = load_build()
+    d = tmp_path / "out"
+    d.mkdir()
+    report_path, report_tmp = _report_paths(mod, d)
+    prior = b"PRIOR\n"
+    report_path.write_bytes(prior)
+    report_tmp.write_text("NEW\n", encoding="utf-8")
+
+    real_link = os.link
+    leaf = report_path.name
+    state = {"fired": False}
+
+    def _link_fails_after_a_racer_appears(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        # The aside is now CLAIMED by a link too, so key on the PUBLISH link specifically
+        # (dst == the report leaf): let the aside-claim link land, then on the publish link a
+        # racer drops a file at the report name and this link fails with a non-FileExistsError
+        # to reach the recovery.
+        if dst == leaf and not state["fired"]:
+            state["fired"] = True
+            report_path.write_bytes(b"CONCURRENT\n")
+            raise OSError("simulated publish-link failure after a racer appeared")
+        return real_link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(os, "link", _link_fails_after_a_racer_appears)
+
+    with pytest.raises(OSError):
+        mod._publish_report(report_tmp, report_path, prior)
+
+    assert (
+        report_path.read_bytes() == b"CONCURRENT\n"
+    ), "the recovery renamed the aside over the concurrent writer's file and destroyed it"
+    aside = list(d.glob("*.prev"))
+    assert (
+        aside and aside[0].read_bytes() == prior
+    ), "this build's prior report must be preserved at the aside name, not lost"
+
+
+@_posix_only
+def test_MUTATION_a_rename_recovery_clobbers_a_concurrent_writer(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """Revert the recovery to ``os.rename(aside -> leaf)`` and the concurrent file is destroyed.
+
+    Reddens the fix: a rename replaces atomically, so restoring the aside over a name a racer
+    reoccupied overwrites the racer's file. The exclusive-link recovery is what preserves it.
+    """
+    mod = load_build(
+        mutate=(
+            "                try:\n                    os.link(aside_name, leaf_name, "
+            "src_dir_fd=parent_fd, dst_dir_fd=parent_fd)\n"
+            "                except FileExistsError:",
+            "                try:\n                    os.rename(aside_name, leaf_name, "
+            "src_dir_fd=parent_fd, dst_dir_fd=parent_fd)\n"
+            "                except FileExistsError:",
+        )
+    )
+    d = tmp_path / "out"
+    d.mkdir()
+    report_path, report_tmp = _report_paths(mod, d)
+    prior = b"PRIOR\n"
+    report_path.write_bytes(prior)
+    report_tmp.write_text("NEW\n", encoding="utf-8")
+
+    real_link = os.link
+    leaf = report_path.name
+    state = {"fired": False}
+
+    def _link_fails_after_a_racer_appears(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        if dst == leaf and not state["fired"]:
+            state["fired"] = True
+            report_path.write_bytes(b"CONCURRENT\n")
+            raise OSError("simulated publish-link failure after a racer appeared")
+        return real_link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(os, "link", _link_fails_after_a_racer_appears)
+
+    with pytest.raises(OSError):
+        mod._publish_report(report_tmp, report_path, prior)
+
+    assert report_path.read_bytes() == prior, (
+        "with the rename recovery the aside replaced the concurrent file -- proving the "
+        "exclusive-link recovery is what preserves a writer this build did not create"
+    )
+
+
+@_posix_only
+def test_MUTATION_no_replace_is_load_bearing_on_a_racing_creation(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file that appears AFTER the check must be refused, not clobbered.
+
+    The install step is reached with the destination reported ABSENT at the check (``lstat``
+    is forced to raise ``FileNotFoundError`` for the leaf) while a file really sits there --
+    the concurrent-creation race the drift check cannot see. The exclusive link answers it
+    with ``FileExistsError`` and refuses; reverting the link to a plain replace overwrites the
+    racer's file.
+    """
+    pristine_lstat = os.lstat
+
+    def fake_lstat(path, *a, **k):
+        if path == "bundle.smc-bundle.json" and k.get("dir_fd") is not None:
+            raise FileNotFoundError()
+        return pristine_lstat(path, *a, **k)
+
+    monkeypatch.setattr(os, "lstat", fake_lstat)
+
+    def stage(mod, name: str) -> tuple[pathlib.Path, pathlib.Path]:
+        d = tmp_path / name
+        d.mkdir()
+        report_path, report_tmp = _report_paths(mod, d)
+        report_path.write_text("RACER\n", encoding="utf-8")
+        report_tmp.write_text("NEW\n", encoding="utf-8")
+        return report_path, report_tmp
+
+    real = load_build()
+    rp, rt = stage(real, "real")
+    with pytest.raises(real.ExportRefused):
+        real._publish_report(rt, rp, None)
+    assert rp.read_text(encoding="utf-8") == "RACER\n", "the exclusive link must not clobber"
+
+    mut = load_build(
+        mutate=(
+            "os.link(tmp_name, leaf_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)",
+            "os.replace(tmp_name, leaf_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)",
+        )
+    )
+    rp2, rt2 = stage(mut, "mut")
+    mut._publish_report(rt2, rp2, None)
+    assert rp2.read_text(encoding="utf-8") == "NEW\n", "a by-name replace clobbers the racer"
+
+
+@_posix_only
+def test_the_report_scratch_temp_refuses_a_foreign_occupant_at_its_name(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The run-id scratch temp is claimed O_CREAT|O_EXCL, so a file already there is refused.
+
+    ``_write_nofollow(..., exclusive=True)`` opens with ``O_EXCL``: a name this build creates
+    fresh that already holds a file was not written by this build, and truncating it would
+    overwrite something this transaction did not create. The claim is checked, not assumed.
+    """
+    mod = load_build()
+    d = tmp_path / "out"
+    d.mkdir()
+    _, report_tmp = _report_paths(mod, d)
+    report_tmp.write_text("FOREIGN SCRATCH\n", encoding="utf-8")
+
+    with pytest.raises(mod.ExportRefused):
+        mod._write_nofollow(report_tmp, "NEW\n", exclusive=True)
+
+    assert (
+        report_tmp.read_text(encoding="utf-8") == "FOREIGN SCRATCH\n"
+    ), "the exclusive write truncated a foreign file at the scratch name"
+
+
+@_posix_only
+def test_the_aside_name_is_claimed_by_link_not_rename_so_a_foreign_occupant_is_refused(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A foreign file already at the ``.prev`` aside name is refused, not overwritten.
+
+    The aside is claimed with an exclusive ``os.link``, not ``os.rename`` (which replaces): a
+    concurrent process holding this build's run-id ``.prev`` scratch name has its file left
+    intact and the publish refuses, rather than the rename silently taking the name over.
+    """
+    mod = load_build()
+    d = tmp_path / "out"
+    d.mkdir()
+    report_path, report_tmp = _report_paths(mod, d)
+    prior = b"PRIOR\n"
+    report_path.write_bytes(prior)
+    report_tmp.write_text("NEW\n", encoding="utf-8")
+    aside = d / (report_path.name + f".{mod._RUN_ID}.prev")
+    aside.write_bytes(b"FOREIGN ASIDE\n")
+
+    with pytest.raises(mod.ExportRefused):
+        mod._publish_report(report_tmp, report_path, prior)
+
+    assert aside.read_bytes() == b"FOREIGN ASIDE\n", (
+        "the aside claim overwrote a foreign file at the .prev name -- it must link-exclusive "
+        "and refuse, not rename over it"
+    )
+    assert report_path.read_bytes() == prior, "the prior report must be untouched on refusal"

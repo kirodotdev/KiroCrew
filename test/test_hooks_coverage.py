@@ -390,6 +390,103 @@ class TestValidateFilePath:
         f = _write(tmp_path / "ok.txt", "x")
         assert _same(validate_file_path(str(f)) or "", str(f))
 
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (r"\\?\C:\Users\me\.aws\creds", r"C:\Users\me\.aws\creds"),
+            (r"\\?\c:\x", r"c:\x"),
+            ("\\\\?\\C:/x", "C:/x"),
+            (r"\\?\UNC\host\share", r"\\?\UNC\host\share"),
+            (r"\\?\GLOBALROOT\Device\Mup\host\share", r"\\?\GLOBALROOT\Device\Mup\host\share"),
+            (r"C:\plain", r"C:\plain"),
+            ("//host/share", "//host/share"),
+            ("", ""),
+        ],
+        ids=[
+            "drive-local-folds",
+            "lowercase-drive",
+            "forward-slash-remainder",
+            "unc-longform-untouched",
+            "globalroot-untouched",
+            "plain-drive-untouched",
+            "posix-doubled-slash-untouched",
+            "empty",
+        ],
+    )
+    def test_fold_extended_length_local(self, raw, expected):
+        r"""Only a drive-absolute ``\\?\`` remainder folds to a plain
+        local path; ``\\?\UNC\`` and every other extended namespace are left
+        intact so they stay UNC-shaped and fail closed."""
+        from kiro_crew import hooks as hooks_mod
+
+        assert hooks_mod._fold_extended_length_local(raw) == expected
+
+    def test_extended_length_local_secret_path_is_refused(self, monkeypatch):
+        r"""An extended-length credential path is folded at the INPUT and
+        refused as sensitive.
+
+        ``is_unc_shape`` reports ``\\?\C:\`` as non-UNC (it names a local drive,
+        not a share), so the UNC gate does not fire on it. The prefix is folded
+        at the input instead, so the sensitive-path fence sees the plain ``C:\``
+        path and refuses a read of ``\\?\C:\Users\<user>\<secret-dir>\<leaf>``.
+        The probe asserts the fence never sees the ``\\?\`` prefix -- the
+        property that makes the credential leaf recognisable."""
+        from kiro_crew import hooks as hooks_mod
+        from kiro_crew import platform_compat
+
+        seen: list[str] = []
+        secret_dir = "." + "aws"
+
+        def _probe(p):
+            seen.append(p)
+            return secret_dir in p.lower()
+
+        self._windows(monkeypatch)
+        monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda _p: False)
+        monkeypatch.setattr(hooks_mod, "is_sensitive_path", _probe)
+        assert validate_file_path("\\\\?\\C:\\Users\\me\\" + secret_dir + "\\creds") is None
+        assert seen, "the sensitive-path fence was never consulted"
+        assert all(not p.startswith("\\\\?\\") for p in seen), seen
+
+    def test_extended_length_local_persona_still_resolves(self, monkeypatch):
+        r"""Non-vacuity: a benign extended-length local path
+        (``\\?\C:\...\persona.md``) must still read -- the fold makes
+        ``is_unc_shape`` see a plain (non-UNC) ``C:\`` path, and the fence
+        passes a non-secret file. Proves the refusal above is the fence firing,
+        not a blanket ``\\?\`` ban."""
+        from kiro_crew import hooks as hooks_mod
+        from kiro_crew import platform_compat
+
+        self._windows(monkeypatch)
+        monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda _p: False)
+        monkeypatch.setattr(hooks_mod, "is_sensitive_path", lambda _p: False)
+        assert validate_file_path(r"\\?\C:\Users\me\project\persona.md") is not None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            r"\\?\UNC\evil-host\share\doc.txt",
+            r"\\?\GLOBALROOT\Device\Mup\evil-host\share\doc.txt",
+            r"\\.\PhysicalDrive0",
+        ],
+        ids=["unc-longform", "globalroot", "physicaldrive"],
+    )
+    def test_extended_namespace_input_is_refused_before_resolution(self, monkeypatch, raw):
+        r"""A raw ``\\?\UNC\...``, ``\\?\GLOBALROOT\...`` or ``\\.\device`` input
+        is NOT folded to a local path: it stays UNC-shaped and the UNC
+        trusted-root gate refuses it before any resolution (``realpath`` wired
+        to explode proves the gate returned first)."""
+        from kiro_crew import platform_compat
+
+        def _boom(_p):  # pragma: no cover
+            raise AssertionError("resolution ran on an extended-namespace input")
+
+        self._windows(monkeypatch, realpath=_boom)
+        monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: None)
+        assert validate_file_path(raw) is None
+
     def _windows(self, monkeypatch, realpath=os.path.realpath):
         """Simulate the Windows gates without patching the global os.name
         (which would make pathlib dispatch WindowsPath on a POSIX host).

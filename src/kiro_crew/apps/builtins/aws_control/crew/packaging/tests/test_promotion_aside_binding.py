@@ -44,9 +44,9 @@ def test_a_tree_swapped_in_before_the_aside_rename_is_not_kept_as_the_rollback_c
     real = mod._refuse_unless_this_build_wrote_it
     state = {"swapped": False}
 
-    def _swap_then_check(d, flag):
+    def _swap_then_check(d, flag, crew_name):
         # Swap AFTER --out has been cleared, which is the window the binding closes.
-        real(d, flag)
+        real(d, flag, crew_name)
         if flag == "--out" and not state["swapped"]:
             state["swapped"] = True
             os.rename(out, tmp_path / "ours.real")

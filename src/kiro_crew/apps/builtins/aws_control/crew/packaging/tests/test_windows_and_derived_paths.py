@@ -348,3 +348,141 @@ def test_author_path_reads_do_not_use_the_leaf_only_reader_in_source() -> None:
             f"{banned!r} reads an author-supplied path leaf-only; route it through "
             f"_read_text_openat so every component is anchored no-follow"
         )
+
+
+@_posix_only
+def test_an_external_prompt_is_refused_when_the_shared_fence_is_missing(tmp_path) -> None:
+    """Fail closed, and say which check was unavailable.
+
+    The import is mutated to fail so the fallback path is the one under test. Refusing
+    costs the external-reference feature and nothing else: an inline prompt is unaffected,
+    which is what makes fail-closed the affordable direction here.
+    """
+    mod = load_build(
+        mutate=(
+            "        from kiro_crew.security import is_sensitive_path",
+            "        raise ImportError('simulated standalone environment')",
+        )
+    )
+    persona = tmp_path / "persona.md"
+    persona.write_text("a persona\n", encoding="utf-8")
+    home = make_crew(tmp_path / "home", prompt=f"file://{persona}")
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+
+    with pytest.raises(mod.ExportRefused) as caught:
+        mod.build_spec(crew, spec, set(), crew.agent_spec_path.parent)
+    assert "is_sensitive_path" in str(caught.value)
+
+
+@_posix_only
+def test_an_external_prompt_still_inlines_when_the_fence_is_present(tmp_path) -> None:
+    """Non-vacuity: refusing unconditionally would satisfy the test above.
+
+    ``kiro_crew.security`` is importable in this repo's own environment, so this is the path
+    every real build takes and it has to keep working.
+    """
+    mod = load_build()
+    persona = tmp_path / "persona.md"
+    persona.write_text("a persona\n", encoding="utf-8")
+    home = make_crew(tmp_path / "home", prompt=f"file://{persona}")
+    crew = mod.resolve_crew("frontdesk", home)
+    spec = mod.read_agent_spec(crew)
+    result = mod.build_spec(crew, spec, set(), crew.agent_spec_path.parent)
+    assert "a persona" in result.spec["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# The disposal / no-follow primitives reach os.O_DIRECTORY, which does not exist
+# on Windows, so a test that drives one must be POSIX-gated or it raises
+# AttributeError on the Windows shard. Marking them one at a time does not
+# converge: each code change pulls a different neighbour onto that path. This
+# guard is the file-level answer -- it fails on ANY platform the moment a test
+# in the sensitive-source suite calls such a primitive without a POSIX skip,
+# so an unmarked neighbour is caught here at collection rather than as a
+# shifting set of the same size on the next Windows run.
+# ---------------------------------------------------------------------------
+_POSIX_ONLY_PRIMITIVES = (
+    "_purge_via_private_aside",
+    "_dispose_via_private_aside",
+    "_rmtree_pinned",
+    "_open_dir_nofollow_pinned",
+    "_open_leaf_nofollow_at",
+    "_read_text_openat",
+    "_read_bytes_openat",
+    "_walk_no_reparse",
+    "_write_nofollow",
+    "_write_bytes_nofollow",
+    "build_bundle",
+    "_tree_hash",
+    "_staged_tree_hash",
+)
+
+
+def _test_has_posix_skip(fn: ast.FunctionDef) -> bool:
+    """A test is POSIX-gated if a decorator is ``@_posix_only`` or a ``skipif`` naming posix."""
+    for dec in fn.decorator_list:
+        text = ast.unparse(dec)
+        if "_posix_only" in text or ("skipif" in text and "posix" in text):
+            return True
+    return False
+
+
+def _calls_a_posix_only_primitive(fn: ast.FunctionDef) -> bool:
+    for node in ast.walk(fn):
+        name = ""
+        if isinstance(node, ast.Attribute):
+            name = node.attr
+        elif isinstance(node, ast.Name):
+            name = node.id
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            # load_build(mutate=(...)) targets the primitive by NAME inside a string anchor,
+            # so a mutation test that never calls the primitive directly still exercises the
+            # O_DIRECTORY path through the mutated module and must be gated too.
+            name = node.value
+        if any(prim in name for prim in _POSIX_ONLY_PRIMITIVES):
+            return True
+    return False
+
+
+def test_every_sensitive_source_test_touching_a_posix_primitive_is_posix_gated() -> None:
+    """No test that drives a POSIX-only primitive is left runnable on the Windows shard.
+
+    The failure the shifting set produces (``AttributeError: module 'os' has no attribute
+    'O_DIRECTORY'``) comes from a test reaching the disposal / no-follow primitives on Windows.
+    This asserts every such test in the sensitive-source suite carries a POSIX skip, so the
+    next neighbour pulled onto that path is caught here rather than on the Windows run.
+    """
+    suite = pathlib.Path(__file__).resolve().parent / "test_sensitive_source_and_report_identity.py"
+    tree = ast.parse(suite.read_text(encoding="utf-8"), str(suite))
+    offenders = [
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        and fn.name.startswith("test_")
+        and _calls_a_posix_only_primitive(fn)
+        and not _test_has_posix_skip(fn)
+    ]
+    assert not offenders, (
+        "these sensitive-source tests drive a POSIX-only primitive (which reaches "
+        "os.O_DIRECTORY) but carry no POSIX skip, so they raise AttributeError on the Windows "
+        f"shard: {offenders}. Add @_posix_only."
+    )
+
+
+def test_the_posix_gate_guard_is_scanning_real_tests() -> None:
+    """Non-vacuity: the guard above finds real primitive-driving tests to check.
+
+    A guard that matched nothing would pass while an unmarked test raised on Windows. Confirm
+    the suite has several tests that DO drive a primitive, so the rule is scanning a real set.
+    """
+    suite = pathlib.Path(__file__).resolve().parent / "test_sensitive_source_and_report_identity.py"
+    tree = ast.parse(suite.read_text(encoding="utf-8"), str(suite))
+    drivers = [
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        and fn.name.startswith("test_")
+        and _calls_a_posix_only_primitive(fn)
+    ]
+    assert len(drivers) >= 10, f"expected many primitive-driving tests in scope, found {drivers}"
