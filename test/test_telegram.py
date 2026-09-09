@@ -2744,7 +2744,7 @@ class TestDispatcher:
     def test_a_shutdown_refusal_is_spooled_for_a_persistent_session(
         self, tmp_path, monkeypatch
     ) -> None:
-        """The durable inbound spool (#2217) receives the refused message."""
+        """The durable inbound spool receives the refused message."""
         from kiro_crew.messaging import inbound_spool as S
 
         monkeypatch.setattr(S, "data_home", lambda: tmp_path)

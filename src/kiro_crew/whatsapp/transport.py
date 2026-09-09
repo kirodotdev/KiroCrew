@@ -176,9 +176,9 @@ class WhatsAppTransport(MessagingTransport):
         self.pending_message_id: dict[int, str] = {}
         #: ``(text as the user sent it, media count)`` captured BEFORE ingestion
         #: rewrites ``msg.text`` with attachment context and temp paths. The
-        #: durable inbound spool (issue #2217) quotes the spooled text back to the
+        #: durable inbound spool quotes the spooled text back to the
         #: user in a restart notice, and the ingested form would quote on-disk
-        #: paths to files that no longer exist. Same keying and lifetime as the
+        #: paths to files that do not survive the restart. Same keying and lifetime as the
         #: three tables above.
         self.pending_original: dict[int, tuple[str, int]] = {}
         client.on_message = self.receive

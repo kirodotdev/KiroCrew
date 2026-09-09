@@ -1052,7 +1052,7 @@ def _substitution_bodies(text: str) -> "list[str]":
 
     Quoting was not the whole of it. That span helper counted a ``)`` that shell
     COMMAND GRAMMAR also puts there as an ordinary character, and two such
-    spellings were measured allowing a payload this module still refuses (#8150):
+    spellings were measured allowing a payload this module still refuses:
     a ``#`` comment (``$(: # )`` closes on a later line) and a ``case`` pattern
     (``$(case x in x) printf token;; esac)``). Both truncated the body before the
     verb, so the value assembled from it was never recognised. The closer for the
@@ -1624,7 +1624,7 @@ def _opens_comment(text: str, index: int) -> bool:
 def _in_command_position(text: str, index: int) -> bool:
     """True if a command could START at *index* -- the previous real character separates.
 
-    Used to tell the reserved word ``esac`` from the ordinary string ``esac``, which
+    Tells the reserved word ``esac`` from the ordinary string ``esac``, which
     a command may pass as an argument.
 
     A backslash-newline is a line CONTINUATION, not a separator: ``echo \\`` then a
@@ -1662,7 +1662,7 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
 
     Quoting is not the only way a ``)`` reaches this walk as an ordinary
     character. Two COMMAND-GRAMMAR constructs put one there too, and each was
-    measured allowing a payload this module still refuses (#8150):
+    measured allowing a payload this module still refuses:
 
     * a ``#`` COMMENT runs to the end of its line, so the ``)`` in
       ``$(: # )`` is commented out and the substitution closes on a LATER line.

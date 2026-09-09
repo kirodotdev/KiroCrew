@@ -1295,7 +1295,7 @@ def decide(
        belongs here for the same reason the marker conditions do: mid-round a
        fresh CONCERNS with no ruling yet is expected, not a defect -- the
        author has not been shown it. It gates only once the round has settled,
-       which is exactly the state that used to return 0 and arm auto-merge
+       which is exactly the state that would otherwise return 0 and arm auto-merge
        past an unanswered whole-design review. LOCAL ONLY: --disposition-gate
        never reaches this function, so the repository's required status keeps
        treating CONCERNS as advisory.

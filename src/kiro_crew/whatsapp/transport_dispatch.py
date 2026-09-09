@@ -358,14 +358,14 @@ class WhatsAppDispatcher:
                 channel_type="whatsapp",
                 session_key=session_key,
                 conversation_id=f"whatsapp:{scope}",
-                # Durable inbound spool (issue #2217): DMs ONLY. The replay is a
+                # Durable inbound spool: DMs ONLY. The replay is a
                 # restart notice gated on ``may_send_to``, and this transport's
                 # ``may_send_to`` answers from ``dm_policy`` alone -- it knows
                 # nothing of the group roster, so a group removed or set to ``off``
                 # while the gateway was down would still receive the notice.
                 # Rather than teach the egress gate a roster it was never asked to
                 # hold, group routes are not declared and a refused group message
-                # degrades exactly as before this seam (tracked in #9144).
+                # degrades as any un-spooled refusal does: lost, with no restart notice.
                 #
                 # The text is the PRE-INGESTION original the transport captured,
                 # not ``inbound.text`` (by now rewritten with attachment context

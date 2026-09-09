@@ -1596,7 +1596,7 @@ class TaskRunner:
                     # remove` deregisters and deletes in separate steps, so
                     # an interrupted finalize() (or the worktree being
                     # removed out from under the run some other way) can
-                    # leave the directory present but no longer a registered
+                    # leave the directory present but not registered as a
                     # git worktree -- resuming against it would silently
                     # dispatch every remaining step against a non-git
                     # directory while still reporting them completed.

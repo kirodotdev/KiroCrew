@@ -918,7 +918,7 @@ class TestRetryFromTask:
         detected by the same workspace_is_valid() check -- _is_git_repo()
         against a nonexistent directory is False too -- and recovery is
         attempted via reinit_workspace_for_retry(), not init_workspace()
-        directly (see #3792: a second init_workspace() call would check the
+        directly (a second init_workspace() call would check the
         DEAD worktree path rather than the original repo)."""
         runner = _runner(tmp_path)
         run = _seed_run(runner, tmp_path, status="failed")
@@ -940,8 +940,8 @@ class TestRetryFromTask:
     async def test_retry_fails_the_run_when_the_workspace_cannot_be_restored(
         self, tmp_path: Path
     ) -> None:
-        """#3792: the original bug -- a retry whose worktree was deregistered
-        (directory present, no longer a registered git repo) must not
+        """A retry whose worktree was deregistered
+        (directory present, not a registered git repo) must not
         silently dispatch the remaining steps against it. If recovery fails,
         the run is failed terminally instead of continuing."""
         runner = _runner(tmp_path)

@@ -1038,7 +1038,7 @@ class TestDispositionViolations:
 # ---------------------------------------------------------------------------
 # Whole-design lanes reach the drill-in with span ids of their own. FINDING_RE
 # reads the `BLOCKING -- path:line` shape only GPT and Opus emit, so a Design
-# or First Principles Watch item used to be invisible to the loop even though
+# or First Principles Watch item is invisible to FINDING_RE alone even though
 # SKILL.md ranks those lanes ABOVE the line-level ones in triage.
 # ---------------------------------------------------------------------------
 
@@ -1237,7 +1237,7 @@ class TestWholeDesignItems:
 
     def test_the_not_justified_section_is_an_item_section(self) -> None:
         """The section the prompts gained for the premise gate. Its items are
-        exactly the ones a PASS used to bury, so they must reach the loop with
+        exactly the ones a PASS verdict would otherwise bury, so they must reach the loop with
         span ids like any other."""
         module = _load_script()
         comment = {

@@ -529,12 +529,12 @@ class TestOwnOutgoingMessages:
 
 @pytest.mark.asyncio
 class TestPreIngestionOriginalIsCapturedForTheSpool:
-    """The durable inbound spool (#2217) quotes the spooled text back to the user.
+    """The durable inbound spool quotes the spooled text back to the user.
 
     ``receive`` rewrites ``msg.text`` with attachment context and temp paths
     before dispatch, so a route built from ``inbound.text`` at the dispatch site
     would spool -- and the restart notice would quote -- on-disk paths to files
-    that no longer exist. The original caption and media count are captured
+    that do not survive the restart. The original caption and media count are captured
     BEFORE ingestion in a side table keyed like the others.
     """
 

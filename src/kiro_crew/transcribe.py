@@ -1835,9 +1835,9 @@ def provider_splits_oversized(stt_config) -> bool:  # type: ignore[no-untyped-de
     under (``sandbox.py``), so a segment WAV handed to the helper by name is
     unreadable and every over-cap Apple import would 502. AWS Transcribe has no
     silent ceiling at all (``batch_duration_cap_secs`` is None for it). So the
-    split is local-only, which is also what issue #8272 intends: "segmentation
+    split is local-only, by design: segmentation
     only ever triggers where the ceiling exists (AWS/Apple providers fail loudly
-    and need no split)". Takes the caller's config snapshot as a REQUIRED
+    and need no split). Takes the caller's config snapshot as a REQUIRED
     argument (the one production caller always has it in hand, from the same
     snapshot the readiness/cap/transcribe calls share); it never reads config
     itself, so there is no window for the three answers to describe different

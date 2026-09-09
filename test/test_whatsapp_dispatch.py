@@ -644,7 +644,7 @@ def _captured_turn(monkeypatch, dispatcher, inbound):
     return seen.get("turn")
 
 
-# ── durable inbound spool route (#2217) ──────────────────────────────────────
+# ── durable inbound spool route ──────────────────────────────────────────────
 
 
 def test_dm_route_spools_the_pre_ingestion_original_not_the_prompt(monkeypatch):
@@ -678,7 +678,7 @@ def test_dm_route_is_not_declared_without_a_captured_original(monkeypatch):
 
 
 def test_group_route_is_never_declared(monkeypatch):
-    """``may_send_to`` knows nothing of the group roster, so groups are not spooled (#9144)."""
+    """``may_send_to`` knows nothing of the group roster, so groups are not spooled."""
     d, _client, _sessions, transport = _make()
     inbound = _msg("hi group", conv=_GROUP)
     transport.pending_original[id(inbound)] = ("hi group", 0)

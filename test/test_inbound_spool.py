@@ -1,6 +1,6 @@
 """Durable inbound spool: the loss it closes, and the bounds that keep it safe.
 
-Issue #2217. Gateway shutdown gathers channel teardown and
+Gateway shutdown gathers channel teardown and
 ``SessionManager.close_all()`` concurrently, so a message the platform has
 already accepted can be refused by the ``_closing`` gate before its turn ever
 opens. Nothing retries it: the payload was discarded and the user was answered
@@ -216,7 +216,7 @@ def test_a_refused_turn_is_spooled_with_its_routing(monkeypatch, spool_home: Pat
 
     RED-BEFORE: with no spool wired into ``drive_turn``'s
     ``except SessionClosingError`` branch, the refusal leaves nothing on disk and
-    the user's text is gone for good — which is the whole of issue #2217.
+    the user's text is gone for good — the loss this spool exists to close.
     """
     _patch_pipeline(monkeypatch)
     sessions = _Sessions(closing=True)
@@ -767,7 +767,7 @@ def test_a_revoked_discord_thread_gets_no_notice_even_from_an_allowed_sender(
 
     RED-BEFORE: with ``principal=entry.user_id`` passed for the thread route, the
     still-allowed sender authorizes via the DM arm and the notice lands in a
-    thread that is no longer on the roster.
+    thread that is off the roster.
     """
     from kiro_crew.discord.transport import DiscordTransport
 
@@ -1103,8 +1103,8 @@ def test_the_default_spool_path_lives_under_the_data_home(spool_home: Path) -> N
 def test_an_entry_records_only_what_the_notice_reads() -> None:
     """No field ridden along "for later": every persisted key is consumed by the pass.
 
-    ``session_key`` and ``chat_type`` were recorded for a re-dispatch design that
-    was removed (#9144). A field nothing reads is a field nothing tests.
+    No ``session_key`` or ``chat_type``: a re-dispatch design would own its own
+    record, and a field nothing reads is a field nothing tests.
     """
     keys = set(SpooledInbound(channel_type="t", conversation_id="c", text="x").to_dict())
     assert keys == {

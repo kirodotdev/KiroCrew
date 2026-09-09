@@ -348,7 +348,7 @@ def test_slack_home_tab_sessions_per_kind_parsed_and_round_trips():
 
 
 class TestMemberDispatchLoad:
-    """agent.member_dispatch load-time coercion (issue #8073).
+    """agent.member_dispatch load-time coercion.
 
     The operator ceiling on the member session-control bypass. A MISSING key
     defaults to true (today's behaviour), but a PRESENT-but-malformed value —
