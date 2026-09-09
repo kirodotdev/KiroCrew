@@ -72,6 +72,7 @@ class FakeSessions:
         self.mirror_links: dict = {}
         self.opt_outs: dict = {}
         self.locked = False
+        self.reserved_generations: list[str] = []
 
     # -- dashboard mirror -------------------------------------------------
     def mirror_opt_out(self, key) -> bool:
@@ -162,6 +163,9 @@ class FakeSessions:
 
     def is_busy(self, key) -> bool:
         return self._busy
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
 
     def max_generation(self, bucket: str) -> int:
         return -1
@@ -377,6 +381,7 @@ class TestCommands:
 
         assert client.sent == [("CONV", "✅ Started a fresh conversation.", _SVC)]
         assert d._conv.current_gen(_EMAIL) == 1
+        assert sessions.reserved_generations == [d._session_key(_EMAIL)]
         assert sessions.successes == []
 
     @pytest.mark.asyncio

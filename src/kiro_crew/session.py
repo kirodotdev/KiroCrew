@@ -2536,6 +2536,10 @@ class SessionManager:
     def find_key_by_sid(self, sid: str) -> str | None:
         return self._session_map.find_key_by_sid(sid)
 
+    def reserve_generation(self, session_key: str) -> None:
+        """Persist a generation floor before its first provider turn."""
+        self._session_map.reserve_generation(session_key)
+
     def max_generation(self, bucket: str) -> int:
         """Highest persisted DM generation for a session bucket (see SessionMap)."""
         return self._session_map.max_generation(bucket)

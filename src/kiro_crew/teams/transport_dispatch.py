@@ -48,7 +48,7 @@ from kiro_crew.messaging.commands import (
     run_yolo_command,
     stop_running_turn,
 )
-from kiro_crew.messaging.conversation import ConversationState
+from kiro_crew.messaging.conversation import ConversationState, reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -254,6 +254,7 @@ class TeamsDispatcher:
                     inbound.conversation_id,
                     inbound.service_url,
                     command_argument(text),
+                    native_key=self._session_key(email),
                 )
                 return
             if cmd == "new":
@@ -611,6 +612,7 @@ class TeamsDispatcher:
                 inbound.reply_to_id or inbound.activity_id,
                 payload["nonce"],
                 int(payload["index"]),
+                native_key=self._session_key(identity),
             )
             return
         # An option chip: resolve the label from what this turn actually offered,
@@ -971,6 +973,12 @@ class TeamsDispatcher:
             self.sessions.clear_queue(session_key)
             await self._queue.finish_cancelled_locked(session_key, self._receipt_surface(inbound))
         self._conv.bump_gen(identity)
+        new_session_key = self._session_key(identity)
+        saved = await reserve_new_generation(
+            self.sessions,
+            new_session_key,
+            channel_type="Teams",
+        )
         # Retire the OLD generation's renderer here. A renderer kept alive for
         # outstanding chips is keyed by the pre-bump session key, and the next turn
         # assigns under the new one -- so nothing else ever pops this entry, and each
@@ -981,6 +989,8 @@ class TeamsDispatcher:
         message = "✅ Started a fresh conversation."
         if left_resumed is not None:
             message = "✅ Started a fresh conversation — left the resumed dashboard session."
+        if not saved:
+            message += "\n⚠️ The new conversation could not be saved for restart."
         await self._reply(inbound, message)
 
     # ── Helpers ────────────────────────────────────────────────────────────

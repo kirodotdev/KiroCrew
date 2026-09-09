@@ -31,7 +31,7 @@ from kiro_crew.feishu.renderer import FeishuRenderer
 from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.commands import compact_unsupported_backend
-from kiro_crew.messaging.conversation import ConversationState
+from kiro_crew.messaging.conversation import ConversationState, reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -120,7 +120,15 @@ class FeishuDispatcher:
         cmd = (inbound.command_text or text).strip().lower()
         if cmd in ("/new", "/reset"):
             self._conv.bump_gen(route)
-            await self.client.send_reply(inbound.message_id, "✅ 已开始新对话")
+            saved = await reserve_new_generation(
+                self.sessions,
+                self._session_key(route),
+                channel_type="Feishu",
+            )
+            message = "✅ 已开始新对话"
+            if not saved:
+                message += "\n⚠️ 新对话无法保存，重启后可能恢复到上一段对话。"
+            await self.client.send_reply(inbound.message_id, message)
             return
         if cmd == "/compact":
             # Releasing the latch here is what keeps the soft notice a

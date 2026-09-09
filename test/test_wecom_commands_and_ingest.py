@@ -77,6 +77,13 @@ class FakeSessions:
         self.opted_out: dict = {}
         self.mirror_links: dict = {}
         self.origin_links: dict = {}
+        self.reserved_generations: list[str] = []
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
+
+    async def aflush(self) -> None:
+        return None
 
     def is_busy(self, key) -> bool:
         return self._busy
@@ -585,11 +592,13 @@ class TestACaptionIsNeverACommand:
 
         monkeypatch.setattr("kiro_crew.wecom.transport_dispatch.drive_turn", fake_drive_turn)
         client = FakeClient()
-        d = _dispatcher(FakeSessions(), client)
+        sessions = FakeSessions()
+        d = _dispatcher(sessions, client)
 
         await d.handle_message(_inbound("/new"))
 
         assert client.said == ["✅ 已开始新对话"]
+        assert sessions.reserved_generations == [d._session_key("Wei")]
         assert not drove, "a bare command must not become a turn"
 
 

@@ -22,7 +22,7 @@ from kiro_crew.messaging.approval import (
     pending_for,
 )
 from kiro_crew.messaging.commands import compact_unsupported_backend
-from kiro_crew.messaging.conversation import ConversationState
+from kiro_crew.messaging.conversation import ConversationState, reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     delivery_is_muted,
@@ -177,7 +177,15 @@ class WhatsAppDispatcher:
         scope = inbound.conversation_id
         if command == "new":
             self._conv.bump_gen(scope)
-            await self._say(scope, NEW_SESSION_TEXT)
+            saved = await reserve_new_generation(
+                self.sessions,
+                self._session_key(scope),
+                channel_type="WhatsApp",
+            )
+            message = NEW_SESSION_TEXT
+            if not saved:
+                message += "\n⚠️ The new conversation could not be saved for restart."
+            await self._say(scope, message)
         elif command == "compact":
             # Clear the nudge flag first, so the soft-threshold nudge can fire
             # again once the context refills after this compaction.

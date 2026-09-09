@@ -12,7 +12,7 @@ import pytest
 from chat_test_helpers import _make_state
 from test_telegram import FakeClient, FakeCtx, FakeProvider
 
-from kiro_crew.history import ConversationLog
+from kiro_crew.history import ConversationLog, transcript_stem
 from kiro_crew.messaging import auto_title
 from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, ChannelLink
 from kiro_crew.messaging.renderer import session_provenance_tag
@@ -84,6 +84,8 @@ class _Sessions:
         self.flush_error: Exception | None = None
         self.batch_failures = 0
         self.approval_policies: list[tuple[str, str]] = []
+        self.channel_keys: set[str] = set()
+        self.reserved_generations: set[str] = set()
 
     async def get_or_create(
         self,
@@ -96,6 +98,7 @@ class _Sessions:
         self.last_key = key
         self.last_agent = agent
         self.last_model = model
+        self.channel_keys.add(key)
         return self.provider, self.is_new_result, self.resumed_result
 
     def begin_turn(self, key: str) -> None:
@@ -176,10 +179,25 @@ class _Sessions:
     def mirror_opt_out(self, key: str) -> bool:
         return _opt_out_key(key) in self.mirror_opt_outs
 
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.add(session_key)
+        self.channel_keys.add(session_key)
+
     def max_generation(self, bucket: str) -> int:
-        return -1
+        prefix = f"{bucket}:gen"
+        return max(
+            (
+                int(key[len(prefix) :])
+                for key in self.reserved_generations
+                if key.startswith(prefix) and key[len(prefix) :].isdigit()
+            ),
+            default=-1,
+        )
 
     def channel_key_for_stem(self, stem: str) -> str:
+        for key in self.channel_keys | set(self.mirror_links):
+            if transcript_stem(key) == stem:
+                return key
         return ""
 
     def is_busy(self, key: str) -> bool:
@@ -362,6 +380,43 @@ class TestTelegramSessionPicker:
         await dispatcher.on_callback(_callback(data, message_id=message_id))
         assert sessions.mirror_links == before
         assert "expired" in client.edits[-1][1].lower()
+
+    @pytest.mark.asyncio
+    async def test_lists_only_this_dm_native_generations(self, tmp_path: Any) -> None:
+        dispatcher, client, sessions, log = _dispatcher(tmp_path)
+        prior_key = "telegram:kirocrew:direct:7:gen4"
+        other_key = "telegram:kirocrew:direct:8:gen4"
+        await asyncio.to_thread(log.append, prior_key, "user", "earlier telegram work")
+        await asyncio.to_thread(log.set_title, prior_key, "Earlier Telegram generation")
+        await asyncio.to_thread(log.append, other_key, "user", "somebody else's work")
+        await asyncio.to_thread(log.set_title, other_key, "Another Telegram user")
+        sessions.channel_keys.update({prior_key, other_key})
+
+        await dispatcher.handle_message(_dm("/sessions"))
+
+        labels = [row[0]["text"] for row in client.sent[-1][1]["inline_keyboard"]]
+        # This regression owns eligibility, not the mtime-ranked catalog order.
+        assert sorted(label.partition(". ")[2] for label in labels) == [
+            "Earlier Telegram generation",
+            "Launch plan",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_repeated_new_does_not_materialize_empty_history_rows(
+        self, tmp_path: Any
+    ) -> None:
+        dispatcher, _, sessions, log = _dispatcher(tmp_path)
+        route = ("direct", "7")
+
+        await dispatcher.handle_message(_dm("/new"))
+        first_key = dispatcher._session_key(route)
+        await dispatcher.handle_message(_dm("/new"))
+        second_key = dispatcher._session_key(route)
+
+        assert first_key != second_key
+        assert not await asyncio.to_thread(log.has_log, first_key)
+        assert not await asyncio.to_thread(log.has_log, second_key)
+        assert {first_key, second_key} <= sessions.reserved_generations
 
     @pytest.mark.asyncio
     async def test_failed_post_registers_no_picker(self, tmp_path: Any) -> None:

@@ -34,6 +34,7 @@ from kiro_crew.imessage.renderer import IMessageRenderer
 from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -129,7 +130,15 @@ class IMessageDispatcher:
         cmd = parse_command(text)
         if cmd == "new":
             self._conv.bump_gen(handle)
-            await self._notify(handle, "✅ Started a fresh conversation.")
+            saved = await reserve_new_generation(
+                self.sessions,
+                self._session_key(handle),
+                channel_type="iMessage",
+            )
+            message = "✅ Started a fresh conversation."
+            if not saved:
+                message += "\n⚠️ The new conversation could not be saved for restart."
+            await self._notify(handle, message)
             return
         if cmd == "compact":
             self._conv.clear_awaiting(handle)

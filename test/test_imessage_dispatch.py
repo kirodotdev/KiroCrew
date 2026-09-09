@@ -63,6 +63,7 @@ class FakeSessions:
         self.released: list[str] = []
         self.acquire_ok = True
         self.usage_pct = 0.0
+        self.reserved_generations: list[str] = []
 
     def is_busy(self, key: str) -> bool:
         return key in self.busy
@@ -93,6 +94,12 @@ class FakeSessions:
 
     def list_sessions(self) -> list[str]:
         return sorted(self.sessions)
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
+
+    async def aflush(self) -> None:
+        return None
 
     def max_generation(self, *_args: object, **_kwargs: object) -> int:
         """No prior generation to seed from — a fresh install starts at 0."""
@@ -161,10 +168,12 @@ class TestCommandIntercept:
 
     @pytest.mark.asyncio
     async def test_new_bumps_the_generation_so_the_session_key_changes(self) -> None:
-        dispatcher, client, _ = _dispatcher()
+        dispatcher, client, sessions = _dispatcher()
         before = dispatcher._session_key(HANDLE)
         await dispatcher.handle_message(_inbound("/new"))
-        assert dispatcher._session_key(HANDLE) != before
+        after = dispatcher._session_key(HANDLE)
+        assert after != before
+        assert sessions.reserved_generations == [after]
         assert "fresh conversation" in client.sent[0]
 
     @pytest.mark.asyncio

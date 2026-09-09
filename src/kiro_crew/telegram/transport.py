@@ -119,7 +119,7 @@ TELEGRAM_CAPABILITIES = TransportCapabilities(
     max_message_chars=TELEGRAM_CHUNK_LIMIT,
     max_buttons=25,
     supports_proactive_send=True,
-    # /session binds this exact Telegram DM back to a dashboard session, and
+    # /session binds this exact Telegram DM back to a persisted session, and
     # every ordinary inbound message resolves that durable binding first.
     supports_session_resume=True,
 )

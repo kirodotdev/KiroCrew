@@ -1112,11 +1112,20 @@ gen, dm_scope)`:
 - **Generation reset** rotates on `/new`, an idle window
   (`MessagingConfig.idle_reset_minutes`), or a daily boundary
   (`daily_reset_hour`), decided by `should_rotate_generation()`.
+- **Explicit `/new` is durable on every DM channel.** Discord, Telegram, Teams,
+  Webex, Feishu, iMessage, WhatsApp, Weixin and WeCom persist the new generation as
+  a monotonic floor on the stable `SessionMap` bucket and await its flush before
+  replying. A failed floor write leaves the in-memory bump intact but adds a
+  restart-safety warning. A zero-turn generation creates no conversation-log row:
+  it holds no work to recover, and repeated `/new` calls therefore update one floor
+  integer instead of crowding the newest-first picker with empty placeholders. The
+  first normal turn creates the real history row. Automatic idle/daily rotation still
+  materializes only when its first real turn runs.
 - **Restart-safe generation seeding.** The generation counter is in-memory (per
   `ConversationState`), so it resets on gateway restart. To stop `/new` from
   bumping a reset counter (0→1) straight onto a still-persisted generation and
   resurrecting that old conversation, the counter is seeded on first access to a
-  bucket from the highest persisted generation via
+  bucket from the highest mapped generation or explicit-new floor via
   `SessionMap.max_generation(bucket)` (shared helper
   `messaging.link.seed_generation`, used by every DM dispatcher). A normal
   post-restart message then resumes the latest generation (continuity); `/new`

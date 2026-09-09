@@ -34,6 +34,7 @@ from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -139,7 +140,15 @@ class WeComDispatcher:
         cmd = None if has_media else parse_command(text)
         if cmd == "new":
             self._conv.bump_gen(userid)
-            await self.client.say(inbound, "✅ 已开始新对话")
+            saved = await reserve_new_generation(
+                self.sessions,
+                self._session_key(userid),
+                channel_type="WeCom",
+            )
+            message = "✅ 已开始新对话"
+            if not saved:
+                message += "\n⚠️ 新对话无法保存，重启后可能恢复到上一段对话。"
+            await self.client.say(inbound, message)
             return
         if cmd == "compact":
             self._conv.clear_awaiting(userid)

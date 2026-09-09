@@ -26,6 +26,7 @@ from kiro_crew.messaging.link import (
     legacy_dashboard_mirror_key,
     rebind_conversation_location,
     should_rotate_generation,
+    split_dm_session_key,
 )
 from kiro_crew.session_map import ConversationOwnershipConflict
 
@@ -69,6 +70,19 @@ class TestBuildDmSessionKey:
             build_dm_session_key("telegram", "a", "1", gen=3, dm_scope=DM_SCOPE_UNIFIED)
             == "unified:a:gen3"
         )
+
+    def test_split_standard_and_unified_generations(self) -> None:
+        assert split_dm_session_key("telegram:a:direct:1:gen3") == (
+            "telegram:a:direct:1",
+            3,
+        )
+        assert split_dm_session_key("unified:a:gen4") == ("unified:a", 4)
+        assert split_dm_session_key("unified:a") == ("unified:a", 0)
+
+    def test_split_rejects_noncanonical_unified_shapes(self) -> None:
+        assert split_dm_session_key("unified") is None
+        assert split_dm_session_key("unified::gen2") is None
+        assert split_dm_session_key("unified:a:extra:gen2") is None
 
     def test_unknown_scope_falls_back_to_per_channel_peer(self) -> None:
         assert build_dm_session_key(

@@ -136,3 +136,33 @@ class TestNoClobber:
         assert sm2.get_agent_override("slack:1.2") == "researcher"
         # reverse index for challenge-redirect resume is intact
         assert sm2.get_session_for_thread("1.2") == "slack:1.2"
+
+
+class TestGenerationFloor:
+    def test_explicit_generation_survives_reload_and_prune(self, patched):
+        tmp, _ = patched
+        bucket = "discord:kirocrew:direct:u1"
+        sm = SessionMap()
+
+        sm.reserve_generation(f"{bucket}:gen4")
+
+        reloaded = SessionMap()
+        assert reloaded.max_generation(bucket) == 4
+        assert reloaded.prune() == 0
+        assert reloaded.max_generation(bucket) == 4
+        raw = json.loads((tmp / "session_map.json").read_text(encoding="utf-8"))
+        assert raw[bucket]["generation_floor"] == 4
+        assert f"{bucket}:gen4" not in raw
+
+    def test_generation_floor_is_monotonic_and_supports_unified_keys(self, patched):
+        sm = SessionMap()
+        sm.reserve_generation("discord:kirocrew:direct:u1:gen5")
+        sm.reserve_generation("discord:kirocrew:direct:u1:gen2")
+        sm.reserve_generation("unified:kirocrew:gen3")
+
+        assert sm.max_generation("discord:kirocrew:direct:u1") == 5
+        assert sm.max_generation("unified:kirocrew") == 3
+
+    def test_non_dm_key_is_rejected(self, patched):
+        with pytest.raises(ValueError, match="not a canonical DM session key"):
+            SessionMap().reserve_generation("dashboard:chat-1")

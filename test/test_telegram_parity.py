@@ -1248,7 +1248,7 @@ class TestSessionsCommand:
 
         heading, markup = client.sent[-1]
         labels = [row[0]["text"] for row in markup["inline_keyboard"]]
-        assert "Dashboard session search" in heading
+        assert "Session search" in heading
         assert any("General Q&A" in label for label in labels)
         assert all("Other session" not in label for label in labels)
 
@@ -1261,7 +1261,7 @@ class TestSessionsCommand:
 
         await dispatcher.handle_message(_msg("/session"))
 
-        assert client.sent[-1][0] == "No recent dashboard sessions."
+        assert client.sent[-1][0] == "No recent sessions."
 
     @pytest.mark.asyncio
     async def test_search_failure_is_audited_and_fails_closed(

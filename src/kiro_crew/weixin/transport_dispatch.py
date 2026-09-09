@@ -38,6 +38,7 @@ from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -159,7 +160,15 @@ class WeixinDispatcher:
                 await self._say(user_id, _ATTACHMENT_WITH_COMMAND)
             if cmd == "new":
                 self._conv.bump_gen(user_id)
-                await self._say(user_id, _NEW_SESSION)
+                saved = await reserve_new_generation(
+                    self.sessions,
+                    self._session_key(user_id),
+                    channel_type="Weixin",
+                )
+                message = _NEW_SESSION
+                if not saved:
+                    message += "\n⚠️ 新对话无法保存，重启后可能恢复到上一段对话。"
+                await self._say(user_id, message)
                 return
             if cmd == "help":
                 await self._say(user_id, build_help())

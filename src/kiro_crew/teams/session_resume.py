@@ -34,6 +34,7 @@ from kiro_crew.messaging.session_resume import (
     RoutingDecision,
     SessionChoice,
     SessionResumeController,
+    same_bucket_origin_keys,
 )
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.teams.cards import resolved_card, session_picker_card
@@ -106,10 +107,10 @@ class _TeamsResumeSurface:
         if normalized:
             label = _safe_teams_text(" ".join(query.split()), 100)
             return (
-                f"No dashboard sessions matched “{label}”. Try fewer words, or run "
+                f"No sessions matched “{label}”. Try fewer words, or run "
                 f"`/sessions` to see up to {PICKER_LIMIT} recent sessions."
             )
-        return "No recent dashboard sessions."
+        return "No recent sessions."
 
     def picker_heading(self, query: str, total: int) -> str:
         return _picker_heading(query, total, " ".join(query.casefold().split()))
@@ -157,7 +158,7 @@ class _TeamsResumeSurface:
 
 
 class TeamsSessionResume:
-    """Lists dashboard sessions and binds one bidirectionally to a Teams chat."""
+    """Lists dashboard + same-chat native sessions and binds one to Teams."""
 
     def __init__(
         self,
@@ -250,6 +251,7 @@ class TeamsSessionResume:
         conversation_id: str,
         service_url: str,
         query: str = "",
+        native_key: str = "",
     ) -> None:
         """Post the session picker, or say why there is nothing to post."""
         await self._controller.show_picker(
@@ -258,6 +260,7 @@ class TeamsSessionResume:
             picker_owner=identity,
             is_owner=self.is_owner(identity),
             query=query,
+            native_key=native_key,
         )
 
     async def choose(
@@ -269,8 +272,10 @@ class TeamsSessionResume:
         activity_id: str,
         nonce: str,
         index: int,
+        native_key: str = "",
     ) -> None:
         """Resolve a picker press: bind the chosen session, or say why not."""
+        link = self.link_for(conversation_id)
         choice = await self._controller.choose(
             _TeamsResumeSurface(client, conversation_id, service_url),
             caller=identity or "unknown",
@@ -279,7 +284,8 @@ class TeamsSessionResume:
             message_id=activity_id,
             nonce=nonce,
             index=index,
-            link=self.link_for(conversation_id),
+            link=link,
+            replace_outbound_keys=same_bucket_origin_keys(self.sessions, link, native_key),
         )
         if choice is not None:
             await self._replay(client, conversation_id, service_url, choice.key)
@@ -345,16 +351,15 @@ def _picker_heading(query: str, total: int, normalized: str) -> str:
         else:
             summary = f"Showing {shown} matching session{'s' if shown != 1 else ''}"
         return (
-            f"🔎 **Dashboard session search**\n{summary} for “{label}”, ranked over "
+            f"🔎 **Session search**\n{summary} for “{label}”, ranked over "
             "titles and message content.\nChoose one to continue here; `/unlink` comes back."
         )
     if total > PICKER_LIMIT:
-        summary = f"Showing {PICKER_LIMIT} of {total} most recent dashboard sessions."
+        summary = f"Showing {PICKER_LIMIT} of {total} most recent sessions."
     else:
-        summary = f"Showing {shown} most recent dashboard session{'s' if shown != 1 else ''}."
+        summary = f"Showing {shown} most recent session{'s' if shown != 1 else ''}."
     return (
-        f"🧵 **Recent dashboard sessions**\n{summary}\nChoose one to continue here; "
-        "`/unlink` comes back."
+        f"🧵 **Recent sessions**\n{summary}\nChoose one to continue here; " "`/unlink` comes back."
     )
 
 

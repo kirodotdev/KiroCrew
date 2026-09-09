@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from kiro_crew.history import transcript_stem
 from kiro_crew.messaging import session_resume as core
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session_map import ConversationOwnershipConflict
@@ -93,6 +94,7 @@ class _ConversationLog:
     def __init__(self, rows: list[dict], logs: dict[str, list[dict]] | None = None) -> None:
         self.rows = rows
         self.logs = logs or {}
+        self.metadata: dict[str, dict] = {}
         self.searched: list[str] = []
 
     def list_sessions(self) -> list[dict]:
@@ -104,10 +106,26 @@ class _ConversationLog:
         return [r for r in self.rows if needle in str(r.get("title", "")).casefold()]
 
     def get_metadata(self, key: str) -> dict:
+        if key in self.metadata:
+            return dict(self.metadata[key])
         for row in self.rows:
             if str(row.get("key", "")).endswith(key.removeprefix("dashboard:")):
                 return {"title": row.get("title", "")}
         return {}
+
+    def update_metadata_if(self, key: str, fields: dict, guard: Any) -> bool:
+        if not guard(self.metadata.get(key, {})):
+            return False
+        self.metadata.setdefault(key, {}).update(fields)
+        self.logs.setdefault(key, [])
+        stem = transcript_stem(key)
+        for row in self.rows:
+            if row.get("key") == stem:
+                row.update(fields)
+                break
+        else:
+            self.rows.insert(0, {"key": stem, **fields})
+        return True
 
     def has_log(self, key: str) -> bool:
         return key in self.logs
@@ -123,6 +141,8 @@ class _Sessions:
         self.flush_fails = flush_fails
         self.cleared: list[str] = []
         self.queues: dict[str, list] = {}
+        self.channel_keys: set[str] = set()
+        self.reserved_generations: set[str] = set()
 
     # -- mirror bindings --
     def find_mirror_sessions(self, link, *, inbound_only: bool = False) -> list:
@@ -157,8 +177,26 @@ class _Sessions:
     def is_busy(self, key) -> bool:
         return False
 
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.add(session_key)
+        self.channel_keys.add(session_key)
+
     def max_generation(self, bucket: str) -> int:
-        return -1
+        prefix = f"{bucket}:gen"
+        return max(
+            (
+                int(key[len(prefix) :])
+                for key in self.reserved_generations
+                if key.startswith(prefix) and key[len(prefix) :].isdigit()
+            ),
+            default=-1,
+        )
+
+    def channel_key_for_stem(self, stem: str) -> str:
+        for key in self.channel_keys | set(self.mirror_links):
+            if transcript_stem(key) == stem:
+                return key
+        return ""
 
     def clear_queue(self, key) -> None:
         self.cleared.append(key)
@@ -293,6 +331,32 @@ class TestThePicker:
         assert titles == ["1. Launch plan", "2. Billing"]
 
     @pytest.mark.asyncio
+    async def test_it_offers_only_this_identity_native_generations(self) -> None:
+        prior_key = "teams:kirocrew:direct:owner@example.com:gen4"
+        other_key = "teams:kirocrew:direct:other@example.com:gen4"
+        rows = _rows("Launch plan") + [
+            {
+                "key": transcript_stem(prior_key),
+                "title": "Earlier Teams generation",
+                "memory_mode": "persistent",
+            },
+            {
+                "key": transcript_stem(other_key),
+                "title": "Another Teams identity",
+                "memory_mode": "persistent",
+            },
+        ]
+        log = _ConversationLog(rows, {"dashboard:chat-1": [], prior_key: [], other_key: []})
+        client, sessions = _Client(), _Sessions()
+        sessions.channel_keys.update({prior_key, other_key})
+        d = _dispatcher(sessions, client, log)
+
+        await d.handle_message(_inbound("/sessions"))
+
+        titles = [a["title"] for a in client.cards[0]["content"]["actions"]]
+        assert titles == ["1. Launch plan", "2. Earlier Teams generation"]
+
+    @pytest.mark.asyncio
     async def test_the_payload_carries_an_index_never_a_session_key(self) -> None:
         """A submit is client input, so a key in it would be an instruction."""
         client = _Client()
@@ -336,7 +400,7 @@ class TestThePicker:
         await d.handle_message(_inbound("/sessions nothing-like-this"))
 
         assert client.cards == []
-        assert "No dashboard sessions matched" in client.sent[-1]
+        assert "No sessions matched" in client.sent[-1]
 
     @pytest.mark.asyncio
     async def test_a_card_that_could_not_be_posted_registers_no_nonce(self) -> None:
@@ -761,6 +825,22 @@ class TestLeaving:
         assert "left the resumed dashboard session" in client.sent[-1]
 
     @pytest.mark.asyncio
+    async def test_repeated_new_does_not_materialize_empty_history_rows(self) -> None:
+        client, sessions = _Client(), _Sessions()
+        log = _ConversationLog(_rows("Launch plan"), {"dashboard:chat-1": []})
+        d = _dispatcher(sessions, client, log)
+
+        await d.handle_message(_inbound("/new"))
+        first_key = d._session_key(_OWNER)
+        await d.handle_message(_inbound("/new"))
+        second_key = d._session_key(_OWNER)
+
+        assert first_key != second_key
+        assert not log.has_log(first_key)
+        assert not log.has_log(second_key)
+        assert {first_key, second_key} <= sessions.reserved_generations
+
+    @pytest.mark.asyncio
     async def test_a_release_that_is_not_durable_changes_nothing_and_says_so(self) -> None:
         """A cleared owner whose flush failed would run natively in silence until the
         persisted binding revived on restart, splitting one history in two."""
@@ -966,7 +1046,7 @@ class TestWhenListingCannotHappen:
 
         await d.handle_message(_inbound("/sessions"))
 
-        assert client.sent[-1] == "No recent dashboard sessions."
+        assert client.sent[-1] == "No recent sessions."
 
     @pytest.mark.asyncio
     async def test_the_heading_says_how_much_was_cut(self) -> None:

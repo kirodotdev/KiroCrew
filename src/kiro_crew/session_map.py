@@ -31,6 +31,7 @@ from kiro_crew.messaging.link import (
     canonical_key,
     is_channel_session_key,
     legacy_dashboard_mirror_key,
+    split_dm_session_key,
 )
 from kiro_crew.sel import _infer_source, sel
 
@@ -62,6 +63,11 @@ def _kiro_sessions_dir() -> Path:
 # every conversation that had already turned it off.
 MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
 
+# Highest explicit DM generation acknowledged before its first provider turn.
+# Stored on the stable bucket entry so repeated /new commands cost one integer,
+# not one immortal map row per empty generation.
+GENERATION_FLOOR_FIELD = "generation_floor"
+
 # Flags that are durable SETTINGS rather than session-scoped state, and so keep
 # their entry alive through :meth:`SessionMap.prune`. Membership is opt-in
 # BECAUSE immortality has a cost: an entry that prune can never collect is a row
@@ -90,14 +96,18 @@ def _has_durable_flag(entry: dict) -> bool:
 def _survives_prune(entry: dict) -> bool:
     """True iff *entry* holds state that must outlive its native session.
 
-    The ONE predicate behind every stale branch of :meth:`SessionMap.prune`, so
-    they cannot disagree about what a missing session file is allowed to take
-    with it. Two kinds of state qualify: a durable flag (a per-conversation
-    setting) and a channel binding — a Slack thread or a ``mirror`` — which is
-    the identity that routes a conversation back to its channel. Prune may clear
-    a stale ``sid`` on such an entry, but never discards the entry itself.
+    Durable settings, an explicit generation floor, and channel bindings all
+    outlive a provider session. The generation floor prevents a restart from
+    reusing a history key after ``/new`` was acknowledged before the first turn.
     """
-    return bool(_has_durable_flag(entry) or entry.get("slack_thread_ts") or entry.get("mirror"))
+    floor = entry.get(GENERATION_FLOOR_FIELD)
+    has_generation_floor = isinstance(floor, int) and not isinstance(floor, bool) and floor > 0
+    return bool(
+        _has_durable_flag(entry)
+        or has_generation_floor
+        or entry.get("slack_thread_ts")
+        or entry.get("mirror")
+    )
 
 
 # The callable shape a lost-binding announcement is delivered through:
@@ -1631,19 +1641,43 @@ class SessionMap:
         return entry.get("mirror_paused") is True
 
     @_guarded
+    def reserve_generation(self, session_key: str) -> None:
+        """Persist the generation in *session_key* before its first provider turn.
+
+        The watermark lives on the stable bucket entry instead of materializing
+        one map row per empty generation. It is monotonic: a delayed or repeated
+        command can never lower the restart seed and make an older history key
+        reusable.
+        """
+        parsed = split_dm_session_key(canonical_key(session_key))
+        if parsed is None:
+            raise ValueError(f"not a canonical DM session key: {session_key!r}")
+        bucket, generation = parsed
+        if generation <= 0:
+            return
+        entry = self._ensure_entry(bucket)
+        current = entry.get(GENERATION_FLOOR_FIELD)
+        if isinstance(current, int) and not isinstance(current, bool) and current >= generation:
+            return
+        entry[GENERATION_FLOOR_FIELD] = generation
+        self._save()
+
+    @_guarded
     def max_generation(self, bucket: str) -> int:
         """Return the highest persisted DM generation for a session *bucket*.
 
         The bucket is the generation-0 key (e.g.
         ``telegram:<agent>:direct:<user>``); generations persist as ``{bucket}``
-        (gen 0) and ``{bucket}:gen{N}``. Returns the max ``N`` with a persisted
-        entry, or -1 when the bucket has none. Channels seed their in-memory
-        generation counter from this so ``/new`` and idle/daily reset advance
-        past any generation left on disk (restart-safe) instead of colliding
-        with a stale session and resuming it.
+        (gen 0) and ``{bucket}:gen{N}``. An explicit ``/new`` also records a
+        monotonic generation floor on the bucket before the first provider turn.
+        Returns the highest of those sources, or -1 when the bucket has none.
         """
         bucket = canonical_key(bucket)
         best = 0 if bucket in self._data else -1
+        entry = self._data.get(bucket)
+        floor = entry.get(GENERATION_FLOOR_FIELD) if entry else None
+        if isinstance(floor, int) and not isinstance(floor, bool):
+            best = max(best, floor)
         prefix = f"{bucket}:gen"
         for key in self._data:
             if key.startswith(prefix):

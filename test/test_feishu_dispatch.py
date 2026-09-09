@@ -81,6 +81,7 @@ class FakeSessions:
         self.channels: list = []
         self.last_agent = None
         self._max_gen: dict[str, int] = {}
+        self.reserved_generations: list[str] = []
         # `closing` mirrors SessionManager._closing so begin_turn refuses the
         # dispatch the way the real gate does after close_all.
         self.closing = False
@@ -125,6 +126,12 @@ class FakeSessions:
 
     def is_busy(self, key) -> bool:
         return getattr(self, "_busy", False)
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
+
+    async def aflush(self) -> None:
+        return None
 
     def max_generation(self, bucket: str) -> int:
         return self._max_gen.get(bucket, -1)
@@ -626,6 +633,7 @@ class TestCommands:
         assert client.replies == [("msg1", "✅ 已开始新对话")]
         route = d._route(_inbound("/new"))
         assert d._conv.current_gen(route) == 1
+        assert sessions.reserved_generations == [d._session_key(route)]
         assert sessions.successes == []  # no LLM turn
 
     @pytest.mark.asyncio

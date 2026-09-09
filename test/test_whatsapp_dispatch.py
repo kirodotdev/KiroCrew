@@ -103,6 +103,7 @@ class FakeSessions:
         #: channel, which is the only case an unseeded counter gets right.
         self.persisted_generations = dict(persisted_generations or {})
         self.generation_lookups: list[str] = []
+        self.reserved_generations: list[str] = []
         self._busy = busy
         self.released = 0
         self.successes = 0
@@ -130,6 +131,12 @@ class FakeSessions:
 
     def has_session(self, key: str) -> bool:
         return self._session_exists
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
+
+    async def aflush(self) -> None:
+        return None
 
     def max_generation(self, bucket: str) -> int:
         self.generation_lookups.append(bucket)
@@ -306,13 +313,14 @@ def test_group_scope_uses_forum_chat_type_in_session_key():
 # ── dispatcher: commands ────────────────────────────────────────────────────
 def test_new_command_starts_a_fresh_session_without_a_turn():
     provider = FakeProvider()
-    d, _client, _sessions, transport = _make(provider=provider)
+    d, _client, sessions, transport = _make(provider=provider)
     before = d._session_key(_DM)
     asyncio.run(d.handle_message(_msg("/new")))
     after = d._session_key(_DM)
 
     assert provider.prompts == []  # no LLM turn for a command
     assert before != after  # generation advanced
+    assert sessions.reserved_generations == [after]
     assert any("fresh session" in t.lower() for _, t in transport.sent)
 
 

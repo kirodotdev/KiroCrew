@@ -55,6 +55,7 @@ from kiro_crew.messaging.commands import (
     stop_running_turn,
     task_arg_reply,
 )
+from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     build_auto_approve,
     build_directive_consumer,
@@ -579,9 +580,17 @@ class TelegramDispatcher:
                 await self._reply(chat_id, _RELEASE_FAILURE, thread=reply_thread)
                 return
             self._conv.bump_gen(route)
+            new_session_key = self._session_key(route)
+            saved = await reserve_new_generation(
+                self.sessions,
+                new_session_key,
+                channel_type="Telegram",
+            )
             message = "✅ New conversation started."
             if left_resumed is not None:
                 message = "✅ New conversation started — left the resumed session."
+            if not saved:
+                message += "\n⚠️ The new conversation could not be saved for restart."
             await self._reply(chat_id, message, thread=reply_thread)
             return
         if cmd == "compact":
@@ -684,6 +693,7 @@ class TelegramDispatcher:
                 getattr(msg, "chat_type", "private"),
                 reply_thread,
                 query=parse_command_argument(text),
+                native_key=self._session_key(route),
             )
             return
         if cmd == "title":

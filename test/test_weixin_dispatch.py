@@ -112,6 +112,7 @@ class FakeSessions:
         self.acquired = False
         self.mirror_links: dict[str, object] = {}
         self.opted_out = False
+        self.reserved_generations: list[str] = []
 
     def is_busy(self, key):
         return self._busy
@@ -149,6 +150,12 @@ class FakeSessions:
 
     def has_session(self, key):
         return True
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
+
+    async def aflush(self) -> None:
+        return None
 
     def max_generation(self, *a, **kw):
         # seed_generation() probes for the highest existing generation; a fresh
@@ -387,6 +394,7 @@ def test_new_command_starts_a_fresh_session_without_a_turn(tmp_path):
 
     assert provider.prompts == []  # no LLM turn for a command
     assert before != after  # generation advanced
+    assert sessions.reserved_generations == [after]
     assert "新对话" in client.sent[0]["text"]
 
 

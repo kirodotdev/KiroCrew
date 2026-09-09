@@ -1757,7 +1757,7 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **Inbound token validation is never reordered behind body USE**: `on_activity` verifies the bearer token before the activity is acted on, and the replay-dedupe check runs AFTER the `serviceUrl` attestation so an unattested activity cannot consume a dedupe slot. The body IS read and JSON-parsed first, under a byte cap — that is what bounds it — so the guarantee is about dispatch, not about reading. A hardening step added ahead of the token check would make the perimeter the trust boundary instead of the signature.
 - **Channel identity is asserted POSITIVELY**: `activity.channelId` must equal `msteams`, never "not some other channel". An Azure Bot resource serves Web Chat (enabled by default) and can serve Direct Line off the SAME endpoint with the SAME credential, and on Direct Line the client composes the `from` object — so a negative test would hand a sender-chosen identity to `allowed_emails`, and would fail open on the next channel Microsoft adds.
 - **An approval widget carries a per-prompt nonce, minted from one place**: ACP request ids restart at 1 in every provider process, so a control left in a chat from a previous run names an id that is live again for a DIFFERENT tool. Slack, Discord, Telegram and Teams all mint through `messaging.renderer.new_approval_nonce`, compare with `secrets.compare_digest`, retire the nonce with the prompt, and fail CLOSED when none was armed. Three independent copies of that is how one ends up with a weaker token or none at all — which is the state Telegram shipped in. The session picker's nonce (`PickerRegistry.mint`) comes from the same function: a press on a stale list of sessions is the same hazard, so it is not a reason for a second generator.
-- **Session resume has ONE controller and routing machine, not one per channel**: `SessionResumeController` is the only consumer of `ResumeSurface`; it owns eligibility/search delegation, the picker registry, access audit, transcript existence, both conflict checks around the awaited UI settlement, expectation-before-success ordering, the atomic inbound claim, dashboard push, and the final audit. `SessionBinder` owns routing, refusal settlement, and release. Discord and Teams supply address and owner identity, their widgets/cards and exact copy/display redaction, callback parsing, and channel-local replay. The machine is where a mistake routes somebody's transcript into someone else's chat, and its hazard is timing: between the durable record read and the live session-map read a binding can appear, vanish or move, so ONE call returns ONE `RoutingDecision` — where the message runs, the refusal that stops it, and the settlement owed once that refusal is delivered. Two resolver calls with an await between them let the binding change in the gap and the routing check fall through to the conversation's own session, silently. A second copy of either transaction is not a maintenance cost, it is a second chance to get it wrong.
+- **Session resume has ONE controller and routing machine, not one per channel**: `SessionResumeController` is the only consumer of `ResumeSurface`; it owns eligibility/search delegation, the picker registry, access audit, transcript existence, both conflict checks around the awaited UI settlement, expectation-before-success ordering, the atomic inbound claim, dashboard push, and the final audit. Dashboard keys are the default eligibility. A resume-capable channel passes only its canonical native key; the controller applies one exact-bucket policy with its own `SessionMap`. Discord, Telegram and Teams include generations in the current private conversation's exact durable bucket, resolving irreversible filename folds through `SessionMap.channel_key_for_stem`; only a mapped generation with a real history row is eligible. A zero-turn generation holds no work to recover and creates no picker row. Explicit `new` still records and flushes a monotonic generation floor on every DM channel, so a restart cannot seed the prior generation and append the next message to old history. Other users, agents, shared conversations and channels remain excluded. `SessionBinder` owns routing, refusal settlement, and release. Discord and Teams supply address and owner identity, their widgets/cards and exact copy/display redaction, callback parsing, and channel-local replay. The machine is where a mistake routes somebody's transcript into someone else's chat, and its hazard is timing: between the durable record read and the live session-map read a binding can appear, vanish or move, so ONE call returns ONE `RoutingDecision` — where the message runs, the refusal that stops it, and the settlement owed once that refusal is delivered. Two resolver calls with an await between them let the binding change in the gap and the routing check fall through to the conversation's own session, silently. A second copy of either transaction is not a maintenance cost, it is a second chance to get it wrong.
 - **There is ONE auto-approve grant, and a channel does not get its own**: every surface that can arm it — the dashboard toggle, `/yolo` on seven channels, and Teams' approval card — goes through `safety_override` via `messaging.commands.run_yolo_command`. A channel-local trusted set is a second grant with its own lifetime, its own audit trail and its own answer to "is YOLO on?", and it has to reimplement the expiry, renewal and auditing the shared helper already owns. Slack's `is_slack_session_trusted` predates this and is the one exception; a new channel follows the seven. It also follows that a control which arms the grant must NAME its blast radius: Teams' button says "Approve + auto-approve", not "Trust session", because the effect reaches every surface until the grant expires.
 - **A model-authored label is never interpreted as a command**: an `[OPTIONS:]` chip re-dispatches with `interpret_commands=False`, exactly like a drained queue payload. Display redaction does not strip a leading `/`, so with interpretation on a model that emitted `[OPTIONS: /dashboard | cancel]` renders a chip whose single tap mints a dashboard login credential.
 - **An option button is bound to the session that posted it**: Discord and Telegram encode `opt:<index>:<tag>`, where `session_provenance_tag` is a stable 12-hex SHA-256 digest of the posting session key. The raw key never reaches client-visible callback data. A press is checked before busy handling and again after idle/daily rotation; a mismatch or an untagged legacy button fails closed. A valid press against a busy session is refused rather than queued or steered, because those paths retain only bare text and would replay the choice with no tag to validate.
@@ -1922,6 +1922,18 @@ mismatch (the chat was rebound or `!new`'d since the buttons were posted) and an
 untagged pre-provenance button both fail closed with a refusal naming the
 remedy; queue drains and AutoNudge fires dispatch untagged with commands off and
 keep their native-session affinity.
+
+**Native-generation picker scope.** Discord, Telegram and Teams include persistent
+dashboard sessions plus native generations from the current private conversation's
+exact durable bucket. A native history filename is never reverse-parsed: every row
+must resolve through `SessionMap.channel_key_for_stem`; the canonical candidate must
+fold back to the row and share the current key's durable bucket. Selecting one may
+replace outbound-only origin mirrors from other generations of the same bucket, but
+never an unrelated dashboard mirror. Webex already lists only its current native
+bucket and remains read-only. Explicit `new` records and flushes a monotonic generation
+floor before replying on all nine DM channels; it creates no zero-turn history row,
+and the first real turn creates the recoverable row. A floor-write failure is reported
+without rolling back the completed in-memory rotation.
 
 Every turn closes with a **one-line footer** as Discord subtext (`-#`) on the
 final segment, rendered by the shared `format_turn_status` (see "Turn-status
@@ -2120,23 +2132,24 @@ The channel's transport, forum routing and mid-turn machinery are described in
 the sections above; what follows is what is specific to its rendering and its
 Bot API surface.
 
-### Telegram's read-only session search
+### Telegram session resume
 
-`/sessions` and its singular `/session` alias remain direct-message-only,
-single-operator, and read-only. With no argument they use the shared recent-sessions
-collector, preserving the ten-row newest-first list, live marker and agent label. With
-search words they call `ConversationLog.search_sessions` off the event loop, so title
-and message-content matching, AND-term semantics, CJK handling, recency weighting,
-and ranking are the same as dashboard history search rather than a Telegram-only title
-filter. Incognito and temporary rows are excluded after a bounded over-fetch, before
-the ten-row display cap, so private content cannot leave a match trace and private hits
-cannot starve later public results. Live markers restore dashboard stems through the
-shared history-key helper and resolve irreversible channel filename folds through
-`SessionMap`, never by guessing colon positions. Both successful and failed reads emit
-`telegram.sessions_data_access`; displayed query text, titles, agents and errors are
-redacted and bounded. Search results contain no callback controls and direct users to
-`/kirocrew dashboard`, so this capability does not claim inbound session binding
-before Telegram owns the resume transaction and routing path.
+`/sessions` and its singular `/session` alias are direct-message-only and
+single-operator. With no argument the shared `SessionResumeController` offers the ten
+newest eligible rows; search words delegate to `ConversationLog.search_sessions`, so
+title/content matching, CJK handling, recency weighting and ranking stay identical to
+dashboard history search. Eligibility is persistent dashboard sessions plus native
+generations from this exact Telegram DM bucket. Incognito/temporary rows and every
+other user, agent, Topic or channel are filtered before the ten-row cap.
+
+Results are nonce-bound inline buttons. A press runs the shared atomic bind transaction,
+replays bounded context, and routes later DM messages into the selected session until
+`/unlink` or `/new`. It may replace outbound-only origin mirrors from this native
+bucket, but never an unrelated dashboard mirror. Irreversible history stems resolve
+through `SessionMap`, never guessed colon positions. A zero-turn generation has no
+history row and nothing to recover; its first real turn makes it eligible. Titles,
+query text, errors and replay are redacted and bounded, and every list read emits
+`telegram.sessions_data_access`.
 
 ### Telegram's upload half (`telegram/`)
 
