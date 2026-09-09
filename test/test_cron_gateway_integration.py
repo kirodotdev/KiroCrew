@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 import threading
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -47,6 +49,7 @@ def _make_gw():
     gw._no_crons = False
     gw.cron_svc = MagicMock()
     gw.cron_svc.remove_job_async = AsyncMock(return_value=True)
+    gw.cron_svc.run_is_manual = MagicMock(return_value=False)
     gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
     gw.sessions.release = MagicMock()
     gw.sessions.reset = AsyncMock()
@@ -82,7 +85,9 @@ def _make_command_job(**overrides):
     return CronJob(**defaults)
 
 
-async def _run_script_callback(gw, job, script_result=None, vet_reason=None, side_effect=None):
+async def _run_script_callback(
+    gw, job, script_result=None, vet_reason=None, side_effect=None, manual_run=False
+):
     """Run the cron callback with a mocked run_script_sandboxed result.
 
     ``vet_reason`` feeds the fire-time governance gate (None = job may run);
@@ -109,6 +114,7 @@ async def _run_script_callback(gw, job, script_result=None, vet_reason=None, sid
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.run_is_manual = MagicMock(return_value=manual_run)
             svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
@@ -153,6 +159,7 @@ async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.run_is_manual = MagicMock(return_value=False)
             svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
@@ -164,6 +171,25 @@ async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_
             return await captured_cb(job)
 
         return await _init_and_run(), mock_run
+
+
+def test_pruned_install_requires_both_runtime_paths_to_be_absent(tmp_path, monkeypatch):
+    from kiro_crew.slack import gateway as gateway_mod
+
+    interpreter = tmp_path / "old-install" / "python"
+    module = tmp_path / "old-install" / "gateway.py"
+    monkeypatch.setattr(gateway_mod.sys, "executable", str(interpreter))
+    monkeypatch.setattr(gateway_mod, "__file__", str(module))
+
+    assert gateway_mod._running_install_was_pruned()
+
+    module.parent.mkdir(parents=True)
+    module.write_text("# still installed\n", encoding="utf-8")
+    assert not gateway_mod._running_install_was_pruned()
+
+    module.unlink()
+    interpreter.write_text("", encoding="utf-8")
+    assert not gateway_mod._running_install_was_pruned()
 
 
 class TestScriptExecution:
@@ -184,6 +210,174 @@ class TestScriptExecution:
         job = _make_script_job()
         result, _ = await _run_script_callback(gw, job, {"status": "skip"})
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_pruned_install_enoent_is_recorded_never_started(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        job.consecutive_failures = 3
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        # Never-started retention contract: last_status "error" keeps
+        # _execute from recording a success, run_never_started stops
+        # _merge_job_result deleting a due one-shot, and no auto-pause
+        # strike is spent (consecutive_failures untouched).
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is True
+        assert job.consecutive_failures == 3
+        assert "replaced by an update" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_pruned_install_retains_a_due_one_shot(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        job.delete_after_run = True
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        # The exact data-loss shape: a one-shot delete_after_run job due
+        # inside the update handoff must NOT be treated as completed —
+        # run_never_started is what _merge_job_result's delete_owed guard
+        # (delete_after_run and not run_never_started) keys on.
+        assert result is None
+        assert job.delete_after_run and job.run_never_started
+
+    @pytest.mark.asyncio
+    async def test_pruned_at_job_is_quiesced_in_memory(self):
+        gw = _make_gw()
+        job = _make_script_job(schedule=CronSchedule(kind="at", at_ts=1.0), delete_after_run=True)
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        # A past-due at-job is due on every tick; on the drained gateway the
+        # launch fails identically forever, so leaving it enabled would be a
+        # zero-delay refire loop. It must be disabled in memory — while the
+        # retained delete_after_run shape keeps enabled=True on disk for the
+        # replacement gateway (merge propagation is gated on
+        # `not delete_after_run or fire_time_denied`).
+        assert result is None
+        assert job.run_never_started is True
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_pruned_recurring_job_is_quiesced_in_memory_too(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            await _run_script_callback(gw, job, side_effect=missing)
+
+        # keep_overdue leaves the job permanently due on this drained
+        # gateway, so it too must be disabled in memory or it refires in a
+        # zero-delay loop. The merge never propagates enabled for recurring
+        # jobs, so on disk it stays enabled for the replacement gateway.
+        assert job.enabled is False
+        assert job.keep_overdue is True
+        # 'every' jobs stay due via untouched last_run_ts — no owed marker.
+        assert job.owed_fire is False
+
+    @pytest.mark.asyncio
+    async def test_pruned_cron_expression_job_persists_an_owed_fire(self):
+        gw = _make_gw()
+        job = _make_script_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            await _run_script_callback(gw, job, side_effect=missing)
+
+        # A cron-expression job is only due while the current minute
+        # matches; the owed marker is what lets the replacement gateway
+        # dispatch the missed occurrence after a slow handoff.
+        assert job.owed_fire is True
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_manual_trigger_during_pruning_persists_no_debt(self):
+        """A manual trigger (run_job / cron trigger) failing on a pruned
+        install must not persist an owed occurrence: the schedule never
+        owed that run, and a paused job resumed later must not execute it
+        unscheduled."""
+        gw = _make_gw()
+        job = _make_script_job(schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"))
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            await _run_script_callback(gw, job, side_effect=missing, manual_run=True)
+
+        assert job.owed_fire is False
+        # The quiesce still applies — the drained process cannot launch.
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_unrelated_missing_path_still_fails_even_when_pruned(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        missing = FileNotFoundError(
+            2, "No such file or directory", "/missing/user-script-interpreter"
+        )
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        # The pruned install only excuses ENOENT on the install's OWN files.
+        # A user script or wrapper deleted while the install happens to be
+        # pruned is still a real job failure.
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is False
+        assert job.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_pathless_enoent_is_a_real_failure_even_when_pruned(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        # resolve_script_path() style: a missing user script raised with no
+        # filename attached. Nothing install-owned is named, so the pruned
+        # install must not excuse it.
+        missing = FileNotFoundError("Script not found")
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert job.run_never_started is False
+        assert job.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_unrelated_spawn_enoent_remains_a_failure(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        missing = FileNotFoundError(2, "No such file or directory", "/missing/wrapper")
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=False):
+            result, _ = await _run_script_callback(gw, job, side_effect=missing)
+
+        assert result is None
+        assert job.last_status == "error"
+        assert job.consecutive_failures == 1
+        assert "/missing/wrapper" in job.last_error
 
     @pytest.mark.asyncio
     async def test_skip_is_success_not_failure(self):
@@ -997,6 +1191,7 @@ def _make_gw_for_llm():
     gw._no_crons = False
     gw.cron_svc = MagicMock()
     gw.cron_svc.remove_job_async = AsyncMock(return_value=True)
+    gw.cron_svc.run_is_manual = MagicMock(return_value=False)
     gw._cfg = MagicMock()
     gw._cfg.agent.provider = "acp"
     gw._cfg.hooks = {}
@@ -1044,6 +1239,7 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.run_is_manual = MagicMock(return_value=False)
             svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 
@@ -1141,6 +1337,110 @@ class TestModelFallback:
             raise RuntimeError("model spawn failed")
 
         with pytest.raises(RuntimeError, match="model spawn failed"):
+            await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "agent_sequence",
+        [[], ["first", "second"]],
+        ids=["single-agent", "agent-sequence"],
+    )
+    async def test_pruned_install_enoent_skips_agent_launch(self, agent_sequence):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=agent_sequence)
+        job.consecutive_failures = 3
+        missing = FileNotFoundError(
+            2, "No such file or directory", str(Path(sys.prefix) / "bin" / "python3.12")
+        )
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, stream_mock = await _run_llm_callback(
+                gw, job, get_or_create_side_effect=_side_effect
+            )
+
+        assert result is None
+        stream_mock.assert_not_awaited()
+        # Never-started retention contract (same as the script path): the
+        # skipped launch must not read as a completed run, and a due
+        # one-shot must survive for the replacement gateway.
+        assert job.last_status == "error"
+        assert job.run_never_started is True
+        assert job.consecutive_failures == 3
+        assert "replaced by an update" in job.last_error
+        gw.cron_svc.clear_active_session_key.assert_called_once_with(job.id)
+
+    @pytest.mark.asyncio
+    async def test_mid_sequence_pruning_records_a_failure_not_never_started(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=["first", "second"])
+        missing = FileNotFoundError(
+            2,
+            "No such file or directory",
+            str(Path(sys.prefix) / "bin" / "python3.12"),
+        )
+        provider_mock = MagicMock()
+        calls = {"n": 0}
+
+        async def _acquire(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return (provider_mock, True, False)
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_acquire)
+
+        # Agent 'first' completed a turn: its side effects exist. Marking the
+        # run never-started would retain the one-shot and REPLAY that
+        # completed work on the replacement gateway — record a normal failed
+        # run instead, surfacing the partial completion to the operator.
+        assert result is None
+        assert job.run_never_started is False
+        assert job.last_status == "error"
+        assert "duplicating finished work" in job.last_error
+        assert job.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_mid_sequence_pruning_names_previous_repeated_agent_position(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(agent_sequence=["repeat", "middle", "repeat"])
+        missing = FileNotFoundError(
+            2,
+            "No such file or directory",
+            str(Path(sys.prefix) / "bin" / "python3.12"),
+        )
+        provider_mock = MagicMock()
+        calls = {"n": 0}
+
+        async def _acquire(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return (provider_mock, True, False)
+            raise missing
+
+        with patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=True):
+            result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_acquire)
+
+        assert result is None
+        assert "after 'middle' completed" in job.last_error
+        assert "duplicating finished work" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_unrelated_agent_spawn_enoent_remains_a_failure(self):
+        gw = _make_gw_for_llm()
+        job = _make_llm_job()
+        missing = FileNotFoundError(2, "No such file or directory", "/missing/provider")
+
+        async def _side_effect(*args, **kwargs):
+            raise missing
+
+        with (
+            patch("kiro_crew.slack.gateway._running_install_was_pruned", return_value=False),
+            pytest.raises(FileNotFoundError, match="missing/provider"),
+        ):
             await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
 
 
@@ -1353,6 +1653,48 @@ class TestExecutePreservesCallbackStatus:
         await svc._execute(job)
         assert job.last_status == "error"
         assert job.last_error == "command failed (exit_code=1)"
+
+    @pytest.mark.asyncio
+    async def test_execute_keep_overdue_leaves_the_schedule_owed(self, tmp_path):
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+
+        async def pruned_cb(job):
+            # _record_pruned_launch_skip contract, scheduler side.
+            job.last_status = "error"
+            job.run_never_started = True
+            job.keep_overdue = True
+
+        svc._on_job = pruned_cb
+        job = svc.add_job("pruned", "echo hi", every_secs=3600)
+        before = job.last_run_ts
+        await svc._execute(job)
+        # The schedule stays exactly as owed as it was: no last_run_ts
+        # advance, so the replacement gateway's retry is not delayed.
+        assert job.last_run_ts == before
+
+    @pytest.mark.asyncio
+    async def test_execute_keep_overdue_does_not_park_a_plain_at_job(self, tmp_path):
+        from kiro_crew.cron import CronSchedule, CronService
+
+        svc = CronService(base_dir=tmp_path)
+
+        async def pruned_cb(job):
+            job.last_status = "error"
+            job.run_never_started = True
+            job.keep_overdue = True
+
+        svc._on_job = pruned_cb
+        job = svc.add_job("pruned-at", "echo hi", every_secs=3600)
+        job.schedule = CronSchedule(kind="at", at_ts=1.0)
+        job.enabled = True
+        await svc._execute(job)
+        # A plain at-job skipped by pruning must NOT hit the fired/parked
+        # disable — that would durably lose its only execution. (The drained
+        # process quiesces it in memory via _record_pruned_launch_skip
+        # instead.)
+        assert job.enabled is True
 
     @pytest.mark.asyncio
     async def test_execute_marks_ok_when_callback_clean(self, tmp_path):
@@ -1593,6 +1935,7 @@ async def _run_script_callback_behind_a_busy_worker(gw, job, script_result, hold
             captured_cb = on_job
             svc = MagicMock()
             svc.start = AsyncMock()
+            svc.run_is_manual = MagicMock(return_value=False)
             svc.remove_job_async = AsyncMock(return_value=True)
             return svc
 

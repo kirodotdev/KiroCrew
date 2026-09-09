@@ -572,6 +572,38 @@ class CronJob:
     # read solely where a one-shot would otherwise be consumed by a run it never
     # had. Reset at the start of every run.
     run_never_started: bool = False
+    # A launch skipped because the RUNNING INSTALL was replaced mid-update:
+    # the run never started AND its schedule must stay owed. Unlike a bare
+    # run_never_started (overlap/starvation, where the tick was genuinely
+    # spent), _execute neither advances last_run_ts nor fires the at-job
+    # disable path when this is set, so the replacement gateway sees the
+    # job exactly as due as it was before the drained process touched it.
+    # In-memory only (reset at the start of every run, never merged).
+    keep_overdue: bool = False
+    # POSITIVE dispatch confirmation: the callback sets this at the moment
+    # side effects become possible (script launch awaited / agent prompt
+    # streamed). A cancellation BEFORE it is a run that never happened —
+    # the owed-debt handler restores the debt — while a cancellation after
+    # it keeps the debt consumed (side effects may exist; a restored debt
+    # would replay them). run_never_started alone cannot make this call:
+    # a cancel during session/context setup leaves it False without
+    # anything having run. In-memory only, reset per run.
+    run_dispatched: bool = False
+    # This run consumed an owed cron occurrence (owed_fire was True at run
+    # start and stayed consumed through finalization). In-memory only —
+    # read by the merge-failure hook so a lost merge can queue the CLEAR
+    # direction too (disk still says owed; without the clear the
+    # replacement gateway would duplicate the already-run occurrence).
+    owed_consumed: bool = False
+    # A cron-expression job's occurrence was owed when the running install
+    # was pruned. Unlike 'every' (still due: last_run_ts untouched) and
+    # 'at' (still due: at_ts in the past), a cron-expression job is only
+    # due while the CURRENT minute matches, so a slow update handoff would
+    # silently lose the occurrence. PERSISTED so the replacement gateway
+    # dispatches the make-up run once: _is_due treats an owed job as due
+    # regardless of the minute, and the make-up run consumes the marker
+    # (reset at the start of every run, merged to disk).
+    owed_fire: bool = False
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
@@ -1406,6 +1438,10 @@ def _job_from_record(j: dict[str, Any]) -> CronJob:
         last_error=j.get("last_error"),
         created_ts=j.get("created_ts", 0.0),
         delete_after_run=j.get("delete_after_run", False),
+        # Strict identity check: a legacy/hand-edited store carrying the
+        # STRING "false" is truthy and would dispatch the job outside its
+        # schedule on every load.
+        owed_fire=j.get("owed_fire") is True,
         last_result=j.get("last_result"),
         last_result_ts=j.get("last_result_ts", 0.0),
         last_result_stamp=j.get("last_result_stamp", ""),
@@ -1518,6 +1554,24 @@ class CronService:
         # a completed one-shot is always
         # eventually removed and can never re-fire in the meantime.
         self._pending_removals: set[str] = set()
+        # Owed cron occurrences whose result merge hit sustained store
+        # contention (CronStoreBusy): the DESIRED debt state (job_id ->
+        # owed_fire) is queued here and re-persisted by the next timer tick's
+        # locked transaction (or the final stop() drain), mirroring
+        # _pending_removals. Both directions travel: True re-persists a debt
+        # the merge lost, False clears stale on-disk debt after a make-up run
+        # whose merge was lost (preventing a duplicate occurrence). A drain
+        # whose save fails restores its claimed entries (newer states win).
+        self._pending_owed_fires: dict[str, bool] = {}
+        # Jobs quiesced on THIS drained (pruned-install) process: launch
+        # attempts for them fail identically forever, so the due-scan skips
+        # them regardless of what a store reload says. A per-JOB-OBJECT
+        # enabled=False is not enough — every tick's _sync() replaces
+        # self._jobs with fresh disk copies (enabled=True on disk by
+        # design, so the REPLACEMENT gateway retries), resurrecting the
+        # quiesce. Process-lifetime by intent: never persisted, never
+        # cleared — this process can never launch again.
+        self._pruned_quiesced: set[str] = set()
         # True while a critical-posture episode is deferring scheduled
         # firings (see _on_timer). Log-throttle state only: the INFO line
         # fires once per deferral episode, not once per deferred tick.
@@ -1658,6 +1712,18 @@ class CronService:
         if self._running_tasks:
             await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
             self._running_tasks.clear()
+        # Final owed-fires drain: the deferral's normal drain is the NEXT
+        # timer tick, but a drained (pruned-install) gateway is by definition
+        # about to shut down — this stop may be the last chance to put the
+        # debt on disk where the replacement gateway can see it. Off the loop
+        # (the drain takes the bounded store lock) and best-effort: a store
+        # still contended here loses the debt, but the window collapses from
+        # "until the next tick that never comes" to one lock acquisition.
+        if self._pending_owed_fires:
+            try:
+                await asyncio.to_thread(self._drain_owed_fires_with_lock)
+            except Exception:
+                logger.exception("Final owed-fires drain failed during stop()")
 
     # ── Reaper ──
 
@@ -2903,6 +2969,85 @@ class CronService:
         # never extend the store-lock hold past the CronStoreBusy timeout.
         return sorted(to_remove)
 
+    def quiesce_pruned(self, job_id: str) -> None:
+        """Mark a job un-launchable on this drained (pruned-install) process.
+
+        Survives store reloads (unlike a job object's in-memory ``enabled``,
+        which every ``_sync`` replaces with the on-disk copy) and is never
+        persisted — the on-disk job stays enabled for the replacement
+        gateway. Process-lifetime by intent; there is no un-quiesce.
+        """
+        self._pruned_quiesced.add(job_id)
+
+    def run_is_manual(self, job_id: str) -> bool:
+        """Whether the in-flight run of ``job_id`` was manually triggered.
+
+        Read by the pruned-launch bookkeeping: a manual trigger (run_job /
+        cron trigger) that fails on a pruned install must NOT persist an
+        owed occurrence — the schedule never owed that run, and a paused
+        job resumed later would execute it unscheduled.
+        """
+        meta = self._job_run_meta.get(job_id)
+        return bool(meta and meta[1] == "manual")
+
+    def _drain_owed_fires_with_lock(self) -> None:
+        """Take the store lock, sync, and drain owed fires. WORKER-THREAD ONLY.
+
+        The shutdown-path wrapper around :meth:`_drain_pending_owed_fires_locked`
+        for callers not already inside a locked transaction.
+        """
+        with self._file_lock():
+            self._sync()
+            self._drain_pending_owed_fires_locked()
+
+    def _drain_pending_owed_fires_locked(self) -> None:
+        """Re-persist owed-fire states whose result merge was lost.
+        MUST hold the store lock; callers not already inside a synced
+        transaction use :meth:`_drain_owed_fires_with_lock`.
+
+        Mirrors :meth:`_drain_pending_removals_locked`: the queue is claimed
+        with a single-bytecode tuple swap (atomic under the GIL against the
+        event-loop adder), ids no longer present are dropped, and the save
+        happens once iff a queued id is still present. Carries the DESIRED debt
+        state in both directions (True re-persists a lost debt, False clears
+        stale debt a completed make-up run consumed). A save failure restores
+        the claimed entries — without clobbering anything newer queued
+        meanwhile — so a later drain retries instead of silently losing the
+        state. Under ``_load_failed`` the job list is unknown rather than
+        empty, so the queue is left intact for a later tick instead of being
+        claimed.
+        """
+        if not self._pending_owed_fires:
+            return
+        if self._load_failed:
+            return
+        pending, self._pending_owed_fires = self._pending_owed_fires, {}
+        # NO changed-check against the in-memory job: an entry is only
+        # queued after a merge FAILED, so the in-memory object (which
+        # already carries the desired state) cannot stand in for the
+        # divergent disk state — skipping the save on "no diff" is exactly
+        # how stale on-disk debt survives to double-run an occurrence.
+        matched = False
+        for j in self._jobs:
+            desired = pending.get(j.id)
+            if desired is not None:
+                j.owed_fire = desired
+                matched = True
+        if not matched:
+            return
+        try:
+            self._save()
+        except Exception:
+            # Restore the claim so a later drain retries; an entry re-queued
+            # by a newer run meanwhile carries newer state and wins.
+            for jid, desired in pending.items():
+                self._pending_owed_fires.setdefault(jid, desired)
+            raise
+        logger.info(
+            "Re-persisted %d owed-fire state(s) after merge contention",
+            len(pending),
+        )
+
     def _bump_grant_epochs_for(self, removed_ids: set[str]) -> None:
         """Kill the secret grants of jobs about to be deleted from the store.
 
@@ -3476,6 +3621,13 @@ class CronService:
         for job in self._jobs:
             if not job.enabled or job.id in self._executing:
                 continue
+            if job.id in self._pruned_quiesced:
+                # The due-scan skips quiesced jobs, so letting one drive the
+                # wake computation would return 0 for an overdue job the
+                # scan then ignores — an empty scan that re-arms immediately,
+                # in a zero-delay loop, for the drained gateway's remaining
+                # lifetime.
+                continue
             if job.schedule.kind == "every" and job.schedule.every_secs:
                 last = job.last_run_ts or job.created_ts
                 next_run = last + job.schedule.every_secs
@@ -3610,6 +3762,15 @@ class CronService:
             with self._file_lock():
                 self._sync()
                 drained = self._drain_pending_removals_locked()
+                try:
+                    self._drain_pending_owed_fires_locked()
+                except Exception:
+                    # The drain requeued its claim before re-raising, so the
+                    # debt state is intact for a later attempt — but the tick
+                    # itself must proceed: aborting the scan here would make
+                    # a DUE cron-expression job miss its matching minute over
+                    # an unrelated persistence failure.
+                    logger.exception("Owed-fire drain failed; tick continues")
         except CronStoreBusy:
             logger.debug("Cron timer tick: store busy, using in-memory snapshot")
         # Post-lock on purpose: the emit must never extend the store-lock hold
@@ -3642,7 +3803,10 @@ class CronService:
             due = [
                 j
                 for j in snapshot
-                if j.enabled and j.id not in self._executing and self._is_due(j, now)
+                if j.enabled
+                and j.id not in self._executing
+                and j.id not in self._pruned_quiesced
+                and self._is_due(j, now)
             ]
 
             # An empty due-scan can only end the tick when no deferral episode is
@@ -3848,7 +4012,11 @@ class CronService:
                 logger.debug("push_refresh failed on job end", exc_info=True)
             if not reaped and not cancelled:
                 # For 'every' jobs, use started_at to prevent cumulative drift
-                if job.schedule.kind == "every":
+                # — unless the run is keep_overdue (pruned-install skip):
+                # _execute deliberately left last_run_ts untouched so the
+                # replacement gateway retries the owed run immediately, and
+                # stamping started_at here would silently re-consume it.
+                if job.schedule.kind == "every" and not job.keep_overdue:
                     job.last_run_ts = started_at
                 # One clear per result-less run. Scattering it over exit sites is
                 # what let the fire-time deny and script Skip paths keep a result.
@@ -3871,6 +4039,16 @@ class CronService:
                     await asyncio.to_thread(self._merge_job_result, job)
                 except Exception:
                     logger.exception("Failed to merge result for job '%s'", job.name)
+                    # A lost merge normally self-heals on the next run — but an
+                    # owed cron occurrence has no next run to re-persist it (the
+                    # replacement gateway only sees the debt on disk). Queue the
+                    # DESIRED state: True to re-persist a lost debt, False to
+                    # clear stale on-disk debt a completed make-up run consumed
+                    # (else the replacement duplicates the occurrence).
+                    if job.owed_fire:
+                        self._pending_owed_fires[job.id] = True
+                    elif job.owed_consumed:
+                        self._pending_owed_fires[job.id] = False
                 # Record history
                 try:
                     status = "success" if job.last_status == "ok" else "failure"
@@ -3961,13 +4139,19 @@ class CronService:
             if now < job.schedule.at_ts:
                 return False
         elif job.schedule.kind == "cron" and job.schedule.cron_expr:
-            tz = _job_tz(job)
-            dt = datetime.fromtimestamp(now, tz=tz)
-            if not cron_expr_matches(job.schedule.cron_expr, dt):
-                return False
-            # Don't re-fire within the same UTC minute (immune to DST ambiguity)
-            if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
-                return False
+            # An occurrence owed from a pruned-install skip is due regardless
+            # of the current minute: the matching minute passed while no
+            # gateway could launch anything, and losing it silently is the
+            # data loss the marker exists to prevent. skip_dates below still
+            # applies.
+            if not job.owed_fire:
+                tz = _job_tz(job)
+                dt = datetime.fromtimestamp(now, tz=tz)
+                if not cron_expr_matches(job.schedule.cron_expr, dt):
+                    return False
+                # Don't re-fire within the same UTC minute (immune to DST ambiguity)
+                if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
+                    return False
         else:
             return False
         # Skip dates check (evaluated in job's local timezone, applies to all schedule types)
@@ -4053,9 +4237,42 @@ class CronService:
         job.last_status = None
         job.fire_time_denied = False
         job.run_never_started = False
+        job.keep_overdue = False
+        job.owed_consumed = False
+        job.run_dispatched = False
+        # Starting a run consumes an owed cron occurrence: the make-up run IS
+        # the occurrence. Snapshot the incoming debt first — a run that never
+        # actually starts because of a SELF-CLEARING state (overlap, pool
+        # starvation) must not consume it, so the epilogue restores it for
+        # run_never_started. A fire-time POLICY denial deliberately DROPS
+        # the debt instead (an owed job is due on every poll, so restoring
+        # under a persistent denial would refire unboundedly). The
+        # pruned-skip callback re-sets the debt itself when the launch fails
+        # on the replaced install.
+        owed_debt = job.owed_fire
+        job.owed_fire = False
         try:
             if self._on_job:
-                await self._on_job(job)
+                try:
+                    await self._on_job(job)
+                except asyncio.CancelledError:
+                    # A stop()/reap cancellation: restore the debt when the
+                    # run provably never happened — no POSITIVE dispatch
+                    # confirmation yet (cancel during session/context setup),
+                    # OR a path that guarantees nothing ran recorded
+                    # run_never_started (overlap refusal, pool-queue wait,
+                    # vet deny; these can fire after the dispatch marker is
+                    # set, which is why both signals are consulted). Past
+                    # dispatch with nothing guaranteeing non-execution, side
+                    # effects may exist: keep the debt consumed and queue the
+                    # durable clear (the reaper's terminal merge does not
+                    # carry owed_fire).
+                    if not job.run_dispatched or job.run_never_started:
+                        job.owed_fire = owed_debt or job.owed_fire
+                    elif owed_debt:
+                        job.owed_consumed = True
+                        self._pending_owed_fires[job.id] = False
+                    raise
             # Only mark "ok" if the callback did not itself report failure. The
             # command/script paths return NORMALLY and signal failure by mutating
             # the shared job (last_status="error"); only the LLM path raises.
@@ -4091,6 +4308,33 @@ class CronService:
             job.last_error = str(exc)
             logger.error("Cron job '%s' failed: %s", job.name, exc)
 
+        # Restore un-run debt ONLY for a run that never started (overlap,
+        # pool starvation) — states that clear on their own, so the retry is
+        # bounded. A fire-time POLICY denial does NOT restore: the denial can
+        # persist indefinitely, and an owed job is due on every poll, so a
+        # restored debt would refire (and write history) every 30 seconds
+        # for as long as the policy holds. The denied occurrence is dropped;
+        # the job resumes at its next scheduled occurrence once policy
+        # allows, and the denial itself is operator-visible state.
+        if job.run_never_started:
+            job.owed_fire = owed_debt or job.owed_fire
+
+        # Record whether this run consumed an incoming debt: the merge-failure
+        # hook queues the clear direction from it, so a contended merge cannot
+        # leave stale debt on disk to double-run the occurrence.
+        job.owed_consumed = owed_debt and not job.owed_fire
+
+        # A pruned-install skip must leave the schedule exactly as owed as it
+        # found it: the drained process cannot run anything ever again, so
+        # advancing last_run_ts would delay the replacement gateway's retry,
+        # and the fired/parked disable below would durably lose a plain
+        # at-job's only execution. The refire loop this would otherwise cause
+        # on the drained process is quiesced by the in-memory enabled=False
+        # in _record_pruned_launch_skip, which the merge never persists for
+        # the shapes it retains.
+        if job.keep_overdue:
+            return
+
         job.last_run_ts = time.time()
 
         # One-shot "at" jobs: disable after the run. A fire-time-DENIED at-job
@@ -4117,6 +4361,40 @@ class CronService:
         """
         with self._file_lock():
             self._sync()
+            if self._load_failed:
+                # _sync degrades an unreadable store to an EMPTY job list
+                # without raising, so falling through would silently skip
+                # the whole merge (job.id not in by_id) and return normally.
+                # Degrade rather than raise — the raise must reach USER
+                # mutations only, never the job runner (see
+                # test_a_background_writer_degrades_instead_of_crashing) —
+                # but do NOT swallow owed state: queue the desired owed_fire
+                # so the tick/stop drains re-persist it once the store is
+                # readable again (the drain itself refuses under
+                # _load_failed, so recovery waits for a readable store).
+                if job.owed_fire:
+                    self._pending_owed_fires[job.id] = True
+                elif job.owed_consumed:
+                    self._pending_owed_fires[job.id] = False
+                # A completed delete_after_run one-shot owes its removal too:
+                # returning without queueing it would re-fire the completed
+                # job once the store heals. Same guards as the base path's
+                # delete_owed derivation; defer_removal is the existing
+                # durable queue for exactly this (its drain also refuses
+                # under _load_failed, so the delete lands with recovery).
+                if job.delete_after_run and not (job.fire_time_denied or job.run_never_started):
+                    self.defer_removal(job.id)
+                logger.warning(
+                    "Cron store unreadable during result merge; runtime "
+                    "state for '%s' not persisted%s",
+                    job.name,
+                    (
+                        " (owed occurrence queued for recovery)"
+                        if job.id in self._pending_owed_fires
+                        else ""
+                    ),
+                )
+                return
             by_id = {j.id: j for j in self._jobs}
             if job.id in by_id:
                 by_id[job.id].last_run_ts = job.last_run_ts
@@ -4127,8 +4405,15 @@ class CronService:
                 # sole authority for user-controlled pause/resume state.
                 # Propagate the fired/parked disable for at-jobs — including a
                 # fire-time-DENIED one (parked disabled instead of deleted so
-                # it cannot refire every tick yet stays re-enableable).
-                if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
+                # it cannot refire every tick yet stays re-enableable). A
+                # keep_overdue (pruned-install) skip is excluded: its disable
+                # is a drained-process quiesce only, and the on-disk job must
+                # stay enabled for the replacement gateway to retry.
+                if (
+                    job.schedule.kind == "at"
+                    and not job.keep_overdue
+                    and (not job.delete_after_run or job.fire_time_denied)
+                ):
                     by_id[job.id].enabled = job.enabled
                     by_id[job.id].user_paused = not job.enabled
                 # auto_paused is execution-owned (repeated-failure auto-pause and
@@ -4155,6 +4440,11 @@ class CronService:
                 by_id[job.id].last_failure_hash = job.last_failure_hash
                 by_id[job.id].last_failure_at = job.last_failure_at
                 by_id[job.id].consecutive_failures = job.consecutive_failures
+                # An owed cron occurrence must reach disk in BOTH directions:
+                # True from the drained gateway's pruned skip (so the
+                # replacement sees the debt) and False from the make-up run
+                # (so the occurrence is consumed exactly once).
+                by_id[job.id].owed_fire = job.owed_fire
             # A fire-time-DENIED run is a policy refusal, not a completed run:
             # deleting the one-shot here would make the documented
             # resume-on-policy-loosening semantic impossible for at-jobs.
@@ -4916,6 +5206,7 @@ class CronService:
                     "last_error": j.last_error,
                     "created_ts": j.created_ts,
                     "delete_after_run": j.delete_after_run,
+                    "owed_fire": j.owed_fire,
                     "last_result": j.last_result,
                     "last_result_ts": j.last_result_ts,
                     "last_result_stamp": j.last_result_stamp,
