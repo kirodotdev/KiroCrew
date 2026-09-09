@@ -60,7 +60,9 @@ Two properties are load-bearing:
   that carve-out runs the spawn loudly warned and SEL-audited with
   `outcome="unconfined"`, and a governance `sandbox.min_level` floor still
   refuses it — controls a plain skip forfeited. It is inert wherever a
-  backend exists, and inert when `sandbox_allow_unsandboxed_exec` is set.
+  backend exists, and inert wherever the no-backend policy already permits the
+  spawn — a declared `sandbox_allow_unsandboxed_exec=true`, or the platform
+  default on Windows.
 
   What earns the claim is that the Windows argv is derived entirely inside this
   package: a System32 `powershell.exe` from `trusted_system_bin`, four

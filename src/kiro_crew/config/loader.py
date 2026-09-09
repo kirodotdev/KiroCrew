@@ -499,6 +499,36 @@ def config_local_path() -> Path:
     return config_dir() / "config.local.json"
 
 
+def unsandboxed_exec_declared() -> bool:
+    """Whether the operator explicitly DECLARED ``agent.sandbox_allow_unsandboxed_exec``.
+
+    Reports key PRESENCE, in either state, in ``config.json`` or the
+    ``config.local.json`` overlay that deep-merges over it. That is the one thing
+    the dataclass cannot express: a deliberate ``false`` (keep this host
+    fail-closed) and an absent key (no decision recorded, so the platform default
+    applies) both arrive at :class:`AgentConfig` as ``False``.
+
+    Read raw rather than through the validated cache precisely because the cache
+    stores the RESOLVED value, which is the distinction being recovered here.
+    Both files are consulted because the overlay wins at load time, so a decision
+    recorded only there must still count as declared — the same reason
+    ``cli_setup``'s consent step consults both before deciding whether to ask.
+
+    An unreadable or non-object document contributes nothing: a corrupt config is
+    not a declaration. The caller decides what an absent declaration means;
+    ``sandbox`` owns that policy, not this loader.
+    """
+    for path in (config_path(), config_local_path()):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        agent = doc.get("agent") if isinstance(doc, dict) else None
+        if isinstance(agent, dict) and "sandbox_allow_unsandboxed_exec" in agent:
+            return True
+    return False
+
+
 def _inside_data_home(path: Path) -> bool:
     """Whether *path* lives in ``config_dir()``, the one directory we own.
 

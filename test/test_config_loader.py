@@ -264,14 +264,24 @@ def test_dashboard_tailscale_hydrates_and_survives_a_round_trip() -> None:
 
 
 def test_sandbox_allow_unsandboxed_exec_default_is_platform_independent(monkeypatch) -> None:
-    """No platform may flip this default on its own.
+    """The CONFIG LAYER stays platform-independent; the platform split lives in
+    ``sandbox``.
 
-    Deriving the fallback from ``sys.platform`` turns a documented fail-closed
-    refusal into an unconfined spawn wherever no backend exists — which is every
-    Windows host — so an agent-selected repo's ``include.path`` could reach
-    ``~/.aws/credentials`` with no operator having declared anything. The
-    discoverable path to the opt-in is the ``kirocrew setup`` consent step
-    (``test_sandbox_unsandboxed_exec_consent.py``), not a platform default.
+    This field records only what the operator DECLARED, so the loader must report
+    ``False`` for "never decided" on every platform — identically to a deliberate
+    ``false``. What an undeclared key then RESOLVES to is
+    ``sandbox.unsandboxed_exec_platform_default()`` (allow on Windows, fail-closed
+    elsewhere), and telling the two apart is
+    ``config.loader.unsandboxed_exec_declared()``, which reads key presence rather
+    than value.
+
+    Guarding the layering is the point: if the loader ever derived this from
+    ``sys.platform``, a declared ``false`` and an absent key would become
+    indistinguishable downstream, and an operator who deliberately locked a Windows
+    host down would be silently overruled by the platform default. The effective
+    verdict is ``sandbox.unsandboxed_exec_permitted_by()``; the direction
+    ``kirocrew setup`` asks in is covered by
+    ``test_sandbox_unsandboxed_exec_consent.py``.
     """
     for plat in ("win32", "linux", "darwin"):
         monkeypatch.setattr("sys.platform", plat)

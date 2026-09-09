@@ -926,16 +926,25 @@ class AgentConfig:
         metadata=_meta(
             "Allow Unsandboxed Execution",
             "When true, allow agent subprocesses to execute without any sandbox "
-            "backend (fail-open). When false (default), wrap_argv raises a "
-            "RuntimeError if no sandbox backend is available and mode is not 'off', "
-            "preventing unsandboxed execution entirely (fail-closed). This is "
-            "distinct from sandbox_allow_no_isolation which only controls warning "
-            "severity — this field controls whether execution proceeds at all. "
-            "The default is platform-independent: on a host with no backend (any "
-            "Windows host, a Linux kernel refusing user namespaces) `kirocrew "
-            "setup` OFFERS this opt-in interactively and writes it only on an "
-            "explicit yes, so unconfined execution stays operator-declared and is "
-            "never enabled implicitly by the platform.",
+            "backend (fail-open). When false, wrap_argv raises if no sandbox "
+            "backend is available and mode is not 'off', preventing unsandboxed "
+            "execution entirely (fail-closed). This is distinct from "
+            "sandbox_allow_no_isolation which only controls warning severity — "
+            "this field controls whether execution proceeds at all. "
+            "This field records only what the OPERATOR DECLARED; it is not the "
+            "effective policy, and `false` here does NOT by itself mean the host "
+            "fail-closes. An UNDECLARED key resolves per platform in "
+            "sandbox.unsandboxed_exec_platform_default(): allow on Windows, which "
+            "has no backend that any operator action could install, and "
+            "fail-closed everywhere else, where a missing backend is broken or "
+            "one profile away from working. A declared value always outranks that "
+            "default in both directions, and a governance sandbox.min_level floor "
+            "outranks the declaration. `kirocrew setup` surfaces the decision on a "
+            "backend-less host — offering the opt-in where the default is "
+            "fail-closed, and stating the exposure plus offering the opt-out where "
+            "it is allow — and writes nothing unless the operator answers yes. "
+            "Read the effective verdict from the sandbox module, never from this "
+            "field alone.",
         ),
     )
     apps_allow_third_party: bool = field(

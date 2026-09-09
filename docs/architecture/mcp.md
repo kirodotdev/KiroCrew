@@ -402,7 +402,9 @@ Probes run from `POST /api/mcp/probe`:
   debugging a server that was fine. `server.error` therefore leads with the
   machine-readable `mcp_probe_sandbox_unavailable:` prefix (mirroring the `code`
   field on dashboard JSON error bodies), states that the server itself may be fine,
-  and names the `agent.sandbox_allow_unsandboxed_exec` remedy. Because the cause is
+  and names the `agent.sandbox_allow_unsandboxed_exec` remedy (on Windows this
+  refusal means the key is declared `false` or a governance floor is pinned, since
+  the platform default permits the spawn). Because the cause is
   the HOST, it recurs identically for every server on every discovery cycle, so the
   remedy paragraph warns once per server name
   (`_warn_probe_sandbox_unavailable_once`) and demotes repeats to DEBUG.

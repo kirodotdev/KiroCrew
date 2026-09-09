@@ -847,10 +847,12 @@ Two things decide whether your app can honestly claim `windows`:
    it is unaffected by the item below. An app with a `backend.entryPoint` is
    spawned through `sandbox.wrap_argv` without the first-party carve-out, and
    Kiro Crew has no native Windows sandbox backend — so on native Windows that
-   spawn needs the operator's `agent.sandbox_allow_unsandboxed_exec=true` (or
-   `agent.sandbox='off'`). That is a documented prerequisite, not a reason to
-   publish "does not run here": state it in your app's `configuration` copy so
-   the dependency is not a surprise. See `docs/guides/windows-install.md` and
+   spawn runs unconfined under this platform's default, since no backend is
+   installable here; it is refused only where the operator declared
+   `agent.sandbox_allow_unsandboxed_exec=false` or a governance
+   `sandbox.min_level` floor is pinned. Say so in your app's `configuration`
+   copy rather than publishing "does not run here", so a locked-down host is
+   not a surprise. See `docs/guides/windows-install.md` and
    `docs/system-specs/common/platform-compat.md`.
 
 When `installMode` is `"client"`, the App Store shows copy-paste terminal

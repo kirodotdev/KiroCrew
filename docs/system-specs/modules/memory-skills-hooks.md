@@ -1827,10 +1827,12 @@ path, choosing isolation over quoting fidelity.
 
 On Windows both wrappers are pass-throughs whenever they return at all — there is
 no sandbox backend and no cgroup v2 — but `wrap_argv` **fail-closes** rather than
-passing through unless `agent.sandbox_allow_unsandboxed_exec` is set, so a
-Windows script hook needs that opt-in (the same one script crons and Papyrus
-need). Without it the hook's `SandboxUnavailableError` surfaces as the result's
-`error`, naming the setting.
+passing through where that is what the host resolves to. On Windows an
+undeclared key resolves to allow, so a script hook runs unconfined by default
+(as script crons and Papyrus do); where the operator declared
+`agent.sandbox_allow_unsandboxed_exec=false`, or a governance
+`sandbox.min_level` floor is pinned, the hook's `SandboxUnavailableError`
+surfaces as the result's `error`, naming the setting.
 
 ### `safe_read_file(path: str) -> str`
 
