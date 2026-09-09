@@ -101,8 +101,11 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 set. Enables cwd-relative resource globs (``AGENTS.md``,
                 ``.kiro/steering``, ``CLAUDE.md``) to resolve correctly.
             approval_mode (str | None): "auto" to skip spawn gate and
-                set session-level auto-approve.  Only honored from
-                authenticated internal callers (X-Internal-Secret).
+                set session-level auto-approve.  "spawn" also skips the spawn
+                gate but keeps the subagent's tool calls approval-gated (no
+                auto, no trusted-parent/yolo/global inheritance) -- for an
+                owner-authorized spawn that acts on untrusted input.  Only
+                honored from authenticated internal callers (X-Internal-Secret).
             silent (bool): Suppress completion notifications.
 
         Returns:
@@ -486,7 +489,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         if self._manager._is_yolo and self._manager._is_yolo():
             self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
             self._manager._log_spawned(info)
-        elif approval_mode == "auto":
+        elif approval_mode in ("auto", "spawn"):
+            # "spawn" pre-authorizes the spawn like "auto", but the tool-approval
+            # policy in _run_inner() deliberately stays non-auto (see deny_auto_inherit).
             self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))
             self._manager._log_spawned(info)
             sel().log_tool_invocation(
@@ -494,7 +499,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 source="subagent",
                 tool_name="spawn_run",
                 outcome="auto_approved_spawn",
-                metadata={"subagent_id": agent_id, "reason": "approval_mode_auto"},
+                metadata={"subagent_id": agent_id, "reason": f"approval_mode_{approval_mode}"},
             )
         elif parent_trusted:
             self._manager._tasks[agent_id] = asyncio.create_task(self._manager._run(info))

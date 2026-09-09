@@ -9039,6 +9039,10 @@
         "more_actions": "추가 작업",
         "needs_active_chat": "이 채팅이 완전히 열리면 사용할 수 있습니다",
         "needs_earlier_history_count_other": "선택하면 이전 기록을 불러옵니다 — 이전 메시지 {{count}}개가 남아 있습니다",
+        "create_skill": "스킬 만들기",
+        "create_skill_hint": "이 대화에서 만들 스킬을 설명하세요.",
+        "create_skill_placeholder": "스킬 목적",
+        "create_skill_submit": "만들기",
         "share_message": "이미지로 공유",
         "copy_failed": "복사 실패"
       },
@@ -9643,6 +9647,7 @@
       "worktree_creation_returned_no_path": "워크트리 생성 결과에 경로가 없습니다",
       "loading_earlier_messages": "이전 메시지를 불러오는 중…",
       "send_failed_with_error": "전송 실패: {{error}}",
+      "create_skill_failed_error": "스킬 생성을 시작할 수 없습니다: {{error}}",
       "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
       "could_not_read_file_reason": "{{path}}을(를) 읽을 수 없습니다 ({{reason}})",
       "screenshot_failed_reason": "스크린샷 실패: {{reason}}",

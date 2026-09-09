@@ -9299,6 +9299,10 @@
         "needs_earlier_history_count_one": "Selecciona para cargar el historial anterior: queda {{count}} mensaje anterior",
         "needs_earlier_history_count_many": "Selecciona para cargar el historial anterior: quedan {{count}} mensajes anteriores",
         "needs_earlier_history_count_other": "Selecciona para cargar el historial anterior: quedan {{count}} mensajes anteriores",
+        "create_skill": "Create skill",
+        "create_skill_hint": "Describe la habilidad que se creará a partir de este chat.",
+        "create_skill_placeholder": "Skill purpose",
+        "create_skill_submit": "Create",
         "share_message": "Compartir como imagen",
         "copy_failed": "Error al copiar"
       },
@@ -9925,6 +9929,7 @@
       "worktree_creation_returned_no_path": "La creación del worktree no devolvió ninguna ruta",
       "loading_earlier_messages": "Cargando mensajes anteriores…",
       "send_failed_with_error": "Error al enviar: {{error}}",
+      "create_skill_failed_error": "Could not start skill creation: {{error}}",
       "delivery_unconfirmed": "Entrega sin confirmar: tu texto ha vuelto al cuadro de redacción; revisa la conversación antes de enviarlo de nuevo.",
       "could_not_read_file_reason": "No se pudo leer {{path}} ({{reason}})",
       "screenshot_failed_reason": "Error en la captura de pantalla: {{reason}}",

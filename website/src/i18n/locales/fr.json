@@ -9299,6 +9299,10 @@
         "needs_earlier_history_count_one": "Sélectionnez pour charger l’historique antérieur – {{count}} message antérieur restant",
         "needs_earlier_history_count_many": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
         "needs_earlier_history_count_other": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
+        "create_skill": "Create skill",
+        "create_skill_hint": "Décrivez la compétence à créer à partir de cette conversation.",
+        "create_skill_placeholder": "Skill purpose",
+        "create_skill_submit": "Create",
         "share_message": "Partager en image",
         "copy_failed": "Échec de la copie"
       },
@@ -9925,6 +9929,7 @@
       "worktree_creation_returned_no_path": "La création du worktree n’a renvoyé aucun chemin",
       "loading_earlier_messages": "Chargement des messages précédents…",
       "send_failed_with_error": "Échec de l'envoi : {{error}}",
+      "create_skill_failed_error": "Could not start skill creation: {{error}}",
       "delivery_unconfirmed": "Envoi non confirmé — votre texte est de retour dans le champ de saisie ; vérifiez la conversation avant de renvoyer.",
       "could_not_read_file_reason": "Impossible de lire {{path}} ({{reason}})",
       "screenshot_failed_reason": "Échec de la capture d’écran : {{reason}}",

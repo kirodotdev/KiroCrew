@@ -1199,7 +1199,9 @@ class SubagentInfo:
     # whether the spawn was allowed, and the child's ongoing tool calls run
     # unconstrained by the app scope.
     app: str = ""
-    approval_mode: str = ""  # "auto" to skip tool approvals in the subagent session
+    approval_mode: str = (
+        ""  # "auto": skip spawn gate + auto-approve tools; "spawn": skip spawn gate but keep tools approval-gated
+    )
     silent: bool = False  # suppress completion notification (dashboard + Slack)
     turns: int = 0
     last_tool: str = ""

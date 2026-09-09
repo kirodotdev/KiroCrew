@@ -9429,6 +9429,10 @@
         "needs_earlier_history_count_few": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщения",
         "needs_earlier_history_count_many": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
         "needs_earlier_history_count_other": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
+        "create_skill": "Создать навык",
+        "create_skill_hint": "Опишите навык, который нужно создать из этого чата.",
+        "create_skill_placeholder": "Назначение навыка",
+        "create_skill_submit": "Создать",
         "share_message": "Поделиться картинкой",
         "copy_failed": "Не удалось скопировать"
       },
@@ -10066,6 +10070,7 @@
       "worktree_creation_returned_no_path": "Создание worktree не вернуло путь",
       "loading_earlier_messages": "Загрузка предыдущих сообщений…",
       "send_failed_with_error": "Не удалось отправить: {{error}}",
+      "create_skill_failed_error": "Не удалось начать создание навыка: {{error}}",
       "delivery_unconfirmed": "Доставка не подтверждена — ваш текст возвращён в поле ввода; проверьте переписку, прежде чем отправлять снова.",
       "could_not_read_file_reason": "Не удалось прочитать {{path}} ({{reason}})",
       "screenshot_failed_reason": "Не удалось сделать снимок экрана: {{reason}}",

@@ -637,6 +637,43 @@ class RunEventCoordinator(ManagerComponent):
         info.last_activity = info._exec_started
         # Inherit approval policy from parent session; yolo/trust overrides
         parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
+        # A subagent spawned with approval_mode="spawn" is pre-authorized to run but
+        # must NEVER auto-approve its own tool calls: it acts on untrusted input, so a
+        # trusted parent's (or yolo/global/config/hook) auto policy is deliberately NOT
+        # inherited -- its tool calls route through the normal approval path.
+        deny_auto_inherit = info.approval_mode == "spawn"
+        if deny_auto_inherit:
+            # Suppressing an auto grant is a permission decision, so audit the single
+            # source that would otherwise have granted auto -- parent, yolo, global
+            # config, or the auto_approve_subagent_tools hook. The grant branches below
+            # are mutually exclusive (first match wins) and stay guarded by
+            # ``not deny_auto_inherit``, so none of them fires here; this is the one
+            # place the suppression is recorded (backend-security-controls).
+            _denied_auto = ""
+            if parent_policy == "auto":
+                _denied_auto = "parent"
+                parent_policy = ""
+            elif self._manager._is_yolo and self._manager._is_yolo():
+                _denied_auto = "yolo"
+            elif self._manager._global_approval_mode == "auto" and (
+                not info.parent_session_key
+                or self._manager._sessions.has_session(info.parent_session_key) is False
+            ):
+                _denied_auto = "global_config"
+            elif (
+                self._manager._ctx_builder
+                and self._manager._ctx_builder.hooks
+                and self._manager._ctx_builder.hooks.auto_approve_subagent_tools is True
+            ):
+                _denied_auto = "auto_approve_subagent_tools"
+            if _denied_auto:
+                sel().log_api_access(
+                    caller=info.parent_session_key or f"subagent:{info.id}",
+                    operation="subagent.deny_auto_inherit",
+                    outcome="denied",
+                    source="subagent",
+                    resources=f"subagent_id={info.id},source={_denied_auto}",
+                )
         # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
         if not parent_policy and info.approval_mode == "auto":
             parent_policy = "auto"
@@ -647,7 +684,12 @@ class RunEventCoordinator(ManagerComponent):
                 source="subagent",
                 resources=f"subagent_id={info.id}",
             )
-        if not parent_policy and self._manager._is_yolo and self._manager._is_yolo():
+        if (
+            not parent_policy
+            and not deny_auto_inherit
+            and self._manager._is_yolo
+            and self._manager._is_yolo()
+        ):
             parent_policy = "auto"
             sel().log_api_access(
                 caller=info.parent_session_key,
@@ -656,7 +698,11 @@ class RunEventCoordinator(ManagerComponent):
                 source="subagent",
                 resources=f"subagent_id={info.id}",
             )
-        if not parent_policy and self._manager._global_approval_mode == "auto":
+        if (
+            not parent_policy
+            and not deny_auto_inherit
+            and self._manager._global_approval_mode == "auto"
+        ):
             # Apply global config as fallback only when parent is absent or
             # confirmed garbage-collected (no longer in session store).
             # If parent session still exists but returned no policy, deny by
@@ -686,7 +732,12 @@ class RunEventCoordinator(ManagerComponent):
                 )
         # auto_approve_subagent_tools auto-approves tool calls inside
         # subagents (separate from the spawn gate, deny-by-default).
-        if not parent_policy and self._manager._ctx_builder and self._manager._ctx_builder.hooks:
+        if (
+            not parent_policy
+            and not deny_auto_inherit
+            and self._manager._ctx_builder
+            and self._manager._ctx_builder.hooks
+        ):
             if self._manager._ctx_builder.hooks.auto_approve_subagent_tools is True:
                 parent_policy = "auto"
                 sel().log_api_access(
@@ -1453,7 +1504,21 @@ class RunEventCoordinator(ManagerComponent):
                         error="child_origin_no_command_context",
                     )
                     continue
-                if tool_result.action == TOOL_AUTO_APPROVE:
+                # A spawn-mode subagent runs on untrusted input, so it must not honour a
+                # hook auto-approval (deny_auto_inherit); otherwise a tool matching
+                # auto_approve_tools would execute without approval.
+                if tool_result.action == TOOL_AUTO_APPROVE and deny_auto_inherit:
+                    # Suppressing the hook's auto-grant is a permission override, so
+                    # audit the denial (backend-security-controls); then fall through to
+                    # the interactive callback / deny-by-default below.
+                    sel().log_api_access(
+                        caller=info.parent_session_key or f"subagent:{info.id}",
+                        operation="subagent.hook_auto_approve_suppressed",
+                        outcome="denied",
+                        source="subagent",
+                        resources=f"subagent_id={info.id},tool={_redact(event.title or '')}",
+                    )
+                elif tool_result.action == TOOL_AUTO_APPROVE:
                     # The hook granted this by NAME (its `auto_approve_tools`
                     # globs, or the read-only allowlist). Honour it only while
                     # each program name in the command still resolves to the

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -100,6 +101,19 @@ def test_approve_promotes_and_marks_scripts_executable(loader):
     if os.name != "nt":
         assert os.stat(live / "scripts" / "run.py").st_mode & 0o111
     assert not (live / ".meta.json").exists()
+
+
+def test_manual_candidate_promotes_to_manual_namespace(loader):
+    _stage(loader, "deploy-runbook")
+    mp = loader._pending_root() / "deploy-runbook" / ".meta.json"
+    meta = json.loads(mp.read_text(encoding="utf-8"))
+    meta["namespace"] = "manual"
+    meta["name"] = "manual/deploy-runbook"
+    mp.write_text(json.dumps(meta), encoding="utf-8")
+    name = loader.approve_pending_skill("deploy-runbook")
+    assert name == "manual/deploy-runbook"
+    assert (loader._dir / "manual" / "deploy-runbook" / "SKILL.md").exists()
+    assert not (loader._dir / "auto" / "deploy-runbook").exists()
 
 
 def test_approve_refuses_when_live_exists(loader):

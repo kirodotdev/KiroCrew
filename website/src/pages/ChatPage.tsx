@@ -4279,6 +4279,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     })
   }, [activeSlot, regenerating, slotRunning, messages, dispatch, showRefusedPress])
 
+  const handleCreateSkill = useCallback(async (purpose: string) => {
+    if (!activeSlot) return
+    try {
+      await api.createSkillFromSession(activeSlot, purpose)
+    } catch (e: unknown) {
+      // Surface the failure AND re-throw so the dialog keeps the typed purpose and
+      // stays open to retry instead of discarding it.
+      alert(i18nT('pages.chatPage.create_skill_failed_error', { error: e instanceof Error ? e.message : String(e) }))
+      throw e
+    }
+  }, [activeSlot])
+
   // ---- Continue the thread ---------------------------------------------------
   // A turn can end without the assistant handing the floor back: the connection
   // dropped, the gateway restarted during an app update, the app was force-quit,
@@ -6978,6 +6990,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
                   agent={currentSlot?.agent}
+                  onCreateSkill={handleCreateSkill}
                   onReveal={activeSlot && embedMode !== 'chat' ? () => {
                     // The request rides the store, not a window event: with the
                     // drawer collapsed ChatSidebar is unmounted, so an event

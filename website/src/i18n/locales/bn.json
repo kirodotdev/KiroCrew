@@ -9169,6 +9169,10 @@
         "needs_active_chat": "এই চ্যাট সম্পূর্ণ খোলা হলে উপলব্ধ হবে",
         "needs_earlier_history_count_one": "আগের ইতিহাস লোড করতে নির্বাচন করুন — আরও {{count}}টি পুরোনো বার্তা বাকি আছে",
         "needs_earlier_history_count_other": "আগের ইতিহাস লোড করতে নির্বাচন করুন — আরও {{count}}টি পুরোনো বার্তা বাকি আছে",
+        "create_skill": "স্কিল তৈরি করুন",
+        "create_skill_hint": "এই চ্যাট থেকে যে স্কিল তৈরি করতে চান তার বর্ণনা দিন।",
+        "create_skill_placeholder": "স্কিলের উদ্দেশ্য",
+        "create_skill_submit": "তৈরি করুন",
         "share_message": "ছবি হিসেবে শেয়ার করুন",
         "copy_failed": "কপি ব্যর্থ হয়েছে"
       },
@@ -9784,6 +9788,7 @@
       "worktree_creation_returned_no_path": "worktree তৈরি করে কোনো পাথ ফেরত আসেনি",
       "loading_earlier_messages": "পূর্ববর্তী বার্তা লোড হচ্ছে…",
       "send_failed_with_error": "পাঠানো যায়নি: {{error}}",
+      "create_skill_failed_error": "স্কিল তৈরি শুরু করা যায়নি: {{error}}",
       "delivery_unconfirmed": "ডেলিভারি নিশ্চিত হয়নি — আপনার লেখা ইনপুট বাক্সে ফিরিয়ে দেওয়া হয়েছে; আবার পাঠানোর আগে কথোপকথনটি দেখে নিন।",
       "could_not_read_file_reason": "{{path}} পড়া যায়নি ({{reason}})",
       "screenshot_failed_reason": "স্ক্রিনশট ব্যর্থ হয়েছে: {{reason}}",

@@ -9039,6 +9039,10 @@
         "more_actions": "その他の操作",
         "needs_active_chat": "このチャットを開き終えると利用できます",
         "needs_earlier_history_count_other": "選択すると以前の履歴を読み込みます（残り{{count}}件）",
+        "create_skill": "スキルを作成",
+        "create_skill_hint": "このチャットから作成するスキルについて説明してください。",
+        "create_skill_placeholder": "スキルの目的",
+        "create_skill_submit": "作成",
         "share_message": "画像として共有",
         "copy_failed": "コピーに失敗しました"
       },
@@ -9643,6 +9647,7 @@
       "worktree_creation_returned_no_path": "ワークツリーの作成結果にパスがありません",
       "loading_earlier_messages": "以前のメッセージを読み込み中…",
       "send_failed_with_error": "送信に失敗しました: {{error}}",
+      "create_skill_failed_error": "スキルの作成を開始できませんでした: {{error}}",
       "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
       "could_not_read_file_reason": "{{path}} を読み取れませんでした（{{reason}}）",
       "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",

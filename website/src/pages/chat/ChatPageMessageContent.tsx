@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BookOpen, ChevronDown, ChevronRight, Folder, Paperclip, Plug } from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronRight, Folder, Paperclip, Plug, Sparkles } from 'lucide-react'
 
 import { api } from '../../api/client'
 import Clickable from '../../components/Clickable'
@@ -14,6 +14,7 @@ import SessionActionsMenu from '../../components/SessionActionsMenu'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -35,15 +36,17 @@ import {
 } from '../../utils/fileTokens'
 import { findTokenRanges, recollapsePastes, type PasteBlock } from '../../utils/pasteTokens'
 import { TURN_OPENER_ROLES } from './groupDisplayItems'
+import CreateSkillDialog from './CreateSkillDialog'
 import McpToolsPanel from './McpToolsPanel'
 import type { DisplayItem, TurnItem } from './types'
 
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: {
-  activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; mode?: string
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode, onCreateSkill }: {
+  activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; mode?: string; onCreateSkill?: (purpose: string) => void | Promise<void>
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
   const [open, setOpen] = useState(false)
+  const [skillOpen, setSkillOpen] = useState(false)
   // MCP server list is fetched lazily when its submenu opens (driven by the
   // Radix Sub's open state).
   const [mcpOpen, setMcpOpen] = useState(false)
@@ -87,6 +90,7 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
   )
 
   return (
+    <>
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
@@ -127,12 +131,32 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
           ]}
           onReveal={onReveal}
           onRename={onRename}
+          // "Create skill" sits right after the Autopilot/Chat toggle; header-only,
+          // so it rides in via modeSlots and opens the purpose modal on select.
+          modeSlots={onCreateSkill ? [
+            <DropdownMenuItem
+              key="create-skill"
+              onSelect={e => {
+                // Close the menu and open the purpose modal.
+                e.preventDefault()
+                setOpen(false)
+                setSkillOpen(true)
+              }}
+            >
+              <Sparkles size={13} className="shrink-0 text-muted" />
+              <span className="flex-1">{i18nT('pages.chat.assistantMessage.create_skill')}</span>
+            </DropdownMenuItem>,
+          ] : undefined}
           // The header controls its own menu, so close it after a colour pick.
           onColorPicked={() => setOpen(false)}
         />
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+    {onCreateSkill && (
+      <CreateSkillDialog open={skillOpen} onOpenChange={setSkillOpen} onSubmit={onCreateSkill} />
+    )}
+    </>
   )
 }
 

@@ -9039,6 +9039,10 @@
         "more_actions": "更多操作",
         "needs_active_chat": "此对话完成打开后可用",
         "needs_earlier_history_count_other": "选择以加载更早的历史记录 — 还剩 {{count}} 条更早的消息",
+        "create_skill": "创建技能",
+        "create_skill_hint": "描述要从此对话创建的技能。",
+        "create_skill_placeholder": "技能用途",
+        "create_skill_submit": "创建",
         "share_message": "分享为图片",
         "copy_failed": "复制失败"
       },
@@ -9643,6 +9647,7 @@
       "worktree_creation_returned_no_path": "创建工作树未返回路径",
       "loading_earlier_messages": "正在加载较早的消息…",
       "send_failed_with_error": "发送失败：{{error}}",
+      "create_skill_failed_error": "无法开始创建技能：{{error}}",
       "delivery_unconfirmed": "尚未确认送达——你的文字已放回输入框；再次发送前请先查看对话记录。",
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
       "screenshot_failed_reason": "截图失败：{{reason}}",

@@ -9299,6 +9299,10 @@
         "needs_earlier_history_count_one": "Seleziona per caricare la cronologia precedente: resta {{count}} messaggio precedente",
         "needs_earlier_history_count_many": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
         "needs_earlier_history_count_other": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
+        "create_skill": "Create skill",
+        "create_skill_hint": "Descrivi la competenza da creare da questa chat.",
+        "create_skill_placeholder": "Skill purpose",
+        "create_skill_submit": "Create",
         "share_message": "Condividi come immagine",
         "copy_failed": "Copia non riuscita"
       },
@@ -9925,6 +9929,7 @@
       "worktree_creation_returned_no_path": "La creazione del worktree non ha restituito alcun percorso",
       "loading_earlier_messages": "Caricamento dei messaggi precedenti…",
       "send_failed_with_error": "Invio non riuscito: {{error}}",
+      "create_skill_failed_error": "Could not start skill creation: {{error}}",
       "delivery_unconfirmed": "Consegna non confermata: il testo è tornato nel campo di scrittura; controlla la conversazione prima di inviarlo di nuovo.",
       "could_not_read_file_reason": "Impossibile leggere {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot non riuscito: {{reason}}",

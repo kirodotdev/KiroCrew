@@ -3375,6 +3375,10 @@
         "needs_active_chat": "Available once this chat finishes opening",
         "needs_earlier_history_count_one": "Select to load earlier history — {{count}} earlier message remains",
         "needs_earlier_history_count_other": "Select to load earlier history — {{count}} earlier messages remain",
+        "create_skill": "Create skill",
+        "create_skill_hint": "Describe the skill to create from this chat.",
+        "create_skill_placeholder": "Skill purpose",
+        "create_skill_submit": "Create",
         "share_message": "Share as image",
         "copy_failed": "Copy failed"
       },
@@ -3715,6 +3719,7 @@
       "worktree_creation_returned_no_path": "Worktree creation returned no path",
       "loading_earlier_messages": "Loading earlier messages…",
       "send_failed_with_error": "Send failed: {{error}}",
+      "create_skill_failed_error": "Could not start skill creation: {{error}}",
       "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the transcript before sending it again.",
       "could_not_read_file_reason": "Could not read {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot failed: {{reason}}",
