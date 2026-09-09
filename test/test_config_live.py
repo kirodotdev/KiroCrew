@@ -1149,6 +1149,7 @@ class TestServerAppliers:
             "agent.provider",
             "agent.role_models.background",
             "agent.log_level",
+            "advisor",
         }
         # None of them is a catch-all: an unrelated write must dispatch nothing.
         for sub in subs.values():

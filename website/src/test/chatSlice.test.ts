@@ -3237,3 +3237,25 @@ describe('steer does not deadlock pending approval (#1667)', () => {
     })
   })
 })
+
+describe('appendSlotMessage advisor steer freezes the streaming row', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+
+  it('finalizes the trailing streaming row before the Advisor card, so later chunks cannot land above it', () => {
+    // A mid-turn advisor steer arrives while the assistant is streaming. Like a
+    // user steer, it must freeze the streaming row into an assistant row first:
+    // the backend cuts the segment at the same boundary, so the frozen order
+    // matches the persisted transcript. Left as `streaming`, the next chunk
+    // would append to the row ABOVE the card and split the response around it.
+    let state = { ...initial, activeSlot: 'A', messages: [{ role: 'streaming' as const, content: 'partial answer', cls: 'msg msg-a' }] }
+    state = reducer(state, appendSlotMessage({ slot: 'A', message: { role: 'advisor', content: '[Advisor] blocker: drops the prod table', cls: 'msg msg-advisor', ts: 't1', meta: { steer: true, severity: 'blocker' } } }))
+    expect(state.messages.map(m => m.role)).toEqual(['assistant', 'advisor'])
+    expect(state.messages[0].content).toBe('partial answer')
+  })
+
+  it('does the same for a backgrounded slot', () => {
+    let state = { ...initial, activeSlot: 'A', slotMessages: { 'B': [{ role: 'streaming' as const, content: 'partial', cls: 'msg msg-a' }] } }
+    state = reducer(state, appendSlotMessage({ slot: 'B', message: { role: 'advisor', content: 'note', cls: 'msg msg-advisor', ts: 't1', meta: { steer: true } } }))
+    expect(state.slotMessages['B'].map(m => m.role)).toEqual(['assistant', 'advisor'])
+  })
+})

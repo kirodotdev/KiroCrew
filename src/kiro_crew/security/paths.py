@@ -841,6 +841,19 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The Advisor reviewer's PROCESS cwd (``advisor/composition.reviewer_process_cwd``).
+    # kiro-cli resolves ``--agent`` against ``<cwd>/.kiro/agents`` before the global
+    # agents directory, so a same-named spec written under this directory would
+    # shadow the managed read-only reviewer spec and hand the reviewer whatever tools
+    # and auto-approvals the planted file grants. WRITE-protected as a whole
+    # directory: nothing secret lives here (it is an otherwise empty anchor), but
+    # its contents are an input to a trust decision, exactly like the model weights
+    # below. The installer also refuses to spawn while anything sits under its
+    # ``.kiro`` tree, so the gate and the fail-closed check cover each other.
+    f"{prefix}/advisor"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # Downloaded MODEL WEIGHTS (speech recognition and embeddings both land here).
     # WRITE-protected as a whole directory, not read+write sensitive: the weights hold
     # no secret, and the settings surface and `kirocrew doctor` both read the directory

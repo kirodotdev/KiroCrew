@@ -4126,7 +4126,6 @@
         "typesetting_hints_one": "{{count}} Satzhinweis",
         "typesetting_hints_other": "{{count}} Satzhinweise"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} löschen",
         "files": "Dateien",
@@ -8361,6 +8360,22 @@
       "label": "Änderungen erfordern Neustart",
       "tooltip": "Diese Einstellung kann sich nicht ändern, während {{productName}} läuft. Der gespeicherte Wert bleibt erhalten und gilt beim nächsten Neustart von {{productName}} (Einstellungen → Über, oder das Terminal, aus dem du es gestartet hast).",
       "schema_unavailable": "Es konnte nicht geprüft werden, ob diese Einstellung einen Neustart braucht."
+    },
+    "advisorOverrideControl": {
+      "advisor": "Berater",
+      "advisor_mode": "Beratermodus",
+      "helper": "Eine separate Prüfsitzung prüft diese Sitzung und weist während der Arbeit auf Probleme hin.",
+      "on": "Ein",
+      "off": "Aus",
+      "update_failed": "Der Berater konnte nicht aktualisiert werden.",
+      "inherit_on": "Erben (Ein)",
+      "inherit_off": "Erben (Aus)",
+      "helper_off": "Keine Überprüfung aktiv.",
+      "inherit": "Erben",
+      "config_load_failed": "Globale Berater-Einstellung konnte nicht geladen werden.",
+      "unavailable_backend": "Der Berater benötigt das kiro-cli-Agent-Backend. Stelle Einstellungen → Entwickler → Agent-Backend auf kiro-cli oder lasse den Berater aus.",
+      "helper_inherit_off": "Eine separate Prüfsitzung kann diese Sitzung prüfen und Probleme melden.",
+      "unavailable_sandbox": "Der Berater braucht eine Sandbox, die deine Zugangsdaten verbirgt; dieser Computer kann keine bereitstellen."
     }
   },
   "hooks": {
@@ -9892,6 +9907,16 @@
         "copy_text_failed": "Kopieren fehlgeschlagen",
         "copy_text_unavailable": "Die Zwischenablage ist hier blockiert. Dein Beitragstext ist markiert — drücke Strg+C / ⌘C. Bearbeiteten Kartentext kopierst du direkt aus der Karte.",
         "export_failed": "Die Share-Karte konnte nicht erzeugt werden"
+      },
+      "advisorMessage": {
+        "advisor": "Berater",
+        "nit": "Hinweis",
+        "concern": "Bedenken",
+        "blocker": "Blocker",
+        "saved_for_next_turn": "Für den nächsten Durchgang gespeichert",
+        "evidence": "Belege",
+        "sent_mid_turn": "Mitten im Zug an den Agenten gesendet",
+        "dropped_by_stop": "Verworfen, als du den Zug gestoppt hast"
       }
     },
     "chatPage": {
@@ -13043,7 +13068,12 @@
         "feature_videos_downloads_disabled": "Video-Downloads sind ausgeschaltet. Es laufen nur bereits gespeicherte Clips.",
         "feature_videos_download_all": "Jetzt alle herunterladen",
         "failed_to_load_feature_video_status": "Cache-Status der Feature-Videos konnte nicht geladen werden",
-        "failed_to_start_feature_video_download": "Download konnte nicht gestartet werden"
+        "failed_to_start_feature_video_download": "Download konnte nicht gestartet werden",
+        "advisor": "Berater",
+        "enable_advisor": "Berater aktivieren",
+        "enable_advisor_description": "Eine separate Prüfsitzung prüft deine Dashboard-Chat-Sitzungen während der Agent arbeitet und meldet Probleme. Standardmäßig aus; pro Sitzung in der Modellauswahl überschreibbar. Züge des Task Runner, von Cron und der Kanäle werden noch nicht geprüft.",
+        "reviewer_model": "Berater-Modell",
+        "failed_to_save_advisor_setting": "Berater-Einstellung konnte nicht gespeichert werden"
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

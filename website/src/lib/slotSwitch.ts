@@ -87,6 +87,7 @@ export interface SlotSwitchValueMap {
   project: string
   agent: AgentSwitchValue
   reasoning_effort: string
+  advisor_override: 'inherit' | 'on' | 'off'
 }
 
 export type SlotSwitchField = keyof SlotSwitchValueMap

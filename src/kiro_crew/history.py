@@ -175,6 +175,8 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "agent",
         "model",
         "reasoning_effort",
+        "advisor_override",
+        "advisor_pending_context",
         "autocompact_pct",
         "mode",
         "workspace",

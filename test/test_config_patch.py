@@ -117,6 +117,116 @@ def _live_state(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
+# ── Advisor enablement (advisor.enabled) ───────────────────────────────────
+class TestAdvisorEnabled:
+    @pytest.mark.asyncio
+    async def test_enable_rejected_on_a_non_kiro_backend(self, tmp_config) -> None:
+        """The reviewer runs on the kiro-cli agent backend only; enabling the
+        advisor under another backend is refused with a visible reason instead
+        of failing every review in the log."""
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        data["agent"]["acp_backend"] = "claude"
+        tmp_config.write_text(json.dumps(data), encoding="utf-8")
+        app = _make_app()
+        _arm(app, _live_state())  # the validator reads the watcher snapshot
+        async with TestClient(TestServer(app)) as c:
+            resp = await _patch(c, "advisor.enabled", True)
+            assert resp.status == 400
+            assert "kiro-cli" in (await resp.text())
+            # Disabling is always allowed.
+            resp = await _patch(c, "advisor.enabled", False)
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_backend_switch_reapplies_the_advisor_config(self, tmp_config) -> None:
+        """Switching agent.acp_backend re-applies the advisor section through the
+        config watcher's "advisor" applier, so an already-enabled advisor is
+        turned off the moment the harness changes."""
+        import kiro_crew.advisor.service as service_mod
+        from kiro_crew.advisor.service import AdvisorService
+
+        service_mod._service = AdvisorService(enabled=True)
+        try:
+            app = _make_app()
+            _arm(app, _live_state())
+            async with TestClient(TestServer(app)) as c:
+                resp = await _patch(c, "agent.acp_backend", "claude")
+                assert resp.status == 200
+            assert service_mod._service.reviewer_available is False
+            assert service_mod._service.enabled is False
+        finally:
+            service_mod._service = None
+
+    def test_validator_reads_the_watcher_snapshot_not_the_disk(
+        self, tmp_config, monkeypatch
+    ) -> None:
+        """Round-84 (GPT): the validator runs on the event loop, so it must not
+        call ``KiroCrewConfig.load()`` (a synchronous disk read + validation).
+        It reads the config watcher's in-memory snapshot -- the value the rest
+        of the gateway has adopted -- and fails CLOSED when none exists yet."""
+        from types import SimpleNamespace
+
+        from kiro_crew.config import live
+        from kiro_crew.dashboard.handlers import core
+
+        def _no_disk(*a, **k):
+            raise AssertionError("KiroCrewConfig.load() called on the event loop")
+
+        monkeypatch.setattr(core.KiroCrewConfig, "load", _no_disk)
+        monkeypatch.setattr(live, "snapshot", lambda: None)
+        assert core._validate_advisor_enabled(True, SimpleNamespace()) is not None
+        monkeypatch.setattr(
+            live, "snapshot", lambda: SimpleNamespace(agent=SimpleNamespace(acp_backend="claude"))
+        )
+        assert "kiro-cli" in (core._validate_advisor_enabled(True, SimpleNamespace()) or "")
+        monkeypatch.setattr(
+            live, "snapshot", lambda: SimpleNamespace(agent=SimpleNamespace(acp_backend=""))
+        )
+        # The sandbox probe is process-wide state another test (or this host,
+        # which has no sandbox backend) may have left at False: pin it, and
+        # pin the refusal it produces.
+        from kiro_crew.advisor.service import get_advisor_service
+
+        monkeypatch.setattr(get_advisor_service(), "sandbox_available", None)
+        assert core._validate_advisor_enabled(True, SimpleNamespace()) is None
+        monkeypatch.setattr(get_advisor_service(), "sandbox_available", False)
+        assert "sandbox" in (core._validate_advisor_enabled(True, SimpleNamespace()) or "")
+        assert core._validate_advisor_enabled(False, SimpleNamespace()) is None
+
+    def test_enable_refused_when_the_sandbox_cannot_mask_credentials(self, monkeypatch) -> None:
+        """The reviewer's reads are bounded by the strict sandbox's credential
+        mask (kiro-cli auto-approves builtin reads). A host that cannot apply
+        it gets the refusal HERE, with a visible reason, not a silent
+        degradation at the first review."""
+        from types import SimpleNamespace
+
+        from kiro_crew.advisor.service import get_advisor_service
+        from kiro_crew.config import live
+        from kiro_crew.dashboard.handlers import core
+
+        monkeypatch.setattr(
+            live, "snapshot", lambda: SimpleNamespace(agent=SimpleNamespace(acp_backend=""))
+        )
+        monkeypatch.setattr(get_advisor_service(), "sandbox_available", False)
+        reason = core._validate_advisor_enabled(True, SimpleNamespace()) or ""
+        assert "sandbox" in reason
+        assert core._validate_advisor_enabled(False, SimpleNamespace()) is None
+
+    @pytest.mark.asyncio
+    async def test_enable_allowed_on_the_kiro_backend(self, tmp_config, monkeypatch) -> None:
+        from kiro_crew.advisor.service import get_advisor_service
+
+        # The sandbox probe is process-wide state the host decides (Windows and
+        # a no-backend Linux host answer False): pin it so this asserts the
+        # backend rule alone.
+        monkeypatch.setattr(get_advisor_service(), "sandbox_available", None)
+        app = _make_app()
+        _arm(app, _live_state())
+        async with TestClient(TestServer(app)) as c:
+            resp = await _patch(c, "advisor.enabled", True)
+            assert resp.status == 200
+
+
 # ── Per-role models (agent.role_models.*) ─────────────────────────────────
 
 
@@ -1119,3 +1229,32 @@ class TestUpdateNudgeKeys:
         async with TestClient(TestServer(_make_app())) as c:
             rec = {**self._REC, "skipped": "yes"}
             assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
+
+
+# ── Advisor reviewer role pin (agent.role_models.advisor) ────────────────────
+
+
+class TestAdvisorRolePin:
+    """Round-72 (First Principles): the reviewer model is the ``advisor`` ROLE
+    pin, patched through the same gate as the other roles -- one grammar, one
+    entitlement validator, nested write. There is no ``advisor.model`` key."""
+
+    @pytest.mark.asyncio
+    async def test_nested_write_and_shell_metacharacters_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.role_models.advisor", "gpt-5.6-sol")
+            assert resp.status == 200
+            resp = await _patch(c, "agent.role_models.advisor", "bad; touch x")
+            assert resp.status == 400
+            resp = await _patch(c, "advisor.model", "gpt-5.6-sol")
+            assert resp.status == 400, "advisor.model is not a config key"
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert data["agent"]["role_models"]["advisor"] == "gpt-5.6-sol"
+
+    @pytest.mark.asyncio
+    async def test_valid_id_and_empty_inherit_accepted(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.role_models.advisor", "gpt-5.6-sol")
+            assert resp.status == 200
+            resp = await _patch(c, "agent.role_models.advisor", "")
+            assert resp.status == 200

@@ -4004,7 +4004,6 @@
         "no_messages": "编译器没有输出任何信息。",
         "typesetting_hints_other": "{{count}} 条排版提示"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "删除 {{file}}",
         "files": "文件",
@@ -8246,6 +8245,22 @@
       "label": "修改后需重启",
       "tooltip": "{{productName}} 运行期间无法更改此设置。已保存的值会保留，并在 {{productName}} 下次重启后应用（设置 → 关于，或启动它的终端）。",
       "schema_unavailable": "无法检查此设置是否需要重启。"
+    },
+    "advisorOverrideControl": {
+      "advisor": "顾问",
+      "advisor_mode": "顾问模式",
+      "helper": "一个独立的审查会话会审查此会话，并在你工作时标记问题。",
+      "on": "开启",
+      "off": "关闭",
+      "update_failed": "无法更新顾问设置。",
+      "inherit_on": "继承（开启）",
+      "inherit_off": "继承（关闭）",
+      "helper_off": "当前未在审查。",
+      "inherit": "继承",
+      "config_load_failed": "无法加载全局顾问设置。",
+      "unavailable_backend": "顾问需要 kiro-cli 代理后端。请将 设置 → 开发者 → 代理后端 切换为 kiro-cli，或保持顾问关闭。",
+      "helper_inherit_off": "一个独立的审查会话可以审查此会话并标记问题。",
+      "unavailable_sandbox": "顾问需要一个能隐藏你凭据的沙箱，而这台计算机无法提供。"
     }
   },
   "hooks": {
@@ -9750,6 +9765,16 @@
         "copy_text_failed": "复制失败",
         "copy_text_unavailable": "当前环境禁止写入剪贴板。文案已选中——按 Ctrl+C / ⌘C 复制。你改过的卡片文字请直接从卡片上复制。",
         "export_failed": "无法生成分享卡片"
+      },
+      "advisorMessage": {
+        "advisor": "顾问",
+        "nit": "小建议",
+        "concern": "需注意",
+        "blocker": "阻止项",
+        "saved_for_next_turn": "已保存到下一轮",
+        "evidence": "证据",
+        "sent_mid_turn": "已在轮次中途发送给代理",
+        "dropped_by_stop": "你停止轮次时已丢弃"
       }
     },
     "chatPage": {
@@ -12865,7 +12890,12 @@
         "feature_videos_downloads_disabled": "视频下载已关闭。只有已保存的片段才能播放。",
         "feature_videos_download_all": "立即下载全部",
         "failed_to_load_feature_video_status": "无法加载功能视频缓存状态",
-        "failed_to_start_feature_video_download": "无法开始下载"
+        "failed_to_start_feature_video_download": "无法开始下载",
+        "advisor": "顾问",
+        "enable_advisor": "启用顾问",
+        "enable_advisor_description": "在代理工作时，一个独立的审查会话会审查你的仪表板聊天会话并标记问题。默认关闭；可在模型选择器中按会话覆盖。任务运行器、cron 和频道的轮次尚未被审查。",
+        "reviewer_model": "顾问模型",
+        "failed_to_save_advisor_setting": "无法保存顾问设置"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

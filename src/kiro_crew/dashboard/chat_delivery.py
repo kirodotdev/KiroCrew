@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 STEER_STEERED = "steered"
 STEER_REQUEUED = "requeued"
 STEER_UNAVAILABLE = "unavailable"
+#: The registration was removed by an EXPLICIT user discard (hard kill), not by
+#: loss: the caller must not resend, requeue, or preserve the text.
+STEER_DISCARDED = "discarded"
 
 # Lifecycle of a mid-turn steer as recorded on the persisted transcript row, in
 # `meta["steerState"]`. These are three DIFFERENT facts and the row must not
@@ -232,6 +235,7 @@ async def steer_into_running_turn(
     message: str,
     *,
     send_id: str | None = None,
+    envelope: Any | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -247,6 +251,14 @@ async def steer_into_running_turn(
     and additive: a send without one keeps the exact prior row/payload shape.
     Normalized at entry (``normalize_send_id``) so the type/length bound holds
     for every caller, not just the current one.
+
+    ``envelope`` marks this steer as an ADVISORY delivery (an
+    ``advisor.delivery.AdvisoryEnvelope``). The ledger mechanics are identical
+    -- same pending registration, same delivery id, same consumption evidence
+    -- but the persisted row carries the ``advisor`` role plus the envelope's
+    provenance meta, and the turn teardown PRESERVES an unconsumed advisory
+    instead of requeueing it as user speech. Absent (every existing caller),
+    the behavior and row/payload shapes are byte-identical to before.
     """
     send_id = normalize_send_id(send_id)
     client = getattr(slot, "_acp_client", None)
@@ -314,6 +326,11 @@ async def steer_into_running_turn(
     # requeued entry's meta unchanged.
     if send_id:
         slot._steer_send_ids[message] = send_id
+    if envelope is not None:
+        # Registered BEFORE the await for the same reason as the pending entry:
+        # the teardown must be able to see this steer is advisory to preserve
+        # rather than requeue it.
+        slot._advisory_envelopes[message] = envelope
     slot._pending_steers.append(message)
     try:
         steered = await client.steer(message)
@@ -356,6 +373,7 @@ async def steer_into_running_turn(
             slot._pending_steers.remove(message)
             slot._steer_delivery_ids.pop(message, None)
             slot._steer_send_ids.pop(message, None)
+            slot._advisory_envelopes.pop(message, None)
             return STEER_UNAVAILABLE
         if stopped:
             # Still registered means the teardown has not run yet and will
@@ -393,6 +411,23 @@ async def steer_into_running_turn(
         # path ran it.
         if stopped:
             _log_stop_race(slot, stop_gen, preserved=False)
+        if envelope is not None and message not in slot._advisory_envelopes:
+            # The envelope entry is gone too. Two paths pop it: the natural
+            # turn teardown, which PRESERVES the advisory first (its update id
+            # is then in `_advisor_preserved_ids`), and the hard kill, which
+            # discards everything. Only the latter is a discard -- reporting
+            # the former as one misstates the outcome and its log line. The
+            # caller's own preserve is idempotent per update id, so the
+            # preserved case returns the plain unavailable outcome.
+            update_id = getattr(envelope, "advisor_update_id", None)
+            if update_id in getattr(slot, "_advisor_preserved_ids", ()):
+                return STEER_UNAVAILABLE
+            # An advisory whose envelope entry is ALSO gone was explicitly
+            # discarded by the hard kill (the stop-force path pops all three
+            # maps together): the user's second press means discard
+            # everything, reviewer advice included, so the caller must not
+            # preserve it into the next turn.
+            return STEER_DISCARDED
         return STEER_UNAVAILABLE
     if stopped:
         # Consumed, then stopped: the text is already delivered and its side
@@ -433,6 +468,13 @@ async def steer_into_running_turn(
     # few lines below, so nothing will read the map entry again and leaving it
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
+    # Envelope lifetime follows the PENDING entry, not this delivery: while the
+    # entry is still registered the turn teardown may yet reconcile this steer,
+    # and it needs the envelope to preserve rather than requeue. Only when the
+    # registration is already gone (consumed during the await) does the
+    # envelope have no later reader.
+    if envelope is not None and not still_registered:
+        slot._advisory_envelopes.pop(message, None)
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
@@ -493,7 +535,11 @@ async def steer_into_running_turn(
     _state = (
         STEER_STATE_CONSUMED if (not still_registered and _had_evidence) else STEER_STATE_WRITTEN
     )
-    meta: dict[str, Any] = {"steer": True, "steerState": _state}
+    if envelope is not None:
+        meta: dict[str, Any] = {"steer": True, "steerState": _state}
+        meta.update(envelope.row_meta("steered"))
+    else:
+        meta = {"steer": True, "steerState": _state}
     if send_id:
         # Persist the client correlation id alongside the steer flag: the
         # transcript page is what mergePreservedThinking reads to resolve an
@@ -501,7 +547,13 @@ async def steer_into_running_turn(
         meta["sendId"] = send_id
     # Store the sanitized form — raw content must never reach an external
     # surface — so the steer survives a page reload via the dirty-flush cycle.
-    _row = slot.append("user", sanitized, "msg msg-u", ts=ts, meta=meta)
+    _role = "advisor" if envelope is not None else "user"
+    _css = "msg msg-advisor" if envelope is not None else "msg msg-u"
+    # broadcast=False for the advisor row: `steer_push` below is its live
+    # delivery (with the advisor discriminator), and `append` broadcasts every
+    # non-user role, so the default would render the row twice on connected
+    # clients. A user row is already excluded by append's own gate.
+    _row = slot.append(_role, sanitized, _css, ts=ts, meta=meta, broadcast=envelope is None)
     push_payload: dict[str, Any] = {
         "slot": slot.key,
         "content": _redact_for_display(sanitized),
@@ -523,6 +575,17 @@ async def steer_into_running_turn(
         # id; omitted when absent so the payload shape is unchanged for sends
         # that never minted one.
         push_payload["sendId"] = send_id
+    if envelope is not None:
+        # The advisory discriminator, so a live client renders the reviewer's
+        # row as an advisor card rather than a user-authored steer bubble; the
+        # persisted row already carries the same role/css/meta, so a page
+        # reload and the live push agree. Includes the structured display
+        # fields the advisor renderer folds (text + evidence).
+        push_payload["role"] = _role
+        push_payload["cls"] = _css
+        push_payload["advisorMeta"] = {
+            k: v for k, v in meta.items() if k not in ("steer", "steerState")
+        }
     state.broadcast_ws("steer_push", push_payload)
     return STEER_STEERED
 

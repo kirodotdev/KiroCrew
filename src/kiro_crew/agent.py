@@ -236,6 +236,12 @@ def _notify_if_config_write(path: Path) -> None:
     live.notify_config_written()
 
 
+#: Public name for other installers (the advisor's packaged reviewer spec
+#: writes through the same tmp+rename path), so the atomic-write boundary is
+#: a stated contract rather than a borrowed private.
+atomic_json_write = _atomic_json_write
+
+
 @contextlib.contextmanager
 def agents_spec_lock(agents_dir: Path) -> Iterator[None]:
     """Cross-process advisory lock serializing every template-spec write.
@@ -3792,6 +3798,13 @@ def _apply_allowed_tools_ceiling(config: dict, *, source: str) -> None:
             )
         except Exception:  # noqa: BLE001 — the audit must not break the build
             logger.debug("SEL audit unavailable for withheld auto-approve", exc_info=True)
+
+
+#: Public name for other installers: every spec that reaches kiro-cli with an
+#: ``allowedTools`` list must pass this ONE ceiling filter (the advisor's
+#: packaged reviewer spec re-filters through it on every launch), so the
+#: governance boundary is a stated contract rather than a borrowed private.
+apply_allowed_tools_ceiling = _apply_allowed_tools_ceiling
 
 
 def _ceiling_filtered_spec(ref: str, spec: dict[str, Any]) -> dict[str, Any]:

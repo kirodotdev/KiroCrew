@@ -1647,9 +1647,17 @@ export function useWebSocket() {
             // which is keyed on `mid`, resolves this row -- without it that patch
             // matches nothing and the state never moves until a reload.
             const steerMid = (data as { mid?: unknown }).mid
+            // An advisory steer carries the advisor discriminator: render it as
+            // the cross-model reviewer's row, not a user-authored bubble — the
+            // persisted transcript already stores it that way, so this keeps a
+            // live client and a page reload in agreement.
+            const steerRole = (data as { role?: unknown }).role
+            const steerCls = (data as { cls?: unknown }).cls
+            const advisorMeta = (data as { advisorMeta?: unknown }).advisorMeta
+            const isAdvisorSteer = steerRole === 'advisor'
             dispatch(appendSlotMessage({
               slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
-              message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}) }, ts: (data as { ts?: string }).ts },
+              message: { role: isAdvisorSteer ? 'advisor' : 'user', content: (data as { content?: string }).content || '', cls: isAdvisorSteer && typeof steerCls === 'string' ? steerCls : 'msg msg-u', meta: { steer: true, ...(isAdvisorSteer && advisorMeta && typeof advisorMeta === 'object' ? advisorMeta as Record<string, unknown> : {}), ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}) }, ts: (data as { ts?: string }).ts },
             }))
             // Steering is the other way to type into a busy session, so it
             // settles the rank exactly like a queued send. The server appends a

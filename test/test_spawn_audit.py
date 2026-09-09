@@ -311,6 +311,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # it executes nothing else (the shim dlopens the already-loaded libc
         # rather than letting ctypes.util.find_library exec ldconfig/gcc).
         "sandbox.py::_probe_unshare_via_spawn",
+        # The Advisor reviewer's read-gate self-test: argv is the gateway's own
+        # interpreter running a fixed module (``sys.executable -m
+        # kiro_crew.advisor.read_gate``), stdin is a fixed JSON probe, cwd is the
+        # crew-owned reviewer directory; nothing agent-influenced. Runs in the
+        # gateway before each reviewer spawn to prove the hook still judges.
+        "advisor/read_gate.py::_probe",
         # _get_rss_tree_mb is deliberately NOT listed: its own spawn moved into
         # _ps_process_table below, so an entry for it would be stale and would
         # mask a future regression that put a spawn back inline.

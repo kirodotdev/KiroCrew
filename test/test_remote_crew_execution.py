@@ -2807,7 +2807,7 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
             assert route in functions, route
             assert _OWNER_GATE in _called_names(functions[route]), route
 
-    def test_all_four_pick_routes_hand_their_request_to_the_chokepoint(self):
+    def test_all_five_pick_routes_hand_their_request_to_the_chokepoint(self):
         """The gate is inside ``_apply_remote_pick``, so it needs the request.
 
         Every pick route reaches the peer through that one function, which is what
@@ -2826,7 +2826,7 @@ class TestEveryPeerDirectedOperationIsOwnerGated:
             and isinstance(call.func, ast.Name)
             and call.func.id == "_apply_remote_pick"
         ]
-        assert len(sites) == 4, [name for name, _ in sites]
+        assert len(sites) == 5, [name for name, _ in sites]
         for name, call in sites:
             first = call.args[0]
             assert isinstance(first, ast.Name) and first.id == "request", name

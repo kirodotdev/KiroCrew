@@ -359,6 +359,13 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # The Advisor reviewer's process cwd. kiro-cli resolves ``--agent`` against
+    # ``<cwd>/.kiro/agents`` first, so a spec written here (by a sandboxed shell,
+    # which the file-edit tool gate never sees) would shadow the managed read-only
+    # reviewer spec. Read-only inside every sandbox, pre-created so the mount
+    # exists, and never resolved through a symlink (its name must stay the mounted
+    # name). The gateway writes nothing into it; it is an empty anchor.
+    "advisor",
     # Recorded consent to deliver a scanner-flagged file. Same class as
     # ``aws_service_consent.json``: a writable grant lets an auto-approved agent
     # consent, on the owner's behalf, to shipping the owner's secrets. This seal is
@@ -447,6 +454,20 @@ _CREW_SANDBOX_VISIBLE_LEAVES: tuple[str, ...] = (
     # reads and rewrites the job store through it.
     "crons.json",
 )
+
+
+def mcp_only_crew_leaf_targets() -> list[str]:
+    """Absolute crew-home paths of every ``_CREW_SANDBOX_VISIBLE_LEAVES`` entry a
+    child without in-sandbox MCP servers has no claim on -- all of them but ``run``,
+    which holds the launcher itself. Both data-home spellings plus the relocated
+    home, so a caller can hand the list to ``wrap_argv(extra_hidden_dirs=...)``:
+    the tier leaves these READ-WRITE for a primary's MCP servers (SEL appends, the
+    dashboard secret), and a child that runs none of them must not read them."""
+    leaves = tuple(leaf for leaf in _CREW_SANDBOX_VISIBLE_LEAVES if leaf != "run")
+    home = str(Path.home())
+    targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
+    targets.extend(_relocated_crew_targets(leaves))
+    return list(dict.fromkeys(targets))
 
 
 def _crew_home_entries(leaves: tuple[str, ...]) -> list[str]:
@@ -751,11 +772,12 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "profiles",
     "member-memory-bindings",
     "playwright-cli",
+    "advisor",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
 #: replaceable, which would let an agent choose the executable the gateway runs.
-_CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = ("playwright-cli",)
+_CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = ("playwright-cli", "advisor")
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
@@ -8323,8 +8345,33 @@ def reset_backend() -> None:
 _SANDBOX_MODE_ALIASES = {"auto": "standard"}
 
 
-def credential_mask_applies(mode: str) -> bool:
+def _delegates_to_kiro_sandbox(
+    kiro_spawn: bool, *, is_kiro_cli: bool | None, private_memory: bool = False
+) -> bool:
+    """Whether a kiro-cli child is handed to Kiro's own sandbox instead of ours.
+
+    The one place this rule lives: ``wrap_argv`` acts on it and
+    :func:`credential_mask_applies` reports it, so the two cannot drift.
+    macOS delegates when Kiro's internal sandbox is enabled; Windows has no
+    Kiro Crew backend and delegates a positively classified kiro-cli spawn;
+    private member memory never delegates.
+    """
+    if private_memory:
+        return False
+    return (sys.platform == "darwin" and kiro_spawn and kiro_internal_sandbox_enabled()) or (
+        sys.platform == "win32" and is_kiro_cli is True
+    )
+
+
+def credential_mask_applies(mode: str, *, is_kiro_cli: bool = False) -> bool:
     """Whether :func:`wrap_argv` would actually APPLY ``extra_hidden_dirs`` for *mode*.
+
+    With ``is_kiro_cli`` the question is the tier's OWN credential hide for a
+    kiro-cli child that passes no extras (the Advisor's reviewer): on macOS with
+    kiro-cli's internal sandbox enabled, and on Windows, ``wrap_argv`` delegates
+    that child's isolation to Kiro's sandbox and Crew's tier is never applied
+    (the two cannot nest), so the answer is False there. An enforced adapter's
+    ``extra_hidden_dirs`` are unaffected: for those macOS keeps the seatbelt.
 
     Exactly two outcomes hand back an UNWRAPPED child, dropping the mask: the ``off``
     tier, and a host with no backend where unsandboxed exec is opted in and no
@@ -8354,6 +8401,11 @@ def credential_mask_applies(mode: str) -> bool:
     # ~/.ssh and ~/.kube readable for kiro-cli's sake -- so it is NOT a substitute for
     # an adapter-specific credential mask.
     if _inside_kirocrew_sandbox() and _macos_sandbox_state() is not False:
+        return False
+    # The same predicate wrap_argv acts on. Conservative for a child that
+    # carries extra hidden dirs (macOS then keeps our seatbelt): reported as
+    # not masked, never the reverse.
+    if is_kiro_cli and _delegates_to_kiro_sandbox(True, is_kiro_cli=True):
         return False
     if detect_backend(config_mode=effective) != "none":
         return True
@@ -8791,11 +8843,9 @@ def wrap_argv(
     # deterministic capability decision, never a fallback after a probe failure.
     # Linux namespace isolation is unaffected.
     kiro_spawn = _spawns_kiro_cli(argv) if is_kiro_cli is None else is_kiro_cli
-    delegate_to_kiro = (
-        sys.platform == "darwin" and kiro_spawn and kiro_internal_sandbox_enabled()
-    ) or (sys.platform == "win32" and is_kiro_cli is True)
-    if private_memory:
-        delegate_to_kiro = False
+    delegate_to_kiro = _delegates_to_kiro_sandbox(
+        kiro_spawn, is_kiro_cli=is_kiro_cli, private_memory=private_memory
+    )
     if delegate_to_kiro:
         if extra_hidden_dirs or extra_visible_dirs or extra_writable_dirs or extra_expose_files:
             # A delegated sandbox cannot enforce KiroCrew-specific path hides.

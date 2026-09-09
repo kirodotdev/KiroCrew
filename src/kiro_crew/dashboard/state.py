@@ -3418,6 +3418,7 @@ class _ChatSlot:
         "_model_withheld_for",
         "served_model",
         "reasoning_effort",
+        "advisor_override",
         "autocompact_pct",
         "mode",
         "workspace",
@@ -3576,6 +3577,12 @@ class _ChatSlot:
         "_pending_steers",
         "_steer_delivery_ids",
         "_steer_send_ids",
+        "_advisory_envelopes",
+        "_advisor_pending_context",
+        "_advisor_peeked_context",
+        "_advisor_preserved_ids",
+        "_advisor_pending_context_key",
+        "_advisor_turn_key",
         "_wait_state",
         "_end_wait_request",
         "_wait_last_ping",
@@ -3612,6 +3619,8 @@ class _ChatSlot:
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
         # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
         self.reasoning_effort: str = ""
+        # Per-session advisor override: inherit | on | off (advisor module).
+        self.advisor_override: str = "inherit"
         # Per-session auto-compact threshold override (percent). None = follow
         # the global session.autocompact_pct. Persisted with the slot and
         # re-seeded into the SessionManager after restore.
@@ -4260,6 +4269,25 @@ class _ChatSlot:
         # persisted from one the running turn consumed — a distinction the bare
         # text cannot make.
         self._steer_delivery_ids: dict[str, str] = {}
+        # Advisory-steer bookkeeping (advisor module). Keyed by message text in
+        # the same content-key convention as `_pending_steers`: an entry here
+        # marks a pending steer as ADVISORY, so the teardown preserves it as an
+        # Advisor card instead of requeueing it as user speech.
+        self._advisory_envelopes: dict[str, object] = {}
+        # Staged advisor context for the NEXT primary turn (drained once).
+        self._advisor_pending_context: list[str] = []
+        #: The entries the CURRENT turn's peek injected -- the commit
+        #: subtracts exactly these, so a preserve landing mid-turn stays
+        #: staged for the next turn instead of being wiped unconsumed.
+        self._advisor_peeked_context: list[str] = []
+        # Advisor update ids already preserved, so a delivery racing the
+        # teardown cannot preserve the same advisory twice.
+        self._advisor_preserved_ids: set[str] = set()
+        # The session the staged context was staged for, and the key the running
+        # turn attached its observer under: a slot object rebound to another
+        # conversation mid-turn must neither carry advice into it nor feed it.
+        self._advisor_pending_context_key: str | None = None
+        self._advisor_turn_key: str | None = None
         # The client's `sendId` for an in-flight steer that supplied one, keyed by
         # the same message text as `_steer_delivery_ids`. Kept in LOCKSTEP with
         # that map -- every site that removes a delivery id removes this too -- so
@@ -5633,6 +5661,17 @@ class DashboardState:
 
         async def _on_compacted(key: str, pct: float, *, success: bool) -> None:
             from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+            if success:
+                # Advisor epoch boundary: a compacted conversation is a history
+                # rewrite, so pending observation state must not cross it.
+                # Total no-op when the advisor is off.
+                from kiro_crew.advisor.service import (
+                    BOUNDARY_COMPACTION,
+                    get_advisor_service,
+                )
+
+                get_advisor_service().notify_boundary(key, BOUNDARY_COMPACTION)
 
             slot_key = dashboard_slot_key(key)
             if slot_key:

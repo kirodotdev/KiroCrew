@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
@@ -220,5 +220,35 @@ describe('pin row monospaces only its two identifiers', () => {
     const label = pinRow().querySelector('span')
     expect(label?.className).toContain('min-w-0')
     expect(label?.className).not.toContain('truncate')
+  })
+})
+
+describe('ModelEffortDropdown — height follows asynchronous page content', () => {
+  it('re-measures when the active page grows after mount (advisor row, helper, refusal notice)', () => {
+    // The advisor row mounts when the config query resolves, and its helper
+    // sentence / save-refusal notice appear later still. None of that is in
+    // the measurement's dependency list, so the spring container (overflow
+    // hidden) must observe the page's size instead of enumerating deps, or
+    // it clips the very message the user needs to read.
+    const callbacks: ResizeObserverCallback[] = []
+    class RO {
+      constructor(cb: ResizeObserverCallback) { callbacks.push(cb) }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+    }
+    vi.stubGlobal('ResizeObserver', RO)
+    try {
+      const { container } = wrap(<ModelEffortDropdown {...baseProps} />)
+      const page = container.querySelector('[data-testid="model-page"]') as HTMLElement
+      expect(page).not.toBeNull()
+      expect(callbacks.length).toBeGreaterThan(0)
+      Object.defineProperty(page, 'offsetHeight', { configurable: true, value: 333 })
+      act(() => callbacks.forEach(cb => cb([] as ResizeObserverEntry[], {} as ResizeObserver)))
+      const spring = page.parentElement!.parentElement as HTMLElement
+      expect(spring.style.height).toBe('333px')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

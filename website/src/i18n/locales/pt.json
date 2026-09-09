@@ -4146,7 +4146,6 @@
         "typesetting_hints_one": "{{count}} aviso de composição",
         "typesetting_hints_other": "{{count}} avisos de composição"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "Eliminar {{file}}",
         "files": "Arquivos",
@@ -8476,6 +8475,22 @@
       "label": "alterações exigem reinício",
       "tooltip": "Esta configuração não pode mudar enquanto o {{productName}} está em execução. O valor salvo é mantido e aplicado na próxima vez que o {{productName}} reiniciar (Configurações → Sobre, ou o terminal de onde você o iniciou).",
       "schema_unavailable": "Não foi possível verificar se esta configuração exige reinicialização."
+    },
+    "advisorOverrideControl": {
+      "advisor": "Consultor",
+      "advisor_mode": "Modo do consultor",
+      "helper": "Uma sessão revisora separada revisa esta sessão e sinaliza problemas enquanto você trabalha.",
+      "on": "Ativado",
+      "off": "Desativado",
+      "update_failed": "Não foi possível atualizar o consultor.",
+      "inherit_on": "Herdar (Ativado)",
+      "inherit_off": "Herdar (Desativado)",
+      "helper_off": "Sem revisão ativa.",
+      "inherit": "Herdar",
+      "config_load_failed": "Não foi possível carregar a configuração global do consultor.",
+      "unavailable_backend": "O consultor precisa do backend de agente kiro-cli. Altere Configurações → Desenvolvedor → Backend do agente para kiro-cli ou deixe o consultor desativado.",
+      "helper_inherit_off": "Uma sessão revisora separada pode revisar esta sessão e apontar problemas.",
+      "unavailable_sandbox": "O consultor precisa de um sandbox que oculte suas credenciais, e este computador não consegue fornecer um."
     }
   },
   "hooks": {
@@ -10034,6 +10049,16 @@
         "copy_text_failed": "Falha ao copiar",
         "copy_text_unavailable": "A área de transferência está bloqueada aqui. O texto da sua publicação está selecionado — pressione Ctrl+C / ⌘C. O texto do cartão que você editou, copie do próprio cartão.",
         "export_failed": "Não foi possível gerar o cartão de compartilhamento"
+      },
+      "advisorMessage": {
+        "advisor": "Consultor",
+        "nit": "Sugestão",
+        "concern": "Atenção",
+        "blocker": "Bloqueador",
+        "saved_for_next_turn": "Salvo para o próximo turno",
+        "evidence": "Evidências",
+        "sent_mid_turn": "Enviado ao agente no meio do turno",
+        "dropped_by_stop": "Descartado quando você parou o turno"
       }
     },
     "chatPage": {
@@ -13221,7 +13246,12 @@
         "feature_videos_downloads_disabled": "Os downloads de vídeo estão desativados. Só os clipes já salvos serão reproduzidos.",
         "feature_videos_download_all": "Baixar tudo agora",
         "failed_to_load_feature_video_status": "Não foi possível carregar o estado da cache de vídeos de recursos",
-        "failed_to_start_feature_video_download": "Não foi possível iniciar o download"
+        "failed_to_start_feature_video_download": "Não foi possível iniciar o download",
+        "advisor": "Consultor",
+        "enable_advisor": "Ativar o consultor",
+        "enable_advisor_description": "Uma sessão revisora separada revisa suas sessões de chat do painel enquanto o agente trabalha e aponta problemas. Desativado por padrão; substitua por sessão no seletor de modelos. Turnos do executor de tarefas, de cron e de canais ainda não são revisados.",
+        "reviewer_model": "Modelo do consultor",
+        "failed_to_save_advisor_setting": "Não foi possível salvar a configuração do consultor"
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

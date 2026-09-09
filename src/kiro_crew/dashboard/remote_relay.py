@@ -614,6 +614,7 @@ _PEER_CONTROL_SEGMENTS = {
     "model": "model",
     "workspace": "workspace",
     "reasoning_effort": "reasoning-effort",
+    "advisor_override": "advisor-override",
 }
 
 

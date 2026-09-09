@@ -1199,6 +1199,13 @@ class TestEveryRegistryRemovalRecordsAnEnd:
             "activation id -- not the session registry's dict[str, _SessionEntry], "
             "and it writes no crumb, so a removal there cannot leave one behind"
         ),
+        "advisor.runtime": (
+            "the reviewer pool's dict[str, ReviewerSession], keyed by the "
+            "PARENT session key it reviews -- reviewer sessions are synthetic "
+            "conversations on the shared reviewer subprocess, never entries in "
+            "the session registry, and the pool writes no crumb, so a removal "
+            "there cannot leave one behind"
+        ),
     }
 
     @staticmethod

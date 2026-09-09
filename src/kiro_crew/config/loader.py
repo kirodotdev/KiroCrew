@@ -377,6 +377,11 @@ from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
 from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
 
+# AdvisorConfig is post-split: reached through the module object (imported
+# above), NOT the frozen pre-split re-export block, whose name set the
+# module-boundary pin freezes by identity.
+AdvisorConfig = _sections.AdvisorConfig
+
 logger = logging.getLogger(__name__)
 
 # Credential keys loaded from .env / environment
@@ -2491,6 +2496,10 @@ class KiroCrewConfig:
         default_factory=OrchestratorConfig,
         metadata=_meta("Orchestrator", "Autopilot/orchestrator settings."),
     )
+    advisor: AdvisorConfig = field(
+        default_factory=AdvisorConfig,
+        metadata=_meta("Advisor", "Opt-in cross-model session reviewer."),
+    )
     messaging: MessagingConfig = field(
         default_factory=MessagingConfig,
         metadata=_meta("Messaging", "Channel-neutral messaging transport settings."),
@@ -3203,6 +3212,7 @@ class KiroCrewConfig:
         messaging_data = _coerced_section(data, "messaging", _degraded)
         telemetry_data = _coerced_section(data, "telemetry", _degraded)
         orchestrator_data = _coerced_section(data, "orchestrator", _degraded)
+        advisor_data = _coerced_section(data, "advisor", _degraded)
         watchdog_data = _coerced_section(data, "watchdog", _degraded)
         resource_limits_data = _coerced_section(data, "resource_limits", _degraded)
 
@@ -3613,6 +3623,9 @@ class KiroCrewConfig:
                     ),
                     OrchestratorConfig.max_plan_duration_seconds,
                 ),
+            ),
+            advisor=AdvisorConfig(
+                enabled=_safe_bool(advisor_data.get("enabled", False), False),
             ),
             watchdog=WatchdogConfig(
                 check_after_secs=_safe_float(watchdog_data.get("check_after_secs", 60.0), 60.0),
@@ -4627,6 +4640,7 @@ class KiroCrewConfig:
             "mcp": asdict(self.mcp),
             "taskrunner": asdict(self.taskrunner),
             "orchestrator": asdict(self.orchestrator),
+            "advisor": asdict(self.advisor),
             "watchdog": asdict(self.watchdog),
             "resource_limits": asdict(self.resource_limits),
             "messaging": asdict(self.messaging),

@@ -14,6 +14,7 @@ exceptions) keeps working for existing callers and tests.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import json
 import logging
@@ -722,6 +723,7 @@ class AcpRuntime:
         acp_backend: str = ACP_BACKEND_KIRO,
         crew_agent: str = "",
         private_memory: bool = False,
+        extra_hidden_dirs: tuple[str, ...] = (),
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -766,6 +768,10 @@ class AcpRuntime:
         self._model = model
         self._sandbox_mode = sandbox_mode
         self._private_memory = private_memory is True
+        # Absolute paths hidden from the child on top of the harness mask and the
+        # tier's own list; the Advisor's reviewer uses it for crew-home leaves
+        # only a primary's in-sandbox MCP servers need.
+        self._extra_hidden_dirs = tuple(extra_hidden_dirs)
         if self._private_memory:
             from kiro_crew.member_memory_auth import require_private_memory_mcp_backend
 
@@ -1302,6 +1308,13 @@ class AcpRuntime:
 
         try:
             plan = await self._resolve_spawn_plan()
+            if self._extra_hidden_dirs:
+                # The plan carries the COMPLETE mask that reaches the sandbox
+                # call (see ``_resolve_spawn_plan``); this runtime's own extras
+                # join the harness mask there rather than at the wrap call.
+                plan = dataclasses.replace(
+                    plan, extra_hidden_dirs=(*plan.extra_hidden_dirs, *self._extra_hidden_dirs)
+                )
             argv = plan.argv
         except _KiroExecutableTrustError as exc:
             raise AcpRuntimeError(str(exc)) from exc

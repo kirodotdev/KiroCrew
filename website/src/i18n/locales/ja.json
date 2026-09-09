@@ -4055,7 +4055,6 @@
         "no_messages": "コンパイラーが何も報告していません。",
         "typesetting_hints_other": "{{count}} 件の植字ヒント"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} を削除",
         "files": "ファイル",
@@ -8246,6 +8245,22 @@
       "label": "変更には再起動が必要",
       "tooltip": "この設定は {{productName}} の実行中には変更できません。保存した値は保持され、次に {{productName}} を再起動したときに適用されます（設定 → バージョン情報、または起動したターミナルから）。",
       "schema_unavailable": "この設定に再起動が必要かどうかを確認できませんでした。"
+    },
+    "advisorOverrideControl": {
+      "advisor": "アドバイザー",
+      "advisor_mode": "アドバイザーモード",
+      "helper": "別のレビューセッションがこのセッションをレビューし、作業中に問題を指摘します。",
+      "on": "オン",
+      "off": "オフ",
+      "update_failed": "アドバイザーを更新できませんでした。",
+      "inherit_on": "継承（オン）",
+      "inherit_off": "継承（オフ）",
+      "helper_off": "レビューは実行されていません。",
+      "inherit": "継承",
+      "config_load_failed": "グローバルなアドバイザー設定を読み込めませんでした。",
+      "unavailable_backend": "アドバイザーには kiro-cli エージェントバックエンドが必要です。設定 → デベロッパー → エージェントバックエンドを kiro-cli に切り替えるか、アドバイザーをオフのままにしてください。",
+      "helper_inherit_off": "別のレビューセッションがこのセッションをレビューして問題を指摘できます。",
+      "unavailable_sandbox": "アドバイザーには認証情報を隠すサンドボックスが必要ですが、このコンピューターでは用意できません。"
     }
   },
   "hooks": {
@@ -9750,6 +9765,16 @@
         "copy_text_failed": "コピーできませんでした",
         "copy_text_unavailable": "この環境ではクリップボードがブロックされています。投稿テキストは選択済みです — Ctrl+C / ⌘C を押してください。編集したカードのテキストはカードから直接コピーしてください。",
         "export_failed": "共有カードを生成できませんでした"
+      },
+      "advisorMessage": {
+        "advisor": "アドバイザー",
+        "nit": "軽微",
+        "concern": "懸念",
+        "blocker": "ブロッカー",
+        "saved_for_next_turn": "次のターン用に保存",
+        "evidence": "根拠",
+        "sent_mid_turn": "ターンの途中でエージェントに送信",
+        "dropped_by_stop": "ターンを停止したため破棄"
       }
     },
     "chatPage": {
@@ -12865,7 +12890,12 @@
         "feature_videos_downloads_disabled": "動画のダウンロードは無効です。保存済みのクリップのみ再生されます。",
         "feature_videos_download_all": "すべて今すぐダウンロード",
         "failed_to_load_feature_video_status": "機能紹介動画のキャッシュ状態を読み込めませんでした",
-        "failed_to_start_feature_video_download": "ダウンロードを開始できませんでした"
+        "failed_to_start_feature_video_download": "ダウンロードを開始できませんでした",
+        "advisor": "アドバイザー",
+        "enable_advisor": "アドバイザーを有効化",
+        "enable_advisor_description": "エージェントの作業中に、別のレビューセッションがダッシュボードのチャットセッションをレビューして問題を指摘します。既定ではオフ。モデルピッカーでセッションごとに上書きできます。タスクランナー、cron、チャンネルのターンはまだレビューされません。",
+        "reviewer_model": "アドバイザーモデル",
+        "failed_to_save_advisor_setting": "アドバイザー設定を保存できませんでした"
       },
       "computerUsePanel": {
         "accessibility": "アクセシビリティ",

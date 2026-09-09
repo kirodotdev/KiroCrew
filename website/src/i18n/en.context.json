@@ -407,6 +407,14 @@
     "components.pendingDecisionCard.submit_n_answers": "Primary button label when several options are toggled; {{count}} is the number of picked options, e.g. 'Submit 2 answers'.",
     "components.pendingDecisionCard.add_to_message_box": "Secondary button on that card; puts the toggled option(s) into the message box below without sending.",
     "components.pendingDecisionCard.add_to_message_box_hint": "Tooltip of that secondary button; uses the same 'message box' term as the label.",
-    "components.pendingDecisionCard.dismiss_hint": "Tooltip of the X button stating the outcome: the card hides without answering, the decision stays in the chat, the loop keeps running."
+    "components.pendingDecisionCard.dismiss_hint": "Tooltip of the X button stating the outcome: the card hides without answering, the decision stays in the chat, the loop keeps running.",
+    "pages.chat.advisorMessage.nit": "Severity badge on an Advisor transcript card: the lowest severity, a minor non-blocking suggestion (the key keeps the reviewer-side name nit; the label reads Minor).",
+    "pages.settings.chatPanel.advisor": "Section heading in Settings > Chat for the cross-model session reviewer. Advisor is a product feature name here, not a financial or academic advisor.",
+    "pages.settings.chatPanel.enable_advisor": "Toggle label that enables the cross-model session reviewer globally. Advisor is the feature name; keep it consistent with components.advisorOverrideControl.advisor.",
+    "pages.settings.chatPanel.reviewer_model": "Select label for the model that reviews the primary model's work (the Advisor). Named after the Advisor section it sits in so a palette search for Advisor finds it.",
+    "pages.chat.advisorMessage.sent_mid_turn": "Outcome badge on an Advisor transcript card: the advice reached the running agent turn as a mid-turn steer. Names the outcome, not a mechanism.",
+    "pages.chat.advisorMessage.dropped_by_stop": "Outcome badge on an Advisor transcript card: the user stopped the turn while the advice was in flight, so it was intentionally dropped rather than saved.",
+    "components.advisorOverrideControl.helper_inherit_off": "One state-free sentence under the per-session Advisor select when the untouched default inherits a resolved global off: says what the Advisor is. Must not claim any review state or tell the user where to click.",
+    "components.advisorOverrideControl.unavailable_sandbox": "Inline error under the per-session Advisor select when the gateway refuses Enabled because this host's sandbox cannot hide credentials from the reviewer process. Plain language; do not name the sandbox tier."
   }
 }

@@ -29,7 +29,10 @@ from collections.abc import Mapping
 #: The camel-case spelling is not hypothetical -- ``_SEARCH_DENY_ARG_KEYS`` has
 #: accepted it for the search plane all along, while the sensitive-path keystone
 #: below read only the two snake_case forms.
-TARGET_PATH_KEYS: tuple[str, ...] = ("path", "file_path", "filePath")
+#: ``image_paths`` is kiro-cli's ``fs_read`` Image-mode target list: an image is
+#: a file read like any other, and a key the walker does not know is a read the
+#: gates never see.
+TARGET_PATH_KEYS: tuple[str, ...] = ("path", "file_path", "filePath", "image_paths", "imagePaths")
 
 
 #: Cap on the number of DISTINCT candidate paths collected below. The extractor
