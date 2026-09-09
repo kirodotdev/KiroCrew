@@ -2023,6 +2023,28 @@ def _policy_fetch(*, force: bool) -> None:
     raise SystemExit(1)
 
 
+def write_eval_artifacts(
+    results_dir: Path, ts: str, report: str, json_data: dict[str, object]
+) -> tuple[Path, Path]:
+    """Write the run's Markdown report and JSON summary, and return their paths.
+
+    Both are written as UTF-8 rather than the host's locale codec.
+    ``eval.runner.format_results`` puts a ✅ or ❌ on every scenario, session and
+    turn, so the report is never ASCII, and the turn snippets it embeds carry
+    whatever the agent said. Under the default codec on a Windows host — cp1252 in
+    the US and western Europe, cp950, cp932 and friends elsewhere — encoding that
+    raises ``UnicodeEncodeError``, and the raise lands AFTER the whole eval has
+    run, taking the JSON summary with it.
+    """
+
+    results_dir.mkdir(exist_ok=True)
+    report_path = results_dir / f"eval_{ts}.md"
+    report_path.write_text(report + "\n", encoding="utf-8")
+    json_path = results_dir / f"eval_{ts}.json"
+    json_path.write_text(json.dumps(json_data, indent=2) + "\n", encoding="utf-8")
+    return report_path, json_path
+
+
 async def _run_eval(args: argparse.Namespace) -> None:
     """Run multi-session evaluation scenarios."""
 
@@ -2110,13 +2132,7 @@ async def _run_eval(args: argparse.Namespace) -> None:
 
     # Save results
     results_dir = Path.cwd() / "eval_results"
-    results_dir.mkdir(exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
-    report_path = results_dir / f"eval_{ts}.md"
-    report_path.write_text(report + "\n")
-
-    json_path = results_dir / f"eval_{ts}.json"
     json_data = {
         "timestamp": ts,
         "scenarios": [r.summary() for r in results],
@@ -2124,7 +2140,7 @@ async def _run_eval(args: argparse.Namespace) -> None:
         "overall_passed": overall,
         "overall_total": len(results),
     }
-    json_path.write_text(json.dumps(json_data, indent=2) + "\n")
+    report_path, json_path = write_eval_artifacts(results_dir, ts, report, json_data)
 
     print(f"\nResults saved to:\n  {report_path}\n  {json_path}")
 

@@ -19,6 +19,9 @@ import argparse
 import dataclasses
 import io
 import json
+import os
+import subprocess
+import sys
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2654,6 +2657,76 @@ class TestRunEval:
         assert "smoke_test" in out
         h.runner.run_scenarios.assert_not_awaited()
         assert not (tmp_path / "eval_results").exists()
+
+    #: Imports the helper and writes a report holding the formatter's own glyph.
+    _WRITE_CHILD = """
+import locale, sys
+from pathlib import Path
+from kiro_crew.cli_commands import write_eval_artifacts
+
+print("encoding=" + locale.getencoding())
+report_path, json_path = write_eval_artifacts(
+    Path(sys.argv[1]), "20260101_000000", "## \\u2705 ok", {"overall_passed": 1}
+)
+print("wrote=" + report_path.name + "," + json_path.name)
+"""
+
+    def test_the_artifacts_survive_a_non_utf8_default_codec(self, tmp_path: Path) -> None:
+        """The report is written as UTF-8, not the host's locale codec.
+
+        Run in a CHILD PROCESS on purpose, against this file's usual convention:
+        the default codec ``open()`` picks is fixed when the interpreter starts,
+        so it cannot be substituted in-process — patching ``locale`` does not
+        reach the C-level lookup ``io`` actually performs.
+
+        Without ``encoding="utf-8"`` the write raises ``UnicodeEncodeError`` under
+        cp1252/cp950/cp932, and it raises after the eval has already run, so both
+        artifacts are lost.
+        """
+        env = dict(os.environ)
+        # PEP 540 off, PEP 538 coercion off, C locale: a non-UTF-8 default on
+        # every platform -- the Windows ANSI code page, or ASCII on POSIX.
+        env["PYTHONUTF8"] = "0"
+        env["PYTHONCOERCECLOCALE"] = "0"
+        env["LC_ALL"] = "C"
+        env["LANG"] = "C"
+        env.pop("PYTHONIOENCODING", None)
+        # The child is anchored outside the checkout, so hand it this
+        # interpreter's own import path rather than relying on an installed copy.
+        env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+        env["KIROCREW_HOME"] = str(tmp_path / "home")
+        out_dir = tmp_path / "eval_results"
+        proc = subprocess.run(
+            [sys.executable, "-c", self._WRITE_CHILD, str(out_dir)],
+            env=env,
+            capture_output=True,
+            text=True,
+            # This process's own capture is UTF-8 regardless of the codec the
+            # CHILD was forced onto; only the child's file write is under test.
+            encoding="utf-8",
+            errors="replace",
+            # The child imports the installed package; anchor it outside the
+            # checkout so nothing it writes relatively lands in the repo.
+            cwd=tmp_path,
+        )
+        encoding = next(
+            (
+                line.split("=", 1)[1].strip()
+                for line in proc.stdout.splitlines()
+                if line.startswith("encoding=")
+            ),
+            "",
+        )
+        if not encoding:
+            pytest.fail(f"the child never started:\n{proc.stdout}\n{proc.stderr}")
+        if encoding.lower().replace("-", "") in {"utf8", "utf8mb4"}:
+            pytest.skip(f"this host's default codec stayed UTF-8 ({encoding}); nothing to prove")
+
+        assert proc.returncode == 0, f"the save died under {encoding}:\n{proc.stderr}"
+        report = next(p for p in out_dir.iterdir() if p.suffix == ".md")
+        # Decode strictly: the bytes on disk have to BE UTF-8, whatever the host
+        # codec was. (Line endings are the text layer's, so compare by line.)
+        assert report.read_bytes().decode("utf-8").splitlines() == ["## ✅ ok"]
 
     @pytest.mark.asyncio
     async def test_dimension_summary_marks_pass_and_fail_rates(

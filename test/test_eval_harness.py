@@ -621,6 +621,31 @@ class TestReporting:
         assert "# Eval Results" in report
         assert "test" in report
 
+    def test_the_report_is_never_ascii(self):
+        """Every result carries a ✅ or ❌, so the report cannot be saved as ASCII.
+
+        This is the premise the artifact writer rests on: `_run_eval` hands this
+        string straight to `write_eval_artifacts`, and the coverage tests around
+        that call all patch this function out for a plain ASCII stub, so nothing
+        else pins what the writer is really given.
+        """
+        for ok in (True, False):
+            result = ScenarioResult(
+                name="test",
+                sessions=[SessionResult(name="s1", turns=[
+                    TurnResult(
+                        user_message="q",
+                        agent_response="r",
+                        assertion_results=[
+                            (Assertion(type=AssertionType.CONTAINS, value="r"), ok),
+                        ],
+                    ),
+                ])],
+            )
+            assert result.passed is ok
+            with pytest.raises(UnicodeEncodeError):
+                format_results([result]).encode("ascii")
+
     def test_format_results_with_dimensions(self):
         result = ScenarioResult(
             name="test",
