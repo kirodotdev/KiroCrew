@@ -2471,6 +2471,13 @@ stop reason fails closed to preserved. A future-version record is never
 replaceable (it belongs to the newer gateway that wrote it), and a terminal
 record whose accepted wake still awaits completion evidence keeps its own
 wake-in-flight refusal, so an unfinished correlation is never orphaned.
+A preserved record is not permanent: the owner ends it by CLEARING it, which is
+what `DELETE /api/autonudge/{loop_id}` does once the monitor is already terminal
+(`authorize_and_clear_monitor` — owner-gated, audited as `monitor_clear`, and
+refusing a live monitor, a future-version record, and a wake in flight). That is
+the only route that removes the row, so it is the one the re-arm refusal names;
+`POST /api/monitors/{id}/restart` revives the SAME subject and therefore cannot
+free the session to watch a different one.
 Create-only directives cannot silently replace an active
 legacy loop with a structured monitor or discard an active structured monitor's
 durable evidence. The generic service update also fails closed for structured

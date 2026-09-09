@@ -5728,7 +5728,8 @@
       "watches_load_failed": "Impossibile caricare le watch di questa sessione.",
       "watches_next": "prossima",
       "watches_note": "Svegliano l'agente solo con un segnale reale. Gestiscili nella pagina Pianificazione.",
-      "watches_title": "Monitoraggi senza token"
+      "watches_title": "Monitoraggi senza token",
+      "clear_record": "Cancella record"
     },
     "bottomTerminalPanel": {
       "close_terminal": "Chiudi il terminale",

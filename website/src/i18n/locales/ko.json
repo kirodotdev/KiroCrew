@@ -5542,7 +5542,8 @@
       "watches_load_failed": "이 세션의 워치를 불러올 수 없습니다.",
       "watches_next": "다음",
       "watches_note": "실제 신호가 있을 때만 에이전트를 깨웁니다. 스케줄 페이지에서 관리하세요.",
-      "watches_title": "토큰을 쓰지 않는 감시"
+      "watches_title": "토큰을 쓰지 않는 감시",
+      "clear_record": "기록 삭제"
     },
     "bottomTerminalPanel": {
       "close_terminal": "터미널 닫기",

@@ -17,6 +17,7 @@ from kiro_crew.autonudge import is_structured_monitor_loop, structured_monitor_b
 # is intentionally a THIN HTTP mapping over it.
 from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     authorize_and_add_nudge,
+    authorize_and_clear_monitor,
     authorize_and_stop_monitor,
     authorize_and_update_monitor,
     authorize_and_update_nudge,
@@ -854,7 +855,12 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
 
 
 async def api_autonudge_delete(request: web.Request) -> web.Response:
-    """DELETE /api/autonudge/{loop_id} — stop and remove a loop."""
+    """DELETE /api/autonudge/{loop_id} — stop and remove a loop.
+
+    For a structured monitor the verb splits by state: a LIVE monitor is
+    stopped (its outcome retained as evidence), an already-stopped one is
+    cleared (the row removed) so the slot can watch a different subject.
+    """
     svc = _autonudge_get()
     if svc is None:
         return web.json_response(
@@ -870,9 +876,30 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
     # update-path channel refusal uses -- rather than a second inline id-scan.
     existing = svc.get_by_id(loop_id)
     if existing is not None and is_structured_monitor_loop(existing):
-        denied = await _require_monitor_owner(request, "monitor_stop")
+        monitor = existing.monitor
+        # Two different operations share this verb, split by whether the record
+        # is already terminal. A LIVE monitor is STOPPED, which retains its
+        # outcome as evidence. An already-stopped one is CLEARED, which removes
+        # the row: that is the "its owner must clear it first" the re-arm
+        # refusal names, and without it the retained row is permanent, because
+        # ``stop_monitor`` returns an already-terminal loop unchanged and this
+        # route answered ``ok`` having removed nothing.
+        clearing = monitor is not None and monitor.outcome is not None
+        operation = "monitor_clear" if clearing else "monitor_stop"
+        denied = await _require_monitor_owner(request, operation)
         if denied is not None:
             return denied
+        if clearing:
+            _cleared, error, status = await authorize_and_clear_monitor(
+                svc=svc,
+                loop_id=loop_id,
+                session_key=existing.slot_key,
+                source="dashboard",
+                caller=request.remote or "",
+            )
+            if error is not None:
+                return _monitor_error(error, "monitor_clear_denied", status=status)
+            return web.json_response({"ok": True, "cleared": True})
         _stopped, error, status = await authorize_and_stop_monitor(
             svc=svc,
             loop_id=loop_id,

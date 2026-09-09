@@ -5542,7 +5542,8 @@
       "watches_load_failed": "このセッションのウォッチを読み込めませんでした。",
       "watches_next": "次回",
       "watches_note": "実際のシグナルがあったときだけエージェントを起こします。管理は「スケジュール」ページから。",
-      "watches_title": "トークンを消費しない監視"
+      "watches_title": "トークンを消費しない監視",
+      "clear_record": "記録を削除"
     },
     "bottomTerminalPanel": {
       "terminal_is_in_its_own_window": "ターミナルは別ウィンドウで開いています",

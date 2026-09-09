@@ -5728,7 +5728,8 @@
       "watches_load_failed": "Não foi possível carregar as vigilâncias desta sessão.",
       "watches_next": "próxima",
       "watches_note": "Só acordam o agente diante de um sinal real. Gerencie-os na página Agendamento.",
-      "watches_title": "Monitoramentos sem tokens"
+      "watches_title": "Monitoramentos sem tokens",
+      "clear_record": "Limpar registro"
     },
     "bottomTerminalPanel": {
       "close_terminal": "Fechar terminal",

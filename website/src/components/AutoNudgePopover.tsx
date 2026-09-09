@@ -529,9 +529,20 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             <button
               onClick={stop}
               disabled={saving}
+              data-testid="auto-nudge-stop"
               className="px-3 py-1 rounded border border-border text-muted hover:text-danger hover:border-danger bg-transparent cursor-pointer disabled:opacity-50"
             >
-              {i18nT('components.autoNudgePopover.stop_loop')}
+              {/* Two different actions behind one button, so the label has to
+                  name which one this press does. On a LIVE loop it stops the
+                  loop and keeps the record. On an already-stopped one there is
+                  nothing left to stop: the press REMOVES the record, which is
+                  what frees the slot to watch something else. Labelling both
+                  "Stop loop" made the second press read as a no-op, and a
+                  structured monitor's stopped record is exactly the case a user
+                  reaches this button for. */}
+              {loop.active
+                ? i18nT('components.autoNudgePopover.stop_loop')
+                : i18nT('components.autoNudgePopover.clear_record')}
             </button>
           )}
           <button

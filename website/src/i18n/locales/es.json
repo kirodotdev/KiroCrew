@@ -5728,7 +5728,8 @@
       "watches_load_failed": "No se pudieron cargar las vigilancias de esta sesión.",
       "watches_next": "siguiente",
       "watches_note": "Solo despiertan al agente ante una señal real. Gestiónalas en la página Programación.",
-      "watches_title": "Vigilancias sin consumo de tokens"
+      "watches_title": "Vigilancias sin consumo de tokens",
+      "clear_record": "Borrar registro"
     },
     "bottomTerminalPanel": {
       "close_terminal": "Cerrar la terminal",

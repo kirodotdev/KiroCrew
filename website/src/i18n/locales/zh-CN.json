@@ -5542,7 +5542,8 @@
       "watches_load_failed": "无法加载此会话的监视项。",
       "watches_next": "下次",
       "watches_note": "只在出现真实信号时唤醒智能体。可在“计划”页面管理。",
-      "watches_title": "零 token 监视"
+      "watches_title": "零 token 监视",
+      "clear_record": "清除记录"
     },
     "bottomTerminalPanel": {
       "close_terminal": "关闭终端",

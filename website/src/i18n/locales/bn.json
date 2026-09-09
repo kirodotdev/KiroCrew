@@ -5635,7 +5635,8 @@
       "watches_load_failed": "এই সেশনের ওয়াচগুলো লোড করা যায়নি।",
       "watches_next": "পরবর্তী",
       "watches_note": "প্রকৃত সংকেত পেলেই এজেন্টকে জাগায়। সময়সূচি পৃষ্ঠায় পরিচালনা করুন।",
-      "watches_title": "টোকেন-মুক্ত পর্যবেক্ষণ"
+      "watches_title": "টোকেন-মুক্ত পর্যবেক্ষণ",
+      "clear_record": "রেকর্ড মুছুন"
     },
     "bottomTerminalPanel": {
       "close_terminal": "টার্মিনাল বন্ধ করুন",

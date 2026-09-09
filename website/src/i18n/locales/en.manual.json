@@ -1583,7 +1583,8 @@
       "start_loop": "Start loop",
       "trigger_nudge": "Trigger nudge",
       "watches_load_failed": "Couldn't load this session's watches.",
-      "loop_paused": "Paused"
+      "loop_paused": "Paused",
+      "clear_record": "Clear record"
     },
     "bottomTerminalPanel": {
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",

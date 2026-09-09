@@ -712,6 +712,22 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 
+  it('says the button CLEARS the record once the loop is already stopped', async () => {
+    // One button, two actions. On a live loop the press stops the loop and keeps
+    // the record. On a stopped one there is nothing left to stop: the press
+    // removes the record, which is the only way the slot can watch something
+    // else -- a stopped structured monitor blocks a re-arm until its row is
+    // gone. Labelling both "Stop loop" made the second press read as a no-op.
+    // Both directions asserted so this cannot just move the confusion.
+    renderWith(makeLoop({ active: false }))
+    expect(screen.getByRole('button', { name: 'Clear record' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Stop loop' })).toBeNull()
+    cleanup()
+    renderWith(makeLoop({ active: true }))
+    expect(screen.getByRole('button', { name: 'Stop loop' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Clear record' })).toBeNull()
+  })
+
   it('sits on the schedule line, not in the Stop/Save action row (max-two-buttons-per-row)', async () => {
     // `website/AUTOSDE.yaml:230` holds a row to two controls and names this
     // escape itself: the third action "leaves the row". Asserted structurally

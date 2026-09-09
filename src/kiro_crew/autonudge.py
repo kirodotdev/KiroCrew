@@ -1477,7 +1477,7 @@ class AutoNudgeService:
                         raise MonitorUpdateConflict(
                             "the session's stopped automation is retained as evidence "
                             "and is not replaceable by a re-arm; its owner must clear "
-                            "it first"
+                            "it first from the dashboard's goal popover"
                         )
                     if existing_monitor is not None and existing_monitor.wake_in_flight:
                         raise MonitorUpdateConflict(
@@ -1654,7 +1654,8 @@ class AutoNudgeService:
                     raise MonitorUpdateConflict(
                         "the session's stopped automation is retained as evidence "
                         f"(stop reason: {existing.stopped_reason or 'manual'!s}) and is "
-                        "not replaceable by a re-arm; its owner must clear it first"
+                        "not replaceable by a re-arm; its owner must clear it first "
+                        "from the dashboard's goal popover"
                     )
                 if existing_monitor is not None and existing_monitor.wake_in_flight:
                     raise MonitorUpdateConflict(

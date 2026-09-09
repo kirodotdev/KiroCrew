@@ -5635,7 +5635,8 @@
       "watches_load_failed": "इस सत्र के वॉच लोड नहीं किए जा सके।",
       "watches_next": "अगला",
       "watches_note": "ये वास्तविक संकेत मिलने पर ही एजेंट को जगाते हैं। शेड्यूल पेज पर प्रबंधित करें।",
-      "watches_title": "टोकन-मुक्त निगरानी"
+      "watches_title": "टोकन-मुक्त निगरानी",
+      "clear_record": "रिकॉर्ड हटाएँ"
     },
     "bottomTerminalPanel": {
       "close_terminal": "टर्मिनल बंद करें",

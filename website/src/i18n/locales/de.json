@@ -5635,7 +5635,8 @@
       "watches_load_failed": "Die Watches dieser Sitzung konnten nicht geladen werden.",
       "watches_next": "nächste",
       "watches_note": "Sie wecken den Agenten nur bei einem echten Signal. Verwaltung auf der Seite „Zeitplan“.",
-      "watches_title": "Überwachungen ohne Tokenverbrauch"
+      "watches_title": "Überwachungen ohne Tokenverbrauch",
+      "clear_record": "Eintrag löschen"
     },
     "bottomTerminalPanel": {
       "close_terminal": "Terminal schließen",

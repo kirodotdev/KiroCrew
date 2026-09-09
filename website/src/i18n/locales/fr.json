@@ -5728,7 +5728,8 @@
       "watches_load_failed": "Impossible de charger les veilles de cette session.",
       "watches_next": "prochaine",
       "watches_note": "Elles ne réveillent l'agent qu'en cas de signal réel. Gérez-les depuis la page Planification.",
-      "watches_title": "Surveillances sans jetons"
+      "watches_title": "Surveillances sans jetons",
+      "clear_record": "Effacer l'enregistrement"
     },
     "bottomTerminalPanel": {
       "close_terminal": "Fermer le terminal",
