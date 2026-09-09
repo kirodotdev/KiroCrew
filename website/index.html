@@ -62,19 +62,178 @@
     // its closing tag ended this script early, and the remainder ran as an
     // inline module that threw. `npm run i18n:render` renders the built shell
     // and is what catches that; `vite build` alone exits 0.
+    // Reveal the shell's own failure panel. Deliberately lives here rather than
+    // in the app: when a boot-critical module never arrives, no app code runs, so
+    // no React error boundary and not staleShellHeal (a boot-time probe) can
+    // reach this state. Before this, a top-level page in that state showed the
+    // dark empty shell and nothing else -- the mobile black screen.
+    //
+    // The reveal waits, then checks whether #root has children, which is the
+    // whole "did we boot" test and needs no new signal from the bundle. An entry
+    // chunk that failed leaves it empty; a LAZY chunk that failed after render
+    // leaves it populated, and then the running app owns its own error surface
+    // and must not be covered by this. The wait also has to outlast the service
+    // worker's own bounded retry on the same request (two extra attempts with
+    // jittered backoff, see public/sw.js), or this would fire while the retry is
+    // still winning.
+    var bootFailureTimer = null;
+    var bootFailureSrc = '';
+    var bootFailureNote = '';
+    function hideBootFailure(panel) {
+      panel.hidden = true;
+      try { panel.style.display = ''; } catch (err) {}
+    }
+    // Once revealed, keep watching #root. Every signal this panel arms on is
+    // evidence the page MIGHT be dead, never proof: a slow entry chunk, a service
+    // worker retry that lands late, or a rejection from something other than the
+    // module graph all look identical at signal+4s. Without this, such a boot
+    // mounts UNDERNEATH a fixed maximum-z-index overlay that has no dismiss --
+    // strictly worse than the blank page, since the app is running and unreachable.
+    // So the reveal is reversible: the moment #root gains a child, the panel goes
+    // back to hidden and the running app owns its own errors again, which is the
+    // same rule the pre-reveal check applies.
+    //
+    // A MutationObserver is the only mechanism, with no polling fallback: reaching
+    // this code at all requires module-script support, which no engine shipped
+    // before 2017, and MutationObserver shipped in 2013. There is no engine that
+    // runs the one and lacks the other. (If `observe` throws, `root` is not a usable
+    // node, and a poll reading `root.firstChild` would be just as blind.)
+    //
+    // The tag name for a module script is deliberately NOT spelled out literally
+    // anywhere in this script's comments: an opening script tag inside script
+    // content flips the HTML tokenizer into its escaped state, so the next closing
+    // tag no longer ends this element and the remainder is parsed as one module that
+    // throws. That is the same trap the note at the top of this block records, and
+    // `npm run i18n:render` is what catches it -- `vite build` alone exits 0.
+    function watchForLateMount(panel, root) {
+      var observer = null;
+      var check = function () {
+        if (!root || !root.firstChild) return;
+        hideBootFailure(panel);
+        if (observer) { try { observer.disconnect(); } catch (err) {} observer = null; }
+      };
+      try {
+        if (window.MutationObserver && root) {
+          observer = new window.MutationObserver(check);
+          observer.observe(root, { childList: true });
+        }
+      } catch (err) { observer = null; }
+      check();
+    }
+    function revealBootFailure(src, note) {
+      // A later, more specific report wins the detail line: the runtime paths know
+      // no URL, so an eval throw followed by a real fetch failure should still name
+      // the module. `note` is what those paths contribute instead -- a statement of
+      // what happened, since that is the fact a reporter can actually paste.
+      if (src && !bootFailureSrc) bootFailureSrc = src;
+      if (note && !bootFailureNote) bootFailureNote = note;
+      if (bootFailureTimer !== null) return;
+      bootFailureTimer = window.setTimeout(function () {
+        bootFailureTimer = null;
+        var root = document.getElementById('root');
+        if (root && root.firstChild) return;
+        var panel = document.getElementById('boot-failure');
+        if (!panel) return;
+        var why = document.getElementById('boot-failure-why');
+        if (why && !bootFailureSrc) {
+          // The markup ships the fetch-failure wording because that is the common
+          // case, but leaving it there on the eval-throw path made the page
+          // contradict itself: "part of its code never arrived" directly above a
+          // detail line saying it arrived and then threw.
+          try {
+            why.textContent =
+              'Its code arrived but failed while starting, so nothing could run. ' +
+              'That is a fault in this build rather than anything you did.';
+          } catch (err) {}
+          // ...and the closing sentence goes with it, or the page would assert a
+          // build fault and then hedge "likely broken" about the button it offers.
+          var nextFetch = document.getElementById('boot-failure-next-fetch');
+          var nextBuild = document.getElementById('boot-failure-next-build');
+          if (nextFetch && nextBuild) {
+            try { nextFetch.hidden = true; nextBuild.hidden = false; } catch (err) {}
+          }
+        }
+        var detail = document.getElementById('boot-failure-detail');
+        if (detail) {
+          // Always populated, and always a POSITIVE fact, because the copy points at
+          // this line ("with the line below") in every state. An earlier version said
+          // no address was available, which reads as "nothing to report" and clashed
+          // with the instruction directly above it. Prefixed rather than a bare URL:
+          // a reader shown only the URL said they did not know what it was for.
+          //
+          // Exactly TWO shapes, so every state the line can be in is photographable:
+          // an address when the fetch failed, the thrown message when it did not.
+          // Each caller guarantees one of them, which is why there is no third
+          // sentence here for "neither" -- an unreachable-but-visible variant is a
+          // state nobody can review.
+          try {
+            detail.textContent = bootFailureSrc
+              ? 'Could not load: ' + bootFailureSrc
+              : bootFailureNote;
+          } catch (err) {}
+        }
+        // Both, deliberately: `hidden` is the semantic state assistive tech
+        // reads, and `display` is what actually paints. The tag ships without an
+        // inline `display` precisely so `hidden` is not overridden there, which
+        // means unhiding has to supply it here.
+        panel.hidden = false;
+        try { panel.style.display = 'flex'; } catch (err) {}
+        var retry = document.getElementById('boot-failure-retry');
+        if (retry) { try { retry.focus(); } catch (err) {} }
+        watchForLateMount(panel, root);
+      }, 4000);
+    }
+    function bootFailureIsEmbedded() {
+      try { return window.self !== window.top; } catch (err) { return true; }
+    }
     window.addEventListener('error', function (e) {
       var t = e && e.target;
-      if (!t || t.tagName !== 'SCRIPT' || t.type !== 'module') return;
-      var src = String(t.src || '').split('?')[0];
-      try { console.error('[boot] module script failed to load: ' + src); } catch (err) {}
-      var embedded = false;
-      try { embedded = window.self !== window.top; } catch (err) { embedded = true; }
-      if (!embedded) return;
-      try {
-        // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-        window.parent.postMessage({ type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: src }, '*');
-      } catch (err) {}
+      if (t && t.tagName) {
+        // A RESOURCE failed to load. Only a boot-critical module script means the
+        // page cannot start: an image, a font or a stylesheet failing costs looks,
+        // not the app, and must not raise a full-screen panel.
+        if (t.tagName !== 'SCRIPT' || t.type !== 'module') return;
+        var src = String(t.src || '').split('?')[0];
+        try { console.error('[boot] module script failed to load: ' + src); } catch (err) {}
+        if (!bootFailureIsEmbedded()) { revealBootFailure(src); return; }
+        try {
+          // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
+          window.parent.postMessage({ type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: src }, '*');
+        } catch (err) {}
+        return;
+      }
+      // No element target, so this is a module that LOADED and then threw while
+      // evaluating -- the resource arrived, the graph is what is broken. That is
+      // exactly what a static chunk-import cycle produces, so the panel has to
+      // cover it too: the CI gate keeps a cycle from landing, it cannot help a
+      // page that already has one. The thrown message is the one specific fact a
+      // reporter can paste, so it becomes the detail line, length-capped. The 4s
+      // wait and the `#root` re-check do the filtering -- an error the app recovers
+      // from leaves a mounted tree, and nothing is revealed.
+      //
+      // Embedded panes are left out on purpose: they have a host listening for
+      // mc-embedded-boot, and inventing a new stage for this would change a
+      // contract other frames already consume.
+      var msg = '';
+      try { msg = String((e && e.message) || '').slice(0, 200); } catch (err) {}
+      if (!bootFailureIsEmbedded()) {
+        // Always the same shape, so the detail line has exactly two variants rather
+        // than three: an engine that reports no message changes the PAYLOAD, not the
+        // state, the same way one URL differs from another.
+        revealBootFailure('', 'Startup error: ' + (msg || '(no message reported)'));
+      }
     }, true);
+    // There is deliberately NO `unhandledrejection` listener. A rejected promise
+    // reaching a dead boot is a protocol possibility with no named producer here:
+    // the entry is a static module tag, so its fetch failures arrive as `error`
+    // events; the only un-awaited pre-mount chain in the entry is DEV-only
+    // (@axe-core/react); the Pierre warm import carries its own `.catch`; and a
+    // failed lazy chunk surfaces as Vite's `vite:preloadError` event, which the app
+    // handles once it is running. The one real rejection this shell used to produce
+    // -- its own service-worker registration on a flaky network -- is suppressed at
+    // source below, because it says nothing about whether the app booted. Arming on
+    // any rejection therefore bought a state no user reaches while costing a copy
+    // path that contradicted itself. Name a producer and this is three lines back.
   </script>
   <script>
     // Set data-ui from localStorage before React hydrates to prevent flash of
@@ -95,7 +254,115 @@
 </head>
 <body>
   <div id="root"></div>
+  <!-- Shell-owned failure panel, hidden until revealBootFailure decides the
+       bundle never ran. Every style here is inline on purpose: if a boot-critical
+       module could not be fetched then neither could the CSS chunk, so anything
+       depending on a stylesheet or a utility class would render unstyled. The
+       colours are fixed rather than theme-derived for the same reason.
+       The text is English-only for the same reason again -- i18n lives in the
+       bundle that failed to load, so there is no runtime here to translate with
+       and no locale catalogue to read. An untranslated sentence a user can act on
+       beats a correctly-translated blank page.
+
+       `display` is the ONE property deliberately NOT inline here, and it has to
+       stay that way. `hidden` renders through the UA stylesheet's plain
+       `[hidden] { display: none }`, which carries no `!important`, so any inline
+       `display` outranks it and the attribute becomes inert: with `display:flex`
+       written here the panel covered the whole viewport at maximum z-index on
+       EVERY load and, being topmost, swallowed every click -- verified in
+       Chromium, where `elementFromPoint` at the viewport centre returned this
+       node on a healthy page. revealBootFailure sets `display` at the moment it
+       decides to unhide, and bootFailureSurface.test.ts fails if a `display`
+       declaration reappears in this tag. -->
+  <div id="boot-failure" hidden role="alert" aria-live="assertive"
+       style="position:fixed;inset:0;z-index:2147483647;align-items:center;justify-content:center;padding:24px;background:#0b1220;color:#e5e7eb;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif">
+    <!-- An inline <style> rather than an inline attribute because a focus ring
+         cannot be expressed as one. It still survives a failed CSS chunk, since it
+         ships inside this document and costs no request. Without it the UA default
+         paints, and the default is not the same everywhere: white on desktop
+         Chromium, ORANGE on mobile -- and a reader shown the orange one read it as
+         a warning ("orange usually means careful") on the one control that is the
+         way out. `:focus` rather than `:focus-visible` because this button is
+         focused programmatically when the panel reveals, and whether that counts
+         as "visible" focus is a per-engine heuristic; a ring on the panel's only
+         control is wanted in every case anyway. -->
+    <style>#boot-failure-retry:focus{outline:2px solid #93c5fd;outline-offset:3px}</style>
+    <div style="max-width:32rem">
+      <h1 style="margin:0 0 12px;font-size:1.25rem;font-weight:600">This page could not finish loading</h1>
+      <p id="boot-failure-why" style="margin:0 0 12px">Part of its code never arrived, so nothing could start. That is almost always the network or a proxy in front of it, not something you did.</p>
+      <p style="margin:0 0 20px">Retrying clears this page's cached copy first, which is what gets you out of it when reloading the page yourself keeps failing. None of your chats or settings are kept there, so nothing of yours is lost.       <!-- Two closing sentences, toggled by the reveal, because the two paths owe the
+           reader different things. On a fetch failure the build is probably fine and
+           a retry is the likely cure, so reporting is the fallback. On an eval throw
+           the panel has just asserted the build is at fault, and hedging "likely
+           broken" right after that made the page argue with itself about the only
+           button it offers. Both are static markup so the link survives without JS
+           building HTML. `hidden` alone flips them, and neither declares an inline
+           `display` -- see the note on the panel tag for why that matters. -->
+      <span id="boot-failure-next-fetch">If retrying does not help, the build itself is likely broken and worth reporting at <a href="https://github.com/kirodotdev/KiroCrew/issues" style="color:#93c5fd">github.com/kirodotdev/KiroCrew/issues</a>, with the line below (one tap selects it).</span><span id="boot-failure-next-build" hidden>The fault is in this build, so a retry may or may not fetch a fixed copy. Either way it is worth reporting at <a href="https://github.com/kirodotdev/KiroCrew/issues" style="color:#93c5fd">github.com/kirodotdev/KiroCrew/issues</a>, with the line below (one tap selects it).</span></p>
+      <button id="boot-failure-retry" type="button"
+              style="font:inherit;padding:10px 18px;border:1px solid #3b82f6;border-radius:8px;background:#1d4ed8;color:#fff;cursor:pointer">Clear cache and retry</button>
+      <!-- `user-select: all` so one tap or click selects the WHOLE line: the copy
+           above asks the user to include this in a report, and on a phone
+           finger-selecting a long URL is the friction that stops them. A Copy
+           button was the other option and was rejected as more surface than it
+           buys -- a second control on a one-action recovery screen competes with
+           the escape hatch, and needs the clipboard API, a permission-denied path
+           and its own states. The -webkit- prefix is for Safari, which is the
+           engine this panel exists for. -->
+      <p id="boot-failure-detail" style="margin:20px 0 0;font-size:0.75rem;opacity:0.7;word-break:break-all;-webkit-user-select:all;user-select:all"></p>
+    </div>
+  </div>
   <script type="module" src="/src/main.tsx"></script>
-  <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js')</script>
+  <script>
+    // The `.catch` is load-bearing rather than tidiness: an un-awaited rejection
+    // here IS an unhandledrejection, and the boot-failure panel above treats one
+    // as evidence the page never started. Registration failing says nothing about
+    // whether the app booted -- and it fails exactly where this matters, on the
+    // flaky network the panel exists for. Swallowing it removes the most likely
+    // false trigger at its source instead of healing the symptom.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(function () { })
+    }
+    // Wired here rather than in the head block because the button only exists
+    // once the body is parsed. Unregisters the worker and drops CacheStorage
+    // before reloading: a plain reload does NOT bypass the worker on iOS Safari,
+    // so without this the user is stuck with the same cached shell serving the
+    // same dark skeleton, and clearing site data by hand is the only way out.
+    // Mirrors clearSwAndCaches in src/lib/staleShellHeal.ts, which cannot help
+    // here because it runs after boot.
+    var kcRetry = document.getElementById('boot-failure-retry')
+    if (kcRetry) kcRetry.addEventListener('click', function () {
+      kcRetry.disabled = true
+      // `disabled` alone changes nothing on an inline-styled button, so without
+      // this the surface built to restore trust goes silent for up to 3s. The
+      // dimming and cursor go with the relabel because a reader shown only the new
+      // text could not tell whether the busy button was still clickable.
+      try {
+        kcRetry.textContent = 'Clearing cache...'
+        kcRetry.style.opacity = '0.65'
+        kcRetry.style.cursor = 'default'
+      } catch (e) { }
+      var done = function () { try { location.reload() } catch (e) { } }
+      var jobs = []
+      try {
+        if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+          jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+            return Promise.all(rs.map(function (r) { return r.unregister() }))
+          }))
+        }
+      } catch (e) { }
+      try {
+        if (window.caches && window.caches.keys) {
+          jobs.push(window.caches.keys().then(function (ks) {
+            return Promise.all(ks.map(function (k) { return window.caches.delete(k) }))
+          }))
+        }
+      } catch (e) { }
+      // Reload even if clearing fails, and never wait on it forever: a reload
+      // that happens anyway is strictly better than a dead button.
+      Promise.all(jobs).catch(function () { }).then(done)
+      window.setTimeout(done, 3000)
+    })
+  </script>
 </body>
 </html>

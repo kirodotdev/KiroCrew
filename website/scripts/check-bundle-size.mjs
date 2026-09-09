@@ -17,7 +17,7 @@
 // byte-for-byte unaffected -- CI runs the analyze build and then this script.
 import path from 'path'
 import { pathToFileURL } from 'url'
-import { checkChunkBudgets, formatBytes, loadBundleSummary } from './lib/bundleReport.mjs'
+import { checkChunkBudgets, failGate, formatBytes, loadSummaryOrExit } from './lib/bundleReport.mjs'
 
 const KB = 1024
 
@@ -163,29 +163,14 @@ export const CHUNK_BUDGETS = {
 
 const REPORT_PATH = path.resolve('dist', 'bundle-report.json')
 
-function fail(message, code = 1) {
-  process.stderr.write(`${message}\n`)
-  process.exit(code)
-}
-
-// Exit-code mapping for this gate: 2 = report missing, 3 = report malformed or
-// unsupported version, 4 = report valid but lists no chunks. The contract itself
-// (existence/shape/version) lives in the shared loadBundleSummary; 4 is checked
-// here rather than there because an empty report is legitimate for
+// This gate's own exit code, beyond the 2 (missing) / 3 (malformed) that
+// loadSummaryOrExit owns: 4 = report valid but lists no chunks. That one is
+// checked here rather than there because an empty report is legitimate for
 // bundle-report.mjs, which simply has nothing to render.
-function loadSummary(file) {
-  const { summary, error } = loadBundleSummary(file, {
-    hint:
-      'Run `vite build --mode analyze` first -- a plain `npm run build` deliberately ' +
-      'does not write one, so the normal build stays unaffected.',
-  })
-  if (error) fail(error.message, error.code === 'missing' ? 2 : 3)
-  return summary
-}
 
 export function main(argv = process.argv.slice(2)) {
   const reportPath = argv[0] ? path.resolve(argv[0]) : REPORT_PATH
-  const summary = loadSummary(reportPath)
+  const summary = loadSummaryOrExit(reportPath)
   const { breaches, unusedBudgets, checkedCount } = checkChunkBudgets(summary, {
     budgets: CHUNK_BUDGETS,
     defaultBudget: DEFAULT_BUDGET_BYTES,
@@ -199,7 +184,7 @@ export function main(argv = process.argv.slice(2)) {
   // unused-budget warnings, so the actionable line is not buried under one
   // warning per allowlist entry (11 of them today).
   if (checkedCount === 0) {
-    fail(
+    failGate(
       `no chunks in ${reportPath} -- the gate measured nothing, so it cannot ` +
         'certify anything. Re-run `vite build --mode analyze` and check it ' +
         'emitted a bundle.',
@@ -230,7 +215,7 @@ export function main(argv = process.argv.slice(2)) {
         `by ${formatBytes(b.overage)} (chunk '${b.logicalName}')\n`
     )
   }
-  fail(
+  failGate(
     `${breaches.length} chunk(s) over budget. Either shrink the chunk (prefer a lazy ` +
       'import() boundary or a codeSplitting group -- see website/vite.config.ts), or, if the ' +
       'growth is genuinely irreducible, add/adjust its entry in CHUNK_BUDGETS in ' +

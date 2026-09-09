@@ -104,6 +104,14 @@ export function summarizeBundle(bundle, options = {}) {
       moduleCount,
       isEntry: Boolean(output.isEntry),
       isDynamicEntry: Boolean(output.isDynamicEntry),
+      // STATIC imports only, as the bundler itself resolved them -- the edge set
+      // an initialization cycle can form on. `dynamicImports` is deliberately
+      // excluded: a dynamic edge defers execution, so it cannot make a chunk
+      // body run before something it references has initialized. Recorded as an
+      // additive field on version 1: a consumer that does not know about it is
+      // unaffected, and findChunkCycles refuses a report that lacks it rather
+      // than reading "no imports" as "no cycles".
+      imports: Array.isArray(output.imports) ? [...output.imports] : [],
     })
   }
 
@@ -231,6 +239,112 @@ export function checkChunkBudgets(summary, { budgets = {}, defaultBudget } = {})
 }
 
 /**
+ * Find static-import cycles between the emitted JS chunks.
+ *
+ * The failure this catches is not a size regression, it is a blank page. When
+ * two chunks statically import each other, one body runs before the other has
+ * finished initializing, so a binding it reads is still uninitialized -- in this
+ * app that surfaces as `new QueryClient(...)` throwing before React mounts, and
+ * the user sees the shell's dark skeleton and nothing else. No existing gate can
+ * see it: the per-chunk budget above measures bytes, and the unit suite never
+ * loads a built bundle.
+ *
+ * It is reachable from ordinary config edits rather than from application code.
+ * Setting rolldown's `includeDependenciesRecursively: false` produced two cycles
+ * on a tree that had none -- a 71-chunk one spanning App, client, vendor-react
+ * and vendor-icons, and a 3-chunk one across the graph chunks -- while every
+ * other gate stayed green.
+ *
+ * Returns the verdict as data rather than printing or exiting, matching
+ * `checkChunkBudgets`: `cycles` is a list of strongly connected components with
+ * more than one chunk (plus any self-loop), each sorted for stable output, and
+ * `edgeCount` / `checkedCount` describe what was actually measured.
+ *
+ * `imports` is required. A summary whose chunks carry no `imports` key measured
+ * no edges at all, and reading that as "no cycles" would be a green gate over an
+ * unmeasured graph, so it is reported through `missingImports` for the caller to
+ * fail on.
+ */
+export function findChunkCycles(summary) {
+  const chunks = summary && Array.isArray(summary.chunks) ? summary.chunks : []
+  const known = new Set()
+  for (const chunk of chunks) {
+    if (chunk && typeof chunk.fileName === 'string') known.add(chunk.fileName)
+  }
+
+  let withImports = 0
+  const graph = new Map()
+  for (const chunk of chunks) {
+    if (!chunk || typeof chunk.fileName !== 'string') continue
+    if (Array.isArray(chunk.imports)) withImports += 1
+    const targets = new Set()
+    for (const target of Array.isArray(chunk.imports) ? chunk.imports : []) {
+      // Only edges between chunks this report describes. An import of something
+      // outside the emitted set cannot participate in a cycle within it.
+      if (typeof target === 'string' && known.has(target)) targets.add(target)
+    }
+    graph.set(chunk.fileName, targets)
+  }
+
+  const edgeCount = [...graph.values()].reduce((total, set) => total + set.size, 0)
+  const missingImports = graph.size > 0 && withImports === 0
+
+  // Tarjan, iterated rather than recursive: this graph runs to hundreds of
+  // chunks and a recursive walk would risk the stack on a deep dependency path.
+  const index = new Map()
+  const low = new Map()
+  const onStack = new Set()
+  const stack = []
+  const cycles = []
+  let counter = 0
+
+  for (const root of graph.keys()) {
+    if (index.has(root)) continue
+    index.set(root, counter)
+    low.set(root, counter)
+    counter += 1
+    stack.push(root)
+    onStack.add(root)
+    const work = [{ node: root, children: [...graph.get(root)].sort()[Symbol.iterator]() }]
+    while (work.length > 0) {
+      const frame = work[work.length - 1]
+      let descended = false
+      for (const child of frame.children) {
+        if (!index.has(child)) {
+          index.set(child, counter)
+          low.set(child, counter)
+          counter += 1
+          stack.push(child)
+          onStack.add(child)
+          work.push({ node: child, children: [...(graph.get(child) || [])].sort()[Symbol.iterator]() })
+          descended = true
+          break
+        }
+        if (onStack.has(child)) low.set(frame.node, Math.min(low.get(frame.node), index.get(child)))
+      }
+      if (descended) continue
+      work.pop()
+      const parent = work.length > 0 ? work[work.length - 1].node : null
+      if (parent !== null) low.set(parent, Math.min(low.get(parent), low.get(frame.node)))
+      if (low.get(frame.node) === index.get(frame.node)) {
+        const component = []
+        for (;;) {
+          const top = stack.pop()
+          onStack.delete(top)
+          component.push(top)
+          if (top === frame.node) break
+        }
+        const selfLoop = graph.get(frame.node).has(frame.node)
+        if (component.length > 1 || selfLoop) cycles.push(component.sort())
+      }
+    }
+  }
+
+  cycles.sort((a, b) => b.length - a.length || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+  return { cycles, edgeCount, checkedCount: graph.size, missingImports }
+}
+
+/**
  * Compare two summaries. Used to answer "did my change make it bigger", which is
  * the question a report is usually opened to settle.
  */
@@ -296,4 +410,40 @@ export function loadBundleSummary(file, { hint = '' } = {}) {
     }
   }
   return { summary: parsed }
+}
+
+/** What produces the report in a gate's context. Module-private: the only reader
+ * is loadSummaryOrExit's default below, and the renderer passes its own text. */
+const ANALYZE_BUILD_HINT =
+  'Run `vite build --mode analyze` first -- a plain `npm run build` deliberately ' +
+  'does not write one, so the normal build stays unaffected.'
+
+/**
+ * Write a gate failure to stderr and exit with `code`.
+ *
+ * Lives here because all three report consumers -- both gates and the renderer --
+ * had a byte-identical private copy of this, so a change to the message channel
+ * or the default code silently applied to one and not the others.
+ */
+export function failGate(message, code = 1) {
+  process.stderr.write(`${message}\n`)
+  process.exit(code)
+}
+
+/**
+ * Load a report or exit: 2 = missing, 3 = malformed or an unsupported version.
+ *
+ * That mapping and the accompanying hint were duplicated verbatim in
+ * check-bundle-size.mjs and check-chunk-cycles.mjs, so the two would have drifted
+ * the moment either message was reworded. The renderer passes its own `hint`
+ * because it names a different command (`npm run analyze`), which is a real
+ * difference rather than drift -- everything else about the contract is shared.
+ *
+ * Exit codes beyond 3 stay with each caller: they describe what THAT gate could
+ * not measure, not what the report failed to be.
+ */
+export function loadSummaryOrExit(file, { hint = ANALYZE_BUILD_HINT } = {}) {
+  const { summary, error } = loadBundleSummary(file, { hint })
+  if (error) failGate(error.message, error.code === 'missing' ? 2 : 3)
+  return summary
 }

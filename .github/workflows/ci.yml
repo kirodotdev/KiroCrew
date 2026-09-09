@@ -1840,6 +1840,22 @@ jobs:
         # website/scripts/check-bundle-size.mjs (CHUNK_BUDGETS).
         run: node scripts/check-bundle-size.mjs
 
+      - name: Chunk cycle gate
+        working-directory: website
+        # Reuses the analyze build above rather than paying for a second one, which
+        # is why it lives in this job instead of its own. The job KEEPS its name:
+        # `Bundle Size Gate` is a required check, and renaming it to match the
+        # widened scope would silently stop satisfying branch protection.
+        #
+        # Different failure from the size gate, and one nothing else here can see.
+        # Two chunks that statically import each other have no valid
+        # initialization order, so a body runs against an uninitialized binding
+        # and the page blanks before React mounts. Bytes stay fine, tsc stays
+        # fine, and the unit suite never loads a bundle -- a config edit
+        # (rolldown's `includeDependenciesRecursively: false`) produced two cycles
+        # with every other gate green, which is what this closes.
+        run: node scripts/check-chunk-cycles.mjs
+
   e2e:
     name: E2E (stub ACP backend, offline)
     needs: [await-fast-gate]
