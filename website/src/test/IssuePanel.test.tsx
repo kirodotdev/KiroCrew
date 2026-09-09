@@ -219,4 +219,31 @@ describe('IssuePanel', () => {
     expect(text).toContain('- Reported by: octocat')
     expect(text).toContain(`- Issue: ${openIssue.url}`)
   })
+
+  it('qualifies source tabs with their project when two projects share a number', async () => {
+    // Issue numbers are only unique per project: group-a/svc#1 and
+    // group-b/svc#1 would render two identical `#1` tabs. The qualifier
+    // prefixes each with its project path, same as the Changes panel.
+    renderPanel({
+      issues: [
+        { url: 'https://gitlab.com/group-a/svc/-/issues/1', provider: 'gitlab', number: 1, repo: 'svc', kind: 'issue' },
+        { url: 'https://gitlab.com/group-b/svc/-/issues/1', provider: 'gitlab', number: 1, repo: 'svc', kind: 'issue' },
+      ],
+    })
+
+    expect(await screen.findByRole('tab', { name: /group-a\/svc #1/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /group-b\/svc #1/i })).toBeInTheDocument()
+  })
+
+  it('keeps bare numbers on a single-project issue strip', async () => {
+    renderPanel({
+      issues: [
+        { url: 'https://gitlab.com/group-a/svc/-/issues/1', provider: 'gitlab', number: 1, repo: 'svc', kind: 'issue' },
+        { url: 'https://gitlab.com/group-a/svc/-/issues/2', provider: 'gitlab', number: 2, repo: 'svc', kind: 'issue' },
+      ],
+    })
+
+    const tabs = await screen.findAllByRole('tab')
+    for (const tab of tabs) expect(tab.textContent ?? '').not.toContain('group-a/svc')
+  })
 })

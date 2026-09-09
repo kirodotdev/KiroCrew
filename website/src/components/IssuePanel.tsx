@@ -20,6 +20,7 @@ import {
   MAX_PULL_REQUEST_SOURCES,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
+import { sourceTabQualifier } from '../utils/sourceProviderMeta'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import JiraLogo from './icons/JiraLogo'
@@ -312,6 +313,15 @@ export default function IssuePanel({
 }) {
   const cappedIssues = issues.slice(0, MAX_PULL_REQUEST_SOURCES)
   const selected = cappedIssues.find(issue => issue.url === selectedUrl) || cappedIssues[0]
+  // Same ambiguity as the Changes panel's source strip: issue numbers are only
+  // unique per project, so a session naming group-a/svc#1 and group-b/svc#1
+  // renders two identical `#1` tabs. Qualify with the project when the strip
+  // spans more than one; Jira keeps its own `KEY-1` grammar (the qualifier is
+  // null for it by construction).
+  const tabQualifier = useMemo(
+    () => sourceTabQualifier(issues.slice(0, MAX_PULL_REQUEST_SOURCES)),
+    [issues],
+  )
   const [tab, setTab] = useState<IssueTab>('description')
   // A ref, not state: the flag is consumed inside queryFn and must not itself
   // trigger a render (which would re-run the effect chain around the query).
@@ -395,7 +405,9 @@ export default function IssuePanel({
           aria-label={i18nT('components.issuePanel.issues')}
           className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto"
         >
-          {cappedIssues.map(item => (
+          {cappedIssues.map(item => {
+            const qualifier = tabQualifier(item)
+            return (
             <Btn
               key={item.url}
               type="button"
@@ -410,9 +422,13 @@ export default function IssuePanel({
                 : item.provider === 'jira'
                 ? <JiraLogo size={13} className="shrink-0" />
                 : <GitlabLogo size={13} className="shrink-0" />}
+              {/* No CSS truncation: the qualifier is already shortened to its
+                  minimal unique trailing suffix; the full url is in the title. */}
+              {qualifier && <span>{qualifier}</span>}
               <span>{item.provider === 'jira' ? `${item.repo}-${item.number}` : `#${item.number}`}</span>
             </Btn>
-          ))}
+            )
+          })}
         </div>
       )}
 
