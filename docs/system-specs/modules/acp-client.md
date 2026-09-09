@@ -579,6 +579,52 @@ Subprocess lifecycle:
   carry that error. These sites authorize on a **freshly verified** probe
   (`verified_ready`, 30s ceiling), never the bare latch — a stale `ready=True`
   would green-light exactly the signed-out spawn the gate exists to prevent.
+  - **The latch governs only a harness that signs in through kiro-cli.** The
+    gate first reads `agent.acp_backend` (off the loop, through
+    `KiroCrewConfig.load`) and applies only when that backend is a member of
+    `backends_retired_by_host_logout()` — positive membership (H5/H6), answered
+    by `kiro_readiness.backend_signs_in_via_kiro_cli()` over `selected_backend()`.
+    For any other
+    selected harness (claude-agent-acp, codex-acp) the probe describes a binary
+    the sessions never spawn, and refusing on it locked every gated endpoint
+    behind a kiro-cli sign-in the operator had stopped needing; the gate now
+    returns `None` without consulting the service. An unreadable config answers
+    "kiro" so the latch keeps governing — fail closed toward the gate. The two
+    spawn sites do **not** rely on that `None`: each tests the membership itself
+    and never resolves kiro-cli for a foreign harness (`/api/models` answers
+    `model_list_backend_unsupported` 503; `/api/sessions/usage` publishes the
+    `{"available": false}` marker that hides the credit pill), because kiro-cli
+    may still be installed and signed out on that host and the browser storm is
+    what the spawn does whatever backend the sessions use.
+    `test_kiro_spawn_readiness_gate.py::test_gate_applies_exactly_to_the_kiro_identity_store_members`
+    pins the membership over every id in `ACP_BACKENDS_KNOWN`.
+  - **One backend snapshot per request.** The gate takes `backend=` from a
+    caller that already read the configured backend for its own branch
+    (`/api/models`, `/api/sessions/usage`), and reads config itself only when
+    handed none. Two reads are two snapshots: a `PATCH agent.acp_backend`
+    landing between them admits the kiro-cli branch on the first while the gate
+    stands aside on the second — one unauthenticated spawn.
+    `test_api_models_gates_on_its_own_snapshot_not_a_second_read` pins it.
+  - **A caller that continues a live session gates on THAT session's backend.**
+    A live session keeps the backend it was started on (a PATCH refreshes
+    defaults and retires nothing in flight), and plain regenerate continues the
+    slot's session rather than discarding it, so after a switch to Claude Code
+    the rerun still lands on the old kiro-cli.
+    `kiro_readiness.live_session_signs_in_via_kiro_cli` peeks
+    `state.sessions._sessions` (never creates) and reads the provider's own
+    `uses_kiro_identity_store` declaration (H14) — the same membership the gate
+    derives for a configured backend, so the id is never re-derived from a
+    live session; `None` falls back to the configured
+    backend, which is what a fresh session would get. `POST
+    /v1/chat/completions` with an `id` naming a slot that already holds a live
+    session continues it the same way, so that endpoint gates once the slot is
+    known rather than before the body is read; an `id` for a slot with no live
+    session, or no `id` at all, starts fresh on the configured backend.
+    Edit-resend and rewind discard the conversation first, so the configured
+    backend is theirs.
+    `test_chat_regenerate_cov80.py::test_regenerate_gates_on_the_live_sessions_backend_after_a_hot_switch`
+    and `test_openai_compat.py::TestApiCompletionsBlocking::test_gates_on_the_live_sessions_backend_after_a_hot_switch`
+    pin it.
 - **`AcpAuthRequired` is the authoritative logout signal.** Readiness is probed
   at gateway start and on explicit user action only, so a mid-session sign-out is
   discovered when the ACP attempt fails, not by a poll. `AcpRuntime`/`AcpClient`

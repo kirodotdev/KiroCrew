@@ -43,7 +43,11 @@ from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
     internal_memory_scope,
 )
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    backend_signs_in_via_kiro_cli,
+    reject_if_kiro_unverified,
+    selected_backend,
+)
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.executors import subprocess_executor
@@ -544,6 +548,25 @@ def _publish_usage(payload: dict[str, object]) -> None:
     _usage_cache_ts = time.time()
 
 
+def _publish_usage_unavailable_without_refresh_stamp() -> None:
+    """Hide the pill for a backend that has no kiro credit plan, WITHOUT a stamp.
+
+    ``_publish_usage`` stamps ``_usage_cache_ts`` with now, which is right for a
+    scrape result: it starts the refresh interval. It is wrong here. A switch back
+    to a kiro identity-store backend inside ``_USAGE_REFRESH_SECS`` would then
+    find a fresh-looking cache and skip the fetch, leaving the pill hidden for up
+    to ten minutes on a harness that does have a plan to show. Leaving the stamp
+    at zero means the first kiro poll after a switch refreshes immediately, and
+    the marker itself is idempotent so a 30s foreign-backend poll rewrites
+    nothing once it is set.
+    """
+    global _usage_cache, _usage_cache_ts
+    if _usage_cache.get("available") is False:
+        return
+    _usage_cache = {"available": False}
+    _usage_cache_ts = 0.0
+
+
 def _cache_transient_failure() -> None:
     """Record a transient usage-fetch failure without blanking the pill.
 
@@ -963,11 +986,24 @@ async def _fetch_usage_bg() -> None:
 
 async def api_sessions_usage(request: web.Request) -> web.Response:
     """GET /api/sessions/usage — cached kiro credit usage (background refresh)."""
+    # The credit plan this scrapes is kiro-cli's, so it exists only for a
+    # harness that signs in through kiro-cli (positive membership, harness-parity
+    # H5). On any other selected backend publish the same unavailable marker
+    # `_fetch_usage_bg` uses for an absent binary -- the pill hides -- WITHOUT
+    # scheduling the fetch: the readiness gate stands aside for a foreign
+    # harness, while kiro-cli may still be installed and signed out here, and the
+    # scrape below opens a browser login on every 30s poll in that state.
+    backend = await selected_backend()
+    if not backend_signs_in_via_kiro_cli(backend):
+        _publish_usage_unavailable_without_refresh_stamp()
+        return web.json_response({"usage": _usage_cache})
     # Same browser-storm guard as api_models: the /usage scrape shells out to
     # `kiro-cli chat --no-interactive ... /usage`, which auto-opens a browser
     # login while signed out. This endpoint is polled every 30s by the top-bar
     # credit pill, so an unauthenticated gateway spawned a browser every 30s.
-    blocked = await reject_if_kiro_unverified(request)
+    # One snapshot: the gate is handed the backend read above, never a second
+    # read a PATCH could land between.
+    blocked = await reject_if_kiro_unverified(request, backend=backend)
     if blocked is not None:
         return blocked
     now = time.time()

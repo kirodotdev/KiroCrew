@@ -11,7 +11,10 @@ from aiohttp import web
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history, save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    live_session_signs_in_via_kiro_cli,
+    reject_if_kiro_unverified,
+)
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -41,17 +44,29 @@ _SAVE_DRAIN_ATTEMPTS = 8
 
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/regenerate — regenerate the last assistant reply."""
-    # Destructive: this truncates and PERSISTS history before the background
-    # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
-    # readiness latch must be honored BEFORE the mutation.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # Destructive: this truncates and PERSISTS history before the background
+    # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
+    # readiness latch must be honored BEFORE the mutation. Gated on the backend
+    # the turn will ACTUALLY run on: regenerate continues the slot's live
+    # session (no discard, unlike edit-resend and rewind), and a live session
+    # keeps the backend it was started on across a hot switch of
+    # `agent.acp_backend` -- so after a switch to Claude Code the configured
+    # default says "not kiro" while the rerun still lands on a kiro-cli that may
+    # be signed out. Only with no live session does the default decide.
+    blocked = await reject_if_kiro_unverified(
+        request,
+        signs_in_via_kiro_cli=live_session_signs_in_via_kiro_cli(
+            state, effective_session_key(slot)
+        ),
+    )
+    if blocked is not None:
+        return blocked
 
     # A crew-bound slot has no local regenerate: it would truncate LOCAL history
     # and re-run the turn on this machine, diverging from the peer.

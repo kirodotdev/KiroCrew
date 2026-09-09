@@ -30,6 +30,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
 
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKENDS_KNOWN,
+    backends_retired_by_host_logout,
+)
 from kiro_crew.dashboard import kiro_readiness
 from kiro_crew.dashboard.handlers import agents, sessions
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
@@ -451,3 +458,190 @@ async def test_a_ready_gateway_logs_no_refusal() -> None:
             await agents.api_models(request)
 
     warn.assert_not_called()
+
+
+# ── The latch governs only a harness that signs in through kiro-cli ──────────
+#
+# ``reject_if_kiro_unverified`` describes a kiro-cli sign-in. On a deployment
+# whose ``agent.acp_backend`` is claude-agent-acp or codex-acp that latch says
+# nothing about the sessions, and refusing on it locked regenerate, rewind,
+# ``/v1/chat/completions``, ``/api/models`` and ``/api/sessions/usage`` behind
+# a kiro-cli sign-in the operator had deliberately stopped needing. The gate
+# now reads the selected backend as POSITIVE membership in
+# ``backends_retired_by_host_logout()`` (harness-parity H5/H6); the two kiro-cli
+# spawn sites test that membership themselves so a foreign harness never has the
+# browser-opening binary resolved on its behalf either.
+
+
+def _config_selecting(backend: str):
+    """Patch the config read the gate performs so it reports *backend*."""
+
+    from kiro_crew.config import KiroCrewConfig
+
+    cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=backend, model=""))
+    return patch.object(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
+async def test_gate_applies_exactly_to_the_kiro_identity_store_members(backend: str) -> None:
+    """Membership, not identity: every known backend is answered from the set."""
+    request = _request(_make_signed_out_kiro_prerequisite())
+    with _config_selecting(backend):
+        resp = await kiro_readiness.reject_if_kiro_unverified(request)
+
+    if backend in backends_retired_by_host_logout():
+        assert resp is not None and resp.status == 503
+        assert json.loads(resp.body)["code"] == "kiro_prerequisite_required"
+    else:
+        assert resp is None
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_backend_never_consults_the_prerequisite_service() -> None:
+    """Even an ABSENT service (which fails closed for kiro) is not asked."""
+    request = MagicMock()
+    request.app = {}
+    with _config_selecting(ACP_BACKEND_CLAUDE):
+        assert await kiro_readiness.reject_if_kiro_unverified(request) is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_config_keeps_the_gate(caplog: pytest.LogCaptureFixture) -> None:
+    """Fail closed toward the latch: a broken config must not un-gate the spawn."""
+    from kiro_crew.config import KiroCrewConfig
+
+    def _boom(cls):
+        raise OSError("config.json unreadable")
+
+    request = _request(_make_signed_out_kiro_prerequisite())
+    with patch.object(KiroCrewConfig, "load", classmethod(_boom)):
+        with caplog.at_level("WARNING", logger=kiro_readiness.logger.name):
+            resp = await kiro_readiness.reject_if_kiro_unverified(request)
+
+    assert resp is not None and resp.status == 503
+    assert any("agent.acp_backend" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_api_models_refuses_a_foreign_backend_before_resolving_kiro_cli() -> None:
+    """A selectable harness with no model list of its own (opencode, at the time of
+    writing) is refused before kiro-cli is resolved: the kiro-cli list is not its
+    answer, and claude and codex each read their adapter's advertised list
+    instead."""
+    request = _request(_make_signed_out_kiro_prerequisite())
+    with _config_selecting(ACP_BACKEND_OPENCODE):
+        with patch(_RESOLVE_TARGET, AsyncMock(return_value=_FAKE_KIRO_BIN)) as resolve:
+            with patch("asyncio.create_subprocess_exec", AsyncMock()) as spawn:
+                resp = await agents.api_models(request)
+
+    resolve.assert_not_called()
+    spawn.assert_not_called()
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "model_list_backend_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_usage_hides_the_pill_on_a_foreign_backend_without_a_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A signed-out kiro-cli left on a Claude Code host must not be scraped."""
+    monkeypatch.setattr(sessions, "_usage_cache", {"credits_plan": 10.0})
+    monkeypatch.setattr(sessions, "_usage_cache_ts", 0.0)
+    request = _request(_make_signed_out_kiro_prerequisite())
+    with _config_selecting(ACP_BACKEND_CLAUDE):
+        with patch.object(sessions, "_fetch_usage_bg", AsyncMock()) as fetch:
+            resp = await sessions.api_sessions_usage(request)
+
+    fetch.assert_not_called()
+    assert resp.status == 200
+    assert json.loads(resp.body) == {"usage": {"available": False}}
+
+
+@pytest.mark.asyncio
+async def test_switching_back_to_kiro_refreshes_usage_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The foreign-backend marker must not start a refresh interval.
+
+    ``_publish_usage`` stamps the cache with now; a switch back to a kiro
+    identity-store backend inside ``_USAGE_REFRESH_SECS`` would then find a
+    fresh-looking cache and skip the fetch, hiding the pill for up to ten minutes
+    on a harness that does have a plan to show.
+    """
+    monkeypatch.setattr(sessions, "_usage_cache", {"credits_plan": 10.0})
+    monkeypatch.setattr(sessions, "_usage_cache_ts", 0.0)
+    with patch.object(sessions, "_fetch_usage_bg", AsyncMock()) as fetch:
+        with _config_selecting(ACP_BACKEND_CLAUDE):
+            await sessions.api_sessions_usage(_request(_make_signed_out_kiro_prerequisite()))
+        fetch.assert_not_called()
+        assert sessions._usage_cache == {"available": False}
+
+        with _config_selecting(ACP_BACKEND_KIRO):
+            resp = await sessions.api_sessions_usage(_request(_make_ready_kiro_prerequisite()))
+
+    fetch.assert_called_once()
+    assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_backend_snapshot_is_used_instead_of_a_config_read() -> None:
+    """A caller's snapshot is authoritative: the gate must not read config again."""
+    from kiro_crew.config import KiroCrewConfig
+
+    def _boom(cls):
+        raise AssertionError("the gate re-read config despite being handed a backend")
+
+    request = _request(_make_signed_out_kiro_prerequisite())
+    with patch.object(KiroCrewConfig, "load", classmethod(_boom)):
+        assert (
+            await kiro_readiness.reject_if_kiro_unverified(request, backend=ACP_BACKEND_CLAUDE)
+            is None
+        )
+        resp = await kiro_readiness.reject_if_kiro_unverified(request, backend=ACP_BACKEND_KIRO)
+    assert resp is not None and resp.status == 503
+
+
+@pytest.mark.asyncio
+async def test_api_models_gates_on_its_own_snapshot_not_a_second_read() -> None:
+    """A PATCH landing between the handler's read and the gate's must not admit a spawn.
+
+    The handler read kiro; by the time the gate would read again the default has
+    flipped to a foreign backend. With two reads the gate stands aside and the
+    kiro-cli branch spawns unauthenticated once. With one snapshot it refuses.
+    """
+    request = _request(_make_signed_out_kiro_prerequisite())
+    with _config_selecting(ACP_BACKEND_KIRO):
+        with patch.object(
+            kiro_readiness, "selected_backend", AsyncMock(return_value=ACP_BACKEND_CLAUDE)
+        ):
+            with patch(_RESOLVE_TARGET, AsyncMock(return_value=_FAKE_KIRO_BIN)) as resolve:
+                resp = await agents.api_models(request)
+
+    resolve.assert_not_called()
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "kiro_prerequisite_required"
+
+
+def test_live_session_verdict_is_the_providers_own_declaration_and_nothing_else() -> None:
+    live = SimpleNamespace(
+        sessions=SimpleNamespace(
+            _sessions={
+                "k": SimpleNamespace(provider=SimpleNamespace(uses_kiro_identity_store=True)),
+                "f": SimpleNamespace(provider=SimpleNamespace(uses_kiro_identity_store=False)),
+            }
+        )
+    )
+    assert kiro_readiness.live_session_signs_in_via_kiro_cli(live, "k") is True
+    assert kiro_readiness.live_session_signs_in_via_kiro_cli(live, "f") is False
+    assert kiro_readiness.live_session_signs_in_via_kiro_cli(live, "other") is None
+    assert (
+        kiro_readiness.live_session_signs_in_via_kiro_cli(
+            SimpleNamespace(sessions=MagicMock()), "k"
+        )
+        is None
+    )
+    undeclared = SimpleNamespace(
+        sessions=SimpleNamespace(_sessions={"k": SimpleNamespace(provider=SimpleNamespace())})
+    )
+    assert kiro_readiness.live_session_signs_in_via_kiro_cli(undeclared, "k") is None
