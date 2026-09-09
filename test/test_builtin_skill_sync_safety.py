@@ -581,6 +581,21 @@ class TestFingerprint:
             return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(skills_mod.os, "open", _deny)
+
+        # The fingerprint reads through the hooks chokepoint, whose open is
+        # platform_compat.open_file_no_reparse -- CreateFileW on Windows, so a patch on
+        # os.open alone would leave the Windows shard reading the file happily and
+        # fingerprinting a tree this test needs to be unprovable. Deny at that seam too.
+        from kiro_crew import platform_compat as _pc
+
+        real_no_reparse = _pc.open_file_no_reparse
+
+        def _deny_no_reparse(path: object, *args: object, **kwargs: object) -> int:
+            if "hidden.txt" in str(path):
+                raise PermissionError("denied")
+            return real_no_reparse(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(_pc, "open_file_no_reparse", _deny_no_reparse)
         assert _skill_tree_fingerprint(a) is None
 
 

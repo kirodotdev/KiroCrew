@@ -2277,9 +2277,12 @@ def safe_read_file(path: str) -> str:
 
     Canonicalizes the path (following every symlink), re-checks the RESOLVED
     target against ``is_sensitive_path`` — so a symlink pointing into ``~/.aws``
-    etc. is refused through the link — then opens the canonical path with
-    ``O_NOFOLLOW`` as defense-in-depth against a TOCTOU swap of the final
-    component into a symlink after the check.  Opening the
+    etc. is refused through the link — then re-opens the canonical path through
+    :func:`kiro_crew.platform_compat.open_file_no_reparse` as defense-in-depth
+    against a TOCTOU swap of the final component into a link after the check.
+    That helper carries the refusal on Windows too, where ``O_NOFOLLOW`` does not
+    exist and a plain open would resolve a junction planted at the name.
+    Opening the
     already-resolved canonical path never rejects a legitimate file (its final
     component is not a symlink by construction), so this only closes the race.
 
@@ -2295,7 +2298,7 @@ def safe_read_file(path: str) -> str:
         # would forge a second record.
         raise PermissionError(f"Blocked: access to sensitive path: {resolved!r}")
     try:
-        fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = platform_compat.open_file_no_reparse(resolved)
     except OSError as exc:
         # ELOOP on the canonical (symlink-free) path means a concurrent TOCTOU
         # swap of the final component into a symlink — refuse it. Any other
@@ -2319,9 +2322,10 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
 
     ``validate_file_path`` already canonicalizes via ``realpath`` (following
     symlinks) and rejects sensitive resolved targets, so a workspace symlink
-    into ``~/.aws`` etc. is refused before any read.  The final open uses
-    ``O_NOFOLLOW`` on the canonical path as defense-in-depth against a TOCTOU
-    swap of the final component into a symlink after the check.
+    into ``~/.aws`` etc. is refused before any read.  The final open goes through
+    :func:`kiro_crew.platform_compat.open_file_no_reparse` as defense-in-depth
+    against a TOCTOU swap of the final component into a link after the check —
+    a refusal that holds on Windows as well, where ``O_NOFOLLOW`` does not exist.
 
     Returns file content as bytes, or None if path is rejected or unreadable.
     """
@@ -2330,7 +2334,7 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
         return None
 
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = platform_compat.open_file_no_reparse(path)
     except OSError:
         return None
     try:
@@ -2350,7 +2354,9 @@ def safe_read_file_bytes_with_identity(
 
     Like :func:`safe_read_file_bytes`, but closes the authorize-then-read TOCTOU
     window for callers that keep a filesystem allowlist. The file is opened ONCE
-    with ``O_NOFOLLOW`` and the ``fstat`` identity ``(st_dev, st_ino)`` of that
+    through :func:`kiro_crew.platform_compat.open_file_no_reparse`, which refuses a
+    link at the final component on every platform, and the ``fstat`` identity
+    ``(st_dev, st_ino)`` of that
     very descriptor MUST be in ``allowed_identities`` before any bytes are
     returned. Because authorization and read share one descriptor, a symlink- or
     directory-swap slipped in between ``realpath`` and ``open`` cannot substitute
@@ -2359,8 +2365,8 @@ def safe_read_file_bytes_with_identity(
     all filesystem reads stay funnelled through this centralized chokepoint.
 
     Returns bytes on success. Raises :class:`PermissionError` when the opened
-    inode is not allowlisted or a final-component symlink swap is detected
-    (``O_NOFOLLOW`` → ``ELOOP``), and :class:`FileTooLargeError` when the file
+    inode is not allowlisted or a final-component link swap is detected
+    (reported as ``ELOOP``), and :class:`FileTooLargeError` when the file
     exceeds ``MAX_FILE_BYTES``. Returns ``None`` when the path is rejected by
     :func:`validate_file_path` or is otherwise unreadable.
     """
@@ -2369,7 +2375,7 @@ def safe_read_file_bytes_with_identity(
         return None
 
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = platform_compat.open_file_no_reparse(path)
     except OSError as exc:
         if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", -1)):
             raise PermissionError(f"Blocked: refusing to follow symlink at {path!r}") from exc
@@ -2422,18 +2428,29 @@ def safe_read_file_bytes_nolink(
     A caller that lstat()s the path and then opens it by name leaves a race
     window where the file is swapped for a hardlink to a sensitive file
     (e.g. ``~/.aws/config``) between the check and the open. Here the open
-    happens first (``O_NOFOLLOW``), then ``fstat()`` on the descriptor —
+    happens first, refusing a link at the final component, then ``fstat()`` on
+    the descriptor —
     the inode that is validated is exactly the inode that is read:
     ``st_nlink > 1`` or a non-regular file type is rejected.
 
     When ``within_root`` is given, the OPENED descriptor's real path
     (via ``/proc/self/fd`` on Linux, ``fcntl.F_GETPATH`` on macOS, or
     ``GetFinalPathNameByHandleW`` on Windows) must resolve inside that root and
-    must not be sensitive. ``O_NOFOLLOW`` only guards the
+    must not be sensitive. Refusing the link only guards the
     FINAL path component — a nested directory swapped for a symlink between
     the tree walk and the open would silently escape the approved tree. The
     fd-path check is pinned to the inode actually opened, so no check-to-use
     window remains. If the fd's real path cannot be determined, fail closed.
+
+    That final-component refusal comes from
+    :func:`kiro_crew.platform_compat.open_file_no_reparse`, not from an
+    ``O_NOFOLLOW`` flag, because the flag does not exist on Windows:
+    ``getattr(os, "O_NOFOLLOW", 0)`` is ``0`` there, so a plain ``os.open``
+    resolves a junction at the name and this chokepoint would hold one fewer
+    guarantee on one platform than the paragraph above claims. ``CreateFileW``
+    with ``FILE_FLAG_OPEN_REPARSE_POINT`` opens the reparse point AS ITSELF and
+    the helper reports ``ELOOP``, which is what POSIX reports for the same
+    shape, so the open is one operation with one contract everywhere.
 
     Returns file content as bytes, or None if the path is rejected,
     hardlinked, non-regular, escaping ``within_root``, or unreadable.
@@ -2450,7 +2467,7 @@ def safe_read_file_bytes_nolink(
         return None
 
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = platform_compat.open_file_no_reparse(path)
     except OSError:
         return None
     try:
@@ -3003,22 +3020,30 @@ def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
     freshly created 0600 temp file inside *dest_dir*, so downstream readers
     never touch the caller-influenced original path again.
 
-    Validation mirrors :func:`safe_read_file_bytes_nolink`: open first
-    (``O_NOFOLLOW``), then ``fstat()`` on the descriptor (regular file,
+    Validation mirrors :func:`safe_read_file_bytes_nolink`: open first, refusing a
+    link at the final component, then ``fstat()`` on the descriptor (regular file,
     ``st_nlink == 1``), then the OPENED descriptor's real path (via
-    ``/proc/self/fd`` on Linux, ``fcntl.F_GETPATH`` on macOS) must not be
-    sensitive. ``O_NOFOLLOW`` only guards the FINAL path component — an
-    ancestor directory swapped for a symlink between validation and open
-    would otherwise reach a sensitive file. The fd-path check is pinned to
-    the inode actually opened and copied, so no check-to-use window remains.
-    If the fd's real path cannot be determined, fail closed.
+    ``/proc/self/fd`` on Linux, ``fcntl.F_GETPATH`` on macOS,
+    ``GetFinalPathNameByHandleW`` on Windows) must not be sensitive. Refusing the
+    link only guards the FINAL path component — an ancestor directory swapped for a
+    symlink between validation and open would otherwise reach a sensitive file. The
+    fd-path check is pinned to the inode actually opened and copied, so no
+    check-to-use window remains. If the fd's real path cannot be determined, fail
+    closed.
+
+    The open goes through :func:`kiro_crew.platform_compat.open_file_no_reparse`
+    because this function copies BYTES with a raw ``os.read``, and both halves of
+    that matter on Windows: ``O_NOFOLLOW`` does not exist there, so a plain
+    ``os.open`` follows a reparse point at the name AND hands back a CRT descriptor
+    in text mode, which truncates a binary payload at its first ``0x1A``. Media
+    files — what this function exists for — are exactly the payloads that carry one.
     """
     path = validate_file_path(raw)
     if path is None:
         return None
 
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = platform_compat.open_file_no_reparse(path)
     except OSError:
         return None
     tmp_fd = -1
@@ -3071,8 +3096,10 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
     ``MAX_FILE_BYTES`` (e.g. the ~100 MB kiro-cli binary). ``validate_file_path``
     canonicalizes via ``realpath`` (following symlinks) and rejects sensitive
     resolved targets, so a symlink pointing into ``~/.aws`` etc. is refused
-    before any read. The open uses ``O_NOFOLLOW`` on the canonical path as
-    TOCTOU defense against a final-component symlink swap after the check.
+    before any read. The open goes through
+    :func:`kiro_crew.platform_compat.open_file_no_reparse` as TOCTOU defense
+    against a final-component link swap after the check — a refusal that holds on
+    Windows too, where ``O_NOFOLLOW`` does not exist.
 
     Returns up to *n* bytes, or None if the path is rejected or unreadable.
     """
@@ -3082,7 +3109,7 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
     if path is None:
         return None
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = platform_compat.open_file_no_reparse(path)
     except OSError:
         return None
     try:
@@ -3229,20 +3256,22 @@ def safe_read_file_internal(read_id: str) -> bytes | None:
             f"non-sensitive path; allowlist is only valid for sensitive paths",
         )
 
-    # Open with O_NOFOLLOW so a symlink at the final path component (e.g. a
-    # planted ~/.aws/sso/cache/kiro-auth-token-cli.json -> attacker file) is
-    # refused, binding the read to the real allowlisted file rather than a
-    # redirected target. Check + read share ONE descriptor (TOCTOU-safe), and
-    # fstat confirms a regular file before reading.
+    # Open so a link at the final path component (e.g. a planted
+    # ~/.aws/sso/cache/kiro-auth-token-cli.json -> attacker file) is refused,
+    # binding the read to the real allowlisted file rather than a redirected
+    # target. platform_compat.open_file_no_reparse carries that refusal on Windows
+    # as well, where O_NOFOLLOW does not exist and a plain os.open would resolve a
+    # junction planted at the name. Check + read share ONE descriptor
+    # (TOCTOU-safe), and fstat confirms a regular file before reading.
     import stat
 
     try:
-        fd = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = platform_compat.open_file_no_reparse(resolved)
     except FileNotFoundError:
         _emit_internal_read_audit(read_id, "missing")
         return None
     except OSError:
-        # ELOOP (final component is a symlink) and any other open error —
+        # ELOOP (final component is a link) and any other open error —
         # fail closed, never following the link.
         _emit_internal_read_audit(read_id, "unreadable")
         return None

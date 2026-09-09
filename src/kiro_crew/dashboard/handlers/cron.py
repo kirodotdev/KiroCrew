@@ -1709,11 +1709,16 @@ _SCRIPT_SOURCE_MAX_BYTES = 256 * 1024
 # reaches the promotion path.
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
-# The read below traverses the O_NOFOLLOW + fd-real-path chokepoint in hooks
-# (safe_read_file_bytes_nolink), which has no Windows implementation
-# (pinned_fs.fd_real_path returns None there -> fail-closed on every read). Gate with an
-# honest 501 rather than an opaque refusal, mirroring the theme-pack routes.
-_SCRIPT_SOURCE_WIN_UNSUPPORTED = os.name == "nt"
+# The read below traverses the link-refusal + fd-real-path chokepoint in hooks
+# (safe_read_file_bytes_nolink). Every half answers on Windows as well as on POSIX:
+# the open goes through ``platform_compat.open_file_no_reparse``, which refuses a
+# reparse point at the FINAL component there in the same call that opens it;
+# ``pinned_fs.fd_real_path`` reads the opened handle's real path through
+# ``GetFinalPathNameByHandleW``, so the containment check against
+# ``<config_dir>/crons/`` and the sensitivity check are pinned to the inode actually
+# opened; and ``os.fstat`` reports ``st_nlink`` there, so the hardlink-alias refusal
+# holds too. This read needs no ``dir_fd``/``openat``, which is the primitive Windows
+# lacks.
 
 
 def _read_script_source_sync(
@@ -1846,14 +1851,6 @@ async def api_cron_script_source(request: web.Request) -> web.Response:
         return web.json_response({"error": "job not found", "code": "job_not_found"}, status=404)
     if not job.script:
         return web.json_response({"error": "job has no script", "code": "no_script"}, status=404)
-    if _SCRIPT_SOURCE_WIN_UNSUPPORTED:
-        return web.json_response(
-            {
-                "error": "script source view is not yet supported on Windows",
-                "code": "unsupported_platform",
-            },
-            status=501,
-        )
     payload, err = await asyncio.get_running_loop().run_in_executor(
         discovery_executor(), _read_script_source_sync, job.script
     )

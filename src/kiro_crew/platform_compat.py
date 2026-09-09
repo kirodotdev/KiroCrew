@@ -3888,6 +3888,14 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
 
     The handle is wrapped in a CRT descriptor so ``os.fstat`` can read the
     attributes of what was actually opened and ``os.close`` can release it.
+
+    ``O_BINARY`` is part of that wrapping, not a detail. A CRT descriptor in TEXT
+    mode translates CRLF and stops at the first ``0x1A``, and a caller reading
+    with a raw ``os.read`` gets that translation: on a body of 55 bytes holding
+    one ``0x1A``, such a descriptor yields 12. ``os.fdopen(fd, "rb")`` hides the
+    difference because ``io.FileIO`` sets the mode itself, so only a raw-read
+    caller is exposed -- which is precisely the caller that copies media files.
+    Naming the flag here makes the descriptor's contract the same for both.
     """
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.CreateFileW.argtypes = [
@@ -3911,7 +3919,9 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     )
     if handle is None or handle == wintypes.HANDLE(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
-    return msvcrt.open_osfhandle(handle, os.O_RDONLY)  # type: ignore[attr-defined]
+    return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+        handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    )
 
 
 def open_file_no_reparse(path: str | os.PathLike) -> int:

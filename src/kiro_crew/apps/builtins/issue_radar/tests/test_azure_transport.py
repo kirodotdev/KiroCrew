@@ -30,9 +30,11 @@ two resolver helpers at CALL time, so they are patched on
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import stat
+import string
 import subprocess
 import sys
 import tempfile
@@ -41,9 +43,10 @@ from unittest import mock
 
 import pytest
 
-from kiro_crew.apps.builtins.issue_radar.backend import azure_client
+from kiro_crew.apps.builtins.issue_radar.backend import azure_client, azure_transport
 from kiro_crew.apps.builtins.issue_radar.backend.errors import (
     ProviderCliError,
+    ProviderInvalidInputError,
     ProviderPermissionError,
     ProviderSetupError,
 )
@@ -64,7 +67,11 @@ def _proc(
 
 def _executable(directory: str, name: str = "az") -> str:
     """An executable file that is NOT az -- only its path and mode are ever read."""
-    path = os.path.join(directory, name)
+    # Windows resolves a bare name against PATHEXT, so the fixture carries the
+    # suffix the Azure CLI's own launcher uses; POSIX resolves the bare name and
+    # takes the execute bit below.
+    suffix = ".cmd" if sys.platform == "win32" else ""
+    path = os.path.join(directory, f"{name}{suffix}")
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("#!/bin/sh\nexit 0\n")
     # Add ONLY the owner-execute bit to whatever mode the file was created with,
@@ -175,12 +182,13 @@ class TestSplitOwner(unittest.TestCase):
             azure_client._split_owner(f"contoso/{'a' * 65}")
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="the POSIX binary-resolution path -- _az_bin refuses Windows outright",
-)
 class TestAzBinResolution(unittest.TestCase):
     """``_az_bin`` decides WHICH binary runs with the user's Azure session.
+
+    Runs on every platform, because the resolution does: both helpers it calls
+    are platform-aware (``shutil.which`` applies ``PATHEXT``, the validator reads
+    an ACL instead of ``st_uid``), so there is no platform short-circuit above
+    them to except this suite from.
 
     The cache is a module global, so it is cleared around every test: a leaked
     value would make a later test assert against a path this one chose.
@@ -333,23 +341,149 @@ class TestAzBinResolution(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             on_path = _executable(tmp)
+
+            def _candidates() -> set[str]:
+                # Normalized case: Windows appends the extension as PATHEXT
+                # spells it (commonly upper), so the resolved path differs from
+                # the fixture's on-disk spelling without being a different file.
+                return {
+                    os.path.normcase(path)
+                    for path in source_providers.provider_executable_candidates("az")
+                }
+
             with mock.patch.dict(os.environ, {"PATH": tmp}, clear=False):
                 os.environ.pop(STRICT_PROVIDER_BIN_ENV, None)
-                self.assertIn(on_path, source_providers.provider_executable_candidates("az"))
+                self.assertIn(os.path.normcase(on_path), _candidates())
                 os.environ[STRICT_PROVIDER_BIN_ENV] = "1"
-                self.assertNotIn(on_path, source_providers.provider_executable_candidates("az"))
+                self.assertNotIn(os.path.normcase(on_path), _candidates())
 
-    def test_windows_is_refused_before_any_resolution_is_attempted(self):
-        # Not a ProviderSetupError: no install or login fixes it, so the connect
-        # dialog must not offer one. The resolver is never consulted at all.
-        candidates = mock.Mock()
-        with mock.patch.object(azure_client.sys, "platform", "win32"):
-            with mock.patch.object(source_providers, "provider_executable_candidates", candidates):
-                with self.assertRaises(ProviderCliError) as caught:
-                    azure_client._az_bin()
-        self.assertNotIsInstance(caught.exception, ProviderSetupError)
-        self.assertIn("WSL", str(caught.exception))
-        candidates.assert_not_called()
+    def test_the_resolver_is_consulted_on_every_platform(self):
+        """No platform refuses ahead of resolution.
+
+        The two helpers ``_az_bin`` calls are the SAME ones the Sidebar PR panel
+        and ``_glab_bin`` use, and both are implemented for Windows as well as
+        POSIX, so a platform test here would refuse a host whose ``az`` those
+        helpers accept -- and would tell a Windows user their trusted install is
+        unusable while ``gh`` and ``glab`` run from the same policy.
+        """
+        for platform in ("win32", "darwin", "linux"):
+            with self.subTest(platform=platform):
+                azure_client._az_bin_cache = None
+                candidates = mock.Mock(return_value=("C:\\tools\\az\\az.cmd",))
+                with mock.patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("KIROCREW_ISSUE_RADAR_AZ", None)
+                    with mock.patch.object(os.path, "isfile", return_value=True):
+                        with mock.patch.multiple(
+                            source_providers,
+                            provider_executable_candidates=candidates,
+                            _validate_provider_executable=mock.Mock(side_effect=lambda p: p),
+                        ):
+                            self.assertEqual(azure_client._az_bin(), "C:\\tools\\az\\az.cmd")
+                candidates.assert_called_once_with("az")
+
+
+class TestReparsedLauncherArguments(unittest.TestCase):
+    """A ``.cmd``/``.bat`` az is executed BY the Windows command processor.
+
+    ``CreateProcess`` hands such a launcher to ``%COMSPEC%``, which re-parses the
+    command line, so the argv list by itself stops guaranteeing that one argument
+    stays one argument. Every value this module puts in an argv is shape-checked
+    upstream and every request body travels in a file, so this suite covers the
+    backstop that keeps the guarantee true for a value that reaches argv without
+    passing one of those checks.
+    """
+
+    def setUp(self):
+        azure_client._az_bin_cache = None
+
+    def tearDown(self):
+        azure_client._az_bin_cache = None
+
+    def test_a_metacharacter_argument_is_refused_before_any_spawn(self):
+        launcher = os.path.join("C:", os.sep, "tools", "azure-cli", "az.cmd")
+        for payload in ('a"b', "a&b", "a|b", "a>b", "a<b", "a^b", "a\rb", "a\nb"):
+            with self.subTest(payload=payload):
+                run = mock.Mock()
+                with mock.patch.object(azure_client, "_az_bin", return_value=launcher):
+                    with mock.patch.object(azure_client.subprocess, "run", run):
+                        with self.assertRaises(ProviderInvalidInputError):
+                            azure_client._az_run(
+                                ["az", "devops", "invoke", payload], host=HOST, timeout=1.0
+                            )
+                # Refused BEFORE the spawn, not detected after it: the point is
+                # that the command processor never sees the argument.
+                run.assert_not_called()
+
+    def test_a_percent_encoded_argument_still_reaches_a_cmd_launcher(self):
+        # _SEGMENT_RE admits a SPACE, so an organization whose name carries one is
+        # legitimate, and _org_url percent-encodes it to %20 on every call. Refusing
+        # every percent would break a supported name rather than an attack, so the rule
+        # is the encoding contract: every percent must open two hex digits.
+        launcher = os.path.join("C:", os.sep, "tools", "azure-cli", "az.cmd")
+        run = mock.Mock(return_value=_proc())
+        with mock.patch.object(azure_client, "_az_bin", return_value=launcher):
+            with mock.patch.object(azure_client, "_audit"):
+                with mock.patch.object(azure_client.subprocess, "run", run):
+                    azure_client._az_run(
+                        ["az", "devops", "invoke", "--org", "https://dev.azure.com/My%20Org"],
+                        host=HOST,
+                        timeout=1.0,
+                    )
+        run.assert_called_once()
+
+    def test_a_variable_reference_is_refused_under_a_cmd_launcher(self):
+        # The other half of the same rule, and the reason presence of a percent cannot
+        # decide it: %PATH% is EXPANDED by the command processor -- measured putting the
+        # value of PATH into a child's argv -- and `PA` is not two hex digits, so the
+        # encoding contract separates it from %20 without a list of variable names.
+        launcher = os.path.join("C:", os.sep, "tools", "azure-cli", "az.cmd")
+        run = mock.Mock(return_value=_proc())
+        with mock.patch.object(azure_client, "_az_bin", return_value=launcher):
+            with mock.patch.object(azure_client, "_audit"):
+                with mock.patch.object(azure_client.subprocess, "run", run):
+                    with self.assertRaises(azure_client.ProviderInvalidInputError):
+                        azure_client._az_run(
+                            ["az", "devops", "invoke", "--org", "https://dev.azure.com/%PATH%"],
+                            host=HOST,
+                            timeout=1.0,
+                        )
+        run.assert_not_called()
+
+    def test_the_percent_rule_admits_encoding_and_refuses_everything_else(self):
+        """Table over the rule itself, so the boundary is pinned rather than implied."""
+        for value in ("My%20Org", "a%2Fb%2Fc", "plain", "50%25done"):
+            with self.subTest(accepted=value):
+                self.assertIsNone(azure_client._reject_percent_that_is_not_encoding(value))
+        for value in ("%PATH%", "a%PATH%b", "trailing%", "%2", "%GG", "%%PATH%%"):
+            with self.subTest(refused=value):
+                self.assertIsNotNone(azure_client._reject_percent_that_is_not_encoding(value))
+
+    def test_a_percent_encoded_argument_still_reaches_a_real_exe(self):
+        # An .exe is executed by the kernel, so nothing re-parses its arguments and
+        # neither half of the percent rule applies.
+        direct = os.path.join(os.sep, "opt", "azure-cli", "bin", "az")
+        run = mock.Mock(return_value=_proc())
+        with mock.patch.object(azure_client, "_az_bin", return_value=direct):
+            with mock.patch.object(azure_client, "_audit"):
+                with mock.patch.object(azure_client.subprocess, "run", run):
+                    azure_client._az_run(
+                        ["az", "devops", "invoke", "--org", "https://dev.azure.com/%PATH%"],
+                        host=HOST,
+                        timeout=1.0,
+                    )
+        run.assert_called_once()
+
+    def test_a_binary_the_kernel_runs_directly_is_not_subject_to_the_check(self):
+        # No launcher in the chain means no second parser: the argv list reaches
+        # the kernel as written, which is why this module has no shell surface.
+        direct = os.path.join(os.sep, "opt", "azure-cli", "bin", "az")
+        run = mock.Mock(return_value=_proc())
+        with mock.patch.object(azure_client, "_az_bin", return_value=direct):
+            with mock.patch.object(azure_client, "_audit"):
+                with mock.patch.object(azure_client.subprocess, "run", run):
+                    azure_client._az_run(["az", "devops", "invoke", "a&b"], host=HOST, timeout=1.0)
+        run.assert_called_once()
+        self.assertIn("a&b", run.call_args.args[0])
 
 
 class TestAzEnv(unittest.TestCase):
@@ -1035,6 +1169,327 @@ class TestTransportFacadeBindings(unittest.TestCase):
         self.assertEqual(out, [])
         self.assertIs(captured["invoke_one"], invoke_one)
         self.assertIs(captured["values"], azure_client._values)
+
+
+class ReparsedLauncherGuard(unittest.TestCase):
+    """The guard's own behaviour, independent of any platform.
+
+    What a real command processor DOES to each of these characters is measured in
+    ``test/test_azure_launcher_reparse.py``, which lives outside this tree because it
+    spawns a launcher and every spawn under ``src/kiro_crew`` must be routed or
+    allowlisted. These assertions need no spawn: the guard keys off the resolved
+    binary's suffix, so it decides identically on every host.
+    """
+
+    def test_every_listed_metacharacter_is_refused_under_a_cmd_launcher(self):
+        """The refusal covers each listed character, on every platform.
+
+        Complements the measurement above: that one proves WHY the characters are on
+        the list, this one proves the guard actually rejects each of them, and it runs
+        everywhere because the guard keys off the launcher's suffix, not the host.
+        """
+        for char in azure_client._MEASURED_HOSTILE_CHARACTERS:
+            with self.subTest(char=char):
+                with self.assertRaises(azure_client.ProviderInvalidInputError):
+                    azure_client._reject_reparsed_launcher_args(
+                        r"C:\Program Files\Azure CLI\az.cmd", [f"contoso{char}x"]
+                    )
+
+    def test_a_real_exe_launcher_does_not_refuse_the_same_argument(self):
+        """An ``.exe`` is executed by the kernel, so nothing re-parses its arguments."""
+        azure_client._reject_reparsed_launcher_args("/usr/bin/az", ["contoso&whoami"])
+        azure_client._reject_reparsed_launcher_args(r"C:\tools\az.exe", ["contoso%PATH%"])
+
+    def test_bang_stays_refused_even_though_a_stock_host_measures_it_inert(self):
+        """``!`` must not be dropped by a measurement on a default host.
+
+        A stock launcher receives ``a!PATH!b`` intact, which reads as evidence that
+        ``!`` is harmless -- and that reading is the trap. Delayed expansion is a HOST
+        setting (``Software\\Microsoft\\Command Processor\\DelayedExpansion``), not a
+        property of the launcher: re-measured with it enabled, the same argument arrives
+        as the expanded ``PATH`` split across dozens of argv elements.
+
+        Pins the DECISION rather than the observation, because the observation flips
+        with a registry value no test can rely on.
+        """
+        with self.assertRaises(azure_client.ProviderInvalidInputError):
+            azure_client._reject_reparsed_launcher_args(
+                r"C:\Program Files\Azure CLI\az.cmd", ["contoso!PATH!x"]
+            )
+
+    def test_the_allowlist_still_covers_every_shape_check(self):
+        """The allowlist is DERIVED from the upstream shapes, so re-derive it here.
+
+        Widening a shape check upstream must fail here rather than silently opening a
+        hole in the launcher backstop. For every printable character, if any value
+        containing it can satisfy a shape check, that character has to be allowed.
+        """
+        shapes = {
+            name: getattr(azure_client, name)
+            for name in ("_SEGMENT_RE", "_LOGIN_RE", "_SHA_RE", "_GUID_RE")
+        }
+        printable = [c for c in string.printable if c not in "\r\n\t\x0b\x0c"]
+        for name, shape in shapes.items():
+            for char in printable:
+                reachable = any(
+                    shape.match(candidate)
+                    for candidate in (f"a{char}b", f"{char}ab", f"ab{char}", char * 8)
+                )
+                if reachable:
+                    with self.subTest(shape=name, char=char):
+                        self.assertIn(char, azure_client._ARGUMENT_ALLOWED_CHARACTERS)
+
+        # A GUID is 8-4-4-4-12 hex, so no candidate above can match it; assert its
+        # charset directly rather than letting the loop silently prove nothing.
+        self.assertTrue(shapes["_GUID_RE"].match("0123abcd-4567-89ef-0123-456789abcdef"))
+        for char in "0123456789abcdefABCDEF-":
+            with self.subTest(char=char):
+                self.assertIn(char, azure_client._ARGUMENT_ALLOWED_CHARACTERS)
+
+    def test_the_allowlist_covers_what_the_url_builder_emits(self):
+        """Derive from the real argv BUILDER, not only from the shape checks.
+
+        Deriving the allowlist from the four shapes alone was wrong once: an ``--org``
+        argument is a full URL, so ``:`` and ``/`` reach argv and a shapes-only allowlist
+        refused every real call. This asserts against what :func:`_org_url` actually
+        emits for the widest legitimate organization name.
+        """
+        widest = "My Org.Name_1-v2"
+        self.assertIsNotNone(azure_client._SEGMENT_RE.match(widest))
+        url = azure_transport._org_url(widest)
+        for char in url:
+            with self.subTest(char=char, url=url):
+                self.assertIn(char, azure_client._ARGUMENT_ALLOWED_CHARACTERS)
+        azure_client._reject_reparsed_launcher_args(r"C:\Program Files\Azure CLI\az.cmd", [url])
+
+    def test_user_data_cannot_introduce_a_raw_slash_or_colon(self):
+        """Why admitting ``:`` and ``/`` does not widen what an attacker controls.
+
+        Both come from the CONSTANT ``https://dev.azure.com/`` prefix. Anything the user
+        supplies goes through ``quote(..., safe="")``, which encodes a slash and a colon
+        rather than passing them through -- so the two characters the allowlist admits
+        for the URL's sake are not reachable from the part of it a caller influences.
+        """
+        for hostile in ("a/b", "a:b", "../../etc", "a/b:c"):
+            with self.subTest(hostile=hostile):
+                encoded = azure_transport._org_url(hostile)
+                tail = encoded.split("dev.azure.com/", 1)[1]
+                self.assertNotIn("/", tail)
+                self.assertNotIn(":", tail)
+
+    def test_every_measured_hostile_character_is_outside_the_allowlist(self):
+        """The measurements act as a regression check on the allowlist.
+
+        Each character in ``_MEASURED_HOSTILE_CHARACTERS`` was observed doing damage to
+        a real ``.cmd`` launcher's command line. None of them may be reachable through
+        the allowlist, and none of them needs to be named by the enforcement path.
+        """
+        for char in azure_client._MEASURED_HOSTILE_CHARACTERS:
+            with self.subTest(char=char):
+                self.assertNotIn(char, azure_client._ARGUMENT_ALLOWED_CHARACTERS)
+
+    def test_the_allowlist_covers_a_real_composed_argv(self):
+        """Derive from the PRODUCER, not from a proxy for it.
+
+        The allowlist governs whole argv elements, so it has to be checked against argv
+        elements the transport really composes -- ``f"{key}={value}"`` route/query pairs,
+        OData keys like ``$top``, and the Windows temp path for ``--in-file``. Deriving
+        it from the value shape checks alone refused every real call, because those
+        shapes describe what goes INTO an element, not the element.
+        """
+        captured: list[list[str]] = []
+
+        def _capture(argv, *, host, timeout):
+            captured.append(list(argv))
+            return _proc()
+
+        with mock.patch.object(azure_client, "_az_run", _capture):
+            with contextlib.suppress(Exception):
+                azure_client._az_invoke(
+                    org="My Org",
+                    area="git",
+                    resource="repositories",
+                    method="GET",
+                    api_version="7.1",
+                    route={"project": "My Project"},
+                    query={"$top": "30", "searchCriteria.status": "active"},
+                    body={"hello": "world"},
+                    media_type="application/json",
+                    host=HOST,
+                )
+
+        self.assertTrue(captured, "the transport never reached the spawn seam")
+        for element in captured[0][1:]:
+            if element in azure_transport._GENERATED_BODY_PATHS:
+                continue  # host-owned spelling; covered by the body-path test below
+            for char in element:
+                with self.subTest(element=element, char=char):
+                    self.assertIn(char, azure_client._ARGUMENT_ALLOWED_CHARACTERS)
+
+    def test_a_generated_body_path_is_not_held_to_the_allowlist(self):
+        """A temp path's spelling is the HOST's, so the allowlist cannot describe it.
+
+        Measured the hard way: this branch passed on a developer host whose temp path is
+        ``C:\\Users\\bolic\\...`` and failed on the CI Windows runner, whose path carries
+        an 8.3 short name -- ``C:\\Users\\RUNNER~1\\...`` -- contributing a ``~`` no shape
+        check or argv builder could have predicted. A ``TMPDIR`` under
+        ``Program Files (x86)`` would contribute parentheses next. So a path this module
+        generated is checked for characters that genuinely break a command line, and only
+        an UNREGISTERED value is held to the allowlist.
+        """
+        registry = azure_transport._GENERATED_BODY_PATHS
+        launcher = r"C:\Program Files\Azure CLI\az.cmd"
+        short_name_path = r"C:\Users\RUNNER~1\AppData\Local\Temp\kirocrew-az-x.json"
+        parens_path = r"C:\Program Files (x86)\tmp\kirocrew-az-y.json"
+
+        for path in (short_name_path, parens_path):
+            with self.subTest(path=path):
+                # Unregistered, it is refused -- so forgetting to register is strict.
+                registry.discard(path)
+                with self.assertRaises(azure_client.ProviderInvalidInputError):
+                    azure_client._reject_reparsed_launcher_args(launcher, [path])
+                # Registered, it passes.
+                registry.add(path)
+                try:
+                    azure_client._reject_reparsed_launcher_args(launcher, [path])
+                finally:
+                    registry.discard(path)
+
+        # A registered path is still refused when it carries a real metacharacter.
+        hostile = r"C:\tmp\a&whoami\kirocrew-az-z.json"
+        registry.add(hostile)
+        try:
+            with self.assertRaises(azure_client.ProviderInvalidInputError):
+                azure_client._reject_reparsed_launcher_args(launcher, [hostile])
+        finally:
+            registry.discard(hostile)
+
+    def test_a_real_composed_argv_reaches_the_spawn_under_a_cmd_launcher(self):
+        """End to end: a normal invoke must SPAWN on a Windows ``az.cmd`` install.
+
+        The guard sits at the spawn chokepoint, so a refusal here is the provider not
+        working at all on the platform this PR enables -- per request, with a message
+        blaming the caller's input. This drives route parameters, a query parameter and a
+        body file through ``_az_run`` with ``_az_bin`` resolving a ``.cmd`` launcher, and
+        asserts ``subprocess.run`` is actually called.
+        """
+        launcher = os.path.join("C:", os.sep, "Program Files", "Azure CLI", "az.cmd")
+        run = mock.Mock(return_value=_proc())
+        with mock.patch.object(azure_client, "_az_bin", return_value=launcher):
+            with mock.patch.object(azure_client, "_audit"):
+                with mock.patch.object(azure_client.subprocess, "run", run):
+                    with contextlib.suppress(Exception):
+                        azure_client._az_invoke(
+                            org="My Org",
+                            area="git",
+                            resource="repositories",
+                            method="GET",
+                            api_version="7.1",
+                            route={"project": "My Project"},
+                            query={"$top": "30"},
+                            body={"hello": "world"},
+                            media_type="application/json",
+                            host=HOST,
+                        )
+        run.assert_called_once()
+        spawned = run.call_args[0][0]
+        self.assertIn("--route-parameters", spawned)
+        self.assertIn("project=My Project", spawned)
+        self.assertIn("$top=30", spawned)
+
+    def test_no_shape_check_admits_a_character_the_composition_contributes(self):
+        """Why admitting ``: / = $ \\ %`` does not widen what an attacker controls.
+
+        Each of the six enters only from a literal this module writes -- the constant
+        URL prefix, the ``key=value`` join, an OData key, a temp path, or ``quote``'s
+        octets. If a shape check ever started admitting one, caller data could carry it
+        into an argv element, and this assertion is what fails first.
+        """
+        for name in ("_SEGMENT_RE", "_LOGIN_RE", "_SHA_RE", "_GUID_RE"):
+            shape = getattr(azure_client, name)
+            for char in ":/=$\\%":
+                for candidate in (f"a{char}b", f"{char}ab", f"ab{char}", char * 8):
+                    with self.subTest(shape=name, candidate=candidate):
+                        self.assertIsNone(shape.match(candidate))
+
+    def test_no_az_child_env_key_can_form_an_octet_spanning_reference(self):
+        """The invariant that makes a two-space organization name safe to pass.
+
+        ``quote`` emits one ``%20`` per space, so an organization named ``A B C`` reaches
+        argv as ``A%20B%20C``. Both octets satisfy
+        :func:`_reject_percent_that_is_not_encoding` individually, and a command processor
+        reading the line left to right can still see ``%20B%`` SPANNING them as a
+        reference to a variable named ``20B``. Measured against a real ``.cmd`` launcher:
+        with ``20B`` undefined the argument arrives intact, and with ``20B`` defined it
+        arrives as ``A<value>20C``. The mechanism is real.
+
+        What closes it is the child environment, not the argument: ``_az_env`` builds the
+        env from a fixed literal allowlist rather than inheriting the parent's, so a
+        variable of that shape is never defined in the process that re-parses the line.
+        That was an incidental property of an unrelated function until this test, which is
+        the problem -- widening the env allowlist would have opened a command-injection
+        path here with nothing failing.
+
+        Refusing the argument instead is NOT the fix: rejecting more than one ``%`` would
+        refuse ``A%20B%20C``, and a two-space organization name is legitimate under
+        ``_SEGMENT_RE``.
+        """
+        env = azure_client._az_env("dev.azure.com")
+        for key in env:
+            with self.subTest(key=key):
+                self.assertRegex(
+                    key,
+                    r"^[A-Za-z_]",
+                    "an env key starting with a digit could be the target of a "
+                    "`%<digits><letters>%` reference spanning two encoded octets",
+                )
+
+        # The parent's environment must not be able to inject one either.
+        with mock.patch.dict(os.environ, {"20B": "INJECTED", "20": "X"}, clear=False):
+            leaked = azure_client._az_env("dev.azure.com")
+            self.assertNotIn("20B", leaked)
+            self.assertNotIn("20", leaked)
+
+    def test_a_two_space_organization_name_still_reaches_the_launcher(self):
+        """The legitimate value the tempting fix would have broken."""
+        url = azure_transport._org_url("A B C")
+        self.assertEqual(url, "https://dev.azure.com/A%20B%20C")
+        azure_client._reject_reparsed_launcher_args(r"C:\Program Files\Azure CLI\az.cmd", [url])
+
+    def test_cmd_delimiters_no_measurement_named_are_refused_anyway(self):
+        """What deriving the check from the producer buys.
+
+        ``;``, ``,``, tab, ``(`` and ``)`` are all significant to cmd.exe and appear in
+        no argv element this provider composes, so the allowlist refuses them without
+        anyone having measured them -- the property an enumeration of hostile characters
+        cannot have, since it admits every spelling not yet enumerated.
+
+        ``=`` and ``$`` are deliberately NOT in this list: the transport writes both
+        itself (``key=value`` pairs, OData keys like ``$top``), so refusing them refuses
+        the provider's own traffic.
+        """
+        for char in (";", ",", "\t", "(", ")", "`", "~", "*", "?", "{", "}", "["):
+            with self.subTest(char=char):
+                with self.assertRaises(azure_client.ProviderInvalidInputError):
+                    azure_client._reject_reparsed_launcher_args(
+                        r"C:\Program Files\Azure CLI\az.cmd", [f"contoso{char}x"]
+                    )
+
+    def test_a_legitimate_value_still_reaches_a_cmd_launcher(self):
+        """The allowlist must not refuse what the provider legitimately builds."""
+        for value in (
+            "contoso corp",  # _SEGMENT_RE admits a space
+            "My.Project_1-v2",
+            "user.name+tag@example.com",
+            "o'brien",  # _LOGIN_RE admits an apostrophe
+            "0123abcd-4567-89ef-0123-456789abcdef",
+            "a1b2c3d4e5f6",
+            "contoso%20corp",  # the encoded form of the space
+        ):
+            with self.subTest(value=value):
+                azure_client._reject_reparsed_launcher_args(
+                    r"C:\Program Files\Azure CLI\az.cmd", [value]
+                )
 
 
 if __name__ == "__main__":  # pragma: no cover
