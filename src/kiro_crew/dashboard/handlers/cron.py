@@ -483,6 +483,10 @@ async def api_crons_create(request: web.Request) -> web.Response:
         approval_mode = validate_string_field(body, "approval_mode", max_len=10)
         timezone_val = validate_string_field(body, "timezone", max_len=50)
         agent_id = validate_string_field(body, "agent", max_len=MAX_SHORT_STRING)
+        source_preset = validate_string_field(body, "source_preset", max_len=MAX_SHORT_STRING)
+        source_template_prompt = validate_string_field(
+            body, "source_template_prompt", max_len=MAX_CRON_MESSAGE
+        )
     except ValidationError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     if not name or not message:
@@ -561,6 +565,13 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "hide_in_chat": bool(hide_in_chat),
         "minimal_context": bool(minimal_context),
         "folder_id": folder_id,
+        # Dashboard-only template provenance (see CronJob.source_preset). The
+        # prompt SNAPSHOT is what makes the Schedule-page "template updated"
+        # hint attributable: comparing it against the template's current prompt
+        # detects a template that moved, distinct from a user who edited their
+        # own copy. Both "" for a blank create. Never gate execution.
+        "source_preset": (source_preset or ""),
+        "source_template_prompt": (source_template_prompt or ""),
     }
     if approval_mode:
         add_kwargs["approval_mode"] = approval_mode
@@ -2420,6 +2431,26 @@ async def api_crons(request: web.Request) -> web.Response:
             # the next save.
             "minimal_context": j.minimal_context,
             "folder_id": j.folder_id,
+            # The Schedule-page template this job was seeded from, or None. A
+            # stable catalog id (e.g. "error-digest"), not user free-text, so
+            # it is returned as-is; the frontend matches it against the live
+            # SCHEDULE_PRESETS to decide whether the source template moved.
+            "source_preset": redact_credentials(redact_exfiltration_urls(j.source_preset or "")[0])[
+                0
+            ]
+            or None,
+            # The template's prompt AS IT WAS at save time. The frontend
+            # compares THIS against the live preset prompt (template moved?),
+            # not the job's current message (which the user may have edited),
+            # so the hint attributes the change to the template. Redacted with
+            # the same pipeline as every other free-text field on this dict:
+            # it is a client-settable POST field, so it cannot bypass the
+            # dashboard's credential/exfiltration redaction. None when the job
+            # carries no template lineage.
+            "source_template_prompt": redact_credentials(
+                redact_exfiltration_urls(j.source_template_prompt or "")[0]
+            )[0]
+            or None,
             "last_run_ts": j.last_run_ts,
             "has_result": bool(j.last_result),
             "has_slot": state.has_slot(f"cron-{j.id}"),

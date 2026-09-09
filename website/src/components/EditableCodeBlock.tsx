@@ -8,15 +8,7 @@ import { useTerminalEnabled } from '../utils/terminalRegistry'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
-
-/** djb2 over the snippet, so two same-language snippets that happen to share a
- *  character count get distinct cache keys. A hash and not the text itself:
- *  the key must stay short and bounded no matter how long the snippet is. */
-function contentHash(text: string): string {
-  let h = 5381
-  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0
-  return (h >>> 0).toString(36)
-}
+import { contentHash } from '../lib/contentHash'
 
 /** Chat code block with an opt-in scratch editor: the pencil swaps the
  *  rendered block for an editable Pierre surface over a LOCAL copy (nothing

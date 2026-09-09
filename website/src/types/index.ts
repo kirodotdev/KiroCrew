@@ -430,6 +430,17 @@ export interface CronJob {
    * which is invisible to every chat session and manageable only from the
    * Schedule page or the CLI. */
   session_key?: string | null
+  /** Schedule-page template preset id this job was seeded from (e.g.
+   * "error-digest"), or null/absent for a blank create or any non-dashboard
+   * create surface. Compared against the live SCHEDULE_PRESETS catalog on the
+   * Schedule page to hint when the source template's prompt has since changed. */
+  source_preset?: string | null
+  /** The source template's prompt text as it was when this job was saved. The
+   * Schedule page compares THIS against the live template prompt (did the
+   * template move?), never the job's current message (which the user may have
+   * edited), so the "template updated" hint is attributable. Null/absent when
+   * the job carries no template lineage. */
+  source_template_prompt?: string | null
 }
 
 export interface Lesson {

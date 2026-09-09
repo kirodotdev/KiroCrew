@@ -84,6 +84,8 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("thread_ts", 30),
     ("agent_id", MAX_SHORT_STRING),
     ("created_by", MAX_SHORT_STRING),
+    ("source_preset", MAX_SHORT_STRING),
+    ("source_template_prompt", MAX_CRON_MESSAGE),
     ("folder_id", MAX_SHORT_STRING),
     ("session_key", MAX_SHORT_STRING),
     ("model", MAX_SHORT_STRING),
@@ -625,6 +627,32 @@ class CronJob:
     approval_mode: str = ""  # "" (default/hook-based) | "auto" (auto-approve all tools)
     acked_items: list[str] = field(default_factory=list)
     created_by: str = ""  # Slack user ID of the creator (for DM fallback)
+    # Provenance of a job seeded from a Schedule-page template. Curated
+    # template prompts are COPIED into the job at save time (the user owns and
+    # edits their prompt), so a later fix to a template is unreachable for jobs
+    # already saved. Two create-only fields, written together by the dashboard
+    # create path ONLY (MCP / CLI / apps SDK / onboarding import never involve a
+    # template and leave both ""):
+    #
+    #   source_preset          -- the template preset id (e.g. "error-digest").
+    #   source_template_prompt -- the template's prompt text AS IT WAS at save
+    #                             time (a snapshot, written once, never updated).
+    #
+    # The snapshot is what makes "the template changed" an ATTRIBUTABLE claim.
+    # Comparing the job's live message against the template's CURRENT prompt is
+    # symmetric: it cannot tell a template that moved from a user who edited
+    # their own copy. The snapshot fixes one operand at save time, so the
+    # Schedule page can ask the two questions separately -- did the TEMPLATE
+    # move (snapshot != live preset prompt), which is the only thing that shows
+    # a "template updated" hint, versus did the USER edit their copy
+    # (message != snapshot), which shows nothing. It is a text snapshot, not a
+    # maintained revision integer, so it cannot drift out of date.
+    #
+    # "" for both means "unknown" -- a blank/non-dashboard create, or a job
+    # saved before these fields existed (_job_from_record defaults both to "").
+    # Such a job simply never shows the hint.
+    source_preset: str = ""
+    source_template_prompt: str = ""
     silent: bool = False  # suppress auto-delivery; agent sends via send_message
     session_key: str = ""  # session that created this job (for scoped removal)
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
@@ -1429,6 +1457,18 @@ def enabled_count_from_disk(path: Path) -> tuple[int, bool]:
     return (count, loadable)
 
 
+def _str_or_empty(value: Any) -> str:
+    """Return *value* when it is a string, else ``""``.
+
+    ``crons.json`` is hand-editable, so a record may carry a non-string where a
+    string is expected. A stored value that is not a string degrades to ``""``
+    (the field's "unset" value) rather than flowing into a consumer that calls
+    string methods on it -- the redacting serializer on ``GET /api/crons`` would
+    otherwise raise on ``.strip()``/regex and 500 the whole listing.
+    """
+    return value if isinstance(value, str) else ""
+
+
 def _job_from_record(j: dict[str, Any]) -> CronJob:
     """Build one :class:`CronJob` from its serialized record.
 
@@ -1486,6 +1526,8 @@ def _job_from_record(j: dict[str, Any]) -> CronJob:
         approval_mode=j.get("approval_mode", ""),
         acked_items=j.get("acked_items", []),
         created_by=j.get("created_by", ""),
+        source_preset=_str_or_empty(j.get("source_preset")),
+        source_template_prompt=_str_or_empty(j.get("source_template_prompt")),
         silent=j.get("silent", False),
         session_key=j.get("session_key", ""),
         last_posted_hash=j.get("last_posted_hash", ""),
@@ -2429,6 +2471,8 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        source_preset: str = "",
+        source_template_prompt: str = "",
     ) -> CronJob:
         """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
 
@@ -2477,6 +2521,16 @@ class CronService:
             timeout=timeout,
             timeout_secs=timeout_secs,
         )
+        # Dashboard-only template provenance. Set on the freshly-built job
+        # BEFORE the off-loop persist -- the object has no other reference yet,
+        # so this is still a single fully-formed first save, not a
+        # build-then-mutate-then-second-save. Kept off _build_job because only
+        # this async path is ever called with them (the sync add_job, CLI, MCP
+        # and apps SDK never carry a template), so threading them through the
+        # shared constructor would be surface with no consumer.
+        if source_preset:
+            job.source_preset = source_preset
+            job.source_template_prompt = source_template_prompt
         await asyncio.to_thread(self._persist_add_locked, job)
         self._arm_timer()
         logger.info("Added cron job '%s' (%s)", name, job.id)
@@ -4996,6 +5050,8 @@ class CronService:
                     "approval_mode": j.approval_mode,
                     "acked_items": j.acked_items,
                     "created_by": j.created_by,
+                    "source_preset": j.source_preset,
+                    "source_template_prompt": j.source_template_prompt,
                     "silent": j.silent,
                     "session_key": j.session_key,
                     "last_posted_hash": j.last_posted_hash,

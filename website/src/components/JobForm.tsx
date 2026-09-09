@@ -113,6 +113,7 @@ function buildBody(
   tz: string,
   setError: (e: string) => void,
   isEdit = false,
+  prefill?: CronPrefill,
 ): Record<string, string | number | boolean> | null {
   const isLlmless = f.jobKind === 'script' || f.jobKind === 'command'
   // Script/command crons have no agent message — only the agent/message kind
@@ -151,6 +152,16 @@ function buildBody(
     if (expr.split(/\s+/).length !== 5) { setError(i18nT('components.jobForm.enter_a_valid_5_field_cron_expression')); return null }
     body.cron = expr
     body.timezone = tz
+  }
+  // Provenance stamp, create-only: the template this job was seeded from, plus
+  // the template's prompt AS IT WAS when picked (the snapshot the Schedule page
+  // compares against the template's current prompt to detect a template change,
+  // independent of any edit the user makes to the Message field below). The
+  // PATCH endpoint does not accept either (provenance is fixed at creation), so
+  // they are never sent on edit.
+  if (!isEdit && prefill?.sourcePreset) {
+    body.source_preset = prefill.sourcePreset
+    body.source_template_prompt = prefill.sourceTemplatePrompt ?? ''
   }
   return body
 }
@@ -311,7 +322,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const submit = async () => {
     setError(''); setSaving(true)
     const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
-    const body = buildBody(f, tz, setError, !!job)
+    const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
     try {
       const res = job
