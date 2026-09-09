@@ -387,3 +387,98 @@ class TestCommittedBaseline:
     def test_committed_baseline_only_lists_scanned_trees(self) -> None:
         for rel in gate._read_baseline(BASELINE):
             assert rel.startswith(gate.DEFAULT_TARGETS), f"{rel} is outside the scanned trees"
+
+
+class TestDirtyTreeScope:
+    """The gate's added-line rule on a tree with uncommitted edits.
+
+    The gate scans violations from the working tree, and ``ratchet_scope``
+    provides the added-line set for the same diff. On a dirty tree those two
+    descriptions must be of the same file state: a baselined marker shifted by
+    an uncommitted insert must not be judged as newly added just because its
+    working-tree line number falls inside the committed diff's added range,
+    while a marker the uncommitted edit genuinely writes must still fail. Each
+    test builds a synthetic repo, computes scope and added lines through a
+    fresh ``ratchet_scope`` pointed at it, scans the working-tree bytes with
+    the gate's real detector, and reads the verdict from ``_verdicts`` -- the
+    same pipeline ``run_gate`` wires together.
+    """
+
+    BASE_SOURCE = "# hotfix\nvalue = 1\n"
+    COMMITTED_SOURCE = "# hotfix\nvalue = 1\nextra_a = 2\nextra_b = 3\nextra_c = 4\n"
+
+    @pytest.fixture()
+    def dirty_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import subprocess
+
+        from test_ratchet_scope import _fixture_git_env
+
+        from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
+
+        # The module under test runs git with the ambient environment; an
+        # exported GIT_DIR would answer for the wrong repository.
+        for var in _GIT_LOCATION_VARS:
+            monkeypatch.delenv(var, raising=False)
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+                env=_fixture_git_env(),
+            )
+
+        git("init", "-b", "main", ".")
+        (repo / "pkg.py").write_text(self.BASE_SOURCE, encoding="utf-8")
+        git("add", "pkg.py")
+        git("commit", "-m", "base file with one recorded marker")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        git("checkout", "-b", "topic")
+        (repo / "pkg.py").write_text(self.COMMITTED_SOURCE, encoding="utf-8")
+        git("add", "pkg.py")
+        git("commit", "-m", "append clean lines below the marker")
+
+        spec = importlib.util.spec_from_file_location(
+            "ratchet_scope_dirty_tree", ROOT / "scripts" / "ratchet_scope.py"
+        )
+        assert spec and spec.loader
+        rs = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rs)
+        monkeypatch.setattr(rs, "ROOT", repo)
+        return repo, rs
+
+    def _verdict(self, repo: Path, rs, worktree_source: str):
+        (repo / "pkg.py").write_text(worktree_source, encoding="utf-8")
+        changed, label = rs.changed_paths()
+        assert label == "origin/main...HEAD"
+        added = rs.added_lines(label)
+        assert added is not None
+        violations = {"pkg.py": gate.violations_in_source(worktree_source)}
+        return gate._verdicts(violations, {"pkg.py": 1}, changed, added)
+
+    def test_a_shifted_baselined_marker_is_not_flagged(self, dirty_repo) -> None:
+        # Uncommitted insert above the marker: it moves to working-tree line 3,
+        # a number inside the committed diff's added range {3, 4, 5}. The gate
+        # must read it as the pre-existing line it is; committing these exact
+        # bytes produces the same verdict.
+        repo, rs = dirty_repo
+        new, grown, on_added, shrunk = self._verdict(
+            repo, rs, "wip_a = 0\nwip_b = 0\n" + self.COMMITTED_SOURCE
+        )
+        assert not new and not grown and not on_added and not shrunk
+
+    def test_a_marker_written_by_the_uncommitted_edit_still_fails(self, dirty_repo) -> None:
+        # Swap: the uncommitted edit deletes the recorded marker and writes a
+        # fresh one at the end. The count stays level, so only the added-line
+        # rule can catch it -- and it must.
+        repo, rs = dirty_repo
+        source = self.COMMITTED_SOURCE.replace("# hotfix\n", "") + "# hotfix\n"
+        new, grown, on_added, shrunk = self._verdict(repo, rs, source)
+        assert on_added == {"pkg.py": gate.violations_in_source(source)}
+        assert not new and not grown and not shrunk

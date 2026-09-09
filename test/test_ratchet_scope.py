@@ -304,6 +304,85 @@ class TestWholeTreeOverride:
         )
 
 
+class TestDirtyTree:
+    """``added_lines`` must describe the file state the consuming gates scan.
+
+    The merge-ref ratchets read violations from the WORKING TREE. On a tree
+    with uncommitted edits, an added set numbered by HEAD's copy of a file and
+    a violation numbered by the working-tree copy can collide: a pre-existing
+    line shifted by an uncommitted insert lands on a line number the HEAD diff
+    counts as added, and the gate fails on bytes that pass once committed.
+    These tests pin the three-dot label's diff to base-to-working-tree, and pin
+    that the base stays the MERGE-BASE rather than the base tip.
+    """
+
+    def test_uncommitted_edits_are_in_the_added_set(self, repo: Path) -> None:
+        _git(repo, "checkout", "feature")
+        _set_origin_main(repo)
+        (repo / "feature.py").write_text("feature.py\nuncommitted\n", encoding="utf-8")
+
+        added = scope.added_lines("origin/main...HEAD")
+
+        assert added is not None
+        assert 2 in added["feature.py"]
+
+    def test_a_shifted_preexisting_line_is_not_counted_as_added(self, repo: Path) -> None:
+        # The reproduction from the comment-history gate: `victim.py` exists on
+        # the base with a line the baseline already records, the branch appends
+        # committed lines below it, and an uncommitted insert ABOVE it shifts
+        # the recorded line onto a number the base..HEAD diff counts as added.
+        # The added set must describe the working tree, where that line is old.
+        (repo / "victim.py").write_text("recorded = 1\n", encoding="utf-8")
+        _git(repo, "add", "victim.py")
+        _git(repo, "commit", "-m", "base file with a recorded line")
+        _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        _git(repo, "checkout", "-b", "topic")
+        (repo / "victim.py").write_text(
+            "recorded = 1\nadded_a = 2\nadded_b = 3\n", encoding="utf-8"
+        )
+        _git(repo, "add", "victim.py")
+        _git(repo, "commit", "-m", "append two lines below the recorded one")
+        # Uncommitted: insert two lines above. The recorded line now sits at
+        # working-tree line 3, a number inside HEAD's added range {2, 3}.
+        (repo / "victim.py").write_text(
+            "wip_a = 0\nwip_b = 0\nrecorded = 1\nadded_a = 2\nadded_b = 3\n", encoding="utf-8"
+        )
+
+        added = scope.added_lines("origin/main...HEAD")
+
+        assert added is not None
+        assert 3 not in added["victim.py"]
+        assert {1, 2}.issubset(added["victim.py"])
+
+    def test_the_base_is_the_merge_base_not_the_base_tip(self, repo: Path) -> None:
+        # main rewrites base.txt AFTER the branch point. A diff against the
+        # base TIP would count the working tree's older copy of base.txt as
+        # this change's added lines; the merge-base diff sees no edit there.
+        _git(repo, "checkout", "main")
+        (repo / "base.txt").write_text("rewritten on main\n", encoding="utf-8")
+        _git(repo, "add", "base.txt")
+        _git(repo, "commit", "-m", "rewrite base.txt on main after the branch point")
+        _set_origin_main(repo)
+        _git(repo, "checkout", "feature")
+        (repo / "feature.py").write_text("feature.py\nuncommitted\n", encoding="utf-8")
+
+        added = scope.added_lines("origin/main...HEAD")
+
+        assert added is not None
+        assert "base.txt" not in added
+        assert 2 in added["feature.py"]
+
+    def test_a_clean_tree_matches_the_head_diff(self, repo: Path) -> None:
+        # CI checks out a clean tree; the working-tree diff must be identical
+        # to the committed one there, so this change is invisible to CI.
+        _git(repo, "checkout", "feature")
+        _set_origin_main(repo)
+
+        added = scope.added_lines("origin/main...HEAD")
+
+        assert added == {"feature.py": {1}}
+
+
 class TestExplicitBase:
     """The env-base family's entry points: an EXPLICIT ref in, shared parsing out.
 
