@@ -857,10 +857,11 @@ class AutoNudgeService:
                         loop.monitor = monitor_state_from_dict(monitor_raw)
                     except (TypeError, ValueError):
                         monitor_quarantined = True
+                        quarantine_needs_rewrite = loop.active or loop.next_due_ts != 0.0
                         loop.monitor = quarantine_monitor_state(monitor_raw)
                         loop.active = False
                         loop.next_due_ts = 0.0
-                        self._store_dirty = True
+                        self._store_dirty = self._store_dirty or quarantine_needs_rewrite
                         logger.warning(
                             "AutoNudge: quarantined malformed monitor record for loop %s",
                             loop.id,
@@ -2200,7 +2201,7 @@ class AutoNudgeService:
 
         Every removal path (explicit remove, session close, replacement by a
         new arm) funnels through ``remove_sync``, so this is the one place the
-        trust record is told a loop no longer exists -- and the ONLY path that
+        trust record is told a loop has left the store -- and the ONLY path that
         drops an entry, since ``record_self_arm`` is a pure upsert. Otherwise a
         removed id would keep its authorization indefinitely, and a forged
         store entry reusing that id on the same slot would inherit it.
@@ -2410,6 +2411,8 @@ class AutoNudgeService:
                 staged_state.last_probe_at = now
                 staged_state.last_decision = decision
                 observation = result.observation
+                staged_state.last_observation_status = observation.status
+                staged_state.last_observation_reason_code = observation.reason_code
                 provider_error = (
                     observation.provider_error or observation.supplemental_provider_error
                 )
@@ -2639,6 +2642,8 @@ class AutoNudgeService:
             if reset_baseline:
                 staged_state.config_generation += 1
                 staged_state.last_observation = {}
+                staged_state.last_observation_status = None
+                staged_state.last_observation_reason_code = ""
                 staged_state.last_fingerprint = ""
                 staged_state.last_observed_at = 0.0
                 staged_state.last_decision = None

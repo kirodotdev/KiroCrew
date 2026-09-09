@@ -2,11 +2,50 @@ import { describe, it, expect } from 'vitest'
 import chatReducer, { deleteSlot } from '../store/chatSlice'
 import notifReducer, { addNotification, fetchNotifications, NOTIFICATIONS_RING_CAP } from '../store/notificationsSlice'
 import { sseSlots, sseConnected, fetchSlots } from '../store/dashboardSlice'
+import type { StructuredMonitor } from '../monitoring/automation'
 import type { ChatMessage, ChatSlot, Notification } from '../types'
 import './mockApiClient'
 
 const slot = (key: string): ChatSlot => ({ key, messages: 0, running: false })
 const msg = (content: string): ChatMessage => ({ role: 'assistant', content, cls: '' })
+const terminalMonitor = (slotKey: string): StructuredMonitor => ({
+  kind: 'structured_monitor',
+  id: `monitor-${slotKey}`,
+  slotKey,
+  active: false,
+  actionable: true,
+  version: 1,
+  monitorKind: 'github_pull_request',
+  objective: 'review_ready',
+  target: 'https://github.com/acme/widgets/pull/7',
+  cadenceSecs: 60,
+  nextProbeAt: 0,
+  wakeInstructions: '',
+  budgets: {
+    maxRuntimeSecs: 600,
+    maxAgentTurns: 4,
+    maxTokens: 10_000,
+    maxProviderErrors: 2,
+  },
+  latest: {
+    classification: 'success',
+    reasonCode: 'review_ready',
+    summary: 'Ready to merge',
+    observedAt: 100,
+    decision: 'stop_success',
+  },
+  usage: {
+    probes: 2,
+    wakes: 1,
+    agentTurns: 1,
+    inputTokens: 100,
+    outputTokens: 50,
+    providerErrors: 0,
+    tokenUsageKnown: true,
+  },
+  action: { wakeInFlight: false, wakeDelivery: '' },
+  terminal: { outcome: 'success', reason: 'review_ready', stoppedAt: 101 },
+})
 
 /** Seed a chat state carrying per-slot caches for the given keys. */
 function seeded(keys: string[], activeSlot: string | null = null) {
@@ -140,7 +179,7 @@ describe('slot teardown parity', () => {
       followups: Object.fromEntries(keys.map(k => [k, { items: [], ts: 1 }])),
       folderSuggestions: Object.fromEntries(keys.map(k => [k, { folderId: 'f', folderName: 'F', breadcrumb: 'F', ts: 1, turns: 0 }])),
       subagentQueued: Object.fromEntries(keys.map(k => [k, 2])),
-      goalLoops: Object.fromEntries(keys.map(k => [k, { cycle_count: 1, max_cycles: 5 }])),
+      automations: Object.fromEntries(keys.map(k => [k, terminalMonitor(k)])),
       slotPaneHasMore: Object.fromEntries(keys.map(k => [k, true])),
       slotPaneBounded: Object.fromEntries(keys.map(k => [k, 50])),
       thinkingOrphans: Object.fromEntries(keys.map(k => [k, [{ msg: { role: 'thinking', content: `reasoning for ${k}`, cls: '' } as ChatMessage, anchor: { text: 'OLD ANSWER' } }]])),
@@ -150,7 +189,8 @@ describe('slot teardown parity', () => {
   const perSlotMaps = [
     'slotMessages', 'slotActivity', 'slotRun', 'slotHydrated', 'slotSide',
     'slotSideClosed', 'slotStatusDetail', 'slotContextPct', 'slotContextTokens',
-    'stopPressedAt', 'followups', 'folderSuggestions', 'subagentQueued', 'goalLoops',
+    'stopPressedAt', 'followups', 'folderSuggestions', 'subagentQueued',
+    'automations',
     'slotPaneHasMore', 'slotPaneBounded',
     // Client-only and unrecoverable, so a slot that leaves has to take it with it.
     'thinkingOrphans',
@@ -184,7 +224,7 @@ describe('slot teardown parity', () => {
    *  the safe-keyed maps, or a slot whose only residue lives there is never
    *  visited and survives that path. */
   it('the reconcile evicts a slot whose only residue is in a safe-keyed map', () => {
-    const state = { ...seeded(['chat-1']), subagentQueued: { ghost: 3 }, goalLoops: {}, pendingQuestions: {} }
+    const state = { ...seeded(['chat-1']), subagentQueued: { ghost: 3 }, automations: {}, pendingQuestions: {} }
     const next = chatReducer(state, sseSlots([slot('chat-1')]))
     expect(next.subagentQueued['ghost']).toBeUndefined()
   })
@@ -205,7 +245,7 @@ describe('slot teardown parity', () => {
   })
 
   it('keeps a live slot that is only present in a safe-keyed map', () => {
-    const state = { ...seeded(['chat-1']), subagentQueued: { 'chat-1': 3 }, goalLoops: {}, pendingQuestions: {} }
+    const state = { ...seeded(['chat-1']), subagentQueued: { 'chat-1': 3 }, automations: {}, pendingQuestions: {} }
     const next = chatReducer(state, sseSlots([slot('chat-1')]))
     expect(next.subagentQueued['chat-1']).toBe(3)
   })

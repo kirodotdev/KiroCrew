@@ -214,7 +214,7 @@
     "src/kiro_crew/artifacts.py": 10,
     "src/kiro_crew/atomic_write.py": 3,
     "src/kiro_crew/auth/refresh.py": 1,
-    "src/kiro_crew/autonudge.py": 24,
+    "src/kiro_crew/autonudge.py": 23,
     "src/kiro_crew/autonudge_authz.py": 1,
     "src/kiro_crew/aws_consent.py": 7,
     "src/kiro_crew/browser_cli/install.py": 1,

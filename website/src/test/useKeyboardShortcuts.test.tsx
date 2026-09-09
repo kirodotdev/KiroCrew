@@ -1407,7 +1407,17 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const store = createTestStore({
       dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
-      chat: { activeSlot: 'slot-1', slotHistory: [], goalLoops: { 'slot-1': { cycle_count: 2, max_cycles: 0 } } } as unknown as RootState['chat'],
+      chat: {
+        activeSlot: 'slot-1',
+        slotHistory: [],
+        automations: {
+          'legacy-1': {
+            kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'slot-1', message: '',
+            idleSecs: 60, maxCycles: 0, cycleCount: 2, active: true,
+            lastFireAt: 0, stoppedReason: '',
+          },
+        },
+      } as unknown as RootState['chat'],
     })
     renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
     press({ code: 'KeyW', ctrlKey: true })

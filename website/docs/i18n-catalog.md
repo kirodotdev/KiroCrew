@@ -322,6 +322,20 @@ Available: `fmtNumber`, `fmtPercent`, `fmtCurrency`, `fmtUnit`, `fmtDuration`,
 `fmtRelative`, `fmtList`, `collator`, `compareText`, plus `activeLocale` and
 `toDate`.
 
+Bounded-monitor evidence follows the same seam. Probe, wake, agent-turn, token,
+provider-error, cadence, and budget values pass through `fmtNumber`; probe
+deadlines pass through `fmtDateTimeNumeric`. The catalog keeps these usage lines
+label-first (`"Probes: {{count}}"`) because `count` is already formatted text and
+may also be the translated unknown-state label, so it must not be used as an
+i18next plural selector. Human-readable monitor statuses are catalog values in
+all shipped locales. Provider classifications, scheduler decisions, terminal
+reason codes, and target URLs are machine or user data instead: render them with
+`translate="no"` and never add their open-ended values to the catalog.
+Bounded-monitor validation formats the backend minimum and maximum before passing
+them to the field-specific catalog message. The pull-request example translates
+only its local “e.g.” prefix; the URL remains byte-identical under the catalog's
+do-not-translate URL rule.
+
 **Naming a locale IS the opt-out**, which is why there is no allowlist file:
 
 ```ts

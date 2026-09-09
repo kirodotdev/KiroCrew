@@ -128,6 +128,21 @@ export interface WorkflowDefinitionWrite {
   slug?: string
   derived_from?: WorkflowLineage | null
 }
+
+export type MonitorWrite = {
+  slot_key?: string
+  kind?: 'github_pull_request'
+  objective?: 'review_ready'
+  target?: string
+  cadence_secs?: number
+  max_runtime_secs?: number
+  max_agent_turns?: number
+  max_tokens?: number
+  max_provider_errors?: number
+  wake_instructions?: string
+}
+
+export type MonitorResponse = { ok: true; monitor: unknown }
 /** The gateway's advisory reading of whether a server's backend can be shared.
  *
  *  `strength` is the evidence tier, weakest first: `unknown`, `no_objection`,
@@ -3108,6 +3123,21 @@ export const api = {
    *  callers need no flag check. */
   autonudgeList: (): Promise<AutoNudgeListResponse> =>
     fetch('/api/autonudge').then(j),
+  autonudgeForSlot: (slot: string): Promise<{ enabled: boolean; loop: unknown | null }> =>
+    fetch('/api/autonudge/slot/' + encodeURIComponent(slot)).then(j),
+  /** Structured monitor records include terminal outcomes for inspection. */
+  monitorsList: (): Promise<{ enabled: boolean; monitors: unknown[] }> =>
+    fetch('/api/monitors').then(j),
+  monitorForSlot: (slot: string): Promise<{ enabled: boolean; monitor: unknown | null }> =>
+    fetch('/api/monitors/slot/' + encodeURIComponent(slot)).then(j),
+  monitorCreate: (body: Required<MonitorWrite>): Promise<MonitorResponse> =>
+    post('/api/monitors', body).then(j) as Promise<MonitorResponse>,
+  monitorUpdate: (id: string, body: MonitorWrite): Promise<MonitorResponse> =>
+    patch('/api/monitors/' + encodeURIComponent(id), body).then(j) as Promise<MonitorResponse>,
+  monitorStop: (id: string): Promise<MonitorResponse> =>
+    post('/api/monitors/' + encodeURIComponent(id) + '/stop').then(j) as Promise<MonitorResponse>,
+  monitorRestart: (id: string): Promise<MonitorResponse> =>
+    post('/api/monitors/' + encodeURIComponent(id) + '/restart').then(j) as Promise<MonitorResponse>,
   /** Every pull request / issue link a session carries — the unbudgeted read
    *  behind the sidebar's expandable "+N" overflow chip. The slots payload caps
    *  chips per kind, so the links behind that chip are not on the client until

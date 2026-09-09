@@ -1,0 +1,35 @@
+{
+  "monitorStateVersion": 1,
+  "limits": {
+    "cadenceSecs": { "minimum": 15, "maximum": 86400, "defaultValue": 300 },
+    "maxRuntimeSecs": { "minimum": 1, "maximum": 604800, "defaultValue": 14400 },
+    "maxAgentTurns": { "minimum": 1, "maximum": 8, "defaultValue": 8 },
+    "maxTokens": { "minimum": 1, "maximum": 1000000, "defaultValue": 250000 },
+    "maxProviderErrors": { "minimum": 1, "maximum": 20, "defaultValue": 3 },
+    "wakeInstructions": { "maximumLength": 1000 }
+  },
+  "pullRequestMonitorKinds": ["github_pull_request"],
+  "enums": {
+    "wakeDelivery": ["dispatched", "busy", "unavailable"],
+    "lastCompletionDisposition": ["success", "failure", "cancellation", "approval_stall"],
+    "lastDecision": [
+      "no_change",
+      "record_only",
+      "wake_actionable",
+      "stop_success",
+      "stop_blocked",
+      "retry_provider",
+      "stop_budget"
+    ],
+    "lastProviderError": [
+      "transient",
+      "rate_limited",
+      "authentication",
+      "authorization",
+      "not_found",
+      "setup"
+    ],
+    "lastObservationStatus": ["pending", "actionable", "success", "blocked", "provider_error"],
+    "outcome": ["success", "blocked", "budget", "user_stop", "session_close", "target_unavailable"]
+  }
+}

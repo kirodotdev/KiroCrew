@@ -251,7 +251,7 @@ function renderSidebar(opts: RenderOpts = {}) {
       ...defaults.chat,
       activeSlot: opts.activeSlot ?? null,
       slotStatusDetail: {}, subagents: {}, slotActivity: {},
-      goalLoops: {}, workflowRuns: {}, subagentQueued: {}, slotHistory: [],
+      automations: {}, workflowRuns: {}, subagentQueued: {}, slotHistory: [],
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })

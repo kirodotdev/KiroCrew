@@ -80,6 +80,16 @@ const TOOL_DETAIL = {
 }
 
 function renderSidebar(slots: ChatSlot[], chat: Record<string, unknown>) {
+  const legacyFixtures = chat.goalLoops as Record<string, { cycle_count: number; max_cycles: number }> | undefined
+  const { goalLoops: _legacyFixtures, ...chatState } = chat
+  const automations = Object.fromEntries(Object.entries(legacyFixtures ?? {}).map(([slotKey, loop]) => [
+    slotKey,
+    {
+      kind: 'legacy_goal_loop', id: `loop-${slotKey}`, slotKey, message: '', idleSecs: 60,
+      maxCycles: loop.max_cycles, cycleCount: loop.cycle_count, active: true,
+      lastFireAt: 0, stoppedReason: '',
+    },
+  ]))
   const store = createTestStore({
     dashboard: {
       status: {}, connected: true, slots, approvalMode: 'normal',
@@ -88,7 +98,7 @@ function renderSidebar(slots: ChatSlot[], chat: Record<string, unknown>) {
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
     } as unknown as RootState['dashboard'],
-    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, goalLoops: {}, ...chat } as unknown as RootState['chat'],
+    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, ...chatState, automations } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])

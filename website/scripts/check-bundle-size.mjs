@@ -47,8 +47,9 @@ export const CHUNK_BUDGETS = {
   // recent catalog increments included in this measurement; Dev Fleet's
   // per-pod system readout then adds its own strings across the same 12
   // catalogs on top of that baseline. The Drive gallery's keys across 13
-  // catalogs ride inside the headroom that measurement already left, so this
-  // branch does not move the ceiling.
+  // catalogs and this branch's structured-monitor and session-mode additions
+  // ride inside the headroom that measurement already left, so this branch
+  // does not move the ceiling.
   // Re-measured 2026-09-06: main @ 3a6478967 alone builds the chunk at
   // 10,700,930 B (10450 KB) against the 10490 KB ceiling -- 0.4% headroom, so
   // any feature PR shipping a normal set of keys across the 13 catalogs fails
@@ -80,7 +81,12 @@ export const CHUNK_BUDGETS = {
   // same drift again (~36 KB of English strings in four days). A feature PR
   // adding ~40 keys (#8307) trips it on its merge ref while main's own gate
   // stays green, so the ceiling moves back to the 5% convention.
-  t: 815 * KB, // measured 776.5 KB on main @ 9af9543b0 (~5% headroom)
+  // The structured-monitor dashboard adds 57 English keys, a measured 2.7 KB
+  // increase over main's 776.5 KB runtime chunk. That is expected catalog
+  // growth, not a new library reaching the runtime. Keep roughly 5% headroom,
+  // matching the `all` entry's convention above, so ordinary translated UI
+  // additions do not make this gate block unrelated descendants.
+  t: 819 * KB, // measured 779.2 KB with structured-monitor catalog additions
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

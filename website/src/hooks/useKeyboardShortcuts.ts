@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
-import { switchSlot, deleteSlot, openActivityToTab, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive } from '../store/chatSlice'
+import { switchSlot, deleteSlot, openActivityToTab, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../store/chatSlice'
 import { inferLane } from '../pages/chat/sessionLane'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
@@ -981,7 +981,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
           const lane = slot ? inferLane(slot, {
             subagentAwaiting: Math.min(selectSidebarApprovalCounts(state)[activeSlot] || 0, subagentsRunning),
             workflowActive: normalizeRunSessionKey(activeSlot) in selectSidebarWorkflowActive(state),
-            goalLoopActive: Object.prototype.hasOwnProperty.call(state.chat.goalLoops ?? {}, activeSlot),
+            goalLoopActive: selectSidebarAutomationRunningKeys(state).includes(activeSlot),
             detailedSubagentsRunning: subagentsRunning > 0,
           }) : 'idle'
           const modChord = e.metaKey || e.ctrlKey

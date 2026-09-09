@@ -30,7 +30,7 @@ import { useLanguage } from '../i18n/LanguageProvider'
 import { pickToolLabel } from '../utils/toolLabel'
 import { toApiDecision } from '../utils/approvalDecision'
 import TrustDropdown from './TrustDropdown'
-import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
+import type { AutomationRecord } from '../monitoring/automation'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
@@ -97,6 +97,8 @@ class ComposerLoadBoundary extends Component<
     return this.state.failed ? null : this.props.children
   }
 }
+
+const SessionAutomationPopover = lazy(() => import('./SessionAutomationPopover'))
 
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
@@ -632,11 +634,15 @@ interface ChatInputProps {
   cleanMode?: boolean
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
   sentMessages?: string[]
-  /** Auto-nudge loop state for this slot (if any) */
-  onAutoNudgeClick?: (open: boolean) => void
-  autoNudgeLoop?: AutoNudgeLoop | null
-  autoNudgeOpen?: boolean
-  onAutoNudgeChange?: (loop: AutoNudgeLoop | null) => void
+  /** Authoritative automation record for this slot (if any). */
+  onAutomationClick?: (open: boolean) => void
+  automation?: AutomationRecord | null
+  automationOpen?: boolean
+  onAutomationChange?: (automation: AutomationRecord | null) => void
+  automationCreationReady?: boolean
+  automationSnapshotFailed?: boolean
+  /** Session routing mode; crew/member cannot host direct monitor turns. */
+  sessionMode?: string
   /** Send-key mode. Default 'enter'. */
   sendOnEnter?: SendMode
   /** Follow-up options from assistant message */
@@ -997,10 +1003,13 @@ function ChatInput({
   memoryMode,
   cleanMode,
   sentMessages,
-  onAutoNudgeClick,
-  autoNudgeLoop,
-  autoNudgeOpen,
-  onAutoNudgeChange,
+  onAutomationClick,
+  automation,
+  automationOpen,
+  onAutomationChange,
+  automationCreationReady,
+  automationSnapshotFailed,
+  sessionMode,
   sendOnEnter = 'enter',
   followUpOptions,
   followUpPicked,
@@ -1577,8 +1586,8 @@ function ChatInput({
   // content width — only this remeasure can refresh the cue. Boolean presence,
   // not the callback itself: the handler's identity may change every render
   // and would re-run the effect for nothing.
-  const hasAutoNudge = !!onAutoNudgeClick
-  useEffect(() => { remeasureControlRow() }, [hasAutoNudge, autoNudgeLoop, approvalMode, isMobile, remeasureControlRow])
+  const hasAutomation = !!onAutomationClick
+  useEffect(() => { remeasureControlRow() }, [hasAutomation, automation, approvalMode, isMobile, remeasureControlRow])
   const ime = useImeGuard()
   const resolvedPlaceholder = placeholder || i18nT('components.chatInput.message_placeholder', { bot: botName })
   // An icon swap alone announces nothing, so the empty-state placeholder carries
@@ -4270,18 +4279,23 @@ function ChatInput({
             <div className="relative min-w-0 flex-1">
               <div ref={attachControlRow} data-testid="composer-control-row" className="flex items-center gap-0.5 overflow-x-auto">
 
-              {onAutoNudgeClick && (
-                <AutoNudgePopover
-                  slotKey={slotId || ''}
-                  loop={autoNudgeLoop || null}
-                  open={autoNudgeOpen || false}
-                  onOpenChange={v => onAutoNudgeClick(v)}
-                  onChange={onAutoNudgeChange || (() => {})}
-                  // Same condition as the Resume placeholder (`resumeOffered`):
-                  // whenever the composer says "press Resume", the loop chip
-                  // must not pulse as if a cycle were executing.
-                  interrupted={resumeOffered}
-                />
+              {onAutomationClick && (
+                <Suspense fallback={null}>
+                  <SessionAutomationPopover
+                    slotKey={slotId || ''}
+                    automation={automation || null}
+                    open={automationOpen || false}
+                    onOpenChange={v => onAutomationClick(v)}
+                    onChange={onAutomationChange || (() => {})}
+                    creationReady={automationCreationReady}
+                    snapshotFailed={automationSnapshotFailed}
+                    sessionMode={sessionMode}
+                    // Same condition as the Resume placeholder (`resumeOffered`):
+                    // whenever the composer says "press Resume", the loop chip
+                    // must not pulse as if a cycle were executing.
+                    interrupted={resumeOffered}
+                  />
+                </Suspense>
               )}
               {!isMobile && approvalMode && (
                 <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
