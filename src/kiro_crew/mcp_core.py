@@ -70,6 +70,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import DIRECTIVE_TOOLS, refuse_if_markerless
+from kiro_crew.session_pid_sig import session_pid_mapping_path
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.validation import (
     MCP_CORE_SCHEMAS,
@@ -832,13 +833,34 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
     """
     if _resolve_session_key_strict():
         return ""
-    if os.environ.get("KIROCREW_HOST_PID", "").isdigit():
+    host_pid = os.environ.get("KIROCREW_HOST_PID", "")
+    if host_pid.isdigit():
         # The sandbox launcher declared a host pid, so the channel exists and
         # the sidecar is what failed — a signing/trust-root problem, not routing.
+        # Name the directory the verifier actually searched: when an agent spec
+        # pinned a foreign KIROCREW_HOME into this stub's environment,
+        # the path is the poisoned home, and without it the operator is sent to
+        # `kirocrew doctor` on the real gateway, which reports a healthy trust
+        # root and points nowhere.
+        suffix = ""
+        try:
+            mapping = session_pid_mapping_path(host_pid)
+            # Existence-independent on purpose: the mapping directory is
+            # same-uid agent-writable, so any wording that varies with what is
+            # at the path (present, absent, a planted symlink) becomes an
+            # existence oracle. Naming the searched path is the whole of the
+            # diagnostic; whether anything is there is one `ls` away.
+            suffix = f" (mapping searched: {mapping})"
+        except (OSError, RuntimeError, ValueError):
+            # A diagnostic must never replace the denial it decorates with a
+            # crash: Path.home() raises RuntimeError with no resolvable home,
+            # expanduser RuntimeError on "~unknown", resolution OSError, and
+            # garbage ValueError. On any of them, keep the generic wording.
+            suffix = ""
         return (
-            f" No identity channel: the signed pid mapping for this session did not "
-            f"verify. Check `kirocrew doctor` (trust root) — {server} does not need "
-            f"routing when this channel works."
+            f" No identity channel: the signed pid mapping for this session did "
+            f"not verify{suffix}. Check `kirocrew doctor` (trust root) — {server} "
+            f"does not need routing when this channel works."
         )
     return (
         f" No identity channel on this install: {server} is not in "
