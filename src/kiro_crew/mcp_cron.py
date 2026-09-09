@@ -18,16 +18,18 @@ Tools:
 from __future__ import annotations
 
 import fnmatch
+import json
 import logging
 import os
 import re
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from kiro_crew import model_registry
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.cron import (
     _JOB_TIMEOUT_SECS,
     CronJob,
@@ -51,6 +53,7 @@ from kiro_crew.cron_script import (
     validate_secret_env_grant,
 )
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_core import (
     _post,
@@ -1055,6 +1058,22 @@ def _list_tools() -> list[dict[str, Any]]:
                         "description": "Optional list of job IDs. When set, "
                         "returns full bodies for matching jobs only.",
                     },
+                    "json": {
+                        "type": "boolean",
+                        "description": "If true, return a JSON document instead "
+                        "of text: one record per owned job with its mode, "
+                        "schedule, context settings, prompt, and folded "
+                        "run-history counts (runs, failures, distinct results, "
+                        "runs that found nothing to do). Takes precedence over "
+                        "verbose and over ids' implied verbose, because it "
+                        "serves a program rather than a reader. Run history is "
+                        "read through the gateway, which is the only reader "
+                        "that can see it; when that read cannot happen, "
+                        "history_available is false and each UNFETCHED job's "
+                        "history is null rather than an empty tally, so a job "
+                        "whose history is unknown is never mistaken for an idle "
+                        "one. A partial read keeps the history it did fetch.",
+                    },
                 },
             },
         },
@@ -1416,6 +1435,221 @@ def _sanitize(s: str) -> str:
     extra regexes apply; standalone is byte-for-byte today's two-pass.
     """
     return redact(s)
+
+
+# ── cron_list JSON mode ──
+#
+# A skill script cannot read the job store or the run history itself. The store is
+# only sandbox-visible because ``mcp_cron`` was carved out for it
+# (``sandbox._CREW_SANDBOX_VISIBLE_LEAVES``), and reading it directly bypasses the
+# ownership filter every MCP cron tool applies -- a non-owner sharing one data home
+# would see every participant's job metadata. ``cron-history`` is masked outright,
+# and on Linux the mask is an empty writable directory, so a direct read reports
+# zero runs for every job and looks identical to a job that has never fired.
+#
+# So both reads come through here: ownership is decided from the gateway-vouched
+# session key, and history is fetched from the gateway for the ALREADY-SCOPED ids
+# only. A history read that cannot happen is reported as unavailable, never as zero.
+
+#: Recent runs asked of the gateway per job. Matches the audit window the
+#: cron-cost-optimize skill reasons over.
+_JSON_HISTORY_LIMIT = 40
+
+#: Jobs whose history is fetched in one call. An upper bound on work, not on
+#: payload size -- the size bound is ``_JSON_BYTE_BUDGET``, because a count cannot
+#: bound bytes.
+_JSON_MAX_JOBS = 100
+
+#: Serialized characters the records may occupy. A COUNT cap does not bound size:
+#: ``json.dumps`` escapes a non-ASCII character to ``\uXXXX``, six characters for
+#: one, so 100 ordinary 400-character prompts in Chinese serialize to ~296,000
+#: characters -- almost three times the response ceiling. Measured, not estimated.
+#: Crossing that ceiling matters more than losing a row, because
+#: ``sanitize_response`` truncates with a blind tail slice that appends a notice
+#: OUTSIDE the JSON grammar, so the consumer gets a document that does not parse
+#: at all rather than a short one. Held below ``MAX_RESPONSE_LEN`` with room for
+#: the envelope and the unavailable-reason string.
+_JSON_BYTE_BUDGET = 88_000
+
+#: Prompt text carried per job. Longer than the compact preview, because a
+#: consumer classifies the prompt rather than displaying it, and shorter than the
+#: full body, which no classifier needs and which would blow the payload budget.
+_JSON_MESSAGE_LEN = 400
+
+#: Per-request and whole-phase ceilings for the history fetch. A slow or absent
+#: gateway degrades the payload, it never hangs the tool.
+_JSON_HISTORY_TIMEOUT_SECS = 3.0
+_JSON_HISTORY_BUDGET_SECS = 20.0
+
+
+#: Result text that means a run found nothing to do. Matched against a run's own
+#: summary, so it describes what the job SAID, not what its prompt asked for.
+_NOOP_RE = re.compile(
+    r"("
+    r"nothing to do|nothing new|nothing to report|nothing changed|"
+    r"no new |no change|no changes|unchanged|no update|no action|"
+    r"none found|no matches|no results|no failures|no errors|no issues|"
+    r"all clear|all good|all healthy|clean run|looks healthy|is healthy|"
+    r"up to date|already (done|handled|posted|processed|triaged)|"
+    r"skipped|no-op|idle|0 found|0 new|zero new"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _normalize_summary(text: str) -> str:
+    """Collapse a run summary so two runs that said the same thing compare equal.
+
+    Digits become ``#`` because a timestamp, a count or a percentage changing is
+    exactly the case that reads as different while meaning the same thing: "tmp
+    1%, home 19%" and "tmp 4%, home 22%" are one result, not two.
+    """
+    lowered = re.sub(r"\d+", "#", text.strip().lower())
+    return re.sub(r"\s+", " ", lowered)
+
+
+def _fold_runs(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Reduce a job's run records to the counts a cost audit needs.
+
+    ``cron-history`` is bind-masked from every sandboxed agent shell
+    (``sandbox._CREW_HIDDEN_LEAVES``), so a skill script cannot read run history
+    itself; it has to come from the gateway. What crosses that boundary should be
+    COUNTS rather than the run text they came from -- a count cannot carry a
+    credential, and folding here keeps a many-job payload well under the ceiling.
+
+    ``records`` are history rows as the store serializes them, so each carries at
+    least ``status`` and ``summary``. A row whose status is present and not
+    ``success`` counts as a failure and contributes to no other tally: a run that
+    crashed says nothing about whether the job had work to do.
+
+    ``same_every_run`` needs more than one run to mean anything, so a single
+    recorded run reports False rather than trivially True.
+    """
+    runs = 0
+    failures = 0
+    noop_runs = 0
+    seen: set[str] = set()
+    for rec in records:
+        status = str(rec.get("status") or "")
+        if status and status != "success":
+            failures += 1
+            continue
+        runs += 1
+        summary = str(rec.get("summary") or "")
+        seen.add(_normalize_summary(summary))
+        if _NOOP_RE.search(summary):
+            noop_runs += 1
+    return {
+        "runs": runs,
+        "failures": failures,
+        "distinct_summaries": len(seen),
+        "noop_runs": noop_runs,
+        "same_every_run": runs > 1 and len(seen) == 1,
+    }
+
+
+def _fetch_history_stats(job_ids: list[str]) -> tuple[dict[str, dict[str, Any]], str]:
+    """Ask the gateway to fold each job's run history into counts.
+
+    Returns ``(stats_by_job_id, unavailable_reason)``. An empty reason means every
+    id in *job_ids* was fetched. A non-empty reason means some or all could not be,
+    and the caller MUST surface it rather than let a missing entry read as a job
+    that has never run.
+
+    Loopback plus ``X-Internal-Secret``, the same path ``cron_trigger`` uses, with
+    the same port and credential resolvers -- the serving port rather than the
+    configured one, and the per-listener secret ahead of the home-wide fallback.
+    """
+    if not job_ids:
+        return {}, ""
+    try:
+        port = resolve_serving_port()
+    except Exception as exc:  # pragma: no cover - resolver is defensive already
+        return {}, f"cannot resolve the gateway port ({type(exc).__name__})"
+    secret = read_local_secret(port)
+    if not secret:
+        return {}, "no gateway credential on this host, so run history cannot be read"
+
+    stats: dict[str, dict[str, Any]] = {}
+    started = time.time()
+    for jid in job_ids:
+        if time.time() - started > _JSON_HISTORY_BUDGET_SECS:
+            return stats, "the run-history fetch ran out of time before every job was read"
+        url = f"http://127.0.0.1:{port}/api/crons/{jid}/history?limit={_JSON_HISTORY_LIMIT}"
+        req = urllib.request.Request(url, method="GET", headers={"X-Internal-Secret": secret})
+        try:
+            with loopback_urlopen(req, timeout=_JSON_HISTORY_TIMEOUT_SECS) as resp:
+                body = json.loads(resp.read())
+        except Exception as exc:
+            # One unreachable gateway means none of the rest will answer either.
+            return stats, f"the gateway did not answer the run-history read ({type(exc).__name__})"
+        runs = body.get("runs")
+        stats[jid] = _fold_runs(runs if isinstance(runs, list) else [])
+    return stats, ""
+
+
+def _render_cron_list_json(jobs: list[Any]) -> str:
+    """Ownership-scoped job records plus folded run-history counts, as JSON.
+
+    Every free-text field is sanitized BEFORE it is truncated. The other order
+    leaves a credential's prefix in the surviving span, which is why the compact
+    renderer has a test named for it.
+
+    The payload bounds itself and says so. Relying on the response-level cap would
+    hand a consumer a blind tail slice of a JSON document, which does not parse.
+    """
+    kept = jobs[:_JSON_MAX_JOBS]
+    stats, unavailable = _fetch_history_stats([j.id for j in kept])
+
+    records: list[dict[str, Any]] = []
+    used = 0
+    dropped = False
+    for job in kept:
+        history = stats.get(job.id)
+        message = _sanitize(job.message or "")
+        record = {
+            "id": job.id,
+            "name": _sanitize(job.name or "")[:_MSG_PREVIEW_LEN],
+            "mode": _job_kind(job),
+            "enabled": bool(getattr(job, "enabled", True)),
+            "schedule": format_schedule(job.schedule, tz_name=job.timezone or ""),
+            "every_secs": getattr(job.schedule, "every_secs", None),
+            "minimal_context": bool(job.minimal_context),
+            "persistent_session": bool(job.persistent_session),
+            "hide_in_chat": bool(job.hide_in_chat),
+            "message": message[:_JSON_MESSAGE_LEN],
+            # A consumer classifies the prompt, and anything past the cut is
+            # invisible to it -- including the words that would RULE OUT a
+            # cheaper mode. Saying the text was cut is what lets it refuse to
+            # judge instead of judging on half a prompt.
+            "message_truncated": len(message) > _JSON_MESSAGE_LEN,
+            # None, never an empty tally: a job whose history could not be read
+            # has not been shown to be idle, and a consumer must be able to
+            # tell those two apart.
+            "history": history,
+        }
+        # Measure what this record actually costs SERIALIZED, then decide. The
+        # alternative -- assemble everything and check at the end -- has no way
+        # to shed a row without re-serializing, and guessing a per-record size
+        # is what the count cap already got wrong.
+        cost = len(json.dumps(record, indent=2, sort_keys=True)) + 4
+        if records and used + cost > _JSON_BYTE_BUDGET:
+            dropped = True
+            break
+        records.append(record)
+        used += cost
+
+    payload: dict[str, Any] = {
+        "scanned": len(records),
+        # True when ANY owned job is missing from this payload, whichever bound
+        # dropped it. A consumer only needs to know the scan is partial.
+        "truncated": dropped or len(jobs) > len(kept),
+        "history_available": not unavailable,
+        "jobs": records,
+    }
+    if unavailable:
+        payload["history_unavailable_reason"] = unavailable
+    return json.dumps(payload, indent=2, sort_keys=True)
 
 
 def _job_kind(job: Any) -> str:
@@ -2064,6 +2298,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 missing = ", ".join(sorted(id_set))
                 return f"No cron jobs match ids: {missing}"
             verbose = True
+        # JSON last, and it wins: it is a different CONSUMER, not a third verbosity.
+        # A machine reading this must get a parseable document even when `ids` has
+        # already forced verbose on, so the precedence is stated in the description
+        # the same way `ids over verbose` already is.
+        if bool(args.get("json", False)):
+            return _render_cron_list_json(jobs)
         if verbose:
             return _render_cron_list_full(jobs)
         return _render_cron_list_compact(jobs)
