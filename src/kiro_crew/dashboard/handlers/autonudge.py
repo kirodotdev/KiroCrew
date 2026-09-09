@@ -46,6 +46,12 @@ from kiro_crew.monitoring.models import (
     MonitorState,
     monitor_state_public_dict,
 )
+from kiro_crew.monitoring.registry import (
+    GITHUB_PULL_REQUEST,
+    REVIEW_READY,
+    kind_supports_objective,
+    publicly_armable_kinds,
+)
 from kiro_crew.platform import redact_via_context
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import ledger_key, render_snapshot
@@ -363,10 +369,13 @@ def _bounded_int(body: dict[str, Any], name: str, default: int, minimum: int, ma
 def _monitor_config(body: dict[str, Any]) -> MonitorState:
     from kiro_crew.monitoring.github_pull_request import parse_github_pull_request_target
 
-    kind = body.get("kind", "github_pull_request")
-    objective = body.get("objective", "review_ready")
-    if kind != "github_pull_request" or objective != "review_ready":
-        raise ValueError("only github_pull_request review_ready monitors are supported")
+    kind = body.get("kind", GITHUB_PULL_REQUEST)
+    objective = body.get("objective", REVIEW_READY)
+    # Both halves: a caller may only name a PUBLICLY ARMABLE kind, and that kind must
+    # itself declare the objective. The flat allowlists upstream cannot express the
+    # pairing, so this is where it is checked.
+    if kind not in publicly_armable_kinds() or not kind_supports_objective(kind, objective):
+        raise ValueError(f"no monitored kind {kind!r} supports objective {objective!r}")
     target = parse_github_pull_request_target(body.get("target", "")).url
     wake = body.get("wake_instructions", "")
     if not isinstance(wake, str) or len(wake) > MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS:

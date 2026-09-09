@@ -23,6 +23,10 @@ from kiro_crew.monitoring.models import (
     is_finite_non_negative_number,
     resolve_probe_result,
 )
+from kiro_crew.monitoring.registry import (
+    kind_supports_objective,
+    kind_supports_shadow,
+)
 
 ShadowStatePersistence = Callable[[MonitorState], Awaitable[None]]
 
@@ -46,8 +50,16 @@ async def run_shadow_probe(
     """
     if wake_delivery:
         raise ShadowWakeDeliveryRefused("wake delivery is unavailable in shadow mode")
-    if state.kind != "github_pull_request" or state.objective != "review_ready":
-        raise ValueError("shadow mode supports only github_pull_request review_ready")
+    # A CAPABILITY the kind declares, not an allowlist of what a caller may request:
+    # this asks whether the persistence-only path is implemented for the kind, which
+    # is a fact about what code exists. A kind registered without it is refused here
+    # rather than silently inheriting a claim about a path it has never run.
+    if not kind_supports_shadow(state.kind):
+        raise ValueError(f"shadow mode is not implemented for monitored kind {state.kind!r}")
+    if not kind_supports_objective(state.kind, state.objective):
+        raise ValueError(
+            f"monitored kind {state.kind!r} does not declare objective {state.objective!r}"
+        )
     if not is_finite_non_negative_number(now):
         raise ValueError("now must be a finite non-negative number")
     if not callable(persist):
