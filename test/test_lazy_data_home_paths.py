@@ -34,12 +34,16 @@ Keeping the module-level name means existing ``monkeypatch.setattr(mod,
 from __future__ import annotations
 
 import ast
+import os
+import stat
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+from conftest import requires_symlinks
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
 # scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
@@ -682,3 +686,116 @@ class TestConfigDirMemoIsNotServedAfterTheHomeIsCleared:
 
         assert first == second == tmp_path / "home" / ".kiro" / "crew"
         assert calls == [1], f"memo did not serve the second call: {calls}"
+
+
+class TestRecoveryBreadcrumb:
+    @requires_symlinks
+    def test_symlinked_breadcrumb_is_replaced_and_its_target_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """A planted symlink can never redirect the write onto its target.
+
+        The atomic rename replaces the directory entry at the breadcrumb path
+        without following it: the symlink is consumed (a regular breadcrumb
+        takes its place) and the file it pointed at keeps its exact content.
+        """
+        from kiro_crew.config import paths
+
+        data_home = tmp_path / "data-home"
+        crumb = tmp_path / paths.RECOVERY_BREADCRUMB_NAME
+        target = tmp_path / "target"
+        target.write_text("leave this untouched", encoding="utf-8")
+        os.symlink(target, crumb)
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            paths._write_recovery_breadcrumb(data_home)
+
+        assert target.read_text(encoding="utf-8") == "leave this untouched"
+        assert crumb.is_file() and not crumb.is_symlink()
+        assert str(data_home) in crumb.read_text(encoding="utf-8")
+
+    def test_normal_breadcrumb_write_is_private_and_contains_the_data_home(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.config import paths
+
+        data_home = tmp_path / "data-home"
+        crumb = tmp_path / paths.RECOVERY_BREADCRUMB_NAME
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            paths._write_recovery_breadcrumb(data_home)
+
+        assert str(data_home) in crumb.read_text(encoding="utf-8")
+        if os.name == "posix":
+            # Windows has no POSIX permission bits; st_mode reads 0o666 there.
+            assert stat.S_IMODE(crumb.stat().st_mode) == 0o600
+
+    def test_existing_breadcrumb_that_contains_the_data_home_is_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        """Up-to-date breadcrumbs are not churned - where the safe read exists.
+
+        The idempotence read is gated on ``O_NOFOLLOW``: platforms that have it
+        (POSIX) skip the rewrite when the recorded path is current; platforms
+        that lack it (Windows) deliberately rewrite every start, so there the
+        assertion is that the rewrite lands a valid breadcrumb.
+        """
+        from kiro_crew.config import paths
+
+        data_home = tmp_path / "data-home"
+        crumb = tmp_path / paths.RECOVERY_BREADCRUMB_NAME
+        existing_content = f"existing pointer: {data_home}\n"
+        crumb.write_text(existing_content, encoding="utf-8")
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            paths._write_recovery_breadcrumb(data_home)
+
+        if hasattr(os, "O_NOFOLLOW"):
+            assert crumb.read_text(encoding="utf-8") == existing_content
+        else:
+            assert str(data_home) in crumb.read_text(encoding="utf-8")
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+    def test_fifo_at_breadcrumb_path_neither_hangs_nor_survives(self, tmp_path: Path) -> None:
+        """A non-regular file at the breadcrumb path must not stall startup.
+
+        The old idempotence check called ``read_text`` after a ``is_symlink``
+        re-check; a FIFO (or a symlink swapped in after the check) would make
+        that read block forever or follow the swap. The read now goes through a
+        no-follow, non-blocking descriptor gated on ``S_ISREG``, so a FIFO is
+        skipped and atomically replaced by the real breadcrumb.
+        """
+        from kiro_crew.config import paths
+
+        data_home = tmp_path / "data-home"
+        crumb = tmp_path / paths.RECOVERY_BREADCRUMB_NAME
+        os.mkfifo(crumb)
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            paths._write_recovery_breadcrumb(data_home)
+
+        assert crumb.is_file() and not crumb.is_symlink()
+        assert str(data_home) in crumb.read_text(encoding="utf-8")
+
+    def test_without_o_nofollow_the_read_is_skipped_and_write_still_lands(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Platforms lacking O_NOFOLLOW (Windows) must skip the idempotence read.
+
+        An open without O_NOFOLLOW would follow a raced symlink (e.g. to an
+        unreachable UNC path, stalling startup), so the function goes straight
+        to the atomic rewrite there. Startup must not crash and the breadcrumb
+        must still land correctly.
+        """
+        from kiro_crew.config import paths
+
+        data_home = tmp_path / "data-home"
+        crumb = tmp_path / paths.RECOVERY_BREADCRUMB_NAME
+        crumb.write_text(f"already points at {data_home}\n", encoding="utf-8")
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            paths._write_recovery_breadcrumb(data_home)
+
+        assert crumb.is_file() and not crumb.is_symlink()
+        assert str(data_home) in crumb.read_text(encoding="utf-8")

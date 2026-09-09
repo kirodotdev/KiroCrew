@@ -2,7 +2,10 @@
 
 This is a **leaf module**: it depends only on the standard library
 (``os``, ``sys``, ``pathlib``, ``logging``) and imports nothing from
-``kiro_crew``. Modules that only need to locate ``~/.kirocrew/`` should import
+``kiro_crew`` at import time. The one exception is a lazy, in-function import
+of :mod:`kiro_crew.atomic_write` inside ``_write_recovery_breadcrumb`` (that
+helper itself imports this module lazily, so there is no cycle). Modules that
+only need to locate ``~/.kirocrew/`` should import
 from here directly::
 
     from kiro_crew.config.paths import config_dir
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import sys
 import tempfile
 from collections.abc import Callable, Mapping
@@ -146,14 +150,38 @@ def _write_recovery_breadcrumb(data_home: Path) -> None:
             "any surviving data or know where it had been. It is NOT a backup.\n"
         )
         # Idempotent: only (re)write when absent or the recorded path changed, so
-        # we don't churn the file on every process start.
-        if crumb.is_file():
+        # we don't churn the file on every process start. Read through a
+        # no-follow descriptor and confirm it is a regular file, so a planted
+        # symlink or FIFO can neither redirect the read nor hang or bloat
+        # startup (``read_text`` would follow it). Where O_NOFOLLOW does not
+        # exist (Windows), skip the read entirely - an open there would follow
+        # a symlink (e.g. to an unreachable UNC path, stalling startup) - and
+        # fall through to the atomic rewrite.
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        if no_follow:
             try:
-                if str(data_home) in crumb.read_text(encoding="utf-8"):
-                    return
+                read_flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
+                crumb_fd = os.open(crumb, read_flags)
+                try:
+                    if stat.S_ISREG(os.fstat(crumb_fd).st_mode):
+                        existing = os.read(crumb_fd, 65536).decode("utf-8", errors="replace")
+                        if str(data_home) in existing:
+                            return
+                finally:
+                    os.close(crumb_fd)
             except OSError:
                 pass
-        crumb.write_text(content, encoding="utf-8")
+
+        # Write via the repo's mandated atomic-write helper: unique temp file,
+        # fchmod on the descriptor (never a path-based chmod), rename with the
+        # Windows sharing-violation retry, cleanup on failure. The rename
+        # replaces whatever directory entry sits at the breadcrumb path without
+        # following it, so a planted symlink is consumed - never written
+        # through - and its target is untouched. Imported lazily: this module
+        # stays an import-time leaf (see module docstring).
+        from kiro_crew.atomic_write import atomic_write
+
+        atomic_write(crumb, content, mode=0o600)
     except OSError:  # pragma: no cover - defensive: a breadcrumb is best-effort
         logger.debug("could not write recovery breadcrumb", exc_info=True)
 
