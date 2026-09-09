@@ -22,7 +22,12 @@ class ManagerComponent:
 def bind_component_globals(
     component_types: Iterable[type[ManagerComponent]], namespace: dict[str, Any]
 ) -> None:
-    """Bind implementations to ``subagent`` globals for patch compatibility."""
+    """Bind implementations to ``subagent`` globals for patch compatibility.
+
+    A rebound function keeps its own code but runs on ``namespace``, so an import at the
+    top of its defining module is inert for it. Every global it loads must resolve in
+    ``namespace`` -- add the name there, or import it inside the function.
+    """
     for component_type in component_types:
         for name, implementation in tuple(vars(component_type).items()):
             if not name.endswith("_impl") or not isinstance(implementation, FunctionType):
