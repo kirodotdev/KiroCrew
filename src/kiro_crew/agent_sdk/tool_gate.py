@@ -45,6 +45,7 @@ import os
 from enum import Enum
 from pathlib import PurePosixPath
 
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
     Routing,
@@ -81,11 +82,24 @@ _LABELS: dict = {
 #: An adapter authenticates itself, so its OWN token is the one thing the mask
 #: below must not take away. Everything else on the read-gate floor is denied.
 #:
+#: PROJECTED from each harness's declaration in
+#: :mod:`kiro_crew.agent_sdk.host_auth`, which is also where the read-gate floor
+#: gets the leaf it fences. That is what keeps the exclusion and the fence naming
+#: the same file: a leaf spelled here but not there is an exclusion from a mask
+#: that never covered it, and the declaration refuses to make one -- a harness may
+#: only ask the mask to spare a leaf its own declaration put ON the floor.
+#:
+#: A harness that declares none is ABSENT rather than present with an empty tuple,
+#: so the ``.get(backend, ())`` reads below are unchanged.
+#:
 #: Home-relative, matching the floor's own spelling. An operator override
-#: (``CODEX_HOME``) moves the real file outside the home anyway, so it is not on
-#: the floor and the mask never had it to exclude.
+#: (``CODEX_HOME``) moves the real file outside the home, and the floor re-anchors
+#: the declared leaf under it, so ``sandbox_credential_targets`` excludes the
+#: relocated spelling too.
 ADAPTER_OWN_CREDENTIAL_LEAVES: dict = {
-    ACP_BACKEND_CODEX: (".codex/auth.json",),
+    declaration.backend: declaration.adapter_own_leaves
+    for declaration in host_auth.AGENT_AUTH_DECLARATIONS
+    if declaration.adapter_own_leaves
 }
 
 #: Files re-exposed READ-ONLY inside a directory the mask hides, home-relative.
@@ -125,6 +139,17 @@ ADAPTER_OWN_CREDENTIAL_LEAVES: dict = {
 #: operator's own store, not a boundary the child can cross. Operators who
 #: keep static keys in ``config`` should move them to ``credentials``, which
 #: stays masked.
+#: HOST-owned, and deliberately NOT projected from a harness declaration like the
+#: exclusion above.
+#:
+#: The exclusion can be declared safely because the declaration constrains it: a
+#: harness may only ask the mask to spare a leaf its own declaration put ON the
+#: floor. A re-exposure has no such constraint available. It is an EDIT to the mask,
+#: and no structural rule separates the one legitimate case from the worst
+#: illegitimate one -- ``.aws/config`` and ``.ssh/id_rsa`` are both files under a
+#: directory this mask hides, so "must sit under something masked" admits them
+#: equally. So this stays where adding an entry is visibly a change to a security
+#: control, made by the host, rather than a line in a driver's own declaration.
 ADAPTER_EXPOSED_CREDENTIAL_LEAVES: dict = {
     ACP_BACKEND_CODEX: (".aws/config",),
 }
@@ -209,7 +234,7 @@ def adapter_hidden_credential_dirs(backend: str) -> tuple:
     return sandbox_credential_targets(tuple(ADAPTER_OWN_CREDENTIAL_LEAVES.get(backend, ())))
 
 
-def adapter_expose_files(backend: str) -> tuple:
+def adapter_expose_files(backend: str, hidden: tuple) -> tuple:
     """Absolute files to re-expose READ-ONLY inside *backend*'s masked dirs.
 
     The companion to :func:`adapter_hidden_credential_dirs`: that mask hides a
@@ -220,18 +245,67 @@ def adapter_expose_files(backend: str) -> tuple:
     the subpath deny -- so the posture is the same on every platform:
     ``~/.aws/config`` readable, ``~/.aws/credentials`` and the SSO cache not.
 
+    *hidden* is the mask :func:`adapter_hidden_credential_dirs` already resolved
+    for this spawn, and it is REQUIRED rather than defaulted. Resolving it here
+    instead would reach ``_realpath_or_none`` -- a filesystem read, and on Windows a
+    directory open -- from whatever thread called this, and the ONE production caller
+    runs on the event loop: a stalled home mount would freeze the gateway rather than
+    just this spawn. A default parameter would leave that failure one forgotten
+    argument away, so the type system asks for the resolved mask instead.
+
     Empty for a harness this core does not enforce, so the first-class path and
-    every unenforced harness keep byte-identical sandbox arguments. Pure path
-    projection under the home -- no disk access -- so it is safe to call inline
-    on the spawn path.
+    every unenforced harness keep byte-identical sandbox arguments.
     """
     if not is_enforced(backend):
         return ()
+    # CONTAINED, not trusted. A re-exposure is the one thing this table can ask for
+    # that OPENS a path, and the mask is what makes it a narrowing: a leaf that sits
+    # under nothing the mask hides is not a carve-out, it is a fresh hole in the
+    # read-gate floor -- a private key named here would be handed to the child
+    # read-only. Checked against *hidden*, the mask actually being applied to this
+    # spawn, and a leaf that fails is DROPPED rather than honoured: losing a
+    # re-exposure fails a session closed with a nameable error, while honouring one
+    # exposes a file silently.
     home = os.path.expanduser("~")
-    return tuple(
-        os.path.join(home, *PurePosixPath(leaf).parts)
-        for leaf in ADAPTER_EXPOSED_CREDENTIAL_LEAVES.get(backend, ())
-    )
+    exposed = []
+    for leaf in ADAPTER_EXPOSED_CREDENTIAL_LEAVES.get(backend, ()):
+        full = os.path.join(home, *PurePosixPath(leaf).parts)
+        if _sits_under_any(full, hidden):
+            exposed.append(full)
+        else:
+            logger.warning(
+                "refusing to re-expose %r for %s: it sits under no directory this "
+                "mask hides, so exposing it would widen the read-gate floor rather "
+                "than carve an exception out of the mask",
+                leaf,
+                label_for(backend),
+            )
+    return tuple(exposed)
+
+
+def _sits_under_any(path: str, roots: tuple) -> bool:
+    """Whether *path* is inside one of *roots*.
+
+    Prefix comparison on normcased paths with a separator appended, NOT
+    ``str.startswith`` on the bare root: ``~/.awsconfig`` starts with ``~/.aws``
+    and is a different file, so the bare form would report a sibling as contained
+    and re-expose it. ``normcase`` because the check has to hold on the two
+    platforms whose filesystems are case-insensitive, where a declaration spelled
+    in the other case names the same file.
+
+    A root that is itself a FILE cannot contain anything, and needs no special
+    case: the mask hides both files and directories, and a file's path plus a
+    trailing separator is a prefix of nothing, so the comparison answers False
+    for it on its own.
+    """
+    target = os.path.normcase(os.path.abspath(path))
+    for root in roots:
+        if not os.path.isabs(root):
+            continue
+        prefix = os.path.normcase(os.path.abspath(root)).rstrip(os.sep) + os.sep
+        if target.startswith(prefix):
+            return True
+    return False
 
 
 def enforce_sandbox_floor(backend: str, mode: str) -> None:

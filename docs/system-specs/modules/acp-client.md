@@ -694,9 +694,10 @@ reached as `kiro-cli acp --agent-engine v3 --auth-method cli`, whose relay
 forwards unrelated NDJSON frames byte-for-byte and consumes
 `_kiro/auth/getAccessToken` itself, resolving tokens from kiro-cli's own store.
 Crew therefore never sees that frame and holds no KAS token. One consequence is
-recorded in `ACP_BACKENDS_KIRO_IDENTITY_STORE`: because the relay signs in from
-kiro-cli's store, a KAS runtime is retired by an external `kiro-cli logout` on
-the same terms as the kiro backend. A second is that the KAS process gets no OS
+recorded in KAS's auth declaration and reaches callers as
+`backends_retired_by_host_logout()`: because the relay signs in from kiro-cli's
+store, a KAS runtime is retired by an external `kiro-cli logout` on the same terms
+as the kiro backend. A second is that the KAS process gets no OS
 sandbox of its own — the relay spawns its server without `--sandbox` and the
 agent resolves an absent config to a no-op backend — so Crew's own sandbox stays
 engaged for this backend and KAS is excluded from

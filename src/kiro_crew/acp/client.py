@@ -144,6 +144,7 @@ from kiro_crew.acp.types import (
     model_registry_namespace,
 )
 from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import kiro_sessions_dir
@@ -1769,9 +1770,12 @@ class AcpPromptBusy(AcpError):  # noqa: N818
 # `_RE_SESSION_EXPIRED` already carries that wording alongside the rest of the
 # auth vocabulary, and a second narrower copy is what let the spawn path miss
 # every expiry that does not use the banner's exact words.
-_NOT_LOGGED_IN_MESSAGE = (
-    "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, " "then start a new chat."
-)
+#
+# The DETECTION lives here; the MESSAGE does not. What an operator must do to sign
+# a harness back in is a property of that harness, so every raise site reads
+# `host_auth.signed_out_message(backend)` instead of a literal in this module. A
+# literal here spelled `kiro-cli login` for whichever harness happened to fail,
+# which is wrong the moment a harness signs in through its own credential file.
 
 
 # ── Transient-error classification (shared by _format_acp_error and
@@ -2296,7 +2300,12 @@ def _auto_remedy(available_models: Sequence[str] | None) -> str:
     return f"(2) set agent.model to '{DEFAULT_MODEL}' in ~/.kiro/crew/config.json, or (3) "
 
 
-def _format_acp_error(error: object, available_models: Sequence[str] | None = None) -> str:
+def _format_acp_error(
+    error: object,
+    available_models: Sequence[str] | None = None,
+    *,
+    backend: str = "",
+) -> str:
     """Format a JSON-RPC error from the ACP backend into actionable user text.
 
     The ACP backend (kiro-cli or claude-agent-acp) surfaces upstream Bedrock
@@ -2449,9 +2458,22 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             # Session expiry (401/403, or prose saying as much) — distinct from
             # the Bedrock credential errors above. Retrying or switching models
             # cannot succeed, so the message must not suggest either.
+            #
+            # The sign-in half comes from the harness's own declaration: which
+            # command re-authenticates is a per-harness fact. This arm HAS
+            # evidence -- a 401/403 or prose saying the session expired -- so it
+            # takes the signed-out message, which is allowed to assert the state;
+            # the standing caveat the panel renders unprobed is not.
+            #
+            # An empty *backend* resolves to the kiro declaration, because the
+            # kiro id IS the empty string. That is correct rather than a fallback:
+            # a caller reaching here with no backend in hand is on the shared
+            # runtime, whose harnesses are the two on the host identity store.
+            # The retry verdict stays hard-coded -- that is this arm's own finding
+            # about the error, not sign-in advice.
             formatted = (
-                "Your session has expired. Run `kiro-cli login` in your "
-                "terminal to sign back in, then start a new chat. "
+                "Your session has expired. "
+                f"{host_auth.signed_out_message(backend)} "
                 "Retrying or switching models will not help — this is a "
                 "sign-in issue, not a backend error."
                 f"{req_id_suffix}"
@@ -2604,7 +2626,12 @@ def _rejected_model_from_error(error: object) -> str | None:
     return m.group(1) if m else None
 
 
-def _raise_acp_error(error: object, available_models: Sequence[str] | None = None) -> None:
+def _raise_acp_error(
+    error: object,
+    available_models: Sequence[str] | None = None,
+    *,
+    backend: str = "",
+) -> None:
     """Format and raise the appropriate AcpError subclass for *error*.
 
     Delegates formatting to ``_format_acp_error`` and raises either
@@ -2614,8 +2641,15 @@ def _raise_acp_error(error: object, available_models: Sequence[str] | None = Non
     *available_models* is passed to BOTH the formatter and the transient
     classifier so a model-rejection's wording and its retry verdict are decided
     from the same evidence.
+
+    *backend* only reaches the formatter, where an auth-expiry needs the failing
+    harness's own sign-in message. It defaults to empty, which is the KIRO id
+    rather than a sentinel: a caller with no backend in reach is on the shared
+    runtime, and both harnesses there resolve tokens from kiro-cli's own store,
+    so kiro's message is the right answer for it. The retry verdict does not
+    depend on it.
     """
-    formatted = _format_acp_error(error, available_models)
+    formatted = _format_acp_error(error, available_models, backend=backend)
     # Detect prompt-busy from the raw error (before formatting rewrites it)
     raw_data = ""
     if isinstance(error, dict):
@@ -5072,8 +5106,13 @@ class AcpClient:
             # The other half of the Bedrock trade: ``.aws`` stays in the mask
             # above and only ``.aws/config`` comes back read-only, through each
             # backend's own carve-out primitive. Empty for every unenforced
-            # harness. Pure path projection, no disk access, so no thread hop.
-            adapter_expose = acp_tool_gate.adapter_expose_files(self.backend)
+            # harness. Pure path projection, no disk access, so no thread hop --
+            # which holds only because the mask resolved above is HANDED IN. Each
+            # re-exposed file must sit inside a directory that mask hides, and
+            # re-resolving the mask here to check that would put a filesystem read
+            # (a stalled home mount, a Windows directory open) back on the event
+            # loop the preflight above exists to keep it off.
+            adapter_expose = acp_tool_gate.adapter_expose_files(self.backend, adapter_hidden_dirs)
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -7200,7 +7239,7 @@ class AcpClient:
                         self._last_stop_reason = reason
                         self._turn_done.set()
                         return
-                    _raise_acp_error(msg.error, self._advertised_model_ids())
+                    _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
                 if action == "permission":
                     await self._handle_permission(msg)
                 elif action == "server_request_unknown":
@@ -7360,7 +7399,7 @@ class AcpClient:
                         usage=self.last_prompt_stats.to_turn_usage(),
                     )
                     return
-                _raise_acp_error(msg.error, self._advertised_model_ids())
+                _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
             if action == "permission":
                 yield self._build_permission_event(msg)
             elif action == "server_request_unknown":
@@ -7933,7 +7972,7 @@ class AcpClient:
                     self._last_stop_reason = reason
                     self._turn_done.set()
                     return "".join(output)
-                _raise_acp_error(msg.error, self._advertised_model_ids())
+                _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
             if action == "permission":
                 await self._handle_permission(msg)
             elif action == "server_request_unknown":

@@ -37,6 +37,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.agent_sdk import backend_install as probe
+from kiro_crew.agent_sdk import host_auth
 
 
 @pytest.fixture(autouse=True)
@@ -584,7 +585,12 @@ class TestEndpointPayloadShape:
                 "missing_components",
                 "install_command",
                 "restart_required",
+                "auth",
             }
+            # Sign-in is the harness's own third fact, so every row carries it --
+            # including a row whose harness this build cannot serve, which is the
+            # one an operator is most likely to be asking about.
+            assert set(row["auth"]) == {"sign_in_remedy", "signs_in_separately"}
 
         by_policy = {r["policy_id"]: r for r in rows}
         assert by_policy["kiro"] == {
@@ -595,6 +601,14 @@ class TestEndpointPayloadShape:
             "missing_components": [],
             "install_command": "",
             "restart_required": False,
+            # Compared against the declaration rather than a literal copy of the
+            # remedy: the string is rendered verbatim by the panel, so a literal
+            # here would pin the WORDING, and every reword of the operator advice
+            # would read as a wire-contract break.
+            "auth": {
+                "sign_in_remedy": host_auth.declaration_for("").sign_in_remedy,
+                "signs_in_separately": False,
+            },
         }
         # Not selectable in this build AND not installed here -- both facts on
         # one row, which is the whole reason the endpoint exists.

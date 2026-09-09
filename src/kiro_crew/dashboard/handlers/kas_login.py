@@ -246,7 +246,7 @@ async def _retire_runtimes_after_sign_out(request: web.Request) -> None:
     from is now empty. Deleting the entry alone therefore leaves the account live for
     that long. This is the same shape as an external ``kiro-cli logout`` against a
     running kiro-backed child, and it takes the same remedy: the identity-change
-    sweep, which retires every idle member of ``ACP_BACKENDS_KIRO_IDENTITY_STORE``
+    sweep, which retires every idle member of ``backends_retired_by_host_logout()``
     (KAS included) and marks busy ones for retirement at their next turn. The
     replacement processes re-probe the vault and, finding nothing, spawn kiro-cli-
     owned. Kiro-backed children are recycled too: they never read the vault, so for

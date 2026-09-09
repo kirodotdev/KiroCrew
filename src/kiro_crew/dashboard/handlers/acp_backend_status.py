@@ -5,7 +5,7 @@ One row per backend id in ``acp_backends.ACP_BACKENDS_KNOWN``, sorted by
 switch lists all of them and must be able to say which is which, so an
 unservable backend needs a row rather than silent absence.
 
-Two facts per row, from two owners that must not be conflated:
+Three facts per row, from three owners that must not be conflated:
 
 * ``selectable`` -- build capability AND deployment policy, read from
   ``handlers.core._selectable_acp_backends()``. That helper is already the
@@ -19,6 +19,13 @@ Two facts per row, from two owners that must not be conflated:
   Reached through the SDK rather than the ACP layer directly: this handler is
   application code, and ``scripts/check_agent_sdk_boundary.py`` is what keeps
   that true.
+* ``auth`` -- how the harness signs in, projected from its one declaration in
+  ``agent_sdk.host_auth``. Installed and signed-in are different questions with
+  different remedies, and a panel that only had ``installed`` could show a green
+  row for a harness whose every session dies at start on an authentication
+  error. Nothing here READS a credential: the declaration is static data, so the
+  row says which store holds the entitlement and what to run, and never that a
+  particular harness is currently signed in.
 
 Owner-only, and the snapshot is offloaded: the Claude probe shells out to mise
 and walks the filesystem, and resolving the governance ceiling loads config, so
@@ -91,12 +98,19 @@ def _snapshot() -> List[Dict[str, Any]]:
     module-scope import from a module the package ``__init__`` also imports is
     how a cycle gets introduced later.
     """
-    from kiro_crew.agent_sdk import INSTALLED, MISSING, probe_backends
+    from kiro_crew.agent_sdk import (
+        INSTALLED,
+        MISSING,
+        declaration_for,
+        probe_backends,
+        signs_in_separately,
+    )
     from kiro_crew.dashboard.handlers.core import _selectable_acp_backends
 
     selectable = set(_selectable_acp_backends())
     rows: List[Dict[str, Any]] = []
     for state in probe_backends():
+        auth = declaration_for(state.backend)
         rows.append(
             {
                 "id": state.backend,
@@ -117,6 +131,21 @@ def _snapshot() -> List[Dict[str, Any]]:
                 "restart_required": (
                     bool(state.restart_required) if state.installed == INSTALLED else False
                 ),
+                # ``sign_in_remedy`` is rendered VERBATIM by the panel and is
+                # deliberately untranslated. A per-harness sign-in string that went
+                # through i18n would be a per-harness edit to thirteen locale files
+                # by construction, and the harness that shipped selectable first is
+                # exactly the one nobody would remember to add -- so an untranslated
+                # remedy that is present beats a translated one that is missing.
+                #
+                # Two fields, because two are read. The panel renders the remedy and
+                # branches on ``signs_in_separately``; the entitlement source's
+                # identifier has no frontend reader and is not sent -- a field can
+                # return with its first consumer.
+                "auth": {
+                    "sign_in_remedy": auth.sign_in_remedy,
+                    "signs_in_separately": signs_in_separately(state.backend),
+                },
             }
         )
     return rows

@@ -5783,9 +5783,6 @@
       "show_controls": "Show controls"
     },
     "developer": {
-      "agentBackendTab": {
-        "codex_signs_in_separately": "Codex signs in on its own: finish its sign-in, or name a model provider in ~/.codex/config.toml (CODEX_HOME moves that folder). Neither is checked here — the adapter reads them, not {{productName}}."
-      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat on a crew",
         "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane.",

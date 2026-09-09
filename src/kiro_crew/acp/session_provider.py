@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.acp.client import (
-    _NOT_LOGGED_IN_MESSAGE,
     DEFAULT_MODEL,
     AcpAuthRequired,
     AcpError,
@@ -36,9 +35,9 @@ from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, A
 from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import (
     ACP_BACKENDS_COMPACT,
-    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     STOP_REASON_END_TURN,
 )
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
@@ -262,7 +261,13 @@ class AcpSessionProvider(LLMProvider):
             # NOT an AcpError) escapes both the AcpProcessDied and AcpError
             # handlers and surfaces as an unhandled crash.
             if self._runtime.saw_not_logged_in():
-                raise AcpAuthRequired(_NOT_LOGGED_IN_MESSAGE) from exc
+                # The runtime is the only object here that still knows which
+                # harness died, and each one signs in differently — read the
+                # remedy off its declaration rather than naming one harness's CLI
+                # to an operator running another.
+                raise AcpAuthRequired(
+                    host_auth.signed_out_message(self._runtime.acp_backend)
+                ) from exc
             raise AcpProcessDied(str(exc)) from exc
         except AcpRuntimeError as exc:
             # Base AcpRuntimeError (e.g. prompt()'s "turn already active"
@@ -314,7 +319,10 @@ class AcpSessionProvider(LLMProvider):
         AcpError (e.g. chat_runner) and lands on its generic `except Exception`
         (raw error card, no retry/reset). Mirrors stream()'s translation."""
         if self._runtime.saw_not_logged_in():
-            return AcpAuthRequired(_NOT_LOGGED_IN_MESSAGE)
+            # Same per-harness remedy as stream(): this translation is shared by
+            # every runtime-touching call, so a literal here would misinform an
+            # operator on any harness that does not sign in through kiro-cli.
+            return AcpAuthRequired(host_auth.signed_out_message(self._runtime.acp_backend))
         return AcpProcessDied(str(exc))
 
     async def _guarded(self, awaitable: Any) -> Any:
@@ -510,12 +518,12 @@ class AcpSessionProvider(LLMProvider):
     def uses_kiro_identity_store(self) -> bool:
         """True when this provider's child signs in from kiro-cli's own store.
 
-        Membership in ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` (harness-parity
+        Membership in ``backends_retired_by_host_logout()`` (harness-parity
         H5/H14), read off the runtime's backend for the same reason
         :attr:`backend` is: this provider fronts whichever backend the runtime
         spawned.
         """
-        return self._runtime.acp_backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+        return self._runtime.acp_backend in host_auth.backends_retired_by_host_logout()
 
     def has_active_turn(self) -> bool:
         """True if a prompt turn is currently in progress.

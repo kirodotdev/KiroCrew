@@ -113,22 +113,82 @@ replays full history.
 
 ## 3. Identity and auth
 
+This bucket is a **declared seam**, and the declaration is the whole of it. One
+frozen `AgentAuthDeclaration` per harness in `agent_sdk/host_auth.py` is the only
+place a harness's auth is written down, and every host layer that has to agree
+about a credential reads a projection of it rather than keeping its own copy: the
+read-gate floor and its override anchoring (`security/paths.py`), the sandbox
+credential mask and the one leaf it spares (`agent_sdk/tool_gate.py`), the
+the logout-recycle answer `backends_retired_by_host_logout()`, the `AcpAuthRequired` text
+raised at every sign-in failure (`acp/session_provider.py`, `providers/acp.py`,
+`acp/client.py`), and the `auth` object on `GET /api/acp-backends`
+(`dashboard/handlers/acp_backend_status.py`).
+
+The split is a security property rather than a tidiness one. A harness declares
+what it **stores**; this host still decides what is **fenced**. No field names a
+path to leave open in general — `adapter_own_leaves` may only name a leaf the same
+declaration already put ON the floor, and `AgentAuthDeclaration.__post_init__`
+refuses a declaration that tries otherwise, raising at import rather than reaching
+a floor that fences less than its author believed.
+
+The rows below are the declaration's own fields, so a harness answers this bucket
+by writing one literal. Leaves are home-relative and authored with POSIX
+separators; the floor re-joins them for the running platform.
+
 | | kiro-cli | KAS | CC | Codex |
 |---|---|---|---|---|
-| Sign-in | `kiro-cli login`; SSO `--use-device-flow --license pro` (`kiro_prerequisite.py`) | same | brings its own: a credential-refresh **command** named inside its own `settings.json`, plus a provider-routing env var on the child (companion) | brings its own, and Crew implements none: no login command and no auth probe. The `AcpAuthRequired` login prompt is an `AcpRuntime` path this backend never takes (`acp/session_provider.py`) |
-| Credential store | projected, never copied: identity tables plus `migrations` rows plus selected `state` rows (`kiro_prerequisite.py`) | same store | its own; that refresh command is copied **verbatim** into the isolated seed at `0o600`. Dropping it breaks auth outright, so the seed cannot simply be emptied (companion) | its own `~/.codex/auth.json`, on the read-gate floor with `CODEX_HOME` re-anchored so an override cannot move it out from under the gate (`security.py`). Crew never reads or copies it, and it is the ONE leaf excluded from the child's OS credential mask so the adapter can still authenticate (`acp_tool_gate.py`) |
-| Recyclable on a host logout | yes | yes (`ACP_BACKENDS_KIRO_IDENTITY_STORE`, `acp_backends.py`) | **no** — a live CC child must survive `kiro-cli logout` | **no** — excluded from `ACP_BACKENDS_KIRO_IDENTITY_STORE`: a `kiro-cli logout` says nothing about whether a running codex child is still authenticated (`acp_backends.py`) |
-| Entitlement discovery | account API | account API | runtime, from the advertised model set at session init; the registry is filtered down to it (`dashboard/handlers/agents.py`) | runtime, from the model set advertised at `session/new` / `session/load`, but in-memory for that session only — no account API, no registry filter, no cross-session persist (excluded from `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`) (`acp/client.py`) |
+| `entitlement_source` | `host_identity_store` — `kiro-cli login` writes it; org SSO is `--use-device-flow --license pro` (`kiro_prerequisite.py`) | `host_identity_store` — the same store. Spawned as `kiro-cli acp --agent-engine v3 --auth-method cli`, and that flag is the demonstration: the relay resolves every access token from kiro-cli's own store | `own_credential_file` — brings its own sign-in, and Crew implements no login command for it | `own_credential_file` — brings its own sign-in, and Crew implements neither a login command nor an auth probe |
+| `credential_leaves` | none of its own. The locations are the HOST's, declared by `identity_stores.IDENTITY_STORE_ROOTS` and spliced onto the floor from there; a harness re-declaring them would hand a driver a say over the host's own store. The store is projected, never copied: identity tables plus `migrations` rows plus selected `state` rows (`kiro_prerequisite.py`) | none of its own — same store, nothing further to fence | `~/.claude/.credentials.json`. Its credential-refresh **command** is named inside its own `settings.json` and copied **verbatim** into the isolated seed at `0o600`; dropping it breaks auth outright, so the seed cannot simply be emptied (companion) | `~/.codex/auth.json`. Crew never reads or copies it and only ever checks that it exists |
+| `home_override_env_vars` | none | none | `CLAUDE_CONFIG_DIR`, `CLAUDE_HOME` | `CODEX_HOME` |
+| `adapter_own_leaves` | none | none | none — outside `tool_gate.ENFORCED_ROUTINGS`, so no credential mask is applied and there is nothing to carve an exception out of. Declaring one anyway would assert something about a control that never runs | `~/.codex/auth.json` — the adapter authenticates ITSELF, so a mask that took its own token away would fail every session at start with an opaque authentication error. The asymmetry is safe: the read gate still refuses that leaf to the AGENT's file tools, so the two controls cover different readers rather than cancelling each other |
+| `host_logout_retires_children` | `True` — a logout there invalidates a running child | `True` — excluding it would let a KAS session keep serving turns on the previous account's credentials | `False` — a live CC child must survive `kiro-cli logout` | `False` — a `kiro-cli logout` says nothing about whether a running codex child is still authenticated, and retiring its child on that signal would end a live turn for no reason |
+| `sign_in_remedy` | run `kiro-cli login`, then start a new chat | the same string verbatim — it is kiro-cli's store the relay reads | run `claude` and complete its sign-in, then start a new chat | two branches: complete Codex's own sign-in, or name a model provider in `~/.codex/config.toml` (`CODEX_HOME` moves that folder). Neither is checked here — the adapter reads them |
+| `AgentInteractiveLogin` | not implemented — sign-in happens in the operator's own terminal | not implemented — same | not implemented — the harness brings its own | not implemented — the harness brings its own |
+| Entitlement discovery, model side | account API | account API | runtime, from the advertised model set at session init; the registry is filtered down to it (`dashboard/handlers/agents.py`) | runtime, from the model set advertised at `session/new` / `session/load`, but in-memory for that session only — no account API, no registry filter, no cross-session persist (excluded from `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`) (`acp/client.py`) |
 | Readiness probe | `--version` then `whoami`, inside the OS sandbox (`kiro_prerequisite.py`) | same | binary resolution only, but for **both** components and through the spawn's own resolvers, so the answer cannot disagree with what a spawn does (`agent_sdk/backend_install.py`, `agent_sdk/drivers/acp.py`) | one component, adapter resolution only and through the spawn's own resolver: `codex-acp`, reported `installed` / `missing` with the install command, plus `restart_required` when this process cached a negative (`agent_sdk/backend_install.py`). No auth check |
 
-**A provider must declare:** its login and org-SSO commands, its credential
-locations, whether a host logout may retire its live children, how entitlement is
-discovered, and its readiness probe.
+Installed and signed-in are separate questions with separate remedies, which is
+why the last row answers only the first. `agent_sdk/backend_install.py` probes no
+credential on purpose: reading another harness's token is what the floor exists to
+forbid, so a probe that did it would be the one reader the floor cannot fence.
 
-The membership set is named `ACP_BACKENDS_KIRO_IDENTITY_STORE`, but its meaning is
-*authorization*, not ownership: it records that a `kiro-cli logout` may retire
-this backend's live child. A provider that brings its own auth is excluded, and
-the exclusion is load-bearing.
+**A provider must declare:** one `AgentAuthDeclaration` — its entitlement source
+(`host_identity_store` or `own_credential_file`), the
+credential leaves it stores, the `$HOME`-override variables that relocate them,
+the one leaf its own child must still read, its operator-facing sign-in remedy,
+and whether a host logout may retire its live children. It does not declare a
+file to re-expose inside a directory the mask hides: a re-exposure is an edit to the
+mask, and the mask is host-owned, so that table stays in `agent_sdk/tool_gate.py`
+(`ADAPTER_EXPOSED_CREDENTIAL_LEAVES`). It also declares,
+structurally, whether it offers an in-product sign-in: `AgentInteractiveLogin` is
+a `runtime_checkable` protocol tested with `isinstance`, never a boolean, so a
+harness that has no flow is a shape the type system can see rather than one that
+answers a flag and then no-ops. And it declares its readiness probe, which is
+about files rather than credentials.
+
+Silence is not an answer here, and unlike most of this document that is enforced:
+`test_agent_sdk_host_auth.py` fails when a member of `ACP_BACKENDS_KNOWN` has no
+declaration, and `missing_declarations` names the gap rather than asserting a
+length. The failure mode it closes is a harness reaching
+`BASELINE_SELECTABLE_BACKENDS` without touching the credential floor, and serving
+sessions with a live agent-readable token that nothing fences.
+
+The logout-recycle answer is `backends_retired_by_host_logout()`, and its
+meaning is *authorization*, not ownership: it records that a `kiro-cli logout` may
+retire this backend's live child. It is the projection of
+`host_logout_retires_children` over the declaration table, defined in
+`agent_sdk/host_auth.py` and re-exported by `acp/types.py` and `acp_backends.py`.
+It is a FUNCTION and not an `ACP_BACKENDS_*` set: that naming is harness vocabulary,
+whose home is `agent_sdk/backends.py` and which the harness-parity gate enforces, and
+a derived answer is not vocabulary. Nor could the set sit beside the other capability
+sets in `agent_sdk/backends.py`,
+because that module supplies the backend ids the declaration table is keyed by, so
+importing the table from there would close a cycle. Membership is positive and
+derived from a declared fact rather than from "not claude", the exclusion is
+load-bearing, and the inconsistent pair is refused outright: a declaration that
+claims `host_logout_retires_children` while resolving its entitlement anywhere
+other than the host identity store raises, because a logout says nothing about a
+store the harness never reads.
 
 ## 4. Sandbox
 
@@ -391,14 +451,14 @@ design and review.
 |---|---|
 | 6 Usage / billing | real — consumers read a boolean flag |
 | 7 Permission vocabulary | real — `acp/kas_permissions.py`, shared by the wire projection and the on-disk writer so they cannot drift |
+| 3 Identity and auth | real — one `AgentAuthDeclaration` per harness (`agent_sdk/host_auth.py`); the floor, the sandbox mask, the own-leaf exclusion, the logout-recycle set, the auth-required message and the panel caveat are all projections of it, and a known backend with no declaration fails a test |
 | 1 Agent definition | partial — `acp/kas_agents.py` is a genuine projection; the *writer* (`agent.py`) has none |
-| 3 Auth-store reading | weak — the projection is isolated, the paths and table names are inline constants |
 | 4 Sandbox delegation | weak — one decision function, a hardcoded predicate |
 | 2 Session persistence | **none** — the path is spelled literally in at least four modules |
 | 5 MCP injection | **none** — an overridable method returning `[]` is the whole extension point, and now that CC is selectable that neutral default is what a public build actually runs |
 | 7 Regex-engine parity | **none** — the deny catalog is authored against one engine |
 | 8 Auxiliary runtimes | partial — `agent_sdk/backend_install.py` is a real preflight that names each absent component before a session, but the *requirement* is still declared nowhere a type checker can see: the probe knows CC needs two binaries because it was written to, not because CC declared it |
-| 9 Tool-result marker fidelity | real — one recovery function, and the only bucket whose requirement a test enforces rather than a comment asserting it |
+| 9 Tool-result marker fidelity | real — one recovery function, and a bucket whose requirement a test enforces rather than a comment asserting it |
 
 ## New-provider checklist
 

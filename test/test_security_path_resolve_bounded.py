@@ -30,6 +30,7 @@ import pytest
 
 import kiro_crew.executors as ex
 from kiro_crew import security
+from kiro_crew.agent_sdk import host_auth
 
 
 @pytest.fixture(autouse=True)
@@ -370,7 +371,16 @@ class _StalledRealpath:
 
 
 def _clear_override_roots(monkeypatch) -> None:
+    """Unset every anchor variable, the host's own AND each harness's.
+
+    A harness credential home is declared rather than listed in
+    ``_OVERRIDE_ROOT_ENVS``, so iterating that tuple alone would leave a developer
+    machine's exported ``CODEX_HOME`` anchoring a real extra root -- and a case that
+    counts resolutions would then count one the assertion does not expect.
+    """
     for _field, env in security._OVERRIDE_ROOT_ENVS:
+        monkeypatch.delenv(env, raising=False)
+    for env in host_auth.home_override_env_vars():
         monkeypatch.delenv(env, raising=False)
 
 
@@ -439,8 +449,9 @@ def test_a_stalled_anchor_is_not_reprobed_until_the_cooldown_lapses(monkeypatch)
 
 def test_root_anchors_resolve_in_one_pool_hop(monkeypatch, tmp_path) -> None:
     # ``_resolved_root_key`` runs on the event loop once per is_sensitive_path
-    # call; six thread hops there would cost more than the inline realpath it
-    # replaces.  All six roots travel in one submission.
+    # call; one thread hop per root would cost more than the inline realpath it
+    # replaces.  Every root -- the host's own and each declared harness home --
+    # travels in one submission.
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
     monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
@@ -461,7 +472,11 @@ def test_root_anchors_resolve_in_one_pool_hop(monkeypatch, tmp_path) -> None:
     assert submissions == ["_resolve_root_anchors"]
     assert roots.crew_home == str(security.Path(tmp_path / "crew").resolve())
     assert roots.kiro_home == str(security.Path(tmp_path / "kiro").resolve())
-    assert roots.codex_home == str(security.Path(tmp_path / "codex").resolve())
+    # A harness's credential home travels in the same worker call as the host's own
+    # roots, keyed by the variable its declaration names.
+    assert dict(roots.adapter_roots)["CODEX_HOME"] == str(
+        security.Path(tmp_path / "codex").resolve()
+    )
 
 
 def test_a_stalled_rebuild_refuses_even_with_a_warm_cache(monkeypatch, tmp_path) -> None:

@@ -44,6 +44,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.executors import _MAX_PATH_RESOLVE_WORKERS, path_resolve_executor
 from kiro_crew.identity_stores import (
     AUTH_SQLITE_DB,
@@ -96,22 +97,30 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".pypirc",
     ".netrc",
     ".git-credentials",
-    # ACP adapter OAuth token stores. Each adapter owns its own sign-in flow and
+    # ACP adapter credential stores. Each adapter owns its own sign-in flow and
     # persists its own tokens; Kiro Crew never reads them, and only ever checks
     # that the file EXISTS so it can name the right sign-in command. An agent
     # that could ``fs_read`` one could impersonate the operator against that
-    # vendor, so both are on the floor "precisely so nothing else does".
+    # vendor, so they are on the floor "precisely so nothing else does".
     #
-    # Only the token leaf is classified. The sibling config files — codex's
-    # ``config.toml``, claude's ``settings*.json`` — deliberately stay readable:
+    # DECLARED by each harness rather than spelled here
+    # (``agent_sdk.host_auth.AGENT_AUTH_DECLARATIONS``), for the same reason the
+    # identity-store splice below reads one canonical table: this fence, the
+    # sandbox mask that compensates for it, and the sign-in advice the operator
+    # is shown all have to name the same file, and the harness that shipped
+    # selectable first shipped with its live token off this list because the
+    # list was hand-maintained somewhere else. A harness declares what it
+    # STORES; this module stays the one that decides what is fenced.
+    #
+    # Only the token leaf is declared. The sibling config files -- codex's
+    # ``config.toml``, claude's ``settings*.json`` -- deliberately stay readable:
     # routing diagnosis needs them and they carry no credential.
     #
-    # These are ``$HOME``-rooted defaults. Both adapters honour a home override
-    # (``CODEX_HOME``; ``CLAUDE_CONFIG_DIR`` / ``CLAUDE_HOME``), re-anchored in
-    # ``_home_dir_targets_uncached`` so an override cannot move the token out
+    # These are ``$HOME``-rooted defaults. A harness that honours a home override
+    # declares the variable too, and every declared leaf is re-anchored under it
+    # in ``_home_dir_targets_uncached`` so an override cannot move the token out
     # from under the gate.
-    ".codex/auth.json",
-    ".claude/.credentials.json",
+    *host_auth.credential_leaves(),
     # (The Notes builtin's GitHub PAT lives under the crew data-home at
     # ``<prefix>/workspace/md-notebook/pat``; it is added below via
     # ``_CREW_SECRET_LEAVES`` so BOTH ``.kiro/crew`` and the legacy ``.kirocrew``
@@ -1455,12 +1464,13 @@ def _home_dir_targets_uncached(
     # (the default form stays, so every location is always covered). Guarded on
     # membership in *home_dirs* for the same reason as the agents dir above: a
     # write-tier build must not gain a read-tier target.
-    for _leaf, _root_fields in _OVERRIDE_ANCHORED_LEAVES:
+    _adapter_roots = dict(resolved.adapter_roots)
+    for _leaf, _root_envs in _OVERRIDE_ANCHORED_LEAVES:
         if _leaf not in home_dirs:
             continue
         _basename = _leaf_basename(_leaf)
-        for _field in _root_fields:
-            _root = getattr(resolved, _field, None)
+        for _env in _root_envs:
+            _root = _adapter_roots.get(_env)
             if not _root:
                 continue
             _full = os.path.join(_root, _basename)
@@ -1530,17 +1540,25 @@ class _ResolvedRoots(NamedTuple):
     fields than the builder anchors on is the fail-OPEN shape the resolved-home
     key already exists to prevent.
 
-    A new adapter with its own credential home adds a field here and an entry in
-    ``_OVERRIDE_ANCHORED_LEAVES``; nothing else changes, because the tuple is
-    unpacked by FIELD rather than by position.
+    A new adapter with its own credential home adds NOTHING here: its override
+    variables arrive in ``adapter_roots``, projected from its own declaration in
+    ``agent_sdk.host_auth``. That is what keeps this tuple fixed-width as harnesses
+    are added, and what keeps the anchors and the key derived from one table rather
+    than from a per-adapter field each caller has to remember to pair up.
     """
 
     home: str
     crew_home: str | None
     kiro_home: str | None
-    codex_home: str | None
-    claude_config_dir: str | None
-    claude_home: str | None
+    #: Each declared ``$HOME``-override variable and the root it resolves to, in
+    #: declaration order, ``None`` when the variable is unset.
+    #:
+    #: A TUPLE of pairs rather than a dict because this NamedTuple is also the
+    #: cache key: it has to hash, and it has to change exactly when an override
+    #: that would move a target changes. A dict would make the key unhashable,
+    #: and the fallback -- keying on fewer fields than the builder anchors on --
+    #: is the fail-OPEN shape the resolved-home key exists to prevent.
+    adapter_roots: tuple[tuple[str, str | None], ...]
     logical_home: str
     # ``KIROCREW_OS_HOME`` is an ALTERNATE WHOLE ``$HOME``, not one adapter's
     # credential leaf: ``pod.runtime.build_pod_env`` sets it and
@@ -1559,15 +1577,18 @@ class _ResolvedRoots(NamedTuple):
     os_home: str | None
 
 
-#: Sensitive leaf → the override roots its parent directory can be moved to.
+#: Sensitive leaf -> the ``$HOME``-override VARIABLES its parent can be moved by.
 #:
-#: The leaf's own ``$HOME``-rooted form is anchored by the ordinary path in
-#: ``_home_dir_targets_uncached``; this table only covers the overrides. A leaf
-#: absent from the *home_dirs* list being built is skipped, so a write-tier
-#: build never leaks a read-tier target.
+#: PROJECTED from the harness declarations, not enumerated: the pairing has to
+#: name the same leaf the list above fences and the same variable the resolver
+#: below reads, and it was a third hand-maintained copy of both. A leaf absent
+#: from the *home_dirs* list being built is skipped, so a write-tier build never
+#: leaks a read-tier target.
+#:
+#: Read once at import, like the leaf list itself: the declarations are static
+#: data, and re-projecting per gate call would put a table walk on the hot path.
 _OVERRIDE_ANCHORED_LEAVES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (".codex/auth.json", ("codex_home",)),
-    (".claude/.credentials.json", ("claude_config_dir", "claude_home")),
+    host_auth.override_anchored_leaves()
 )
 
 
@@ -1620,13 +1641,16 @@ def _lexical_root(expanded: str) -> str:
     return os.path.normpath(expanded)
 
 
-#: The override roots :func:`_resolve_root_anchors` resolves, in field order.
+#: The HOST's own override roots :func:`_resolve_root_anchors` resolves, in field
+#: order. Each relocates a whole tree this core owns or honours itself.
+#:
+#: A harness's own credential home is NOT here: those arrive from
+#: :func:`host_auth.home_override_env_vars` into ``adapter_roots``, so adding a
+#: harness edits neither this tuple, nor ``_ResolvedRoots``, nor either of the two
+#: loops that anchor on them.
 _OVERRIDE_ROOT_ENVS: tuple[tuple[str, str], ...] = (
     ("crew_home", "KIROCREW_HOME"),
     ("kiro_home", "KIRO_HOME"),
-    ("codex_home", "CODEX_HOME"),
-    ("claude_config_dir", "CLAUDE_CONFIG_DIR"),
-    ("claude_home", "CLAUDE_HOME"),
     ("os_home", "KIROCREW_OS_HOME"),
 )
 
@@ -1643,7 +1667,14 @@ def _resolve_root_anchors(logical_home: str) -> _ResolvedRoots:
     """
     home = _realpath_or_none(logical_home) or logical_home
     overrides = {field: _resolved_env_root(env) for field, env in _OVERRIDE_ROOT_ENVS}
-    return _ResolvedRoots(home=home, logical_home=logical_home, **overrides)
+    # Resolved in the SAME worker call as the host's own roots, for the reason
+    # above: one thread hop for every anchor, rather than one more per harness.
+    adapter_roots = tuple(
+        (env, _resolved_env_root(env)) for env in host_auth.home_override_env_vars()
+    )
+    return _ResolvedRoots(
+        home=home, logical_home=logical_home, adapter_roots=adapter_roots, **overrides
+    )
 
 
 def _resolved_root_key() -> _ResolvedRoots:
@@ -1660,7 +1691,7 @@ def _resolved_root_key() -> _ResolvedRoots:
     to ``~/.kiro`` in ``kiro_home()``, already covered by the default form); it is
     resolved only so a symlinked override keys and anchors identically.
 
-    The three adapter roots do the same for the OAuth token leaves in
+    ``adapter_roots`` does the same for every declared harness credential home in
     ``_OVERRIDE_ANCHORED_LEAVES``.
 
     ``logical_home`` is ``Path.home()`` UNRESOLVED.  It is a separate anchor, not
@@ -2074,13 +2105,14 @@ def sandbox_credential_targets(exclude_leaves: tuple[str, ...] = ()) -> tuple[st
                         else resolved.crew_home
                     )
                     break
-    # An adapter's OAuth token follows that adapter's own home override.
-    for leaf, root_fields in _OVERRIDE_ANCHORED_LEAVES:
+    # An adapter's credential store follows that adapter's own home override.
+    adapter_roots = dict(resolved.adapter_roots)
+    for leaf, root_envs in _OVERRIDE_ANCHORED_LEAVES:
         if leaf in excluded or leaf not in _SENSITIVE_HOME_DIRS:
             continue
         basename = _leaf_basename(leaf)
-        for field in root_fields:
-            root = getattr(resolved, field, None)
+        for env in root_envs:
+            root = adapter_roots.get(env)
             if root:
                 targets.add(os.path.join(root, basename))
     return tuple(sorted(targets))

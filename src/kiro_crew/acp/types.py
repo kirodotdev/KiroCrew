@@ -24,7 +24,6 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_INTERNAL_SANDBOX,
-    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
@@ -38,6 +37,15 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     model_registry_namespace,
     selectable_backends,
+)
+
+# Declared per harness rather than listed as a capability set: whether a
+# ``kiro-cli logout`` retires a running child is a fact about how that harness signs
+# in, so it is derived from that harness's declaration. A function and not an
+# ``ACP_BACKENDS_*`` set because it is not vocabulary -- see the projection's own
+# docstring for why neither module is a legal home for the set form.
+from kiro_crew.agent_sdk.host_auth import (  # noqa: E402,F401 - re-exported for importers
+    backends_retired_by_host_logout,
 )
 
 # ── ACP Event Kinds ──

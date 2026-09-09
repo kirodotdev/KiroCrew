@@ -43,6 +43,7 @@ from kiro_crew.acp.types import (
     JSONRPC_METHOD_NOT_FOUND,
     AcpPromptStats,
 )
+from kiro_crew.agent_sdk import host_auth
 
 # Windows lacks os.killpg and POSIX process-tree APIs (ps, /proc).
 # Tests that exercise these paths are skipped on Windows.
@@ -8867,19 +8868,50 @@ class TestFormatAcpError:
 
     def test_session_expired_rewrite(self):
         """An expired session gets actionable sign-in guidance rather than the
-        misleading transient-5xx retry advice."""
+        misleading transient-5xx retry advice.
+
+        The sign-in half is the failing harness's own declared remedy, so this
+        asserts it is rendered verbatim rather than pinning the wording here: a
+        second copy of that wording is what let the message name `kiro-cli login`
+        to an operator on a harness that signs in some other way.
+        """
         err = {
             "code": -32603,
             "message": "Internal error",
             "data": "DispatchFailure: session expired",
         }
         out = _format_acp_error(err)
-        assert "session has expired" in out.lower() or "session expired" in out.lower()
+        # The signed-out MESSAGE, not the remedy. This arm reaches the text on real
+        # evidence (a 401/403, or prose saying the session expired), so it may assert
+        # the state; the remedy is the register for a caveat rendered having measured
+        # nothing, and it deliberately makes no state claim.
+        assert host_auth.signed_out_message("") in out
         assert "kiro-cli login" in out.lower()
         assert "retry" in out.lower() and "will not help" in out.lower()
         # Must NOT show the misleading 5xx message.
         assert "transient error" not in out.lower()
         assert "retry in a moment" not in out.lower()
+
+    def test_session_expired_names_the_failing_harness(self):
+        """A harness that signs in elsewhere gets ITS message, not kiro-cli's.
+
+        The regression this guards: the arm hardcoded `kiro-cli login`, so an
+        expiry on a harness with its own credential file told the operator to run
+        a command that could not fix it. The retry verdict is this arm's own
+        finding about the error, so it must survive on every backend.
+
+        Reads ``signed_out_message`` and not ``sign_in_remedy``, and the
+        difference is the point: this arm HAS evidence -- a 401, or prose saying
+        the session expired -- so it may assert the state. The remedy is the
+        register for the places that render a standing line having measured
+        nothing, and using it here would drop the diagnosis.
+        """
+        err = {"code": -32603, "message": "Internal error", "data": "HTTP 401"}
+        for backend in ("claude", "codex"):
+            out = _format_acp_error(err, backend=backend)
+            assert host_auth.signed_out_message(backend) in out
+            assert "kiro-cli login" not in out.lower(), backend
+            assert "will not help" in out.lower(), backend
 
     def test_session_expired_by_http_status(self):
         """A bare 401/403 is the shape an expired session actually arrives in:

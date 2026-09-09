@@ -7,7 +7,7 @@ the work actually falls out.
 The sequence below is derived from onboarding Codex (`ACP_BACKEND_CODEX`), not
 reconstructed from KAS and Claude Code after the fact. That matters, because two
 of the stages here did not exist as stages until a third harness needed them:
-Stage 2 had five capability sets and no tuning channels at all, and Stage 5
+Stage 2 had five capability sets and no tuning channels at all, and Stage 6
 was invisible while every known id happened to be selectable. A harness
 that walks this list will find gaps the list does not predict; when it does, the
 gap belongs here in the same change, as a stage — not in the harness's own
@@ -15,7 +15,7 @@ module as a special case.
 
 ## The two landing states
 
-A harness lands in one of two states, and choosing between them is Stage 6, not
+A harness lands in one of two states, and choosing between them is Stage 7, not
 Stage 1:
 
 - **Dormant.** The core can *spell* the id — it is in `ACP_BACKENDS_KNOWN`, it
@@ -28,7 +28,7 @@ Stage 1:
   and survives a config load.
 
 Dormant is a legitimate destination, and shipping there deliberately is cheaper
-than a long-lived branch. But it must be *named* as an exception (Stage 6), or
+than a long-lived branch. But it must be *named* as an exception (Stage 7), or
 the narrowing check fails.
 
 ## Stage 1 — the vocabulary, in the leaf
@@ -51,12 +51,17 @@ without crossing it.
 
 ## Stage 2 — an explicit decision for every capability set
 
-There are fifteen sets. **"Inherited the default" is not a decision** — a
+There are fourteen sets. **"Inherited the default" is not a decision** — a
 capability is granted by opt-in membership, never by negation (H6), so a set you
 do not think about is a set you have silently opted out of. That is usually
 right, and it must still be deliberate, because the review lane and the tests
 both read the membership as a claim. `ACP_BACKENDS_KNOWN` is not one of them: it
-is the membership floor, not a capability.
+is the membership floor, not a capability. Neither is
+`backends_retired_by_host_logout()`: whether a host logout may retire your running
+child is a fact about how you sign in, so it is declared in Stage 5 and projected
+from there rather than decided here. It is deliberately not an `ACP_BACKENDS_*` set
+— that naming is vocabulary this module owns, and a derived answer is not
+vocabulary.
 
 | Set | Grants |
 |---|---|
@@ -64,7 +69,6 @@ is the membership floor, not a capability.
 | `ACP_BACKENDS_STEER` | The `_session/steer` extension. A steer sent to a non-implementer answers `-32601`. |
 | `ACP_BACKENDS_INTERNAL_SANDBOX` | The harness sandboxes itself, so Kiro Crew's own wrapper stands down. Security-relevant: wrong membership hands isolation to a layer that never starts (H7). |
 | `ACP_BACKENDS_ACP_RUNTIME` | Driven through `AcpRuntime` rather than its own spawn branch. |
-| `ACP_BACKENDS_KIRO_IDENTITY_STORE` | Reads Kiro's identity/credential store. |
 | `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` | Model switching lands as a config option rather than a protocol call. |
 | `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION` | Reasoning-effort push, same channel shape. |
 | `ACP_BACKENDS_KIRO_SLASH_COMMANDS` | Receives `_kiro.dev/commands/execute`, **and** gets the workspace `cli.json` overlay written for it. Membership decides both, so a non-member must not collect an overlay it never reads and the membership-gated clear can never remove. |
@@ -118,7 +122,54 @@ identical to an existing one.** That is not duplication: it makes a future
 divergence a one-line edit here instead of a silent downgrade of whichever
 harness happened to move first.
 
-## Stage 5 — the install probe
+## Stage 5 — the auth declaration
+
+How your harness signs in is one frozen `AgentAuthDeclaration` in
+`src/kiro_crew/agent_sdk/host_auth.py`, plus your column in bucket 3 of
+[agent-host-contract.md](agent-host-contract.md). **That is the whole auth cost.**
+Everything else is a projection of that one literal: the read-gate floor that
+fences your credential and re-anchors it under your own override variables
+(`security/paths.py`), the sandbox credential mask and the single leaf it spares so
+your own child can still authenticate (`agent_sdk/tool_gate.py`), the
+the logout-recycle answer `backends_retired_by_host_logout()`, the `AcpAuthRequired` text
+an operator reads when a session cannot start, the `auth` object on
+`GET /api/acp-backends` (`dashboard/handlers/acp_backend_status.py`), and the
+standing sign-in caveat the backend switch renders from it. You write the
+declaration; you edit none of those.
+
+It belongs after the handshake and before the install probe, because it is the
+sign-in half of the question Stage 6 answers about files — a harness that is
+installed and signed out still dies at `session/new` — and because the floor has
+to be fencing your credential before Stage 7 lets an operator choose you.
+
+| Field | What it commits the host to |
+|---|---|
+| `entitlement_source` | One of `host_identity_store` or `own_credential_file`. The doctor row and the logout policy branch on it, so a third spelling fails a test rather than reading as a harness nobody has an answer for; a harness entitled by the ambient cloud environment adds the third when it exists. |
+| `credential_leaves` | The home-relative leaves you STORE, spliced onto the read-gate floor so an agent's file tools can read none of them. Empty when your entitlement is the host store: those locations are the host's, declared in `identity_stores.py`, and re-declaring them would hand a driver a say over the host's own store. |
+| `home_override_env_vars` | The variables that relocate your credential `$HOME`. Every declared leaf is re-anchored under each of them, which is what keeps a relocated token fenced. |
+| `adapter_own_leaves` | The leaf your own child must still read. A SUBSET of `credential_leaves`, and enforced as one: a driver may only ask the mask to spare a leaf its own declaration put on the floor, and `__post_init__` raises otherwise. |
+| `sign_in_remedy` | A finished sentence, server-owned and rendered verbatim wherever it appears. Untranslated on purpose — a translated per-harness string is a per-harness edit to thirteen locale files by construction, and the harness nobody remembers to add is exactly the one that needs the sentence. |
+| `host_logout_retires_children` | Whether a host logout may retire your already-running children. True only alongside `host_identity_store`; the other pairing is refused, because a logout says nothing about a store you never read. |
+
+The declaration says what you **store**; the host still decides what is **fenced**.
+That is why no field names a path to leave open in general, and why a malformed
+declaration raises at import rather than reaching a floor that fences less than its
+author believed.
+
+`AgentInteractiveLogin` is the optional half, and the absence is the point. A
+harness whose sign-in happens outside the product — in the operator's own terminal,
+or in the harness's own CLI — simply does not implement it, and a consumer finds
+that out with `isinstance` rather than by reading a boolean and then calling a
+method that no-ops. No harness implements it today.
+
+**Silence is not available at this stage.** `test_agent_sdk_host_auth.py` fails
+when a member of `ACP_BACKENDS_KNOWN` has no declaration, and
+`missing_declarations` names the gap. The failure mode that gate closes is a
+harness reaching `BASELINE_SELECTABLE_BACKENDS` without touching the credential
+floor, and then serving sessions with a live agent-readable token that nothing
+fences.
+
+## Stage 6 — the install probe
 
 `agent_sdk/backend_install.py` answers a question selectability does not: *is
 this harness installed on this machine, and if not, what installs it?* It holds
@@ -132,11 +183,11 @@ operator does. A build that offers a switch with no probe behind it cannot tell
 anyone what was missing when the session failed to start — the switch renders,
 the session dies, and the dashboard has nothing to say.
 
-## Stage 6 — selectability, or a named exception
+## Stage 7 — selectability, or a named exception
 
-With Stages 1–5 done, add the id to `BASELINE_SELECTABLE_BACKENDS`.
+With Stages 1–6 done, add the id to `BASELINE_SELECTABLE_BACKENDS`.
 
-If it is not done — most often Stage 5 — then the id is in
+If it is not done — most often Stage 6 — then the id is in
 `ACP_BACKENDS_KNOWN` but not in the baseline, which is a NARROWING. Name it in
 `NOT_SHIPPED_SELECTABLE` in
 `test_agent_backend_editable.py::test_baseline_ships_every_known_backend`, with
@@ -150,9 +201,9 @@ at import cannot see a boot-time registration, and `validate_config_data`
 *deletes* an out-of-enum value before the loader ever sees it — which strips a
 registered harness from `config.json` with no degrade log at all.
 
-## Stage 7 — what a live harness additionally touches
+## Stage 8 — what a live harness additionally touches
 
-Stages 1–6 keep a harness inside `acp/`, `providers/`, and `acp_backends.py`. A
+Stages 1–7 keep a harness inside `acp/`, `providers/`, and `acp_backends.py`. A
 harness an operator can actually select spills further. Measured across the two
 in-flight live-harness branches, roughly ten files outside those trees:
 
@@ -198,7 +249,7 @@ yet — say so in the PR instead of widening a seam.
 
 ## Worked example: the Codex seam
 
-The Codex onboarding is a clean instance of stopping at Stage 6:
+The Codex onboarding is a clean instance of stopping at Stage 7:
 
 | Stage | State |
 |---|---|
@@ -206,11 +257,12 @@ The Codex onboarding is a clean instance of stopping at Stage 6:
 | 2 capability sets | Decided for every set: in the model and effort channels, out of the rest. All three channel sets were *created* by this work, which is why the tuning channels are three sets rather than one. |
 | 3 spawn path | Done — adapter, npm package, dep marker, env override, project-local resolution. |
 | 4 handshake | Done — `PROTOCOL_VERSION_CODEX`, its own literal at the same number as Claude's. |
-| 5 install probe | Done — `_probe_codex` names `codex-acp` and the command that installs it. One component, not two: the adapter ships its own Codex binary. Credentials are deliberately NOT probed: a `missing` verdict disables the switch, and the checkable paths are not the only ones that authenticate a Codex, so the two-branch remedy (its own sign-in, or a `model_provider` in `~/.codex/config.toml`) is stated in the panel as a standing caveat instead. |
-| 6 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` is empty again, which is the healthy state. |
+| 5 auth declaration | Done — `own_credential_file`, `~/.codex/auth.json` on the floor with `CODEX_HOME` re-anchored, that same leaf spared for its own child, `.aws/config` re-exposed read-only, not retired by a host logout, and a two-branch remedy every consumer renders verbatim. |
+| 6 install probe | Done — `_probe_codex` names `codex-acp` and the command that installs it. One component, not two: the adapter ships its own Codex binary. Credentials are deliberately NOT probed: a `missing` verdict disables the switch, and the checkable paths are not the only ones that authenticate a Codex. The sign-in answer is the Stage 5 declaration instead, and every consumer renders its remedy rather than carrying a string of its own. |
+| 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` is empty again, which is the healthy state. |
 | routing | Done — `SESSION_CONFIG`, verified and applied as `mode=read-only` after session/new and before the first prompt, refusing otherwise. |
 | residual | ACP v1 cannot require a prompt for a passive READ, so the sensitive-path block does not see this harness's reads. Mitigated at the OS boundary instead: its child cannot read the credential homes the standard tier leaves open. |
-| 7 live spill | Not reached. |
+| 8 live spill | Not reached. |
 
 The lesson worth carrying: the seam is dormant for exactly one reason, that
 reason is written down where the narrowing check reads it, and closing it is a

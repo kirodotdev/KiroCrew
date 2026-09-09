@@ -82,7 +82,6 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_INTERNAL_SANDBOX,
-    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
@@ -99,6 +98,7 @@ from kiro_crew.acp.types import (
     METHOD_SUBAGENT_LIST_UPDATE,
     JsonRpcMessage,
     JsonRpcRequest,
+    backends_retired_by_host_logout,
 )
 from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
@@ -920,13 +920,13 @@ class AcpRuntime:
     def uses_kiro_identity_store(self) -> bool:
         """True when this runtime's process signs in from kiro-cli's own store.
 
-        Membership in ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` (harness-parity
+        Membership in ``backends_retired_by_host_logout()`` (harness-parity
         H5/H14). ``AcpRuntime`` is not an ``LLMProvider``, but the identity-change
         sweep reaches shared runtimes as well as session providers, so it
         declares the same capability under the same name -- letting that sweep
         ask both families one question instead of probing private attributes.
         """
-        return self._acp_backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+        return self._acp_backend in backends_retired_by_host_logout()
 
     @property
     def supports_image_prompt(self) -> bool:

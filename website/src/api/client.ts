@@ -1197,6 +1197,22 @@ export interface AcpBackendProbe {
    * that is guaranteed to error.
    */
   restart_required: boolean
+  /**
+   * How this harness gets its credential, and what to tell an operator who has
+   * not given it one. OPTIONAL because a gateway that predates this field sends
+   * no `auth` at all, and the panel already treats absent probe information as
+   * "say nothing, gate nothing".
+   *
+   * `sign_in_remedy` is a complete sentence rendered VERBATIM: the server owns
+   * the wording, so it carries no placeholder to interpolate and is not
+   * translated here. `signs_in_separately` is what decides whether the sentence
+   * is shown at all -- a harness authenticating through Crew's own identity
+   * store has no separate sign-in to finish.
+   */
+  auth?: {
+    sign_in_remedy: string
+    signs_in_separately: boolean
+  }
 }
 
 let _sessionExpiredShown = false
