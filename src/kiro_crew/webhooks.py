@@ -186,12 +186,11 @@ def locked(path: Path) -> Iterator[None]:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.parent / (path.name + ".lock")
-    # touch + "r+", never "w": a truncating open of a lock file another holder
-    # already locked raises a sharing violation on Windows instead of waiting.
-    # Full rationale at work_ledger._open_lock (issue #9248).
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as lock_fd:
-        with platform_compat.flock_exclusive(lock_fd.fileno()):
+    # Open non-truncating; see ``platform_compat.open_lock_file`` for why ``"w"``
+    # loses the lock on Windows (GH-9248). Parent mkdir stays (the helper does
+    # not create parent dirs).
+    with platform_compat.open_lock_file(lock_path) as lock_fd:
+        with platform_compat.flock_exclusive(lock_fd):
             yield
 
 

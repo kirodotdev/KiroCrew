@@ -1,6 +1,6 @@
 {
   "_comment": "Comments and docstrings that narrate change history, per file, as a match COUNT. The rule they break is in docs/system-specs/common/code-style.md (\"Comments explain the WHY\"); it predates any enforcement, so the tree is recorded here rather than rewritten in one pass. The gate requires every OTHER file to be clean and none of these counts to grow, so this list can only shrink. Do NOT add or raise an entry to make a red gate green: a new offender means the comment should state CURRENT behavior in present tense. Lower and prune with `python3 scripts/check_comment_history.py --write-baseline`, which never adds or raises one.",
-  "_total": 6979,
+  "_total": 6977,
   "files": {
     "src/kiro_crew/__main__.py": 1,
     "src/kiro_crew/acp/_dispatch.py": 8,
@@ -441,7 +441,7 @@
     "src/kiro_crew/mcp_tools/apps.py": 1,
     "src/kiro_crew/mcp_tools/artifacts.py": 2,
     "src/kiro_crew/mcp_tools/browser.py": 1,
-    "src/kiro_crew/mcp_tools/control.py": 6,
+    "src/kiro_crew/mcp_tools/control.py": 5,
     "src/kiro_crew/mcp_tools/learn.py": 2,
     "src/kiro_crew/mcp_tools/sessions.py": 2,
     "src/kiro_crew/mcp_tools/spawn.py": 7,
@@ -578,7 +578,7 @@
     "src/kiro_crew/webex/gateway.py": 1,
     "src/kiro_crew/webex/renderer.py": 1,
     "src/kiro_crew/webex/transport_dispatch.py": 4,
-    "src/kiro_crew/webhooks.py": 4,
+    "src/kiro_crew/webhooks.py": 3,
     "src/kiro_crew/wecom/client.py": 2,
     "src/kiro_crew/wecom/gateway.py": 6,
     "src/kiro_crew/wecom/transport.py": 1,

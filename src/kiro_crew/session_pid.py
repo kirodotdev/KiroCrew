@@ -145,18 +145,11 @@ def _session_pid_file_lock():  # type: ignore[no-untyped-def]
     """Exclusive file lock for session PID file operations."""
     lock_path = _session_pid_file_path().with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    # ``touch`` + ``"r+"``: WRITABLE, and crucially WITHOUT truncation.
-    # ``msvcrt.locking`` needs a writable handle, so ``"r"`` is not an option;
-    # but ``"w"`` TRUNCATES on open, and on Windows a truncating open of a lock
-    # file whose first byte another holder already locked raises a sharing
-    # violation rather than waiting, so the contending acquirer crashes BEFORE
-    # it reaches ``file_lock`` and the serialisation this lock exists to provide
-    # never happens. POSIX ``flock`` tolerates the truncate, which is why the
-    # defect is Windows-only. Same shape as ``dashboard/handlers/mcp.py``'s
-    # ``_McpFileLock`` and ``work_ledger._open_lock``.
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as lock_fd:
-        with platform_compat.file_lock(lock_fd.fileno(), exclusive=True):
+    # Open non-truncating; see ``platform_compat.open_lock_file`` for why ``"w"``
+    # loses the lock on Windows (GH-9248). The helper does the create-or-open in
+    # one syscall; the parent mkdir above stays because it does not.
+    with platform_compat.open_lock_file(lock_path) as lock_fd:
+        with platform_compat.file_lock(lock_fd, exclusive=True):
             yield
 
 
@@ -191,18 +184,11 @@ def _pid_file_lock():  # type: ignore[no-untyped-def]
     """Exclusive file lock for all PID file read-modify-write operations."""
     lock_path = _pid_file_path().with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    # ``touch`` + ``"r+"``: WRITABLE, and crucially WITHOUT truncation.
-    # ``msvcrt.locking`` needs a writable handle, so ``"r"`` is not an option;
-    # but ``"w"`` TRUNCATES on open, and on Windows a truncating open of a lock
-    # file whose first byte another holder already locked raises a sharing
-    # violation rather than waiting, so the contending acquirer crashes BEFORE
-    # it reaches ``file_lock`` and the serialisation this lock exists to provide
-    # never happens. POSIX ``flock`` tolerates the truncate, which is why the
-    # defect is Windows-only. Same shape as ``dashboard/handlers/mcp.py``'s
-    # ``_McpFileLock`` and ``work_ledger._open_lock``.
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as lock_fd:
-        with platform_compat.file_lock(lock_fd.fileno(), exclusive=True):
+    # Open non-truncating; see ``platform_compat.open_lock_file`` for why ``"w"``
+    # loses the lock on Windows (GH-9248). The helper does the create-or-open in
+    # one syscall; the parent mkdir above stays because it does not.
+    with platform_compat.open_lock_file(lock_path) as lock_fd:
+        with platform_compat.file_lock(lock_fd, exclusive=True):
             yield
 
 
@@ -521,6 +507,10 @@ def _periodic_pid_sweep(my_gw_pid: int, active_pids: set[int]) -> tuple[set[str]
         # This site is the likeliest of the three to feel it: the sweep runs on a
         # timer while `_track_session_pid` is contending for the same lock, which
         # is exactly the interleaving a truncating open turns into a crash.
+        # Kept inline rather than routed through `platform_compat.open_lock_file`:
+        # this fd takes a SHARED (read) lock and is held across the try/finally
+        # below, not a `with` block -- the with-scoped helper serves exclusive
+        # acquisition only, so forcing this through it would change behaviour.
         lock_path.touch(exist_ok=True)
         lock_fd = open(lock_path, "r+")
     except OSError:

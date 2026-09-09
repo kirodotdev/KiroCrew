@@ -134,12 +134,16 @@ class _McpFileLock:
     async def __aenter__(self) -> None:
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _MCP_LOCK_PATH.touch(exist_ok=True)
-        # Open the lock fd WRITABLE. Windows msvcrt.locking() requires write
-        # access on the handle — an "r" fd fails with EACCES and
+        # Open the lock fd WRITABLE and non-truncating. Windows msvcrt.locking()
+        # requires write access on the handle -- an "r" fd fails with EACCES and
         # platform_compat.acquire_lock swallows that (best-effort semantics),
         # silently degrading this to a no-op and letting concurrent
         # /api/mcp/toggle requests race the atomic-rename write of mcp.json
-        # (one flip is lost). "r+" keeps the shared file present (no truncate).
+        # (one flip is lost). "r+" keeps the shared file present (no truncate);
+        # see platform_compat.open_lock_file for the full Windows rationale
+        # (GH-9248). Kept inline rather than routed through that helper: the fd
+        # is stored on self._fd and released in __aexit__, so it must OUTLIVE
+        # this method -- the with-scoped helper would close it at method return.
         fd = open(_MCP_LOCK_PATH, "r+")
         # Run blocking lock acquire in a thread to avoid blocking the event
         # loop. Bind self._fd ONLY AFTER a successful acquire — otherwise a
@@ -187,6 +191,10 @@ class _McpFileLockSync:
     def __enter__(self) -> None:
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _MCP_LOCK_PATH.touch(exist_ok=True)
+        # Non-truncating "r+", see :class:`_McpFileLock` and
+        # platform_compat.open_lock_file (GH-9248). Kept inline for the same
+        # reason: self._fd outlives __enter__/__exit__, so the with-scoped
+        # helper cannot hold it.
         fd = open(_MCP_LOCK_PATH, "r+")
         try:
             platform_compat.acquire_lock(fd.fileno(), exclusive=True)
