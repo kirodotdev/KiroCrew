@@ -1144,6 +1144,43 @@ class SessionMetadataProjection:
                         return None
                 path = self._log._path(key)
                 existed = path.exists()
+                # The search index holds a copy of this session's message text, so
+                # it goes FIRST. Removing it before the transcript means a failure
+                # here has destroyed nothing yet and the delete can abort cleanly;
+                # the reverse order would leave the text readable in the index
+                # after the transcript was already gone. drop() reports failure
+                # rather than swallowing it for exactly this reason.
+                #
+                # EVERY spelling of the key is dropped, not the caller's one. Rows
+                # are written under ``list_sessions``' key, which is the file's
+                # ``stem``; a caller holding the logical form (``dashboard:mochi``)
+                # names a row that does not exist, and an empty match is a
+                # successful drop -- so the transcript would be unlinked while its
+                # indexed text stayed readable. ``_cache_key_identities`` is the
+                # existing owner of "every spelling of this transcript", used by
+                # cache invalidation for the same reason.
+                search_index = self._log._catalog_projection.search_index
+                identities = set(self._log._cache_key_identities(key)) | {key, path.stem}
+                if existed and search_index.available and not search_index.drop(identities):
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: could not remove the search index row, "
+                        "not deleting key=%s",
+                        key,
+                    )
+                    return False
+                # An index that exists on disk but cannot be opened is the one case
+                # that must fail CLOSED: a copy of this session's text may be in it
+                # and nothing here can remove it, so reporting the delete as done
+                # would be a claim we cannot support. Removing the index file
+                # unblocks it, which is why the path is named in the log.
+                if existed and not search_index.available and search_index.store_exists():
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: search index present but unreadable, so a "
+                        "copy of this session's text may remain; not deleting "
+                        "key=%s (remove the index to proceed)",
+                        key,
+                    )
+                    return False
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:

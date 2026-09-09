@@ -2661,6 +2661,83 @@ def _kick_connections_warm_scavenge(state: DashboardState) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
+def _kick_session_search_index(state: DashboardState) -> None:
+    """Keep the session search candidate index caught up, post-bind.
+
+    Without this the index never gets built and search silently stays on the
+    scan path — correct, and as slow as it was (measured 6.7 s per keystroke on
+    a 2.96 GB corpus, against ~0.3 s indexed).
+
+    Shape, and why each part is what it is:
+
+    * post-bind and in a worker thread, like the warm scavenge — a first pass
+      over a large corpus reads and parses every session in the search window
+      (~70 s for 500 files here) and must never sit in front of the listener or
+      on the event loop;
+    * budgeted per pass rather than run to completion, so the first pass yields
+      the thread repeatedly instead of holding it for a minute;
+    * paced by a sleep between passes once caught up, because the only work then
+      is picking up sessions that changed since the last pass;
+    * ``optimize`` on a slow multiple of the pass, since FTS5 deletes leave
+      tombstones that every query pays for until segments merge.
+
+    A failure is logged and the loop continues: a missing row costs one scanned
+    file, so the honest response to an index that will not build is to keep
+    serving searches from the files.
+    """
+
+    #: Seconds of indexing work per pass, and the pause between passes once the
+    #: window is fully indexed. The pass budget is small enough that the thread
+    #: is returned promptly; the idle pause is what keeps a caught-up gateway
+    #: from re-stat'ing the window in a tight loop.
+    pass_budget_secs = 5.0
+    idle_pause_secs = 60.0
+    busy_pause_secs = 2.0
+    optimize_every_passes = 60
+
+    def _pass_in_thread() -> dict[str, int]:
+        log = state.conversation_log
+        if log is None:
+            return {"indexed": 0, "dropped": 0, "remaining": 0}
+        return log._catalog_projection.backfill_index(budget_secs=pass_budget_secs)
+
+    def _optimize_in_thread() -> None:
+        log = state.conversation_log
+        if log is not None:
+            log._catalog_projection.search_index.optimize()
+
+    async def _session_index_loop() -> None:
+        if state.conversation_log is None:
+            # No transcript store on this gateway: nothing to index, and the
+            # search path it would serve does not exist either.
+            return
+        passes = 0
+        while True:
+            try:
+                report = await asyncio.to_thread(_pass_in_thread)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — search must survive a bad index
+                logger.warning("Session search index pass failed", exc_info=True)
+                await asyncio.sleep(idle_pause_secs)
+                continue
+            passes += 1
+            if passes % optimize_every_passes == 0:
+                try:
+                    await asyncio.to_thread(_optimize_in_thread)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    logger.warning("Session search index optimize failed", exc_info=True)
+            # More to do means come straight back; caught up means idle until
+            # something changes on disk.
+            await asyncio.sleep(busy_pause_secs if report["remaining"] else idle_pause_secs)
+
+    task = asyncio.create_task(_session_index_loop())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _register_browser_view_cleanup(app: web.Application) -> None:
     """Stop the CLI dashboard process when the gateway shuts down.
 
@@ -4081,6 +4158,7 @@ async def start_dashboard(
     # import must never sit in front of the listener
     # (no-new-work-on-gateway-boot-path).
     _kick_connections_warm_scavenge(state)
+    _kick_session_search_index(state)
 
     # Event-loop heartbeat: proves the asyncio loop is live (the off-loop /proc
     # sampler can't — it runs in a subprocess). Sleeps 10s, then logs actual
@@ -4840,6 +4918,7 @@ async def start_api_server(
     # start_dashboard: never an on_startup hook, which would run the deferred
     # import before the bind).
     _kick_connections_warm_scavenge(state)
+    _kick_session_search_index(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 
