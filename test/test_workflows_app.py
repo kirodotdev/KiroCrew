@@ -249,6 +249,25 @@ def test_handler_send_redacts_before_writing_to_the_wire() -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _forbid_real_bind(monkeypatch) -> None:
+    """Name-independent anti-hang guard for the entrypoint tests.
+
+    Patching ``server._Server`` intercepts what ``main()`` constructs *today*; a
+    patch on any name ``main()`` does not construct (an inlined
+    ``ThreadingHTTPServer(...)``, a ``_make_server()`` factory) still succeeds
+    but goes unused, and the test then binds a real socket and hangs the CI
+    shard. Failing at the bind itself turns that silent hang into a loud,
+    diagnosable failure whatever ``main()`` happens to name.
+    """
+    import socketserver
+
+    monkeypatch.setattr(
+        socketserver.TCPServer,
+        "server_bind",
+        lambda self: pytest.fail("main() bound a real socket"),
+    )
+
+
 def test_main_boots_platform_before_binding_server(monkeypatch) -> None:
     """The app process must compose security before accepting workflow requests."""
     from types import SimpleNamespace
@@ -269,7 +288,12 @@ def test_main_boots_platform_before_binding_server(monkeypatch) -> None:
 
     monkeypatch.setattr(server, "boot_platform", _boot)
     monkeypatch.setattr(server.KiroCrewConfig, "load", classmethod(lambda cls: SimpleNamespace()))
-    monkeypatch.setattr(server, "ThreadingHTTPServer", _FakeServer)
+    # Patch _Server, the class main() actually constructs: its ThreadingHTTPServer
+    # base was bound at class-definition time, so patching the base name never
+    # engages and the test would bind a REAL listener and block in serve_forever().
+    # setattr raises on a missing attribute, so a rename of _Server fails fast here.
+    monkeypatch.setattr(server, "_Server", _FakeServer)
+    _forbid_real_bind(monkeypatch)
 
     assert server.main() is None
     assert calls == ["boot", "bind", "serve"]
@@ -284,12 +308,25 @@ def test_main_fails_closed_when_platform_cannot_compose(monkeypatch) -> None:
         raise PlatformCompositionError("companion missing")
 
     served: list[str] = []
+
+    # Class-shaped fake (not a bare lambda): if the boot/bind ordering ever
+    # regresses, main() goes on to call .serve_forever() on the constructed
+    # object, and a lambda returning None would surface an unrelated
+    # AttributeError instead of the ordering assertion below.
+    class _FakeServer:
+        def __init__(self, *args, **kwargs) -> None:
+            served.append("bind")
+
+        def serve_forever(self) -> None:
+            served.append("serve")
+
     monkeypatch.setattr(server, "boot_platform", _boom)
-    monkeypatch.setattr(
-        server,
-        "ThreadingHTTPServer",
-        lambda *args, **kwargs: served.append("bind"),
-    )
+    # Same substitution as the boot-ordering test: main() constructs _Server, so a
+    # patch on the ThreadingHTTPServer base name is dead — masked here only because
+    # the boot stub raises before the bind, and it would bind a real socket the
+    # moment that ordering changed.
+    monkeypatch.setattr(server, "_Server", _FakeServer)
+    _forbid_real_bind(monkeypatch)
 
     with pytest.raises(PlatformCompositionError):
         server.main()
