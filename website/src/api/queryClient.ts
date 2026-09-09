@@ -1,4 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
+import { isEdgeChallengeError } from './apiError'
 
 /**
  * True when the error is an HTTP 429 (edge/proxy rate limit). When the
@@ -34,8 +35,11 @@ export const isDeadlineError = (error: unknown): boolean =>
  * settles at ~31s once the single retry and its backoff are counted.
  */
 export const retryPolicy = (failureCount: number, error: unknown): boolean =>
-  isDeadlineError(error) ? false
-    : isThrottleError(error) ? failureCount < 4 : failureCount < 1
+  // The gateway's own 403 is deliberately absent: there the one retry is what makes
+  // a refreshed cookie recover invisibly.
+  isEdgeChallengeError(error) ? false
+    : isDeadlineError(error) ? false
+      : isThrottleError(error) ? failureCount < 4 : failureCount < 1
 
 /**
  * Jittered exponential backoff for throttles (1s → 2s → 4s → 8s, ±500ms so

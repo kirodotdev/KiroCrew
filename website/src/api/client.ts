@@ -33,7 +33,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import type { MemoryRecord, MemoryRecordRef, MemoryRecordQuery, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRevision } from '../types/memoryEditing'
 import type { AutoNudgeListResponse } from '../components/autoNudgeLoop'
 import type { TaskDetailResponse, TasksListResponse, TasksSummary } from './tasks'
-import { ApiError, friendlyErrText } from './apiError'
+import { ApiError, friendlyErrText, toApiError } from './apiError'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
@@ -41,6 +41,7 @@ import {
   installStaleOwnerHandler,
   noteStaleOwnerResponse,
 } from './staleOwnerSignal'
+import { edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { withDeadline } from '../lib/withDeadline'
 import { createVoiceRequestId } from '../lib/voicePlayback'
@@ -2009,7 +2010,7 @@ export { STALE_OWNER_SESSION_CODE }
  * every existing consumer, and every test that mocks `../api/client`, is
  * unchanged by the move.
  */
-export { ApiError, friendlyErrText }
+export { ApiError, friendlyErrText, toApiError }
 
 /**
  * Whether *e* is a failure the user can only clear by signing back in.
@@ -2019,9 +2020,15 @@ export { ApiError, friendlyErrText }
  * useless to a user: it neither says the session is what broke nor points at
  * the re-auth banner. Call sites use this to swap a futile retry for the one
  * action that recovers.
+ *
+ * An interposed proxy's challenge is deliberately NOT one of these, though it
+ * also sets `authRequired`: the gateway never saw that request, so its sign-in
+ * banner and token flow cannot clear it, and offering them names the wrong
+ * system. Those failures carry their own remedy in the message instead. Call
+ * sites that only want the retry withdrawal read `authRequired` directly.
  */
 export const isAuthExpiredError = (e: unknown): boolean =>
-  e instanceof ApiError && e.authRequired
+  e instanceof ApiError && e.authRequired && !e.edgeChallenge
 
 /**
  * Build the ApiError AND journal it.
@@ -2045,11 +2052,23 @@ const apiFailure = (r: Response, errText: string): ApiError => {
   // the BODY, which checkSessionExpired (a pre-body Response hook) cannot read;
   // the prompt itself is idempotent, so the factory raising it cannot spam.
   const staleOwnerSession = noteStaleOwnerResponse(r.status, errText)
+  // A third denial neither of the above can see: a proxy in front of the gateway
+  // answered with its own sign-in page, so the signals are status + type + body.
+  // Skipped when the gateway's own header is present: that header proves the request
+  // reached the gateway, so nothing interposed answered it.
+  const edgeOutcome = authRequired || staleOwnerSession
+    ? null
+    : noteEdgeAuthChallenge(r.status, r.headers.get('content-type'), errText)
+  // Every one of these needs a person: the gateway never saw the request, so a silent
+  // retry a second later reproduces it whether a session lapsed or a firewall refused.
+  const edgeAuthExpired = edgeOutcome !== null
   const message = staleOwnerSession
     ? i18nT('api.client.stale_owner_session_sign_in_again')
     : authRequired
       ? i18nT('api.client.session_expired_sign_in_again')
-      : friendlyErrText(r.status, errText) || `HTTP ${r.status}`
+      : edgeChallengeMessage(edgeOutcome)
+        || friendlyErrText(r.status, errText)
+        || `HTTP ${r.status}`
   recordError({
     source: 'api',
     message,
@@ -2060,7 +2079,11 @@ const apiFailure = (r: Response, errText: string): ApiError => {
   })
   // A stale-owner denial is authRequired in the sense call sites care about:
   // no retry can succeed until the user signs in again.
-  return new ApiError(r.status, message, errText, authRequired || staleOwnerSession)
+  return new ApiError(
+    r.status, message, errText,
+    authRequired || staleOwnerSession || edgeAuthExpired,
+    edgeAuthExpired,
+  )
 }
 
 /**
@@ -3267,8 +3290,7 @@ export const api = {
   wakatimeExportDownload: async (start: string, end: string, format: 'csv' | 'json') => {
     const r = await get(api.wakatimeExportUrl(start, end, format))
     if (!r.ok) {
-      const t = await r.text()
-      throw new ApiError(r.status, t || `HTTP ${r.status}`)
+      throw await toApiError(r)
     }
     const blob = await r.blob()
     const cd = r.headers.get('Content-Disposition') || ''
@@ -3498,15 +3520,7 @@ export const api = {
   exportSession: async (slot: string) => {
     const r = await get('/api/chat/slots/' + encodeURIComponent(slot) + '/export')
     if (!r.ok) {
-      let message = `HTTP ${r.status}`
-      try {
-        const body = await r.json()
-        if (body?.error) message = body.error
-      } catch {
-        // A non-JSON error body is not worth a second failure mode; the status
-        // line above is still a usable message.
-      }
-      throw new ApiError(r.status, message)
+      throw await toApiError(r)
     }
     const blob = await r.blob()
     const filename = filenameFromDisposition(
@@ -4899,8 +4913,7 @@ export const api = {
   exportPlanYaml: async (taskId: string) => {
     const r = await get('/api/taskrunner/' + encodeURIComponent(taskId) + '/plan.yaml')
     if (!r.ok) {
-      const t = await r.text()
-      throw new ApiError(r.status, t || `HTTP ${r.status}`)
+      throw await toApiError(r)
     }
     const blob = await r.blob()
     const cd = r.headers.get('Content-Disposition') || ''
@@ -5655,8 +5668,7 @@ export const api = {
     const r = await post(item.endpoint, { item_id: item.id, ...ctx }, sessionKey, undefined, 'error')
     checkSessionExpired(r)
     if (r.ok) { removeAuthBanner(); return r.json() }
-    const errText = await r.text()
-    throw new ApiError(r.status, errText || `HTTP ${r.status}`)
+    throw await toApiError(r)
   },
 
   artifactTeardown: (slug: string) => post(`/api/deploy/teardown/${slug}`, { confirm: true }).then(j),
@@ -5699,8 +5711,7 @@ export const api = {
     if (r.ok) { removeAuthBanner(); return r.json() }
     // 409 = scan blocked — parse body so PublishHub can render findings panel
     if (r.status === 409) { return r.json() }
-    const errText = await r.text()
-    throw new ApiError(r.status, errText || `HTTP ${r.status}`)
+    throw await toApiError(r)
   },
 
   // Tips

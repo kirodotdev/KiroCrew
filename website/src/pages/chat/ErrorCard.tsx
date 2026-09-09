@@ -7,6 +7,7 @@ import { chatErrorDisplayText } from '../../lib/chatErrorRecovery'
 import { isStopEvent } from '../../lib/stopEvent'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
 import type { ChatMessage } from '../../types'
+import { withOriginLink } from '../../components/withOriginLink'
 import { injectOpensTurn } from './RecoveryCard'
 
 /** Row kind the backend stamps on a terminal model-entitlement rejection
@@ -313,7 +314,7 @@ export const ErrorCard = memo(function ErrorCard({
         data-auth-required="true"
       >
         <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-          {content}
+          {withOriginLink(content)}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -350,7 +351,7 @@ export const ErrorCard = memo(function ErrorCard({
         data-testid="error-card"
       >
         <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-          {displayText}
+          {withOriginLink(displayText)}
         </div>
         {onPickModel && onOpenDefaultModel && (
           // Both actions are needed, and a primary/secondary pair reads as
@@ -405,7 +406,7 @@ export const ErrorCard = memo(function ErrorCard({
         data-testid="error-card"
         style={{ overflowWrap: 'anywhere' }}
       >
-        {displayText}
+        {withOriginLink(displayText)}
         {elsewhere && (
           <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-elsewhere-hint">
             {i18nT(elsewhereKey!)}
@@ -432,7 +433,7 @@ export const ErrorCard = memo(function ErrorCard({
       data-continuable="true"
     >
       <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
-        {displayText}
+        {withOriginLink(displayText)}
       </div>
       <button
         type="button"

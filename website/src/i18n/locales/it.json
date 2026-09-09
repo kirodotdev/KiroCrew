@@ -142,6 +142,8 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "Incolla l'URL di accesso…",
+      "proxy_challenge_reload": "Ricarica questa scheda del browser: se compare una pagina di accesso, la sessione del tuo proxy di accesso è scaduta. Altrimenti un proxy o un firewall davanti a questa dashboard ha rifiutato la richiesta; controlla i log del proxy oppure riprova più tardi.",
+      "proxy_challenge_framed": "Apri {{origin}} in una nuova scheda: se compare una pagina di accesso, la sessione del tuo proxy di accesso è scaduta. Dentro questo pannello non funziona. Accedi lì, poi ricarica questa pagina.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Esegui kirocrew token in un terminale, incolla qui sotto l'URL di accesso e premi Invio.",

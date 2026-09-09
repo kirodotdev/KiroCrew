@@ -727,7 +727,13 @@ async function fetchCatalog(hooks: CatalogFetchHooks, replayed = false): Promise
   try {
     res = await api.themes()
   } catch (e) {
-    if (replayed || !(e instanceof ApiError && e.authRequired)) throw e
+    // An interposed proxy's challenge sets `authRequired` too, but no refresh is
+    // ever started for it (`checkSessionExpired` needs the gateway's own
+    // `X-Auth-Required`), so `awaitRefreshOrThrow` would find nothing pending and
+    // the replay would re-fail — leaving the catalog settled in error with the
+    // notice suppressed and no retry left. Throw instead, so it reaches the notice.
+    const refreshable = e instanceof ApiError && e.authRequired && !e.edgeChallenge
+    if (replayed || !refreshable) throw e
     await awaitRefreshOrThrow(e)
     return fetchCatalog(hooks, true)
   }
@@ -759,7 +765,10 @@ async function fetchCatalog(hooks: CatalogFetchHooks, replayed = false): Promise
     (r): r is PromiseRejectedResult => r.status === 'rejected' && r.reason instanceof ApiError && r.reason.authRequired,
   )
   if (denied) {
-    if (replayed) throw denied.reason
+    // Same asymmetry as the listing above: a proxy challenge has no refresh to
+    // wait for, so replaying it only spends another round-trip on the same
+    // refusal. Throwing surfaces it through the Display panel's notice.
+    if (replayed || (denied.reason as ApiError).edgeChallenge) throw denied.reason
     await awaitRefreshOrThrow(denied.reason)
     return fetchCatalog(hooks, true)
   }
@@ -941,6 +950,11 @@ function useThemeState(): ThemeContextValue {
     // is gone (a failed refetch keeps the styles it has), so a refetch that
     // fails falls back to the app-wide policy instead of retrying forever.
     retry: (failureCount, error) => {
+      // A proxy challenge is NOT exempted here, unlike the notice and the refresh
+      // replay: this arm is the one that already does the right thing for it. Adding
+      // `&& !edgeChallenge` would fall through to the line below, which retries
+      // forever while no catalog has loaded -- retrying the very refusal this change
+      // exists to stop retrying.
       if (error instanceof ApiError && error.authRequired) return false
       if (queryClient.getQueryData(CATALOG_QUERY_KEY) === undefined) return true
       return retryPolicy(failureCount, error)
@@ -955,8 +969,13 @@ function useThemeState(): ThemeContextValue {
   // once one has, only a settled refetch failure is (the list may be stale),
   // not the single app-policy retry in between.
   const catalogFailure = catalogQuery.error ?? (catalogQuery.data === undefined ? catalogQuery.failureReason : null)
+  // A gateway auth denial is withheld because the re-auth banner already owns that
+  // recovery and a second notice would duplicate it. A proxy challenge has no such
+  // owner -- no banner, no refresh, and `retry` refuses it -- so withholding it too
+  // would leave the dashboard unstyled with nothing on screen saying why.
   const customThemesLoadError =
-    catalogFailure instanceof Error && !(catalogFailure instanceof ApiError && catalogFailure.authRequired)
+    catalogFailure instanceof Error
+    && !(catalogFailure instanceof ApiError && catalogFailure.authRequired && !catalogFailure.edgeChallenge)
       ? catalogFailure
       : null
   const customThemes = catalogQuery.data?.themes ?? EMPTY_THEMES

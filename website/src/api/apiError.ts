@@ -12,6 +12,7 @@
  * import path — and every test that mocks `../api/client` — keeps working.
  */
 import { i18nT } from '../i18n/t'
+import { looksLikeHtmlDocument, edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge'
 
 /**
  * A failed API call, carrying the HTTP status so callers can branch on specific
@@ -30,12 +31,23 @@ export class ApiError extends Error {
    * authenticates (403 + `X-Auth-Required`). Call sites branch on this to drop
    * retry affordances that cannot succeed until the user re-authenticates. */
   readonly authRequired: boolean
-  constructor(status: number, message: string, body = '', authRequired = false) {
+  /** An interposed proxy answered with its own sign-in page, so no amount of
+   * retrying reaches the gateway at all. Distinct from `authRequired`, which the
+   * gateway's own 403 also sets and whose silent refresh recovers on retry. */
+  readonly edgeChallenge: boolean
+  constructor(
+    status: number,
+    message: string,
+    body = '',
+    authRequired = false,
+    edgeChallenge = false,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.body = body
     this.authRequired = authRequired
+    this.edgeChallenge = edgeChallenge
   }
 }
 
@@ -60,11 +72,20 @@ export const isTerminalApprovalRefusal = (e: unknown): boolean => {
 }
 
 /**
- * A body whose first markup is a document type: both doctype spellings, plus a
- * bare `<html>` from a proxy that emits none. Deliberately does NOT match every
- * `<`-leading body, so an XML error envelope still reaches the caller whole.
+ * Does this failure come from an interposed proxy's own sign-in page?
+ *
+ * Lives here rather than in `api/client` so `api/queryClient` can read it: client
+ * imports queryClient to invalidate caches, so the reverse import would be a cycle.
+ *
+ * Narrower than the gateway's own `authRequired`, deliberately. That 403 also needs a
+ * person, but there `attemptSilentRefresh` plus the one retry recovers a slept-laptop
+ * cookie invisibly -- a successful refresh invalidates only `['auth-me']` and
+ * `staleTime` is `Infinity`, so a query whose retry was cancelled holds an error card
+ * until something else invalidates its key. A proxy challenge has no such recovery:
+ * the request never reached the gateway.
  */
-const HTML_DOCUMENT_START = /^<(?:!doctype\s|html[\s>])/i
+export const isEdgeChallengeError = (e: unknown): boolean =>
+  e instanceof ApiError && e.edgeChallenge
 
 /**
  * Map raw edge/proxy error bodies to a human-readable message. A dashboard
@@ -95,7 +116,7 @@ export const friendlyErrText = (status: number, body: string): string => {
   }
   // An error PAGE has no message field to unwrap, so returning it verbatim put
   // `<!DOCTYPE html><html><head><meta charset="utf…` in the dashboard's topbar.
-  if (HTML_DOCUMENT_START.test(trimmed)) return ''
+  if (looksLikeHtmlDocument(trimmed)) return ''
   return body
 }
 
@@ -125,7 +146,25 @@ export const friendlyErrText = (status: number, body: string): string => {
  */
 export async function toApiError(r: Response): Promise<ApiError> {
   const body = await r.text().catch(() => '')
-  const authRequired = r.status === 403 && r.headers?.get?.('X-Auth-Required') === 'true'
-  const message = friendlyErrText(r.status, body) || `HTTP ${r.status}`
-  return new ApiError(r.status, message, body, authRequired)
+  const gatewayAuth = r.status === 403 && r.headers?.get?.('X-Auth-Required') === 'true'
+  // The same refusal reaches app bundles through here, and their `/apps/<app>/api/…`
+  // calls traverse the same proxy, so without this they print a bare `HTTP 403`.
+  // Not consulted when the gateway's own header is present: that header proves the
+  // gateway answered, and its HTML denial page would otherwise match.
+  const edge = gatewayAuth
+    ? null
+    : noteEdgeAuthChallenge(r.status, r.headers?.get?.('content-type') ?? null, body)
+  const message = edgeChallengeMessage(edge)
+    || friendlyErrText(r.status, body)
+    || `HTTP ${r.status}`
+  // Every one of these needs a person: the gateway never saw the request, so a silent
+  // retry a second later reproduces it whether a session lapsed or a firewall refused.
+  const edgeChallenge = edge !== null
+  return new ApiError(
+    r.status,
+    message,
+    body,
+    gatewayAuth || edgeChallenge,
+    edgeChallenge,
+  )
 }

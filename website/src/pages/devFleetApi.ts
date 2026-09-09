@@ -13,7 +13,7 @@
  * which already carries the status and the raw body: this module only needs the
  * error SHAPE, not that client's request pipeline.
  */
-import { ApiError, friendlyErrText } from '../api/client'
+import { toApiError } from '../api/client'
 
 const BASE = '/apps/dev-fleet/api'
 export const GATEWAY_BASE = '/api/apps/dev-fleet'
@@ -27,11 +27,10 @@ async function request<T = any>(path: string, opts?: RequestInit, base: string =
     // refusals are states to act on, not failures to report, and the caller
     // needs the STATUS to tell which -- the sync single-flight 409 names the run
     // already in flight, which is what lets the page attach its progress
-    // stepper to it. `friendlyErrText` also unwraps the body's `error` field, so
-    // a refusal no longer reaches a toast as a raw JSON blob, and it maps the
-    // tunnel edge's opaque 429 to something a person can read.
-    const text = await res.text().catch(() => '')
-    throw new ApiError(res.status, friendlyErrText(res.status, text) || `HTTP ${res.status}`, text)
+    // stepper to it. Going through the shared factory rather than wording the
+    // message here is what makes an interposed proxy's sign-in page reach a
+    // toast as a remedy instead of as its own markup.
+    throw await toApiError(res)
   }
   return res.json()
 }

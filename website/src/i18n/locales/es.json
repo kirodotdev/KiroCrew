@@ -142,6 +142,8 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "Pega la URL de inicio de sesión…",
+      "proxy_challenge_reload": "Vuelve a cargar esta pestaña del navegador: si aparece una página de inicio de sesión, la sesión de tu proxy de acceso expiró. Si no, un proxy o firewall delante de este panel rechazó la solicitud; revisa los registros del proxy o vuelve a intentarlo más tarde.",
+      "proxy_challenge_framed": "Abre {{origin}} en una pestaña nueva: si aparece una página de inicio de sesión, la sesión de tu proxy de acceso expiró. Dentro de este panel no funciona. Inicia sesión allí y luego vuelve a cargar esta página.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitación de peticiones en el borde del túnel (HTTP 429) — demasiadas solicitudes en una ráfaga. El panel lo reintenta automáticamente; si esto continúa, espera unos segundos y recarga la página.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Ejecuta kirocrew token en una terminal, pega abajo la URL de inicio de sesión y pulsa Intro.",

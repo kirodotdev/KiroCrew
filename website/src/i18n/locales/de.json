@@ -141,6 +141,8 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "Anmelde-URL einfügen…",
+      "proxy_challenge_reload": "Lade diesen Browser-Tab neu — erscheint eine Anmeldeseite, ist die Sitzung deines Zugriffsproxys abgelaufen. Wenn nicht, hat ein Proxy oder eine Firewall vor diesem Dashboard die Anfrage abgewiesen; prüfe die Protokolle des Proxys oder versuche es später erneut.",
+      "proxy_challenge_framed": "Öffne {{origin}} in einem neuen Tab — erscheint eine Anmeldeseite, ist die Sitzung deines Zugriffsproxys abgelaufen. In diesem Panel funktioniert die Anmeldung nicht. Melde dich dort an und lade dann diese Seite neu.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Vom Tunnel-Edge gedrosselt (HTTP 429) — zu viele Anfragen in kurzer Folge. Das Dashboard versucht es automatisch erneut; falls das anhält, warte ein paar Sekunden und lade die Seite neu.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Führe kirocrew token in einem Terminal aus, füge die Anmelde-URL unten ein und drücke die Eingabetaste.",

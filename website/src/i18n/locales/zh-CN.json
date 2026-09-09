@@ -140,6 +140,8 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "粘贴登录 URL…",
+      "proxy_challenge_reload": "请重新加载此浏览器标签页：如果出现登录页面，说明访问代理的会话已过期。否则，则是此仪表板前方的代理或防火墙拒绝了请求；请查看代理日志，或稍后重试。",
+      "proxy_challenge_framed": "请在新标签页中打开 {{origin}}：如果出现登录页面，说明访问代理的会话已过期。在此面板内无法完成登录。请在那里登录后，重新加载此页面。",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "隧道边缘已限流（HTTP 429）— 短时间内请求过多。仪表板会自动重试；如果持续出现，等待几秒后重新加载。",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "在终端中运行 kirocrew token，然后将登录 URL 粘贴到下方并按 Enter。",

@@ -13,6 +13,7 @@ import {
   knowledgeUnregister,
   notesApi,
 } from '../apps/md-notebook/api'
+import { ApiError as SharedApiError, isEdgeChallengeError } from '../api/apiError'
 import { API_BASE } from '../apps/md-notebook/constants'
 import { i18nT } from '../i18n/t'
 import type { Vault } from '../apps/md-notebook/types'
@@ -22,8 +23,17 @@ type StubReply = {
   status?: number
   statusText?: string
   json?: unknown
-  /** Make `res.json()` reject, the way a non-JSON body does. */
+  /** Make the body unparseable as JSON, the way a non-JSON body does. */
   jsonThrows?: boolean
+  /** Raw body text, for a reply whose body is not JSON at all. Wins over `json`. */
+  body?: string
+  contentType?: string
+  /**
+   * Extra response headers. Needed because the gateway's own denial is told apart
+   * from an interposed proxy's by `X-Auth-Required` alone — the status, content
+   * type and HTML body are identical in both.
+   */
+  headers?: Record<string, string>
 }
 
 let fetchMock: ReturnType<typeof vi.fn>
@@ -32,11 +42,20 @@ let fetchMock: ReturnType<typeof vi.fn>
 function reply(...replies: StubReply[]): void {
   for (const r of replies) {
     const status = r.status ?? 200
+    // The module reads the body with `text()` and consults `headers`, so the stub has
+    // to model both: serialising `json` here is what keeps the JSON cases unchanged.
+    const text = r.body ?? (r.jsonThrows ? 'not json' : JSON.stringify(r.json ?? {}))
+    const headers = new Headers({
+      'Content-Type': r.contentType ?? 'application/json',
+      ...(r.headers ?? {}),
+    })
     fetchMock.mockImplementationOnce(() =>
       Promise.resolve({
         ok: r.ok ?? status < 400,
         status,
         statusText: r.statusText ?? '',
+        headers,
+        text: () => Promise.resolve(text),
         json: () =>
           r.jsonThrows ? Promise.reject(new Error('not json')) : Promise.resolve(r.json ?? {}),
       }),
@@ -144,6 +163,62 @@ describe('mdnbCall error translation', () => {
     const err = (await notesApi.health().catch((e: unknown) => e)) as ApiError
     expect(err.staleBackend).toBe(false)
     expect(err.message).toBe('sync failed: no route: /x')
+  })
+
+  it("names an interposed gate's sign-in page instead of answering its bare statusText", async () => {
+    reply({
+      status: 403,
+      statusText: 'Forbidden',
+      contentType: 'text/html; charset=utf-8',
+      body: '<!DOCTYPE html><html><body><h1>Access proxy sign-in</h1></body></html>',
+    })
+    const err = (await notesApi.health().catch((e: unknown) => e)) as ApiError
+    expect(err.message).toBe(i18nT('api.client.proxy_challenge_reload'))
+    expect(err.message).not.toBe('Forbidden')
+    // The gate authors that markup, so none of it may reach the reader.
+    expect(err.message).not.toMatch(/DOCTYPE|<html|Access proxy sign-in/)
+    expect(err.status).toBe(403)
+  })
+
+  it('leaves a 403 whose body is JSON alone — the HTML document is what distinguishes a gate', async () => {
+    reply({ status: 403, statusText: 'Forbidden', json: { error: 'vault is read-only' } })
+    const err = (await notesApi.health().catch((e: unknown) => e)) as ApiError
+    expect(err.message).toBe('vault is read-only')
+    expect(err.message).not.toBe(i18nT('api.client.proxy_challenge_reload'))
+  })
+
+  it("does not blame the proxy for the GATEWAY's own denial, which carries X-Auth-Required", async () => {
+    // `token_auth._deny` answers an unauthenticated call with `_403_HTML`: a 403,
+    // `text/html`, an HTML document — every signal the proxy test reads. Only this
+    // header separates them, and the remedy differs (`kirocrew token`, not the proxy),
+    // so reporting the proxy here sends the reader to the wrong system entirely.
+    reply({
+      status: 403,
+      statusText: 'Forbidden',
+      contentType: 'text/html',
+      headers: { 'X-Auth-Required': 'true' },
+      body: '<!DOCTYPE html><html><body><h1>Access Denied</h1></body></html>',
+    })
+    const err = (await notesApi.health().catch((e: unknown) => e)) as ApiError
+    expect(err.message).not.toBe(i18nT('api.client.proxy_challenge_reload'))
+    expect(err.message).not.toBe(i18nT('api.client.proxy_challenge_framed'))
+    expect(isEdgeChallengeError(err)).toBe(false)
+  })
+
+  it('throws the SHARED ApiError for a challenge, so the retry stop can recognise it', async () => {
+    // `retryPolicy` stops retrying only on `isEdgeChallengeError`, an `instanceof`
+    // test against the shared class. Throwing this module's own class would leave
+    // React Query retrying the refusal the change exists to stop retrying.
+    reply({
+      status: 403,
+      statusText: 'Forbidden',
+      contentType: 'text/html; charset=utf-8',
+      body: '<!DOCTYPE html><html><body><h1>Access proxy sign-in</h1></body></html>',
+    })
+    const err = (await notesApi.health().catch((e: unknown) => e)) as SharedApiError
+    expect(err).toBeInstanceOf(SharedApiError)
+    expect(isEdgeChallengeError(err)).toBe(true)
+    expect(err.message).toBe(i18nT('api.client.proxy_challenge_reload'))
   })
 })
 

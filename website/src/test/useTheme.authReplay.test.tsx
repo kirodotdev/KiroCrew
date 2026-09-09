@@ -137,6 +137,41 @@ describe('useTheme: installed-theme catalog replay after silent auth recovery', 
     expect(themesFn).toHaveBeenCalledTimes(2)
   })
 
+  it("surfaces an interposed proxy's refusal instead of swallowing it as a gateway auth denial", async () => {
+    // The proxy challenge sets `authRequired` too, but NOTHING starts a refresh for it
+    // (`checkSessionExpired` needs the gateway's own `X-Auth-Required`), so the auth
+    // branch would await a refresh that does not exist and replay into the same
+    // refusal — while the notice stayed suppressed and `retry` refused. The outcome
+    // was an unstyled dashboard with nothing on screen saying why.
+    const { fetchFn } = installRefreshFetch()
+    const challenge = new ApiError(403, 'your access proxy’s session expired', '<!DOCTYPE html>', true, true)
+    themesFn.mockRejectedValue(challenge)
+
+    const { result } = renderHook(() => useTheme(), { wrapper })
+    await waitFor(() => expect(result.current.customThemesLoadError).not.toBeNull())
+
+    // Reported, not silent — this is what DisplayPanel renders through `ErrorNotice`.
+    expect(result.current.customThemesLoadError).toBe(challenge)
+    // No refresh was awaited and no replay was attempted: both would be futile here.
+    expect(fetchFn).not.toHaveBeenCalled()
+    expect(themesFn).toHaveBeenCalledTimes(1)
+    expect(result.current.customThemes).toEqual([])
+  })
+
+  it('still withholds the notice for the GATEWAY’s own auth denial, which the banner owns', async () => {
+    // The negative control for the test above: tightening the proxy case must not start
+    // double-reporting the gateway case, whose recovery the re-auth banner already owns.
+    const { settle } = installRefreshFetch()
+    themesFn.mockImplementation(authDeniedWithRefreshStarted)
+
+    const { result } = renderHook(() => useTheme(), { wrapper })
+    await waitFor(() => expect(themesFn).toHaveBeenCalledTimes(1))
+    settle(401)
+
+    await new Promise((r) => setTimeout(r, 30))
+    expect(result.current.customThemesLoadError).toBeNull()
+  })
+
   it('does not route non-auth failures through the refresh path', async () => {
     // Retry/backoff for these failures is covered in useTheme.signInReplay.test.tsx;
     // here only that the auth branch (pendingRefresh + replay) is not entered.
