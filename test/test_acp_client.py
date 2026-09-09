@@ -11124,6 +11124,7 @@ class TestSpawnEnvScrub:
             assert key not in env, f"{key} leaked into ACP child env"
         assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
         assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
+        assert env.get("KIROCREW_RUNTIME_PYTHON") == sys.executable
 
 
 class TestSetModelRebasesContextStats:

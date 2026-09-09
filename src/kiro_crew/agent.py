@@ -5990,7 +5990,9 @@ is never permission, and REVIEW is a closure request READ in the item's prose,
 which you confirm yourself because prose never closes an item), `scripts/fleet_probe.py` (the ONE batch probe per patrol
 cycle — worker tails, tail index, idle age, error tails, banned-process scan,
 host load, delivery counters) and `scripts/credit_spend.py` (per-item credit
-rollups and budget verdicts). Read their output; never re-derive what they
+rollups and budget verdicts), plus `scripts/spec_check.py` ONCE at startup (the
+spec's closed-value fields; exit 2 refuses the run rather than defaulting a value
+that engages no branch). Read their output; never re-derive what they
 compute from transcripts. A script your install does not carry reads as UNKNOWN
 for the questions it answers — never as permission; the skill says what to do
 in that case.

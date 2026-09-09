@@ -1325,6 +1325,13 @@ class AcpRuntime:
         # credential-pointer/API-key resolution so no resolver can reintroduce a
         # denied variable; KIRO_API_KEY itself is intentionally not denied.
         env = scrub_agent_subprocess_env(env)
+        # Bundled skill scripts must not depend on a system ``python`` name.
+        # The desktop bundles carry their interpreter outside the user's PATH,
+        # while this path is already running under the exact environment that
+        # can import ``kiro_crew``. Overwrite after the scrub and after
+        # ``extra_env`` so agent configuration cannot redirect the trusted read
+        # gate to a foreign interpreter.
+        env["KIROCREW_RUNTIME_PYTHON"] = sys.executable
         # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
         # confined to the pod's tree instead of the real host's -- see
         # acp.client._apply_pod_home_remap's docstring. No-op outside a pod and

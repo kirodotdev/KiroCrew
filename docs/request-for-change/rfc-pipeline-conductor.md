@@ -238,7 +238,8 @@ default_branch: main
 work_source: {kind: gh_issues, select_labels: [...], skip_signals: [...]}   # SEAM: adapter
 claim: {lock_label, marker_phrase, operator_tag}                            # lock protocol as data
 worker_contract: {branch_pattern, worktree_pattern, brief_template, heartbeat_sla}
-verifier: {gate_profile, reviewer_lanes: [...], readiness_context, acceptance}  # SEAM: adapter
+verifier: {gate_profile, reviewer_lanes: [...], readiness_context, acceptance,
+           repro_gate: best_effort|pod_required}  # SEAM: adapter
 adjudication: {auto_action_categories, blast_radius_max, security_denylist}     # SEAM: policy as data
 governance: {max_in_flight, per_cycle, credit_budget_per_item, session_ceiling, posture}
 interface: {folder_name, worker_model, digest_language, notify_channel}
@@ -250,6 +251,18 @@ adapter (reviewer lanes as a data list), protocol vocabulary as data (labels, ma
 the highest-leverage seam), adjudication policy as data, and per-repo identity (#6221). One
 invariant stays out of the template: the forge is the cross-operator lock (claim label + assignee
 + operator-tagged comments); local state is only a cache.
+
+`verifier.repro_gate` is campaign admission policy, not a score attached after implementation.
+`best_effort` preserves the generic worker contract. `pod_required` admits an issue only after the
+unmodified worktree produces the reported failure through a live pod's real product surface; unit
+or structural repro does not substitute. A missing route, caller identity, scenario, host
+capability, or externally drivable trigger produces an evidence-bearing stand-down with no edits,
+commit, or PR, and the conductor advances the queue. The same pod trace must turn green before the
+item can report green. This distinction prevents a pipeline advertised as pod verification from
+silently measuring ordinary unit-fix throughput instead. The two values are the whole set, checked
+at startup by `scripts/spec_check.py` rather than by prose: a spec whose gate is neither value
+engages neither branch, so it would run generically while reading as gated, and the check refuses
+the run instead of defaulting.
 
 ## Phases
 

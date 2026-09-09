@@ -24,27 +24,44 @@ couple this file to that one for no additional coverage.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import stat
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 from skill_script_helpers import load_skill_script
 
-from kiro_crew import agent
+from kiro_crew import agent, hooks
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 DESIGN_DOC = REPO_ROOT / "docs" / "request-for-change" / "rfc-pipeline-conductor.md"
 
-#: The three scripts the procedure delegates its deterministic half to. Named
+#: The scripts the procedure delegates its deterministic half to. Named
 #: here rather than globbed from the directory on purpose: the point is that the
 #: PROSE cites each one, and a glob would pass on a skill body that mentions
 #: none of them.
-BUNDLED_SCRIPTS = ("claim_preflight.py", "fleet_probe.py", "credit_spend.py")
+BUNDLED_SCRIPTS = (
+    "claim_preflight.py",
+    "fleet_probe.py",
+    "credit_spend.py",
+    "spec_check.py",
+)
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _make_executable(path: Path) -> None:
+    """Grant the execute bit, for a file a ``PATH`` lookup or an ``exec`` reaches."""
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def _flat(text: str) -> str:
@@ -240,6 +257,575 @@ class TestClaimPreflightIsDocumented:
 
     def test_an_already_fixed_item_is_triage_debt_not_a_dispatch(self):
         assert "triage debt" in _flat(_skill_section(self.HEADING))
+
+
+class TestPodReproAdmissionGate:
+    """A pod campaign must reject unit-only fixes before implementation.
+
+    The first pilot silently weakened "pod repro required" into an after-the-fact
+    friction note: all three issues were fixed, none was reproduced in a pod, and
+    the run was still reported as evidence for the pod loop. These assertions pin
+    the distinction between campaign admission and ordinary verification quality.
+    """
+
+    def test_the_spec_exposes_a_safe_generic_default_and_the_hard_mode(self):
+        spec = _flat(_skill_section("## The pipeline spec"))
+        assert '"repro_gate": "best_effort"' in spec
+        assert "`pod_required` is a hard admission gate" in spec
+
+    def test_pod_required_forbids_edits_before_the_live_red_trace(self):
+        spec = _flat(_skill_section("## The pipeline spec"))
+        assert "no source, test, or documentation edit may precede the live red trace" in spec
+        assert "unmodified worktree" in spec
+
+    def test_unit_evidence_cannot_be_relabelled_as_pod_admission(self):
+        spec = _flat(_skill_section("## The pipeline spec"))
+        for inadequate in (
+            "unit or structural test",
+            "direct module call",
+            "simulated exception",
+            "source reading",
+        ):
+            assert inadequate in spec
+        assert "failed sample in this one" in spec
+
+    def test_an_ineligible_issue_stands_down_without_a_pr_and_advances(self):
+        spec = _flat(_skill_section("## The pipeline spec"))
+        assert "standdown: pod-repro-ineligible" in spec
+        assert "without a commit or pr" in spec
+        assert "queue advances to the next candidate" in spec
+
+    def test_the_worker_brief_runs_the_gate_before_implementation(self):
+        brief = _flat(_skill_section("### The work-order brief (seed message skeleton)"))
+        assert "repro admission (`{verifier.repro_gate}`)" in brief
+        assert "no live pod red" in brief
+        assert "no edit, commit, or pr" in brief
+        assert "run the same pod trace green" in brief
+        assert "tear the pod down to zero residue" in brief
+        assert "worktree's `./.venv/bin/kirocrew`" in brief
+        assert "repository's own playwright runner" in brief
+        assert "missing required engine" in brief
+
+
+class TestSpecCheckRefusesAnUndeclaredGate:
+    """A two-value field is only two-valued if something refuses a third value.
+
+    ``verifier.repro_gate`` is documented as an enum, and a value outside the
+    declared set matches neither branch of the procedure: ``pod_required``'s
+    admission gate never engages while the spec file says it is on, the generic
+    implementation instructions stay reachable, and the campaign metric still
+    counts the run as pod-verified. That is the gate's own failure mode one level
+    down, which is why the check refuses the run rather than falling back to
+    ``best_effort``.
+    """
+
+    @staticmethod
+    def _script():
+        return load_skill_script("spec_check", SKILL_DIR / "scripts" / "spec_check.py")
+
+    def test_a_misspelled_gate_is_refused_by_name_value_and_option_set(self):
+        problem = self._script().spec_error({"verifier": {"repro_gate": "pod-required"}})
+        assert problem is not None
+        # The operator has to be able to act on the message without opening the
+        # spec's documentation: which field, what it read, what it accepts.
+        assert "verifier.repro_gate" in problem
+        assert "pod-required" in problem
+        assert "best_effort" in problem
+        assert "pod_required" in problem
+
+    def test_both_declared_values_are_accepted(self):
+        spec_error = self._script().spec_error
+        for value in ("best_effort", "pod_required"):
+            assert spec_error({"verifier": {"repro_gate": value}}) is None, value
+
+    def test_an_omitted_gate_takes_the_documented_default(self):
+        """Omission is how a pipeline asks for the default, so it is not an
+        error -- otherwise every pre-existing spec stops running."""
+        spec_error = self._script().spec_error
+        assert spec_error({}) is None
+        assert spec_error({"verifier": {}}) is None
+
+    def test_a_non_string_gate_is_refused_rather_than_coerced(self):
+        """An explicit ``null`` is a value, not an omission, and truthiness
+        coercion is how ``0`` or ``[]`` would silently select a branch."""
+        spec_error = self._script().spec_error
+        for value in (None, 0, True, [], {}, "BEST_EFFORT", ""):
+            assert spec_error({"verifier": {"repro_gate": value}}) is not None, value
+
+    def test_a_scalar_verifier_block_is_refused(self):
+        """A block spelled as a scalar hides every field under it, so the enum
+        would read as absent and default -- the same silent outcome."""
+        problem = self._script().spec_error({"verifier": "pod_required"})
+        assert problem is not None
+        assert "verifier" in problem
+
+    def test_the_cli_exits_two_on_a_misspelled_gate_and_zero_on_a_valid_one(self, tmp_path, capsys):
+        script = self._script()
+        bad = tmp_path / "bad-spec.json"
+        bad.write_text(json.dumps({"verifier": {"repro_gate": "pod-required"}}), encoding="utf-8")
+        assert script.main(["--spec", str(bad)]) == 2
+        assert "malformed spec" in capsys.readouterr().err
+
+        good = tmp_path / "good-spec.json"
+        good.write_text(json.dumps({"verifier": {"repro_gate": "pod_required"}}), encoding="utf-8")
+        assert script.main(["--spec", str(good)]) == 0
+
+    def test_an_unreadable_or_non_object_spec_refuses_the_run(self, tmp_path):
+        script = self._script()
+        assert script.main(["--spec", str(tmp_path / "absent.json")]) == 2
+        listy = tmp_path / "listy.json"
+        listy.write_text("[]", encoding="utf-8")
+        assert script.main(["--spec", str(listy)]) == 2
+
+    def test_a_deeply_nested_spec_refuses_with_the_documented_code(self, tmp_path, capsys):
+        """Every unusable spec leaves through exit 2, including the one shape that
+        exhausts the scanner's stack rather than failing to parse.
+
+        A document nested past the scanner's depth raises ``RecursionError``, which
+        subclasses ``RuntimeError`` and not ``ValueError``, so it is the one
+        malformed input that can leave as a traceback and exit 1. Exit 1 is not the
+        code the usage block gives a caller for a malformed spec, and a traceback is
+        not the message that names the field to fix.
+
+        The nesting is of OBJECTS so that parsing, if it somehow succeeded, would
+        yield a dict with no ``verifier`` block and exit 0 -- a nested ARRAY is
+        refused as a non-object anyway, which would pass this assertion without
+        the stack ever being the reason.
+        """
+        deep = tmp_path / "deep.json"
+        depth = sys.getrecursionlimit() * 20
+        deep.write_text('{"a":' * depth + "1" + "}" * depth, encoding="utf-8")
+        assert self._script().main(["--spec", str(deep)]) == 2
+        assert "malformed spec" in capsys.readouterr().err
+
+    def test_the_accepted_set_reads_as_a_sentence_at_any_arity(self):
+        """The message is the whole remedy an operator gets, so its rendering is
+        part of the contract rather than cosmetic: a bare tuple repr is what sends
+        someone back to the documentation to find out what to type."""
+        expected = self._script()._expected
+        assert expected(("only",)) == "'only'"
+        assert expected(("best_effort", "pod_required")) == "'best_effort' or 'pod_required'"
+        assert expected(("a", "b", "c")) == "'a', 'b', or 'c'"
+
+    def test_the_prose_declares_exactly_the_values_the_script_accepts(self):
+        """The value set is read from the SCRIPT, not restated here. Two copies
+        of one fact drift, and the drift is invisible: the prose is what the
+        operator writes the spec from, the script is what refuses it."""
+        allowed = self._script()._ENUMS["verifier.repro_gate"]
+        spec = _flat(_skill_section("## The pipeline spec"))
+        for value in allowed:
+            assert f"`{value}`" in spec, value
+
+    def test_startup_runs_the_check_before_it_dispatches_anything(self):
+        startup = _flat(_skill_section("## Startup (once per run)"))
+        posix = startup.index(
+            '`"$kirocrew_runtime_python" -i -b "<skill-dir>/scripts/spec_check.py" --spec <path>`'
+        )
+        powershell = startup.index(
+            '`& $env:kirocrew_runtime_python -i -b "<skill-dir>/scripts/spec_check.py" --spec <path>`'
+        )
+        agent_read = startup.index("only after exit 0 may you read the spec")
+        folder = startup.index("`chat_folder_create`")
+        assert max(posix, powershell) < agent_read < folder
+        assert "current directory, script directory, user site" in startup
+        assert "never substitute bare `python` or `python3`" in startup
+        assert "refusal to start" in startup
+
+
+class TestSpecCheckReadsThroughTheSensitivePathGate:
+    """The spec path is operator-supplied, so the read is a gated read.
+
+    ``--spec`` comes from the seed message, which makes it caller-influenced: a
+    symlink there could aim the validator at a credential store the sandbox
+    leaves readable, and the script would open it with the operator's own
+    permissions. Reading through ``safe_read_file`` puts the resolved target
+    behind ``is_sensitive_path`` and opens it ``O_NOFOLLOW``, so the gate holds
+    through the link and through a TOCTOU swap of the final component.
+
+    Each case below writes a spec whose CONTENT would produce a *different*
+    message if the gate were bypassed (a bad ``repro_gate`` value, which the
+    validator reports by name). So a passing test proves the file was refused
+    rather than merely proving some non-zero exit.
+
+    The fixture does NOT relocate ``HOME``. Re-anchoring the home directory into
+    ``tmp_path`` would make the planted tree *be* the sensitive location, so the
+    tests would pass without the real credential-boundary classification ever
+    running -- they would be checking the fixture. Instead exactly one planted
+    path is declared sensitive and every other path DELEGATES to the real
+    ``is_sensitive_path``, so the production boundary logic still decides the
+    ordinary-spec cases and a regression in it is not masked.
+    """
+
+    @staticmethod
+    def _script():
+        return load_skill_script("spec_check", SKILL_DIR / "scripts" / "spec_check.py")
+
+    @staticmethod
+    def _plant_credential_store(monkeypatch, root):
+        """Plant a credential store and classify ONLY it as sensitive.
+
+        Returns the planted path. ``safe_read_file`` calls the bare
+        ``is_sensitive_path`` name out of ``kiro_crew.hooks``' module globals, so
+        patching the attribute there intercepts the real call site rather than a
+        copy. The wrapper compares canonical paths, which is what makes the
+        symlink case meaningful: the link resolves to the planted target.
+        """
+        aws = root / ".aws"
+        aws.mkdir(parents=True)
+        cred = aws / "credentials"
+        # Valid JSON carrying a bad gate value: bypassing the read gate yields
+        # "malformed spec: verifier.repro_gate ...", never a refusal.
+        cred.write_text(json.dumps({"verifier": {"repro_gate": "pod-required"}}), encoding="utf-8")
+
+        real_is_sensitive_path = hooks.is_sensitive_path
+        planted = os.path.realpath(str(cred))
+
+        def classify(path_str, *args, **kwargs):
+            if os.path.realpath(os.path.expanduser(str(path_str))) == planted:
+                return True
+            # Everything else is the real gate's call, so the ordinary-spec
+            # assertions below are answered by production code.
+            return real_is_sensitive_path(path_str, *args, **kwargs)
+
+        monkeypatch.setattr(hooks, "is_sensitive_path", classify)
+        return cred
+
+    def test_a_spec_path_inside_a_credential_store_is_refused_not_parsed(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        cred = self._plant_credential_store(monkeypatch, tmp_path)
+        assert self._script().main(["--spec", str(cred)]) == 2
+        err = capsys.readouterr().err
+        assert "refused spec" in err
+        assert "sensitive path" in err
+        # The discriminator: the validator never got to look at the content.
+        assert "repro_gate" not in err
+
+    def test_a_symlinked_spec_is_refused_through_the_link(self, tmp_path, capsys, monkeypatch):
+        """The attack shape: an innocuous-looking `spec.json` whose target is the
+        credential store. Checking the link's own path would pass it."""
+        cred = self._plant_credential_store(monkeypatch, tmp_path)
+        link = tmp_path / "spec.json"
+        link.symlink_to(cred)
+        assert self._script().main(["--spec", str(link)]) == 2
+        err = capsys.readouterr().err
+        assert "refused spec" in err
+        # Named by RESOLVED target, so the refusal says what it actually blocked.
+        assert ".aws" in err
+        assert "repro_gate" not in err
+
+    def test_an_ordinary_spec_beside_the_store_still_validates(self, tmp_path, capsys, monkeypatch):
+        """The gate must not cost the tool its job: a normal spec beside the
+        credential store reads and validates as before. This is the case the real
+        ``is_sensitive_path`` answers -- the wrapper delegates it."""
+        self._plant_credential_store(monkeypatch, tmp_path)
+        spec = tmp_path / "pipeline-spec.json"
+        spec.write_text(json.dumps({"verifier": {"repro_gate": "pod_required"}}), encoding="utf-8")
+        assert self._script().main(["--spec", str(spec)]) == 0
+        assert "OK" in capsys.readouterr().out
+
+        bad = tmp_path / "typo-spec.json"
+        bad.write_text(json.dumps({"verifier": {"repro_gate": "pod-required"}}), encoding="utf-8")
+        assert self._script().main(["--spec", str(bad)]) == 2
+        assert "verifier.repro_gate" in capsys.readouterr().err
+
+    def test_an_unenforceable_gate_refuses_rather_than_reading_plainly(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A skill's scripts can run as bare files with ``kiro_crew`` off the
+        path. Degrading to ``read_text`` there would reopen the bypass in
+        the case least likely to be noticed, so absence of the gate is itself a
+        refusal.
+
+        The gate is unenforceable only once BOTH routes to it are gone: the
+        import here, and the re-exec under Kiro Crew's own interpreter that
+        ``TestSpecCheckRunsWhereTheGateIsImportable`` covers. Both are stubbed
+        out, so what this pins is the terminal state rather than the relocation.
+        """
+        script = self._script()
+        monkeypatch.setattr(script, "safe_read_file", None)
+        monkeypatch.setattr(script, "bundled_python", lambda: None)
+        spec = tmp_path / "pipeline-spec.json"
+        spec.write_text(json.dumps({"verifier": {"repro_gate": "pod_required"}}), encoding="utf-8")
+        assert script.main(["--spec", str(spec)]) == 2
+        err = capsys.readouterr().err
+        assert "cannot enforce the sensitive-path read gate" in err
+
+
+class TestSpecCheckRunsWhereTheGateIsImportable:
+    """The check has to reach an interpreter that can import the gate.
+
+    The procedure runs this script with a plain ``python3``, and the default
+    install is a managed venv whose interpreter is not the ``python3`` on the
+    operator's ``PATH``. Under that pairing the gate import fails, and since an
+    unenforceable gate is a refusal, the startup predicate refuses EVERY spec:
+    the fail-closed branch stops a healthy install from starting any run at all,
+    which is the opposite of what it exists for.
+
+    So the script re-runs itself under Kiro Crew's own interpreter -- the
+    ``kirocrew`` launcher's sibling -- the way ``web-verify``'s downscale helper
+    reaches Pillow. The read gate is never degraded, only relocated to a process
+    that has it, and the refusal stays last: a build with no launcher, and a
+    second failure inside the re-exec, both still refuse.
+    """
+
+    @staticmethod
+    def _script():
+        return load_skill_script("spec_check", SKILL_DIR / "scripts" / "spec_check.py")
+
+    @staticmethod
+    def _install(tmp_path):
+        """A synced copy of the script plus a launcher whose sibling has the gate.
+
+        Both halves mirror production. ``_ensure_builtin_skills`` copies the
+        packaged skill into the skills directory, so the file the agent runs sits
+        outside ``kiro_crew/`` and no ``__file__``-relative walk reaches the
+        package from it. And the launcher is the only handle on the interpreter:
+        a managed install puts ``kirocrew`` on ``PATH`` while the interpreter
+        beside it is on ``PATH`` nowhere.
+        """
+        scripts = tmp_path / "skills" / "pipeline-conductor" / "scripts"
+        scripts.mkdir(parents=True)
+        synced = scripts / "spec_check.py"
+        shutil.copy2(SKILL_DIR / "scripts" / "spec_check.py", synced)
+
+        bindir = tmp_path / "venv" / "bin"
+        bindir.mkdir(parents=True)
+        launcher = bindir / "kirocrew"
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        # A ``PATH`` lookup skips a file it cannot execute, so the mode is part of
+        # the fixture rather than decoration.
+        _make_executable(launcher)
+        # A shell shim, not a copied binary: the sibling only has to BE an
+        # interpreter that can import the gate, and the interpreter running this
+        # test already is one.
+        shim = bindir / "python"
+        shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        _make_executable(shim)
+        return synced, bindir
+
+    @staticmethod
+    def _run(synced, bindir, spec, home):
+        """Run the synced copy the way a managed install runs it.
+
+        ``-S`` drops ``site-packages``, which is where an install of any shape
+        puts the package, and ``-E`` drops ``PYTHONPATH``, which is how a source
+        tree can still be on it. Together they make this process's own
+        interpreter stand in for the operator's ``python3``, so the simulation
+        holds however the checkout under test happens to be installed.
+
+        ``KIROCREW_HOME`` and ``KIROCREW_WORKSPACE`` are pinned EXPLICITLY rather
+        than inherited. The rootdir ``_isolate_kirocrew_home`` fixture pins them
+        for this process, but a child assembled from ``os.environ`` is isolated
+        only for as long as that keeps being true, and reaching the operator's
+        real home is not a read: the gate imports ``config.paths``, whose
+        ``config_dir()`` CREATES the home and its marker on first use and can run
+        the legacy home migration as a side effect. Pinning also keeps one
+        developer's config drift out of the streams these assertions read, which
+        is why they check an exit code and one substring rather than the absence
+        of other output.
+        """
+        return subprocess.run(
+            [sys.executable, "-S", "-E", str(synced), "--spec", str(spec)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={
+                **os.environ,
+                "PATH": str(bindir),
+                "KIROCREW_HOME": str(home),
+                "KIROCREW_WORKSPACE": str(home / "workspace"),
+            },
+        )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the stand-in launcher sibling needs a POSIX '#!' line"
+    )
+    def test_a_valid_spec_starts_the_run_under_an_interpreter_without_the_package(self, tmp_path):
+        synced, bindir = self._install(tmp_path)
+        spec = tmp_path / "pipeline-spec.json"
+        spec.write_text(json.dumps({"verifier": {"repro_gate": "pod_required"}}), encoding="utf-8")
+        done = self._run(synced, bindir, spec, tmp_path / "home")
+        # Exit code plus the one line that only a completed check prints. The
+        # refusal exits 2, so a zero here already rules it out, and asserting on
+        # the ABSENCE of other stderr would make any incidental notice a failure.
+        assert done.returncode == 0, done.stderr
+        assert "OK" in done.stdout
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the stand-in launcher sibling needs a POSIX '#!' line"
+    )
+    def test_a_malformed_spec_is_named_rather_than_traced(self, tmp_path):
+        """The operator's remedy travels through the re-exec, or the relocation
+        bought nothing: a traceback names no field to fix, and the gate refusal
+        names the wrong problem."""
+        synced, bindir = self._install(tmp_path)
+        bad = tmp_path / "typo-spec.json"
+        bad.write_text(json.dumps({"verifier": {"repro_gate": "pod-required"}}), encoding="utf-8")
+        done = self._run(synced, bindir, bad, tmp_path / "home")
+        assert done.returncode == 2
+        assert "verifier.repro_gate" in done.stderr
+        # The one negative worth keeping: an unimportable gate leaving as a
+        # traceback is the shape this whole path exists to prevent.
+        assert "Traceback" not in done.stderr, done.stderr
+
+    def test_the_injected_runtime_interpreter_is_authoritative(self, tmp_path, monkeypatch):
+        """The ACP parent supplies the exact interpreter already running Crew.
+
+        This is the normal path and must not depend on a launcher or a Python
+        basename being discoverable on the user's PATH.
+        """
+        script = self._script()
+        runtime_python = tmp_path / "sealed bundle" / "python3.12"
+        runtime_python.parent.mkdir(parents=True)
+        runtime_python.write_text("", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_RUNTIME_PYTHON", str(runtime_python))
+        monkeypatch.setattr(
+            script.shutil,
+            "which",
+            lambda _name: pytest.fail(
+                "launcher lookup must not run when the parent injected Python"
+            ),
+        )
+        assert script.bundled_python() == str(runtime_python)
+
+    def test_the_interpreter_is_the_launcher_s_sibling_resolved_through_the_link(
+        self, tmp_path, monkeypatch
+    ):
+        """``bin/kirocrew`` -> ``bin/python``, resolved on the REAL path.
+
+        The launcher is habitually a symlink from a user's ``bin`` directory into
+        the venv, so the sibling lookup has to run in the venv rather than beside
+        the link. ``realpath`` is patched instead of planting a symlink because
+        creating one needs a privilege the Windows runner does not hold.
+        """
+        script = self._script()
+        monkeypatch.delenv("KIROCREW_RUNTIME_PYTHON", raising=False)
+        bindir = tmp_path / "venv" / "bin"
+        bindir.mkdir(parents=True)
+        (bindir / "kirocrew").write_text("", encoding="utf-8")
+        (bindir / "python").write_text("", encoding="utf-8")
+        monkeypatch.setattr(
+            script.shutil, "which", lambda _name: str(tmp_path / "link" / "kirocrew")
+        )
+        monkeypatch.setattr(script.os.path, "realpath", lambda _p: str(bindir / "kirocrew"))
+        monkeypatch.setattr(script.os, "name", "posix")
+        assert script.bundled_python() == str(bindir / "python")
+
+    def test_the_posix_desktop_interpreter_is_the_versioned_sibling(self, tmp_path, monkeypatch):
+        """Desktop PBS layout: ``bin/kirocrew`` -> ``bin/python3.12``."""
+        script = self._script()
+        monkeypatch.delenv("KIROCREW_RUNTIME_PYTHON", raising=False)
+        bindir = tmp_path / "backend-dist" / "bin"
+        bindir.mkdir(parents=True)
+        launcher = bindir / "kirocrew"
+        launcher.write_text("", encoding="utf-8")
+        python = bindir / "python3.12"
+        python.write_text("", encoding="utf-8")
+        monkeypatch.setattr(script.shutil, "which", lambda _name: str(launcher))
+        monkeypatch.setattr(script.os, "name", "posix")
+        assert script.bundled_python() == str(python)
+
+    def test_the_windows_venv_interpreter_carries_the_exe_suffix(self, tmp_path, monkeypatch):
+        """``Scripts/kirocrew.exe`` -> ``Scripts/python.exe``."""
+        script = self._script()
+        monkeypatch.delenv("KIROCREW_RUNTIME_PYTHON", raising=False)
+        scripts = tmp_path / "venv" / "Scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "kirocrew.exe").write_text("", encoding="utf-8")
+        (scripts / "python.exe").write_text("", encoding="utf-8")
+        monkeypatch.setattr(script.shutil, "which", lambda _name: str(scripts / "kirocrew.exe"))
+        monkeypatch.setattr(script.os, "name", "nt")
+        got = script.bundled_python()
+        assert got is not None
+        # Compared as resolved paths: a Windows temporary directory is handed back
+        # in the short 8.3 form while ``realpath`` returns the long one, and the
+        # two name the same file.
+        assert os.path.realpath(got) == os.path.realpath(str(scripts / "python.exe"))
+
+    def test_the_windows_desktop_interpreter_is_above_the_cmd_shim(self, tmp_path, monkeypatch):
+        """Desktop PBS layout: ``bin\\kirocrew.cmd`` -> ``python.exe``."""
+        script = self._script()
+        monkeypatch.delenv("KIROCREW_RUNTIME_PYTHON", raising=False)
+        root = tmp_path / "backend-dist"
+        bindir = root / "bin"
+        bindir.mkdir(parents=True)
+        launcher = bindir / "kirocrew.cmd"
+        launcher.write_text("@echo off\n", encoding="utf-8")
+        python = root / "python.exe"
+        python.write_text("", encoding="utf-8")
+        monkeypatch.setattr(script.shutil, "which", lambda _name: str(launcher))
+        monkeypatch.setattr(script.os, "name", "nt")
+        assert script.bundled_python() == str(python)
+
+    def test_no_injected_path_or_launcher_leaves_no_interpreter_to_reach(self, monkeypatch):
+        script = self._script()
+        monkeypatch.delenv("KIROCREW_RUNTIME_PYTHON", raising=False)
+        monkeypatch.setattr(script.shutil, "which", lambda _name: None)
+        assert script.bundled_python() is None
+
+    def test_the_re_exec_refuses_instead_of_recursing(self, tmp_path, capsys, monkeypatch):
+        """An interpreter that also lacks the gate must not spawn a third: the
+        marker on the child is what turns a loop into the refusal."""
+        script = self._script()
+        monkeypatch.setattr(script, "safe_read_file", None)
+        monkeypatch.setenv(script._REEXEC_ENV, "1")
+        called = []
+        monkeypatch.setattr(script.subprocess, "call", lambda *a, **k: called.append(a) or 0)
+        spec = tmp_path / "pipeline-spec.json"
+        spec.write_text("{}", encoding="utf-8")
+        assert script.main(["--spec", str(spec)]) == 2
+        assert not called
+        assert "cannot enforce the sensitive-path read gate" in capsys.readouterr().err
+
+    def test_the_child_s_verdict_is_this_check_s_verdict(self, tmp_path, monkeypatch):
+        """The re-exec is a relocation, not a second opinion: the caller reads
+        the same exit code it would have read from a gate-carrying interpreter,
+        and the child's own message is what reaches the operator.
+        """
+        script = self._script()
+        monkeypatch.setattr(script, "safe_read_file", None)
+        monkeypatch.setattr(script, "bundled_python", lambda: "/venv/bin/python")
+        seen = {}
+
+        def record(argv, env=None):
+            seen["argv"] = argv
+            seen["env"] = env
+            return 2
+
+        monkeypatch.setattr(script.subprocess, "call", record)
+        spec = tmp_path / "pipeline-spec.json"
+        spec.write_text("{}", encoding="utf-8")
+        assert script.main(["--spec", str(spec)]) == 2
+        assert seen["argv"][0] == "/venv/bin/python"
+        assert seen["argv"][1:3] == ["-I", "-B"]
+        assert seen["argv"][3] == os.path.abspath(script.__file__)
+        assert seen["argv"][4:] == ["--spec", str(spec)]
+        # The marker travels on the child, or the child re-execs in turn.
+        assert seen["env"][script._REEXEC_ENV] == "1"
+
+    def test_the_caller_s_data_home_reaches_the_child_unchanged(self, tmp_path, monkeypatch):
+        """The script pins no home of its own, in either direction.
+
+        Which home the check reads is the CALLER's decision -- an operator with a
+        relocated ``KIROCREW_HOME``, and a pod whose whole isolation is that
+        variable, both need the child to resolve exactly what the parent was
+        given. So the re-exec forwards the environment and adds only its own loop
+        marker; a home pinned here would silently retarget the sensitive-path
+        gate away from the caller's own boundary.
+        """
+        script = self._script()
+        monkeypatch.setattr(script, "safe_read_file", None)
+        monkeypatch.setattr(script, "bundled_python", lambda: "/venv/bin/python")
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "relocated"))
+        seen = {}
+        monkeypatch.setattr(
+            script.subprocess, "call", lambda argv, env=None: seen.update(env=env) or 0
+        )
+        spec = tmp_path / "pipeline-spec.json"
+        spec.write_text("{}", encoding="utf-8")
+        script.main(["--spec", str(spec)])
+        assert seen["env"]["KIROCREW_HOME"] == str(tmp_path / "relocated")
 
 
 class TestProbeSignalsAreDocumented:
@@ -798,7 +1384,7 @@ class TestDesignDocTracksTheSkill:
         doc = _flat(_read(DESIGN_DOC))
         assert "admission is sized on delivery" in doc
 
-    def test_design_doc_names_all_three_scripts(self):
+    def test_design_doc_names_every_bundled_script(self):
         doc = _read(DESIGN_DOC)
         for script in BUNDLED_SCRIPTS:
             assert script in doc, script

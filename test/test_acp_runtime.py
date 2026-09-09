@@ -6268,6 +6268,7 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
         assert key not in env, f"{key} leaked into runtime child env"
     assert env.get("KIROCREW_UNRELATED_KEEPME") == "keep-this-value"
     assert env.get("AWS_ACCESS_KEY_ID") == "FAKE-akid"
+    assert env.get("KIROCREW_RUNTIME_PYTHON") == runtime_mod.sys.executable
 
 
 @pytest.mark.asyncio
