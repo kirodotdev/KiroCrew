@@ -257,6 +257,13 @@ _ACP_RESPAWN_BACKOFF_S = 2.0
 # action when the binary is on PATH; otherwise the adapter surfaces its own
 # native-binary error.
 CLAUDE_CODE_BIN = "claude"
+# Kiro Crew's launcher for that CLI (``claude_launcher.mjs`` beside this module).
+# ``CLAUDE_CODE_EXECUTABLE`` points at it and ``_ENV_CLAUDE_LAUNCHER_TARGET`` names
+# the real CLI, so the adapter's SDK starts the CLI through it; the launcher drops
+# ``--allow-dangerously-skip-permissions``, which the adapter adds for every
+# non-root session. See :func:`_point_adapter_at_claude_cli`.
+_CLAUDE_LAUNCHER = Path(__file__).with_name("claude_launcher.mjs")
+_ENV_CLAUDE_LAUNCHER_TARGET = "KIROCREW_CLAUDE_CODE_EXECUTABLE"
 # npm package that provides the claude-agent-acp binary.  Install it publicly
 # with ``npm i -g @agentclientprotocol/claude-agent-acp`` (or add it as a
 # project dependency); resolution also accepts a copy under a project-local
@@ -904,6 +911,65 @@ def _resolve_claude_code_executable() -> str | None:
     # Casing-normalize (Windows): a `which`-resolved .EXE reaches the launcher shim
     # with its true on-disk name (see _normalize_exe_casing).
     return _normalize_exe_casing(shutil.which(CLAUDE_CODE_BIN, path=search_path))
+
+
+def _point_adapter_at_claude_cli(env: dict[str, str]) -> None:
+    """Name the claude CLI in *env* for a claude-agent-acp child, via the launcher.
+
+    The adapter hands ``CLAUDE_CODE_EXECUTABLE`` to its SDK as
+    ``pathToClaudeCodeExecutable``, and the SDK does not search ``PATH`` for
+    ``claude`` on its own, so the spawn has to name one: an explicit
+    ``CLAUDE_CODE_EXECUTABLE`` already in *env* (the operator's environment or the
+    caller's ``extra_env``) wins, else :func:`_resolve_claude_code_executable`.
+
+    That CLI is started through :data:`_CLAUDE_LAUNCHER`. The adapter sets the SDK
+    option ``allowDangerouslySkipPermissions`` for every non-root session, which
+    puts ``--allow-dangerously-skip-permissions`` on the CLI command line: the
+    capability to enter ``bypassPermissions``, the one mode in which the adapter
+    stops sending ``session/request_permission`` and so stops reaching the host
+    gate. Crew never selects that mode, so the launcher drops the flag and passes
+    everything else through. The operator's choice of binary is kept; only the
+    capability request is withheld.
+
+    A launcher missing from the install starts the CLI directly, with a warning,
+    which is the behaviour before the launcher existed. So does Windows, on
+    purpose: an npm-installed ``claude`` resolves to a ``.cmd`` shim there, and
+    neither "the SDK runs a ``.mjs`` executable under node on win32" nor a
+    cmd.exe routing of that shim has been exercised on a Windows host, so the
+    pre-launcher direct path stays until one verifies it end to end. The bypass
+    capability is therefore still requested on Windows; the log line says so.
+    Blocking (``which``, a possible ``mise`` subprocess, a stat), so the caller
+    runs it off the loop.
+    """
+    claude_exe = env.get("CLAUDE_CODE_EXECUTABLE") or _resolve_claude_code_executable()
+    if not claude_exe:
+        logger.warning(
+            "%s not found on PATH; the claude-agent-acp adapter will "
+            "fail with 'Claude native binary not found'. Set "
+            "CLAUDE_CODE_EXECUTABLE.",
+            CLAUDE_CODE_BIN,
+        )
+        return
+    if platform_compat.IS_WINDOWS:
+        logger.info(
+            "Windows: starting %s directly; the claude launcher is not yet verified "
+            "on this platform, so the adapter's --allow-dangerously-skip-permissions "
+            "is not withheld here.",
+            claude_exe,
+        )
+        env["CLAUDE_CODE_EXECUTABLE"] = claude_exe
+        return
+    if not _CLAUDE_LAUNCHER.is_file():
+        logger.warning(
+            "claude launcher missing at %s; starting %s directly, so it receives "
+            "--allow-dangerously-skip-permissions from the adapter.",
+            _CLAUDE_LAUNCHER,
+            claude_exe,
+        )
+        env["CLAUDE_CODE_EXECUTABLE"] = claude_exe
+        return
+    env[_ENV_CLAUDE_LAUNCHER_TARGET] = claude_exe
+    env["CLAUDE_CODE_EXECUTABLE"] = str(_CLAUDE_LAUNCHER)
 
 
 def _claude_settings_usable(path: Path) -> bool:
@@ -6091,21 +6157,14 @@ class AcpClient:
         if self._extra_env:
             env.update(self._extra_env)
         env["PATH"] = augmented_path(env.get("PATH", ""))
-        if self._is_claude and not env.get("CLAUDE_CODE_EXECUTABLE"):
-            # Dormant seam (see _spawn docstring): the adapter's SDK needs a
-            # native Claude binary we don't vendor and does NOT search PATH for
-            # `claude` itself, so point it at one explicitly when the seam is
-            # driven. Only set when unset so an operator override always wins.
-            claude_exe = _resolve_claude_code_executable()
-            if claude_exe:
-                env["CLAUDE_CODE_EXECUTABLE"] = claude_exe
-            else:
-                logger.warning(
-                    "%s not found on PATH; the claude-agent-acp adapter will "
-                    "fail with 'Claude native binary not found'. Set "
-                    "CLAUDE_CODE_EXECUTABLE.",
-                    CLAUDE_CODE_BIN,
-                )
+        if self._is_claude:
+            # The adapter's SDK needs a claude CLI and does NOT search PATH for
+            # one, so name it -- an operator-set CLAUDE_CODE_EXECUTABLE wins --
+            # and start it through Crew's launcher, which withholds the
+            # bypass-permissions capability the adapter always asks for. Off-loop
+            # and guarded: it may run `which`/`mise`, and the sandbox temp file
+            # is live from here to the exec.
+            await self._to_thread_guarding_sandbox(_point_adapter_at_claude_cli, env)
         if self._is_opencode and self._opencode_config_content:
             # The seed the read-back above verified, applied unconditionally: the
             # merge in ``_opencode_routing_config`` already preserved every key the
