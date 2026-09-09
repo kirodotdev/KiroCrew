@@ -108,18 +108,15 @@ _health_reconcile_lock = threading.RLock()
 
 # Spawn survival check: poll the freshly-spawned child over a short grace window to
 # confirm it survived its initial bind (an immediate exit -> EADDRINUSE crash-loop must
-# be caught, see _start_app_backend_body). The loop breaks as soon as the process exits,
-# so a healthy backend only ever pays the full window on a machine where the child is
-# still starting up. Exposed as module constants so the test harness can widen the
-# window: under heavy pytest-xdist parallelism (-n auto, ~32 workers) a sandboxed child
-# can take longer than the default window just to reach its exit, which would otherwise
-# make the immediate-exit detection test flaky.
+# be caught, see _start_app_backend_body). The loop returns early on either outcome -
+# the child exiting, or our own child owning the listener - so a healthy backend pays
+# the full window only where ownership cannot be proven (no port to observe, or no
+# port->PID tool on the host); see _survived_spawn. Exposed as module constants so the
+# test harness can widen the window: under heavy pytest-xdist parallelism (-n auto, ~32
+# workers) a sandboxed child can take longer than the default window just to reach its
+# exit, which would otherwise make the immediate-exit detection test flaky.
 _SPAWN_SURVIVAL_CHECKS = 8
 _SPAWN_SURVIVAL_INTERVAL = 0.2
-# Consecutive alive polls that confirm a child cleared its bind. An immediate
-# failure (EADDRINUSE) exits within the first poll or two, so this is enough to
-# distinguish "survived" from "about to die" without burning the full budget on
-# every healthy app — see _survived_spawn.
 _PID_ANCESTRY_MAX_DEPTH = 8  # bound the parent walk when proving listener ownership
 _PORT_PROBE_TIMEOUT = 0.15  # cheap loopback gate before the costly port->PID lookup
 # Ceiling on parallel boot spawns. Each one forks a sandboxed interpreter, so an
@@ -170,9 +167,9 @@ def _survived_spawn(proc: Any, port: int | None = None) -> bool:
 
     Detects the failure this guards against — an immediate exit, e.g. EADDRINUSE
     from a port collision — while NOT paying the full grace window when the child
-    is healthy. The old loop slept its entire ~1.6s budget on the happy path and
-    broke only on death, so every app added ~1.6s of pure boot latency; with
-    concurrent boot that was the single largest startup cost.
+    is healthy. Sleeping the whole ~1.6s budget on the happy path would add that
+    much pure boot latency per app, which under concurrent boot is the single
+    largest startup cost.
 
     The early exit is driven by POSITIVE evidence: once OUR OWN child owns the
     listening socket on *port*, it has completed the very bind whose failure this
@@ -191,12 +188,12 @@ def _survived_spawn(proc: Any, port: int | None = None) -> bool:
     Ownership accepts our pid OR any descendant of it, because the sandbox
     launcher execs the real server as a child. When ownership cannot be
     established at all (no port to observe, or no port->PID tool on the host), it
-    degrades to polling the full budget exactly as before.
+    degrades to polling the full budget.
 
     The ownership probe shells out to lsof (~150ms), so it is gated behind a cheap
     loopback connect and is not run on every poll: the deadline below stays honest
     about wall-clock rather than adding the probe's cost to each interval, which
-    would otherwise make the failure path take LONGER than the original budget.
+    would otherwise make the failure path take LONGER than that budget.
     """
 
     can_check_owner = port is not None and platform_compat.listening_pid_tool_available()
@@ -335,12 +332,11 @@ def _reserve_free_port(app_name: str) -> int:
     """Atomically pick a free port and record it against *app_name*.
 
     Boot starts app backends CONCURRENTLY, so selection and reservation must be
-    one critical section. Probing without reserving (the previous behavior, safe
-    only while spawns were serialized) lets two apps be handed the same port —
-    both children then bind it and the loser dies with EADDRINUSE, which is the
-    crash-loop the post-spawn survival check exists to catch. The reservation is
-    overwritten with the real port on success and cleared on failure by the
-    existing spawn bookkeeping.
+    one critical section. Probing without reserving lets two apps be handed the
+    same port — both children then bind it and the loser dies with EADDRINUSE,
+    which is the crash-loop the post-spawn survival check exists to catch. The
+    reservation is overwritten with the real port on success and cleared on
+    failure by the existing spawn bookkeeping.
     """
     with _lock:
         port = _find_free_port()
@@ -877,18 +873,19 @@ def _await_inflight_spawn(app_name: str, timeout: float = 20.0) -> AppProcess | 
         owner_gone = False  # cannot prove the owner is gone: do not clear
     with _lock:
         cur = _processes.get(app_name)
-        if cur is not None and not getattr(cur, "starting", False):
+        if cur is None:
+            return None
+        if not getattr(cur, "starting", False):
             return cur  # resolved to a real process at the deadline
-        if cur is not None and getattr(cur, "starting", False):
-            if not owner_gone:
-                logger.info(
-                    "App %s backend spawn still in flight past the wait window "
-                    "(provisioning?) - leaving the placeholder in place",
-                    app_name,
-                )
-                return None
-            _processes.pop(app_name, None)
-            logger.warning("App %s backend spawn timed out — cleared stale placeholder", app_name)
+        if not owner_gone:
+            logger.info(
+                "App %s backend spawn still in flight past the wait window "
+                "(provisioning?) - leaving the placeholder in place",
+                app_name,
+            )
+            return None
+        _processes.pop(app_name, None)
+        logger.warning("App %s backend spawn timed out — cleared stale placeholder", app_name)
         return None
 
 
@@ -1112,8 +1109,6 @@ def _capped_spill(spill, hard_cap_bytes: int, poll_secs: float = 0.5):
     diagnostic, not a transcript). No child pid needed, so this composes
     with a mocked run_limited that spawns nothing.
     """
-    import threading
-
     stop = threading.Event()
     tripped = threading.Event()
 
@@ -1991,7 +1986,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     entry_str = str(entry) if entry else entry_point
 
     # Prefer explicit backend type from manifest over content sniffing
-    backend_type = manifest.backend.type if manifest.backend else ""
+    backend_type = manifest.backend.type
 
     # --- Node.js backend ---
     # Note: module-style entry points (entry is None) are always Python
@@ -2222,7 +2217,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     if is_builtin_app(app_root=execution_path, app_name=app_name):
         _visible = app_backend_visible_targets(app_name)
     if _cache_visible:
-        # SECURITY (#8795): refuse rather than carve when the cache sits beneath an
+        # SECURITY: refuse rather than carve when the cache sits beneath an
         # independently masked directory (a data home relocated under a credential
         # tree). ``extra_visible_dirs`` cancels any hidden mask entry that CONTAINS
         # a visible path, so carving the cache out would unmask that whole foreign
@@ -2366,12 +2361,12 @@ def _wait_for_pids(pids: list[int], timeout: float = 2.0) -> None:
     timeout duration when processes exit quickly.
 
     Uses pid_liveness (tri-state), NOT pid_exists (which collapses EPERM to
-    True): an adopted app-backend PID can be recycled between kill_pid(SIGTERM)
-    and this poll to a different user's process. pid_exists would keep it in
+    True): an adopted app-backend PID can be recycled between
+    kill_pid_pinned(SIGTERM) and this poll to a different user's process. pid_exists would keep it in
     still_alive for the whole 2.0s deadline; pid_liveness returns UNSIGNALABLE
-    for the not-ours case and we treat that as done, restoring the fast-return
-    behavior the old ``os.kill(pid, 0) except OSError`` had. Never raw
-    ``os.kill(pid, 0)`` — that TERMINATES the target on Windows.
+    for the not-ours case and we treat that as done, so a recycled PID returns
+    fast instead of holding the deadline. Never raw ``os.kill(pid, 0)`` — that
+    TERMINATES the target on Windows.
     """
     deadline = time.monotonic() + timeout
     remaining = list(pids)
@@ -3709,8 +3704,8 @@ def start_enabled_app_backends() -> list[str]:
 
     # Vet first, then spawn the admitted set CONCURRENTLY. Vetting is cheap and
     # order-dependent bookkeeping; spawning is the slow part (each child is polled
-    # for a grace window), so serializing it made boot latency scale linearly with
-    # the number of installed apps.
+    # for a grace window), so serializing it would make boot latency scale linearly
+    # with the number of installed apps.
     admitted: list[str] = []
     for app_info in apps:
         if not app_info.get("enabled"):
@@ -3800,9 +3795,10 @@ def _start_backends_concurrently(names: list[str]) -> list[str]:
     """Spawn the given app backends in parallel; return those that started.
 
     Each app's spawn blocks on a survival grace window, so starting them one at a
-    time made boot cost roughly N x that window. They are independent (ports are
-    reserved atomically — see ``_reserve_free_port``), so they run concurrently and
-    boot costs about ONE window regardless of app count.
+    time would cost roughly N x that window. They are independent (ports are
+    reserved atomically — see ``_reserve_free_port``), so they run concurrently,
+    ``_BOOT_SPAWN_MAX_WORKERS`` at a time: boot costs about one window per wave
+    rather than one per app.
 
     Declared FIXED ports are reserved up front, before any spawn is submitted.
     A fixed port is a requirement, not a preference, so it must not be lost to an
@@ -3810,9 +3806,9 @@ def _start_backends_concurrently(names: list[str]) -> list[str]:
     that race entirely, leaving `PortUnavailableError` to signal only a genuine
     conflict (two apps declaring the same port, or a foreign holder).
 
-    Failure isolation matches the previous serial loop exactly: one app's spawn
-    raising or returning None must never take down the gateway (Slack + dashboard
-    + every session) or affect the other apps.
+    Failure isolation is per app: one app's spawn raising or returning None must
+    never take down the gateway (Slack + dashboard + every session) or affect the
+    other apps.
     """
 
     if not names:
