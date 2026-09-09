@@ -974,10 +974,27 @@ async def _stream_task(
                     # command-scoped tiers are available. Keep an ungrantable
                     # redacted command visible, but do not give it that marker
                     # or the card would offer decisions the server must refuse.
+                    #
+                    # The other marker names what is missing and promises
+                    # nothing about scope. It must not say "allow once": the
+                    # blanket channel grant needs no command scope, so ``Trust
+                    # all tools in this channel`` renders beside this label and
+                    # the endpoint records it. A card telling the reader it can
+                    # only be allowed once, while carrying a control that trusts
+                    # the whole channel, is worse than a card that says nothing.
+                    #
+                    # It also must not say the text is HIDDEN, because the text
+                    # is right there beside the marker: what the reader cannot
+                    # have is proof that those characters are the ones that run,
+                    # since two commands differing only in a credential redact
+                    # to the same string. "Exact text unverified" is the fact,
+                    # and it stays out of implementation vocabulary: channel
+                    # readers are not all engineers, so it names neither bytes
+                    # nor redaction.
                     _card_name = (
                         f"Running: {_safe_cmd}"
                         if _command_grantable
-                        else f"Shell command (allow once): {_safe_cmd}"
+                        else f"Shell command (exact text unverified): {_safe_cmd}"
                     )
                 else:
                     _card_name = event.text or event.title or ""

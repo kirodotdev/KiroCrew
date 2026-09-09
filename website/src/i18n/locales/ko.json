@@ -3094,8 +3094,8 @@
         "title": "작업 승인",
         "tool": "도구",
         "trust_all_base": "모든 {{base}} 명령 신뢰",
-        "trust_all_tools": "모든 도구 신뢰",
-        "trust_hint": "신뢰하면 이후 {{tool}}도 자동으로 승인됩니다.",
+        "trust_all_tools": "이 세션의 모든 도구 신뢰",
+        "trust_hint": "신뢰하면 이 세션이 끝날 때까지 모든 도구가 자동으로 승인됩니다.",
         "trust_this_command": "‘{{cmd}}’ 신뢰",
         "trusted": "신뢰됨"
       },
@@ -5633,7 +5633,7 @@
       "total": "합계",
       "transcribing": "받아쓰는 중…",
       "transcribing_please_wait": "받아쓰는 중입니다. 잠시 기다리세요…",
-      "trust_reads": "읽기 신뢰",
+      "trust_reads": "읽기 전용 명령 신뢰",
       "turn_interrupted_press_continue": "이전 턴이 중단되었습니다 — ‘재개’를 누르거나 그냥 입력하세요",
       "upload_file": "파일 업로드",
       "use_a_skill": "스킬 사용",
@@ -7493,7 +7493,7 @@
     "trustDropdown": {
       "trust": "신뢰",
       "trust_all_base": "<mono>{{base}}</mono> 명령 모두 신뢰",
-      "trust_all_tools": "모든 도구 신뢰",
+      "trust_all_tools": "이 세션의 모든 도구 신뢰",
       "trust_all_tools_channel": "이 채널의 모든 도구 신뢰 — 재시작 후에도 유지",
       "trust_this_command": "‘<mono>{{cmd}}</mono>’ 신뢰"
     },

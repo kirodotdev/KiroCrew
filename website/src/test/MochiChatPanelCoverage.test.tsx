@@ -724,7 +724,7 @@ describe('ChatPanel trust scopes', () => {
       fullCommand: 'cat x', baseCommand: 'cat', trustGrantable: true,
     })
     await userEvent.click(await screen.findByRole('button', { name: 'Trust' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Trust all tools' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Trust all tools for this session' }))
     expect(respondApproval).toHaveBeenCalledWith('req-9', 'trust', undefined, true)
     expect(await screen.findByText('Trusted')).toBeInTheDocument()
   })

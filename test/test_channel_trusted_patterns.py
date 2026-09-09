@@ -350,15 +350,16 @@ async def test_redacted_command_is_never_a_grant_target():
 
     assert stash == [""]
     posts = _approval_posts(ch)
-    assert "**Shell command (allow once):" in posts[0][1]
+    assert "**Shell command (exact text unverified):" in posts[0][1]
     assert "**Running:" not in posts[0][1]
 
 
 @pytest.mark.asyncio
 async def test_transport_redaction_provenance_is_never_a_grant_target():
     """A transport may redact bytes without leaving a marker the channel can
-    rediscover. Its provenance bit is authoritative and must keep the card
-    allow-once-only even when the remaining command looks harmless."""
+    rediscover. Its provenance bit is authoritative and must keep the card off
+    every command-scoped tier even when the remaining command looks harmless.
+    The blanket channel grant is unaffected: it names no command."""
     agent = _make_agent(set())
     stash: list[str] = []
     ch = _make_channel(agent, capture=stash)
@@ -374,7 +375,7 @@ async def test_transport_redaction_provenance_is_never_a_grant_target():
 
     assert stash == [""]
     posts = _approval_posts(ch)
-    assert "**Shell command (allow once):" in posts[0][1]
+    assert "**Shell command (exact text unverified):" in posts[0][1]
     assert "**Running:" not in posts[0][1]
 
 

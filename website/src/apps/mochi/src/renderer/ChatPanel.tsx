@@ -2006,7 +2006,18 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
     const approvalActions = [
       ['approve', i18nT('apps.mochi.approval.btn_approve'), '#2e7d32', Check],
       ...(req.trustGrantable === true
-        ? [['trust', i18nT('apps.mochi.approval.btn_trust'), '#1565c0', Handshake]]
+        ? [[
+          'trust',
+          // With scopes this button only OPENS the tier list, so the bare verb is
+          // right. Without them the same click IS the broadest grant, so the
+          // button must name what it grants: consent has to match the scope, and
+          // an unqualified "Trust" beside one tool reads as trusting that tool.
+          hasTrustScopes
+            ? i18nT('apps.mochi.approval.btn_trust')
+            : i18nT('apps.mochi.approval.trust_all_tools'),
+          '#1565c0',
+          Handshake,
+        ]]
         : []),
       ['reject', i18nT('apps.mochi.approval.btn_reject'), '#c62828', Ban],
     ] as [string, string, string, React.ComponentType<{ size?: number }>][]
@@ -2083,8 +2094,11 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
             </div>
           )}
           {req.trustGrantable === true && !hasTrustScopes && (
+            // This hint renders ONLY on the scopeless path, where the button
+            // grants the whole session. It therefore describes the session and
+            // names no tool: naming the pending tool understates the grant.
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 5 }}>
-              {i18nT('apps.mochi.approval.trust_hint', { tool: req.tool })}
+              {i18nT('apps.mochi.approval.trust_hint')}
             </div>
           )}
         </div>

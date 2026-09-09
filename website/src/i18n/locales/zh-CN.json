@@ -3043,8 +3043,8 @@
         "title": "操作批准",
         "tool": "工具",
         "trust_all_base": "信任所有 {{base}} 命令",
-        "trust_all_tools": "信任所有工具",
-        "trust_hint": "“信任”还会让 {{tool}} 从此自动通过。",
+        "trust_all_tools": "信任本会话的所有工具",
+        "trust_hint": "“信任”会让本会话之后的每个工具都自动通过。",
         "trust_this_command": "信任“{{cmd}}”",
         "trusted": "已信任"
       },
@@ -5633,7 +5633,7 @@
       "total": "总计",
       "transcribing": "转写中…",
       "transcribing_please_wait": "正在转写，请稍候…",
-      "trust_reads": "信任读取",
+      "trust_reads": "信任只读命令",
       "turn_interrupted_press_continue": "上一轮被中断 — 点“继续”，或直接输入",
       "upload_file": "上传文件",
       "use_a_skill": "使用技能",
@@ -7493,7 +7493,7 @@
     "trustDropdown": {
       "trust": "信任",
       "trust_all_base": "信任所有 <mono>{{base}}</mono> 命令",
-      "trust_all_tools": "信任所有工具",
+      "trust_all_tools": "信任本会话的所有工具",
       "trust_all_tools_channel": "信任此频道中的所有工具 — 重启后仍然有效",
       "trust_this_command": "信任“<mono>{{cmd}}</mono>”"
     },

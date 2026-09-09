@@ -3163,8 +3163,8 @@
         "title": "Approvazione dell'azione",
         "tool": "Strumento",
         "trust_all_base": "Fidati di tutti i comandi {{base}}",
-        "trust_all_tools": "Fidati di tutti gli strumenti",
-        "trust_hint": "«Fidati» approva automaticamente {{tool}} da ora in poi.",
+        "trust_all_tools": "Fidati di tutti gli strumenti di questa sessione",
+        "trust_hint": "«Fidati» approva automaticamente ogni strumento per il resto di questa sessione.",
         "trust_this_command": "Fidati di «{{cmd}}»",
         "trusted": "Attendibile"
       },
@@ -5819,7 +5819,7 @@
       "total": "Totale",
       "transcribing": "Trascrizione in corso…",
       "transcribing_please_wait": "Trascrizione in corso, attendi…",
-      "trust_reads": "Considera attendibili le letture",
+      "trust_reads": "Considera attendibili i comandi di sola lettura",
       "turn_interrupted_press_continue": "L'ultimo turno è stato interrotto — premi Riprendi, oppure scrivi",
       "upload_file": "Carica file",
       "use_a_skill": "Usa una skill",
@@ -7715,7 +7715,7 @@
     "trustDropdown": {
       "trust": "Considera attendibile",
       "trust_all_base": "Fidati di tutti i comandi <mono>{{base}}</mono>",
-      "trust_all_tools": "Considera attendibili tutti gli strumenti",
+      "trust_all_tools": "Considera attendibili tutti gli strumenti di questa sessione",
       "trust_all_tools_channel": "Considera attendibili tutti gli strumenti di questo canale — persiste dopo il riavvio",
       "trust_this_command": "Fidati di «<mono>{{cmd}}</mono>»"
     },

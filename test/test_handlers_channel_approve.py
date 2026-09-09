@@ -71,6 +71,34 @@ async def _call(body: dict, agent):
 
 class TestChannelApproveTrustTiers:
     @pytest.mark.asyncio
+    async def test_blanket_trust_survives_an_unstashed_command(self):
+        """A card whose bytes were redacted keeps the blanket channel grant.
+
+        ``_stream_task`` stashes no command for such a card, which withholds
+        every command-scoped tier. The blanket tier names no command, so the
+        card still carries it and the endpoint still records it. The card's own
+        label says the bytes are hidden rather than promising allow-once-only.
+        """
+        agent = _make_agent(pending_command="")
+        resp, ch = await _call({"action": "trust"}, agent)
+        assert resp.status == 200
+        assert ch.trusted is True
+        assert agent._approval_future.result() == "trust"
+        # Blanket trust is not a command grant; it stores no pattern.
+        assert agent._trusted_commands == set()
+        assert agent._trusted_bases == set()
+
+    @pytest.mark.asyncio
+    async def test_command_tiers_refused_for_the_same_unstashed_card(self):
+        """The tiers that DO name bytes stay refused on that same card."""
+        for action in ("trust_command", "trust_base"):
+            agent = _make_agent(pending_command="")
+            resp, ch = await _call({"action": action, "pattern": "ls"}, agent)
+            assert resp.status == 400, action
+            assert json.loads(resp.body)["code"] == "pattern_underivable", action
+            assert ch.trusted is False, action
+
+    @pytest.mark.asyncio
     async def test_trust_command_binds_pending_command_and_approves(self):
         agent = _make_agent(pending_command="grep -r foo .")
         resp, ch = await _call({"action": "trust_command", "pattern": "grep -r foo ."}, agent)

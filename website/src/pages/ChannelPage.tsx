@@ -143,7 +143,10 @@ export function approvalToolTitle(content: string): string {
   return /^⚠️ Approval needed: \*\*([\s\S]*)\*\*\n```/.exec(content)?.[1] || ''
 }
 
-function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
+/** Exported for the capture entries only, alongside `approvalToolTitle`: an
+ *  approval's posted TEXT is rendered here, above the card, so a frame that
+ *  mounts the card alone cannot show what a channel reader actually reads. */
+export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
   msg: ChannelMessage; agents: ChannelAgent[]
   onReply?: () => void; onOpenThread?: () => void; onApprove?: (action: string, pattern?: string) => Promise<unknown>
 }) {

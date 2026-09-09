@@ -64,7 +64,7 @@ describe('ApprovalCard', () => {
   it('shows TrustDropdown with 3 tiers for shell command', () => {
     render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    expect(screen.getByText('Trust all tools')).toBeInTheDocument()
+    expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
     const buttons = screen.getAllByRole('menuitem')
     expect(buttons.some(b => b.textContent?.includes('ls /tmp'))).toBe(true)
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(true)
@@ -73,7 +73,7 @@ describe('ApprovalCard', () => {
   it('shows TrustDropdown with 2 tiers for non-shell tool', () => {
     render(<ApprovalCard title="TaskeiGetTask" toolInput="" showButtons onApprove={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    expect(screen.getByText('Trust all tools')).toBeInTheDocument()
+    expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
     const buttons = screen.getAllByRole('menuitem')
     expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(false)
   })
@@ -102,7 +102,7 @@ describe('ApprovalCard', () => {
     const onApprove = vi.fn()
     render(<ApprovalCard title="Running: ls" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     expect(onApprove).toHaveBeenCalledWith('trust', undefined)
   })
 
@@ -113,30 +113,27 @@ describe('ApprovalCard', () => {
 
   // The channels surface passes hasCommand={false}: its card is titled with an
   // agent ROLE, and its backend accepts only approved/rejected/trust — so the
-  // command-scoped tiers must not be offered there (#4421).
+  // command-scoped tiers must not be offered there (#4421). One tier left means
+  // no menu: the control carries that tier's own label.
   it('offers only the plain trust action when hasCommand=false', () => {
     render(<ApprovalCard title="Researcher" toolInput="" showButtons hasCommand={false} onApprove={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
-    const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(1)
-    expect(items[0].textContent).toContain('Trust all tools')
+    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Trust all tools for this session' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
   })
 
   it('hasCommand=false emits trust — a decision the channel backend accepts', () => {
     const onApprove = vi.fn()
     render(<ApprovalCard title="Researcher" toolInput="" showButtons hasCommand={false} onApprove={onApprove} />)
-    fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     expect(onApprove).toHaveBeenCalledTimes(1)
     expect(onApprove).toHaveBeenCalledWith('trust', undefined)
   })
 
   it('hasCommand=false suppresses command tiers even for a shell-looking title', () => {
     render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons hasCommand={false} onApprove={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
-    const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(1)
-    expect(items[0].textContent).not.toContain('commands')
+    const only = screen.getByRole('button', { name: 'Trust all tools for this session' })
+    expect(only.textContent).not.toContain('commands')
   })
 
   it('keeps all three tiers when hasCommand is omitted (chat-surface regression guard)', () => {
@@ -155,7 +152,7 @@ describe('ApprovalCard', () => {
   it('shows trusted state after trust action', () => {
     render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     expect(screen.getByText(/auto-approving future calls/)).toBeInTheDocument()
   })
 
@@ -269,7 +266,7 @@ describe('ApprovalCard', () => {
     const onApprove = vi.fn(() => Promise.reject(new ApiError(404, 'channel gone')))
     render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     await waitFor(() => expect(screen.queryByText(/auto-approving future calls/)).not.toBeInTheDocument())
     expect(screen.getByRole('alert').textContent).toContain('no longer waiting')
   })

@@ -3154,8 +3154,8 @@
         "title": "Aktionsgenehmigung",
         "tool": "Tool",
         "trust_all_base": "Allen {{base}}-Befehlen vertrauen",
-        "trust_all_tools": "Allen Werkzeugen vertrauen",
-        "trust_hint": "„Vertrauen“ genehmigt {{tool}} ab jetzt auch automatisch.",
+        "trust_all_tools": "Allen Werkzeugen in dieser Sitzung vertrauen",
+        "trust_hint": "„Vertrauen“ genehmigt für den Rest dieser Sitzung jedes Werkzeug automatisch.",
         "trust_this_command": "„{{cmd}}“ vertrauen",
         "trusted": "Vertraut"
       },
@@ -5726,7 +5726,7 @@
       "total": "Gesamt",
       "transcribing": "Wird transkribiert…",
       "transcribing_please_wait": "Wird transkribiert, bitte warten…",
-      "trust_reads": "Lesevorgängen vertrauen",
+      "trust_reads": "Nur-Lese-Befehlen vertrauen",
       "turn_interrupted_press_continue": "Letzter Zug wurde unterbrochen – Fortsetzen drücken oder einfach tippen",
       "upload_file": "Datei hochladen",
       "use_a_skill": "Einen Skill verwenden",
@@ -7604,7 +7604,7 @@
     "trustDropdown": {
       "trust": "Vertrauen",
       "trust_all_base": "Allen <mono>{{base}}</mono>-Befehlen vertrauen",
-      "trust_all_tools": "Allen Werkzeugen vertrauen",
+      "trust_all_tools": "Allen Werkzeugen in dieser Sitzung vertrauen",
       "trust_all_tools_channel": "Allen Werkzeugen in diesem Kanal vertrauen — bleibt nach Neustarts bestehen",
       "trust_this_command": "„<mono>{{cmd}}</mono>“ vertrauen"
     },

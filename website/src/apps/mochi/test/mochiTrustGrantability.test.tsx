@@ -53,7 +53,36 @@ describe('Mochi pending-card trust proof', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Trust' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Trust all tools' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Trust all tools for this session' }))
     expect(onApproval).toHaveBeenCalledWith('safe-1', 'trust', undefined, true)
+  })
+
+  it('names the session scope on a proven card with no command scope', () => {
+    // The gateway proves a SESSION grant for a card whose command it could not
+    // canonicalize, so there is no tier list to open and this one click IS the
+    // grant. The button must therefore say what it grants, and the hint must
+    // describe the session rather than the pending tool.
+    const onApproval = vi.fn()
+    render(
+      <Bubble
+        animate={false}
+        message={approvalMessage({
+          id: 'scopeless-1',
+          tool: 'Run hidden command',
+          trustGrantable: true,
+        })}
+        onApproval={onApproval}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Trust' })).not.toBeInTheDocument()
+    const trust = screen.getByRole('button', { name: 'Trust all tools for this session' })
+    // No disclosure: with nothing to reveal the button is a direct action.
+    expect(trust).not.toHaveAttribute('aria-expanded')
+    expect(screen.getByText(/every tool for the rest of this session/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Run hidden command from now on/)).not.toBeInTheDocument()
+
+    fireEvent.click(trust)
+    expect(onApproval).toHaveBeenCalledWith('scopeless-1', 'trust', undefined, true)
   })
 })

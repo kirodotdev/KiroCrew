@@ -3214,8 +3214,8 @@
         "title": "Approbation d'action",
         "tool": "Outil",
         "trust_all_base": "Faire confiance à toutes les commandes {{base}}",
-        "trust_all_tools": "Faire confiance à tous les outils",
-        "trust_hint": "« Faire confiance » approuve aussi {{tool}} automatiquement à partir de maintenant.",
+        "trust_all_tools": "Faire confiance à tous les outils pour cette session",
+        "trust_hint": "« Faire confiance » approuve automatiquement tous les outils pour le reste de cette session.",
         "trust_this_command": "Faire confiance à « {{cmd}} »",
         "trusted": "De confiance"
       },
@@ -5819,7 +5819,7 @@
       "total": "Total",
       "transcribing": "Transcription…",
       "transcribing_please_wait": "Transcription en cours, patiente…",
-      "trust_reads": "Approuver les lectures",
+      "trust_reads": "Approuver les commandes en lecture seule",
       "turn_interrupted_press_continue": "Le dernier tour a été interrompu — appuie sur Reprendre, ou écris simplement",
       "upload_file": "Importer un fichier",
       "use_a_skill": "Utiliser une compétence",
@@ -7715,7 +7715,7 @@
     "trustDropdown": {
       "trust": "Approuver",
       "trust_all_base": "Faire confiance à toutes les commandes <mono>{{base}}</mono>",
-      "trust_all_tools": "Approuver tous les outils",
+      "trust_all_tools": "Approuver tous les outils pour cette session",
       "trust_all_tools_channel": "Approuver tous les outils de ce canal — persiste après redémarrage",
       "trust_this_command": "Faire confiance à « <mono>{{cmd}}</mono> »"
     },

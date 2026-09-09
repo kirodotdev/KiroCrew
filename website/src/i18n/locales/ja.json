@@ -3094,8 +3094,8 @@
         "title": "アクション承認",
         "tool": "ツール",
         "trust_all_base": "すべての{{base}}コマンドを信頼",
-        "trust_all_tools": "すべてのツールを信頼",
-        "trust_hint": "信頼すると{{tool}}も今後自動承認されます。",
+        "trust_all_tools": "このセッションのすべてのツールを信頼",
+        "trust_hint": "信頼すると、このセッションの残りの間はすべてのツールが自動承認されます。",
         "trust_this_command": "「{{cmd}}」を信頼",
         "trusted": "信頼済み"
       },
@@ -5633,7 +5633,7 @@
       "total": "合計",
       "transcribing": "文字起こし中…",
       "transcribing_please_wait": "文字起こし中、お待ちください…",
-      "trust_reads": "信頼スコープの読み取り",
+      "trust_reads": "読み取り専用コマンドを信頼",
       "turn_interrupted_press_continue": "前のターンが中断されました — 「再開」を押すか、そのまま入力できます",
       "upload_file": "ファイルをアップロード",
       "use_a_skill": "スキルを使用",
@@ -7493,7 +7493,7 @@
     "trustDropdown": {
       "trust": "信頼",
       "trust_all_base": "<mono>{{base}}</mono> コマンドをすべて信頼",
-      "trust_all_tools": "すべてのツールを信頼",
+      "trust_all_tools": "このセッションのすべてのツールを信頼",
       "trust_all_tools_channel": "このチャネルのすべてのツールを信頼 — 再起動後も維持",
       "trust_this_command": "「<mono>{{cmd}}</mono>」を信頼"
     },

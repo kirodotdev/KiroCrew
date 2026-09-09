@@ -67,6 +67,7 @@ function stateWithApproval(meta: Record<string, unknown> = {}): Partial<RootStat
             base_command: 'ls',
             trust_command_grantable: '1',
             trust_base_grantable: '1',
+            trust_grantable: '1',
             tool_call_id: 'tc-1',
           },
           ...meta,
@@ -181,7 +182,7 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
         'slot-1', 'trust', { request_id: 'ap-123' }
@@ -193,12 +194,26 @@ describe('ChatInput approval flow', () => {
   it('Trust reads calls approveChatSlot for read-only commands', async () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    fireEvent.click(screen.getByText('Trust reads'))
+    // Trust-reads is a tier inside the one Trust dropdown, not a fourth button
+    // on the row: `max-two-buttons-per-row` grandfathers three controls there
+    // and forbids a fourth.
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getByText('Trust read-only commands'))
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
         'slot-1', 'trust_reads', { request_id: 'ap-123' }
       )
     })
+  })
+
+  it('keeps the approval row at three controls for a read-only command', () => {
+    // The row that would have grown to four: Allow once, Trust reads, Trust,
+    // Reject. Every standing grant lives in the dropdown instead.
+    const store = createTestStore(stateWithApproval())
+    const { container } = renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    const row = screen.getByRole('button', { name: 'Allow once' }).parentElement!
+    expect(row.querySelectorAll('button')).toHaveLength(3)
+    expect(container).toBeTruthy()
   })
 
   it('does not show approval bar without pending approval', () => {
@@ -213,7 +228,8 @@ describe('ChatInput approval flow', () => {
   it('shows Trust reads only for read-only commands', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.getByText('Trust reads')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Trust'))
+    expect(screen.getByText('Trust read-only commands')).toBeInTheDocument()
   })
 
   it('hides Trust reads for non-read-only commands', () => {
@@ -221,7 +237,8 @@ describe('ChatInput approval flow', () => {
     state.chat!.messages[1].meta!.is_read_only = ''
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
-    expect(screen.queryByText('Trust reads')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Trust'))
+    expect(screen.queryByText('Trust read-only commands')).not.toBeInTheDocument()
   })
 
   // #5486: with no slot to grant on, the Trust affordances are WITHHELD rather
@@ -255,7 +272,7 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     // is_read_only is '1' in this fixture, so the button renders whenever the
     // gate allows it — its absence here is the gate, not a missing precondition.
-    expect(screen.queryByText('Trust reads')).not.toBeInTheDocument()
+    expect(screen.queryByText('Trust read-only commands')).not.toBeInTheDocument()
   })
 
   it('handles API error gracefully without crashing', async () => {
@@ -274,7 +291,7 @@ describe('ChatInput approval flow', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     // Should not throw
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalled()
@@ -309,18 +326,20 @@ describe('ChatInput approval flow', () => {
     expect(buttons.some(b => b.textContent?.includes('ls') && b.textContent?.includes('commands'))).toBe(true)
   })
 
-  it('chat surface offers all three trust tiers for a shell command (regression guard)', () => {
+  it('chat surface offers every trust tier for a read-only shell command (regression guard)', () => {
     // The channels surface deliberately drops the command-scoped tiers
     // (hasCommand={false}); the chat surface must keep every tier — a future
     // change must not silently strip trust_command / trust_base here (#4421).
+    // Four tiers for this fixture, because it is also read-only.
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
     const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(3)
+    expect(items).toHaveLength(4)
     expect(items.some(b => b.textContent?.includes('ls /tmp'))).toBe(true)          // trust_command
     expect(items.some(b => b.textContent?.includes('commands'))).toBe(true)         // trust_base
-    expect(items.some(b => b.textContent?.includes('Trust all tools'))).toBe(true)  // trust
+    expect(items.some(b => b.textContent === 'Trust read-only commands')).toBe(true)             // trust_reads
+    expect(items.some(b => b.textContent?.includes('Trust all tools for this session'))).toBe(true)  // trust
   })
 
   it('uses the server shell flag instead of the display title', () => {
@@ -346,14 +365,57 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
     const buttons = screen.getAllByRole('menuitem')
-    expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(false)
+    // Match the base tier's whole shape, not the bare word "commands": the
+    // read-only tier also says "commands", so a substring test would pass
+    // whatever the base tier does.
+    expect(buttons.some(b => /Trust all .+ commands/.test(b.textContent || ''))).toBe(false)
   })
 
-  it('hides trust when the server cannot prove a command scope', () => {
+  it('keeps the session tier when the server cannot prove a command scope', () => {
+    // A redacted or uncanonicalizable command withholds the tiers that NAME
+    // that command. The session grant names none, so it stays: the whole menu
+    // used to vanish here and a plain `cd` card offered allow-once only.
     const state = stateWithApproval()
     const meta = state.chat!.messages[1].meta!
     delete meta.trust_command_grantable
     delete meta.trust_base_grantable
+    delete meta.full_command
+    delete meta.base_command
+    // The reported card was a `cd`, which is not read-only; a read-only one
+    // would also carry the reads tier and blur what this test pins.
+    meta.is_read_only = ''
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    // One tier means no menu: the control carries the tier's own label, so the
+    // scope is on the thing the user clicks.
+    expect(screen.queryByRole('button', { name: 'Trust' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Trust all tools for this session' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
+  })
+
+  it('offers only the reads tier when a read-only card carries no grant proof', () => {
+    // trust_reads needs no server-side scope proof, so it survives. The
+    // session tier does need one and is withheld: offering it would name a
+    // decision the endpoint refuses.
+    const state = stateWithApproval()
+    const meta = state.chat!.messages[1].meta!
+    delete meta.trust_command_grantable
+    delete meta.trust_base_grantable
+    delete meta.trust_grantable
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.queryByRole('button', { name: 'Trust' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Trust read-only commands' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
+  })
+
+  it('hides trust entirely when the card carries no grant proof at all', () => {
+    const state = stateWithApproval()
+    const meta = state.chat!.messages[1].meta!
+    delete meta.trust_command_grantable
+    delete meta.trust_base_grantable
+    delete meta.trust_grantable
+    meta.is_read_only = ''
     const store = createTestStore(state)
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     expect(screen.queryByRole('button', { name: 'Trust' })).not.toBeInTheDocument()
@@ -375,7 +437,7 @@ describe('ChatInput orphaned approval (404)', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     await waitFor(() => {
       expect(screen.queryByText('Allow once')).not.toBeInTheDocument()
     })
@@ -629,7 +691,7 @@ describe('ChatInput unattended-source approvals', () => {
     const store = createTestStore(withSource(source))
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     expect(screen.queryByText('Trust')).not.toBeInTheDocument()
-    expect(screen.queryByText('Trust reads')).not.toBeInTheDocument()
+    expect(screen.queryByText('Trust read-only commands')).not.toBeInTheDocument()
     // The actionable controls remain — the card is still answerable.
     expect(screen.getByText('Allow once')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()

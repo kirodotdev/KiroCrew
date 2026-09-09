@@ -2054,8 +2054,8 @@
         "title": "Action Approval",
         "tool": "Tool",
         "trust_all_base": "Trust all {{base}} commands",
-        "trust_all_tools": "Trust all tools",
-        "trust_hint": "Trust also auto-approves {{tool}} from now on.",
+        "trust_all_tools": "Trust all tools for this session",
+        "trust_hint": "Trust auto-approves every tool for the rest of this session.",
         "trust_this_command": "Trust “{{cmd}}”",
         "trusted": "Trusted"
       },
@@ -4219,7 +4219,7 @@
       "stopping_2": "Stopping",
       "taking_longer_than_expected": "taking longer than expected",
       "total": "Total",
-      "trust_reads": "Trust reads",
+      "trust_reads": "Trust read-only commands",
       "turn_interrupted_press_continue": "Last turn was interrupted — press Resume, or just type",
       "upload_file": "Upload file",
       "use_a_skill": "Use a skill",
@@ -5169,7 +5169,7 @@
     },
     "trustDropdown": {
       "trust": "Trust",
-      "trust_all_tools": "Trust all tools"
+      "trust_all_tools": "Trust all tools for this session"
     },
     "tunnelStatus": {
       "tunnel": "Tunnel"

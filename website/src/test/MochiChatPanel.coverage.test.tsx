@@ -729,7 +729,7 @@ describe('ChatPanel approval card', () => {
     expect(trust).toHaveAttribute('aria-expanded', 'true')
 
     expect(screen.getByRole('button', { name: /cat \/etc\/hosts/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Trust all tools' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Trust all tools for this session' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Trust all cat, wc commands' }))
     expect(respondApproval).toHaveBeenCalledWith('req-1', 'trust_base', 'cat *,wc *', true)
     expect(await screen.findByText('Trusted')).toBeInTheDocument()
@@ -754,7 +754,7 @@ describe('ChatPanel approval card', () => {
     }))
     await userEvent.click(await screen.findByRole('button', { name: 'Trust' }))
     expect(screen.queryByRole('button', { name: /Trust all .* commands/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Trust all tools' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Trust all tools for this session' })).toBeInTheDocument()
   })
 
   it('ignores a duplicate approval frame instead of stacking a second card', async () => {

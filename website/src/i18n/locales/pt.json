@@ -3163,8 +3163,8 @@
         "title": "Aprovação de ação",
         "tool": "Ferramenta",
         "trust_all_base": "Confiar em todos os comandos {{base}}",
-        "trust_all_tools": "Confiar em todas as ferramentas",
-        "trust_hint": "“Confiar” também aprova {{tool}} automaticamente de agora em diante.",
+        "trust_all_tools": "Confiar em todas as ferramentas desta sessão",
+        "trust_hint": "“Confiar” aprova automaticamente todas as ferramentas no resto desta sessão.",
         "trust_this_command": "Confiar em “{{cmd}}”",
         "trusted": "Confiável"
       },
@@ -5819,7 +5819,7 @@
       "total": "Total",
       "transcribing": "Transcrevendo…",
       "transcribing_please_wait": "Transcrevendo, aguarde…",
-      "trust_reads": "Confiar em leituras",
+      "trust_reads": "Confiar em comandos somente leitura",
       "turn_interrupted_press_continue": "O último turno foi interrompido — toque em Retomar ou apenas escreva",
       "upload_file": "Enviar arquivo",
       "use_a_skill": "Usar uma habilidade",
@@ -7715,7 +7715,7 @@
     "trustDropdown": {
       "trust": "Confiar",
       "trust_all_base": "Confiar em todos os comandos <mono>{{base}}</mono>",
-      "trust_all_tools": "Confiar em todas as ferramentas",
+      "trust_all_tools": "Confiar em todas as ferramentas desta sessão",
       "trust_all_tools_channel": "Confiar em todas as ferramentas deste canal — persiste após reiniciar",
       "trust_this_command": "Confiar em “<mono>{{cmd}}</mono>”"
     },

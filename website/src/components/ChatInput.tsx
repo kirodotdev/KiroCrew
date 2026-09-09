@@ -1,6 +1,6 @@
 import { Component, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import AppIcon from './AppIcon'
 import CopyBranchButton from './CopyBranchButton'
@@ -1080,6 +1080,14 @@ function ChatInput({
   // never be promoted into grant authority by a frontend fallback.
   const approvalTrustCommandGrantable = approvalMeta?.trust_command_grantable === '1'
   const approvalTrustBaseGrantable = approvalMeta?.trust_base_grantable === '1'
+  /** Server proof that the SESSION-wide grant ("trust all tools") can be
+   *  recorded for this card. Read separately from the command-scoped bit above
+   *  because the session grant names no command: it auto-approves whatever this
+   *  slot asks for next. Reusing the command bit for it hid the whole menu
+   *  whenever the transport redacted or could not canonicalize the command, so
+   *  a card that could still take a session grant offered allow-once and reject
+   *  alone. */
+  const approvalTrustAllGrantable = approvalMeta?.trust_grantable === '1'
   /** Sources that run with no human attached to THIS conversation. Session
    *  trust means "auto-approve tools for this chat session", which is
    *  incoherent for an unattended job: the job is not this session, so the
@@ -3629,13 +3637,21 @@ function ChatInput({
                       catalog translates the labels. */}
                   <div data-approval-actions className="flex gap-1.5 flex-wrap items-center">
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
-                      {approvalIsReadOnly && approvalTrustGrantable && <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('trust_reads')}><BookOpen size={12} className="shrink-0" />{i18nT('components.chatInput.trust_reads')}</button>}
-                      {approvalTrustGrantable && approvalTrustCommandGrantable && (
+                      {/* One dropdown carries every standing grant this card can
+                          record. Trust-reads is a tier inside it, not a sibling
+                          button: the row is capped at three controls
+                          (`max-two-buttons-per-row` grandfathers Allow once +
+                          Trust + Reject and forbids a fourth), and a read-only
+                          scopeless card can offer reads and session trust at
+                          once. */}
+                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) && (
                         <TrustDropdown
                             fullCommand={approvalFullCommand}
                             baseCommand={approvalBaseCommand}
                             isShell={approvalIsShell && approvalTrustBaseGrantable}
                             hasCommand={approvalTrustCommandGrantable}
+                            trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
+                            showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
                             disabled={approvalSubmitting}
                             className={approvalBtnClass}
                             onAction={(action, pattern) => { handleApprovalAction(action, pattern) }}

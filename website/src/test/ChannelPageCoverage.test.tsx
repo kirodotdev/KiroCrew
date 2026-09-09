@@ -201,10 +201,10 @@ describe('ChannelPage — message list', () => {
       })],
     })])
     await renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
-    const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(1)
-    expect(items[0].textContent).toMatch(/Trust all tools/)
+    // One tier left means no menu: the control carries the tier's own label, so
+    // there is nothing to open and nothing to mistake for a tooltip.
+    expect(screen.getByRole('button', { name: 'Trust all tools in this channel — persists across restarts' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
   })
 
   it('hides the per-command tiers when the tool input is redacted', async () => {
@@ -218,10 +218,10 @@ describe('ChannelPage — message list', () => {
       })],
     })])
     await renderPage()
-    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
-    const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(1)
-    expect(items[0].textContent).toMatch(/Trust all tools/)
+    // One tier left means no menu: the control carries the tier's own label, so
+    // there is nothing to open and nothing to mistake for a tooltip.
+    expect(screen.getByRole('button', { name: 'Trust all tools in this channel — persists across restarts' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
   })
 
   it('forwards the trust_command pattern from the trust dropdown', async () => {
@@ -291,12 +291,10 @@ describe('ChannelPage — message list', () => {
       })],
     })])
     await renderPage()
-    await userEvent.click(screen.getByRole('button', { name: /Trust/ }))
-    const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(1)
-    expect(items[0].textContent).toContain('Trust all tools in this channel — persists across restarts')
-    // Neither tier may describe the role string the card is titled with.
-    expect(items.some(b => b.textContent?.includes('Researcher'))).toBe(false)
+    const only = screen.getByRole('button', { name: 'Trust all tools in this channel — persists across restarts' })
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
+    // The one tier may not describe the role string the card is titled with.
+    expect(only.textContent).not.toContain('Researcher')
   })
 
   it('posts the plain trust decision — one the channel backend accepts', async () => {
@@ -307,8 +305,7 @@ describe('ChannelPage — message list', () => {
       })],
     })])
     await renderPage()
-    await userEvent.click(screen.getByRole('button', { name: /Trust/ }))
-    await userEvent.click(screen.getByText('Trust all tools in this channel — persists across restarts'))
+    await userEvent.click(screen.getByRole('button', { name: 'Trust all tools in this channel — persists across restarts' }))
     await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
       .toHaveBeenCalledWith('ch1', 'a1', 'trust', undefined))
     // Legacy cards must never send a command-scoped action.

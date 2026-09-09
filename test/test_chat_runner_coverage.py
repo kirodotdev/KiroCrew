@@ -510,11 +510,11 @@ class TestTurnMetric:
 
     def test_session_source_attribute_is_attached(self):
         recorder = MagicMock()
-        # The emit and its source derivation moved to ``metrics/turns.py`` so
-        # every dispatch surface could reach them (they used to sit in
-        # chat_runner, which only the dashboard turn loop runs). The source now
-        # comes from ``telemetry_channel_of``, which — unlike infer_use_case —
-        # knows the background surfaces this metric was widened to cover.
+        # The emit and its source derivation live in ``metrics/turns.py`` so
+        # every dispatch surface can reach them; chat_runner is only the
+        # dashboard turn loop. The source comes from ``telemetry_channel_of``,
+        # which — unlike infer_use_case — knows the background surfaces this
+        # metric covers.
         with (
             patch.object(turns_mod, "telemetry_channel_of", return_value="cron"),
             patch.object(turns_mod, "get_recorder", return_value=recorder),
@@ -2655,10 +2655,10 @@ class TestRunPendingSynthesis:
         """The prompt must reach the transcript as `inject`, never as user speech.
 
         This site bypasses `_start_next_queued_turn` (it runs no queue entry),
-        which is the only other place a turn-dispatching path appends a row. It
-        previously appended nothing at all, so the prompt reached the
-        conversation log with no dashboard row and resurfaced attributed to the
-        USER on replay.
+        which is the only other place a turn-dispatching path appends a row.
+        Without a row of its own the prompt reaches the conversation log with
+        nothing on the dashboard, and resurfaces attributed to the USER on
+        replay.
         """
         state, slot = _state(tmp_path), _slot()
         slot._pending_synthesis = True
@@ -3748,7 +3748,9 @@ class TestRunChatAutoApproveRungs:
         assert "full_command" not in meta
         assert "trust_command_key" not in meta
         assert "trust_command_grantable" not in meta
-        assert "trust_grantable" not in meta
+        # The session-wide grant names no command, so it survives an
+        # underivable one: only the command-scoped tiers are withheld.
+        assert meta["trust_grantable"] == "1"
 
     @pytest.mark.asyncio
     async def test_reused_non_shell_title_cannot_match_another_tools_trust(self, tmp_path):
@@ -3837,7 +3839,7 @@ class TestRunChatAutoApproveRungs:
         assert "full_command" not in meta
         assert "trust_command_key" not in meta
         assert "trust_command_grantable" not in meta
-        assert "trust_grantable" not in meta
+        assert meta["trust_grantable"] == "1"
         client.approve_tool.assert_awaited_once_with("req-cov-1")
 
     @pytest.mark.asyncio
@@ -4067,7 +4069,9 @@ class TestRunChatApprovalWindow:
         assert "base_command" not in meta
         assert "trust_command_grantable" not in meta
         assert "trust_base_grantable" not in meta
-        assert "trust_grantable" not in meta
+        # Redaction hides the bytes a COMMAND grant would name, so those tiers
+        # go.  Trusting the session names no bytes, so that tier stays.
+        assert meta["trust_grantable"] == "1"
         client.reject_tool.assert_awaited_once_with("req-cov-1")
 
     @pytest.mark.asyncio

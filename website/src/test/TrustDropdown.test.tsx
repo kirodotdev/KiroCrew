@@ -23,7 +23,7 @@ describe('TrustDropdown', () => {
   it('opens on button click', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    expect(screen.getByText('Trust all tools')).toBeInTheDocument()
+    expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
   })
 
   it('shows 3 options for shell command', () => {
@@ -33,7 +33,7 @@ describe('TrustDropdown', () => {
     const texts = buttons.map(b => b.textContent)
     expect(texts.some(t => t?.includes('ls /tmp'))).toBe(true)
     expect(texts.some(t => t?.includes('ls') && t?.includes('commands'))).toBe(true)
-    expect(screen.getByText('Trust all tools')).toBeInTheDocument()
+    expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
   })
 
   // The exact-command option is the one the user is most likely to misread: it
@@ -96,7 +96,7 @@ describe('TrustDropdown', () => {
     render(<TrustDropdown fullCommand="TaskeiGetTask" baseCommand="TaskeiGetTask" isShell={false} className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
     expect(screen.getByText(/TaskeiGetTask/)).toBeInTheDocument()
-    expect(screen.getByText('Trust all tools')).toBeInTheDocument()
+    expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
     expect(screen.queryByText(/commands/)).not.toBeInTheDocument()
   })
 
@@ -124,7 +124,7 @@ describe('TrustDropdown', () => {
     const onAction = vi.fn()
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={onAction} />)
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     expect(onAction).toHaveBeenCalledWith('trust')
   })
 
@@ -141,13 +141,13 @@ describe('TrustDropdown', () => {
       fireEvent.click(screen.getByText('Trust'))
       expect(screen.getByText(channelLabel)).toBeInTheDocument()
       // Exact-string match: the default label must not render alongside.
-      expect(screen.queryByText('Trust all tools')).not.toBeInTheDocument()
+      expect(screen.queryByText('Trust all tools for this session')).not.toBeInTheDocument()
     })
 
     it('keeps the default label when the prop is absent', () => {
       render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
       fireEvent.click(screen.getByText('Trust'))
-      expect(screen.getByText('Trust all tools')).toBeInTheDocument()
+      expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
       expect(screen.queryByText(channelLabel)).not.toBeInTheDocument()
     })
 
@@ -172,11 +172,11 @@ describe('TrustDropdown', () => {
     it('labels the sole remaining tier when the surface has no command', () => {
       const onAction = vi.fn()
       render(<TrustDropdown fullCommand="Researcher" baseCommand="Researcher" isShell={false} hasCommand={false} trustAllLabelKey={channelKey} className={btnClass} onAction={onAction} />)
-      fireEvent.click(screen.getByText('Trust'))
-      const items = screen.getAllByRole('menuitem')
-      expect(items).toHaveLength(1)
-      expect(items[0]).toHaveTextContent(channelLabel)
-      fireEvent.click(items[0])
+      // One tier means no menu: the trigger IS the tier, so its own label
+      // carries the scope and there is nothing to open.
+      expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+      const only = screen.getByRole('button', { name: channelLabel })
+      fireEvent.click(only)
       expect(onAction).toHaveBeenCalledWith('trust')
     })
   })
@@ -211,17 +211,17 @@ describe('TrustDropdown', () => {
       </div>,
     )
     fireEvent.click(screen.getByText('Trust'))
-    expect(screen.getByText('Trust all tools')).toBeInTheDocument()
+    expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
     fireEvent.mouseDown(screen.getByTestId('outside'))
-    expect(screen.queryByText('Trust all tools')).not.toBeInTheDocument()
+    expect(screen.queryByText('Trust all tools for this session')).not.toBeInTheDocument()
   })
 
   it('closes dropdown after selecting an option', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    expect(screen.getByText('Trust all tools')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('Trust all tools'))
-    expect(screen.queryByText('Trust all tools')).not.toBeInTheDocument()
+    expect(screen.getByText('Trust all tools for this session')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
+    expect(screen.queryByText('Trust all tools for this session')).not.toBeInTheDocument()
   })
 
   it('handles multi-binary baseCommand (comma-separated)', () => {
@@ -240,7 +240,7 @@ describe('TrustDropdown', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell disabled className={btnClass} onAction={onAction} />)
     fireEvent.click(screen.getByText('Trust'))
     // Dropdown should not open when disabled
-    expect(screen.queryByText('Trust all tools')).not.toBeInTheDocument()
+    expect(screen.queryByText('Trust all tools for this session')).not.toBeInTheDocument()
     expect(onAction).not.toHaveBeenCalled()
   })
 
@@ -256,7 +256,7 @@ describe('TrustDropdown', () => {
     const onAction = vi.fn()
     render(<TrustDropdown fullCommand="" baseCommand="" isShell={false} className={btnClass} onAction={onAction} />)
     fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     expect(onAction).toHaveBeenCalledWith('trust')
   })
 
@@ -274,31 +274,38 @@ describe('TrustDropdown', () => {
 describe('TrustDropdown without a command (hasCommand=false)', () => {
   // The channels surface titles its approval with an agent ROLE, not a
   // command, and its backend accepts only approved/rejected/trust — so the
-  // command-scoped tiers must disappear entirely there.
-  it('offers only the plain session-trust action', () => {
+  // command-scoped tiers must disappear entirely there. With one tier left
+  // there is no menu at all: a lone floating item reads as a tooltip, and a
+  // bare "Trust" trigger does not say whether clicking it already grants, so
+  // the tier's own label goes on the control.
+  it('offers only the plain session-trust action, as the control itself', () => {
     render(<TrustDropdown fullCommand="Researcher" baseCommand="Researcher" isShell={false} hasCommand={false} className={btnClass} onAction={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
-    const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(1)
-    expect(items[0].textContent).toContain('Trust all tools')
+    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Trust all tools for this session' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument()
   })
 
   it('hides trust_base even when the title happens to look like a shell command', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell hasCommand={false} className={btnClass} onAction={() => {}} />)
-    fireEvent.click(screen.getByText('Trust'))
-    const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(1)
-    expect(items[0].textContent).not.toContain('commands')
-    expect(items[0].textContent).toContain('Trust all tools')
+    const only = screen.getByRole('button')
+    expect(only.textContent).not.toContain('commands')
+    expect(only.textContent).toContain('Trust all tools for this session')
   })
 
   it('emits the plain trust decision with no pattern', () => {
     const onAction = vi.fn()
     render(<TrustDropdown fullCommand="Researcher" baseCommand="Researcher" isShell={false} hasCommand={false} className={btnClass} onAction={onAction} />)
-    fireEvent.click(screen.getByText('Trust'))
-    fireEvent.click(screen.getByText('Trust all tools'))
+    fireEvent.click(screen.getByText('Trust all tools for this session'))
     expect(onAction).toHaveBeenCalledTimes(1)
     expect(onAction).toHaveBeenCalledWith('trust')
+  })
+
+  it('renders nothing when every tier is withheld', () => {
+    // No command tiers, no reads tier, and no server proof for the session
+    // tier: there is no decision this control could offer, so it must not
+    // render an empty trigger the user can open onto nothing.
+    const { container } = render(<TrustDropdown fullCommand="" baseCommand="" isShell={false} hasCommand={false} showTrustAll={false} className={btnClass} onAction={() => {}} />)
+    expect(container.querySelector('button')).toBeNull()
   })
 
   it('keeps every tier when hasCommand is not passed (command-bearing surfaces)', () => {
@@ -331,7 +338,7 @@ describe('TrustDropdown positioning', () => {
   it.skip('renders menu positioned above — handled by Radix Portal', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
-    const menu = screen.getByText('Trust all tools').closest('div[class*="absolute"]')
+    const menu = screen.getByText('Trust all tools for this session').closest('div[class*="absolute"]')
     expect(menu).toBeInTheDocument()
     expect(menu?.className).toContain('bottom-full')
   })

@@ -9390,12 +9390,24 @@ async def _run_chat(
                     # them so two different pairs cannot share a durable grant.
                     perm_meta["trust_command_key"] = _trust_key
                     perm_meta["trust_command_grantable"] = "1"
-                    # A broad per-slot Trust click is still a durable grant.
-                    # Carry an explicit server proof so alternate approval
-                    # surfaces cannot offer it merely because they received a
-                    # pending card.  Redacted/underivable calls intentionally
-                    # omit this bit and remain allow-once/reject only.
-                    perm_meta["trust_grantable"] = "1"
+                # A broad per-slot Trust click is still a durable grant, so it
+                # carries an explicit server proof: an alternate approval
+                # surface must not offer it merely because it received a
+                # pending card.  The proof is deliberately NOT conditioned on
+                # ``_command_grantable``.  The session grant names no command —
+                # it auto-approves whatever this slot asks for next — so the
+                # bytes of THIS call are not what the user consents to, and
+                # their derivability cannot bear on it.  Conditioning it there
+                # removed the entire Trust menu, every tier, from any card
+                # whose command the transport redacted or could not
+                # canonicalize; a plain ``cd`` request then rendered with
+                # allow-once and reject alone.  The command-scoped tiers above
+                # stay gated, because those DO name the bytes being consented
+                # to.  This matches the fidelity split already documented on
+                # ``child_unconditional_grant_eligible``, where trust-all is an
+                # unconditional grant and only content-matching paths need the
+                # canonical command.
+                perm_meta["trust_grantable"] = "1"
                 _base = _extract_base_command(_trust_key) if event.is_shell else ""
                 _safe_base, _ = redact_exfiltration_urls(_base)
                 _safe_base, _ = redact_credentials(_safe_base)
