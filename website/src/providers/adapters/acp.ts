@@ -2,6 +2,7 @@ import { api } from '../../api/client'
 import modelTokensRaw from '../../model_tokens.json'
 import { markModelsDegraded } from '../modelListHealth'
 import { isPricedMultiplier } from '../modelList'
+import { i18nT } from '../../i18n/t'
 import type {
   ProviderAdapter,
   ProviderCapabilities,
@@ -254,7 +255,17 @@ export class AcpAdapter implements ProviderAdapter {
 
   async fetchUsage(): Promise<NormalizedUsage> {
     const data = await api.kiroUsage()
-    const s = data.sessions
+    const s = data?.sessions
+    // A 2xx whose body is not the route's contract at all: no `sessions` half
+    // (a proxy or a stub answering `[]`, a gateway that never had the route).
+    // Reading `s.total_sessions` off that rejects with the engine's own
+    // "Cannot read properties of undefined", and the Overview card and the
+    // Usage tab render whatever this rejects with verbatim -- an English JS
+    // TypeError in place of a message, in every locale. Say what happened
+    // instead, in the catalog's words.
+    if (!s || typeof s !== 'object' || Array.isArray(s)) {
+      throw new Error(i18nT('api.client.unexpected_server_response'))
+    }
     // The route answers 200 even when the transcript directory could not be
     // read, because billing is a separate half of the payload. `error` is the
     // server's own message for that failure, and the statistics beside it are

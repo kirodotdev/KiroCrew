@@ -120,3 +120,34 @@ describe('AcpAdapter.fetchUsage — an unreadable sessions directory', () => {
     expect(usage.billing?.plan).toBe('Pro')
   })
 })
+
+// `GET /api/usage/kiro` can also answer 200 with a body that is not the route's
+// contract at all -- no `sessions` half. A reverse proxy or a fixture stub that
+// answers `[]` for a route it does not map is the concrete case: the i18n
+// render gate's stub does exactly that, and reading `s.total_sessions` off it
+// turns the Overview usage card into "Cannot read properties of undefined
+// (reading 'total_sessions')" -- the engine's English, in every locale, which
+// the en-XA pseudolocale sweep counts as a latin leak as soon as the gate waits
+// for the surface to settle before scanning it (#9709).
+describe('AcpAdapter.fetchUsage — a payload with no sessions half', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it.each([
+    ['an array', []],
+    ['an empty object', {}],
+    ['a sessions half that is an array', { username: 'someone', billing: {}, sessions: [] }],
+  ])('rejects with the catalog message for %s, not a TypeError', async (_label, payload) => {
+    kiroUsage.mockResolvedValue(payload)
+    const err = await new AcpAdapter().fetchUsage().then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(Error)
+    // The message is what the Overview card and the Usage tab print, so it has
+    // to be a catalog string: setup pins i18next to English, and the key is the
+    // one `api/client.ts` already uses for a body that is not what the route
+    // promised.
+    expect((err as Error).message).toBe('Unexpected server response')
+    expect((err as Error).message).not.toMatch(/undefined|total_sessions/)
+  })
+})
