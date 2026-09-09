@@ -2,6 +2,9 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "Token-URL oder Roh-Token einfügen…",
+      "proxy_session_expired_reload": "Die Sitzung deines Zugriffsproxys ist abgelaufen. Lade diesen Browser-Tab neu, um dich wieder anzumelden.",
+      "proxy_refused_no_sign_in": "Diese Anfrage wurde abgewiesen, und es wurde keine Anmeldeseite angeboten — das sieht eher nach einer Sperre als nach einer abgelaufenen Sitzung aus. Wahrscheinliche Ursache ist ein Proxy oder eine Firewall vor diesem Dashboard; prüfe das oder versuche es später erneut.",
+      "proxy_session_expired_framed": "Die Sitzung deines Zugriffsproxys ist abgelaufen. Öffne {{origin}} in einem neuen Tab, um dich wieder anzumelden — in diesem Panel funktioniert die Anmeldung nicht.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Vom Tunnel-Edge gedrosselt (HTTP 429) — zu viele Anfragen in kurzer Folge. Das Dashboard versucht es automatisch erneut; falls das anhält, warte ein paar Sekunden und lade die Seite neu.",
       "session_expired": "Sitzung abgelaufen.",
       "session_expired_sign_in_again": "Die Sitzung ist abgelaufen. Führen Sie kirocrew token in einem Terminal aus und fügen Sie die URL in das Banner oben auf dieser Seite ein, um sich erneut anzumelden.",

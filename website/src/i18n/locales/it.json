@@ -2,6 +2,9 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "Incolla l'URL del token o il token grezzo…",
+      "proxy_session_expired_reload": "La sessione del tuo proxy di accesso è scaduta. Ricarica questa scheda del browser per accedere di nuovo.",
+      "proxy_refused_no_sign_in": "Questa richiesta è stata rifiutata e non è stata offerta alcuna pagina di accesso, quindi sembra un blocco più che una sessione scaduta. La causa probabile è un proxy o un firewall davanti a questa dashboard; controllalo oppure riprova più tardi.",
+      "proxy_session_expired_framed": "La sessione del tuo proxy di accesso è scaduta. Apri {{origin}} in una nuova scheda per accedere di nuovo: dentro questo pannello non funziona.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
       "session_expired": "Sessione scaduta.",
       "session_expired_sign_in_again": "Sessione scaduta. Esegui kirocrew token in un terminale, quindi incolla l'URL nel banner in cima a questa pagina per accedere di nuovo.",

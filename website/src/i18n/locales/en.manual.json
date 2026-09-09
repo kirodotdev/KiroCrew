@@ -2,6 +2,9 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "Paste token URL or raw token…",
+      "proxy_session_expired_reload": "Your access proxy's session expired. Reload this browser tab to sign in again.",
+      "proxy_refused_no_sign_in": "This request was refused, and no sign-in page was offered — so this looks like a block rather than a lapsed session. A proxy or firewall in front of this dashboard is the likely cause; check it, or retry later.",
+      "proxy_session_expired_framed": "Your access proxy's session expired. Open {{origin}} in a new tab to sign in again — signing in inside this panel won't work.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Rate limited by the tunnel edge (HTTP 429) — too many requests in a burst. The dashboard retries automatically; if this persists, wait a few seconds and reload.",
       "session_expired": "Session expired.",
       "session_expired_sign_in_again": "Session expired. Run kirocrew token in a terminal, then paste the URL into the banner at the top of this page to sign back in.",

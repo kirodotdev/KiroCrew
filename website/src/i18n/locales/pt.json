@@ -2,6 +2,9 @@
   "api": {
     "client": {
       "paste_token_url_or_raw_token": "Cole a URL do token ou o token bruto…",
+      "proxy_session_expired_reload": "A sessão do seu proxy de acesso expirou. Recarregue esta aba do navegador para entrar novamente.",
+      "proxy_refused_no_sign_in": "Esta solicitação foi recusada e nenhuma página de login foi oferecida, então isso parece um bloqueio e não uma sessão expirada. A causa provável é um proxy ou firewall na frente deste painel; verifique isso ou tente de novo mais tarde.",
+      "proxy_session_expired_framed": "A sessão do seu proxy de acesso expirou. Abra {{origin}} em uma nova aba para entrar novamente — dentro deste painel não funciona.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limite de taxa aplicado pela borda do túnel (HTTP 429) — muitas solicitações em rajada. O painel repete a tentativa automaticamente; se isso persistir, aguarde alguns segundos e recarregue.",
       "session_expired": "Sessão expirada.",
       "session_expired_sign_in_again": "A sessão expirou. Execute kirocrew token em um terminal e cole o URL no banner no topo desta página para entrar novamente.",
