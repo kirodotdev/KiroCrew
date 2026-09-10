@@ -285,7 +285,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
-from kiro_crew.sel import sel
+from kiro_crew.sel import flush_audit_queue, flush_audit_queue_before_hard_exit, sel
 from kiro_crew.service.common import restart_command_hint
 from kiro_crew.session import (
     HEARTBEAT_KEY,
@@ -11539,6 +11539,13 @@ class GatewayOrchestrator:
                     _stop_log_queue_listener(timeout=2.0)
                 except Exception:
                     pass  # force exit must never be blocked by logging
+                # The SEL audit queue has the identical shape and the identical
+                # exposure: a daemon writer thread whose drain is an atexit hook
+                # this exit skips, so the events recorded while shutting down --
+                # the ones a security review reads first -- die here. Bounded
+                # the same way. This handler runs on the loop thread, but the
+                # process leaves on the next line, so blocking it costs nothing.
+                flush_audit_queue(timeout=2.0)
                 os._exit(0)
             _shutting_down = True
             shutdown_event.set()
@@ -11771,6 +11778,10 @@ class GatewayOrchestrator:
         from kiro_crew.cli import drain_log_queue_before_hard_exit
 
         await drain_log_queue_before_hard_exit()
+        # And the SEL audit queue, for the same reason at the same layer: the
+        # restart path already flushes it before its own os._exit, so a normal
+        # shutdown dropping the audit tail is the inconsistency, not the fix.
+        await flush_audit_queue_before_hard_exit()
         os._exit(exit_code)
 
     async def _start_channel_transports(
