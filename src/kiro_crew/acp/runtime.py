@@ -3402,6 +3402,7 @@ class AcpRuntime:
         agent: str | None = None,
         crew_agent: str | None = None,
         member_session_key: str = "",
+        mcp_servers: list[dict[str, Any]] | None = None,
     ) -> AcpSessionHandle:
         """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -3434,9 +3435,12 @@ class AcpRuntime:
         # the event loop — the overlay lookup stats and reads files. Empty when
         # the shared gateway is disabled, so non-pooled installs still send [].
         active_agent = agent or self._agent
-        mcp_servers = await asyncio.to_thread(
-            pooled_session_servers, self._mcp_gateway_overlay, active_agent
-        )
+        if mcp_servers is None:
+            mcp_servers = await asyncio.to_thread(
+                pooled_session_servers, self._mcp_gateway_overlay, active_agent
+            )
+        else:
+            mcp_servers = list(mcp_servers)
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time, same as create_session().

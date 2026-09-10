@@ -115,7 +115,6 @@ dead-identifier	docs/reference/kiro-cli/mcp/examples.md	list_branches
 dead-identifier	docs/reference/kiro-cli/mcp/examples.md	read_documentation
 dead-identifier	docs/reference/kiro-cli/mcp/examples.md	search_documentation
 dead-identifier	docs/reference/kiro-cli/mcp/examples.md	search_repositories
-dead-identifier	docs/reference/kiro-cli/mcp/examples.md	update_issue
 dead-identifier	docs/reference/kiro-cli/mcp/oauth-token-storage.md	ascii_serialization
 dead-identifier	docs/reference/kiro-cli/mcp/oauth-token-storage.md	recycle_kiro_sessions
 dead-identifier	docs/reference/kiro-cli/steering.md	kiro_default
@@ -127,11 +126,9 @@ dead-identifier	docs/system-specs/common/testing-conventions.md	catching_logs
 dead-identifier	docs/system-specs/common/testing-conventions.md	subprocess_exec
 dead-identifier	docs/system-specs/common/testing-conventions.md	subprocess_shell
 dead-identifier	docs/system-specs/modules/acp-client.md	AgentExecutionUserMessageCleared
-dead-identifier	docs/system-specs/modules/acp-client.md	PermissionOption
 dead-identifier	docs/system-specs/modules/acp-client.md	SessionStart
 dead-identifier	docs/system-specs/modules/acp-client.md	node_binary
 dead-identifier	docs/system-specs/modules/acp-client.md	permission_denied
-dead-identifier	docs/system-specs/modules/acp-client.md	requestedSchema
 dead-identifier	docs/system-specs/modules/acp-client.md	seal_memfd
 dead-identifier	docs/system-specs/modules/agent-host-contract.md	SessionStart
 dead-identifier	docs/system-specs/modules/agent-host-contract.md	bills_kiro_credits
@@ -205,7 +202,6 @@ dead-identifier	docs/system-specs/modules/ops-mission-control.md	motor_pe_beta
 dead-identifier	docs/system-specs/modules/ops-mission-control.md	webhook_config
 dead-identifier	docs/system-specs/modules/pptx-maker.md	loader_path
 dead-identifier	docs/system-specs/modules/pptx-maker.md	test_text_butted_against_a_data_uri_is_not_silently_dropped
-dead-identifier	docs/system-specs/modules/providers.md	current_model
 dead-identifier	docs/system-specs/modules/security.md	auth_prompt
 dead-identifier	docs/system-specs/modules/security.md	credential_manager
 dead-identifier	docs/system-specs/modules/security.md	find_overbroad_cc_deny_rules
@@ -257,7 +253,6 @@ line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/client.py:23
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/client.py:2438
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/client.py:2742
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/client.py:2807-2820
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/client.py:3313
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/client.py:3313-3332
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/client.py:3323
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	acp/client.py:3408

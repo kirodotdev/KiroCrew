@@ -144,6 +144,8 @@ choice blob makes the usage line unreadable.
 | `kirocrew chat -m "msg"` | Send a single message, print streaming response |
 | `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D) |
 | `kirocrew chat --model X` | Override model for this session |
+| `kirocrew acp` | Serve ACP v1 over stdio to an editor, backed by the running gateway. |
+| `kirocrew acp --standalone` | Serve ACP from an isolated in-process session registry without dashboard sharing. |
 | `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
 | `kirocrew gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
 | `kirocrew gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |

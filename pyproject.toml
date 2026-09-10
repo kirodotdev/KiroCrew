@@ -68,6 +68,8 @@ dev = [
     # runtime concern for the desktop bundle, NOT a core install_requires. Pinned to
     # the exact version the desktop matrix ships (packaging/build-desktop.sh).
     "imageio-ffmpeg==0.6.0",
+    # ACP SDK used by the closed-box interoperability tests.
+    "agent-client-protocol==0.12.1",
 ]
 
 [tool.black]

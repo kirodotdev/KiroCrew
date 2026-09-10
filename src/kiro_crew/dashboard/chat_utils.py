@@ -267,15 +267,58 @@ def _build_stream_chunk(msg: dict, *, include_row_meta: bool = False) -> str:
         cls_val, _ = redact_credentials(cls_val)
     else:
         cls_val = _redact_deep(cls_val)
-    return json.dumps(
-        {
-            "type": msg.get("role", ""),
-            "content": content,
-            "ts": msg.get("ts", ""),
-            "cls": cls_val,
-            **({"meta": meta} if meta else {}),
-        }
-    )
+    locations = _tool_locations_from_meta(msg)
+    payload: dict[str, Any] = {
+        "type": msg.get("role", ""),
+        "content": content,
+        "ts": msg.get("ts", ""),
+        "cls": cls_val,
+    }
+    if meta:
+        payload["meta"] = meta
+    if locations:
+        payload["locations"] = locations
+    # Tool call correlation for ACP session/update: the http_backend needs to
+    # map a refinement (role="tool_update") back to the original tool_call so
+    # its send_tool_call_update targets the same gw-N ID. Cheaper than
+    # exposing the whole msg meta and stays scoped to the two roles that need it.
+    if msg.get("role") in ("tool", "tool_update"):
+        msg_meta = msg.get("meta")
+        if isinstance(msg_meta, dict):
+            tcid = msg_meta.get("tool_call_id")
+            if isinstance(tcid, str) and tcid:
+                payload["tool_call_id"] = tcid
+            tool_name = msg_meta.get("tool_name")
+            if isinstance(tool_name, str) and tool_name:
+                payload["tool_name"] = tool_name
+    return json.dumps(payload)
+
+
+def _tool_locations_from_meta(msg: dict) -> list[dict[str, Any]] | None:
+    """Return sanitized absolute tool locations for editor follow-along."""
+    if msg.get("role") not in ("tool", "tool_update"):
+        return None
+    meta = msg.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("locations")
+    if not isinstance(raw, list):
+        return None
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        path, _ = redact_exfiltration_urls(path)
+        path, _ = redact_credentials(path)
+        cleaned: dict[str, Any] = {"path": path}
+        line = entry.get("line")
+        if isinstance(line, int) and not isinstance(line, bool) and line > 0:
+            cleaned["line"] = line
+        out.append(cleaned)
+    return out or None
 
 
 # Deprecated -1m model aliases → base model (Anthropic 1M GA, April 2026)

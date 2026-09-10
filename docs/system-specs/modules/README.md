@@ -13,6 +13,7 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [acp-client.md](acp-client.md) | The ACP JSON-RPC client that drives `kiro-cli`: transport, framing, timeouts, and the backend seam. |
+| [acp-server.md](acp-server.md) | The ACP agent role served to editors: stdio framing, gateway-backed sessions, selectors, and supervised client MCP servers. |
 | [providers.md](providers.md) | The `LLMProvider` interface, the `AcpProvider` the factory selects, and how a backend id is chosen. |
 | [agent-host-contract.md](agent-host-contract.md) | What an agent backend must supply besides speaking ACP: agent layout, session store, identity, sandbox, MCP delivery, billing, permission engine, auxiliary runtimes — kiro-cli, KAS and Claude Code side by side, with the new-provider checklist. |
 | [claude-code-provider.md](claude-code-provider.md) | Claude Code as a selectable ACP harness: the live spawn path, the two binaries it needs on the machine, and the MCP gap a Claude session still carries. |

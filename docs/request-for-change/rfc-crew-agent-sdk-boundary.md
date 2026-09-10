@@ -89,11 +89,15 @@ exposed a design flaw in an earlier draft of §5 (§5.3).
 ## 2. Motivation and current state
 
 Re-verified at `73d60a83d` on 2026-09-05. Counts below are from
-`src/kiro_crew`, excluding `src/kiro_crew/acp/` and `src/kiro_crew/providers/`
-themselves, and excluding `test/` unless stated. For import edges the
+`src/kiro_crew`, excluding `src/kiro_crew/acp/`,
+`src/kiro_crew/acp_server/`, and `src/kiro_crew/providers/` themselves, and excluding
+`test/` unless stated. For import edges the
 authoritative count is no longer an ad-hoc scan: it is
 `.github/agent-sdk-boundary-baseline.txt`, and the gate prints the live per-root
-split on every run.
+split on every run. `acp_server/` is excluded because it implements the
+agent-role ACP endpoint itself: it owns editor-facing JSON-RPC framing and must
+name ACP protocol types. The gate test pins that narrow exemption; application
+code outside the four boundary trees remains subject to the ratchet.
 
 ### 2.1 The existing seam is an alias, not a translation
 

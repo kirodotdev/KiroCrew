@@ -236,6 +236,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     user_meta = body.get("meta")  # knowledge/files/pastes metadata from frontend
     if not isinstance(user_meta, dict):
         user_meta = None
+    requested_acp_session = request.headers.get("X-ACP-Session-Id", "")
+    if not request.get("internal_auth") or not isinstance(requested_acp_session, str):
+        requested_acp_session = ""
     theme_consent = body.get("theme_consent") is True
     # Content-bound persona consent: the sha256 hex the user
     # granted in the consent modal. Injection is gated on this matching the
@@ -797,11 +800,15 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # agent itself decides whether to operate a browser or read with web_fetch
     # (the system prompt and the kirocrew-commands / web-browse skills tell it
     # how), so the backend injects nothing here.
+    # Mark ACP-originated turns before append so the editor relay can suppress
+    # the returning user row on the same ACP session.
+    acp_turn_origin = requested_acp_session if requested_acp_session == slot.key else ""
+    if acp_turn_origin:
+        slot._acp_origin_session_id = acp_turn_origin
+
     # A dashboard's busy snapshot can suppress its optimistic user bubble even
-    # when this send starts a turn. Echo correlated sends BEFORE starting the
-    # reply so every pane sees the user row in order, independently of when the
-    # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
-    # callers without a correlation id keep their existing delivery contract.
+    # when this send starts a turn. Echo correlated sends before starting the
+    # reply so every pane sees the user row in order.
     _user_row = slot.append(
         "user", message, "msg msg-u", meta=_redact_meta(user_meta) if user_meta else None
     )
@@ -1001,14 +1008,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # An unattended app-owned turn runs under the background concurrency
     # cap; run_background_turn passes an attended slot straight through, so the
     # interactive path is unchanged (no semaphore is even created).
-    #
-    # The remote arm is a conditional expression INSIDE the dispatch rather than a
-    # coroutine hoisted into a local: `test_chat_turn_timeout_consistency` scans
-    # the text of each `spawn_guarded_turn(...)` body for `_run_chat(`, so hoisting
-    # the call out would take this site — the primary user-typed turn — out of the
-    # static guard that every dispatch carries a CHAT_TURN_TIMEOUT ceiling.
-    # Both arms are wrapped identically: a hung peer must hit the same wall a hung
-    # local turn does.
     task = spawn_guarded_turn(
         state,
         slot,
@@ -1026,6 +1025,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             ),
         ),
     )
+    if acp_turn_origin:
+
+        def _clear_acp_origin(_task: asyncio.Task[object]) -> None:
+            if slot._acp_origin_session_id == acp_turn_origin:
+                slot._acp_origin_session_id = ""
+
+        task.add_done_callback(_clear_acp_origin)
     slot.task = task
     slot._recovery_retrigger_count = 0
     state.push_slots_update()
@@ -1041,6 +1047,22 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             _receipt["mid"] = _user_mid
         return web.json_response(_receipt)
 
+    return await stream_slot_response(
+        request,
+        slot,
+        relay_mode=relay_mode,
+        relay_owned=_relay_owned,
+    )
+
+
+async def stream_slot_response(
+    request: web.Request,
+    slot: _ChatSlot,
+    *,
+    relay_mode: bool = False,
+    relay_owned: bool = False,
+) -> web.StreamResponse:
+    """Stream one already-started slot turn through the dashboard SSE contract."""
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -1056,7 +1078,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # draining it. Drop mirror ownership on the way out so the leak cannot
         # happen; the dispatched turn keeps running, exactly as it does when the
         # reader disconnects mid-stream.
-        remote_mirror.detach(slot.key, _relay_owned)
+        remote_mirror.detach(slot.key, relay_owned)
         raise
 
     # Declare this reader as the owner of `slot._pending` for as long as it is
@@ -1083,7 +1105,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         finally:
             slot.drain()
             slot._has_reader = False
-            remote_mirror.detach(slot.key, _relay_owned)
+            remote_mirror.detach(slot.key, relay_owned)
     return resp
 
 
@@ -8158,6 +8180,64 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             schedule_eager_spawn(state, slot)
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})
+
+
+async def api_chat_slot_mcp(request: web.Request) -> web.Response:
+    """Register the ACP editor's stdio MCP server set for one slot."""
+    # Deferred to keep dashboard imports independent from acp_server package setup.
+    from kiro_crew.acp_server.mcp_config import (
+        McpConfigError,
+        parse_mcp_servers,
+        servers_to_acp_dicts,
+    )
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    denied = deny_non_dashboard_caller(request, "chat_slot_mcp")
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "request must be an object", "code": "invalid_request"},
+            status=400,
+        )
+
+    raw = body.get("servers")
+    requested = len(raw) if isinstance(raw, list) else 0
+    try:
+        servers = parse_mcp_servers(raw)
+    except McpConfigError as exc:
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="chat_slot_mcp",
+            outcome="denied",
+            resources=f"slot={name} requested={requested}",
+            error=str(exc),
+        )
+        return web.json_response({"error": str(exc), "code": "invalid_mcp_servers"}, status=400)
+
+    names = [server.name for server in servers]
+    slot.session_mcp_servers = servers_to_acp_dicts(servers)
+    logger.info(
+        "Slot %s registered %d ACP MCP server(s): %s",
+        name,
+        len(servers),
+        ", ".join(names) or "(cleared)",
+    )
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="chat_slot_mcp",
+        outcome="allowed",
+        resources=f"slot={name} servers={','.join(names)}",
+    )
+    return web.json_response({"ok": True, "servers": names})
 
 
 # Fields carried per follow-up item on the wire. Kept explicit so a future
