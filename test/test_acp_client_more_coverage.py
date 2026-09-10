@@ -410,6 +410,10 @@ class TestClientAccessors:
         client._process = _live_process()
         assert client.is_process_alive() is True
         assert client.exit_code is None
+        # A never-prompted client is idle: _turn_done is set at construction, so
+        # there is no unfinished turn even with a live process.
+        assert client.has_unfinished_turn() is False
+        client._turn_done.clear()  # a turn is now in flight
         assert client.has_unfinished_turn() is True  # turn not done + process alive
 
         client._process.returncode = 3

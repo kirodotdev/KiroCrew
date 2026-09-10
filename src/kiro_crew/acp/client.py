@@ -3507,6 +3507,11 @@ class AcpClient:
         self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._last_activity: float = time.monotonic()
         self._turn_done: asyncio.Event = asyncio.Event()
+        # Idle reads as "turn done": has_active_turn() must be False on a spawned
+        # but never-prompted client, or the model/agent switch endpoints refuse
+        # with turn_in_flight against a turn that never ran. Every prompt entry
+        # point clear()s this before running, so a real turn still reads active.
+        self._turn_done.set()
         # Serializes whole read turns on this client's single stdout StreamReader.
         # An asyncio StreamReader permits exactly ONE waiting reader; the shared
         # `_bg` session is streamed by ~8 callers and the per-session Semaphore(1)
@@ -6007,7 +6012,19 @@ class AcpClient:
         self._cancel_ts = 0.0
         self._cancel_grace_secs = _CANCEL_GRACE_SECS
         self._resumed = False
-        self._turn_done = asyncio.Event()
+        # Keep the existing _turn_done OBJECT across a respawn — do not replace
+        # it. A wait_turn_done() waiter captures self._turn_done.wait() on the
+        # object live at that moment; swapping in a fresh Event would strand that
+        # waiter on an object nothing sets, so the cooperative-stop ack times out
+        # and hard-kills the respawned turn. Reusing the object also carries the
+        # turn state for free: a mid-turn respawn's event stays cleared (reads
+        # active, so a concurrent cancel is not dropped), and an idle client's
+        # stays set (the idle == "turn done" invariant, so a later model switch
+        # is not refused with turn_in_flight). Synthesize one only when absent —
+        # test clients built without __init__ — defaulting to idle.
+        if getattr(self, "_turn_done", None) is None:
+            self._turn_done = asyncio.Event()
+            self._turn_done.set()
         self._last_stop_reason = ""
         self._pending_oauth_requests.clear()
         self._oauth_emitted_servers.clear()
