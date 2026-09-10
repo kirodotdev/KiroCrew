@@ -199,7 +199,9 @@ def _credentials_are_unconfined() -> str:
     try:
         from kiro_crew.config import KiroCrewConfig
 
-        mode = str(getattr(KiroCrewConfig.load(), "sandbox", "") or "").strip().lower()
+        # The sandbox tier is on the agent section, not the config top level.
+        _agent = getattr(KiroCrewConfig.load(), "agent", None)
+        mode = str(getattr(_agent, "sandbox", "") or "").strip().lower()
     except Exception as exc:  # noqa: BLE001 — an unverifiable sandbox is an unconfined one
         return f"the gateway sandbox setting could not be read ({type(exc).__name__})"
     # The provider path runs repository-controlled text through an agent with
