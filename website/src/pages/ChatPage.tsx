@@ -4456,6 +4456,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   // Legacy aliases so the JSX below keeps reading the same names.
   const visibleDisplayItems = virt.virtualItems
+  // A window replacement can commit after the scroll frame that requested it.
+  // Re-read geometry from the committed rows so an incomplete old window cannot
+  // leave its banner at rest over a different part of the transcript.
+  useLayoutEffect(() => { updatePinnedPrompt() }, [visibleDisplayItems, updatePinnedPrompt])
 
 
 

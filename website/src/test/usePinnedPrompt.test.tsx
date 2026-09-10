@@ -85,9 +85,9 @@ function mountGeometry(rowCount: number) {
   return { scroller, fold, card, rows, get scrollTop() { return scrollTop } }
 }
 
-function renderPin() {
+function renderPin(requiresMountedHandoff = false) {
   const scrollerRef = { current: null as HTMLDivElement | null }
-  const hook = renderHook(() => usePinnedPrompt({ scrollerRef }))
+  const hook = renderHook(() => usePinnedPrompt({ scrollerRef, requiresMountedHandoff }))
   return { ...hook, scrollerRef }
 }
 
@@ -180,6 +180,26 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
       h.result.current.updatePinnedPrompt()
     })
     expect(h.result.current.pinned?.idx).toBe(2)
+  })
+
+  it('drops the banner when the mounted window starts below the hand-off line', () => {
+    const h = renderPin(true)
+    const g = mountGeometry(14)
+    const items = Array.from({ length: 68 }, (_, index) => single(
+      index,
+      index % 2 === 0 ? 'user' : 'assistant',
+      `Turn ${Math.floor(index / 2) + 1} ${index % 2 === 0 ? 'prompt' : 'response'}`,
+    ))
+    // A fast upward jump has moved the viewport to the start, but React has not
+    // replaced the old tail window yet. Every mounted row is below the fold.
+    g.rows.forEach((row, offset) => {
+      row.dataset.displayIndex = String(54 + offset)
+      setRect(row, 500 + offset * 80, 40)
+    })
+
+    wire(h, g, items)
+
+    expect(h.result.current.pinned).toBeNull()
   })
 
   it('reports nothing pinned when no prompt sits above the hand-off line', () => {
